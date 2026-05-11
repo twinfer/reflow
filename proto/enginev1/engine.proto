@@ -1,0 +1,271 @@
+// Reflow engine wire types.
+//
+// Mirrors Restate's wal-protocol v2 and journal v2 where applicable; citations
+// to crates/... refer to Restate v1.6.2.
+//
+// Scope per phase:
+//   Phase 1 (current): partition-shard commands + rows. AnnounceLeader is
+//     shared with the metadata shard, but Phase 1 deployments only host
+//     partition shards.
+//   Phase 4: metadata-shard commands (RegisterNode, RemoveNode,
+//     UpdatePartitionTable, Heartbeat, VersionBarrier) will land in the
+//     Command oneof's reserved tag range (6-15). See SAD §6.2.
+//   Phase 4+: SnapshotMeta (defined below) is the operator-visible sidecar
+//     written by the SnapshotRepository. See SAD §6.12.
+//
+// All commands flow through the same dragonboat IOnDiskStateMachine
+// (Partition). The only thing distinguishing a metadata shard (shardID=0)
+// from a partition shard (shardID=1..N) at the wire level is which Command
+// variants the shard accepts.
+syntax = "proto3";
+
+package reflow.engine.v1;
+
+option go_package = "github.com/twinfer/reflow/proto/enginev1;enginev1";
+
+// InvocationId carries the partition_key inside the ID so routing never needs
+// to re-parse the target. Mirrors restate types/identifiers.rs:456-461.
+message InvocationId {
+  fixed64 partition_key = 1;
+  bytes uuid = 2; // 16 bytes
+}
+
+message InvocationTarget {
+  string service_name = 1;
+  string handler_name = 2;
+  string object_key = 3; // empty for unkeyed services
+}
+
+// Deduplication strategy.
+// Phase 1 only emits SelfProposal (leader) and Arbitrary (ingress).
+message Dedup {
+  oneof kind {
+    SelfProposalDedup self_proposal = 1;
+    ArbitraryDedup arbitrary = 2;
+  }
+}
+
+message SelfProposalDedup {
+  uint64 leader_epoch = 1;
+  uint64 seq = 2;
+}
+
+message ArbitraryDedup {
+  string producer_id = 1;
+  uint64 seq = 2;
+}
+
+// Envelope wraps every Raft command.
+message Envelope {
+  Header header = 1;
+  Command command = 2;
+}
+
+message Header {
+  Dedup dedup = 1;
+  fixed64 created_at_ms = 2;
+}
+
+// Command oneof. Mirrors restate CommandKind in
+// crates/wal-protocol/src/v2.rs:222-283.
+//
+// Tag assignment:
+//   1     : AnnounceLeader        (every shard)
+//   2-5   : partition-shard commands (Phase 1)
+//   6-15  : reserved for Phase 4 metadata-shard commands (RegisterNode,
+//           RemoveNode, UpdatePartitionTable, Heartbeat, VersionBarrier).
+//           Do not allocate from this range without updating SAD §6.2.
+//   16+   : reserved for Phase 2-3 partition-shard additions (Run effects,
+//           awakeable completions, virtual-object queue ops).
+message Command {
+  reserved 6 to 15;
+
+  oneof kind {
+    AnnounceLeader announce_leader = 1;
+    InvokeCommand invoke = 2;
+    InvokerEffect invoker_effect = 3;
+    TimerFired timer_fired = 4;
+    PurgeInvocation purge = 5;
+  }
+}
+
+// AnnounceLeader is proposed on every shard when its leader changes. It is
+// the only Command variant accepted by both the metadata shard (shardID=0)
+// and partition shards (shardID=1..N).
+//
+// partition_key_start and partition_key_end describe the partition-key range
+// this shard owns; meaningful for partition shards only. The metadata shard
+// sets both to 0.
+message AnnounceLeader {
+  uint64 node_id = 1;
+  uint64 leader_epoch = 2;
+  fixed64 partition_key_start = 3;
+  fixed64 partition_key_end = 4;
+}
+
+message InvokeCommand {
+  InvocationId invocation_id = 1;
+  InvocationTarget target = 2;
+  bytes input = 3;
+  string idempotency_key = 4;
+}
+
+message InvokerEffect {
+  InvocationId invocation_id = 1;
+  oneof kind {
+    JournalEntryAppended journal_appended = 2;
+    InvocationCompleted completed = 3;
+    InvocationSuspended suspended = 4;
+  }
+}
+
+message JournalEntryAppended {
+  uint32 command_index = 1;
+  JournalEntry entry = 2;
+}
+
+message InvocationCompleted {
+  bytes output = 1;
+  string failure_message = 2;
+}
+
+message InvocationSuspended {
+  repeated string awaiting_on = 1;
+}
+
+// JournalEntry — Phase 1 minimum set.
+// Mirrors restate journal_v2 Command+Notification flat union
+// at types/src/journal_v2/mod.rs:60-150.
+message JournalEntry {
+  uint32 index = 1;
+  oneof entry {
+    JEInput input = 2;
+    JESleep sleep = 3;
+    JESleepResult sleep_result = 4;
+    JECall call = 5;
+    JECallResult call_result = 6;
+    JEGetState get_state = 7;
+    JESetState set_state = 8;
+    JEOutput output = 9;
+  }
+}
+
+message JEInput {
+  bytes value = 1;
+}
+
+message JESleep {
+  uint64 fire_at_ms = 1;
+}
+
+message JESleepResult {
+  uint32 sleep_index = 1;
+}
+
+message JECall {
+  InvocationTarget target = 1;
+  bytes input = 2;
+}
+
+message JECallResult {
+  uint32 call_index = 1;
+  bytes result = 2;
+}
+
+message JEGetState {
+  string key = 1;
+  bytes value = 2;
+  bool present = 3;
+}
+
+message JESetState {
+  string key = 1;
+  bytes value = 2;
+}
+
+message JEOutput {
+  bytes value = 1;
+}
+
+message TimerFired {
+  InvocationId invocation_id = 1;
+  uint32 sleep_index = 2;
+  uint64 fire_at_ms = 3;
+}
+
+message PurgeInvocation {
+  InvocationId invocation_id = 1;
+}
+
+// InvocationStatus discriminated union.
+// Mirrors restate storage-api/src/invocation_status_table/mod.rs:141-155.
+message InvocationStatus {
+  oneof status {
+    Free free = 1;
+    Scheduled scheduled = 2;
+    Invoked invoked = 3;
+    Suspended suspended = 4;
+    Completed completed = 5;
+  }
+}
+
+message Free {}
+
+message Scheduled {
+  InvocationTarget target = 1;
+  bytes input = 2;
+  fixed64 created_at_ms = 3;
+}
+
+message Invoked {
+  InvocationTarget target = 1;
+  fixed64 created_at_ms = 2;
+  fixed64 invoked_at_ms = 3;
+}
+
+message Suspended {
+  InvocationTarget target = 1;
+  fixed64 suspended_at_ms = 2;
+  repeated string awaiting_on = 3;
+}
+
+message Completed {
+  InvocationTarget target = 1;
+  bytes output = 2;
+  string failure_message = 3;
+  fixed64 completed_at_ms = 4;
+}
+
+// DedupEntry — value stored in the dedup table (per-producer max-seen seq).
+message DedupEntry {
+  uint64 seq = 1;
+  uint64 leader_epoch = 2;
+}
+
+// PartitionMeta is the per-shard singleton holding the shard's applied Raft
+// index and leader-epoch view. Stored under the `meta` key in each shard's
+// own Pebble DB. NOT the cluster-wide metadata — that lives in the metadata
+// shard's own state (defined when Phase 4 lands; SAD §6.2).
+message PartitionMeta {
+  uint64 applied_index = 1;
+  uint64 leader_epoch = 2;
+  uint64 latest_announced_epoch = 3;
+}
+
+// SnapshotMeta is the operator-visible sidecar accompanying each snapshot
+// blob in the SnapshotRepository. Marshaled as protojson so `cat` / `jq`
+// work on the artifact:
+//
+//   {prefix}/p{shard_id:08d}/snapshot-{raft_index:020d}.tar
+//   {prefix}/p{shard_id:08d}/snapshot-{raft_index:020d}.meta.json
+//
+// Phase 4+. See SAD §6.12.
+message SnapshotMeta {
+  uint64 shard_id = 1;
+  uint64 raft_index = 2;
+  uint64 leader_epoch = 3;
+  string reflow_version = 4;
+  // Hex-encoded SHA-256 of the snapshot tar body.
+  string checksum_sha256 = 5;
+  fixed64 created_at_ms = 6;
+}

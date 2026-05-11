@@ -1,0 +1,178 @@
+// Package keys defines the Pebble key codec for a single reflow partition's
+// state store. Because each partition has its own Pebble DB, keys do NOT carry
+// a partition_id prefix — isolation is at the DB level.
+//
+// Namespaces (top-level prefixes):
+//
+//	meta                                         -> PartitionMeta singleton
+//	inv/<24-byte inv_id>                         -> InvocationStatus
+//	journal/<24-byte inv_id>/<4-byte BE u32 idx> -> JournalEntry
+//	timer/<8-byte BE fire_at_ms>/<24-byte id>    -> uint32 sleep_index
+//	state/<service>/<obj_key>/<state_key>        -> reserved for Phase 3
+//	dedup/self/<8-byte BE leader_epoch>          -> DedupEntry
+//	dedup/arbitrary/<producer_id>                -> DedupEntry
+//
+// All multi-byte integers in keys are big-endian so lexicographic byte order
+// equals numeric order. Invocation IDs are encoded as a fixed 24-byte raw
+// form: 8-byte BE partition_key followed by 16-byte uuid. The fixed length is
+// what makes namespace boundaries unambiguous (no prefix can be longer than
+// the namespace + 24 bytes).
+package keys
+
+import (
+	"encoding/binary"
+	"errors"
+	"fmt"
+
+	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+)
+
+const (
+	invocationIDLen = 24 // 8-byte partition_key + 16-byte uuid
+
+	metaPrefix      = "meta"
+	invPrefix       = "inv/"
+	journalPrefix   = "journal/"
+	timerPrefix     = "timer/"
+	statePrefix     = "state/"
+	dedupSelfPrefix = "dedup/self/"
+	dedupArbPrefix  = "dedup/arbitrary/"
+)
+
+// ErrInvalidInvocationID is returned when an InvocationId has a uuid field of
+// the wrong length.
+var ErrInvalidInvocationID = errors.New("invocation id must have 16-byte uuid")
+
+// EncodeInvocationID returns the canonical 24-byte raw form of an InvocationId.
+func EncodeInvocationID(id *enginev1.InvocationId) ([]byte, error) {
+	if len(id.GetUuid()) != 16 {
+		return nil, ErrInvalidInvocationID
+	}
+	out := make([]byte, invocationIDLen)
+	binary.BigEndian.PutUint64(out[:8], id.GetPartitionKey())
+	copy(out[8:], id.GetUuid())
+	return out, nil
+}
+
+// DecodeInvocationID is the inverse of EncodeInvocationID.
+func DecodeInvocationID(buf []byte) (*enginev1.InvocationId, error) {
+	if len(buf) != invocationIDLen {
+		return nil, fmt.Errorf("invocation id raw length = %d; want %d", len(buf), invocationIDLen)
+	}
+	return &enginev1.InvocationId{
+		PartitionKey: binary.BigEndian.Uint64(buf[:8]),
+		Uuid:         append([]byte(nil), buf[8:]...),
+	}, nil
+}
+
+// MetaKey returns the singleton key for the partition's PartitionMeta record.
+func MetaKey() []byte { return []byte(metaPrefix) }
+
+// InvocationKey returns inv/<24-byte id>.
+func InvocationKey(id *enginev1.InvocationId) ([]byte, error) {
+	raw, err := EncodeInvocationID(id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(invPrefix)+invocationIDLen)
+	out = append(out, invPrefix...)
+	return append(out, raw...), nil
+}
+
+// JournalPrefix returns journal/<24-byte id>/.
+//
+// Use with PrefixUpperBound to scan every entry for an invocation.
+func JournalPrefix(id *enginev1.InvocationId) ([]byte, error) {
+	raw, err := EncodeInvocationID(id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(journalPrefix)+invocationIDLen+1)
+	out = append(out, journalPrefix...)
+	out = append(out, raw...)
+	return append(out, '/'), nil
+}
+
+// JournalKey returns journal/<24-byte id>/<4-byte BE index>.
+func JournalKey(id *enginev1.InvocationId, index uint32) ([]byte, error) {
+	raw, err := EncodeInvocationID(id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(journalPrefix)+invocationIDLen+1+4)
+	out = append(out, journalPrefix...)
+	out = append(out, raw...)
+	out = append(out, '/')
+	var idxBuf [4]byte
+	binary.BigEndian.PutUint32(idxBuf[:], index)
+	return append(out, idxBuf[:]...), nil
+}
+
+// TimerPrefix returns the timer/ namespace prefix.
+func TimerPrefix() []byte { return []byte(timerPrefix) }
+
+// TimerKey returns timer/<8-byte BE fire_at>/<24-byte id>. Sorted by fire
+// time then invocation id, which is what the timer service scans.
+func TimerKey(fireAtMs uint64, id *enginev1.InvocationId) ([]byte, error) {
+	raw, err := EncodeInvocationID(id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(timerPrefix)+8+invocationIDLen)
+	out = append(out, timerPrefix...)
+	var fireBuf [8]byte
+	binary.BigEndian.PutUint64(fireBuf[:], fireAtMs)
+	out = append(out, fireBuf[:]...)
+	return append(out, raw...), nil
+}
+
+// DecodeTimerKey extracts (fireAtMs, invocation_id) from a timer key.
+func DecodeTimerKey(key []byte) (uint64, *enginev1.InvocationId, error) {
+	want := len(timerPrefix) + 8 + invocationIDLen
+	if len(key) != want {
+		return 0, nil, fmt.Errorf("timer key length = %d; want %d", len(key), want)
+	}
+	p := len(timerPrefix)
+	fireAt := binary.BigEndian.Uint64(key[p : p+8])
+	id, err := DecodeInvocationID(key[p+8:])
+	return fireAt, id, err
+}
+
+// DedupSelfKey returns dedup/self/<8-byte BE leader_epoch>.
+func DedupSelfKey(leaderEpoch uint64) []byte {
+	out := make([]byte, 0, len(dedupSelfPrefix)+8)
+	out = append(out, dedupSelfPrefix...)
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], leaderEpoch)
+	return append(out, buf[:]...)
+}
+
+// DedupArbitraryKey returns dedup/arbitrary/<producer_id>.
+func DedupArbitraryKey(producerID string) []byte {
+	out := make([]byte, 0, len(dedupArbPrefix)+len(producerID))
+	out = append(out, dedupArbPrefix...)
+	return append(out, producerID...)
+}
+
+// StatePrefix is reserved for Phase 3 virtual-object state. Exported so other
+// packages can avoid colliding with it.
+func StatePrefix() []byte { return []byte(statePrefix) }
+
+// PrefixUpperBound returns the smallest key strictly greater than every key
+// that begins with the given prefix. Returns nil if the prefix is empty or
+// consists entirely of 0xFF bytes — Pebble treats a nil UpperBound as "no
+// upper bound".
+//
+// This fixes the aliasing + overflow bug in the original reflow code which
+// did append(prefix[:n-1], prefix[n-1]+1).
+func PrefixUpperBound(prefix []byte) []byte {
+	out := append([]byte(nil), prefix...)
+	for len(out) > 0 && out[len(out)-1] == 0xFF {
+		out = out[:len(out)-1]
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	out[len(out)-1]++
+	return out
+}

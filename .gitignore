@@ -1,0 +1,17 @@
+# External reference checkouts (kept locally for design study; not part of reflow).
+/restate/
+
+# Per-tool / per-developer state.
+.claude/
+.idea/
+.vscode/
+
+# Local test/run artifacts.
+/data/
+/tmp/
+*.log
+
+# Build output.
+/bin/
+/dist/
+/reflowd

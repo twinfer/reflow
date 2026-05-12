@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 
 	"github.com/lni/dragonboat/v4/statemachine"
 	"google.golang.org/protobuf/proto"
@@ -183,6 +184,14 @@ func (f *FSM) applyCommand(
 			return nil, fmt.Errorf("cluster: write partition table: %w", err)
 		}
 		return applied, nil
+	case *enginev1.Command_EvictNode:
+		return f.applyEvictNode(batch, store, k.EvictNode, raftIndex)
+	case *enginev1.Command_BeginRebalanceStep:
+		return f.applyBeginRebalanceStep(batch, store, k.BeginRebalanceStep, raftIndex)
+	case *enginev1.Command_CompleteRebalanceStep:
+		return f.applyCompleteRebalanceStep(batch, store, k.CompleteRebalanceStep, raftIndex)
+	case *enginev1.Command_UpdateVersionBarrier:
+		return f.applyUpdateVersionBarrier(batch, store, k.UpdateVersionBarrier, raftIndex)
 	case nil:
 		f.cfg.Log.Warn("cluster: envelope has no command kind", "raft_index", raftIndex)
 		return nil, nil
@@ -193,6 +202,232 @@ func (f *FSM) applyCommand(
 			"raft_index", raftIndex, "kind", fmt.Sprintf("%T", k))
 		return nil, nil
 	}
+}
+
+// applyEvictNode marks the named node logically dead (last_seen_ms = 0)
+// and appends a DELETE_REPLICA RebalanceStep to PartitionTable.pending
+// for every shard whose ReplicaSet still contains node_id. Idempotent:
+// re-applying for an already-evicted node is a no-op (the membership
+// check below short-circuits).
+func (f *FSM) applyEvictNode(
+	batch storage.Batch,
+	store storage.Store,
+	cmd *enginev1.EvictNode,
+	raftIndex uint64,
+) (*enginev1.PartitionTable, error) {
+	nodeID := cmd.GetNodeId()
+	if nodeID == 0 {
+		f.cfg.Log.Warn("cluster: EvictNode missing node_id; ignoring",
+			"raft_index", raftIndex)
+		return nil, nil
+	}
+	m, err := (MembershipTable{S: store}).Get(nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load membership: %w", err)
+	}
+	if m == nil {
+		f.cfg.Log.Warn("cluster: EvictNode for unknown node; ignoring",
+			"raft_index", raftIndex, "node_id", nodeID)
+		return nil, nil
+	}
+	if m.GetLastSeenMs() == 0 {
+		// Already evicted (last_seen_ms=0 is the eviction marker).
+		return nil, nil
+	}
+	m.LastSeenMs = 0
+	if err := (MembershipTable{S: store}).Put(batch, m); err != nil {
+		return nil, fmt.Errorf("cluster: write membership: %w", err)
+	}
+
+	pt, err := (PartitionTableTable{S: store}).Get()
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load partition table: %w", err)
+	}
+	if pt == nil {
+		// No partition table yet (pre-bootstrap eviction is meaningless).
+		return nil, nil
+	}
+	for shardID, rs := range pt.GetShards() {
+		if !replicaSetContains(rs, nodeID) {
+			continue
+		}
+		step := &enginev1.RebalanceStep{
+			ShardId:      shardID,
+			Kind:         enginev1.RebalanceStep_DELETE_REPLICA,
+			RemoveNodeId: nodeID,
+			StepId:       nextStepID(pt.GetPending(), shardID),
+		}
+		pt.Pending = append(pt.Pending, step)
+	}
+	if err := (PartitionTableTable{S: store}).Put(batch, pt); err != nil {
+		return nil, fmt.Errorf("cluster: write partition table: %w", err)
+	}
+	return proto.Clone(pt).(*enginev1.PartitionTable), nil
+}
+
+// applyBeginRebalanceStep appends the requested step to
+// PartitionTable.pending, unless an entry with the same (shard_id,
+// step_id) already exists (idempotency on retry).
+func (f *FSM) applyBeginRebalanceStep(
+	batch storage.Batch,
+	store storage.Store,
+	cmd *enginev1.BeginRebalanceStep,
+	raftIndex uint64,
+) (*enginev1.PartitionTable, error) {
+	step := cmd.GetStep()
+	if step == nil || step.GetShardId() == 0 || step.GetStepId() == 0 {
+		f.cfg.Log.Warn("cluster: BeginRebalanceStep malformed; ignoring",
+			"raft_index", raftIndex)
+		return nil, nil
+	}
+	pt, err := (PartitionTableTable{S: store}).Get()
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load partition table: %w", err)
+	}
+	if pt == nil {
+		f.cfg.Log.Warn("cluster: BeginRebalanceStep before partition table bootstrap; ignoring",
+			"raft_index", raftIndex)
+		return nil, nil
+	}
+	for _, p := range pt.GetPending() {
+		if p.GetShardId() == step.GetShardId() && p.GetStepId() == step.GetStepId() {
+			// Already present — caller retried; drop silently.
+			return nil, nil
+		}
+	}
+	pt.Pending = append(pt.Pending, proto.Clone(step).(*enginev1.RebalanceStep))
+	if err := (PartitionTableTable{S: store}).Put(batch, pt); err != nil {
+		return nil, fmt.Errorf("cluster: write partition table: %w", err)
+	}
+	return proto.Clone(pt).(*enginev1.PartitionTable), nil
+}
+
+// applyCompleteRebalanceStep removes the matching pending entry, bumps
+// assignment_epoch, and (for DELETE_REPLICA / PROMOTE_TO_VOTER) updates
+// the relevant ReplicaSet. ADD_NON_VOTING does not appear in the
+// voting set so the ReplicaSet is untouched; the entry is just popped.
+// Idempotent: if no entry matches, no-op.
+func (f *FSM) applyCompleteRebalanceStep(
+	batch storage.Batch,
+	store storage.Store,
+	cmd *enginev1.CompleteRebalanceStep,
+	raftIndex uint64,
+) (*enginev1.PartitionTable, error) {
+	shardID := cmd.GetShardId()
+	stepID := cmd.GetStepId()
+	if shardID == 0 || stepID == 0 {
+		f.cfg.Log.Warn("cluster: CompleteRebalanceStep malformed; ignoring",
+			"raft_index", raftIndex)
+		return nil, nil
+	}
+	pt, err := (PartitionTableTable{S: store}).Get()
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load partition table: %w", err)
+	}
+	if pt == nil {
+		return nil, nil
+	}
+	var matched *enginev1.RebalanceStep
+	kept := pt.Pending[:0]
+	for _, p := range pt.GetPending() {
+		if matched == nil && p.GetShardId() == shardID && p.GetStepId() == stepID {
+			matched = p
+			continue
+		}
+		kept = append(kept, p)
+	}
+	if matched == nil {
+		// Already completed on a prior apply, or never proposed; no-op.
+		return nil, nil
+	}
+	pt.Pending = kept
+
+	switch matched.GetKind() {
+	case enginev1.RebalanceStep_DELETE_REPLICA:
+		if rs := pt.GetShards()[shardID]; rs != nil {
+			rs.NodeIds = removeNodeID(rs.NodeIds, matched.GetRemoveNodeId())
+		}
+	case enginev1.RebalanceStep_PROMOTE_TO_VOTER:
+		rs := pt.GetShards()[shardID]
+		if rs == nil {
+			rs = &enginev1.ReplicaSet{}
+			if pt.Shards == nil {
+				pt.Shards = make(map[uint64]*enginev1.ReplicaSet)
+			}
+			pt.Shards[shardID] = rs
+		}
+		if !replicaSetContains(rs, matched.GetAddNodeId()) {
+			rs.NodeIds = append(rs.NodeIds, matched.GetAddNodeId())
+		}
+	case enginev1.RebalanceStep_ADD_NON_VOTING:
+		// No ReplicaSet change — non-voting members are tracked by
+		// dragonboat directly and are invisible to PartitionTable's
+		// voting view.
+	default:
+		f.cfg.Log.Warn("cluster: CompleteRebalanceStep on unknown step kind",
+			"raft_index", raftIndex, "kind", matched.GetKind())
+	}
+	pt.AssignmentEpoch++
+
+	if err := (PartitionTableTable{S: store}).Put(batch, pt); err != nil {
+		return nil, fmt.Errorf("cluster: write partition table: %w", err)
+	}
+	return proto.Clone(pt).(*enginev1.PartitionTable), nil
+}
+
+// applyUpdateVersionBarrier writes the barrier value. Does not bump
+// assignment_epoch (barrier is orthogonal to partition placement).
+func (f *FSM) applyUpdateVersionBarrier(
+	batch storage.Batch,
+	store storage.Store,
+	cmd *enginev1.UpdateVersionBarrier,
+	raftIndex uint64,
+) (*enginev1.PartitionTable, error) {
+	pt, err := (PartitionTableTable{S: store}).Get()
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load partition table: %w", err)
+	}
+	if pt == nil {
+		f.cfg.Log.Warn("cluster: UpdateVersionBarrier before partition table bootstrap; ignoring",
+			"raft_index", raftIndex)
+		return nil, nil
+	}
+	if pt.GetVersionBarrier() == cmd.GetVersion() {
+		return nil, nil
+	}
+	pt.VersionBarrier = cmd.GetVersion()
+	if err := (PartitionTableTable{S: store}).Put(batch, pt); err != nil {
+		return nil, fmt.Errorf("cluster: write partition table: %w", err)
+	}
+	return proto.Clone(pt).(*enginev1.PartitionTable), nil
+}
+
+// replicaSetContains reports whether nodeID is present in rs.
+func replicaSetContains(rs *enginev1.ReplicaSet, nodeID uint64) bool {
+	return slices.Contains(rs.GetNodeIds(), nodeID)
+}
+
+// removeNodeID returns ids with the first occurrence of nodeID removed.
+func removeNodeID(ids []uint64, nodeID uint64) []uint64 {
+	for i, id := range ids {
+		if id == nodeID {
+			return append(ids[:i], ids[i+1:]...)
+		}
+	}
+	return ids
+}
+
+// nextStepID is the smallest step_id that does not appear in the
+// pending list for the requested shard. The pending list is bounded by
+// active rebalances so the scan is cheap.
+func nextStepID(pending []*enginev1.RebalanceStep, shardID uint64) uint64 {
+	var max uint64
+	for _, p := range pending {
+		if p.GetShardId() == shardID && p.GetStepId() > max {
+			max = p.GetStepId()
+		}
+	}
+	return max + 1
 }
 
 // Lookup query types. Each query returns a typed result.

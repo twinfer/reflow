@@ -11,9 +11,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/twinfer/reflow/internal/engine"
+	"github.com/twinfer/reflow/internal/engine/admin"
 	"github.com/twinfer/reflow/internal/engine/delivery"
+	"github.com/twinfer/reflow/internal/engine/snapshot"
 	"github.com/twinfer/reflow/internal/observability"
 	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
 )
@@ -88,12 +92,42 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	var deliveryClient *delivery.Client
 
 	if multiNode {
+		// Phase 4.2: build the Delivery TLS material upfront so both
+		// the outbound client and the inbound server share one node
+		// cert. When TLS files are absent, fall back to insecure for
+		// dev/test ergonomics — Step 8 (reflowd CLI) enforces
+		// "multi-node requires TLS" at the binary level.
+		clientDialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+		var serverCreds credentials.TransportCredentials
+		if !cfg.TLS.IsZero() {
+			clientTLS, tlsErr := BuildDeliveryClientTLS(cfg.TLS.files())
+			if tlsErr != nil {
+				_ = eh.Close()
+				if metricsCloser != nil {
+					_ = metricsCloser()
+				}
+				return nil, fmt.Errorf("reflow: build delivery client TLS: %w", tlsErr)
+			}
+			clientDialOpts = []grpc.DialOption{grpc.WithTransportCredentials(credentials.NewTLS(clientTLS))}
+
+			serverTLS, sErr := BuildDeliveryServerTLS(cfg.TLS.files())
+			if sErr != nil {
+				_ = eh.Close()
+				if metricsCloser != nil {
+					_ = metricsCloser()
+				}
+				return nil, fmt.Errorf("reflow: build delivery server TLS: %w", sErr)
+			}
+			serverCreds = credentials.NewTLS(serverTLS)
+		}
+
 		// Build the delivery client first so partitions get a Sender on
 		// startup. Resolver is the engine.Host itself (PartitionLeaderHint
 		// + NodeEndpoint).
 		dc, dcErr := delivery.NewClient(delivery.ClientConfig{
-			Resolver: eh,
-			Log:      logger,
+			Resolver:    eh,
+			Log:         logger,
+			DialOptions: clientDialOpts,
 		})
 		if dcErr != nil {
 			_ = eh.Close()
@@ -118,7 +152,11 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			}
 			return nil, fmt.Errorf("reflow: listen delivery %s: %w", cfg.Node.DeliveryAddr, lnErr)
 		}
-		gs := grpc.NewServer()
+		var gsOpts []grpc.ServerOption
+		if serverCreds != nil {
+			gsOpts = append(gsOpts, grpc.Creds(serverCreds))
+		}
+		gs := grpc.NewServer(gsOpts...)
 		deliveryv1.RegisterDeliveryServer(gs, delivery.NewServer(eh, logger))
 		deliverySrv = gs
 		deliveryLn = ln
@@ -171,12 +209,119 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		logger.Info("reflow: partition started", "shard", sh)
 	}
 
+	// Phase 4.2 surfaces below this point. All optional + multi-node-only.
+	var (
+		adminSrv    *grpc.Server
+		adminLn     net.Listener
+		snapshotCxl context.CancelFunc
+	)
+	cleanup := func() {
+		if snapshotCxl != nil {
+			snapshotCxl()
+		}
+		if adminSrv != nil {
+			adminSrv.Stop()
+		}
+		if adminLn != nil {
+			_ = adminLn.Close()
+		}
+		if deliverySrv != nil {
+			deliverySrv.Stop()
+			_ = deliveryLn.Close()
+		}
+		if deliveryClient != nil {
+			_ = deliveryClient.Close()
+		}
+		_ = eh.Close()
+		if metricsCloser != nil {
+			_ = metricsCloser()
+		}
+	}
+
+	var snapshotRepo snapshot.Repository
+	if multiNode && cfg.Snapshot.Driver == "fs" {
+		if cfg.Snapshot.FSRoot == "" {
+			cleanup()
+			return nil, errors.New("reflow: Snapshot.FSRoot required when Driver=fs")
+		}
+		snapshotRepo = &snapshot.FSRepository{
+			Root:   cfg.Snapshot.FSRoot,
+			Retain: cfg.Snapshot.Retain,
+		}
+		if cfg.Snapshot.Interval > 0 {
+			snapCtx, cancel := context.WithCancel(context.Background())
+			snapshotCxl = cancel
+			source := &engine.HostSnapshotSource{Host: eh}
+			for _, sh := range shards {
+				go snapshot.RunProducer(snapCtx, snapshot.ProducerConfig{
+					ShardID:    sh,
+					Interval:   cfg.Snapshot.Interval,
+					Source:     source,
+					Repo:       snapshotRepo,
+					ScratchDir: cfg.Snapshot.ScratchDir,
+					Log:        logger,
+				})
+			}
+			logger.Info("reflow: snapshot producer started",
+				"interval", cfg.Snapshot.Interval, "shards", shards)
+		}
+	}
+
+	if multiNode && !cfg.Admin.Disabled && cfg.Admin.Addr != "" {
+		runner := eh.MetadataRunner()
+		if runner == nil {
+			cleanup()
+			return nil, errors.New("reflow: metadata runner not initialized; cannot start admin")
+		}
+		if cfg.TLS.IsZero() {
+			cleanup()
+			return nil, errors.New("reflow: admin server requires TLS configuration")
+		}
+		adminTLS, atErr := BuildAdminServerTLS(cfg.TLS.files())
+		if atErr != nil {
+			cleanup()
+			return nil, fmt.Errorf("reflow: build admin TLS: %w", atErr)
+		}
+		ln, lErr := net.Listen("tcp", cfg.Admin.Addr)
+		if lErr != nil {
+			cleanup()
+			return nil, fmt.Errorf("reflow: listen admin %s: %w", cfg.Admin.Addr, lErr)
+		}
+		adminLn = ln
+		srv, sErr := admin.NewServer(admin.Config{
+			Host:       eh,
+			Runner:     runner,
+			Repo:       snapshotRepo,
+			Source:     &engine.HostSnapshotSource{Host: eh},
+			Log:        logger,
+			ScratchDir: cfg.Snapshot.ScratchDir,
+		})
+		if sErr != nil {
+			cleanup()
+			return nil, fmt.Errorf("reflow: admin server: %w", sErr)
+		}
+		adminSrv = grpc.NewServer(
+			grpc.Creds(credentials.NewTLS(adminTLS)),
+			grpc.UnaryInterceptor(admin.AuditInterceptor(logger)),
+		)
+		srv.Register(adminSrv)
+		go func() {
+			if err := adminSrv.Serve(adminLn); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+				logger.Error("reflow: admin gRPC Serve exited", "err", err)
+			}
+		}()
+		logger.Info("reflow: admin listening", "addr", adminLn.Addr().String())
+	}
+
 	return &Host{
 		engine:         eh,
 		metricsCloser:  metricsCloser,
 		deliverySrv:    deliverySrv,
 		deliveryLn:     deliveryLn,
 		deliveryClient: deliveryClient,
+		adminSrv:       adminSrv,
+		adminLn:        adminLn,
+		snapshotCxl:    snapshotCxl,
 	}, nil
 }
 

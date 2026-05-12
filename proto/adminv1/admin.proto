@@ -1,0 +1,110 @@
+// Reflow cluster Admin service.
+//
+// Phase 4.2. Every reflowd process hosts an Admin gRPC server on a
+// dedicated port (typically :8082). The server is mTLS-protected with
+// the operator CA as the client trust anchor — only operators holding
+// a certificate signed by that CA can reach the surface. The reflow-
+// cluster CLI is the canonical client.
+//
+// Mutating RPCs (AddNode, RemoveNode, SetVersionBarrier) translate to
+// shard-0 Raft proposals; the apply arms in the metadata FSM and the
+// metadata-leader rebalancer drive the rest. Read RPCs (ListNodes,
+// ListPartitions, ListSnapshots) issue a SyncRead against shard 0 or
+// the local SnapshotRepository.
+//
+// CreateSnapshot triggers an immediate dragonboat Exported snapshot of
+// the requested partition shard; the resulting export dir is archived
+// into the configured SnapshotRepository (filesystem driver in 4.2).
+
+syntax = "proto3";
+
+package reflow.admin.v1;
+
+import "enginev1/engine.proto";
+
+option go_package = "github.com/twinfer/reflow/proto/adminv1;adminv1";
+
+service Admin {
+  // AddNode registers a new peer with shard 0 and enqueues a rebalance
+  // sequence to give the new node a non-voting replica of every
+  // existing partition shard. The non-voting replica is promoted to a
+  // voter after dragonboat reports catch-up.
+  rpc AddNode(AddNodeRequest) returns (AddNodeResponse);
+  // RemoveNode marks a peer as evicted in shard 0. The rebalancer
+  // observes and walks the dragonboat membership-change sequence
+  // (DELETE_REPLICA for every shard the node hosted).
+  rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse);
+  // ListNodes returns the current NodeMembership records from shard 0.
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  // ListPartitions returns the current PartitionTable from shard 0.
+  rpc ListPartitions(ListPartitionsRequest) returns (ListPartitionsResponse);
+  // CreateSnapshot kicks off an Exported snapshot of the requested
+  // partition shard and archives the result via the local
+  // SnapshotRepository. Returns the snapshot index.
+  rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
+  // ListSnapshots enumerates archived snapshots for a partition shard.
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
+  // SetVersionBarrier writes PartitionTable.version_barrier via shard 0.
+  // Phase 4.2 round-trips the value but partition FSMs do not enforce.
+  rpc SetVersionBarrier(SetVersionBarrierRequest) returns (SetVersionBarrierResponse);
+}
+
+message AddNodeRequest {
+  uint64 node_id = 1;
+  string raft_addr = 2;
+  string gossip_addr = 3;
+  string grpc_endpoint = 4;
+  string node_host_id = 5;
+}
+message AddNodeResponse {
+  // assignment_epoch after the new node was registered. The caller can
+  // poll ListPartitions until shards converge.
+  uint64 assignment_epoch = 1;
+}
+
+message RemoveNodeRequest {
+  uint64 node_id = 1;
+}
+message RemoveNodeResponse {
+  uint64 assignment_epoch = 1;
+}
+
+message ListNodesRequest {}
+message ListNodesResponse {
+  repeated reflow.engine.v1.NodeMembership nodes = 1;
+}
+
+message ListPartitionsRequest {}
+message ListPartitionsResponse {
+  reflow.engine.v1.PartitionTable table = 1;
+}
+
+message CreateSnapshotRequest {
+  uint64 shard_id = 1;
+}
+message CreateSnapshotResponse {
+  uint64 shard_id = 1;
+  uint64 index = 2;
+  int64 size_bytes = 3;
+}
+
+message ListSnapshotsRequest {
+  uint64 shard_id = 1;
+}
+message SnapshotRef {
+  uint64 shard_id = 1;
+  uint64 index = 2;
+  int64 size_bytes = 3;
+  int64 created_at_unix_ms = 4;
+}
+message ListSnapshotsResponse {
+  repeated SnapshotRef snapshots = 1;
+}
+
+message SetVersionBarrierRequest {
+  uint64 version = 1;
+}
+message SetVersionBarrierResponse {
+  uint64 version = 1;
+  uint64 assignment_epoch = 2;
+}

@@ -22,13 +22,34 @@ type Host struct {
 	deliverySrv    *grpc.Server
 	deliveryLn     net.Listener
 	deliveryClient *delivery.Client
+	// Phase 4.2: admin gRPC server + snapshot producer lifecycle.
+	adminSrv    *grpc.Server
+	adminLn     net.Listener
+	snapshotCxl context.CancelFunc
 }
 
 // Close stops every partition and the underlying NodeHost. Idempotent.
-// Stops the metrics HTTP server, Delivery gRPC server, and pooled
-// delivery client too, if Run started them.
+// Stops the metrics HTTP server, admin + Delivery gRPC servers, the
+// snapshot producer goroutines, and the pooled delivery client.
 func (h *Host) Close() error {
 	var firstErr error
+	if h.snapshotCxl != nil {
+		h.snapshotCxl()
+		h.snapshotCxl = nil
+	}
+	if h.adminSrv != nil {
+		h.adminSrv.GracefulStop()
+		h.adminSrv = nil
+	}
+	if h.adminLn != nil {
+		// adminLn closes first — firstErr is still nil; drop the
+		// otherwise-tautological nil check (vet's `nilness` analyzer
+		// would flag it).
+		if err := h.adminLn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			firstErr = err
+		}
+		h.adminLn = nil
+	}
 	if h.deliverySrv != nil {
 		h.deliverySrv.GracefulStop()
 		h.deliverySrv = nil

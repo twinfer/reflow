@@ -1,0 +1,506 @@
+package engine_test
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
+
+	"github.com/twinfer/reflow/internal/engine"
+	"github.com/twinfer/reflow/internal/engine/admin"
+	enginesnap "github.com/twinfer/reflow/internal/engine/snapshot"
+	"github.com/twinfer/reflow/internal/pki"
+	"github.com/twinfer/reflow/pkg/reflow"
+	"github.com/twinfer/reflow/pkg/sdk"
+	adminv1 "github.com/twinfer/reflow/proto/adminv1"
+	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+)
+
+// adminRig augments a Phase 4.1 nodeRig with an admin gRPC server.
+// Admin runs without the AuditInterceptor in tests because the
+// interceptor requires mTLS-verified client certs — the dedicated
+// TLS-rejection tests rebuild the rig with TLS+interceptor enabled.
+type adminRig struct {
+	nodeRig *nodeRig
+	adminLn net.Listener
+	adminGS *grpc.Server
+}
+
+func (a *adminRig) addr() string { return a.adminLn.Addr().String() }
+
+func (a *adminRig) close() {
+	if a.adminGS != nil {
+		a.adminGS.GracefulStop()
+	}
+	if a.adminLn != nil {
+		_ = a.adminLn.Close()
+	}
+	if a.nodeRig != nil {
+		a.nodeRig.close()
+	}
+}
+
+// startAdminInsecure wires an admin gRPC server on the local Host
+// without TLS. For tests that exercise admin functionality without
+// caring about authentication.
+func startAdminInsecure(t *testing.T, r *nodeRig) *adminRig {
+	t.Helper()
+	srv, err := admin.NewServer(admin.Config{
+		Host:   r.host,
+		Runner: r.host.MetadataRunner(),
+	})
+	if err != nil {
+		t.Fatalf("admin.NewServer: %v", err)
+	}
+	ln, err := net.Listen("tcp", freeLocalAddr(t))
+	if err != nil {
+		t.Fatalf("listen admin: %v", err)
+	}
+	gs := grpc.NewServer()
+	srv.Register(gs)
+	go func() {
+		if err := gs.Serve(ln); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			t.Logf("admin Serve exited: %v", err)
+		}
+	}()
+	return &adminRig{nodeRig: r, adminLn: ln, adminGS: gs}
+}
+
+// dialInsecureAdmin opens a plaintext gRPC connection to addr and
+// returns the typed client + a cleanup.
+func dialInsecureAdmin(t *testing.T, addr string) (adminv1.AdminClient, func()) {
+	t.Helper()
+	cc, err := grpc.NewClient(addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	return adminv1.NewAdminClient(cc), func() { _ = cc.Close() }
+}
+
+// awaitMetadataLeaderRig polls until a metadata leader is found and
+// returns the rig that leads. Avoids races where the leader rotates
+// between cluster bring-up and the test's first admin RPC.
+func awaitMetadataLeaderRig(t *testing.T, rigs []*nodeRig, timeout time.Duration) *nodeRig {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		for _, r := range rigs {
+			if mr := r.host.MetadataRunner(); mr != nil && mr.IsLeader() {
+				return r
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("no metadata leader within timeout")
+	return nil
+}
+
+// awaitMembership polls Membership(0) until at least min rows show up.
+func awaitMembership(t *testing.T, leader *nodeRig, min int, timeout time.Duration) []*enginev1.NodeMembership {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		members, err := leader.host.Membership(ctx)
+		cancel()
+		if err == nil && len(members) >= min {
+			return members
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("membership never reached >= %d rows", min)
+	return nil
+}
+
+// TestPhase4_2_AdminListNodes confirms the leader's admin surface
+// returns every registered node. Membership is bootstrapped by the
+// metadata-leader's RegisterNode propose loop.
+func TestPhase4_2_AdminListNodes(t *testing.T) {
+	rigs, _ := bringUpThreeNodeCluster(t, sdk.NewRegistry())
+	defer closeAll(rigs)
+
+	leader := awaitMetadataLeaderRig(t, rigs, 15*time.Second)
+	awaitMembership(t, leader, 3, 10*time.Second)
+
+	ar := startAdminInsecure(t, leader)
+	defer ar.close()
+
+	cli, done := dialInsecureAdmin(t, ar.addr())
+	defer done()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resp, err := cli.ListNodes(ctx, &adminv1.ListNodesRequest{})
+	if err != nil {
+		t.Fatalf("ListNodes: %v", err)
+	}
+	if len(resp.GetNodes()) != 3 {
+		t.Fatalf("ListNodes returned %d; want 3", len(resp.GetNodes()))
+	}
+	seen := map[uint64]bool{}
+	for _, m := range resp.GetNodes() {
+		seen[m.GetNodeId()] = true
+	}
+	for id := uint64(1); id <= 3; id++ {
+		if !seen[id] {
+			t.Errorf("ListNodes missing node %d: %v", id, seen)
+		}
+	}
+}
+
+// TestPhase4_2_AdminListPartitions returns the bootstrap partition
+// table observable via the admin surface.
+func TestPhase4_2_AdminListPartitions(t *testing.T) {
+	rigs, _ := bringUpThreeNodeCluster(t, sdk.NewRegistry())
+	defer closeAll(rigs)
+
+	leader := awaitMetadataLeaderRig(t, rigs, 15*time.Second)
+	awaitMembership(t, leader, 3, 10*time.Second)
+
+	ar := startAdminInsecure(t, leader)
+	defer ar.close()
+	cli, done := dialInsecureAdmin(t, ar.addr())
+	defer done()
+
+	// Allow the leader's bootstrap UpdatePartitionTable to land.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := cli.ListPartitions(ctx, &adminv1.ListPartitionsRequest{})
+		if err == nil && resp.GetTable() != nil && len(resp.GetTable().GetShards()) == 3 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("ListPartitions never returned a 3-shard table")
+}
+
+// TestPhase4_2_AdminRemoveNode_LogicallyEvicts proposes EvictNode and
+// asserts the apply path marks last_seen_ms=0 and enqueues DELETE_REPLICA
+// steps for every shard the node hosted.
+func TestPhase4_2_AdminRemoveNode_LogicallyEvicts(t *testing.T) {
+	rigs, _ := bringUpThreeNodeCluster(t, sdk.NewRegistry())
+	defer closeAll(rigs)
+
+	leader := awaitMetadataLeaderRig(t, rigs, 15*time.Second)
+	awaitMembership(t, leader, 3, 10*time.Second)
+
+	// Pick a victim that is not the metadata leader (RemoveNode refuses
+	// self-evict).
+	victim := uint64(0)
+	for _, r := range rigs {
+		if r != leader {
+			victim = r.host.NodeID()
+			break
+		}
+	}
+	if victim == 0 {
+		t.Fatal("could not pick a non-leader victim")
+	}
+
+	ar := startAdminInsecure(t, leader)
+	defer ar.close()
+	cli, done := dialInsecureAdmin(t, ar.addr())
+	defer done()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := cli.RemoveNode(ctx, &adminv1.RemoveNodeRequest{NodeId: victim}); err != nil {
+		t.Fatalf("RemoveNode: %v", err)
+	}
+
+	// The apply arm: last_seen_ms == 0 + DELETE_REPLICA pending for any
+	// shard the node was in.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		members, _ := leader.host.Membership(ctx)
+		pt, _ := leader.host.PartitionTable(ctx)
+		marked := false
+		for _, m := range members {
+			if m.GetNodeId() == victim && m.GetLastSeenMs() == 0 {
+				marked = true
+				break
+			}
+		}
+		hasPending := false
+		if pt != nil {
+			for _, p := range pt.GetPending() {
+				if p.GetKind() == enginev1.RebalanceStep_DELETE_REPLICA && p.GetRemoveNodeId() == victim {
+					hasPending = true
+					break
+				}
+			}
+		}
+		if marked && hasPending {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("EvictNode apply never zeroed last_seen_ms + enqueued DELETE_REPLICA for node %d", victim)
+}
+
+// TestPhase4_2_AdminSetVersionBarrier_RoundTrips writes a barrier via
+// SetVersionBarrier and observes it back through ListPartitions. Phase
+// 4.2: no apply-path enforcement, just the wire round trip.
+func TestPhase4_2_AdminSetVersionBarrier_RoundTrips(t *testing.T) {
+	rigs, _ := bringUpThreeNodeCluster(t, sdk.NewRegistry())
+	defer closeAll(rigs)
+
+	leader := awaitMetadataLeaderRig(t, rigs, 15*time.Second)
+	awaitMembership(t, leader, 3, 10*time.Second)
+
+	ar := startAdminInsecure(t, leader)
+	defer ar.close()
+	cli, done := dialInsecureAdmin(t, ar.addr())
+	defer done()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := cli.SetVersionBarrier(ctx, &adminv1.SetVersionBarrierRequest{Version: 42}); err != nil {
+		t.Fatalf("SetVersionBarrier: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := cli.ListPartitions(ctx, &adminv1.ListPartitionsRequest{})
+		if err == nil && resp.GetTable() != nil && resp.GetTable().GetVersionBarrier() == 42 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("version_barrier never reached 42 via ListPartitions")
+}
+
+// TestPhase4_2_AdminMutualTLS_RejectsUnsignedClient builds an admin
+// server wired with operator-CA mTLS and asserts that a client without
+// any cert cannot complete the handshake. Sanity check that the
+// transport layer enforces auth.
+func TestPhase4_2_AdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
+	rigs, _ := bringUpThreeNodeCluster(t, sdk.NewRegistry())
+	defer closeAll(rigs)
+	leader := awaitMetadataLeaderRig(t, rigs, 15*time.Second)
+
+	dir := t.TempDir()
+	files, opCert, opKey := writeAdminTLSFixtures(t, dir)
+
+	// Build a TLS-protected admin server. AuditInterceptor refuses
+	// callers without verified TLS, but Require+VerifyClientCert at the
+	// TLS layer should reject them first.
+	srv, err := admin.NewServer(admin.Config{
+		Host:   leader.host,
+		Runner: leader.host.MetadataRunner(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tlsCfg, err := reflow.BuildAdminServerTLS(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", freeLocalAddr(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs := grpc.NewServer(
+		grpc.Creds(credentials.NewTLS(tlsCfg)),
+		grpc.UnaryInterceptor(admin.AuditInterceptor(nil)),
+	)
+	srv.Register(gs)
+	go func() {
+		_ = gs.Serve(ln)
+	}()
+	t.Cleanup(func() { gs.GracefulStop(); _ = ln.Close() })
+
+	// 1) BuildAdminClientTLS itself refuses empty operator cert.
+	if _, err := reflow.BuildAdminClientTLS("", "", files.NodeCAFile); err == nil {
+		t.Fatal("expected BuildAdminClientTLS to reject empty operator cert; got nil err")
+	}
+
+	// 2) Dial gRPC with a TLS config that trusts the server CA but
+	//    presents no client cert. The gRPC call must fail because the
+	//    server's ClientAuth = RequireAndVerifyClientCert rejects the
+	//    empty client Certificate message.
+	caBytes, err := os.ReadFile(files.NodeCAFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM(caBytes) {
+		t.Fatal("failed to parse node CA PEM")
+	}
+	noClientCert := &tls.Config{
+		ServerName: "127.0.0.1",
+		RootCAs:    caPool,
+		MinVersion: tls.VersionTLS13,
+	}
+	ccBad, err := grpc.NewClient(ln.Addr().String(),
+		grpc.WithTransportCredentials(credentials.NewTLS(noClientCert)))
+	if err != nil {
+		t.Fatalf("grpc.NewClient (no client cert): %v", err)
+	}
+	defer ccBad.Close()
+	badCtx, badCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer badCancel()
+	if _, err := adminv1.NewAdminClient(ccBad).ListNodes(badCtx, &adminv1.ListNodesRequest{}); err == nil {
+		t.Fatal("expected ListNodes to fail when client presents no cert; got nil")
+	}
+
+	// Sanity: with the proper operator cert + node CA, dial succeeds.
+	good, err := reflow.BuildAdminClientTLS(opCert, opKey, files.NodeCAFile)
+	if err != nil {
+		t.Fatalf("BuildAdminClientTLS: %v", err)
+	}
+	good.ServerName = "127.0.0.1"
+	cc, err := grpc.NewClient(ln.Addr().String(),
+		grpc.WithTransportCredentials(credentials.NewTLS(good)))
+	if err != nil {
+		t.Fatalf("grpc.NewClient with operator cert: %v", err)
+	}
+	defer cc.Close()
+	cli := adminv1.NewAdminClient(cc)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := cli.ListNodes(ctx, &adminv1.ListNodesRequest{}); err != nil {
+		t.Fatalf("operator-authenticated ListNodes failed: %v", err)
+	}
+}
+
+// TestPhase4_2_Snapshot_PartitionExportAndArchive triggers an exported
+// snapshot through the engine.Host helper, archives it via the fs
+// repository, and confirms a non-empty Fetch round-trip.
+func TestPhase4_2_Snapshot_PartitionExportAndArchive(t *testing.T) {
+	rigs, _ := bringUpThreeNodeCluster(t, sdk.NewRegistry())
+	defer closeAll(rigs)
+
+	// Find a leader for partition shard 1.
+	deadline := time.Now().Add(15 * time.Second)
+	var owner *nodeRig
+	for time.Now().Before(deadline) && owner == nil {
+		owner = findPartitionLeader(rigs, 1)
+		if owner == nil {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	if owner == nil {
+		t.Fatal("no leader for shard 1")
+	}
+
+	// Snapshot to a fresh export dir.
+	exportDir := filepath.Join(t.TempDir(), "export")
+	if err := os.MkdirAll(exportDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	idx, err := owner.host.SnapshotPartitionToDir(ctx, 1, exportDir)
+	if err != nil {
+		t.Fatalf("SnapshotPartitionToDir: %v", err)
+	}
+	if idx == 0 {
+		t.Fatal("expected non-zero snapshot index")
+	}
+
+	// dragonboat writes a subdirectory under exportDir.
+	entries, err := os.ReadDir(exportDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("export dir is empty")
+	}
+	src := exportDir
+	if len(entries) == 1 && entries[0].IsDir() {
+		src = filepath.Join(exportDir, entries[0].Name())
+	}
+
+	repo := &enginesnap.FSRepository{Root: t.TempDir()}
+	if err := repo.Put(ctx, 1, idx, src); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	refs, err := repo.List(ctx, 1)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(refs) != 1 || refs[0].Index != idx {
+		t.Fatalf("List = %+v; want one entry at index %d", refs, idx)
+	}
+	dst := filepath.Join(t.TempDir(), "restored")
+	if err := repo.Fetch(ctx, 1, idx, dst); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	// Restored dir is non-empty.
+	rentries, err := os.ReadDir(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rentries) == 0 {
+		t.Fatal("restored snapshot dir is empty")
+	}
+}
+
+// writeAdminTLSFixtures mirrors pkg/reflow's test helper but inside the
+// engine_test package so the integration tests stay self-contained.
+func writeAdminTLSFixtures(t *testing.T, dir string) (reflow.TLSFiles, string, string) {
+	t.Helper()
+	nodeCA, err := pki.NewCA("phase4_2-node-ca")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opCA, err := pki.NewCA("phase4_2-operator-ca")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeCAcrt, _, err := nodeCA.Write(dir, "node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opCAcrt, _, err := opCA.Write(dir, "operator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := nodeCA.Issue(pki.LeafOptions{
+		Kind: pki.LeafNode, Name: "node-1",
+		Hosts: []string{"127.0.0.1", "localhost"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeCrt, nodeKey, err := pki.WriteMaterial(dir, "node-1", leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opLeaf, err := opCA.Issue(pki.LeafOptions{Kind: pki.LeafOperator, Name: "test-op"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opCrt, opKey, err := pki.WriteMaterial(dir, "operator-test-op", opLeaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reflow.TLSFiles{
+		NodeCAFile:     nodeCAcrt,
+		OperatorCAFile: opCAcrt,
+		NodeCertFile:   nodeCrt,
+		NodeKeyFile:    nodeKey,
+	}, opCrt, opKey
+}
+
+// awaitable just keeps the `engine` import used when not all code paths
+// hit it; placate vet on Linux builds.
+var _ = engine.HostConfig{}
+
+// silence unused-import diagnostic when grpc isn't referenced through
+// the test (it is, via grpc.NewServer above, but keep this for static
+// analyzers that don't follow that path).
+var _ = fmt.Sprintf

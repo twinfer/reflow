@@ -10,6 +10,7 @@ package reflow
 import (
 	"crypto/tls"
 	"log/slog"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -24,13 +25,80 @@ import (
 // expressed identically in YAML, JSON, and env vars (the env provider
 // translates REFLOW_INGRESS_GRPC_ADDR → ingress.grpc_addr).
 type Config struct {
-	Node     NodeConfig    `koanf:"node"`
-	Cluster  ClusterConfig `koanf:"cluster"`
-	Storage  StorageConfig `koanf:"storage"`
-	Ingress  IngressConfig `koanf:"ingress"`
-	Metrics  MetricsConfig `koanf:"metrics"`
-	Logging  LoggingConfig `koanf:"logging"`
-	Handlers *sdk.Registry `koanf:"-"`
+	Node    NodeConfig    `koanf:"node"`
+	Cluster ClusterConfig `koanf:"cluster"`
+	Storage StorageConfig `koanf:"storage"`
+	Ingress IngressConfig `koanf:"ingress"`
+	Metrics MetricsConfig `koanf:"metrics"`
+	Logging LoggingConfig `koanf:"logging"`
+	// TLS is the two-CA mTLS configuration (Phase 4.2). Required when
+	// Cluster.Peers is non-empty — Delivery (between nodes) and Admin
+	// (between operators and nodes) both terminate mTLS using the same
+	// node-leaf cert.
+	TLS TLSConfig `koanf:"tls"`
+	// Admin is the cluster admin gRPC surface. Phase 4.2.
+	Admin AdminConfig `koanf:"admin"`
+	// Snapshot configures the off-host DR snapshot archive. Phase 4.2.
+	Snapshot SnapshotConfig `koanf:"snapshot"`
+	Handlers *sdk.Registry  `koanf:"-"`
+}
+
+// AdminConfig configures the admin gRPC server. Phase 4.2.
+type AdminConfig struct {
+	// Addr is the listen address for the admin gRPC server. Empty
+	// disables the server (single-node deployments rarely need it).
+	Addr string `koanf:"addr"`
+	// Disabled forces the admin server off even when Addr is set. Used
+	// by tests + multi-process embedders that ship their own surface.
+	Disabled bool `koanf:"disabled"`
+}
+
+// SnapshotConfig configures the per-partition DR snapshot producer
+// and the archive repository (filesystem driver only in Phase 4.2).
+type SnapshotConfig struct {
+	// Interval between automatic snapshot cycles per partition shard.
+	// Zero disables the producer; admin RPC CreateSnapshot still works.
+	Interval time.Duration `koanf:"interval"`
+	// Retain is the per-shard retention count handed to the FSRepository.
+	// 0 means "retain all".
+	Retain int `koanf:"retain"`
+	// Driver selects the repository implementation. Empty disables
+	// archiving (admin snapshot RPCs return FailedPrecondition). Phase
+	// 4.2 only recognizes "fs".
+	Driver string `koanf:"driver"`
+	// FSRoot is the filesystem root for Driver="fs".
+	FSRoot string `koanf:"fs_root"`
+	// ScratchDir is where dragonboat Exported snapshots land before
+	// archiving. Empty falls back to $TMPDIR/reflow-snapshot-scratch.
+	ScratchDir string `koanf:"scratch_dir"`
+}
+
+// TLSConfig groups the four PEM file paths that drive reflow's mTLS.
+// See pkg/reflow/tls.go for the two-CA contract.
+type TLSConfig struct {
+	NodeCAFile     string `koanf:"node_ca_file"`
+	OperatorCAFile string `koanf:"operator_ca_file"`
+	NodeCertFile   string `koanf:"node_cert_file"`
+	NodeKeyFile    string `koanf:"node_key_file"`
+}
+
+// files renders TLSConfig as the internal TLSFiles struct used by the
+// helper builders. Kept as a small projection so the public Config
+// surface doesn't depend on tls.go internals.
+func (c TLSConfig) files() TLSFiles {
+	return TLSFiles{
+		NodeCAFile:     c.NodeCAFile,
+		OperatorCAFile: c.OperatorCAFile,
+		NodeCertFile:   c.NodeCertFile,
+		NodeKeyFile:    c.NodeKeyFile,
+	}
+}
+
+// IsZero reports whether no TLS file paths have been configured. Used by
+// Run to gate "multi-node requires TLS" validation.
+func (c TLSConfig) IsZero() bool {
+	return c.NodeCAFile == "" && c.OperatorCAFile == "" &&
+		c.NodeCertFile == "" && c.NodeKeyFile == ""
 }
 
 // NodeConfig identifies this node in the cluster.

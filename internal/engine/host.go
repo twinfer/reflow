@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lni/dragonboat/v4"
 	"github.com/lni/dragonboat/v4/config"
 	"github.com/lni/dragonboat/v4/raftio"
@@ -181,6 +182,16 @@ func applyMultiNodeConfig(nhConfig *config.NodeHostConfig, cfg *HostConfig) erro
 	if cfg.GrpcEndpoint == "" {
 		return errors.New("host: GrpcEndpoint required when Peers is non-empty")
 	}
+	// dragonboat parses every NodeHostID via google/uuid.Parse before
+	// admitting a NodeHost — fail fast here with a peer-attributed error
+	// rather than letting a malformed override (or a future change to the
+	// derived form) surface as an opaque NewNodeHost failure.
+	for _, p := range cfg.Peers {
+		nhID := p.resolvedNodeHostID()
+		if _, err := uuid.Parse(nhID); err != nil {
+			return fmt.Errorf("host: peer NodeID=%d NodeHostID %q is not a valid UUID: %w", p.NodeID, nhID, err)
+		}
+	}
 	adv := cfg.GossipAdvAddr
 	if adv == "" {
 		adv = cfg.GossipBindAddr
@@ -281,6 +292,7 @@ func (h *Host) StartMetadataShard() (*MetadataRunner, error) {
 		leadership:  leadership,
 		log:         h.log,
 		peers:       append([]Peer(nil), h.cfg.Peers...),
+		host:        h,
 	}
 	leadership.SetCallbacks(runner.onBecomeLeader, runner.onStepDown)
 
@@ -343,6 +355,44 @@ func (h *Host) PartitionTable(ctx context.Context) (*enginev1.PartitionTable, er
 		return nil, fmt.Errorf("host: PartitionTable: unexpected lookup type %T", res)
 	}
 	return pt, nil
+}
+
+// NodeID returns this Host's configured NodeID. Exposed for admin RPCs
+// that need to refuse self-eviction.
+func (h *Host) NodeID() uint64 { return h.cfg.NodeID }
+
+// SnapshotPartitionToDir asks dragonboat to materialize an Exported
+// snapshot of shardID into dstDir and returns the Raft index of the
+// resulting snapshot. The export dir convention follows dragonboat's
+// SnapshotOption{Exported=true, ExportPath=dir}: a single sub-directory
+// is created at dstDir holding the snapshot files.
+//
+// Wraps nh.SyncRequestSnapshot so callers (admin RPCs, snapshot
+// producers) do not import dragonboat. Phase 4.2.
+func (h *Host) SnapshotPartitionToDir(ctx context.Context, shardID uint64, dstDir string) (uint64, error) {
+	if h.nh == nil {
+		return 0, errors.New("host: NodeHost not initialized")
+	}
+	opt := dragonboat.SnapshotOption{Exported: true, ExportPath: dstDir}
+	return h.nh.SyncRequestSnapshot(ctx, shardID, opt)
+}
+
+// Membership performs a linearizable read of shard 0's membership table.
+// Returns an empty slice (not nil) when no rows have been registered yet.
+// Phase 4.2.
+func (h *Host) Membership(ctx context.Context) ([]*enginev1.NodeMembership, error) {
+	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupMembership{})
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return nil, nil
+	}
+	out, ok := res.([]*enginev1.NodeMembership)
+	if !ok {
+		return nil, fmt.Errorf("host: Membership: unexpected lookup type %T", res)
+	}
+	return out, nil
 }
 
 // AwaitMetadataLeader blocks until shard 0 has a stable leader.

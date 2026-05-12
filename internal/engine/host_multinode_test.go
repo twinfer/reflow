@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/lni/dragonboat/v4/config"
 	"google.golang.org/protobuf/proto"
 
@@ -156,6 +157,44 @@ func TestPhase4_1_ApplyMultiNodeConfig_RejectsMissingBindOrEndpoint(t *testing.T
 				t.Fatalf("expected error for %s, got nil", name)
 			}
 		})
+	}
+}
+
+// TestPhase4_1_ApplyMultiNodeConfig_RejectsInvalidUUIDOverride catches a
+// peer with a NodeHostID override that doesn't parse as RFC 4122 — the
+// same check dragonboat applies inside NewNodeHost, raised here so the
+// error attributes the offending peer.
+func TestPhase4_1_ApplyMultiNodeConfig_RejectsInvalidUUIDOverride(t *testing.T) {
+	cfg := HostConfig{
+		NodeID:         1,
+		RaftAddr:       "10.0.0.1:9091",
+		GossipBindAddr: "10.0.0.1:9101",
+		GrpcEndpoint:   "10.0.0.1:8081",
+		Peers: []Peer{
+			{NodeID: 1, GossipAddr: "10.0.0.1:9101"},
+			{NodeID: 2, GossipAddr: "10.0.0.2:9101", NodeHostID: "not-a-uuid"},
+		},
+	}
+	var nh config.NodeHostConfig
+	err := applyMultiNodeConfig(&nh, &cfg)
+	if err == nil || !strings.Contains(err.Error(), "not a valid UUID") {
+		t.Fatalf("err = %v; want 'not a valid UUID'", err)
+	}
+	if !strings.Contains(err.Error(), "NodeID=2") {
+		t.Errorf("err = %v; want peer NodeID=2 attribution", err)
+	}
+}
+
+// TestPhase4_1_DerivedNodeHostID_IsValidUUID guards the derived form
+// against silent drift — dragonboat's NodeHost constructor will reject
+// any non-UUID NodeHostID, and we want that signaled at the resolver.
+func TestPhase4_1_DerivedNodeHostID_IsValidUUID(t *testing.T) {
+	for _, id := range []uint64{1, 2, 7, 999, 1<<32 + 1} {
+		p := Peer{NodeID: id}
+		if _, err := uuid.Parse(p.resolvedNodeHostID()); err != nil {
+			t.Errorf("resolvedNodeHostID for NodeID=%d = %q; not a UUID: %v",
+				id, p.resolvedNodeHostID(), err)
+		}
 	}
 }
 

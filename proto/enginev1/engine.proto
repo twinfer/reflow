@@ -88,7 +88,7 @@ message Header {
 //   16+   : reserved for Phase 2-3 partition-shard additions (Run effects,
 //           awakeable completions, virtual-object queue ops).
 message Command {
-  reserved 8 to 15;
+  reserved 12 to 15;
 
   oneof kind {
     AnnounceLeader announce_leader = 1;
@@ -99,6 +99,13 @@ message Command {
     // Phase 4.1 metadata-shard commands. Accepted only by shardID=0.
     RegisterNode register_node = 6;
     UpdatePartitionTable update_partition_table = 7;
+    // Phase 4.2 metadata-shard commands. Accepted only by shardID=0.
+    // EvictNode marks a node dead; the metadata-leader rebalancer
+    // observes and drives RebalanceStep sequences against dragonboat.
+    EvictNode evict_node = 8;
+    BeginRebalanceStep begin_rebalance_step = 9;
+    CompleteRebalanceStep complete_rebalance_step = 10;
+    UpdateVersionBarrier update_version_barrier = 11;
     // Phase 4.1 partition-shard cross-shard delivery commands. The
     // outbox shuffler ferries DeliverCallResult to the parent's shard
     // and OutboxAck back to the producer's shard; both ride the same
@@ -596,15 +603,83 @@ message NodeMembership {
 // PartitionTable is shard 0's authoritative map of partition shards to
 // replica node sets. Persisted via UpdatePartitionTable. Phase 4.1
 // always populates every partition_shard_id 1..N with the full peer
-// set (RF=3, N=3 → every node hosts every partition); Phase 4.2 will
-// introduce sparse placement. Phase 4.1.
+// set (RF=3, N=3 → every node hosts every partition); Phase 4.2
+// introduces sparse placement once N > RF. Phase 4.1; extended 4.2.
 message PartitionTable {
   map<uint64, ReplicaSet> shards = 1;
   uint64 assignment_epoch = 2;
+  // pending holds in-flight rebalance steps committed by
+  // BeginRebalanceStep but not yet CompleteRebalanceStep'd. A new
+  // metadata-leader picks up where the previous one left off by
+  // replaying this list against dragonboat. Phase 4.2.
+  repeated RebalanceStep pending = 3;
+  // version_barrier is the minimum command-declared version this
+  // cluster will accept once enforcement lands (Phase 4.3+). Phase 4.2
+  // round-trips this through shard 0 via UpdateVersionBarrier but
+  // partition FSMs do not yet gate on it. Phase 4.2.
+  uint64 version_barrier = 4;
 }
 
 // ReplicaSet is the per-partition replica list. Order is not significant
 // for correctness; dragonboat treats the membership as a set. Phase 4.1.
 message ReplicaSet {
   repeated uint64 node_ids = 1;
+}
+
+// EvictNode marks a node logically dead in shard 0. The apply arm
+// zeroes the matching NodeMembership.last_seen_ms and enqueues
+// BeginRebalanceStep entries for every partition the evicted node
+// previously hosted. Idempotent: re-applying for an already-evicted
+// node is a no-op. Phase 4.2.
+message EvictNode {
+  uint64 node_id = 1;
+}
+
+// RebalanceStep is a single dragonboat membership-change action,
+// scoped to one partition shard. Sequences are persisted in
+// PartitionTable.pending so a leader failover can resume mid-flight.
+// step_id is monotonic per shard_id and acts as the idempotency token
+// — the rebalancer matches dragonboat results back to the originating
+// step regardless of retries. Phase 4.2.
+message RebalanceStep {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    ADD_NON_VOTING = 1;
+    PROMOTE_TO_VOTER = 2;
+    DELETE_REPLICA = 3;
+  }
+  uint64 shard_id = 1;
+  Kind kind = 2;
+  // add_node_id is the node being added (ADD_NON_VOTING, PROMOTE_TO_VOTER).
+  uint64 add_node_id = 3;
+  // remove_node_id is the node being removed (DELETE_REPLICA).
+  uint64 remove_node_id = 4;
+  // step_id is the monotonic idempotency token, scoped to shard_id.
+  uint64 step_id = 5;
+}
+
+// BeginRebalanceStep appends a RebalanceStep to PartitionTable.pending
+// if no entry with the same (shard_id, step_id) already exists.
+// Proposed by the admin handler (after AddNode / EvictNode applies)
+// and re-proposed on retry; the apply path absorbs duplicates. Phase 4.2.
+message BeginRebalanceStep {
+  RebalanceStep step = 1;
+}
+
+// CompleteRebalanceStep removes the matching entry from
+// PartitionTable.pending, bumps assignment_epoch, and (for
+// DELETE_REPLICA) updates ReplicaSet.node_ids. Proposed by the
+// rebalancer after dragonboat acknowledges the corresponding
+// SyncRequest*. Phase 4.2.
+message CompleteRebalanceStep {
+  uint64 shard_id = 1;
+  uint64 step_id = 2;
+}
+
+// UpdateVersionBarrier writes PartitionTable.version_barrier on
+// shard 0. Partition FSMs may cache this for future enforcement;
+// Phase 4.2 only round-trips the value (no apply-path rejection).
+// Phase 4.2.
+message UpdateVersionBarrier {
+  uint64 version = 1;
 }

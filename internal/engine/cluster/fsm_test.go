@@ -191,6 +191,173 @@ func TestPhase4_1_Cluster_OpenReturnsAppliedIndex(t *testing.T) {
 	}
 }
 
+// applyPartitionTable is a test helper that proposes UpdatePartitionTable
+// and runs Update so subsequent tests can start from a seeded table.
+func applyPartitionTable(t *testing.T, f *FSM, idx uint64, pt *enginev1.PartitionTable) {
+	t.Helper()
+	cmd := &enginev1.Command{
+		Kind: &enginev1.Command_UpdatePartitionTable{
+			UpdatePartitionTable: &enginev1.UpdatePartitionTable{Table: pt},
+		},
+	}
+	if _, err := f.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func applyRegisterNode(t *testing.T, f *FSM, idx uint64, mem *enginev1.NodeMembership) {
+	t.Helper()
+	cmd := &enginev1.Command{
+		Kind: &enginev1.Command_RegisterNode{RegisterNode: &enginev1.RegisterNode{Member: mem}},
+	}
+	if _, err := f.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPhase4_2_Cluster_EvictNodeZeroesLastSeenAndEnqueuesDeleteSteps(t *testing.T) {
+	f, _, st := newTestFSM(t)
+	applyRegisterNode(t, f, 1, &enginev1.NodeMembership{NodeId: 3, RaftAddr: "10.0.0.3:9091", LastSeenMs: 1700})
+	applyPartitionTable(t, f, 2, &enginev1.PartitionTable{
+		AssignmentEpoch: 1,
+		Shards: map[uint64]*enginev1.ReplicaSet{
+			1: {NodeIds: []uint64{1, 2, 3}},
+			2: {NodeIds: []uint64{1, 2}}, // node 3 absent
+			3: {NodeIds: []uint64{1, 2, 3}},
+		},
+	})
+
+	cmd := &enginev1.Command{Kind: &enginev1.Command_EvictNode{EvictNode: &enginev1.EvictNode{NodeId: 3}}}
+	if _, err := f.Update([]statemachine.Entry{{Index: 3, Cmd: envelope(t, cmd)}}); err != nil {
+		t.Fatal(err)
+	}
+
+	m, _ := (MembershipTable{S: st}).Get(3)
+	if m == nil || m.GetLastSeenMs() != 0 {
+		t.Fatalf("expected node 3 last_seen_ms zeroed; got %+v", m)
+	}
+	pt, _ := (PartitionTableTable{S: st}).Get()
+	if pt == nil {
+		t.Fatal("expected partition table")
+	}
+	// Shards 1 and 3 had node 3; shard 2 did not. Expect exactly two pending steps.
+	if len(pt.GetPending()) != 2 {
+		t.Fatalf("pending = %d; want 2 (shards 1+3)", len(pt.GetPending()))
+	}
+	for _, p := range pt.GetPending() {
+		if p.GetKind() != enginev1.RebalanceStep_DELETE_REPLICA || p.GetRemoveNodeId() != 3 {
+			t.Errorf("unexpected pending step: %+v", p)
+		}
+	}
+
+	// Re-applying EvictNode is a no-op (last_seen already 0).
+	if _, err := f.Update([]statemachine.Entry{{Index: 4, Cmd: envelope(t, cmd)}}); err != nil {
+		t.Fatal(err)
+	}
+	pt2, _ := (PartitionTableTable{S: st}).Get()
+	if len(pt2.GetPending()) != 2 {
+		t.Fatalf("re-apply EvictNode bumped pending to %d; want 2", len(pt2.GetPending()))
+	}
+}
+
+func TestPhase4_2_Cluster_BeginRebalanceStep_IdempotentOnStepID(t *testing.T) {
+	f, _, st := newTestFSM(t)
+	applyPartitionTable(t, f, 1, &enginev1.PartitionTable{
+		AssignmentEpoch: 1,
+		Shards:          map[uint64]*enginev1.ReplicaSet{1: {NodeIds: []uint64{1, 2, 3}}},
+	})
+	step := &enginev1.RebalanceStep{
+		ShardId: 1, Kind: enginev1.RebalanceStep_ADD_NON_VOTING, AddNodeId: 4, StepId: 1,
+	}
+	cmd := &enginev1.Command{Kind: &enginev1.Command_BeginRebalanceStep{BeginRebalanceStep: &enginev1.BeginRebalanceStep{Step: step}}}
+	if _, err := f.Update([]statemachine.Entry{{Index: 2, Cmd: envelope(t, cmd)}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Update([]statemachine.Entry{{Index: 3, Cmd: envelope(t, cmd)}}); err != nil {
+		t.Fatal(err)
+	}
+	pt, _ := (PartitionTableTable{S: st}).Get()
+	if len(pt.GetPending()) != 1 {
+		t.Fatalf("duplicate BeginRebalanceStep produced %d pending; want 1", len(pt.GetPending()))
+	}
+}
+
+func TestPhase4_2_Cluster_CompleteRebalanceStep_PromoteAddsToReplicaSet(t *testing.T) {
+	f, _, st := newTestFSM(t)
+	applyPartitionTable(t, f, 1, &enginev1.PartitionTable{
+		AssignmentEpoch: 1,
+		Shards:          map[uint64]*enginev1.ReplicaSet{1: {NodeIds: []uint64{1, 2, 3}}},
+		Pending: []*enginev1.RebalanceStep{{
+			ShardId: 1, Kind: enginev1.RebalanceStep_PROMOTE_TO_VOTER, AddNodeId: 4, StepId: 1,
+		}},
+	})
+	cmd := &enginev1.Command{Kind: &enginev1.Command_CompleteRebalanceStep{
+		CompleteRebalanceStep: &enginev1.CompleteRebalanceStep{ShardId: 1, StepId: 1},
+	}}
+	if _, err := f.Update([]statemachine.Entry{{Index: 2, Cmd: envelope(t, cmd)}}); err != nil {
+		t.Fatal(err)
+	}
+	pt, _ := (PartitionTableTable{S: st}).Get()
+	if len(pt.GetPending()) != 0 {
+		t.Fatalf("pending should be empty; got %d", len(pt.GetPending()))
+	}
+	if !replicaSetContains(pt.GetShards()[1], 4) {
+		t.Fatalf("node 4 not promoted into shard 1 replica set: %+v", pt.GetShards()[1].GetNodeIds())
+	}
+	if pt.GetAssignmentEpoch() != 2 {
+		t.Fatalf("assignment_epoch = %d; want 2", pt.GetAssignmentEpoch())
+	}
+}
+
+func TestPhase4_2_Cluster_CompleteRebalanceStep_DeleteRemovesFromReplicaSet(t *testing.T) {
+	f, _, st := newTestFSM(t)
+	applyPartitionTable(t, f, 1, &enginev1.PartitionTable{
+		AssignmentEpoch: 1,
+		Shards:          map[uint64]*enginev1.ReplicaSet{1: {NodeIds: []uint64{1, 2, 3}}},
+		Pending: []*enginev1.RebalanceStep{{
+			ShardId: 1, Kind: enginev1.RebalanceStep_DELETE_REPLICA, RemoveNodeId: 3, StepId: 1,
+		}},
+	})
+	cmd := &enginev1.Command{Kind: &enginev1.Command_CompleteRebalanceStep{
+		CompleteRebalanceStep: &enginev1.CompleteRebalanceStep{ShardId: 1, StepId: 1},
+	}}
+	if _, err := f.Update([]statemachine.Entry{{Index: 2, Cmd: envelope(t, cmd)}}); err != nil {
+		t.Fatal(err)
+	}
+	pt, _ := (PartitionTableTable{S: st}).Get()
+	if replicaSetContains(pt.GetShards()[1], 3) {
+		t.Fatalf("node 3 still in replica set: %+v", pt.GetShards()[1].GetNodeIds())
+	}
+}
+
+func TestPhase4_2_Cluster_UpdateVersionBarrierRoundTrips(t *testing.T) {
+	f, _, st := newTestFSM(t)
+	applyPartitionTable(t, f, 1, &enginev1.PartitionTable{
+		AssignmentEpoch: 1,
+		Shards:          map[uint64]*enginev1.ReplicaSet{1: {NodeIds: []uint64{1, 2, 3}}},
+	})
+	cmd := &enginev1.Command{Kind: &enginev1.Command_UpdateVersionBarrier{
+		UpdateVersionBarrier: &enginev1.UpdateVersionBarrier{Version: 7},
+	}}
+	if _, err := f.Update([]statemachine.Entry{{Index: 2, Cmd: envelope(t, cmd)}}); err != nil {
+		t.Fatal(err)
+	}
+	pt, _ := (PartitionTableTable{S: st}).Get()
+	if pt.GetVersionBarrier() != 7 {
+		t.Fatalf("version_barrier = %d; want 7", pt.GetVersionBarrier())
+	}
+	// Idempotent re-apply must not bump epoch.
+	prevEpoch := pt.GetAssignmentEpoch()
+	if _, err := f.Update([]statemachine.Entry{{Index: 3, Cmd: envelope(t, cmd)}}); err != nil {
+		t.Fatal(err)
+	}
+	pt, _ = (PartitionTableTable{S: st}).Get()
+	if pt.GetAssignmentEpoch() != prevEpoch {
+		t.Fatalf("assignment_epoch changed across same-version re-apply: %d -> %d",
+			prevEpoch, pt.GetAssignmentEpoch())
+	}
+}
+
 func TestPhase4_1_Cluster_UnknownCommandIsDropped(t *testing.T) {
 	f, _, _ := newTestFSM(t)
 	cmd := &enginev1.Command{

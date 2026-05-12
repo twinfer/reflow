@@ -79,12 +79,12 @@ func bringUpThreeNodeCluster(t *testing.T, handlers *sdk.Registry) ([]*nodeRig, 
 	}
 
 	dataDirs := make([]string, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		dataDirs[i] = filepath.Join(t.TempDir(), fmt.Sprintf("node%d", i+1))
 	}
 
 	// Stage 1: construct Hosts (NodeHost starts here; no shards yet).
-	for i := 0; i < n; i++ {
+	for i := range n {
 		h, err := engine.NewHost(engine.HostConfig{
 			NodeID:         uint64(i + 1),
 			RaftAddr:       allAddrs[i].raft,

@@ -36,6 +36,11 @@ type MetadataRunner struct {
 	// drives the bootstrap UpdatePartitionTable + RegisterNode proposals.
 	peers []Peer
 
+	// host is the back-reference handed in by Host.StartMetadataShard so
+	// the rebalancer can call dragonboat membership APIs + Host helpers
+	// (PartitionTable, Membership, nodeHostIDOf). Phase 4.2.
+	host *Host
+
 	mu           sync.Mutex
 	leaderCtx    context.Context
 	leaderCancel context.CancelFunc
@@ -71,6 +76,12 @@ func (r *MetadataRunner) onBecomeLeader() {
 	r.mu.Unlock()
 
 	go r.bootstrap(leaderCtx)
+	if r.host != nil {
+		// Phase 4.2: spawn the rebalancer + failure-detection ticker
+		// once shard 0 bootstrap has been kicked off. Both share the
+		// leader-scoped context so step-down tears everything down.
+		go newMetadataRebalancer(r.host, r).run(leaderCtx)
+	}
 }
 
 // onStepDown cancels the leader-scoped context.

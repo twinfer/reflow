@@ -29,6 +29,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "reflowd: %v\n", err)
 		os.Exit(2)
 	}
+	if err := requireTLSWhenMultiNode(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "reflowd: %v\n", err)
+		os.Exit(2)
+	}
 	cfg.Handlers = sdk.NewRegistry()
 	// User binaries register handlers here before reflow.Run; reflowd
 	// ships with an empty registry — useful for smoke-testing the
@@ -63,6 +67,33 @@ func loadConfig() (reflow.Config, error) {
 	return cfg, err
 }
 
+// requireTLSWhenMultiNode rejects a config where Cluster.Peers is
+// non-empty but any of the four TLS file paths is missing. Phase 4.2
+// makes mTLS mandatory for cross-node Delivery + admin. Single-node
+// deployments bypass this check.
+func requireTLSWhenMultiNode(cfg reflow.Config) error {
+	if len(cfg.Cluster.Peers) == 0 {
+		return nil
+	}
+	missing := []string{}
+	if cfg.TLS.NodeCAFile == "" {
+		missing = append(missing, "tls.node_ca_file")
+	}
+	if cfg.TLS.OperatorCAFile == "" {
+		missing = append(missing, "tls.operator_ca_file")
+	}
+	if cfg.TLS.NodeCertFile == "" {
+		missing = append(missing, "tls.node_cert_file")
+	}
+	if cfg.TLS.NodeKeyFile == "" {
+		missing = append(missing, "tls.node_key_file")
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("multi-node deployment requires TLS; missing: %v", missing)
+}
+
 // defaultValues are the baked-in defaults. Picked to make `go run
 // ./cmd/reflowd` work out of the box on a developer machine. Phase 4.1
 // multi-node fields (node.gossip_bind_addr, node.delivery_addr,
@@ -78,5 +109,17 @@ func defaultValues() map[string]any {
 		"ingress.http_addr": ":8080",
 		"metrics.addr":      ":9090",
 		"logging.level":     "INFO",
+		// Phase 4.2 defaults — admin + snapshot. The admin server is
+		// only started when Cluster.Peers is non-empty AND TLS is
+		// configured, so leaving Addr populated is safe for single-node
+		// out of the box. The snapshot producer is disabled by default
+		// (Interval=0); operators opt in via REFLOW_SNAPSHOT_INTERVAL
+		// once they have a sustained DR plan.
+		"admin.addr":           ":8082",
+		"snapshot.driver":      "fs",
+		"snapshot.fs_root":     "./data/snapshots",
+		"snapshot.retain":      24,
+		"snapshot.interval":    "0s",
+		"snapshot.scratch_dir": "",
 	}
 }

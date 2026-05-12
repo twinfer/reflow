@@ -11,9 +11,14 @@
 //     JEClearState, JEGetEagerState) and InvokerEffect kinds (JERunProposal,
 //     AwakeableResolved, SignalDelivered). PartitionMeta gains
 //     next_outbox_seq; AwakeableEntry is the awakeable directory value.
-//   Phase 4: metadata-shard commands (RegisterNode, RemoveNode,
-//     UpdatePartitionTable, Heartbeat, VersionBarrier) will land in the
-//     Command oneof's reserved tag range (6-15). See SAD §6.2.
+//   Phase 4.1: metadata-shard commands (RegisterNode,
+//     UpdatePartitionTable) land at Command tags 6-7. Remaining
+//     metadata-shard work (RemoveNode, Heartbeat, VersionBarrier)
+//     reserved for Phase 4.2 in tags 8-15. OutboxEnvelope grows
+//     destination_shard_id plus DeliverCallResult and OutboxAck
+//     variants for cross-partition Call result delivery. NodeHostMeta
+//     carries the reflow gRPC endpoint via dragonboat GossipConfig.Meta.
+//     See SAD §6.2 and proto/deliveryv1/delivery.proto.
 //   Phase 4+: SnapshotMeta (defined below) is the operator-visible sidecar
 //     written by the SnapshotRepository. See SAD §6.12.
 //
@@ -76,13 +81,14 @@ message Header {
 // Tag assignment:
 //   1     : AnnounceLeader        (every shard)
 //   2-5   : partition-shard commands (Phase 1)
-//   6-15  : reserved for Phase 4 metadata-shard commands (RegisterNode,
-//           RemoveNode, UpdatePartitionTable, Heartbeat, VersionBarrier).
-//           Do not allocate from this range without updating SAD §6.2.
+//   6-7   : Phase 4.1 metadata-shard commands (RegisterNode,
+//           UpdatePartitionTable). Tags 8-15 reserved for Phase 4.2+
+//           (RemoveNode, Heartbeat, VersionBarrier). Do not allocate from
+//           the reserved range without updating SAD §6.2.
 //   16+   : reserved for Phase 2-3 partition-shard additions (Run effects,
 //           awakeable completions, virtual-object queue ops).
 message Command {
-  reserved 6 to 15;
+  reserved 8 to 15;
 
   oneof kind {
     AnnounceLeader announce_leader = 1;
@@ -90,6 +96,9 @@ message Command {
     InvokerEffect invoker_effect = 3;
     TimerFired timer_fired = 4;
     PurgeInvocation purge = 5;
+    // Phase 4.1 metadata-shard commands. Accepted only by shardID=0.
+    RegisterNode register_node = 6;
+    UpdatePartitionTable update_partition_table = 7;
   }
 }
 
@@ -450,15 +459,65 @@ message AwakeableEntry {
 }
 
 // OutboxEnvelope is the row stored in the outbox/<seq> namespace. The
-// leader-side shuffler scans these and re-injects each one as a Command
-// (InvokeCommand) or InvokerEffect (SignalDelivered) on the appropriate
-// partition. Phase 2 only emits the invoke variant; SignalSend is wired
-// when JESignal lands in Step 7. Reserved variants live above tag 15.
+// leader-side shuffler scans these and dispatches each one to the
+// destination shard: same-shard rows are re-injected locally via
+// IngressProposer.ProposeIngress; cross-shard rows are sent over the
+// gRPC Delivery service to the destination shard's leader (Phase 4.1).
+//
+// destination_shard_id is the target Raft shard. A value of 0 means
+// "same shard as the producer" (the Phase 1-3 default; preserves wire
+// compatibility for rows written before 4.1). Phase 4.1+.
+//
+// Variant semantics:
+//   invoke              — schedule a new invocation on the destination
+//                         partition (callee). May carry a ParentLink so
+//                         the callee's Completed apply arm knows where
+//                         to send the result.
+//   signal              — deliver a JESignal payload to a target
+//                         invocation living on the destination partition.
+//   deliver_call_result — cross-partition CallResult delivery: the
+//                         callee partition emits this to the parent's
+//                         partition so the parent's apply arm can append
+//                         JECallResult and wake the suspended parent.
+//                         Phase 4.1.
+//   outbox_ack          — cross-shard acknowledgement that an inbound
+//                         delivery has been durably applied on the
+//                         receiver. The producer shard pops the
+//                         corresponding outbox row on apply. Phase 4.1.
 message OutboxEnvelope {
+  uint64 destination_shard_id = 3;
   oneof kind {
     InvokeCommand invoke = 1;
     SignalSend signal = 2;
+    DeliverCallResult deliver_call_result = 4;
+    OutboxAck outbox_ack = 5;
   }
+}
+
+// DeliverCallResult is the outbox payload used to ship a callee's result
+// back to the parent invocation when caller and callee live on different
+// partitions. Mirrors the in-process logic of deliverCallResultToParent
+// (partition.go): on apply the receiver loads the parent's
+// InvocationStatus, appends a JECallResult journal entry at
+// call_index + 1, runs transitionOnCallResultDelivered, and persists in
+// the same Pebble batch. Phase 4.1.
+message DeliverCallResult {
+  InvocationId parent_id = 1;
+  uint32 call_index = 2;
+  bytes result = 3;
+  string failure_message = 4;
+}
+
+// OutboxAck is the outbox payload that pops a previously-sent cross-shard
+// outbox row on the producer's shard. The receiver emits an OutboxAck row
+// addressed back to the producer in the same Pebble batch as the inbound
+// delivery's apply effects. On apply at the producer's shard the row is
+// dedup'd (the receiver stamped it with its own outbox/<recvShard> seq)
+// and the indicated (producer_shard_id, producer_seq) row is popped from
+// OutboxTable. Phase 4.1.
+message OutboxAck {
+  uint64 producer_shard_id = 1;
+  uint64 producer_seq = 2;
 }
 
 // SignalSend is the outbox payload for a JESignal journal entry. Same
@@ -486,4 +545,59 @@ message SnapshotMeta {
   // Hex-encoded SHA-256 of the snapshot tar body.
   string checksum_sha256 = 5;
   fixed64 created_at_ms = 6;
+}
+
+// NodeHostMeta is the payload packed into dragonboat's GossipConfig.Meta
+// blob. Every NodeHost advertises it via gossip; peers retrieve it via
+// INodeHostRegistry.GetMeta(nodeHostID) and use it to dial the reflow
+// gRPC Delivery service for cross-partition outbox dispatch. Phase 4.1.
+message NodeHostMeta {
+  string grpc_endpoint = 1;
+}
+
+// RegisterNode is proposed against shard 0 when a reflowd process starts
+// and wants to publish or refresh its membership record. In Phase 4.1
+// the static peer list is identical on every node so the proposal is
+// idempotent; the apply arm updates last_seen_ms. Phase 4.2 reuses this
+// for online add-node. Phase 4.1.
+message RegisterNode {
+  NodeMembership member = 1;
+}
+
+// UpdatePartitionTable replaces shard 0's partition table atomically.
+// In Phase 4.1 the new leader of shard 0 proposes this once at bootstrap
+// with the static RF=3 assignment. assignment_epoch is incremented on
+// every successful apply; consumers fence stale local caches against
+// it. Phase 4.1.
+message UpdatePartitionTable {
+  PartitionTable table = 1;
+}
+
+// NodeMembership is the per-node record kept in shard 0's state.
+// raft_addr is dragonboat's inter-node transport address. node_host_id
+// is the stable identifier published over gossip; routing translates
+// node_id → node_host_id → gRPC endpoint via the gossip Meta payload.
+// last_seen_ms is updated by RegisterNode applies; Phase 4.2 will turn
+// it into a liveness signal. Phase 4.1.
+message NodeMembership {
+  uint64 node_id = 1;
+  string raft_addr = 2;
+  string node_host_id = 3;
+  int64 last_seen_ms = 4;
+}
+
+// PartitionTable is shard 0's authoritative map of partition shards to
+// replica node sets. Persisted via UpdatePartitionTable. Phase 4.1
+// always populates every partition_shard_id 1..N with the full peer
+// set (RF=3, N=3 → every node hosts every partition); Phase 4.2 will
+// introduce sparse placement. Phase 4.1.
+message PartitionTable {
+  map<uint64, ReplicaSet> shards = 1;
+  uint64 assignment_epoch = 2;
+}
+
+// ReplicaSet is the per-partition replica list. Order is not significant
+// for correctness; dragonboat treats the membership as a set. Phase 4.1.
+message ReplicaSet {
+  repeated uint64 node_ids = 1;
 }

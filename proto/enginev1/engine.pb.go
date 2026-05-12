@@ -11,9 +11,14 @@
 //     JEClearState, JEGetEagerState) and InvokerEffect kinds (JERunProposal,
 //     AwakeableResolved, SignalDelivered). PartitionMeta gains
 //     next_outbox_seq; AwakeableEntry is the awakeable directory value.
-//   Phase 4: metadata-shard commands (RegisterNode, RemoveNode,
-//     UpdatePartitionTable, Heartbeat, VersionBarrier) will land in the
-//     Command oneof's reserved tag range (6-15). See SAD §6.2.
+//   Phase 4.1: metadata-shard commands (RegisterNode,
+//     UpdatePartitionTable) land at Command tags 6-7. Remaining
+//     metadata-shard work (RemoveNode, Heartbeat, VersionBarrier)
+//     reserved for Phase 4.2 in tags 8-15. OutboxEnvelope grows
+//     destination_shard_id plus DeliverCallResult and OutboxAck
+//     variants for cross-partition Call result delivery. NodeHostMeta
+//     carries the reflow gRPC endpoint via dragonboat GossipConfig.Meta.
+//     See SAD §6.2 and proto/deliveryv1/delivery.proto.
 //   Phase 4+: SnapshotMeta (defined below) is the operator-visible sidecar
 //     written by the SnapshotRepository. See SAD §6.12.
 //
@@ -505,9 +510,10 @@ func (x *Header) GetCreatedAtMs() uint64 {
 //
 //	1     : AnnounceLeader        (every shard)
 //	2-5   : partition-shard commands (Phase 1)
-//	6-15  : reserved for Phase 4 metadata-shard commands (RegisterNode,
-//	        RemoveNode, UpdatePartitionTable, Heartbeat, VersionBarrier).
-//	        Do not allocate from this range without updating SAD §6.2.
+//	6-7   : Phase 4.1 metadata-shard commands (RegisterNode,
+//	        UpdatePartitionTable). Tags 8-15 reserved for Phase 4.2+
+//	        (RemoveNode, Heartbeat, VersionBarrier). Do not allocate from
+//	        the reserved range without updating SAD §6.2.
 //	16+   : reserved for Phase 2-3 partition-shard additions (Run effects,
 //	        awakeable completions, virtual-object queue ops).
 type Command struct {
@@ -519,6 +525,8 @@ type Command struct {
 	//	*Command_InvokerEffect
 	//	*Command_TimerFired
 	//	*Command_Purge
+	//	*Command_RegisterNode
+	//	*Command_UpdatePartitionTable
 	Kind          isCommand_Kind `protobuf_oneof:"kind"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -606,6 +614,24 @@ func (x *Command) GetPurge() *PurgeInvocation {
 	return nil
 }
 
+func (x *Command) GetRegisterNode() *RegisterNode {
+	if x != nil {
+		if x, ok := x.Kind.(*Command_RegisterNode); ok {
+			return x.RegisterNode
+		}
+	}
+	return nil
+}
+
+func (x *Command) GetUpdatePartitionTable() *UpdatePartitionTable {
+	if x != nil {
+		if x, ok := x.Kind.(*Command_UpdatePartitionTable); ok {
+			return x.UpdatePartitionTable
+		}
+	}
+	return nil
+}
+
 type isCommand_Kind interface {
 	isCommand_Kind()
 }
@@ -630,6 +656,15 @@ type Command_Purge struct {
 	Purge *PurgeInvocation `protobuf:"bytes,5,opt,name=purge,proto3,oneof"`
 }
 
+type Command_RegisterNode struct {
+	// Phase 4.1 metadata-shard commands. Accepted only by shardID=0.
+	RegisterNode *RegisterNode `protobuf:"bytes,6,opt,name=register_node,json=registerNode,proto3,oneof"`
+}
+
+type Command_UpdatePartitionTable struct {
+	UpdatePartitionTable *UpdatePartitionTable `protobuf:"bytes,7,opt,name=update_partition_table,json=updatePartitionTable,proto3,oneof"`
+}
+
 func (*Command_AnnounceLeader) isCommand_Kind() {}
 
 func (*Command_Invoke) isCommand_Kind() {}
@@ -639,6 +674,10 @@ func (*Command_InvokerEffect) isCommand_Kind() {}
 func (*Command_TimerFired) isCommand_Kind() {}
 
 func (*Command_Purge) isCommand_Kind() {}
+
+func (*Command_RegisterNode) isCommand_Kind() {}
+
+func (*Command_UpdatePartitionTable) isCommand_Kind() {}
 
 // AnnounceLeader is proposed on every shard when its leader changes. It is
 // the only Command variant accepted by both the metadata shard (shardID=0)
@@ -3371,16 +3410,41 @@ func (x *AwakeableEntry) GetEntryIndex() uint32 {
 }
 
 // OutboxEnvelope is the row stored in the outbox/<seq> namespace. The
-// leader-side shuffler scans these and re-injects each one as a Command
-// (InvokeCommand) or InvokerEffect (SignalDelivered) on the appropriate
-// partition. Phase 2 only emits the invoke variant; SignalSend is wired
-// when JESignal lands in Step 7. Reserved variants live above tag 15.
+// leader-side shuffler scans these and dispatches each one to the
+// destination shard: same-shard rows are re-injected locally via
+// IngressProposer.ProposeIngress; cross-shard rows are sent over the
+// gRPC Delivery service to the destination shard's leader (Phase 4.1).
+//
+// destination_shard_id is the target Raft shard. A value of 0 means
+// "same shard as the producer" (the Phase 1-3 default; preserves wire
+// compatibility for rows written before 4.1). Phase 4.1+.
+//
+// Variant semantics:
+//
+//	invoke              — schedule a new invocation on the destination
+//	                      partition (callee). May carry a ParentLink so
+//	                      the callee's Completed apply arm knows where
+//	                      to send the result.
+//	signal              — deliver a JESignal payload to a target
+//	                      invocation living on the destination partition.
+//	deliver_call_result — cross-partition CallResult delivery: the
+//	                      callee partition emits this to the parent's
+//	                      partition so the parent's apply arm can append
+//	                      JECallResult and wake the suspended parent.
+//	                      Phase 4.1.
+//	outbox_ack          — cross-shard acknowledgement that an inbound
+//	                      delivery has been durably applied on the
+//	                      receiver. The producer shard pops the
+//	                      corresponding outbox row on apply. Phase 4.1.
 type OutboxEnvelope struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	DestinationShardId uint64                 `protobuf:"varint,3,opt,name=destination_shard_id,json=destinationShardId,proto3" json:"destination_shard_id,omitempty"`
 	// Types that are valid to be assigned to Kind:
 	//
 	//	*OutboxEnvelope_Invoke
 	//	*OutboxEnvelope_Signal
+	//	*OutboxEnvelope_DeliverCallResult
+	//	*OutboxEnvelope_OutboxAck
 	Kind          isOutboxEnvelope_Kind `protobuf_oneof:"kind"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3416,6 +3480,13 @@ func (*OutboxEnvelope) Descriptor() ([]byte, []int) {
 	return file_enginev1_engine_proto_rawDescGZIP(), []int{47}
 }
 
+func (x *OutboxEnvelope) GetDestinationShardId() uint64 {
+	if x != nil {
+		return x.DestinationShardId
+	}
+	return 0
+}
+
 func (x *OutboxEnvelope) GetKind() isOutboxEnvelope_Kind {
 	if x != nil {
 		return x.Kind
@@ -3441,6 +3512,24 @@ func (x *OutboxEnvelope) GetSignal() *SignalSend {
 	return nil
 }
 
+func (x *OutboxEnvelope) GetDeliverCallResult() *DeliverCallResult {
+	if x != nil {
+		if x, ok := x.Kind.(*OutboxEnvelope_DeliverCallResult); ok {
+			return x.DeliverCallResult
+		}
+	}
+	return nil
+}
+
+func (x *OutboxEnvelope) GetOutboxAck() *OutboxAck {
+	if x != nil {
+		if x, ok := x.Kind.(*OutboxEnvelope_OutboxAck); ok {
+			return x.OutboxAck
+		}
+	}
+	return nil
+}
+
 type isOutboxEnvelope_Kind interface {
 	isOutboxEnvelope_Kind()
 }
@@ -3453,9 +3542,155 @@ type OutboxEnvelope_Signal struct {
 	Signal *SignalSend `protobuf:"bytes,2,opt,name=signal,proto3,oneof"`
 }
 
+type OutboxEnvelope_DeliverCallResult struct {
+	DeliverCallResult *DeliverCallResult `protobuf:"bytes,4,opt,name=deliver_call_result,json=deliverCallResult,proto3,oneof"`
+}
+
+type OutboxEnvelope_OutboxAck struct {
+	OutboxAck *OutboxAck `protobuf:"bytes,5,opt,name=outbox_ack,json=outboxAck,proto3,oneof"`
+}
+
 func (*OutboxEnvelope_Invoke) isOutboxEnvelope_Kind() {}
 
 func (*OutboxEnvelope_Signal) isOutboxEnvelope_Kind() {}
+
+func (*OutboxEnvelope_DeliverCallResult) isOutboxEnvelope_Kind() {}
+
+func (*OutboxEnvelope_OutboxAck) isOutboxEnvelope_Kind() {}
+
+// DeliverCallResult is the outbox payload used to ship a callee's result
+// back to the parent invocation when caller and callee live on different
+// partitions. Mirrors the in-process logic of deliverCallResultToParent
+// (partition.go): on apply the receiver loads the parent's
+// InvocationStatus, appends a JECallResult journal entry at
+// call_index + 1, runs transitionOnCallResultDelivered, and persists in
+// the same Pebble batch. Phase 4.1.
+type DeliverCallResult struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ParentId       *InvocationId          `protobuf:"bytes,1,opt,name=parent_id,json=parentId,proto3" json:"parent_id,omitempty"`
+	CallIndex      uint32                 `protobuf:"varint,2,opt,name=call_index,json=callIndex,proto3" json:"call_index,omitempty"`
+	Result         []byte                 `protobuf:"bytes,3,opt,name=result,proto3" json:"result,omitempty"`
+	FailureMessage string                 `protobuf:"bytes,4,opt,name=failure_message,json=failureMessage,proto3" json:"failure_message,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *DeliverCallResult) Reset() {
+	*x = DeliverCallResult{}
+	mi := &file_enginev1_engine_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeliverCallResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeliverCallResult) ProtoMessage() {}
+
+func (x *DeliverCallResult) ProtoReflect() protoreflect.Message {
+	mi := &file_enginev1_engine_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeliverCallResult.ProtoReflect.Descriptor instead.
+func (*DeliverCallResult) Descriptor() ([]byte, []int) {
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *DeliverCallResult) GetParentId() *InvocationId {
+	if x != nil {
+		return x.ParentId
+	}
+	return nil
+}
+
+func (x *DeliverCallResult) GetCallIndex() uint32 {
+	if x != nil {
+		return x.CallIndex
+	}
+	return 0
+}
+
+func (x *DeliverCallResult) GetResult() []byte {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
+func (x *DeliverCallResult) GetFailureMessage() string {
+	if x != nil {
+		return x.FailureMessage
+	}
+	return ""
+}
+
+// OutboxAck is the outbox payload that pops a previously-sent cross-shard
+// outbox row on the producer's shard. The receiver emits an OutboxAck row
+// addressed back to the producer in the same Pebble batch as the inbound
+// delivery's apply effects. On apply at the producer's shard the row is
+// dedup'd (the receiver stamped it with its own outbox/<recvShard> seq)
+// and the indicated (producer_shard_id, producer_seq) row is popped from
+// OutboxTable. Phase 4.1.
+type OutboxAck struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	ProducerShardId uint64                 `protobuf:"varint,1,opt,name=producer_shard_id,json=producerShardId,proto3" json:"producer_shard_id,omitempty"`
+	ProducerSeq     uint64                 `protobuf:"varint,2,opt,name=producer_seq,json=producerSeq,proto3" json:"producer_seq,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *OutboxAck) Reset() {
+	*x = OutboxAck{}
+	mi := &file_enginev1_engine_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OutboxAck) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OutboxAck) ProtoMessage() {}
+
+func (x *OutboxAck) ProtoReflect() protoreflect.Message {
+	mi := &file_enginev1_engine_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OutboxAck.ProtoReflect.Descriptor instead.
+func (*OutboxAck) Descriptor() ([]byte, []int) {
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{49}
+}
+
+func (x *OutboxAck) GetProducerShardId() uint64 {
+	if x != nil {
+		return x.ProducerShardId
+	}
+	return 0
+}
+
+func (x *OutboxAck) GetProducerSeq() uint64 {
+	if x != nil {
+		return x.ProducerSeq
+	}
+	return 0
+}
 
 // SignalSend is the outbox payload for a JESignal journal entry. Same
 // shape as JESignal — repeated here so the outbox row is self-contained
@@ -3471,7 +3706,7 @@ type SignalSend struct {
 
 func (x *SignalSend) Reset() {
 	*x = SignalSend{}
-	mi := &file_enginev1_engine_proto_msgTypes[48]
+	mi := &file_enginev1_engine_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3483,7 +3718,7 @@ func (x *SignalSend) String() string {
 func (*SignalSend) ProtoMessage() {}
 
 func (x *SignalSend) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[48]
+	mi := &file_enginev1_engine_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3496,7 +3731,7 @@ func (x *SignalSend) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalSend.ProtoReflect.Descriptor instead.
 func (*SignalSend) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{48}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *SignalSend) GetTargetInvocationId() *InvocationId {
@@ -3543,7 +3778,7 @@ type SnapshotMeta struct {
 
 func (x *SnapshotMeta) Reset() {
 	*x = SnapshotMeta{}
-	mi := &file_enginev1_engine_proto_msgTypes[49]
+	mi := &file_enginev1_engine_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3555,7 +3790,7 @@ func (x *SnapshotMeta) String() string {
 func (*SnapshotMeta) ProtoMessage() {}
 
 func (x *SnapshotMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[49]
+	mi := &file_enginev1_engine_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3568,7 +3803,7 @@ func (x *SnapshotMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotMeta.ProtoReflect.Descriptor instead.
 func (*SnapshotMeta) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{49}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *SnapshotMeta) GetShardId() uint64 {
@@ -3613,6 +3848,329 @@ func (x *SnapshotMeta) GetCreatedAtMs() uint64 {
 	return 0
 }
 
+// NodeHostMeta is the payload packed into dragonboat's GossipConfig.Meta
+// blob. Every NodeHost advertises it via gossip; peers retrieve it via
+// INodeHostRegistry.GetMeta(nodeHostID) and use it to dial the reflow
+// gRPC Delivery service for cross-partition outbox dispatch. Phase 4.1.
+type NodeHostMeta struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	GrpcEndpoint  string                 `protobuf:"bytes,1,opt,name=grpc_endpoint,json=grpcEndpoint,proto3" json:"grpc_endpoint,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodeHostMeta) Reset() {
+	*x = NodeHostMeta{}
+	mi := &file_enginev1_engine_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeHostMeta) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeHostMeta) ProtoMessage() {}
+
+func (x *NodeHostMeta) ProtoReflect() protoreflect.Message {
+	mi := &file_enginev1_engine_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeHostMeta.ProtoReflect.Descriptor instead.
+func (*NodeHostMeta) Descriptor() ([]byte, []int) {
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *NodeHostMeta) GetGrpcEndpoint() string {
+	if x != nil {
+		return x.GrpcEndpoint
+	}
+	return ""
+}
+
+// RegisterNode is proposed against shard 0 when a reflowd process starts
+// and wants to publish or refresh its membership record. In Phase 4.1
+// the static peer list is identical on every node so the proposal is
+// idempotent; the apply arm updates last_seen_ms. Phase 4.2 reuses this
+// for online add-node. Phase 4.1.
+type RegisterNode struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Member        *NodeMembership        `protobuf:"bytes,1,opt,name=member,proto3" json:"member,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegisterNode) Reset() {
+	*x = RegisterNode{}
+	mi := &file_enginev1_engine_proto_msgTypes[53]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterNode) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterNode) ProtoMessage() {}
+
+func (x *RegisterNode) ProtoReflect() protoreflect.Message {
+	mi := &file_enginev1_engine_proto_msgTypes[53]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterNode.ProtoReflect.Descriptor instead.
+func (*RegisterNode) Descriptor() ([]byte, []int) {
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *RegisterNode) GetMember() *NodeMembership {
+	if x != nil {
+		return x.Member
+	}
+	return nil
+}
+
+// UpdatePartitionTable replaces shard 0's partition table atomically.
+// In Phase 4.1 the new leader of shard 0 proposes this once at bootstrap
+// with the static RF=3 assignment. assignment_epoch is incremented on
+// every successful apply; consumers fence stale local caches against
+// it. Phase 4.1.
+type UpdatePartitionTable struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Table         *PartitionTable        `protobuf:"bytes,1,opt,name=table,proto3" json:"table,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdatePartitionTable) Reset() {
+	*x = UpdatePartitionTable{}
+	mi := &file_enginev1_engine_proto_msgTypes[54]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdatePartitionTable) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdatePartitionTable) ProtoMessage() {}
+
+func (x *UpdatePartitionTable) ProtoReflect() protoreflect.Message {
+	mi := &file_enginev1_engine_proto_msgTypes[54]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdatePartitionTable.ProtoReflect.Descriptor instead.
+func (*UpdatePartitionTable) Descriptor() ([]byte, []int) {
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{54}
+}
+
+func (x *UpdatePartitionTable) GetTable() *PartitionTable {
+	if x != nil {
+		return x.Table
+	}
+	return nil
+}
+
+// NodeMembership is the per-node record kept in shard 0's state.
+// raft_addr is dragonboat's inter-node transport address. node_host_id
+// is the stable identifier published over gossip; routing translates
+// node_id → node_host_id → gRPC endpoint via the gossip Meta payload.
+// last_seen_ms is updated by RegisterNode applies; Phase 4.2 will turn
+// it into a liveness signal. Phase 4.1.
+type NodeMembership struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        uint64                 `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	RaftAddr      string                 `protobuf:"bytes,2,opt,name=raft_addr,json=raftAddr,proto3" json:"raft_addr,omitempty"`
+	NodeHostId    string                 `protobuf:"bytes,3,opt,name=node_host_id,json=nodeHostId,proto3" json:"node_host_id,omitempty"`
+	LastSeenMs    int64                  `protobuf:"varint,4,opt,name=last_seen_ms,json=lastSeenMs,proto3" json:"last_seen_ms,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodeMembership) Reset() {
+	*x = NodeMembership{}
+	mi := &file_enginev1_engine_proto_msgTypes[55]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeMembership) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeMembership) ProtoMessage() {}
+
+func (x *NodeMembership) ProtoReflect() protoreflect.Message {
+	mi := &file_enginev1_engine_proto_msgTypes[55]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeMembership.ProtoReflect.Descriptor instead.
+func (*NodeMembership) Descriptor() ([]byte, []int) {
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{55}
+}
+
+func (x *NodeMembership) GetNodeId() uint64 {
+	if x != nil {
+		return x.NodeId
+	}
+	return 0
+}
+
+func (x *NodeMembership) GetRaftAddr() string {
+	if x != nil {
+		return x.RaftAddr
+	}
+	return ""
+}
+
+func (x *NodeMembership) GetNodeHostId() string {
+	if x != nil {
+		return x.NodeHostId
+	}
+	return ""
+}
+
+func (x *NodeMembership) GetLastSeenMs() int64 {
+	if x != nil {
+		return x.LastSeenMs
+	}
+	return 0
+}
+
+// PartitionTable is shard 0's authoritative map of partition shards to
+// replica node sets. Persisted via UpdatePartitionTable. Phase 4.1
+// always populates every partition_shard_id 1..N with the full peer
+// set (RF=3, N=3 → every node hosts every partition); Phase 4.2 will
+// introduce sparse placement. Phase 4.1.
+type PartitionTable struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Shards          map[uint64]*ReplicaSet `protobuf:"bytes,1,rep,name=shards,proto3" json:"shards,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	AssignmentEpoch uint64                 `protobuf:"varint,2,opt,name=assignment_epoch,json=assignmentEpoch,proto3" json:"assignment_epoch,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *PartitionTable) Reset() {
+	*x = PartitionTable{}
+	mi := &file_enginev1_engine_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PartitionTable) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PartitionTable) ProtoMessage() {}
+
+func (x *PartitionTable) ProtoReflect() protoreflect.Message {
+	mi := &file_enginev1_engine_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PartitionTable.ProtoReflect.Descriptor instead.
+func (*PartitionTable) Descriptor() ([]byte, []int) {
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *PartitionTable) GetShards() map[uint64]*ReplicaSet {
+	if x != nil {
+		return x.Shards
+	}
+	return nil
+}
+
+func (x *PartitionTable) GetAssignmentEpoch() uint64 {
+	if x != nil {
+		return x.AssignmentEpoch
+	}
+	return 0
+}
+
+// ReplicaSet is the per-partition replica list. Order is not significant
+// for correctness; dragonboat treats the membership as a set. Phase 4.1.
+type ReplicaSet struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeIds       []uint64               `protobuf:"varint,1,rep,packed,name=node_ids,json=nodeIds,proto3" json:"node_ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReplicaSet) Reset() {
+	*x = ReplicaSet{}
+	mi := &file_enginev1_engine_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReplicaSet) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReplicaSet) ProtoMessage() {}
+
+func (x *ReplicaSet) ProtoReflect() protoreflect.Message {
+	mi := &file_enginev1_engine_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReplicaSet.ProtoReflect.Descriptor instead.
+func (*ReplicaSet) Descriptor() ([]byte, []int) {
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *ReplicaSet) GetNodeIds() []uint64 {
+	if x != nil {
+		return x.NodeIds
+	}
+	return nil
+}
+
 var File_enginev1_engine_proto protoreflect.FileDescriptor
 
 const file_enginev1_engine_proto_rawDesc = "" +
@@ -3642,15 +4200,17 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\acommand\x18\x02 \x01(\v2\x19.reflow.engine.v1.CommandR\acommand\"[\n" +
 	"\x06Header\x12-\n" +
 	"\x05dedup\x18\x01 \x01(\v2\x17.reflow.engine.v1.DedupR\x05dedup\x12\"\n" +
-	"\rcreated_at_ms\x18\x02 \x01(\x06R\vcreatedAtMs\"\xe5\x02\n" +
+	"\rcreated_at_ms\x18\x02 \x01(\x06R\vcreatedAtMs\"\x8c\x04\n" +
 	"\aCommand\x12K\n" +
 	"\x0fannounce_leader\x18\x01 \x01(\v2 .reflow.engine.v1.AnnounceLeaderH\x00R\x0eannounceLeader\x129\n" +
 	"\x06invoke\x18\x02 \x01(\v2\x1f.reflow.engine.v1.InvokeCommandH\x00R\x06invoke\x12H\n" +
 	"\x0einvoker_effect\x18\x03 \x01(\v2\x1f.reflow.engine.v1.InvokerEffectH\x00R\rinvokerEffect\x12?\n" +
 	"\vtimer_fired\x18\x04 \x01(\v2\x1c.reflow.engine.v1.TimerFiredH\x00R\n" +
 	"timerFired\x129\n" +
-	"\x05purge\x18\x05 \x01(\v2!.reflow.engine.v1.PurgeInvocationH\x00R\x05purgeB\x06\n" +
-	"\x04kindJ\x04\b\x06\x10\x10\"\xa8\x01\n" +
+	"\x05purge\x18\x05 \x01(\v2!.reflow.engine.v1.PurgeInvocationH\x00R\x05purge\x12E\n" +
+	"\rregister_node\x18\x06 \x01(\v2\x1e.reflow.engine.v1.RegisterNodeH\x00R\fregisterNode\x12^\n" +
+	"\x16update_partition_table\x18\a \x01(\v2&.reflow.engine.v1.UpdatePartitionTableH\x00R\x14updatePartitionTableB\x06\n" +
+	"\x04kindJ\x04\b\b\x10\x10\"\xa8\x01\n" +
 	"\x0eAnnounceLeader\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12!\n" +
 	"\fleader_epoch\x18\x02 \x01(\x04R\vleaderEpoch\x12.\n" +
@@ -3840,11 +4400,24 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x0eAwakeableEntry\x124\n" +
 	"\x05owner\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\x05owner\x12\x1f\n" +
 	"\ventry_index\x18\x02 \x01(\rR\n" +
-	"entryIndex\"\x8b\x01\n" +
-	"\x0eOutboxEnvelope\x129\n" +
+	"entryIndex\"\xd2\x02\n" +
+	"\x0eOutboxEnvelope\x120\n" +
+	"\x14destination_shard_id\x18\x03 \x01(\x04R\x12destinationShardId\x129\n" +
 	"\x06invoke\x18\x01 \x01(\v2\x1f.reflow.engine.v1.InvokeCommandH\x00R\x06invoke\x126\n" +
-	"\x06signal\x18\x02 \x01(\v2\x1c.reflow.engine.v1.SignalSendH\x00R\x06signalB\x06\n" +
-	"\x04kind\"\x99\x01\n" +
+	"\x06signal\x18\x02 \x01(\v2\x1c.reflow.engine.v1.SignalSendH\x00R\x06signal\x12U\n" +
+	"\x13deliver_call_result\x18\x04 \x01(\v2#.reflow.engine.v1.DeliverCallResultH\x00R\x11deliverCallResult\x12<\n" +
+	"\n" +
+	"outbox_ack\x18\x05 \x01(\v2\x1b.reflow.engine.v1.OutboxAckH\x00R\toutboxAckB\x06\n" +
+	"\x04kind\"\xb0\x01\n" +
+	"\x11DeliverCallResult\x12;\n" +
+	"\tparent_id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\bparentId\x12\x1d\n" +
+	"\n" +
+	"call_index\x18\x02 \x01(\rR\tcallIndex\x12\x16\n" +
+	"\x06result\x18\x03 \x01(\fR\x06result\x12'\n" +
+	"\x0ffailure_message\x18\x04 \x01(\tR\x0efailureMessage\"Z\n" +
+	"\tOutboxAck\x12*\n" +
+	"\x11producer_shard_id\x18\x01 \x01(\x04R\x0fproducerShardId\x12!\n" +
+	"\fproducer_seq\x18\x02 \x01(\x04R\vproducerSeq\"\x99\x01\n" +
 	"\n" +
 	"SignalSend\x12P\n" +
 	"\x14target_invocation_id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\x12targetInvocationId\x12\x1f\n" +
@@ -3858,7 +4431,29 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\fleader_epoch\x18\x03 \x01(\x04R\vleaderEpoch\x12%\n" +
 	"\x0ereflow_version\x18\x04 \x01(\tR\rreflowVersion\x12'\n" +
 	"\x0fchecksum_sha256\x18\x05 \x01(\tR\x0echecksumSha256\x12\"\n" +
-	"\rcreated_at_ms\x18\x06 \x01(\x06R\vcreatedAtMsB3Z1github.com/twinfer/reflow/proto/enginev1;enginev1b\x06proto3"
+	"\rcreated_at_ms\x18\x06 \x01(\x06R\vcreatedAtMs\"3\n" +
+	"\fNodeHostMeta\x12#\n" +
+	"\rgrpc_endpoint\x18\x01 \x01(\tR\fgrpcEndpoint\"H\n" +
+	"\fRegisterNode\x128\n" +
+	"\x06member\x18\x01 \x01(\v2 .reflow.engine.v1.NodeMembershipR\x06member\"N\n" +
+	"\x14UpdatePartitionTable\x126\n" +
+	"\x05table\x18\x01 \x01(\v2 .reflow.engine.v1.PartitionTableR\x05table\"\x8a\x01\n" +
+	"\x0eNodeMembership\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12\x1b\n" +
+	"\traft_addr\x18\x02 \x01(\tR\braftAddr\x12 \n" +
+	"\fnode_host_id\x18\x03 \x01(\tR\n" +
+	"nodeHostId\x12 \n" +
+	"\flast_seen_ms\x18\x04 \x01(\x03R\n" +
+	"lastSeenMs\"\xda\x01\n" +
+	"\x0ePartitionTable\x12D\n" +
+	"\x06shards\x18\x01 \x03(\v2,.reflow.engine.v1.PartitionTable.ShardsEntryR\x06shards\x12)\n" +
+	"\x10assignment_epoch\x18\x02 \x01(\x04R\x0fassignmentEpoch\x1aW\n" +
+	"\vShardsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\x04R\x03key\x122\n" +
+	"\x05value\x18\x02 \x01(\v2\x1c.reflow.engine.v1.ReplicaSetR\x05value:\x028\x01\"'\n" +
+	"\n" +
+	"ReplicaSet\x12\x19\n" +
+	"\bnode_ids\x18\x01 \x03(\x04R\anodeIdsB3Z1github.com/twinfer/reflow/proto/enginev1;enginev1b\x06proto3"
 
 var (
 	file_enginev1_engine_proto_rawDescOnce sync.Once
@@ -3873,7 +4468,7 @@ func file_enginev1_engine_proto_rawDescGZIP() []byte {
 }
 
 var file_enginev1_engine_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_enginev1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 50)
+var file_enginev1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 59)
 var file_enginev1_engine_proto_goTypes = []any{
 	(KeyLeaseStatus_State)(0),    // 0: reflow.engine.v1.KeyLeaseStatus.State
 	(*InvocationId)(nil),         // 1: reflow.engine.v1.InvocationId
@@ -3924,8 +4519,17 @@ var file_enginev1_engine_proto_goTypes = []any{
 	(*PartitionMeta)(nil),        // 46: reflow.engine.v1.PartitionMeta
 	(*AwakeableEntry)(nil),       // 47: reflow.engine.v1.AwakeableEntry
 	(*OutboxEnvelope)(nil),       // 48: reflow.engine.v1.OutboxEnvelope
-	(*SignalSend)(nil),           // 49: reflow.engine.v1.SignalSend
-	(*SnapshotMeta)(nil),         // 50: reflow.engine.v1.SnapshotMeta
+	(*DeliverCallResult)(nil),    // 49: reflow.engine.v1.DeliverCallResult
+	(*OutboxAck)(nil),            // 50: reflow.engine.v1.OutboxAck
+	(*SignalSend)(nil),           // 51: reflow.engine.v1.SignalSend
+	(*SnapshotMeta)(nil),         // 52: reflow.engine.v1.SnapshotMeta
+	(*NodeHostMeta)(nil),         // 53: reflow.engine.v1.NodeHostMeta
+	(*RegisterNode)(nil),         // 54: reflow.engine.v1.RegisterNode
+	(*UpdatePartitionTable)(nil), // 55: reflow.engine.v1.UpdatePartitionTable
+	(*NodeMembership)(nil),       // 56: reflow.engine.v1.NodeMembership
+	(*PartitionTable)(nil),       // 57: reflow.engine.v1.PartitionTable
+	(*ReplicaSet)(nil),           // 58: reflow.engine.v1.ReplicaSet
+	nil,                          // 59: reflow.engine.v1.PartitionTable.ShardsEntry
 }
 var file_enginev1_engine_proto_depIdxs = []int32{
 	4,  // 0: reflow.engine.v1.Dedup.self_proposal:type_name -> reflow.engine.v1.SelfProposalDedup
@@ -3938,62 +4542,71 @@ var file_enginev1_engine_proto_depIdxs = []int32{
 	12, // 7: reflow.engine.v1.Command.invoker_effect:type_name -> reflow.engine.v1.InvokerEffect
 	36, // 8: reflow.engine.v1.Command.timer_fired:type_name -> reflow.engine.v1.TimerFired
 	37, // 9: reflow.engine.v1.Command.purge:type_name -> reflow.engine.v1.PurgeInvocation
-	1,  // 10: reflow.engine.v1.InvokeCommand.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	2,  // 11: reflow.engine.v1.InvokeCommand.target:type_name -> reflow.engine.v1.InvocationTarget
-	11, // 12: reflow.engine.v1.InvokeCommand.parent_link:type_name -> reflow.engine.v1.ParentLink
-	1,  // 13: reflow.engine.v1.ParentLink.parent_id:type_name -> reflow.engine.v1.InvocationId
-	1,  // 14: reflow.engine.v1.InvokerEffect.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	16, // 15: reflow.engine.v1.InvokerEffect.journal_appended:type_name -> reflow.engine.v1.JournalEntryAppended
-	17, // 16: reflow.engine.v1.InvokerEffect.completed:type_name -> reflow.engine.v1.InvocationCompleted
-	18, // 17: reflow.engine.v1.InvokerEffect.suspended:type_name -> reflow.engine.v1.InvocationSuspended
-	13, // 18: reflow.engine.v1.InvokerEffect.run_proposal:type_name -> reflow.engine.v1.JERunProposal
-	14, // 19: reflow.engine.v1.InvokerEffect.awakeable_resolved:type_name -> reflow.engine.v1.AwakeableResolved
-	15, // 20: reflow.engine.v1.InvokerEffect.signal_delivered:type_name -> reflow.engine.v1.SignalDelivered
-	29, // 21: reflow.engine.v1.JERunProposal.retry_policy:type_name -> reflow.engine.v1.RunRetryPolicy
-	19, // 22: reflow.engine.v1.JournalEntryAppended.entry:type_name -> reflow.engine.v1.JournalEntry
-	20, // 23: reflow.engine.v1.JournalEntry.input:type_name -> reflow.engine.v1.JEInput
-	21, // 24: reflow.engine.v1.JournalEntry.sleep:type_name -> reflow.engine.v1.JESleep
-	22, // 25: reflow.engine.v1.JournalEntry.sleep_result:type_name -> reflow.engine.v1.JESleepResult
-	23, // 26: reflow.engine.v1.JournalEntry.call:type_name -> reflow.engine.v1.JECall
-	24, // 27: reflow.engine.v1.JournalEntry.call_result:type_name -> reflow.engine.v1.JECallResult
-	25, // 28: reflow.engine.v1.JournalEntry.get_state:type_name -> reflow.engine.v1.JEGetState
-	26, // 29: reflow.engine.v1.JournalEntry.set_state:type_name -> reflow.engine.v1.JESetState
-	27, // 30: reflow.engine.v1.JournalEntry.output:type_name -> reflow.engine.v1.JEOutput
-	28, // 31: reflow.engine.v1.JournalEntry.run:type_name -> reflow.engine.v1.JERun
-	31, // 32: reflow.engine.v1.JournalEntry.awakeable:type_name -> reflow.engine.v1.JEAwakeable
-	32, // 33: reflow.engine.v1.JournalEntry.awakeable_result:type_name -> reflow.engine.v1.JEAwakeableResult
-	33, // 34: reflow.engine.v1.JournalEntry.signal:type_name -> reflow.engine.v1.JESignal
-	34, // 35: reflow.engine.v1.JournalEntry.clear_state:type_name -> reflow.engine.v1.JEClearState
-	35, // 36: reflow.engine.v1.JournalEntry.get_eager_state:type_name -> reflow.engine.v1.JEGetEagerState
-	30, // 37: reflow.engine.v1.JournalEntry.clear_all_state:type_name -> reflow.engine.v1.JEClearAllState
-	2,  // 38: reflow.engine.v1.JECall.target:type_name -> reflow.engine.v1.InvocationTarget
-	1,  // 39: reflow.engine.v1.JESignal.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
-	1,  // 40: reflow.engine.v1.TimerFired.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	1,  // 41: reflow.engine.v1.PurgeInvocation.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	39, // 42: reflow.engine.v1.InvocationStatus.free:type_name -> reflow.engine.v1.Free
-	40, // 43: reflow.engine.v1.InvocationStatus.scheduled:type_name -> reflow.engine.v1.Scheduled
-	41, // 44: reflow.engine.v1.InvocationStatus.invoked:type_name -> reflow.engine.v1.Invoked
-	42, // 45: reflow.engine.v1.InvocationStatus.suspended:type_name -> reflow.engine.v1.Suspended
-	43, // 46: reflow.engine.v1.InvocationStatus.completed:type_name -> reflow.engine.v1.Completed
-	2,  // 47: reflow.engine.v1.Scheduled.target:type_name -> reflow.engine.v1.InvocationTarget
-	11, // 48: reflow.engine.v1.Scheduled.parent_link:type_name -> reflow.engine.v1.ParentLink
-	2,  // 49: reflow.engine.v1.Invoked.target:type_name -> reflow.engine.v1.InvocationTarget
-	11, // 50: reflow.engine.v1.Invoked.parent_link:type_name -> reflow.engine.v1.ParentLink
-	2,  // 51: reflow.engine.v1.Suspended.target:type_name -> reflow.engine.v1.InvocationTarget
-	11, // 52: reflow.engine.v1.Suspended.parent_link:type_name -> reflow.engine.v1.ParentLink
-	2,  // 53: reflow.engine.v1.Completed.target:type_name -> reflow.engine.v1.InvocationTarget
-	0,  // 54: reflow.engine.v1.KeyLeaseStatus.state:type_name -> reflow.engine.v1.KeyLeaseStatus.State
-	1,  // 55: reflow.engine.v1.KeyLeaseStatus.current_invocation:type_name -> reflow.engine.v1.InvocationId
-	1,  // 56: reflow.engine.v1.KeyLeaseStatus.queue:type_name -> reflow.engine.v1.InvocationId
-	1,  // 57: reflow.engine.v1.AwakeableEntry.owner:type_name -> reflow.engine.v1.InvocationId
-	10, // 58: reflow.engine.v1.OutboxEnvelope.invoke:type_name -> reflow.engine.v1.InvokeCommand
-	49, // 59: reflow.engine.v1.OutboxEnvelope.signal:type_name -> reflow.engine.v1.SignalSend
-	1,  // 60: reflow.engine.v1.SignalSend.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
-	61, // [61:61] is the sub-list for method output_type
-	61, // [61:61] is the sub-list for method input_type
-	61, // [61:61] is the sub-list for extension type_name
-	61, // [61:61] is the sub-list for extension extendee
-	0,  // [0:61] is the sub-list for field type_name
+	54, // 10: reflow.engine.v1.Command.register_node:type_name -> reflow.engine.v1.RegisterNode
+	55, // 11: reflow.engine.v1.Command.update_partition_table:type_name -> reflow.engine.v1.UpdatePartitionTable
+	1,  // 12: reflow.engine.v1.InvokeCommand.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	2,  // 13: reflow.engine.v1.InvokeCommand.target:type_name -> reflow.engine.v1.InvocationTarget
+	11, // 14: reflow.engine.v1.InvokeCommand.parent_link:type_name -> reflow.engine.v1.ParentLink
+	1,  // 15: reflow.engine.v1.ParentLink.parent_id:type_name -> reflow.engine.v1.InvocationId
+	1,  // 16: reflow.engine.v1.InvokerEffect.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	16, // 17: reflow.engine.v1.InvokerEffect.journal_appended:type_name -> reflow.engine.v1.JournalEntryAppended
+	17, // 18: reflow.engine.v1.InvokerEffect.completed:type_name -> reflow.engine.v1.InvocationCompleted
+	18, // 19: reflow.engine.v1.InvokerEffect.suspended:type_name -> reflow.engine.v1.InvocationSuspended
+	13, // 20: reflow.engine.v1.InvokerEffect.run_proposal:type_name -> reflow.engine.v1.JERunProposal
+	14, // 21: reflow.engine.v1.InvokerEffect.awakeable_resolved:type_name -> reflow.engine.v1.AwakeableResolved
+	15, // 22: reflow.engine.v1.InvokerEffect.signal_delivered:type_name -> reflow.engine.v1.SignalDelivered
+	29, // 23: reflow.engine.v1.JERunProposal.retry_policy:type_name -> reflow.engine.v1.RunRetryPolicy
+	19, // 24: reflow.engine.v1.JournalEntryAppended.entry:type_name -> reflow.engine.v1.JournalEntry
+	20, // 25: reflow.engine.v1.JournalEntry.input:type_name -> reflow.engine.v1.JEInput
+	21, // 26: reflow.engine.v1.JournalEntry.sleep:type_name -> reflow.engine.v1.JESleep
+	22, // 27: reflow.engine.v1.JournalEntry.sleep_result:type_name -> reflow.engine.v1.JESleepResult
+	23, // 28: reflow.engine.v1.JournalEntry.call:type_name -> reflow.engine.v1.JECall
+	24, // 29: reflow.engine.v1.JournalEntry.call_result:type_name -> reflow.engine.v1.JECallResult
+	25, // 30: reflow.engine.v1.JournalEntry.get_state:type_name -> reflow.engine.v1.JEGetState
+	26, // 31: reflow.engine.v1.JournalEntry.set_state:type_name -> reflow.engine.v1.JESetState
+	27, // 32: reflow.engine.v1.JournalEntry.output:type_name -> reflow.engine.v1.JEOutput
+	28, // 33: reflow.engine.v1.JournalEntry.run:type_name -> reflow.engine.v1.JERun
+	31, // 34: reflow.engine.v1.JournalEntry.awakeable:type_name -> reflow.engine.v1.JEAwakeable
+	32, // 35: reflow.engine.v1.JournalEntry.awakeable_result:type_name -> reflow.engine.v1.JEAwakeableResult
+	33, // 36: reflow.engine.v1.JournalEntry.signal:type_name -> reflow.engine.v1.JESignal
+	34, // 37: reflow.engine.v1.JournalEntry.clear_state:type_name -> reflow.engine.v1.JEClearState
+	35, // 38: reflow.engine.v1.JournalEntry.get_eager_state:type_name -> reflow.engine.v1.JEGetEagerState
+	30, // 39: reflow.engine.v1.JournalEntry.clear_all_state:type_name -> reflow.engine.v1.JEClearAllState
+	2,  // 40: reflow.engine.v1.JECall.target:type_name -> reflow.engine.v1.InvocationTarget
+	1,  // 41: reflow.engine.v1.JESignal.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
+	1,  // 42: reflow.engine.v1.TimerFired.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	1,  // 43: reflow.engine.v1.PurgeInvocation.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	39, // 44: reflow.engine.v1.InvocationStatus.free:type_name -> reflow.engine.v1.Free
+	40, // 45: reflow.engine.v1.InvocationStatus.scheduled:type_name -> reflow.engine.v1.Scheduled
+	41, // 46: reflow.engine.v1.InvocationStatus.invoked:type_name -> reflow.engine.v1.Invoked
+	42, // 47: reflow.engine.v1.InvocationStatus.suspended:type_name -> reflow.engine.v1.Suspended
+	43, // 48: reflow.engine.v1.InvocationStatus.completed:type_name -> reflow.engine.v1.Completed
+	2,  // 49: reflow.engine.v1.Scheduled.target:type_name -> reflow.engine.v1.InvocationTarget
+	11, // 50: reflow.engine.v1.Scheduled.parent_link:type_name -> reflow.engine.v1.ParentLink
+	2,  // 51: reflow.engine.v1.Invoked.target:type_name -> reflow.engine.v1.InvocationTarget
+	11, // 52: reflow.engine.v1.Invoked.parent_link:type_name -> reflow.engine.v1.ParentLink
+	2,  // 53: reflow.engine.v1.Suspended.target:type_name -> reflow.engine.v1.InvocationTarget
+	11, // 54: reflow.engine.v1.Suspended.parent_link:type_name -> reflow.engine.v1.ParentLink
+	2,  // 55: reflow.engine.v1.Completed.target:type_name -> reflow.engine.v1.InvocationTarget
+	0,  // 56: reflow.engine.v1.KeyLeaseStatus.state:type_name -> reflow.engine.v1.KeyLeaseStatus.State
+	1,  // 57: reflow.engine.v1.KeyLeaseStatus.current_invocation:type_name -> reflow.engine.v1.InvocationId
+	1,  // 58: reflow.engine.v1.KeyLeaseStatus.queue:type_name -> reflow.engine.v1.InvocationId
+	1,  // 59: reflow.engine.v1.AwakeableEntry.owner:type_name -> reflow.engine.v1.InvocationId
+	10, // 60: reflow.engine.v1.OutboxEnvelope.invoke:type_name -> reflow.engine.v1.InvokeCommand
+	51, // 61: reflow.engine.v1.OutboxEnvelope.signal:type_name -> reflow.engine.v1.SignalSend
+	49, // 62: reflow.engine.v1.OutboxEnvelope.deliver_call_result:type_name -> reflow.engine.v1.DeliverCallResult
+	50, // 63: reflow.engine.v1.OutboxEnvelope.outbox_ack:type_name -> reflow.engine.v1.OutboxAck
+	1,  // 64: reflow.engine.v1.DeliverCallResult.parent_id:type_name -> reflow.engine.v1.InvocationId
+	1,  // 65: reflow.engine.v1.SignalSend.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
+	56, // 66: reflow.engine.v1.RegisterNode.member:type_name -> reflow.engine.v1.NodeMembership
+	57, // 67: reflow.engine.v1.UpdatePartitionTable.table:type_name -> reflow.engine.v1.PartitionTable
+	59, // 68: reflow.engine.v1.PartitionTable.shards:type_name -> reflow.engine.v1.PartitionTable.ShardsEntry
+	58, // 69: reflow.engine.v1.PartitionTable.ShardsEntry.value:type_name -> reflow.engine.v1.ReplicaSet
+	70, // [70:70] is the sub-list for method output_type
+	70, // [70:70] is the sub-list for method input_type
+	70, // [70:70] is the sub-list for extension type_name
+	70, // [70:70] is the sub-list for extension extendee
+	0,  // [0:70] is the sub-list for field type_name
 }
 
 func init() { file_enginev1_engine_proto_init() }
@@ -4011,6 +4624,8 @@ func file_enginev1_engine_proto_init() {
 		(*Command_InvokerEffect)(nil),
 		(*Command_TimerFired)(nil),
 		(*Command_Purge)(nil),
+		(*Command_RegisterNode)(nil),
+		(*Command_UpdatePartitionTable)(nil),
 	}
 	file_enginev1_engine_proto_msgTypes[11].OneofWrappers = []any{
 		(*InvokerEffect_JournalAppended)(nil),
@@ -4047,6 +4662,8 @@ func file_enginev1_engine_proto_init() {
 	file_enginev1_engine_proto_msgTypes[47].OneofWrappers = []any{
 		(*OutboxEnvelope_Invoke)(nil),
 		(*OutboxEnvelope_Signal)(nil),
+		(*OutboxEnvelope_DeliverCallResult)(nil),
+		(*OutboxEnvelope_OutboxAck)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -4054,7 +4671,7 @@ func file_enginev1_engine_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_enginev1_engine_proto_rawDesc), len(file_enginev1_engine_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   50,
+			NumMessages:   59,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

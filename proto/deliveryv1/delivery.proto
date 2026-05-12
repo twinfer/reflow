@@ -1,0 +1,69 @@
+// Reflow inter-node Delivery service.
+//
+// Phase 4.1. Every reflowd process hosts a Delivery gRPC server. When a
+// shard's leader-side OutboxService sees an OutboxEnvelope whose
+// destination_shard_id does not match the local shard, it dials the
+// destination shard's current leader via this service and streams the
+// envelope as a Command. The receiver's Delivery server calls the local
+// RaftProposer.ProposeIngress on the destination shard if and only if
+// this node holds that shard's leadership.
+//
+// A successful Ack means "I have durably accepted responsibility for
+// proposing this command via Raft" — durable apply on the receiver
+// triggers a reciprocal OutboxAck envelope that pops the sender's
+// outbox row. NotLeader carries the receiver's leader hint so the
+// sender can re-resolve via the dragonboat gossip ShardView and retry.
+syntax = "proto3";
+
+package reflow.delivery.v1;
+
+import "enginev1/engine.proto";
+
+option go_package = "github.com/twinfer/reflow/proto/deliveryv1;deliveryv1";
+
+service Delivery {
+  // Deliver is a bidirectional stream so the sender can pipeline multiple
+  // envelopes and observe acks / not-leader signals without head-of-line
+  // blocking. Implementations issue exactly one DeliverResponse per
+  // DeliverRequest, correlated by the echoed seq.
+  rpc Deliver(stream DeliverRequest) returns (stream DeliverResponse);
+}
+
+// DeliverRequest carries an outbox envelope that the sender wants
+// proposed on shard_id. producer_id and seq must match the values
+// stamped on the envelope's ArbitraryDedup header so the receiver's
+// dedup absorbs replayed sends on crash recovery.
+message DeliverRequest {
+  uint64 shard_id = 1;
+  string producer_id = 2;
+  uint64 seq = 3;
+  reflow.engine.v1.Command command = 4;
+}
+
+// DeliverResponse is the single reply for a DeliverRequest. The seq
+// field is echoed from the request for correlation on the bidi stream.
+message DeliverResponse {
+  uint64 seq = 1;
+  oneof kind {
+    Ack ack = 2;
+    NotLeader not_leader = 3;
+    Err err = 4;
+  }
+}
+
+// Ack confirms the destination shard's leader on this node has called
+// SyncPropose and the command is durably accepted.
+message Ack {}
+
+// NotLeader indicates this node is not the leader of the requested
+// shard. leader_node_id is a hint from the local ShardView; sender
+// should re-resolve via gossip and retry.
+message NotLeader {
+  uint64 leader_node_id = 1;
+}
+
+// Err is a transient error (e.g. shard not started, dragonboat
+// timeout). Sender should back off and retry.
+message Err {
+  string message = 1;
+}

@@ -3,7 +3,6 @@ package ingress
 import (
 	"context"
 	"sort"
-	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -11,13 +10,6 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
-
-// describeLookupTimeout caps the SyncRead used by DescribeInvocation when
-// the caller did not provide its own deadline. dragonboat's SyncRead
-// requires a deadline; grpc-gateway forwards request contexts as-is, so
-// HTTP callers without an explicit timeout would otherwise fail with
-// "deadline not set".
-const describeLookupTimeout = 2 * time.Second
 
 // ListPartitions returns the partitions hosted on this node and their
 // per-partition leadership state. Sorted by shard_id ascending.
@@ -46,11 +38,7 @@ func (s *Server) DescribeInvocation(ctx context.Context, req *ingressv1.Describe
 	if shardID == 0 {
 		shardID = Phase2ShardID
 	}
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, describeLookupTimeout)
-		defer cancel()
-	}
+	// Deadline is guaranteed by withDefaultDeadline at the gRPC server level.
 	st, err := s.host.LookupInvocationStatus(ctx, shardID, id)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "lookup invocation: %v", err)

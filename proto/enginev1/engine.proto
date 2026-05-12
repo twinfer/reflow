@@ -112,6 +112,20 @@ message InvokeCommand {
   InvocationTarget target = 2;
   bytes input = 3;
   string idempotency_key = 4;
+  // ParentLink is set when this invocation is the callee of a ctx.Call from
+  // another invocation. The receiving partition's FSM propagates it onto the
+  // callee's status so the callee's Completed apply arm can journal a
+  // JECallResult back on the parent. Phase 2.5.
+  ParentLink parent_link = 5;
+}
+
+// ParentLink references the parent invocation that spawned a callee via
+// ctx.Call. parent_id is the parent's InvocationId; call_index is the
+// journal index of the parent's JECall entry. The callee's JECallResult
+// lands at call_index + 1. Phase 2.5.
+message ParentLink {
+  InvocationId parent_id = 1;
+  uint32 call_index = 2;
 }
 
 message InvokerEffect {
@@ -219,6 +233,9 @@ message JECall {
 message JECallResult {
   uint32 call_index = 1;
   bytes result = 2;
+  // failure_message is populated when the callee terminated with a failure
+  // instead of a result. Mirrors the JEAwakeableResult / JERun shape. Phase 2.5.
+  string failure_message = 3;
 }
 
 message JEGetState {
@@ -312,18 +329,24 @@ message Scheduled {
   InvocationTarget target = 1;
   bytes input = 2;
   fixed64 created_at_ms = 3;
+  // ParentLink is set when this invocation is a callee. Propagated through
+  // every status transition until Completed, where the apply arm consumes
+  // it to journal JECallResult on the parent. Phase 2.5.
+  ParentLink parent_link = 4;
 }
 
 message Invoked {
   InvocationTarget target = 1;
   fixed64 created_at_ms = 2;
   fixed64 invoked_at_ms = 3;
+  ParentLink parent_link = 4;
 }
 
 message Suspended {
   InvocationTarget target = 1;
   fixed64 suspended_at_ms = 2;
   repeated string awaiting_on = 3;
+  ParentLink parent_link = 4;
 }
 
 message Completed {

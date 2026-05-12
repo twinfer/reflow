@@ -176,6 +176,30 @@ func TestComplete_FromInvoked(t *testing.T) {
 	}
 }
 
+// TestComplete_FromSuspended documents Phase 2.5's race tolerance:
+// a wake-event (TimerFired / AwakeableResolved / CallResult) can land
+// between the SDK's in-flight Suspended propose and the next ActInvoke
+// commit, causing the new session that completes the handler to send
+// InvokerEffect.Completed while status is Suspended. Rejecting this
+// would strand the invocation forever.
+func TestComplete_FromSuspended(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "S"}
+	cur := suspendedStatus(target)
+	eff := &enginev1.InvocationCompleted{Output: []byte("done")}
+	next, _, err := transitionOnComplete(id, cur, eff, 700)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	completed, ok := next.GetStatus().(*enginev1.InvocationStatus_Completed)
+	if !ok {
+		t.Fatalf("status = %T; want Completed", next.GetStatus())
+	}
+	if string(completed.Completed.GetOutput()) != "done" {
+		t.Errorf("Output = %q; want done", completed.Completed.GetOutput())
+	}
+}
+
 func TestComplete_Idempotent(t *testing.T) {
 	id := mkID()
 	target := &enginev1.InvocationTarget{ServiceName: "S"}
@@ -439,4 +463,245 @@ func TestSignalDelivered_FromCompletedNoop(t *testing.T) {
 	if err != nil || len(actions) != 0 || next != cur {
 		t.Errorf("late signal on Completed: err=%v actions=%d", err, len(actions))
 	}
+}
+
+// ---- Phase 2.5: ParentLink propagation ----
+
+func mkParentLink() *enginev1.ParentLink {
+	return &enginev1.ParentLink{
+		ParentId:  &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("parentuuid-aabb1")},
+		CallIndex: 7,
+	}
+}
+
+func parentLinkOf(s *enginev1.InvocationStatus) *enginev1.ParentLink {
+	switch st := s.GetStatus().(type) {
+	case *enginev1.InvocationStatus_Scheduled:
+		return st.Scheduled.GetParentLink()
+	case *enginev1.InvocationStatus_Invoked:
+		return st.Invoked.GetParentLink()
+	case *enginev1.InvocationStatus_Suspended:
+		return st.Suspended.GetParentLink()
+	default:
+		return nil
+	}
+}
+
+func assertParentLink(t *testing.T, got, want *enginev1.ParentLink) {
+	t.Helper()
+	if got.GetCallIndex() != want.GetCallIndex() {
+		t.Fatalf("parent_link call_index: got %d, want %d", got.GetCallIndex(), want.GetCallIndex())
+	}
+	if string(got.GetParentId().GetUuid()) != string(want.GetParentId().GetUuid()) {
+		t.Fatalf("parent_link parent_id mismatch")
+	}
+}
+
+func TestInvoke_PropagatesParentLink(t *testing.T) {
+	id := mkID()
+	pl := mkParentLink()
+	cmd := &enginev1.InvokeCommand{
+		InvocationId: id,
+		Target:       &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"},
+		Input:        []byte("in"),
+		ParentLink:   pl,
+	}
+	next, _, err := transitionOnInvoke(id, freeStatus(), cmd, 100)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	assertParentLink(t, parentLinkOf(next), pl)
+}
+
+func TestJournalAppend_PropagatesParentLinkScheduledToInvoked(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "S"}
+	pl := mkParentLink()
+	cur := &enginev1.InvocationStatus{
+		Status: &enginev1.InvocationStatus_Scheduled{
+			Scheduled: &enginev1.Scheduled{Target: target, CreatedAtMs: 100, ParentLink: pl},
+		},
+	}
+	appended := &enginev1.JournalEntryAppended{
+		Entry: &enginev1.JournalEntry{
+			Index: 0,
+			Entry: &enginev1.JournalEntry_Input{Input: &enginev1.JEInput{Value: []byte("x")}},
+		},
+	}
+	next, _, err := transitionOnJournalAppend(id, cur, appended, 200)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	assertParentLink(t, parentLinkOf(next), pl)
+}
+
+func TestJournalAppend_PropagatesParentLinkSuspendedToInvoked(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "S"}
+	pl := mkParentLink()
+	cur := &enginev1.InvocationStatus{
+		Status: &enginev1.InvocationStatus_Suspended{
+			Suspended: &enginev1.Suspended{Target: target, SuspendedAtMs: 300, ParentLink: pl},
+		},
+	}
+	appended := &enginev1.JournalEntryAppended{
+		Entry: &enginev1.JournalEntry{
+			Index: 5,
+			Entry: &enginev1.JournalEntry_SleepResult{SleepResult: &enginev1.JESleepResult{SleepIndex: 3}},
+		},
+	}
+	next, _, err := transitionOnJournalAppend(id, cur, appended, 400)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	assertParentLink(t, parentLinkOf(next), pl)
+}
+
+func TestSuspend_PropagatesParentLink(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "S"}
+	pl := mkParentLink()
+	cur := &enginev1.InvocationStatus{
+		Status: &enginev1.InvocationStatus_Invoked{
+			Invoked: &enginev1.Invoked{Target: target, InvokedAtMs: 200, ParentLink: pl},
+		},
+	}
+	eff := &enginev1.InvocationSuspended{AwaitingOn: []string{"call:5"}}
+	next, _, err := transitionOnSuspend(id, cur, eff, 500)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	assertParentLink(t, parentLinkOf(next), pl)
+}
+
+func TestTimerFired_PropagatesParentLink(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "S"}
+	pl := mkParentLink()
+	cur := &enginev1.InvocationStatus{
+		Status: &enginev1.InvocationStatus_Suspended{
+			Suspended: &enginev1.Suspended{Target: target, SuspendedAtMs: 300, ParentLink: pl},
+		},
+	}
+	next, _, err := transitionOnTimerFired(id, cur, &enginev1.TimerFired{}, 400)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	assertParentLink(t, parentLinkOf(next), pl)
+}
+
+func TestAwakeableResolved_PropagatesParentLink(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "S"}
+	pl := mkParentLink()
+	cur := &enginev1.InvocationStatus{
+		Status: &enginev1.InvocationStatus_Suspended{
+			Suspended: &enginev1.Suspended{Target: target, SuspendedAtMs: 300, ParentLink: pl},
+		},
+	}
+	next, _, err := transitionOnAwakeableResolved(id, cur, 4, []byte("v"), "", 400)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	assertParentLink(t, parentLinkOf(next), pl)
+}
+
+func TestSignalDelivered_PropagatesParentLink(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "S"}
+	pl := mkParentLink()
+	cur := &enginev1.InvocationStatus{
+		Status: &enginev1.InvocationStatus_Suspended{
+			Suspended: &enginev1.Suspended{Target: target, SuspendedAtMs: 300, ParentLink: pl},
+		},
+	}
+	next, _, err := transitionOnSignalDelivered(id, cur, 4, "sig", []byte("p"), 400)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	assertParentLink(t, parentLinkOf(next), pl)
+}
+
+// ---- Phase 2.5: transitionOnCallResultDelivered ----
+
+func TestCallResultDelivered_WakesSuspendedParent(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "Caller"}
+	cur := suspendedStatus(target)
+	next, actions, err := transitionOnCallResultDelivered(id, cur, 8, []byte("pong"), "", 500)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if _, ok := next.GetStatus().(*enginev1.InvocationStatus_Invoked); !ok {
+		t.Fatalf("expected Invoked, got %T", next.GetStatus())
+	}
+	if len(actions) != 2 {
+		t.Fatalf("expected ActInvoke + ActDeliverNotification, got %d actions", len(actions))
+	}
+	if _, ok := actions[0].(ActInvoke); !ok {
+		t.Errorf("actions[0] = %T; want ActInvoke", actions[0])
+	}
+	notify, ok := actions[1].(ActDeliverNotification)
+	if !ok {
+		t.Fatalf("actions[1] = %T; want ActDeliverNotification", actions[1])
+	}
+	if notify.CompletionID != 8 {
+		t.Errorf("notify.CompletionID = %d; want 8", notify.CompletionID)
+	}
+	if string(notify.Value) != "pong" {
+		t.Errorf("notify.Value = %q; want pong", notify.Value)
+	}
+}
+
+func TestCallResultDelivered_OnInvokedJustNotifies(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "Caller"}
+	cur := invokedStatus(target)
+	next, actions, err := transitionOnCallResultDelivered(id, cur, 8, []byte("pong"), "", 500)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if next != cur {
+		t.Errorf("status changed; expected no-op on Invoked")
+	}
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	if _, ok := actions[0].(ActDeliverNotification); !ok {
+		t.Errorf("actions[0] = %T; want ActDeliverNotification", actions[0])
+	}
+}
+
+func TestCallResultDelivered_OnCompletedNoop(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "Caller"}
+	cur := completedStatus(target)
+	next, actions, err := transitionOnCallResultDelivered(id, cur, 8, []byte("late"), "", 600)
+	if err != nil || len(actions) != 0 || next != cur {
+		t.Errorf("late CallResult on Completed: err=%v actions=%d", err, len(actions))
+	}
+}
+
+func TestCallResultDelivered_FromFreeInvalid(t *testing.T) {
+	id := mkID()
+	_, _, err := transitionOnCallResultDelivered(id, freeStatus(), 1, nil, "", 100)
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Errorf("expected ErrInvalidTransition, got %v", err)
+	}
+}
+
+func TestCallResultDelivered_PropagatesParentLink(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "Caller"}
+	pl := mkParentLink()
+	cur := &enginev1.InvocationStatus{
+		Status: &enginev1.InvocationStatus_Suspended{
+			Suspended: &enginev1.Suspended{Target: target, SuspendedAtMs: 300, ParentLink: pl},
+		},
+	}
+	next, _, err := transitionOnCallResultDelivered(id, cur, 8, []byte("pong"), "", 500)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	assertParentLink(t, parentLinkOf(next), pl)
 }

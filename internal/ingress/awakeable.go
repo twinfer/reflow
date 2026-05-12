@@ -31,15 +31,7 @@ func (s *Server) ResolveAwakeable(ctx context.Context, req *ingressv1.ResolveAwa
 	if runner == nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "no partition for shard %d", shardID)
 	}
-	// dragonboat SyncRead requires a deadline; grpc-gateway forwards the
-	// HTTP request context as-is, which has no timeout by default. Same
-	// guard as DescribeInvocation in admin.go.
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, describeLookupTimeout)
-		defer cancel()
-	}
-
+	// Deadline is guaranteed by withDefaultDeadline at the gRPC server level.
 	res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupAwakeable{ID: awkID})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "lookup awakeable: %v", err)

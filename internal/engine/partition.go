@@ -335,6 +335,12 @@ func (p *Partition) onInvokerEffect(
 					InvocationId: mintCalleeInvocationID(id, entry.GetIndex()),
 					Target:       e.Call.GetTarget(),
 					Input:        e.Call.GetInput(),
+					// Phase 2.5: stamp parent_link so the callee's Completed
+					// apply arm can journal JECallResult back on the parent.
+					ParentLink: &enginev1.ParentLink{
+						ParentId:  id,
+						CallIndex: entry.GetIndex(),
+					},
 				}},
 			}
 			seq := meta.GetNextOutboxSeq()
@@ -429,6 +435,33 @@ func (p *Partition) onInvokerEffect(
 		)
 	case *enginev1.InvokerEffect_Completed:
 		next, actions, err = transitionOnComplete(id, cur, k.Completed, nowMs)
+		// Phase 2.5 — deliver JECallResult to the parent invocation if this
+		// callee was spawned via ctx.Call. Extract parent_link from either
+		// Invoked or Suspended (both are valid pre-Completed states; see
+		// transitionOnComplete's race-safety note). Completed → Completed
+		// is idempotent and must NOT re-deliver — that's why we read from
+		// cur (the prior status) rather than the new Completed status.
+		if err == nil {
+			var pl *enginev1.ParentLink
+			switch s := cur.GetStatus().(type) {
+			case *enginev1.InvocationStatus_Invoked:
+				pl = s.Invoked.GetParentLink()
+			case *enginev1.InvocationStatus_Suspended:
+				pl = s.Suspended.GetParentLink()
+			}
+			if pl.GetParentId() != nil {
+				parentActs, perr := p.deliverCallResultToParent(
+					batch, inv, journal, pl,
+					k.Completed.GetOutput(),
+					k.Completed.GetFailureMessage(),
+					nowMs,
+				)
+				if perr != nil {
+					return perr
+				}
+				actions = append(actions, parentActs...)
+			}
+		}
 	case *enginev1.InvokerEffect_Suspended:
 		next, actions, err = transitionOnSuspend(id, cur, k.Suspended, nowMs)
 	case nil:
@@ -453,6 +486,74 @@ func (p *Partition) onInvokerEffect(
 		}
 	}
 	return nil
+}
+
+// deliverCallResultToParent handles the same-partition Phase 2.5 path for
+// returning a callee's result to its parent. Called from onInvokerEffect's
+// Completed arm when the callee's prior Invoked status carried a ParentLink.
+//
+// Steps, all inside the existing Pebble batch:
+//
+//  1. Load the parent's current InvocationStatus.
+//  2. Append JECallResult to the parent's journal at call_index + 1.
+//     Journal append is idempotent at an existing index (see
+//     JournalTable.Append) so replay-on-startup re-applying this effect is
+//     a no-op.
+//  3. Run transitionOnCallResultDelivered on the parent — Suspended wakes
+//     to Invoked + emits ActInvoke + ActDeliverNotification; Invoked emits
+//     only the notification; Completed/late-arrival is a no-op.
+//  4. Persist the parent's new status.
+//
+// Returns the parent-side actions so the caller can push them onto the
+// collector alongside any callee-side actions.
+//
+// Phase 4 (cross-partition) will replace step 1+2+4 with an outbox-style
+// "deliver to parent's shard" effect; the FSM transition (step 3) is
+// unchanged.
+func (p *Partition) deliverCallResultToParent(
+	batch storage.Batch,
+	inv tables.InvocationTable,
+	journal tables.JournalTable,
+	pl *enginev1.ParentLink,
+	output []byte,
+	failureMessage string,
+	nowMs uint64,
+) ([]Action, error) {
+	parentID := pl.GetParentId()
+	parentStatus, err := inv.Get(parentID)
+	if err != nil {
+		return nil, fmt.Errorf("deliverCallResultToParent: load parent status: %w", err)
+	}
+	completionIdx := pl.GetCallIndex() + 1
+	resultEntry := &enginev1.JournalEntry{
+		Index: completionIdx,
+		Entry: &enginev1.JournalEntry_CallResult{
+			CallResult: &enginev1.JECallResult{
+				CallIndex:      pl.GetCallIndex(),
+				Result:         output,
+				FailureMessage: failureMessage,
+			},
+		},
+	}
+	if err := journal.Append(batch, parentID, resultEntry); err != nil {
+		return nil, fmt.Errorf("deliverCallResultToParent: journal parent JECallResult: %w", err)
+	}
+	parentNext, parentActions, terr := transitionOnCallResultDelivered(
+		parentID, parentStatus, completionIdx, output, failureMessage, nowMs,
+	)
+	if terr != nil {
+		// Mirror onInvokerEffect's policy: log and continue, but don't write
+		// a stale status.
+		p.cfg.Log.Warn("partition: invalid CallResultDelivered transition on parent",
+			"err", terr, "parent_uuid", fmt.Sprintf("%x", parentID.GetUuid()))
+		return nil, nil
+	}
+	if parentNext != nil {
+		if err := inv.Put(batch, parentID, parentNext); err != nil {
+			return nil, fmt.Errorf("deliverCallResultToParent: persist parent status: %w", err)
+		}
+	}
+	return parentActions, nil
 }
 
 // mintCalleeInvocationID derives a deterministic InvocationId for the

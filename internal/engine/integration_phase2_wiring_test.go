@@ -17,18 +17,20 @@ import (
 func awaitCompleted(t *testing.T, h *engine.Host, shardID uint64, id *enginev1.InvocationId, timeout time.Duration) *enginev1.Completed {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
+	var lastStatus *enginev1.InvocationStatus
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		s, err := h.LookupInvocationStatus(ctx, shardID, id)
 		cancel()
 		if err == nil && s != nil {
+			lastStatus = s
 			if c, ok := s.GetStatus().(*enginev1.InvocationStatus_Completed); ok {
 				return c.Completed
 			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("status never reached Completed within %s", timeout)
+	t.Fatalf("status never reached Completed within %s; last observed = %T", timeout, lastStatus.GetStatus())
 	return nil
 }
 

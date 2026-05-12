@@ -214,6 +214,50 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 	})
 
+	// Phase 2.5: lock the JournalTable.Append contract that the apply path
+	// relies on when re-running InvokerEffects on replay (e.g., parent-side
+	// JECallResult written from a callee's Completed effect). Two re-appends
+	// of the same entry must converge to the same stored bytes. The FSM
+	// guarantees content-determinism per (id, index); the storage layer is
+	// last-write-wins, which is safe under that guarantee.
+	t.Run(name+"/Journal_AppendIdempotentOnDeterministicReplay", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		jt := tables.JournalTable{S: s}
+		id := mkID(1, "ffffffffffffffff")
+
+		entry := &enginev1.JournalEntry{
+			Index: 7,
+			Entry: &enginev1.JournalEntry_CallResult{CallResult: &enginev1.JECallResult{
+				CallIndex: 6,
+				Result:    []byte("v1"),
+			}},
+		}
+
+		// First apply.
+		b1 := s.NewBatch()
+		if err := jt.Append(b1, id, entry); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b1)
+
+		// Replay re-applies the same content.
+		b2 := s.NewBatch()
+		if err := jt.Append(b2, id, entry); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b2)
+
+		got, err := jt.Read(id, 7)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.GetCallResult().GetCallIndex() != 6 || string(got.GetCallResult().GetResult()) != "v1" {
+			t.Errorf("after replay: got call_index=%d result=%q; want 6/v1",
+				got.GetCallResult().GetCallIndex(), got.GetCallResult().GetResult())
+		}
+	})
+
 	t.Run(name+"/Timer_InsertScanDelete", func(t *testing.T) {
 		s := open(t)
 		defer s.Close()

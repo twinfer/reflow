@@ -33,6 +33,7 @@ func transitionOnInvoke(
 					Target:      cmd.GetTarget(),
 					Input:       cmd.GetInput(),
 					CreatedAtMs: nowMs,
+					ParentLink:  cmd.GetParentLink(),
 				},
 			},
 		}
@@ -81,6 +82,7 @@ func transitionOnJournalAppend(
 						Target:      s.Scheduled.GetTarget(),
 						CreatedAtMs: s.Scheduled.GetCreatedAtMs(),
 						InvokedAtMs: nowMs,
+						ParentLink:  s.Scheduled.GetParentLink(),
 					},
 				},
 			}, nil, nil
@@ -94,6 +96,7 @@ func transitionOnJournalAppend(
 				Invoked: &enginev1.Invoked{
 					Target:      s.Suspended.GetTarget(),
 					InvokedAtMs: nowMs,
+					ParentLink:  s.Suspended.GetParentLink(),
 				},
 			},
 		}, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
@@ -106,31 +109,45 @@ func transitionOnJournalAppend(
 // Transitions:
 //
 //	Invoked    → Completed
-//	Completed  → Completed (idempotent)
+//	Suspended  → Completed   (race-safe; see below)
+//	Completed  → Completed   (idempotent)
 //	*          → ErrInvalidTransition
+//
+// Suspended → Completed is legitimate under this race: TimerFired (or any
+// wake-event) commits before the session's in-flight Suspended propose;
+// the wake's ActInvoke spawns a fresh session via pendingRespawn while
+// the prior Suspended propose is still in flight; the new session reads
+// the journal including the just-written result entry, runs the handler
+// to completion, and proposes Completed. By the time Completed applies,
+// the in-flight Suspended has committed and status is Suspended again.
+// Rejecting this would strand the invocation forever.
 func transitionOnComplete(
 	_ *enginev1.InvocationId,
 	cur *enginev1.InvocationStatus,
 	eff *enginev1.InvocationCompleted,
 	nowMs uint64,
 ) (*enginev1.InvocationStatus, []Action, error) {
+	var target *enginev1.InvocationTarget
 	switch s := cur.GetStatus().(type) {
 	case *enginev1.InvocationStatus_Invoked:
-		return &enginev1.InvocationStatus{
-			Status: &enginev1.InvocationStatus_Completed{
-				Completed: &enginev1.Completed{
-					Target:         s.Invoked.GetTarget(),
-					Output:         eff.GetOutput(),
-					FailureMessage: eff.GetFailureMessage(),
-					CompletedAtMs:  nowMs,
-				},
-			},
-		}, nil, nil
+		target = s.Invoked.GetTarget()
+	case *enginev1.InvocationStatus_Suspended:
+		target = s.Suspended.GetTarget()
 	case *enginev1.InvocationStatus_Completed:
 		return cur, nil, nil
 	default:
 		return cur, nil, fmt.Errorf("%w: Complete from %T", ErrInvalidTransition, cur.GetStatus())
 	}
+	return &enginev1.InvocationStatus{
+		Status: &enginev1.InvocationStatus_Completed{
+			Completed: &enginev1.Completed{
+				Target:         target,
+				Output:         eff.GetOutput(),
+				FailureMessage: eff.GetFailureMessage(),
+				CompletedAtMs:  nowMs,
+			},
+		},
+	}, nil, nil
 }
 
 // transitionOnSuspend handles an InvokerEffect.Suspended.
@@ -153,6 +170,7 @@ func transitionOnSuspend(
 					Target:        s.Invoked.GetTarget(),
 					SuspendedAtMs: nowMs,
 					AwaitingOn:    append([]string(nil), eff.GetAwaitingOn()...),
+					ParentLink:    s.Invoked.GetParentLink(),
 				},
 			},
 		}, nil, nil
@@ -193,6 +211,7 @@ func transitionOnTimerFired(
 				Invoked: &enginev1.Invoked{
 					Target:      s.Suspended.GetTarget(),
 					InvokedAtMs: nowMs,
+					ParentLink:  s.Suspended.GetParentLink(),
 				},
 			},
 		}, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
@@ -241,6 +260,7 @@ func transitionOnAwakeableResolved(
 				Invoked: &enginev1.Invoked{
 					Target:      s.Suspended.GetTarget(),
 					InvokedAtMs: nowMs,
+					ParentLink:  s.Suspended.GetParentLink(),
 				},
 			},
 		}
@@ -287,6 +307,7 @@ func transitionOnSignalDelivered(
 				Invoked: &enginev1.Invoked{
 					Target:      s.Suspended.GetTarget(),
 					InvokedAtMs: nowMs,
+					ParentLink:  s.Suspended.GetParentLink(),
 				},
 			},
 		}
@@ -297,6 +318,55 @@ func transitionOnSignalDelivered(
 		return cur, nil, nil
 	default:
 		return cur, nil, fmt.Errorf("%w: SignalDelivered from %T", ErrInvalidTransition, cur.GetStatus())
+	}
+}
+
+// transitionOnCallResultDelivered handles the apply-side delivery of a callee's
+// result to its parent invocation. The JECallResult journal entry has already
+// been appended at completionIdx by the caller of this function (partition.go's
+// onInvokerEffect_Completed arm, when the callee's prior status carried a
+// ParentLink). Wake-up shape mirrors transitionOnAwakeableResolved.
+//
+// Transitions:
+//
+//	Suspended  → Invoked   (+ ActInvoke + ActDeliverNotification)
+//	Invoked    → Invoked   (+ ActDeliverNotification; live session)
+//	Completed  → Completed (late arrival; no-op)
+//	*          → ErrInvalidTransition
+//
+// Phase 2.5.
+func transitionOnCallResultDelivered(
+	id *enginev1.InvocationId,
+	cur *enginev1.InvocationStatus,
+	completionIdx uint32,
+	value []byte,
+	failure string,
+	nowMs uint64,
+) (*enginev1.InvocationStatus, []Action, error) {
+	notify := ActDeliverNotification{
+		ID:           id,
+		CompletionID: completionIdx,
+		Value:        value,
+		Failure:      failure,
+	}
+	switch s := cur.GetStatus().(type) {
+	case *enginev1.InvocationStatus_Suspended:
+		next := &enginev1.InvocationStatus{
+			Status: &enginev1.InvocationStatus_Invoked{
+				Invoked: &enginev1.Invoked{
+					Target:      s.Suspended.GetTarget(),
+					InvokedAtMs: nowMs,
+					ParentLink:  s.Suspended.GetParentLink(),
+				},
+			},
+		}
+		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}, notify}, nil
+	case *enginev1.InvocationStatus_Invoked:
+		return cur, []Action{notify}, nil
+	case *enginev1.InvocationStatus_Completed:
+		return cur, nil, nil
+	default:
+		return cur, nil, fmt.Errorf("%w: CallResultDelivered from %T", ErrInvalidTransition, cur.GetStatus())
 	}
 }
 

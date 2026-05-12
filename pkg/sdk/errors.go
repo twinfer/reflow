@@ -47,8 +47,7 @@ func NewFailure(code uint32, message string) *Failure {
 // AsFailure reports whether err (or anything errors.As-unwrappable from
 // it) is a *Failure, returning the failure if so.
 func AsFailure(err error) (*Failure, bool) {
-	var f *Failure
-	if errors.As(err, &f) {
+	if f, ok := errors.AsType[*Failure](err); ok {
 		return f, true
 	}
 	return nil, false

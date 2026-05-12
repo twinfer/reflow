@@ -77,7 +77,9 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 		if err != nil {
 			return nil, fmt.Errorf("ingress: listen grpc %s: %w", cfg.GRPCAddr, err)
 		}
-		gs := grpc.NewServer()
+		gs := grpc.NewServer(grpc.ChainUnaryInterceptor(
+			withDefaultDeadline(defaultLookupTimeout),
+		))
 		ingressv1.RegisterIngressServer(gs, srv)
 		if cfg.ExtraGRPC != nil {
 			cfg.ExtraGRPC(gs)
@@ -105,7 +107,7 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 			return nil, fmt.Errorf("ingress: register http handler: %w", err)
 		}
 		hs := &http.Server{
-			Handler:           mux,
+			Handler:           withHTTPDefaultDeadline(mux, defaultLookupTimeout),
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		rt.httpSrv = hs

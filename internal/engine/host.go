@@ -447,6 +447,22 @@ func (h *Host) Partition(shardID uint64) *PartitionRunner {
 	return h.partitions[shardID]
 }
 
+// PartitionRunner is the small-interface accessor used by Phase 4.1's
+// Delivery server (it accepts a runner satisfying a narrow IsLeader +
+// Proposer surface). Returns nil when shardID is not hosted on this node;
+// callers must treat nil as "not leader" so the sender re-resolves via
+// gossip.
+func (h *Host) PartitionRunner(shardID uint64) interface {
+	IsLeader() bool
+	Proposer() *RaftProposer
+} {
+	r := h.Partition(shardID)
+	if r == nil {
+		return nil
+	}
+	return r
+}
+
 // Partitions returns a snapshot of the runners hosted on this node, keyed by
 // shard ID. The map is freshly allocated; mutating it does not affect the
 // host. Order is not stable across calls. Used by ingress admin endpoints.

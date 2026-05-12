@@ -28,8 +28,8 @@ func (s *stubLeadership) OnAnnounceLeader(cmd *enginev1.AnnounceLeader) {
 // covered indirectly by the dragonboat integration tests.
 type stubSnapshotter struct{ store storage.Store }
 
-func (s *stubSnapshotter) Store() storage.Store               { return s.store }
-func (s *stubSnapshotter) SaveSnapshot(_ io.Writer) error     { return nil }
+func (s *stubSnapshotter) Store() storage.Store                  { return s.store }
+func (s *stubSnapshotter) SaveSnapshot(_ io.Writer) error        { return nil }
 func (s *stubSnapshotter) RecoverFromSnapshot(_ io.Reader) error { return nil }
 
 func newTestFSM(t *testing.T) (*FSM, *stubLeadership, storage.Store) {

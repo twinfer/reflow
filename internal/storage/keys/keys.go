@@ -8,7 +8,9 @@
 //	inv/<24-byte inv_id>                         -> InvocationStatus
 //	journal/<24-byte inv_id>/<4-byte BE u32 idx> -> JournalEntry
 //	timer/<8-byte BE fire_at_ms>/<24-byte id>    -> uint32 sleep_index
-//	state/<service>/<obj_key>/<state_key>        -> reserved for Phase 3
+//	state/<service>/<obj_key>/<state_key>        -> bytes (Phase 2 lazy state)
+//	outbox/<8-byte BE seq>                       -> OutboxEnvelope (Phase 2)
+//	awakeable/<26-byte id>                       -> AwakeableEntry (Phase 2)
 //	dedup/self/<8-byte BE leader_epoch>          -> DedupEntry
 //	dedup/arbitrary/<producer_id>                -> DedupEntry
 //
@@ -30,11 +32,18 @@ import (
 const (
 	invocationIDLen = 24 // 8-byte partition_key + 16-byte uuid
 
+	// awakeableIDLen is the fixed wire length of an awakeable identifier:
+	// 4-byte "awk_" prefix + 22-char base64url-encoded UUID body. Anchoring
+	// the length lets prefix scans on awakeable/ stay unambiguous.
+	awakeableIDLen = 26
+
 	metaPrefix      = "meta"
 	invPrefix       = "inv/"
 	journalPrefix   = "journal/"
 	timerPrefix     = "timer/"
 	statePrefix     = "state/"
+	outboxPrefix    = "outbox/"
+	awakeablePrefix = "awakeable/"
 	dedupSelfPrefix = "dedup/self/"
 	dedupArbPrefix  = "dedup/arbitrary/"
 )
@@ -154,9 +163,95 @@ func DedupArbitraryKey(producerID string) []byte {
 	return append(out, producerID...)
 }
 
-// StatePrefix is reserved for Phase 3 virtual-object state. Exported so other
+// StatePrefix returns the state/ namespace prefix. Exported so other
 // packages can avoid colliding with it.
 func StatePrefix() []byte { return []byte(statePrefix) }
+
+// StateKey returns state/<service>/<obj_key>/<state_key>. For unkeyed
+// services pass objectKey="". Callers must ensure none of the three
+// components contain '/', otherwise the namespace boundary is ambiguous —
+// the API surface in pkg/sdk rejects invalid keys before they reach here.
+func StateKey(service, objectKey, stateKey string) []byte {
+	out := make([]byte, 0, len(statePrefix)+len(service)+1+len(objectKey)+1+len(stateKey))
+	out = append(out, statePrefix...)
+	out = append(out, service...)
+	out = append(out, '/')
+	out = append(out, objectKey...)
+	out = append(out, '/')
+	return append(out, stateKey...)
+}
+
+// StatePrefixForObject returns state/<service>/<obj_key>/, suitable as the
+// LowerBound for a per-object scan paired with PrefixUpperBound for the
+// matching UpperBound.
+func StatePrefixForObject(service, objectKey string) []byte {
+	out := make([]byte, 0, len(statePrefix)+len(service)+1+len(objectKey)+1)
+	out = append(out, statePrefix...)
+	out = append(out, service...)
+	out = append(out, '/')
+	out = append(out, objectKey...)
+	return append(out, '/')
+}
+
+// OutboxPrefix returns the outbox/ namespace prefix.
+func OutboxPrefix() []byte { return []byte(outboxPrefix) }
+
+// OutboxKey returns outbox/<8-byte BE seq>. Big-endian guarantees
+// lexicographic byte order matches numeric order, so a forward scan from
+// OutboxPrefix yields pending envelopes in FIFO insertion order.
+func OutboxKey(seq uint64) []byte {
+	out := make([]byte, 0, len(outboxPrefix)+8)
+	out = append(out, outboxPrefix...)
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], seq)
+	return append(out, buf[:]...)
+}
+
+// DecodeOutboxKey returns the sequence number from an outbox key.
+func DecodeOutboxKey(key []byte) (uint64, error) {
+	want := len(outboxPrefix) + 8
+	if len(key) != want {
+		return 0, fmt.Errorf("outbox key length = %d; want %d", len(key), want)
+	}
+	return binary.BigEndian.Uint64(key[len(outboxPrefix):]), nil
+}
+
+// AwakeablePrefix returns the awakeable/ namespace prefix.
+func AwakeablePrefix() []byte { return []byte(awakeablePrefix) }
+
+// AwakeableKey returns awakeable/<26-byte id>. The caller is responsible
+// for validating the id via ValidateAwakeableID before constructing the
+// key; passing a malformed id here produces a syntactically valid key but
+// risks collision with future namespace extensions.
+func AwakeableKey(id string) []byte {
+	out := make([]byte, 0, len(awakeablePrefix)+len(id))
+	out = append(out, awakeablePrefix...)
+	return append(out, id...)
+}
+
+// ValidateAwakeableID enforces the awk_<22-char base64url> shape. Used at
+// mint time (SDK) and resolution time (ingress) so prefix scans on the
+// awakeable/ namespace stay unambiguous and no awakeable ID can shadow a
+// nearby key.
+func ValidateAwakeableID(id string) error {
+	if len(id) != awakeableIDLen {
+		return fmt.Errorf("awakeable id length = %d; want %d", len(id), awakeableIDLen)
+	}
+	if id[:4] != "awk_" {
+		return fmt.Errorf("awakeable id must start with %q, got %q", "awk_", id[:4])
+	}
+	for i := 4; i < awakeableIDLen; i++ {
+		c := id[i]
+		ok := (c >= 'A' && c <= 'Z') ||
+			(c >= 'a' && c <= 'z') ||
+			(c >= '0' && c <= '9') ||
+			c == '_' || c == '-'
+		if !ok {
+			return fmt.Errorf("awakeable id char at %d not [A-Za-z0-9_-]: %q", i, c)
+		}
+	}
+	return nil
+}
 
 // PrefixUpperBound returns the smallest key strictly greater than every key
 // that begins with the given prefix. Returns nil if the prefix is empty or

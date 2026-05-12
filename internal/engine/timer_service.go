@@ -177,6 +177,18 @@ func (ts *TimerService) Delete(fireAtMs uint64, id *enginev1.InvocationId) error
 func (ts *TimerService) Run(ctx context.Context) error {
 	defer close(ts.done)
 	for {
+		// Always honor cancellation at the top of the loop. fireDue can
+		// re-push timers on propose failures; without this check a tight
+		// fire→fail→repush cycle would never observe ctx.Done().
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		select {
+		case <-ts.stop:
+			return nil
+		default:
+		}
+
 		ts.mu.Lock()
 		var nextFire uint64
 		if len(ts.heap) > 0 {
@@ -276,17 +288,26 @@ func (ts *TimerService) fireDue(ctx context.Context) {
 		propCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		err := ts.proposer.ProposeSelf(propCtx, cmd)
 		cancel()
-		if err != nil && !errors.Is(err, context.Canceled) {
-			// Re-push so the timer is not lost.
-			ts.mu.Lock()
-			heap.Push(&ts.heap, e)
-			ts.mu.Unlock()
-			ts.log.Warn("timer propose failed; re-queued",
-				"err", err,
-				"fire_at_ms", e.fireAtMs,
-				"sleep_idx", e.sleepIdx,
-			)
+		if err == nil {
+			continue
 		}
+		// Shutdown-class errors are terminal: do NOT re-push or the next
+		// leader will keep retrying a propose against a dead shard. The
+		// timer row is still on disk; rebuild on the next leader gain
+		// picks it up.
+		if errors.Is(err, context.Canceled) || errors.Is(err, ErrShardClosed) {
+			return
+		}
+		// Transient failures (DeadlineExceeded, dragonboat busy/timeout):
+		// re-push so the timer is not lost on this leader.
+		ts.mu.Lock()
+		heap.Push(&ts.heap, e)
+		ts.mu.Unlock()
+		ts.log.Warn("timer propose failed; re-queued",
+			"err", err,
+			"fire_at_ms", e.fireAtMs,
+			"sleep_idx", e.sleepIdx,
+		)
 	}
 }
 

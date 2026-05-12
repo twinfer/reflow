@@ -1,0 +1,273 @@
+package ingress_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/twinfer/reflow/internal/engine"
+	"github.com/twinfer/reflow/internal/ingress"
+	"github.com/twinfer/reflow/pkg/sdk"
+	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+)
+
+// makeID builds an InvocationId from a partition key and a 16-byte uuid.
+func makeID(pk uint64, uuid []byte) *enginev1.InvocationId {
+	return &enginev1.InvocationId{PartitionKey: pk, Uuid: uuid}
+}
+
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	return addr
+}
+
+// bringUpHostWithIngress starts a single-node Host on a temp dir, registers
+// the supplied handlers, awaits leadership on shard 1, and starts the
+// ingress HTTP+gRPC transports on ephemeral ports. The returned cleanup
+// stops everything in the right order (ingress before host so in-flight
+// requests don't dangle).
+func bringUpHostWithIngress(t *testing.T, reg *sdk.Registry) (*engine.Host, *ingress.Runtime) {
+	t.Helper()
+	dir := t.TempDir()
+	h, err := engine.NewHost(engine.HostConfig{
+		NodeID:         1,
+		RaftAddr:       freeAddr(t),
+		DataDir:        filepath.Join(dir, "node1"),
+		RTTMillisecond: 50,
+		Handlers:       reg,
+	})
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	if _, err := h.StartPartition(1); err != nil {
+		t.Fatalf("StartPartition: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := h.AwaitLeader(ctx, 1); err != nil {
+		t.Fatalf("AwaitLeader: %v", err)
+	}
+
+	rt, err := ingress.Start(context.Background(), h, ingress.Config{
+		HTTPAddr: "127.0.0.1:0",
+		GRPCAddr: "127.0.0.1:0",
+	})
+	if err != nil {
+		t.Fatalf("ingress.Start: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+	return h, rt
+}
+
+func httpPost(t *testing.T, url string, body any) ([]byte, int) {
+	t.Helper()
+	buf, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resp, err := http.Post(url, "application/json", bytes.NewReader(buf))
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	return out, resp.StatusCode
+}
+
+// TestIngress_SubmitAndAwaitEcho is the smallest happy-path test: HTTP
+// /invocation/Echo/echo with a JSON-base64-encoded input, poll /await, get
+// the same bytes back. Exercises the full grpc-gateway → gRPC → server →
+// Host → Invoker round-trip.
+func TestIngress_SubmitAndAwaitEcho(t *testing.T) {
+	reg := sdk.NewRegistry()
+	if err := reg.Register("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
+		return append([]byte("echo:"), in...), nil
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	_, rt := bringUpHostWithIngress(t, reg)
+	base := "http://" + rt.HTTPAddr()
+
+	submitBody := map[string]any{
+		"input": base64.StdEncoding.EncodeToString([]byte("hello")),
+	}
+	raw, code := httpPost(t, base+"/invocation/Echo/echo", submitBody)
+	if code != http.StatusOK {
+		t.Fatalf("submit: code=%d body=%s", code, string(raw))
+	}
+	var submitResp struct {
+		InvocationIdStr string `json:"invocationIdStr"`
+	}
+	if err := json.Unmarshal(raw, &submitResp); err != nil {
+		t.Fatalf("submit decode: %v (body=%s)", err, string(raw))
+	}
+	if submitResp.InvocationIdStr == "" {
+		t.Fatalf("submit: missing invocation_id_str (body=%s)", string(raw))
+	}
+
+	awaitURL := fmt.Sprintf("%s/await/%s", base, submitResp.InvocationIdStr)
+	// Poll a few times — the handler is fast but the Raft round-trip + leader
+	// gain race can take a moment after startup.
+	var awaitResp struct {
+		Output         string `json:"output"`
+		FailureMessage string `json:"failureMessage"`
+		Completed      bool   `json:"completed"`
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, code = httpPost(t, awaitURL, map[string]any{"timeoutMs": 1000})
+		if code != http.StatusOK {
+			t.Fatalf("await: code=%d body=%s", code, string(raw))
+		}
+		if err := json.Unmarshal(raw, &awaitResp); err != nil {
+			t.Fatalf("await decode: %v (body=%s)", err, string(raw))
+		}
+		if awaitResp.Completed {
+			break
+		}
+	}
+	if !awaitResp.Completed {
+		t.Fatalf("await never completed: %+v", awaitResp)
+	}
+	// grpc-gateway base64-encodes bytes fields in JSON.
+	got, err := base64.StdEncoding.DecodeString(awaitResp.Output)
+	if err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if string(got) != "echo:hello" {
+		t.Errorf("output = %q; want echo:hello", string(got))
+	}
+	if awaitResp.FailureMessage != "" {
+		t.Errorf("failure_message = %q; want empty", awaitResp.FailureMessage)
+	}
+}
+
+// TestIngress_DescribeAndListPartitions covers the read-only admin
+// endpoints: ListPartitions surfaces shard 1 as leader, DescribeInvocation
+// reports Completed for a finished invocation.
+func TestIngress_DescribeAndListPartitions(t *testing.T) {
+	reg := sdk.NewRegistry()
+	if err := reg.Register("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
+		return in, nil
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	_, rt := bringUpHostWithIngress(t, reg)
+	base := "http://" + rt.HTTPAddr()
+
+	// ListPartitions
+	resp, err := http.Get(base + "/admin/partitions")
+	if err != nil {
+		t.Fatalf("GET partitions: %v", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list partitions: code=%d body=%s", resp.StatusCode, string(raw))
+	}
+	var listResp struct {
+		Partitions []struct {
+			ShardId  string `json:"shardId"`
+			IsLeader bool   `json:"isLeader"`
+		} `json:"partitions"`
+	}
+	if err := json.Unmarshal(raw, &listResp); err != nil {
+		t.Fatalf("list decode: %v (body=%s)", err, string(raw))
+	}
+	if len(listResp.Partitions) != 1 || listResp.Partitions[0].ShardId != "1" {
+		t.Fatalf("list partitions: got %+v", listResp.Partitions)
+	}
+	if !listResp.Partitions[0].IsLeader {
+		t.Errorf("shard 1 should be leader; got %+v", listResp.Partitions[0])
+	}
+
+	// Submit an invocation, then DescribeInvocation should eventually
+	// report Completed.
+	submitBody := map[string]any{
+		"input": base64.StdEncoding.EncodeToString([]byte("x")),
+	}
+	raw, code := httpPost(t, base+"/invocation/Echo/echo", submitBody)
+	if code != http.StatusOK {
+		t.Fatalf("submit: code=%d body=%s", code, string(raw))
+	}
+	var submitResp struct {
+		InvocationIdStr string `json:"invocationIdStr"`
+	}
+	if err := json.Unmarshal(raw, &submitResp); err != nil {
+		t.Fatalf("submit decode: %v", err)
+	}
+	descURL := base + "/admin/invocation/" + submitResp.InvocationIdStr
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, err := http.Get(descURL)
+		if err != nil {
+			t.Fatalf("GET describe: %v", err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("describe: code=%d body=%s", resp.StatusCode, string(raw))
+		}
+		if bytes.Contains(raw, []byte(`"completed":`)) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("describe never reached Completed: body=%s", string(raw))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestIngress_SubmitRejectsEmptyService verifies the InvalidArgument path.
+func TestIngress_SubmitRejectsEmptyService(t *testing.T) {
+	reg := sdk.NewRegistry()
+	_, rt := bringUpHostWithIngress(t, reg)
+	base := "http://" + rt.HTTPAddr()
+
+	raw, code := httpPost(t, base+"/invocation//echo", map[string]any{})
+	if code == http.StatusOK {
+		t.Fatalf("submit with empty service unexpectedly OK: body=%s", string(raw))
+	}
+}
+
+// TestIngress_FormatInvocationIDRoundtrip is a unit check on the id codec
+// (lives in this package since the helper is exported from internal/ingress).
+func TestIngress_FormatInvocationIDRoundtrip(t *testing.T) {
+	uuid := make([]byte, 16)
+	for i := range uuid {
+		uuid[i] = byte(i + 1)
+	}
+	id, err := ingress.ParseInvocationID(ingress.FormatInvocationID(makeID(7, uuid)))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if id.GetPartitionKey() != 7 {
+		t.Errorf("partition_key = %d; want 7", id.GetPartitionKey())
+	}
+	if !bytes.Equal(id.GetUuid(), uuid) {
+		t.Errorf("uuid mismatch")
+	}
+
+	if _, err := ingress.ParseInvocationID("garbage"); err == nil {
+		t.Errorf("ParseInvocationID(\"garbage\") should fail")
+	}
+	if _, err := ingress.ParseInvocationID("inv_xx_yy"); err == nil {
+		t.Errorf("ParseInvocationID(\"inv_xx_yy\") should fail")
+	}
+}

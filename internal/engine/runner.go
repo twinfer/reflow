@@ -6,13 +6,18 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/twinfer/reflow/internal/engine/invoker"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
 // PartitionRunner ties together the per-partition leader-only services: the
-// proposer (Raft client), leadership state, timer service, and action
-// collector. It exposes a small API for tests/ingress to propose commands.
+// proposer (Raft client), leadership state, action collector, timer service,
+// outbox shuffler, and Invoker. It exposes a small API for tests/ingress to
+// propose commands. The runner is constructed in Host.StartPartition and lives
+// for the lifetime of the partition; the leader-only services (timers,
+// outbox) are recreated per leader gain because their internal channels are
+// single-use.
 type PartitionRunner struct {
 	ShardID uint64
 
@@ -20,12 +25,21 @@ type PartitionRunner struct {
 	proposer    *RaftProposer
 	leadership  *Leadership
 	collector   *ActionCollector
-	timers      *TimerService
+	invoker     *invoker.Invoker
 	log         *slog.Logger
 
-	mu          sync.Mutex
-	timerCancel context.CancelFunc
-	timerDone   chan struct{}
+	// timers and outbox are populated by onBecomeLeader and torn down by
+	// onStepDown. dispatchActions reads them on the apply goroutine,
+	// which is the same goroutine as onBecomeLeader/onStepDown — no
+	// extra synchronisation needed.
+	timers *TimerService
+	outbox *OutboxService
+
+	mu           sync.Mutex
+	leaderCtx    context.Context
+	leaderCancel context.CancelFunc
+	timerDone    chan struct{}
+	outboxDone   chan struct{}
 }
 
 // Proposer returns the partition's RaftProposer.
@@ -38,97 +52,191 @@ func (r *PartitionRunner) Leadership() *Leadership { return r.leadership }
 // to read state directly.
 func (r *PartitionRunner) Snapshotter() *Snapshotter { return r.snapshotter }
 
+// Invoker returns the per-partition Invoker. Exposed for tests; production
+// code should reach the Invoker through actions dispatched by the FSM.
+func (r *PartitionRunner) Invoker() *invoker.Invoker { return r.invoker }
+
 // IsLeader is a convenience accessor.
 func (r *PartitionRunner) IsLeader() bool { return r.leadership.IsLeader() }
-
-// runnerTimerTable returns a TimerTable view bound to whichever store the
-// snapshotter currently holds.
-func runnerTimerTable(s *Snapshotter) tables.TimerTable {
-	return tables.TimerTable{S: s.Store()}
-}
 
 // dispatchActions is called by the Partition FSM (inside its Update path,
 // after the storage batch commits) with the actions accumulated on the
 // leader. We may NOT propose to Raft here because we're still inside the
-// dragonboat apply goroutine. Timer pushes are local and safe.
+// dragonboat apply goroutine. Timer pushes / outbox pushes / invoker
+// dispatch are all local and safe.
 func (r *PartitionRunner) dispatchActions(actions []Action) {
 	for _, a := range actions {
 		switch act := a.(type) {
 		case ActRegisterTimer:
+			if r.timers == nil {
+				r.log.Warn("runner: ActRegisterTimer with no timer service",
+					"shard", r.ShardID)
+				continue
+			}
 			if err := r.timers.Push(act.FireAtMs, act.ID, act.SleepIdx); err != nil {
 				r.log.Warn("runner: timer push failed", "err", err, "shard", r.ShardID)
 			}
 		case ActDeleteTimer:
+			if r.timers == nil {
+				continue
+			}
 			if err := r.timers.Delete(act.FireAtMs, act.ID); err != nil {
 				r.log.Warn("runner: timer delete failed", "err", err, "shard", r.ShardID)
 			}
 		case ActInvoke:
-			// Phase 1 has no invoker; Phase 2 will dispatch to the SDK
-			// handler stream. For now we just log so the test harness can
-			// observe the intent.
-			r.log.Debug("runner: ActInvoke (no-op in Phase 1)",
-				"shard", r.ShardID,
-				"target", act.Target.GetServiceName()+"/"+act.Target.GetHandlerName(),
-			)
-		case ActAbortInvocation, ActIngressResponse:
-			// Phase 1 no-op.
+			if r.invoker == nil {
+				r.log.Warn("runner: ActInvoke with no invoker", "shard", r.ShardID)
+				continue
+			}
+			r.invoker.StartInvocation(act.ID, act.Target)
+		case ActAbortInvocation:
+			if r.invoker == nil {
+				continue
+			}
+			r.invoker.AbortInvocation(act.ID)
+		case ActDeliverNotification:
+			if r.invoker == nil {
+				continue
+			}
+			r.invoker.DeliverNotification(act.ID, act.CompletionID, act.Value, act.Failure, act.Void)
+		case ActDeliverAwakeable:
+			if r.invoker == nil {
+				continue
+			}
+			r.invoker.DeliverAwakeable(act.ID, act.AwakeableID, act.Value, act.Failure)
+		case ActDispatchOutbox:
+			if r.outbox == nil {
+				r.log.Warn("runner: ActDispatchOutbox with no outbox service",
+					"shard", r.ShardID, "seq", act.Seq)
+				continue
+			}
+			r.outbox.Push(act.Seq, act.Envelope)
+		case ActIngressResponse:
+			// Phase 2: ingress response routing lands with the gRPC
+			// gateway (Step 13). Drop quietly until then so existing FSM
+			// paths can populate the action without crashing.
 		default:
 			r.log.Warn("runner: unhandled action type", "type", a)
 		}
 	}
 }
 
-// onBecomeLeader rebuilds the timer heap from storage and starts the
-// TimerService run loop. Called by Leadership when we transition to Leader.
+// onBecomeLeader rebuilds the timer heap + outbox queue from storage,
+// rebinds the invoker's table views to the current snapshot store, and
+// starts the leader-side service loops. The timer + outbox services are
+// instantiated fresh on every leader gain because their done channels
+// are single-use; reusing the prior instance would panic on the next
+// `defer close(done)` invocation.
 func (r *PartitionRunner) onBecomeLeader() {
 	r.log.Info("partition: became leader", "shard", r.ShardID, "epoch", r.leadership.LeaderEpoch())
 
-	// The snapshotter's store may have been swapped during a snapshot
-	// recovery; rebind the timer table to the current store.
-	r.timers.table = tables.TimerTable{S: r.snapshotter.Store()}
+	store := r.snapshotter.Store()
+
+	r.timers = NewTimerService(
+		tables.TimerTable{S: store},
+		r.proposer,
+		TimerServiceOptions{Log: r.log},
+	)
+	r.outbox = NewOutboxService(
+		tables.OutboxTable{S: store},
+		r.proposer,
+		r.ShardID,
+		r.log,
+	)
+	if r.invoker != nil {
+		r.invoker.Rebind(
+			tables.JournalTable{S: store},
+			tables.InvocationTable{S: store},
+		)
+	}
 
 	if err := r.timers.Rebuild(); err != nil {
 		r.log.Error("partition: timer rebuild failed", "shard", r.ShardID, "err", err)
 		return
 	}
+	if err := r.outbox.Rebuild(); err != nil {
+		r.log.Error("partition: outbox rebuild failed", "shard", r.ShardID, "err", err)
+		return
+	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
+	leaderCtx, cancel := context.WithCancel(context.Background())
+	timerDone := make(chan struct{})
+	outboxDone := make(chan struct{})
 
 	r.mu.Lock()
-	// Defensive: cancel any prior timer loop (should not happen, but matches
-	// step-down + immediate re-promote semantics).
-	if r.timerCancel != nil {
-		r.timerCancel()
+	// Defensive: cancel any prior leader scope. Normal step-down clears
+	// these; if we somehow re-enter without intervening onStepDown, abort
+	// the prior scope before installing the new one.
+	if r.leaderCancel != nil {
+		r.leaderCancel()
 	}
-	r.timerCancel = cancel
-	r.timerDone = done
+	r.leaderCtx = leaderCtx
+	r.leaderCancel = cancel
+	r.timerDone = timerDone
+	r.outboxDone = outboxDone
 	r.mu.Unlock()
 
+	if r.invoker != nil {
+		r.invoker.Start(leaderCtx)
+		// Resume any non-terminal invocations that committed before this
+		// leader scope. Required because apply-on-startup dispatches
+		// ActInvoke through dispatchActions while the Invoker is not yet
+		// started; those calls are dropped, so the new leader must
+		// re-spawn sessions explicitly from the InvocationTable.
+		if err := r.invoker.ResumeNonTerminal(tables.InvocationTable{S: store}); err != nil {
+			r.log.Warn("partition: invoker resume failed", "shard", r.ShardID, "err", err)
+		}
+	}
+
 	go func() {
-		defer close(done)
-		if err := r.timers.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		defer close(timerDone)
+		if err := r.timers.Run(leaderCtx); err != nil && !errors.Is(err, context.Canceled) {
 			r.log.Error("partition: timer run exited", "shard", r.ShardID, "err", err)
+		}
+	}()
+	go func() {
+		defer close(outboxDone)
+		if err := r.outbox.Run(leaderCtx); err != nil && !errors.Is(err, context.Canceled) {
+			r.log.Error("partition: outbox run exited", "shard", r.ShardID, "err", err)
 		}
 	}()
 }
 
-// onStepDown stops the timer loop.
+// onStepDown tears down the leader-side services. Order matters:
+//
+//  1. Cancel leaderCtx so the timer and outbox loops observe shutdown.
+//  2. Stop the Invoker first (drains running sessions). The sessions
+//     can no longer propose journal entries, so no further timer/outbox
+//     actions arrive while we're stopping.
+//  3. Wait for timer + outbox loops to return.
+//
+// We intentionally do NOT touch the underlying TimerService / OutboxService
+// objects after waiting — the next onBecomeLeader will construct fresh
+// instances. Holding on to the old ones would risk panic on second-Run.
 func (r *PartitionRunner) onStepDown() {
 	r.log.Info("partition: stepped down", "shard", r.ShardID)
 	r.mu.Lock()
-	cancel := r.timerCancel
-	done := r.timerDone
-	r.timerCancel = nil
+	cancel := r.leaderCancel
+	timerDone := r.timerDone
+	outboxDone := r.outboxDone
+	r.leaderCtx = nil
+	r.leaderCancel = nil
 	r.timerDone = nil
+	r.outboxDone = nil
 	r.mu.Unlock()
+
 	if cancel != nil {
 		cancel()
 	}
-	if done != nil {
-		<-done
+	if r.invoker != nil {
+		r.invoker.Stop()
 	}
-	r.timers.Stop()
+	if timerDone != nil {
+		<-timerDone
+	}
+	if outboxDone != nil {
+		<-outboxDone
+	}
 }
 
 // Compile-time check that LeadershipObserver is implemented.

@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/storage"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -152,7 +155,18 @@ func (p *Partition) Update(entries []statemachine.Entry) ([]statemachine.Entry, 
 			return nil, err
 		}
 
+		// Outbox pop: when a command was re-injected by a local outbox
+		// shuffler (Arbitrary dedup with "outbox/" producer), the original
+		// row is no longer needed once we've applied. Pop in the same batch
+		// so apply + pop are atomic.
 		if d := env.GetHeader().GetDedup(); d != nil {
+			if arb := d.GetArbitrary(); arb != nil && isOutboxProducer(arb.GetProducerId()) {
+				outboxT := tables.OutboxTable{S: store}
+				if err := outboxT.Pop(batch, arb.GetSeq()); err != nil {
+					p.cfg.Log.Warn("partition: outbox pop failed",
+						"seq", arb.GetSeq(), "producer", arb.GetProducerId(), "err", err)
+				}
+			}
 			if err := dedup.Record(batch, d); err != nil {
 				return nil, fmt.Errorf("partition: record dedup: %w", err)
 			}
@@ -200,7 +214,7 @@ func (p *Partition) applyCommand(
 	case *enginev1.Command_Invoke:
 		return p.onInvoke(batch, k.Invoke, now, inv, isLeader)
 	case *enginev1.Command_InvokerEffect:
-		return p.onInvokerEffect(batch, k.InvokerEffect, now, inv, journal, isLeader)
+		return p.onInvokerEffect(batch, k.InvokerEffect, now, meta, inv, journal, isLeader)
 	case *enginev1.Command_TimerFired:
 		return p.onTimerFired(batch, k.TimerFired, now, inv, timers, isLeader)
 	case *enginev1.Command_Purge:
@@ -264,6 +278,7 @@ func (p *Partition) onInvokerEffect(
 	batch storage.Batch,
 	eff *enginev1.InvokerEffect,
 	nowMs uint64,
+	meta *enginev1.PartitionMeta,
 	inv tables.InvocationTable,
 	journal tables.JournalTable,
 	isLeader bool,
@@ -274,31 +289,144 @@ func (p *Partition) onInvokerEffect(
 		return fmt.Errorf("onInvokerEffect: load status: %w", err)
 	}
 
+	store := p.cfg.Snapshotter.Store()
+	timersT := tables.TimerTable{S: store}
+	outboxT := tables.OutboxTable{S: store}
+	awakeT := tables.AwakeableTable{S: store}
+
 	var (
 		next    *enginev1.InvocationStatus
 		actions []Action
 	)
 	switch k := eff.GetKind().(type) {
 	case *enginev1.InvokerEffect_JournalAppended:
+		entry := k.JournalAppended.GetEntry()
 		// Persist the journal entry first.
-		if err := journal.Append(batch, id, k.JournalAppended.GetEntry()); err != nil {
+		if err := journal.Append(batch, id, entry); err != nil {
 			return fmt.Errorf("onInvokerEffect: journal append: %w", err)
 		}
-		// Also persist a timer entry when the journal entry is Sleep.
-		if sleep, ok := k.JournalAppended.GetEntry().GetEntry().(*enginev1.JournalEntry_Sleep); ok {
-			t := tables.TimerTable{S: p.cfg.Snapshotter.Store()}
-			if err := t.Insert(batch, sleep.Sleep.GetFireAtMs(), id, k.JournalAppended.GetEntry().GetIndex()); err != nil {
+		// Per-entry-type side effects: timers, awakeable directory, outbox.
+		switch e := entry.GetEntry().(type) {
+		case *enginev1.JournalEntry_Sleep:
+			if err := timersT.Insert(batch, e.Sleep.GetFireAtMs(), id, entry.GetIndex()); err != nil {
 				return fmt.Errorf("onInvokerEffect: timer insert: %w", err)
 			}
 			if isLeader {
 				p.cfg.Collector.Push(ActRegisterTimer{
-					FireAtMs: sleep.Sleep.GetFireAtMs(),
+					FireAtMs: e.Sleep.GetFireAtMs(),
 					ID:       id,
-					SleepIdx: k.JournalAppended.GetEntry().GetIndex(),
+					SleepIdx: entry.GetIndex(),
 				})
+			}
+		case *enginev1.JournalEntry_Awakeable:
+			akID := e.Awakeable.GetAwakeableId()
+			if vErr := keys.ValidateAwakeableID(akID); vErr != nil {
+				p.cfg.Log.Warn("partition: malformed awakeable id; skipping directory write",
+					"err", vErr, "id", akID)
+			} else {
+				dir := &enginev1.AwakeableEntry{Owner: id, EntryIndex: entry.GetIndex()}
+				if err := awakeT.Put(batch, akID, dir); err != nil {
+					return fmt.Errorf("onInvokerEffect: awakeable put: %w", err)
+				}
+			}
+		case *enginev1.JournalEntry_Call:
+			env := &enginev1.OutboxEnvelope{
+				Kind: &enginev1.OutboxEnvelope_Invoke{Invoke: &enginev1.InvokeCommand{
+					InvocationId: mintCalleeInvocationID(id, entry.GetIndex()),
+					Target:       e.Call.GetTarget(),
+					Input:        e.Call.GetInput(),
+				}},
+			}
+			seq := meta.GetNextOutboxSeq()
+			meta.NextOutboxSeq = seq + 1
+			if err := outboxT.Append(batch, seq, env); err != nil {
+				return fmt.Errorf("onInvokerEffect: outbox append (call): %w", err)
+			}
+			if isLeader {
+				p.cfg.Collector.Push(ActDispatchOutbox{Seq: seq, Envelope: env})
+			}
+		case *enginev1.JournalEntry_Signal:
+			env := &enginev1.OutboxEnvelope{
+				Kind: &enginev1.OutboxEnvelope_Signal{Signal: &enginev1.SignalSend{
+					TargetInvocationId: e.Signal.GetTargetInvocationId(),
+					SignalName:         e.Signal.GetSignalName(),
+					Payload:            e.Signal.GetPayload(),
+				}},
+			}
+			seq := meta.GetNextOutboxSeq()
+			meta.NextOutboxSeq = seq + 1
+			if err := outboxT.Append(batch, seq, env); err != nil {
+				return fmt.Errorf("onInvokerEffect: outbox append (signal): %w", err)
+			}
+			if isLeader {
+				p.cfg.Collector.Push(ActDispatchOutbox{Seq: seq, Envelope: env})
 			}
 		}
 		next, actions, err = transitionOnJournalAppend(id, cur, k.JournalAppended, nowMs)
+	case *enginev1.InvokerEffect_RunProposal:
+		// The SDK has produced the outcome of a ctx.Run body; persist it as
+		// a JERun journal entry at the SDK-allocated index. Replay sees the
+		// stored value; the body is never re-executed.
+		runEntry := &enginev1.JournalEntry{
+			Index: k.RunProposal.GetEntryIndex(),
+			Entry: &enginev1.JournalEntry_Run{Run: &enginev1.JERun{
+				Value:          k.RunProposal.GetValue(),
+				FailureMessage: k.RunProposal.GetFailureMessage(),
+			}},
+		}
+		if err := journal.Append(batch, id, runEntry); err != nil {
+			return fmt.Errorf("onInvokerEffect: journal append (run): %w", err)
+		}
+		// State stays Invoked; no FSM transition needed. The Invoker session
+		// observes the persisted entry on its next poll.
+		next, actions = cur, nil
+	case *enginev1.InvokerEffect_AwakeableResolved:
+		akID := k.AwakeableResolved.GetAwakeableId()
+		dir, dirErr := awakeT.Get(akID)
+		if dirErr != nil {
+			if errors.Is(dirErr, storage.ErrNotFound) {
+				p.cfg.Log.Warn("partition: AwakeableResolved for unknown id", "id", akID)
+				return nil
+			}
+			return fmt.Errorf("onInvokerEffect: awakeable lookup: %w", dirErr)
+		}
+		// Place the result entry one index past the originating JEAwakeable
+		// (mirrors the SleepResult-at-sleep_index+1 convention).
+		resultIdx := dir.GetEntryIndex() + 1
+		resultEntry := &enginev1.JournalEntry{
+			Index: resultIdx,
+			Entry: &enginev1.JournalEntry_AwakeableResult{
+				AwakeableResult: &enginev1.JEAwakeableResult{
+					AwakeableId:    akID,
+					Value:          k.AwakeableResolved.GetValue(),
+					FailureMessage: k.AwakeableResolved.GetFailureMessage(),
+				},
+			},
+		}
+		if err := journal.Append(batch, id, resultEntry); err != nil {
+			return fmt.Errorf("onInvokerEffect: journal append (awakeable result): %w", err)
+		}
+		if err := awakeT.Delete(batch, akID); err != nil {
+			return fmt.Errorf("onInvokerEffect: awakeable delete: %w", err)
+		}
+		next, actions, err = transitionOnAwakeableResolved(
+			id, cur, resultIdx,
+			k.AwakeableResolved.GetValue(),
+			k.AwakeableResolved.GetFailureMessage(),
+			nowMs,
+		)
+	case *enginev1.InvokerEffect_SignalDelivered:
+		// Phase 2: receive-side journal entry is deferred; the FSM still
+		// transitions state so a suspended invocation wakes up. CompletionID
+		// is left at 0 — the Invoker session inspects its waker queue on
+		// resume rather than relying on the notification carrying a real
+		// index. Step 11 may revisit.
+		next, actions, err = transitionOnSignalDelivered(
+			id, cur, 0,
+			k.SignalDelivered.GetSignalName(),
+			k.SignalDelivered.GetPayload(),
+			nowMs,
+		)
 	case *enginev1.InvokerEffect_Completed:
 		next, actions, err = transitionOnComplete(id, cur, k.Completed, nowMs)
 	case *enginev1.InvokerEffect_Suspended:
@@ -314,8 +442,10 @@ func (p *Partition) onInvokerEffect(
 		p.cfg.Log.Warn("partition: invalid InvokerEffect transition", "err", err)
 		return nil
 	}
-	if err := inv.Put(batch, id, next); err != nil {
-		return fmt.Errorf("onInvokerEffect: write status: %w", err)
+	if next != nil {
+		if err := inv.Put(batch, id, next); err != nil {
+			return fmt.Errorf("onInvokerEffect: write status: %w", err)
+		}
 	}
 	if isLeader {
 		for _, a := range actions {
@@ -323,6 +453,24 @@ func (p *Partition) onInvokerEffect(
 		}
 	}
 	return nil
+}
+
+// mintCalleeInvocationID derives a deterministic InvocationId for the
+// callee of a JECall, hashing the parent uuid with the JECall journal
+// index. Determinism keeps the result identical across replay on every
+// replica. partition_key is set to the parent's so Phase 2 single-partition
+// deployments route the call to the same shard.
+func mintCalleeInvocationID(parent *enginev1.InvocationId, idx uint32) *enginev1.InvocationId {
+	h := sha256.New()
+	h.Write(parent.GetUuid())
+	var idxBuf [4]byte
+	binary.BigEndian.PutUint32(idxBuf[:], idx)
+	h.Write(idxBuf[:])
+	sum := h.Sum(nil)
+	return &enginev1.InvocationId{
+		PartitionKey: parent.GetPartitionKey(),
+		Uuid:         append([]byte(nil), sum[:16]...),
+	}
 }
 
 func (p *Partition) onTimerFired(
@@ -411,6 +559,29 @@ type LookupAppliedIndex struct{}
 
 func (LookupAppliedIndex) isLookup() {}
 
+// LookupAwakeable returns the AwakeableEntry for an id, or
+// storage.ErrNotFound. Used by ingress to find the partition that owns an
+// outstanding awakeable. Phase 2.
+type LookupAwakeable struct{ ID string }
+
+func (LookupAwakeable) isLookup() {}
+
+// LookupState resolves a single state value. Result is StateLookupResult
+// so callers can distinguish "absent" (Present=false) from "present-but-
+// empty" (Present=true, len(Value)==0). Phase 2.
+type LookupState struct {
+	Target *enginev1.InvocationTarget
+	Key    string
+}
+
+func (LookupState) isLookup() {}
+
+// StateLookupResult is the value returned by Lookup(LookupState).
+type StateLookupResult struct {
+	Value   []byte
+	Present bool
+}
+
 // Lookup implements statemachine.IOnDiskStateMachine.
 func (p *Partition) Lookup(query any) (any, error) {
 	store := p.cfg.Snapshotter.Store()
@@ -426,6 +597,14 @@ func (p *Partition) Lookup(query any) (any, error) {
 			return nil, err
 		}
 		return m.GetAppliedIndex(), nil
+	case LookupAwakeable:
+		return (tables.AwakeableTable{S: store}).Get(q.ID)
+	case LookupState:
+		v, present, err := (tables.StateTable{S: store}).Get(q.Target, q.Key)
+		if err != nil {
+			return nil, err
+		}
+		return StateLookupResult{Value: v, Present: present}, nil
 	default:
 		return nil, fmt.Errorf("partition: unknown lookup type %T", query)
 	}

@@ -47,11 +47,24 @@ func transitionOnInvoke(
 // transitionOnJournalAppend handles an InvokerEffect.JournalAppended.
 // Transitions:
 //
-//	Scheduled  --Input    → Invoked
-//	Scheduled  --other    → Scheduled (no-op; should not happen but tolerated)
-//	Invoked    --*        → Invoked   (no-op; just a journal write)
-//	Suspended  --*Result  → Invoked   (+ ActInvoke; resumes execution)
+//	Scheduled  --Input          → Invoked
+//	Scheduled  --other          → Scheduled (no-op; should not happen but tolerated)
+//	Invoked    --*              → Invoked   (no-op; just a journal write)
+//	Suspended  --*              → Invoked   (+ ActInvoke; resumes execution)
 //	*          → ErrInvalidTransition
+//
+// The Suspended wake-up is lenient: any journal append resumes a suspended
+// invocation. In practice only *Result entries (SleepResult, CallResult,
+// AwakeableResult) and external completions ever arrive in Suspended state;
+// the SDK does not propose fresh command entries while its session is
+// suspended. The lenient default protects against replay races and keeps
+// the FSM agnostic to the exact entry-type taxonomy.
+//
+// Outbox queueing for Call / OneWayCall / outbound JESignal is layered on
+// in partition.go before the transition runs — Step 7 wires that arm.
+// Phase 2 entry types (JERun, JEAwakeable, JEAwakeableResult, JESignal,
+// JEClearState, JEGetEagerState) are accepted by the Invoked / Suspended
+// arms without per-type cases.
 func transitionOnJournalAppend(
 	id *enginev1.InvocationId,
 	cur *enginev1.InvocationStatus,
@@ -154,7 +167,17 @@ func transitionOnSuspend(
 // Transitions:
 //
 //	Suspended  → Invoked   (+ ActInvoke)
-//	Invoked    → Invoked   (late-arriving timer; no-op)
+//	Invoked    → Invoked   (+ ActInvoke; ensures the wake doesn't get lost
+//	                        when this fire races with a session's in-flight
+//	                        InvokerEffect.Suspended propose — the FSM has
+//	                        committed the SleepResult already, but the
+//	                        session that needs to consume it has a stale
+//	                        journal snapshot and is about to exit. The
+//	                        Invoker is idempotent against an already-
+//	                        running session: a true late-arriving fire
+//	                        sees the running session and no-ops, while
+//	                        the race-with-Suspend case queues a respawn
+//	                        for after the session exits.)
 //	Completed  → Completed (no-op)
 //	*          → ErrInvalidTransition
 func transitionOnTimerFired(
@@ -173,10 +196,107 @@ func transitionOnTimerFired(
 				},
 			},
 		}, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
-	case *enginev1.InvocationStatus_Invoked, *enginev1.InvocationStatus_Completed:
+	case *enginev1.InvocationStatus_Invoked:
+		return cur, []Action{ActInvoke{ID: id, Target: s.Invoked.GetTarget()}}, nil
+	case *enginev1.InvocationStatus_Completed:
 		return cur, nil, nil
 	default:
 		return cur, nil, fmt.Errorf("%w: TimerFired from %T", ErrInvalidTransition, cur.GetStatus())
+	}
+}
+
+// transitionOnAwakeableResolved handles an InvokerEffect.AwakeableResolved.
+// The caller (partition.go) has already journaled the JEAwakeableResult at
+// completionIdx and deleted the awakeable directory row.
+//
+// Transitions:
+//
+//	Suspended  → Invoked   (+ ActInvoke + ActDeliverNotification)
+//	Invoked    → Invoked   (+ ActDeliverNotification; live session)
+//	Completed  → Completed (late arrival; no-op)
+//	*          → ErrInvalidTransition
+//
+// On the Suspended path both actions fire: ActInvoke makes the Invoker
+// spawn a fresh session goroutine; ActDeliverNotification is the redundant
+// side-band carrying the completion in case the session's known_entries
+// does not yet include this index. Phase 2.
+func transitionOnAwakeableResolved(
+	id *enginev1.InvocationId,
+	cur *enginev1.InvocationStatus,
+	completionIdx uint32,
+	value []byte,
+	failure string,
+	nowMs uint64,
+) (*enginev1.InvocationStatus, []Action, error) {
+	notify := ActDeliverNotification{
+		ID:           id,
+		CompletionID: completionIdx,
+		Value:        value,
+		Failure:      failure,
+	}
+	switch s := cur.GetStatus().(type) {
+	case *enginev1.InvocationStatus_Suspended:
+		next := &enginev1.InvocationStatus{
+			Status: &enginev1.InvocationStatus_Invoked{
+				Invoked: &enginev1.Invoked{
+					Target:      s.Suspended.GetTarget(),
+					InvokedAtMs: nowMs,
+				},
+			},
+		}
+		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}, notify}, nil
+	case *enginev1.InvocationStatus_Invoked:
+		return cur, []Action{notify}, nil
+	case *enginev1.InvocationStatus_Completed:
+		return cur, nil, nil
+	default:
+		return cur, nil, fmt.Errorf("%w: AwakeableResolved from %T", ErrInvalidTransition, cur.GetStatus())
+	}
+}
+
+// transitionOnSignalDelivered handles an InvokerEffect.SignalDelivered.
+// Same wake-up shape as transitionOnAwakeableResolved — Phase 2 does not
+// filter Suspended.awaiting_on by signal name; the session goroutine
+// inspects its waker queue on resume.
+//
+// Transitions:
+//
+//	Suspended  → Invoked   (+ ActInvoke + ActDeliverNotification void)
+//	Invoked    → Invoked   (+ ActDeliverNotification void)
+//	Completed  → Completed (no-op)
+//	*          → ErrInvalidTransition
+//
+// Phase 2.
+func transitionOnSignalDelivered(
+	id *enginev1.InvocationId,
+	cur *enginev1.InvocationStatus,
+	completionIdx uint32,
+	_ string, // signalName — surfaced via the journal entry, not the action
+	payload []byte,
+	nowMs uint64,
+) (*enginev1.InvocationStatus, []Action, error) {
+	notify := ActDeliverNotification{
+		ID:           id,
+		CompletionID: completionIdx,
+		Value:        payload,
+	}
+	switch s := cur.GetStatus().(type) {
+	case *enginev1.InvocationStatus_Suspended:
+		next := &enginev1.InvocationStatus{
+			Status: &enginev1.InvocationStatus_Invoked{
+				Invoked: &enginev1.Invoked{
+					Target:      s.Suspended.GetTarget(),
+					InvokedAtMs: nowMs,
+				},
+			},
+		}
+		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}, notify}, nil
+	case *enginev1.InvocationStatus_Invoked:
+		return cur, []Action{notify}, nil
+	case *enginev1.InvocationStatus_Completed:
+		return cur, nil, nil
+	default:
+		return cur, nil, fmt.Errorf("%w: SignalDelivered from %T", ErrInvalidTransition, cur.GetStatus())
 	}
 }
 

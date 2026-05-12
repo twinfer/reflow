@@ -1,0 +1,184 @@
+// Reflow SDK ↔ engine session protocol.
+//
+// Mirrors Restate service-protocol v4 message shapes (see
+// restate/service-protocol/dev/restate/service/protocol.proto), adapted for
+// reflow's lazy-state + outbox model. Phase 2 ships exactly the messages
+// needed for the in-process Go SDK and the HTTP/2 wire shim; later phases
+// add scope/limit_key/idempotency to StartInvocation, retry policies to
+// EndInvocation, and combinator notifications to Completion.
+//
+// Both directions flow over the same transport. SDKMessage is a tagged
+// envelope; the kinds enumerate the legal payloads in either direction.
+// Direction conventions are documented per-message, not enforced by the
+// schema — the engine and SDK each reject out-of-direction messages.
+syntax = "proto3";
+
+package reflow.sdk.v1;
+
+option go_package = "github.com/twinfer/reflow/proto/sdkv1;sdkv1";
+
+import "enginev1/engine.proto";
+
+// SDKMessage is the framing envelope for every session message in either
+// direction. The wire shim length-prefixes the marshaled bytes; in-process
+// transports pass the struct directly.
+message SDKMessage {
+  oneof kind {
+    // Engine → SDK.
+    StartInvocation start = 1;
+    ReplayEntry replay_entry = 2;
+    EntryAck entry_ack = 3;
+    Completion completion = 4;
+
+    // SDK → engine.
+    SuspensionRequest suspension = 5;
+    EndInvocation end = 6;
+    ProposeEntry propose_entry = 7;
+    ProposeRunCompletion propose_run_completion = 8;
+
+    // Either direction.
+    ErrorMessage error = 9;
+  }
+}
+
+// StartInvocation kicks off a session. Sent by the engine right after the
+// transport opens. Mirrors Restate StartMessage at protocol.proto:53-105
+// (drops scope, limit_key, idempotency, related_invocation_id for Phase 2).
+//
+//   id          : the InvocationId being executed (carries partition_key).
+//   debug_id    : human-readable hint for logging (e.g. "Greeter/hello/abc").
+//   target      : service + handler + object_key.
+//   input       : the original request body the ingress accepted.
+//   known_entries: count of JournalEntry rows already committed. Replay
+//                  iterates [0, known_entries).
+//   state_map   : eager-state preload. Always empty in Phase 2; reserved for
+//                 Phase 3 when JEGetEagerState lands.
+//   partial_state: true when state_map is incomplete (Phase 3+).
+//   random_seed : deterministic PRNG seed bound to this invocation.
+message StartInvocation {
+  reflow.engine.v1.InvocationId id = 1;
+  string debug_id = 2;
+  reflow.engine.v1.InvocationTarget target = 3;
+  bytes input = 4;
+  uint32 known_entries = 5;
+  repeated StateMapEntry state_map = 6;
+  bool partial_state = 7;
+  uint64 random_seed = 8;
+}
+
+// ReplayEntry feeds a single journaled entry from the engine to the SDK
+// during the Replay phase. Entries arrive in index order and the SDK
+// consumes them in lockstep with handler progress. Mirrors restate
+// service_protocol_runner_v4.rs:171-213.
+message ReplayEntry {
+  reflow.engine.v1.JournalEntry entry = 1;
+}
+
+// EntryAck is sent by the engine once a ProposeEntry has been Raft-committed
+// and applied. The SDK blocks on EntryAck before exposing the entry's
+// effects to the handler goroutine (matching Restate CommandAckMessage at
+// protocol.proto:187-189).
+message EntryAck {
+  uint32 entry_index = 1;
+}
+
+// Completion delivers the result of a previously-issued completable entry
+// (Sleep, Call, Awakeable, lazy GetState). completion_id is the entry index
+// of the originating command.
+message Completion {
+  uint32 completion_id = 1;
+  oneof result {
+    Value value = 2;
+    Failure failure = 3;
+    Void void = 4;
+  }
+}
+
+// SuspensionRequest tells the engine the handler is awaiting one or more
+// pending completions and the session goroutine is exiting cleanly. The
+// engine propagates this as InvokerEffect.InvocationSuspended.
+//
+// awaiting_on is a flat slice of stringified waker IDs (e.g. "sleep:3",
+// "call:5", "awakeable:awk_aaaa..."). Combinator-style nested futures arrive
+// in Phase 3+.
+message SuspensionRequest {
+  repeated string awaiting_on = 1;
+}
+
+// EndInvocation marks the handler returning normally or with a terminal
+// failure. The engine writes JEOutput (or records the failure) and flips
+// the invocation to Completed.
+message EndInvocation {
+  bytes output = 1;
+  Failure failure = 2;
+}
+
+// ProposeEntry asks the engine to journal a new entry on behalf of the
+// handler. The engine proposes InvokerEffect.JournalAppended, the FSM
+// applies it, and an EntryAck is returned. Awaitable entries (Call, Sleep,
+// Awakeable) eventually receive a Completion as well.
+message ProposeEntry {
+  reflow.engine.v1.JournalEntry entry = 1;
+}
+
+// ProposeRunCompletion carries the value or failure produced by a
+// ctx.Run() body. The engine proposes InvokerEffect.JERunProposal; the FSM
+// writes the JERun journal entry at entry_index. Mirrors restate
+// ProposeRunCompletionMessage at protocol.proto:195-201.
+message ProposeRunCompletion {
+  uint32 entry_index = 1;
+  bytes value = 2;
+  Failure failure = 3;
+}
+
+// ErrorMessage signals a protocol-level error. Either side may emit it
+// before closing the transport. related_command_index is optional context
+// (0 means "none"). Mirrors Restate ErrorMessage at protocol.proto:170-184.
+message ErrorMessage {
+  uint32 code = 1;
+  string message = 2;
+  uint32 related_command_index = 3;
+}
+
+// Failure carries an SDK-classified terminal error. code is a user-facing
+// status code (handler authors define the namespace); message is human
+// text. Phase 3 will add retry classification and structured details.
+message Failure {
+  uint32 code = 1;
+  string message = 2;
+}
+
+// Value wraps a non-empty completion payload. The wrapping lets us
+// distinguish "delivered empty bytes" from "void completion".
+message Value {
+  bytes data = 1;
+}
+
+// Void is the explicit zero-value completion (Sleep, OneWayCall ack, etc.).
+message Void {}
+
+// StateMapEntry is one (key, value) tuple in StartInvocation.state_map.
+// Phase 2 never emits these; Phase 3 fills them in for eager-state
+// invocations.
+message StateMapEntry {
+  bytes key = 1;
+  bytes value = 2;
+}
+
+// SessionService is the gRPC bidi-streaming entrypoint for out-of-process
+// SDKs (TypeScript, Python, etc.). A handler-side SDK dials Invoke and the
+// engine routes pending StartInvocation messages to it; the SDK responds
+// with ProposeEntry / Completion / EndInvocation frames over the same
+// stream.
+//
+// We deliberately use gRPC bidi-streaming here rather than Restate's
+// raw-HTTP/2 length-prefix framing: it costs us nothing (gRPC is already
+// in the dep tree for ingress), generated client stubs land for free in
+// every language buf supports, and the wire format is well-tested.
+//
+// Phase 2 ships the proto definition and registers an Unimplemented
+// server stub so clients can discover the service; routing to a connected
+// SDK lands once a non-Go SDK actually exists. See SAD §11.
+service SessionService {
+  rpc Invoke(stream SDKMessage) returns (stream SDKMessage);
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -14,8 +15,10 @@ import (
 	"github.com/lni/dragonboat/v4/config"
 	"github.com/lni/dragonboat/v4/raftio"
 
+	"github.com/twinfer/reflow/internal/engine/invoker"
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/tables"
+	"github.com/twinfer/reflow/pkg/sdk"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -36,6 +39,11 @@ type HostConfig struct {
 	EnableMetrics bool
 	// RTTMillisecond is the dragonboat logical-clock tick. Defaults to 200ms.
 	RTTMillisecond uint64
+	// Handlers is the public SDK registry the leader-side Invoker resolves
+	// against on ActInvoke dispatch. Nil is acceptable — the partition
+	// builds an empty registry and any ActInvoke falls through with a
+	// "no handler" warning. Phase 2.
+	Handlers *sdk.Registry
 }
 
 // Host owns the NodeHost and the per-partition runners.
@@ -134,6 +142,11 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		InitialEpoch: initialEpoch,
 	})
 
+	registry := h.cfg.Handlers
+	if registry == nil {
+		registry = sdk.NewRegistry()
+	}
+
 	runner := &PartitionRunner{
 		ShardID:     shardID,
 		snapshotter: snap,
@@ -142,9 +155,19 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		collector:   collector,
 		log:         h.log,
 	}
-	// Timer service depends on the runner's table view of the store. Created
-	// here, started in onBecomeLeader.
-	runner.timers = NewTimerService(runnerTimerTable(snap), proposer, TimerServiceOptions{Log: h.log})
+	// The Invoker is constructed once and survives leader gain/loss
+	// cycles via Start/Stop; table views rebind on each leader gain so
+	// they track the snapshotter's current store after recovery. The
+	// TimerService and OutboxService are recreated per leader gain in
+	// onBecomeLeader — their `done` channels are single-use so reusing
+	// the same instance across promotions would panic.
+	runner.invoker = invoker.New(invoker.Config{
+		Registry:        invoker.NewRegistry(registry),
+		JournalTable:    tables.JournalTable{S: snap.Store()},
+		InvocationTable: tables.InvocationTable{S: snap.Store()},
+		Proposer:        proposer,
+		Log:             h.log,
+	})
 
 	leadership.SetCallbacks(runner.onBecomeLeader, runner.onStepDown)
 
@@ -187,6 +210,17 @@ func (h *Host) Partition(shardID uint64) *PartitionRunner {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.partitions[shardID]
+}
+
+// Partitions returns a snapshot of the runners hosted on this node, keyed by
+// shard ID. The map is freshly allocated; mutating it does not affect the
+// host. Order is not stable across calls. Used by ingress admin endpoints.
+func (h *Host) Partitions() map[uint64]*PartitionRunner {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make(map[uint64]*PartitionRunner, len(h.partitions))
+	maps.Copy(out, h.partitions)
+	return out
 }
 
 // Close stops every partition and the NodeHost. Idempotent.

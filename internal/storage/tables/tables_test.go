@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cockroachdb/pebble"
-	"github.com/cockroachdb/pebble/vfs"
+	"github.com/cockroachdb/pebble/v2"
+	"github.com/cockroachdb/pebble/v2/vfs"
 
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/tables"
@@ -352,6 +352,215 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		dup, err = dt.IsDuplicate(&enginev1.Dedup{})
 		if err != nil || dup {
 			t.Errorf("empty dedup: dup=%v err=%v", dup, err)
+		}
+	})
+
+	t.Run(name+"/State_SetGetClear", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		st := tables.StateTable{S: s}
+		target := &enginev1.InvocationTarget{ServiceName: "Greeter", ObjectKey: "alice"}
+
+		// Missing key: (nil, false, nil).
+		v, ok, err := st.Get(target, "balance")
+		if err != nil || ok || v != nil {
+			t.Errorf("missing key: v=%v ok=%v err=%v", v, ok, err)
+		}
+
+		b := s.NewBatch()
+		if err := st.Set(b, target, "balance", []byte{0x10}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.Set(b, target, "name", []byte("Alice")); err != nil {
+			t.Fatal(err)
+		}
+		// Present-but-empty must be distinguishable from missing.
+		if err := st.Set(b, target, "empty", []byte{}); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b)
+
+		v, ok, _ = st.Get(target, "balance")
+		if !ok || !bytes.Equal(v, []byte{0x10}) {
+			t.Errorf("balance: v=%v ok=%v", v, ok)
+		}
+		v, ok, _ = st.Get(target, "empty")
+		if !ok || len(v) != 0 {
+			t.Errorf("empty: v=%v ok=%v (want ok && len==0)", v, ok)
+		}
+
+		// Clear removes the row.
+		b2 := s.NewBatch()
+		if err := st.Clear(b2, target, "balance"); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b2)
+		_, ok, _ = st.Get(target, "balance")
+		if ok {
+			t.Error("balance still present after Clear")
+		}
+	})
+
+	t.Run(name+"/State_ScanObjectIsolation", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		st := tables.StateTable{S: s}
+		alice := &enginev1.InvocationTarget{ServiceName: "Svc", ObjectKey: "alice"}
+		bob := &enginev1.InvocationTarget{ServiceName: "Svc", ObjectKey: "bob"}
+		other := &enginev1.InvocationTarget{ServiceName: "Other", ObjectKey: "alice"}
+		unkeyed := &enginev1.InvocationTarget{ServiceName: "Unkeyed", ObjectKey: ""}
+
+		b := s.NewBatch()
+		_ = st.Set(b, alice, "a", []byte("A"))
+		_ = st.Set(b, alice, "z", []byte("Z"))
+		_ = st.Set(b, bob, "a", []byte("Bob-A"))
+		_ = st.Set(b, other, "a", []byte("Other-A"))
+		_ = st.Set(b, unkeyed, "cfg", []byte("U"))
+		commit(t, b)
+
+		var pairs []string
+		if err := st.ScanObject(alice, func(k string, v []byte) error {
+			pairs = append(pairs, k+"="+string(v))
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if len(pairs) != 2 || pairs[0] != "a=A" || pairs[1] != "z=Z" {
+			t.Errorf("alice scan = %v; want [a=A z=Z]", pairs)
+		}
+
+		// Unkeyed service scan returns its own rows only.
+		var uPairs []string
+		_ = st.ScanObject(unkeyed, func(k string, v []byte) error {
+			uPairs = append(uPairs, k+"="+string(v))
+			return nil
+		})
+		if len(uPairs) != 1 || uPairs[0] != "cfg=U" {
+			t.Errorf("unkeyed scan = %v; want [cfg=U]", uPairs)
+		}
+	})
+
+	t.Run(name+"/Outbox_AppendPopGet", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		ot := tables.OutboxTable{S: s}
+
+		env1 := &enginev1.OutboxEnvelope{
+			Kind: &enginev1.OutboxEnvelope_Invoke{Invoke: &enginev1.InvokeCommand{
+				InvocationId: mkID(1, "0123456789abcdef"),
+				Target:       &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"},
+				Input:        []byte("payload"),
+			}},
+		}
+		b := s.NewBatch()
+		if err := ot.Append(b, 1, env1); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b)
+
+		got, err := ot.Get(1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inv := got.GetInvoke()
+		if inv == nil || string(inv.GetInput()) != "payload" {
+			t.Errorf("get: %+v", got)
+		}
+
+		b2 := s.NewBatch()
+		if err := ot.Pop(b2, 1); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b2)
+		if _, err := ot.Get(1); !errors.Is(err, storage.ErrNotFound) {
+			t.Errorf("after pop: %v; want ErrNotFound", err)
+		}
+	})
+
+	t.Run(name+"/Outbox_OrderingFifo", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		ot := tables.OutboxTable{S: s}
+
+		// Insert out of order; ScanFrom must yield ascending seq.
+		seqs := []uint64{5, 1, 7, 2, 100, 3}
+		b := s.NewBatch()
+		for _, seq := range seqs {
+			env := &enginev1.OutboxEnvelope{
+				Kind: &enginev1.OutboxEnvelope_Invoke{Invoke: &enginev1.InvokeCommand{
+					InvocationId: mkID(seq, "0123456789abcdef"),
+					Target:       &enginev1.InvocationTarget{ServiceName: "S"},
+				}},
+			}
+			if err := ot.Append(b, seq, env); err != nil {
+				t.Fatal(err)
+			}
+		}
+		commit(t, b)
+
+		var got []uint64
+		if err := ot.ScanFrom(0, func(row tables.OutboxRow) error {
+			got = append(got, row.Seq)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		want := []uint64{1, 2, 3, 5, 7, 100}
+		if len(got) != len(want) {
+			t.Fatalf("scan len = %d; want %d (%v)", len(got), len(want), got)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("scan[%d] = %d; want %d", i, got[i], want[i])
+			}
+		}
+
+		// ScanFrom(seq=3) skips earlier rows.
+		got = got[:0]
+		_ = ot.ScanFrom(3, func(row tables.OutboxRow) error {
+			got = append(got, row.Seq)
+			return nil
+		})
+		want2 := []uint64{3, 5, 7, 100}
+		if len(got) != len(want2) || got[0] != 3 {
+			t.Errorf("ScanFrom(3) = %v; want %v", got, want2)
+		}
+	})
+
+	t.Run(name+"/Awakeable_PutGetDelete", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		at := tables.AwakeableTable{S: s}
+		id := "awk_AAAAAAAAAAAAAAAAAAAAAA"
+		owner := mkID(42, "0123456789abcdef")
+		entry := &enginev1.AwakeableEntry{Owner: owner, EntryIndex: 7}
+
+		// Missing.
+		if _, err := at.Get(id); !errors.Is(err, storage.ErrNotFound) {
+			t.Errorf("missing: %v; want ErrNotFound", err)
+		}
+
+		b := s.NewBatch()
+		if err := at.Put(b, id, entry); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b)
+
+		got, err := at.Get(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.GetOwner().GetPartitionKey() != 42 || got.GetEntryIndex() != 7 {
+			t.Errorf("roundtrip: %+v", got)
+		}
+
+		b2 := s.NewBatch()
+		if err := at.Delete(b2, id); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b2)
+		if _, err := at.Get(id); !errors.Is(err, storage.ErrNotFound) {
+			t.Errorf("after delete: %v; want ErrNotFound", err)
 		}
 	})
 }

@@ -1,113 +1,79 @@
-// Command reflowd starts a single-node reflow Host. Phase 1 only — no
-// cluster manager, no SDK gateway.
+// Command reflowd starts a reflow node using layered configuration from
+// environment variables and optional config files. For custom deployments
+// that link the engine in their own binary, call reflow.Run(ctx, cfg)
+// directly with a programmatically constructed Config.
+//
+// Configuration sources (later overrides earlier):
+//
+//  1. Built-in defaults (single-node, shard 1, sensible ports).
+//  2. Optional config file from $REFLOW_CONFIG (YAML or JSON).
+//  3. REFLOW_* environment variables.
 package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-
-	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/internal/observability"
+	"github.com/twinfer/reflow/pkg/reflow"
+	"github.com/twinfer/reflow/pkg/reflow/config"
+	"github.com/twinfer/reflow/pkg/sdk"
 )
 
 func main() {
-	var (
-		nodeID      uint64
-		raftAddr    string
-		dataDir     string
-		metricsAddr string
-		level       string
-		shards      uint64Slice
-	)
-	flag.Uint64Var(&nodeID, "node-id", 1, "Replica ID for this node (must be > 0)")
-	flag.StringVar(&raftAddr, "raft-addr", "127.0.0.1:9091", "Raft RPC address (host:port)")
-	flag.StringVar(&dataDir, "data-dir", "./data", "Directory for raft and partition state")
-	flag.StringVar(&metricsAddr, "metrics-addr", ":9090", "HTTP listen address for /metrics")
-	flag.StringVar(&level, "log-level", "info", "slog level: debug|info|warn|error")
-	flag.Var(&shards, "shard", "Shard ID to start (repeatable; default: 1)")
-	flag.Parse()
-
-	logger := observability.NewLogger(parseLevel(level))
-	slog.SetDefault(logger)
-
-	_ = observability.NewMetrics(nil) // registers against the default registry
-
-	if len(shards) == 0 {
-		shards = append(shards, 1)
-	}
-
-	host, err := engine.NewHost(engine.HostConfig{
-		NodeID:        nodeID,
-		RaftAddr:      raftAddr,
-		DataDir:       dataDir,
-		Log:           logger,
-		EnableMetrics: true,
-	})
+	cfg, err := loadConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "reflowd: NewHost: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(os.Stderr, "reflowd: %v\n", err)
+		os.Exit(2)
 	}
-
-	for _, sh := range shards {
-		if _, err := host.StartPartition(sh); err != nil {
-			fmt.Fprintf(os.Stderr, "reflowd: StartPartition(%d): %v\n", sh, err)
-			os.Exit(1)
-		}
-		logger.Info("started partition", "shard", sh)
-	}
-
-	go func() {
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.Handler())
-		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-			fmt.Fprintln(w, "ok")
-		})
-		logger.Info("metrics listening", "addr", metricsAddr)
-		if err := http.ListenAndServe(metricsAddr, mux); err != nil && err != http.ErrServerClosed {
-			logger.Error("metrics server exited", "err", err)
-		}
-	}()
+	cfg.Handlers = sdk.NewRegistry()
+	// User binaries register handlers here before reflow.Run; reflowd
+	// ships with an empty registry — useful for smoke-testing the
+	// ingress + admin endpoints without a real workload.
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	host, err := reflow.Run(ctx, cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reflowd: %v\n", err)
+		os.Exit(1)
+	}
 	<-ctx.Done()
-	logger.Info("shutting down")
+	slog.Default().Info("reflowd: shutting down")
 	_ = host.Close()
 }
 
-func parseLevel(s string) slog.Level {
-	switch s {
-	case "debug":
-		return slog.LevelDebug
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
+// loadConfig layers built-in defaults, an optional config file, and
+// REFLOW_* env vars (in that order — later sources win). Returns the
+// merged Config or any error from a source.
+func loadConfig() (reflow.Config, error) {
+	sources := []config.Source{
+		config.FromMap(defaultValues()),
 	}
+	if path := os.Getenv("REFLOW_CONFIG"); path != "" {
+		sources = append(sources, config.FromFile(path))
+	}
+	sources = append(sources, config.FromEnv())
+
+	cfg, _, err := config.Load(sources...)
+	return cfg, err
 }
 
-// uint64Slice supports a repeatable --shard flag.
-type uint64Slice []uint64
-
-func (s *uint64Slice) String() string {
-	return fmt.Sprintf("%v", []uint64(*s))
-}
-
-func (s *uint64Slice) Set(v string) error {
-	var n uint64
-	if _, err := fmt.Sscanf(v, "%d", &n); err != nil {
-		return err
+// defaultValues are the baked-in defaults. Picked to make `go run
+// ./cmd/reflowd` work out of the box on a developer machine.
+func defaultValues() map[string]any {
+	return map[string]any{
+		"node.id":           uint64(1),
+		"node.raft_addr":    "127.0.0.1:9091",
+		"storage.data_dir":  "./data",
+		"cluster.shards":    []uint64{1},
+		"ingress.grpc_addr": ":8081",
+		"ingress.http_addr": ":8080",
+		"metrics.addr":      ":9090",
+		"logging.level":     "INFO",
 	}
-	*s = append(*s, n)
-	return nil
 }

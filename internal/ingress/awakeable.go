@@ -1,0 +1,69 @@
+package ingress
+
+import (
+	"context"
+	"errors"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/twinfer/reflow/internal/engine"
+	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
+)
+
+// ResolveAwakeable looks up the awakeable directory to find the owning
+// invocation, then proposes an InvokerEffect.AwakeableResolved on the
+// owner's partition. The FSM appends a JEAwakeableResult to the owner's
+// journal and (if Suspended) wakes the invocation.
+//
+// Routing in Phase 2 is single-partition (shard 1). When multi-partition
+// lands, the owner's partition_key in the AwakeableEntry tells us where to
+// propose.
+func (s *Server) ResolveAwakeable(ctx context.Context, req *ingressv1.ResolveAwakeableRequest) (*ingressv1.ResolveAwakeableResponse, error) {
+	awkID := req.GetAwakeableId()
+	if awkID == "" {
+		return nil, status.Error(codes.InvalidArgument, "awakeable_id is required")
+	}
+
+	shardID := Phase2ShardID
+	runner := s.host.Partition(shardID)
+	if runner == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "no partition for shard %d", shardID)
+	}
+	// dragonboat SyncRead requires a deadline; grpc-gateway forwards the
+	// HTTP request context as-is, which has no timeout by default. Same
+	// guard as DescribeInvocation in admin.go.
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, describeLookupTimeout)
+		defer cancel()
+	}
+
+	res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupAwakeable{ID: awkID})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "lookup awakeable: %v", err)
+	}
+	entry, ok := res.(*enginev1.AwakeableEntry)
+	if !ok || entry == nil {
+		return nil, status.Errorf(codes.NotFound, "awakeable %q not found", awkID)
+	}
+
+	effect := &enginev1.InvokerEffect{
+		InvocationId: entry.GetOwner(),
+		Kind: &enginev1.InvokerEffect_AwakeableResolved{AwakeableResolved: &enginev1.AwakeableResolved{
+			AwakeableId:    awkID,
+			Value:          req.GetValue(),
+			FailureMessage: req.GetFailureMessage(),
+		}},
+	}
+	cmd := &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: effect}}
+	producerID := "awk/" + awkID
+	if err := runner.Proposer().ProposeIngress(ctx, producerID, 1, cmd); err != nil {
+		if errors.Is(err, engine.ErrShardClosed) {
+			return nil, status.Error(codes.Unavailable, "shard closed")
+		}
+		return nil, status.Errorf(codes.Internal, "propose awakeable_resolved: %v", err)
+	}
+	return &ingressv1.ResolveAwakeableResponse{Resolved: true}, nil
+}

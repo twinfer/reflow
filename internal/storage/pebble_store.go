@@ -4,7 +4,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/v2"
 )
 
 // PebbleStore is a Store backed by cockroachdb/pebble. Open a fresh DB with
@@ -47,14 +47,13 @@ func (s *PebbleStore) NewBatch() Batch {
 }
 
 func (s *PebbleStore) NewIter(lower, upper []byte) (Iter, error) {
-	// dragonboat v4 (this pseudo-version) pins cockroachdb/pebble at a
-	// Dec-2022 commit where DB.NewIter returns just *Iterator. Newer pebble
-	// returns (*Iterator, error). We pin to dragonboat's version (see
-	// go.mod) and use the older signature here.
-	iter := s.db.NewIter(&pebble.IterOptions{
+	iter, err := s.db.NewIter(&pebble.IterOptions{
 		LowerBound: lower,
 		UpperBound: upper,
 	})
+	if err != nil {
+		return nil, err
+	}
 	return &pebbleIter{iter: iter}, nil
 }
 

@@ -4,9 +4,13 @@
 // to crates/... refer to Restate v1.6.2.
 //
 // Scope per phase:
-//   Phase 1 (current): partition-shard commands + rows. AnnounceLeader is
-//     shared with the metadata shard, but Phase 1 deployments only host
-//     partition shards.
+//   Phase 1: partition-shard commands + rows. AnnounceLeader is shared with
+//     the metadata shard, but Phase 1 deployments only host partition shards.
+//   Phase 2 (current): in-process Go SDK + Invoker. Adds JournalEntry
+//     variants (JERun, JEAwakeable, JEAwakeableResult, JESignal,
+//     JEClearState, JEGetEagerState) and InvokerEffect kinds (JERunProposal,
+//     AwakeableResolved, SignalDelivered). PartitionMeta gains
+//     next_outbox_seq; AwakeableEntry is the awakeable directory value.
 //   Phase 4: metadata-shard commands (RegisterNode, RemoveNode,
 //     UpdatePartitionTable, Heartbeat, VersionBarrier) will land in the
 //     Command oneof's reserved tag range (6-15). See SAD §6.2.
@@ -116,7 +120,38 @@ message InvokerEffect {
     JournalEntryAppended journal_appended = 2;
     InvocationCompleted completed = 3;
     InvocationSuspended suspended = 4;
+    // Phase 2 additions.
+    JERunProposal run_proposal = 5;
+    AwakeableResolved awakeable_resolved = 6;
+    SignalDelivered signal_delivered = 7;
   }
+}
+
+// JERunProposal carries the outcome of a deterministic side-effect block
+// (ctx.Run) from the SDK back to the engine. The FSM applies it by writing
+// a JERun journal entry at entry_index and acking the SDK. Phase 2.
+message JERunProposal {
+  uint32 entry_index = 1;
+  bytes value = 2;
+  string failure_message = 3;
+}
+
+// AwakeableResolved is proposed by the partition that owns the resolving
+// invocation when an external caller resolves an awakeable. The FSM appends
+// a JEAwakeableResult to the owner's journal and wakes the suspended
+// invocation if needed. Phase 2.
+message AwakeableResolved {
+  string awakeable_id = 1;
+  bytes value = 2;
+  string failure_message = 3;
+}
+
+// SignalDelivered is the receiver-side effect when a JESignal lands on its
+// target invocation. signal_name + payload are the routed bits; the target
+// InvocationId lives on the surrounding InvokerEffect.invocation_id. Phase 2.
+message SignalDelivered {
+  string signal_name = 1;
+  bytes payload = 2;
 }
 
 message JournalEntryAppended {
@@ -133,9 +168,16 @@ message InvocationSuspended {
   repeated string awaiting_on = 1;
 }
 
-// JournalEntry — Phase 1 minimum set.
-// Mirrors restate journal_v2 Command+Notification flat union
+// JournalEntry. Mirrors restate journal_v2 Command+Notification flat union
 // at types/src/journal_v2/mod.rs:60-150.
+//
+// Tag assignment:
+//   2-9   : Phase 1 baseline (Input, Sleep+Result, Call+Result, Get/SetState,
+//           Output).
+//   10-15 : Phase 2 (Run, Awakeable, AwakeableResult, Signal, ClearState,
+//           GetEagerState).
+//   16+   : reserved for Phase 3 (Promise combinators, AttachInvocation,
+//           ClearAllState, idempotency-keyed Call, virtual-object queue ops).
 message JournalEntry {
   uint32 index = 1;
   oneof entry {
@@ -147,6 +189,13 @@ message JournalEntry {
     JEGetState get_state = 7;
     JESetState set_state = 8;
     JEOutput output = 9;
+    // Phase 2 additions.
+    JERun run = 10;
+    JEAwakeable awakeable = 11;
+    JEAwakeableResult awakeable_result = 12;
+    JESignal signal = 13;
+    JEClearState clear_state = 14;
+    JEGetEagerState get_eager_state = 15;
   }
 }
 
@@ -185,6 +234,54 @@ message JESetState {
 
 message JEOutput {
   bytes value = 1;
+}
+
+// JERun records the outcome of a deterministic side-effect block. The SDK
+// runs the body once, journals (value or failure_message), and replays
+// store-only on subsequent retries. attempt is bookkeeping for retry
+// policies (Phase 3). Phase 2.
+message JERun {
+  bytes value = 1;
+  string failure_message = 2;
+  uint32 attempt = 3;
+}
+
+// JEAwakeable is journaled when a handler mints an awakeable. The actual
+// resolution arrives later as JEAwakeableResult after an external caller
+// hits the ingress resolution endpoint. Phase 2.
+message JEAwakeable {
+  string awakeable_id = 1;
+}
+
+// JEAwakeableResult resolves a previously-minted awakeable. Written by
+// the FSM in response to InvokerEffect.AwakeableResolved. Phase 2.
+message JEAwakeableResult {
+  string awakeable_id = 1;
+  bytes value = 2;
+  string failure_message = 3;
+}
+
+// JESignal is sender-side: the journal entry an invocation writes when it
+// sends a signal to another invocation. The receiver-side effect is
+// InvokerEffect.SignalDelivered. Phase 2.
+message JESignal {
+  InvocationId target_invocation_id = 1;
+  string signal_name = 2;
+  bytes payload = 3;
+}
+
+// JEClearState records a state deletion. Phase 2.
+message JEClearState {
+  string key = 1;
+}
+
+// JEGetEagerState is the eager-preload form of GetState: the value is
+// resolved from the state map at StartInvocation time rather than via a
+// follow-up notification. Defined for Phase 3; never emitted in Phase 2.
+message JEGetEagerState {
+  string key = 1;
+  bytes value = 2;
+  bool present = 3;
 }
 
 message TimerFired {
@@ -250,6 +347,39 @@ message PartitionMeta {
   uint64 applied_index = 1;
   uint64 leader_epoch = 2;
   uint64 latest_announced_epoch = 3;
+  // next_outbox_seq is the next sequence number the leader will allocate
+  // when appending to OutboxTable. Survives restarts so re-injected
+  // commands keep monotonic ordering. Phase 2.
+  uint64 next_outbox_seq = 4;
+}
+
+// AwakeableEntry is the directory row keyed by awakeable_id, pointing back
+// at the owning invocation and the journal index that minted it. Lets
+// ingress find the right partition to propose AwakeableResolved on. Phase 2.
+message AwakeableEntry {
+  InvocationId owner = 1;
+  uint32 entry_index = 2;
+}
+
+// OutboxEnvelope is the row stored in the outbox/<seq> namespace. The
+// leader-side shuffler scans these and re-injects each one as a Command
+// (InvokeCommand) or InvokerEffect (SignalDelivered) on the appropriate
+// partition. Phase 2 only emits the invoke variant; SignalSend is wired
+// when JESignal lands in Step 7. Reserved variants live above tag 15.
+message OutboxEnvelope {
+  oneof kind {
+    InvokeCommand invoke = 1;
+    SignalSend signal = 2;
+  }
+}
+
+// SignalSend is the outbox payload for a JESignal journal entry. Same
+// shape as JESignal — repeated here so the outbox row is self-contained
+// (the shuffler does not need to load the journal to re-inject).
+message SignalSend {
+  InvocationId target_invocation_id = 1;
+  string signal_name = 2;
+  bytes payload = 3;
 }
 
 // SnapshotMeta is the operator-visible sidecar accompanying each snapshot

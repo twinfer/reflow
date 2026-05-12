@@ -217,13 +217,33 @@ func TestTimerFired_ResumesSuspended(t *testing.T) {
 	}
 }
 
-func TestTimerFired_LateOnInvokedNoop(t *testing.T) {
+// TestTimerFired_OnInvokedEmitsActInvoke locks in the resume-race fix:
+// a TimerFired that lands while the FSM still reports Invoked (because
+// a resumed session's Suspended propose hasn't applied yet) must still
+// emit ActInvoke. Otherwise the wake is swallowed: the SleepResult is
+// journaled but nothing re-spawns a session once the existing one
+// exits via Suspended. The Invoker dedupes idempotently against any
+// currently-running session via its pendingRespawn queue.
+func TestTimerFired_OnInvokedEmitsActInvoke(t *testing.T) {
 	id := mkID()
 	target := &enginev1.InvocationTarget{ServiceName: "S"}
 	cur := invokedStatus(target)
 	next, actions, err := transitionOnTimerFired(id, cur, &enginev1.TimerFired{}, 500)
-	if err != nil || len(actions) != 0 || next != cur {
-		t.Errorf("late timer: err=%v actions=%d", err, len(actions))
+	if err != nil {
+		t.Fatalf("err = %v; want nil", err)
+	}
+	if next != cur {
+		t.Errorf("status changed; want Invoked → Invoked (status preserved)")
+	}
+	if len(actions) != 1 {
+		t.Fatalf("actions = %d; want 1 (ActInvoke)", len(actions))
+	}
+	inv, ok := actions[0].(ActInvoke)
+	if !ok {
+		t.Fatalf("action[0] = %T; want ActInvoke", actions[0])
+	}
+	if inv.Target.GetServiceName() != "S" {
+		t.Errorf("ActInvoke target = %q; want S", inv.Target.GetServiceName())
 	}
 }
 
@@ -245,5 +265,178 @@ func TestPurge_FromInvokedInvalid(t *testing.T) {
 	_, _, err := transitionOnPurge(id, invokedStatus(target), 0)
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Errorf("expected ErrInvalidTransition, got %v", err)
+	}
+}
+
+// Phase 2: new JournalEntry kinds are accepted in Invoked state as no-op
+// state transitions. The wildcard logic in transitionOnJournalAppend
+// covers them — these tests pin that behavior down.
+func TestJournalAppend_Phase2EntryTypesNoOpFromInvoked(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "S"}
+	cases := []struct {
+		name  string
+		entry *enginev1.JournalEntry
+	}{
+		{"JERun", &enginev1.JournalEntry{
+			Entry: &enginev1.JournalEntry_Run{Run: &enginev1.JERun{Value: []byte("v")}},
+		}},
+		{"JEAwakeable", &enginev1.JournalEntry{
+			Entry: &enginev1.JournalEntry_Awakeable{Awakeable: &enginev1.JEAwakeable{AwakeableId: "awk_AAAAAAAAAAAAAAAAAAAAAA"}},
+		}},
+		{"JESignal", &enginev1.JournalEntry{
+			Entry: &enginev1.JournalEntry_Signal{Signal: &enginev1.JESignal{SignalName: "ping"}},
+		}},
+		{"JEClearState", &enginev1.JournalEntry{
+			Entry: &enginev1.JournalEntry_ClearState{ClearState: &enginev1.JEClearState{Key: "k"}},
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cur := invokedStatus(target)
+			app := &enginev1.JournalEntryAppended{Entry: c.entry}
+			next, actions, err := transitionOnJournalAppend(id, cur, app, 250)
+			if err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			if next != cur {
+				t.Errorf("Invoked must remain Invoked (same pointer)")
+			}
+			if len(actions) != 0 {
+				t.Errorf("expected no FSM actions; got %d", len(actions))
+			}
+		})
+	}
+}
+
+func TestJournalAppend_AwakeableResultWakesSuspended(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "S"}
+	cur := suspendedStatus(target)
+	app := &enginev1.JournalEntryAppended{Entry: &enginev1.JournalEntry{
+		Entry: &enginev1.JournalEntry_AwakeableResult{
+			AwakeableResult: &enginev1.JEAwakeableResult{AwakeableId: "awk_AAAAAAAAAAAAAAAAAAAAAA", Value: []byte("v")},
+		},
+	}}
+	next, actions, err := transitionOnJournalAppend(id, cur, app, 350)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := next.GetStatus().(*enginev1.InvocationStatus_Invoked); !ok {
+		t.Errorf("got %T; want Invoked", next.GetStatus())
+	}
+	if len(actions) != 1 {
+		t.Fatalf("expected ActInvoke, got %d actions", len(actions))
+	}
+	if _, ok := actions[0].(ActInvoke); !ok {
+		t.Errorf("action[0] = %T; want ActInvoke", actions[0])
+	}
+}
+
+func TestAwakeableResolved_FromSuspended(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "S"}
+	next, actions, err := transitionOnAwakeableResolved(id, suspendedStatus(target), 7, []byte("v"), "", 400)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := next.GetStatus().(*enginev1.InvocationStatus_Invoked); !ok {
+		t.Fatalf("got %T; want Invoked", next.GetStatus())
+	}
+	if len(actions) != 2 {
+		t.Fatalf("expected 2 actions (ActInvoke + ActDeliverNotification); got %d", len(actions))
+	}
+	if _, ok := actions[0].(ActInvoke); !ok {
+		t.Errorf("action[0] = %T; want ActInvoke", actions[0])
+	}
+	notify, ok := actions[1].(ActDeliverNotification)
+	if !ok {
+		t.Fatalf("action[1] = %T; want ActDeliverNotification", actions[1])
+	}
+	if notify.CompletionID != 7 || string(notify.Value) != "v" {
+		t.Errorf("notification fields: %+v", notify)
+	}
+}
+
+func TestAwakeableResolved_FromInvokedLiveDelivery(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "S"}
+	cur := invokedStatus(target)
+	next, actions, err := transitionOnAwakeableResolved(id, cur, 9, nil, "boom", 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next != cur {
+		t.Errorf("Invoked must remain Invoked (same pointer)")
+	}
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action; got %d", len(actions))
+	}
+	notify, ok := actions[0].(ActDeliverNotification)
+	if !ok {
+		t.Fatalf("action[0] = %T; want ActDeliverNotification", actions[0])
+	}
+	if notify.Failure != "boom" || notify.CompletionID != 9 {
+		t.Errorf("failure delivery fields: %+v", notify)
+	}
+}
+
+func TestAwakeableResolved_FromCompletedNoop(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "S"}
+	cur := completedStatus(target)
+	next, actions, err := transitionOnAwakeableResolved(id, cur, 1, []byte("late"), "", 600)
+	if err != nil || len(actions) != 0 || next != cur {
+		t.Errorf("Completed late arrival: err=%v actions=%d", err, len(actions))
+	}
+}
+
+func TestAwakeableResolved_FromFreeInvalid(t *testing.T) {
+	id := mkID()
+	_, _, err := transitionOnAwakeableResolved(id, freeStatus(), 1, nil, "", 0)
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Errorf("expected ErrInvalidTransition, got %v", err)
+	}
+}
+
+func TestSignalDelivered_FromSuspended(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "S"}
+	next, actions, err := transitionOnSignalDelivered(id, suspendedStatus(target), 4, "ping", []byte("payload"), 700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := next.GetStatus().(*enginev1.InvocationStatus_Invoked); !ok {
+		t.Fatalf("got %T; want Invoked", next.GetStatus())
+	}
+	if len(actions) != 2 {
+		t.Fatalf("expected 2 actions; got %d", len(actions))
+	}
+	notify := actions[1].(ActDeliverNotification)
+	if notify.CompletionID != 4 || string(notify.Value) != "payload" {
+		t.Errorf("notify fields: %+v", notify)
+	}
+}
+
+func TestSignalDelivered_FromInvokedLiveDelivery(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "S"}
+	cur := invokedStatus(target)
+	next, actions, err := transitionOnSignalDelivered(id, cur, 8, "shutdown", []byte("now"), 800)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next != cur || len(actions) != 1 {
+		t.Errorf("Invoked live delivery: actions=%d next==cur=%v", len(actions), next == cur)
+	}
+}
+
+func TestSignalDelivered_FromCompletedNoop(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "S"}
+	cur := completedStatus(target)
+	next, actions, err := transitionOnSignalDelivered(id, cur, 1, "late", nil, 900)
+	if err != nil || len(actions) != 0 || next != cur {
+		t.Errorf("late signal on Completed: err=%v actions=%d", err, len(actions))
 	}
 }

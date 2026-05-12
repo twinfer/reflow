@@ -10,7 +10,10 @@ import (
 // Followers replay the same commands but discard their actions.
 //
 // Mirrors restate crates/worker/src/partition/state_machine/actions.rs:31-114.
-// Phase 1 carries only the variants we actually emit.
+// Phase 1 carried only ActInvoke, the timer pair, ActAbortInvocation, and
+// ActIngressResponse. Phase 2 adds notification + outbox + awakeable
+// delivery actions, and starts emitting ActAbortInvocation on leadership
+// changes.
 type Action interface{ isAction() }
 
 // ActInvoke asks the invoker to begin (or resume) execution of an invocation.
@@ -58,6 +61,53 @@ type ActIngressResponse struct {
 }
 
 func (ActIngressResponse) isAction() {}
+
+// ActDeliverNotification asks the Invoker to deliver a Completion message
+// to a running session. CompletionID is the journal entry index of the
+// originating command (Sleep, Call, Awakeable, lazy GetState). Exactly one
+// of Value / Failure / Void describes the result:
+//
+//	Failure non-empty             → failure completion
+//	Void true (and Failure empty) → void completion
+//	otherwise                     → value completion carrying Value
+//
+// Phase 2.
+type ActDeliverNotification struct {
+	ID           *enginev1.InvocationId
+	CompletionID uint32
+	Value        []byte
+	Failure      string
+	Void         bool
+}
+
+func (ActDeliverNotification) isAction() {}
+
+// ActDispatchOutbox hands a freshly-appended OutboxEnvelope to the leader's
+// outbox shuffler. The shuffler proposes the envelope's command via
+// ProposeIngress and pops the row once the proposal commits. On crash
+// before pop, the next leader rescans the OutboxTable and re-proposes —
+// DedupTable absorbs the duplicate. Phase 2.
+type ActDispatchOutbox struct {
+	Seq      uint64
+	Envelope *enginev1.OutboxEnvelope
+}
+
+func (ActDispatchOutbox) isAction() {}
+
+// ActDeliverAwakeable surfaces an external awakeable resolution to the
+// Invoker side-band, distinct from the JEAwakeableResult-driven
+// ActDeliverNotification path. The Invoker uses it to update in-memory
+// awakeable bookkeeping for sessions that are currently running (not
+// suspended) so a subsequent ctx.Awakeable poll observes the result
+// without a journal re-read. Phase 2.
+type ActDeliverAwakeable struct {
+	ID          *enginev1.InvocationId
+	AwakeableID string
+	Value       []byte
+	Failure     string
+}
+
+func (ActDeliverAwakeable) isAction() {}
 
 // ActionCollector is a single-goroutine append-only buffer of Actions
 // produced during one Update call. It is owned by the partition's apply path

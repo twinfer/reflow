@@ -191,14 +191,144 @@ func TestNamespacesDistinct(t *testing.T) {
 	invK, _ := InvocationKey(id)
 	jouK, _ := JournalKey(id, 0)
 	timK, _ := TimerKey(0, id)
-	// Each pair must NOT share a prefix relationship — different namespaces.
-	if bytes.HasPrefix(invK, jouK) || bytes.HasPrefix(jouK, invK) {
-		t.Errorf("inv and journal namespaces collide")
+	stateK := StateKey("Svc", "obj", "key")
+	outK := OutboxKey(1)
+	awkK := AwakeableKey("awk_AAAAAAAAAAAAAAAAAAAAAA")
+	all := [][]byte{invK, jouK, timK, stateK, outK, awkK}
+	for i := range all {
+		for j := i + 1; j < len(all); j++ {
+			a, b := all[i], all[j]
+			if bytes.HasPrefix(a, b) || bytes.HasPrefix(b, a) {
+				t.Errorf("namespaces collide: %q vs %q", a, b)
+			}
+		}
 	}
-	if bytes.HasPrefix(invK, timK) || bytes.HasPrefix(timK, invK) {
-		t.Errorf("inv and timer namespaces collide")
+}
+
+func TestStateKey_RoundtripAndPrefix(t *testing.T) {
+	k := StateKey("Greeter", "alice", "counter")
+	if string(k) != "state/Greeter/alice/counter" {
+		t.Errorf("unexpected key: %q", k)
 	}
-	if bytes.HasPrefix(jouK, timK) || bytes.HasPrefix(timK, jouK) {
-		t.Errorf("journal and timer namespaces collide")
+	pfx := StatePrefixForObject("Greeter", "alice")
+	if string(pfx) != "state/Greeter/alice/" {
+		t.Errorf("unexpected prefix: %q", pfx)
+	}
+	if !bytes.HasPrefix(k, pfx) {
+		t.Errorf("key %q not under prefix %q", k, pfx)
+	}
+	// Unkeyed services: object_key = "".
+	uk := StateKey("Unkeyed", "", "config")
+	if string(uk) != "state/Unkeyed//config" {
+		t.Errorf("unkeyed state key: %q", uk)
+	}
+	upfx := StatePrefixForObject("Unkeyed", "")
+	if !bytes.HasPrefix(uk, upfx) {
+		t.Errorf("unkeyed key %q not under prefix %q", uk, upfx)
+	}
+}
+
+func TestStateKey_OrderingAcrossObjects(t *testing.T) {
+	// Within a service the (object_key, state_key) lex order should match
+	// natural string ordering. A scan from StatePrefixForObject("Svc", X)
+	// should only return keys for that exact object — never spill into a
+	// neighbouring object_key.
+	keys := [][]byte{
+		StateKey("Svc", "alice", "balance"),
+		StateKey("Svc", "alice", "name"),
+		StateKey("Svc", "bob", "balance"),
+		StateKey("Svc", "bob", "name"),
+		StateKey("Svc", "carol", "name"),
+		StateKey("Tvc", "alice", "x"), // different service comes after
+	}
+	// Confirm pre-sorted; if so, in-place sort is a no-op.
+	for i := 1; i < len(keys); i++ {
+		if bytes.Compare(keys[i-1], keys[i]) >= 0 {
+			t.Fatalf("keys not sorted at %d: %q vs %q", i, keys[i-1], keys[i])
+		}
+	}
+	// Verify per-object scan bounds isolate alice's rows from bob's.
+	aliceLo := StatePrefixForObject("Svc", "alice")
+	aliceHi := PrefixUpperBound(aliceLo)
+	for i, k := range keys {
+		inRange := bytes.Compare(k, aliceLo) >= 0 && bytes.Compare(k, aliceHi) < 0
+		wantInRange := i < 2 // first two are alice's
+		if inRange != wantInRange {
+			t.Errorf("key %q in alice range = %v; want %v", k, inRange, wantInRange)
+		}
+	}
+}
+
+func TestOutboxKey_LexNumericAgreement(t *testing.T) {
+	rng := rand.New(rand.NewPCG(7, 11))
+	type sample struct {
+		Seq uint64
+		Key []byte
+	}
+	samples := make([]sample, 1000)
+	for i := range samples {
+		seq := rng.Uint64()
+		samples[i] = sample{Seq: seq, Key: OutboxKey(seq)}
+	}
+	sort.Slice(samples, func(i, j int) bool {
+		return bytes.Compare(samples[i].Key, samples[j].Key) < 0
+	})
+	for i := 1; i < len(samples); i++ {
+		if samples[i-1].Seq > samples[i].Seq {
+			t.Fatalf("lex/numeric mismatch at %d: %d > %d",
+				i, samples[i-1].Seq, samples[i].Seq)
+		}
+	}
+}
+
+func TestOutboxKey_Roundtrip(t *testing.T) {
+	for _, seq := range []uint64{0, 1, 1 << 32, ^uint64(0)} {
+		k := OutboxKey(seq)
+		got, err := DecodeOutboxKey(k)
+		if err != nil {
+			t.Fatalf("seq=%d: %v", seq, err)
+		}
+		if got != seq {
+			t.Errorf("seq roundtrip: got %d, want %d", got, seq)
+		}
+	}
+}
+
+func TestAwakeableKey_RoundtripAndPrefix(t *testing.T) {
+	id := "awk_ABCDEFGHIJKLMNOPQRSTUV" // 26 chars, all valid
+	if err := ValidateAwakeableID(id); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	k := AwakeableKey(id)
+	if !bytes.HasPrefix(k, AwakeablePrefix()) {
+		t.Errorf("bad prefix: %q", k)
+	}
+	if len(k) != len("awakeable/")+26 {
+		t.Errorf("len=%d want %d", len(k), len("awakeable/")+26)
+	}
+}
+
+func TestValidateAwakeableID(t *testing.T) {
+	cases := []struct {
+		id    string
+		valid bool
+	}{
+		{"awk_ABCDEFGHIJKLMNOPQRSTUV", true},
+		{"awk_0123456789_-abcdefghij", true},
+		{"awk_aaaaaaaaaaaaaaaaaaaaaa", true},
+		{"", false},
+		{"awk_short", false},
+		{"bad_ABCDEFGHIJKLMNOPQRSTUV", false},
+		{"awk_ABCDEFGHIJKLMNOPQRSTU/", false}, // '/' is illegal
+		{"awk_ABCDEFGHIJKLMNOPQRSTU!", false},
+		{"awk_ABCDEFGHIJKLMNOPQRSTUV ", false}, // trailing space → wrong len
+	}
+	for _, c := range cases {
+		err := ValidateAwakeableID(c.id)
+		got := err == nil
+		if got != c.valid {
+			t.Errorf("ValidateAwakeableID(%q): got valid=%v, want %v (err=%v)",
+				c.id, got, c.valid, err)
+		}
 	}
 }

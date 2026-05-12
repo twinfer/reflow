@@ -61,9 +61,12 @@ func (h *timerHeap) Pop() any {
 //   - Timers are persisted in TimerTable by the FSM apply path. The FSM
 //     also pushes an ActRegisterTimer that the leader runner forwards here.
 //   - On leader gain, Rebuild() reloads the heap from TimerTable.
-//   - Run() drives the heap with time.Timer (honest — no timerfd). When the
-//     earliest timer is due it pops it, proposes TimerFired through the
-//     injected Proposer, and continues.
+//   - Run() drives the heap with time.NewTimer — wakes exactly at the next
+//     deadline. OS-level mechanisms (timerfd / kqueue EVFILT_TIMER /
+//     CreateWaitableTimer) would not improve precision here: fire latency is
+//     dominated by the Raft commit round-trip, not the wake mechanism.
+//     Dragonboat's internal tick (nodehost.go tickWorkerMain) is RTT-resolution
+//     (100–200ms), unexported, and global, so we can't piggyback on it either.
 //   - We NEVER hold the mutex across a Propose call. Failed proposes
 //     re-push the entry so the timer is not lost; the next fireDue cycle
 //     retries.
@@ -214,22 +217,20 @@ func (ts *TimerService) Run(ctx context.Context) error {
 			waitDur = 0
 		}
 
+		// Go 1.23+: timer channels are unbuffered, Stop guarantees no
+		// further sends, and unreferenced timers are GC-recoverable. The
+		// pre-1.23 `if !timer.Stop() { <-timer.C }` drain would deadlock
+		// here — Stop is enough.
 		timer := time.NewTimer(waitDur)
 		select {
 		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
+			timer.Stop()
 			return ctx.Err()
 		case <-ts.stop:
-			if !timer.Stop() {
-				<-timer.C
-			}
+			timer.Stop()
 			return nil
 		case <-ts.wake:
-			if !timer.Stop() {
-				<-timer.C
-			}
+			timer.Stop()
 		case <-timer.C:
 		}
 	}

@@ -149,7 +149,6 @@ Each partition is an independent unit: one dragonboat Raft group, one Pebble ins
 | Embedded K/V storage | `cockroachdb/pebble` | Apache 2.0 |
 | gRPC / SDK protocol (Phase 2+) | `google.golang.org/grpc` | Apache 2.0 |
 | HTTP/2 ingress (Phase 2+) | `net/http` (stdlib) | — |
-| Gossip / advisory liveness (Phase 5) | `hashicorp/memberlist` | MPL 2.0 |
 | Snapshot archival (Phase 4 fs, Phase 5 cloud) | `gocloud.dev/blob` | Apache 2.0 |
 | Serialization | `google.golang.org/protobuf` | BSD-3 |
 | Structured logging | `log/slog` (stdlib) | — |
@@ -196,9 +195,10 @@ partition shards. By convention this is `shardID = 0` (the "metadata
 group"); partition shards use `shardID = 1..N`.
 
 **Principle.** *Raft for safety, gossip for spread.* Every durable cluster
-decision goes through the metadata Raft group. Anything advisory (load
-hints, soft state) may be propagated over a gossip layer if it is added
-later (§11 Phase 5+). The metadata group is always authoritative.
+decision goes through the metadata Raft group. Anything advisory (leader
+hints for routing, liveness, load hints) rides on dragonboat's built-in
+gossip layer (memberlist/SWIM, vendored inside `lni/dragonboat/v4`). The
+metadata group is always authoritative; gossip is only ever a hint.
 
 **State held by the metadata Raft group:**
 
@@ -258,18 +258,28 @@ These subcommands of `reflowd` proposing through the metadata group:
   (`RequestAddReplica` for replacement holders, then `RequestRemoveReplica`
   for the leaving node), and only removes the node from shard `0` last.
 
-**Failure detection.** Two-phase plan:
+**Failure detection.** Dragonboat's built-in gossip (memberlist/SWIM,
+enabled via `NodeHostConfig.AddressByNodeHostID = true` + `GossipConfig`)
+runs SWIM probes between every NodeHost. Each observer turns `K`
+consecutive failed probes against node `X` into a `RemoveNode` proposal
+to shard `0`; the metadata leader, seeing reports above the eviction
+threshold, commits the membership change. Eviction is a
+strongly-consistent decision driven by an eventually-consistent signal.
 
-- *Phase 4 (Raft-only).* Each node periodically writes a heartbeat into
-  shard `0` state. The metadata leader scans and proposes an eviction after
-  `K` missed heartbeats. Intentionally simple: at the 3–10 node target
-  scale, heartbeat-as-Raft-proposal cost is negligible.
-- *Phase 5 (gossip-augmented).* `hashicorp/memberlist` (SWIM) replaces the
-  Raft heartbeat path for failure detection and adds soft-state
-  dissemination. Eviction remains a Raft proposal: each observer turns
-  `K` failed gossip probes into a `RemoveNode` proposal to shard `0`. The
-  metadata Raft group stays authoritative for partition ownership and
-  membership. See §11 Phase 5 for the integration boundary.
+**Discovery & endpoint resolution.** Two complementary sources:
+
+- *Authoritative (shard 0):* partition table (`shard_id → [node_id ...]`),
+  assignment epoch, schema version barrier. All routing decisions that
+  affect correctness read from here.
+- *Hint cache (dragonboat gossip):* `NodeHostRegistry.GetShardInfo` exposes
+  `ShardView{LeaderID, Replicas map[replicaID]raftAddr, Term}` for every
+  shard cluster-wide, refreshed by gossip. The per-nodehost `Meta` blob
+  carries the reflow gRPC endpoint so cross-partition delivery (Phase 4)
+  can dial directly by `NodeHostID` without re-reading shard 0 on the hot
+  path. On `NOT_LEADER` from the RPC, fall back to shard 0 and retry.
+  Gossip is *never* a source of truth — it just makes routing fast and
+  decouples node identity from raft addresses (k8s IP churn no longer
+  requires a shard-0 proposal).
 
 **Partition count.** Fixed at cluster bootstrap (default 64). Partition
 shards are the unit of scalability; rebalancing reassigns shards across
@@ -279,9 +289,10 @@ nodes without renaming partition_keys.
 authoritative source of partition ownership. No node ever processes a
 command for a partition it does not own according to its locally-observed
 copy of the partition table. A stale node will fail the `IsLeader` check
-on its `dragonboat` shard before any side effects can escape. Gossip, if
-added later, can never override this — it can only feed advisory signals
-into Raft proposals.
+on its `dragonboat` shard before any side effects can escape. Gossip can
+never override this — it only feeds advisory signals (liveness reports,
+leader hints, endpoint resolution) and Raft proposals are the only path
+to authoritative state changes.
 
 ---
 
@@ -874,7 +885,7 @@ Minimum production deployment: 3 nodes (Raft quorum = 2).
 | # | Question | Impact | Notes |
 |---|---|---|---|
 | 1 | Fixed vs. dynamic partition count | Resolved | Fixed at bootstrap (default 64). Split/merge is explicitly not on the roadmap. |
-| 2 | Node discovery mechanism | Resolved | Embedded metadata Raft group (`shardID=0`). Static peer bootstrap (`--bootstrap-cluster` / `--join`). No external service required; no gossip in Phase 4. See §6.2. |
+| 2 | Node discovery mechanism | Resolved | Embedded metadata Raft group (`shardID=0`) is authoritative for partition ownership; dragonboat's built-in gossip (memberlist/SWIM, no extra dependency) provides endpoint resolution and a leader hint cache. Static peer bootstrap (`--bootstrap-cluster` / `--join`). No external service required. See §6.2. |
 | 3 | In-process Go SDK vs. external SDK only | Resolved | In-process Go SDK is the primary path (§6.10.1). Wire-protocol path supported for non-Go handlers (§6.10.2). |
 | 4 | Partition count default | Resolved | 64 partitions at cluster bootstrap. |
 | 5 | Raft replication factor | Open | Default 3; configurable per deployment; recommended minimum 3 in production. Decided per deployment. |
@@ -883,7 +894,7 @@ Minimum production deployment: 3 nodes (Raft quorum = 2).
 | 8 | SDK protocol versioning | Resolved | Wire protocol tracks restate service-protocol-v4 as a *best-effort* compat target, not bug-for-bug. Phase 2 in-process Go SDK is the primary path; non-Go SDKs ride along on community effort. |
 | 9 | timerfd vs `time.Timer` | Resolved | `time.Timer` for Phase 1. Revisit only with measured latency requirements. |
 | 10 | `StateStore` alternative implementations | Resolved | `internal/storage.Store` interface; `MemStore` (tests) + `PebbleStore` (production). |
-| 11 | Gossip for failure detection + soft state | Resolved | `hashicorp/memberlist` (SWIM, MPL 2.0) lands in Phase 5 as advisory liveness + soft-state dissemination. Cockroach/gossip rejected: heavyweight, tightly coupled to cockroach internals, personal forks unstable. Architectural boundary is fixed: gossip is advisory, Raft is authoritative — eviction and partition assignment never bypass shard 0. |
+| 11 | Gossip for failure detection + soft state | Resolved | Use dragonboat's built-in gossip (memberlist/SWIM, vendored inside `lni/dragonboat/v4`) starting Phase 4 — zero extra dependency. Provides SWIM-based liveness, NodeHostID-stable endpoint resolution, and a `ShardView` leader hint cache. Architectural boundary unchanged: gossip is advisory, Raft (shard 0) is authoritative — eviction and partition assignment always go through a Raft proposal. Soft-state dissemination beyond the per-nodehost `Meta` blob is deferred; revisit only if observed load-hint dissemination requirements outgrow `Meta`. |
 | 12 | Object storage for snapshots | Resolved | `SnapshotRepository` interface lands in Phase 4 (filesystem driver) and Phase 5 (S3/GCS/Azure via `gocloud.dev/blob`). Always optional — default deployment is local-only. Hot state never leaves Pebble; only snapshot artifacts and their metadata go to object storage. See §6.12. |
 
 ---
@@ -978,9 +989,17 @@ Target: a 3–10 node cluster. No external coordination service introduced
   detection via missed-heartbeat eviction proposals, reassignment proposed
   to shard `0`, per-partition membership changes driven by the metadata
   leader.
-- **Failure detection: Raft-only.** Each node writes a heartbeat into
-  shard `0` every `T` seconds; metadata leader evicts after `K` missed
-  heartbeats by proposing a membership change.
+- **Failure detection via dragonboat gossip.** Enable
+  `NodeHostConfig.AddressByNodeHostID = true` + `GossipConfig{Seed: ...}`
+  so every NodeHost runs memberlist/SWIM probes. Observers turn `K`
+  consecutive failed probes into a `RemoveNode` proposal to shard `0`;
+  eviction itself remains a Raft decision. No additional dependency
+  (memberlist is already vendored inside `lni/dragonboat/v4`).
+- **Endpoint resolution + leader hint cache via gossip.** Every node
+  publishes its reflow gRPC endpoint via the gossip `Meta` blob and reads
+  `NodeHostRegistry.GetShardInfo` for `ShardView{LeaderID, Replicas,
+  Term}`. Cross-partition delivery dials by `NodeHostID` without re-reading
+  shard 0 on the hot path; `NOT_LEADER` triggers a fallback re-read.
 - **`SnapshotRepository` abstraction (filesystem driver).** New replicas
   joining a partition try the repository before falling back to
   dragonboat snapshot transfer. Local-fs driver only in Phase 4 (`file://`
@@ -1005,66 +1024,6 @@ add/remove operations.
   debugger, `purge_journal` / `kill_invocation` operations.
 - Operational docs: deployment recipes, backup/restore, upgrade
   procedure (using the version barrier from §6.2).
-- **Gossip layer (`hashicorp/memberlist`).** Reflow's SWIM-based advisory
-  liveness layer ships in Phase 5. The architectural rule is *Raft for
-  safety, gossip for spread*: gossip is advisory; Raft remains
-  authoritative.
-
-  *What gossip does:*
-  - Failure detection. Each node probes peers via memberlist's SWIM
-    protocol. Detection cost drops from `O(N)` Raft heartbeat proposals
-    every cycle to `O(log N)` gossip probes per node. Detection latency
-    becomes sub-second on healthy networks.
-  - Soft-state dissemination. Per-node load hints, capabilities (e.g.
-    "this node can host shard X"), region / zone tags, and current binary
-    version. Used by the ingress for routing hints and by dashboards;
-    never for correctness.
-
-  *What gossip does NOT do:*
-  - It does not move partitions.
-  - It does not evict nodes on its own. When `K` gossip probes report
-    node X as failed, each observer locally generates a *report*; the
-    metadata Raft leader, observing reports above the eviction threshold,
-    proposes the actual `RemoveNode` to shard `0`. Eviction is a
-    strongly-consistent decision driven by an eventually-consistent
-    signal.
-  - It does not own any state that must survive a process restart.
-    Gossip state is in-memory only; partition ownership and version
-    barriers remain in Raft.
-
-  *Library choice rationale:*
-  - **`hashicorp/memberlist`** — SWIM implementation used by Consul,
-    Nomad, Vault, Serf. MPL 2.0 (file-level weak copyleft, fine with
-    Apache-2.0 reflow). Small surface (~5k LOC). Stable API.
-  - **NOT `cockroachdb/cockroach/pkg/gossip`** — heavyweight, designed
-    for cockroach's mesh + custom RPC integration; would require ripping
-    internals out of cockroach's monorepo. Personal forks (e.g.,
-    `zemnmez/cockroach`) are mirrors of cockroach at a point in time,
-    not maintained libraries.
-  - **NOT `hashicorp/serf`** — built on memberlist with extra event-bus
-    machinery we don't need; pulls in additional dependencies for no
-    capability we use.
-
-  *Integration boundary (single failure-domain transition):*
-
-  ```
-      memberlist (in-process)
-            │
-            │  "node 7 looks dead" (K reports)
-            ▼
-      metadata Raft (shard 0)
-            │  RemoveNode{nodeID: 7}    ← strongly consistent
-            ▼
-      partition table updated
-            │
-            ▼
-      partition shards observe + execute reassignment
-  ```
-
-  Operational note: gossip is bound to the same `--raft-addr` host the
-  node is already advertising; no second port required by default. A
-  separate `--gossip-port` flag is available for deployments that need
-  to segregate Raft and gossip traffic.
 - **Non-Go SDKs (community-driven).** TypeScript / Python / Java / Kotlin
   / Rust SDKs talk to reflow via the wire-protocol path (§6.10.2). These
   ride on whatever effort the community contributes; reflow itself

@@ -20,7 +20,7 @@ func TestPhase4_1_PeerResolvedNodeHostID(t *testing.T) {
 		in   Peer
 		want string
 	}{
-		{"derived", Peer{NodeID: 7}, "reflowd-node-7"},
+		{"derived", Peer{NodeID: 7}, "00000000-0000-0000-0000-000000000007"},
 		{"override", Peer{NodeID: 7, NodeHostID: "custom-id"}, "custom-id"},
 	}
 	for _, tc := range tests {
@@ -57,8 +57,8 @@ func TestPhase4_1_ApplyMultiNodeConfig_OK(t *testing.T) {
 	if !nh.DefaultNodeRegistryEnabled {
 		t.Error("DefaultNodeRegistryEnabled = false; want true")
 	}
-	if nh.NodeHostID != "reflowd-node-2" {
-		t.Errorf("NodeHostID = %q; want reflowd-node-2", nh.NodeHostID)
+	if nh.NodeHostID != "00000000-0000-0000-0000-000000000002" {
+		t.Errorf("NodeHostID = %q; want UUID for node 2", nh.NodeHostID)
 	}
 	if nh.Gossip.BindAddress != "10.0.0.2:9101" {
 		t.Errorf("Gossip.BindAddress = %q", nh.Gossip.BindAddress)
@@ -173,8 +173,8 @@ func TestPhase4_1_InitialMembers_FromPeers(t *testing.T) {
 	}}
 	got := h.initialMembers()
 	want := map[uint64]string{
-		1: "reflowd-node-1",
-		2: "reflowd-node-2",
+		1: "00000000-0000-0000-0000-000000000001",
+		2: "00000000-0000-0000-0000-000000000002",
 		3: "custom-3",
 	}
 	if len(got) != len(want) {

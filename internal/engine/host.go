@@ -18,6 +18,7 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine/cluster"
 	"github.com/twinfer/reflow/internal/engine/invoker"
+	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	"github.com/twinfer/reflow/pkg/sdk"
@@ -95,11 +96,15 @@ type Peer struct {
 // resolvedNodeHostID returns the explicit override or a deterministic
 // derivation from NodeID. Both peers and self agree on this without
 // coordination, so static bootstrap needs no NodeHostID exchange.
+//
+// dragonboat validates NodeHostID against google/uuid.Parse, so the
+// derived form has to be a syntactically valid UUID. We embed NodeID
+// in the last 12 hex chars of an all-zero UUID — readable and stable.
 func (p Peer) resolvedNodeHostID() string {
 	if p.NodeHostID != "" {
 		return p.NodeHostID
 	}
-	return fmt.Sprintf("reflowd-node-%d", p.NodeID)
+	return fmt.Sprintf("00000000-0000-0000-0000-%012x", p.NodeID)
 }
 
 // Host owns the NodeHost and the per-partition runners.
@@ -432,6 +437,7 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		NowFn:       func() uint64 { return uint64(time.Now().UnixMilli()) },
 		Log:         h.log,
 		OnActions:   runner.dispatchActions,
+		Partitioner: routing.Partitioner{NumShards: uint64(len(h.cfg.Peers))},
 	}
 	raftCfg := config.Config{
 		ReplicaID:          h.cfg.NodeID,

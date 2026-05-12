@@ -13,6 +13,7 @@ require (
 	github.com/knadh/koanf/v2 v2.3.4
 	github.com/lni/dragonboat/v4 v4.0.0-20250723143628-076c7f6497dc
 	github.com/prometheus/client_golang v1.23.2
+	github.com/qmuntal/stateless v1.8.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20260511170946-3700d4141b60
 	google.golang.org/grpc v1.81.0
 	google.golang.org/protobuf v1.36.11

@@ -64,6 +64,18 @@ message StartInvocation {
   repeated StateMapEntry state_map = 6;
   bool partial_state = 7;
   uint64 random_seed = 8;
+  // Tag 10 reserved for a future protocol_version enum. Phase 3 changes are
+  // strictly additive on the wire and rely on proto3 forward/backward
+  // compatibility; an explicit version is unnecessary until the first
+  // breaking lifecycle change ships.
+  reserved 10;
+  // sdk_build_id is an ops-visibility tag the SDK reports on every session
+  // start. The engine logs it but does not validate. Phase 3.
+  string sdk_build_id = 11;
+  // retry_policy controls how the engine schedules JERun retries for
+  // non-terminal failures. Zero/absent fields fall back to defaults (see
+  // RunRetryPolicy). Phase 3.
+  reflow.engine.v1.RunRetryPolicy retry_policy = 12;
 }
 
 // ReplayEntry feeds a single journaled entry from the engine to the SDK

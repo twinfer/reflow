@@ -26,11 +26,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Ingress_SubmitInvocation_FullMethodName   = "/reflow.ingress.v1.Ingress/SubmitInvocation"
-	Ingress_AwaitInvocation_FullMethodName    = "/reflow.ingress.v1.Ingress/AwaitInvocation"
-	Ingress_ResolveAwakeable_FullMethodName   = "/reflow.ingress.v1.Ingress/ResolveAwakeable"
-	Ingress_ListPartitions_FullMethodName     = "/reflow.ingress.v1.Ingress/ListPartitions"
-	Ingress_DescribeInvocation_FullMethodName = "/reflow.ingress.v1.Ingress/DescribeInvocation"
+	Ingress_SubmitInvocation_FullMethodName    = "/reflow.ingress.v1.Ingress/SubmitInvocation"
+	Ingress_AwaitInvocation_FullMethodName     = "/reflow.ingress.v1.Ingress/AwaitInvocation"
+	Ingress_ResolveAwakeable_FullMethodName    = "/reflow.ingress.v1.Ingress/ResolveAwakeable"
+	Ingress_ListPartitions_FullMethodName      = "/reflow.ingress.v1.Ingress/ListPartitions"
+	Ingress_DescribeInvocation_FullMethodName  = "/reflow.ingress.v1.Ingress/DescribeInvocation"
+	Ingress_AttachInvocation_FullMethodName    = "/reflow.ingress.v1.Ingress/AttachInvocation"
+	Ingress_GetInvocationOutput_FullMethodName = "/reflow.ingress.v1.Ingress/GetInvocationOutput"
 )
 
 // IngressClient is the client API for Ingress service.
@@ -55,6 +57,16 @@ type IngressClient interface {
 	// DescribeInvocation returns the current status of an invocation without
 	// blocking. Read-only debug endpoint.
 	DescribeInvocation(ctx context.Context, in *DescribeInvocationRequest, opts ...grpc.CallOption) (*DescribeInvocationResponse, error)
+	// AttachInvocation blocks (up to deadline) on an existing invocation and
+	// returns its outcome once Completed. Same shape as AwaitInvocation but
+	// explicit about attaching to an already-submitted invocation by id.
+	// Phase 3.
+	AttachInvocation(ctx context.Context, in *AttachInvocationRequest, opts ...grpc.CallOption) (*AttachInvocationResponse, error)
+	// GetInvocationOutput is a non-blocking lookup of an invocation's current
+	// outcome. Returns PENDING for still-running invocations, COMPLETED_OK /
+	// COMPLETED_FAILED for terminated ones, UNKNOWN if no such invocation is
+	// known to this node. Phase 3.
+	GetInvocationOutput(ctx context.Context, in *GetInvocationOutputRequest, opts ...grpc.CallOption) (*GetInvocationOutputResponse, error)
 }
 
 type ingressClient struct {
@@ -115,6 +127,26 @@ func (c *ingressClient) DescribeInvocation(ctx context.Context, in *DescribeInvo
 	return out, nil
 }
 
+func (c *ingressClient) AttachInvocation(ctx context.Context, in *AttachInvocationRequest, opts ...grpc.CallOption) (*AttachInvocationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AttachInvocationResponse)
+	err := c.cc.Invoke(ctx, Ingress_AttachInvocation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *ingressClient) GetInvocationOutput(ctx context.Context, in *GetInvocationOutputRequest, opts ...grpc.CallOption) (*GetInvocationOutputResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetInvocationOutputResponse)
+	err := c.cc.Invoke(ctx, Ingress_GetInvocationOutput_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // IngressServer is the server API for Ingress service.
 // All implementations must embed UnimplementedIngressServer
 // for forward compatibility.
@@ -137,6 +169,16 @@ type IngressServer interface {
 	// DescribeInvocation returns the current status of an invocation without
 	// blocking. Read-only debug endpoint.
 	DescribeInvocation(context.Context, *DescribeInvocationRequest) (*DescribeInvocationResponse, error)
+	// AttachInvocation blocks (up to deadline) on an existing invocation and
+	// returns its outcome once Completed. Same shape as AwaitInvocation but
+	// explicit about attaching to an already-submitted invocation by id.
+	// Phase 3.
+	AttachInvocation(context.Context, *AttachInvocationRequest) (*AttachInvocationResponse, error)
+	// GetInvocationOutput is a non-blocking lookup of an invocation's current
+	// outcome. Returns PENDING for still-running invocations, COMPLETED_OK /
+	// COMPLETED_FAILED for terminated ones, UNKNOWN if no such invocation is
+	// known to this node. Phase 3.
+	GetInvocationOutput(context.Context, *GetInvocationOutputRequest) (*GetInvocationOutputResponse, error)
 	mustEmbedUnimplementedIngressServer()
 }
 
@@ -161,6 +203,12 @@ func (UnimplementedIngressServer) ListPartitions(context.Context, *ListPartition
 }
 func (UnimplementedIngressServer) DescribeInvocation(context.Context, *DescribeInvocationRequest) (*DescribeInvocationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DescribeInvocation not implemented")
+}
+func (UnimplementedIngressServer) AttachInvocation(context.Context, *AttachInvocationRequest) (*AttachInvocationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AttachInvocation not implemented")
+}
+func (UnimplementedIngressServer) GetInvocationOutput(context.Context, *GetInvocationOutputRequest) (*GetInvocationOutputResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetInvocationOutput not implemented")
 }
 func (UnimplementedIngressServer) mustEmbedUnimplementedIngressServer() {}
 func (UnimplementedIngressServer) testEmbeddedByValue()                 {}
@@ -273,6 +321,42 @@ func _Ingress_DescribeInvocation_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Ingress_AttachInvocation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AttachInvocationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IngressServer).AttachInvocation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Ingress_AttachInvocation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IngressServer).AttachInvocation(ctx, req.(*AttachInvocationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Ingress_GetInvocationOutput_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetInvocationOutputRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IngressServer).GetInvocationOutput(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Ingress_GetInvocationOutput_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IngressServer).GetInvocationOutput(ctx, req.(*GetInvocationOutputRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Ingress_ServiceDesc is the grpc.ServiceDesc for Ingress service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -299,6 +383,14 @@ var Ingress_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DescribeInvocation",
 			Handler:    _Ingress_DescribeInvocation_Handler,
+		},
+		{
+			MethodName: "AttachInvocation",
+			Handler:    _Ingress_AttachInvocation_Handler,
+		},
+		{
+			MethodName: "GetInvocationOutput",
+			Handler:    _Ingress_GetInvocationOutput_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

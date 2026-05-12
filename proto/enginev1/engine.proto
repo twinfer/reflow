@@ -210,6 +210,8 @@ message JournalEntry {
     JESignal signal = 13;
     JEClearState clear_state = 14;
     JEGetEagerState get_eager_state = 15;
+    // Phase 3 additions.
+    JEClearAllState clear_all_state = 16;
   }
 }
 
@@ -256,12 +258,31 @@ message JEOutput {
 // JERun records the outcome of a deterministic side-effect block. The SDK
 // runs the body once, journals (value or failure_message), and replays
 // store-only on subsequent retries. attempt is bookkeeping for retry
-// policies (Phase 3). Phase 2.
+// policies. retryable distinguishes a terminal error (handler fails) from a
+// transient one (engine schedules a backoff and re-invokes fn). Phase 3.
 message JERun {
   bytes value = 1;
   string failure_message = 2;
   uint32 attempt = 3;
+  bool retryable = 4;
 }
+
+// RunRetryPolicy controls exponential backoff for retryable JERun failures.
+// Carried on StartInvocation so the SDK can echo it through to the engine
+// apply arm without per-Run wire traffic. Zero/absent fields fall back to
+// defaults: initial=50ms, factor=2.0, max_interval=10s, max_attempts=0
+// (unlimited). Phase 3.
+message RunRetryPolicy {
+  uint64 initial_interval_ms = 1;
+  double factor = 2;
+  uint64 max_interval_ms = 3;
+  uint32 max_attempts = 4;
+}
+
+// JEClearAllState wipes every state row scoped to the invocation's
+// (service, object_key). Empty body: the target is implied by the
+// surrounding invocation. Apply arm uses StateTable.RangeDelete. Phase 3.
+message JEClearAllState {}
 
 // JEAwakeable is journaled when a handler mints an awakeable. The actual
 // resolution arrives later as JEAwakeableResult after an external caller
@@ -354,6 +375,26 @@ message Completed {
   bytes output = 2;
   string failure_message = 3;
   fixed64 completed_at_ms = 4;
+}
+
+// KeyLeaseStatus is the per-(service, object_key) gate enforcing the
+// Virtual Object single-writer invariant. Persisted in KeyLeaseTable; the
+// apply path fires the per-key FSM (internal/engine/object_fsm.go) which
+// reads and writes this message in the same Pebble batch as the invocation
+// status transition. Phase 3.
+//
+// state==IDLE   : no invocation holds the lease; current_invocation unset;
+//                 queue empty.
+// state==ACTIVE : current_invocation holds the lease; queue is the FIFO
+//                 of pending invocations waiting to run next.
+message KeyLeaseStatus {
+  enum State {
+    IDLE = 0;
+    ACTIVE = 1;
+  }
+  State state = 1;
+  InvocationId current_invocation = 2;
+  repeated InvocationId queue = 3;
 }
 
 // DedupEntry — value stored in the dedup table (per-producer max-seen seq).

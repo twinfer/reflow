@@ -30,6 +30,58 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type GetInvocationOutputResponse_Status int32
+
+const (
+	GetInvocationOutputResponse_PENDING          GetInvocationOutputResponse_Status = 0
+	GetInvocationOutputResponse_COMPLETED_OK     GetInvocationOutputResponse_Status = 1
+	GetInvocationOutputResponse_COMPLETED_FAILED GetInvocationOutputResponse_Status = 2
+	GetInvocationOutputResponse_UNKNOWN          GetInvocationOutputResponse_Status = 3
+)
+
+// Enum value maps for GetInvocationOutputResponse_Status.
+var (
+	GetInvocationOutputResponse_Status_name = map[int32]string{
+		0: "PENDING",
+		1: "COMPLETED_OK",
+		2: "COMPLETED_FAILED",
+		3: "UNKNOWN",
+	}
+	GetInvocationOutputResponse_Status_value = map[string]int32{
+		"PENDING":          0,
+		"COMPLETED_OK":     1,
+		"COMPLETED_FAILED": 2,
+		"UNKNOWN":          3,
+	}
+)
+
+func (x GetInvocationOutputResponse_Status) Enum() *GetInvocationOutputResponse_Status {
+	p := new(GetInvocationOutputResponse_Status)
+	*p = x
+	return p
+}
+
+func (x GetInvocationOutputResponse_Status) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (GetInvocationOutputResponse_Status) Descriptor() protoreflect.EnumDescriptor {
+	return file_ingressv1_ingress_proto_enumTypes[0].Descriptor()
+}
+
+func (GetInvocationOutputResponse_Status) Type() protoreflect.EnumType {
+	return &file_ingressv1_ingress_proto_enumTypes[0]
+}
+
+func (x GetInvocationOutputResponse_Status) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use GetInvocationOutputResponse_Status.Descriptor instead.
+func (GetInvocationOutputResponse_Status) EnumDescriptor() ([]byte, []int) {
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{14, 0}
+}
+
 type SubmitInvocationRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Path-bound: service name (e.g. "Greeter").
@@ -633,6 +685,241 @@ func (x *DescribeInvocationResponse) GetStatus() *enginev1.InvocationStatus {
 	return nil
 }
 
+type AttachInvocationRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Path-bound stringified id (preferred).
+	InvocationId      string                 `protobuf:"bytes,1,opt,name=invocation_id,json=invocationId,proto3" json:"invocation_id,omitempty"`
+	InvocationIdProto *enginev1.InvocationId `protobuf:"bytes,2,opt,name=invocation_id_proto,json=invocationIdProto,proto3" json:"invocation_id_proto,omitempty"`
+	// Server-side timeout in milliseconds. 0 means use the default-deadline
+	// interceptor's bound (2s). Capped at 60_000 by the server.
+	TimeoutMs     uint32 `protobuf:"varint,3,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AttachInvocationRequest) Reset() {
+	*x = AttachInvocationRequest{}
+	mi := &file_ingressv1_ingress_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AttachInvocationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AttachInvocationRequest) ProtoMessage() {}
+
+func (x *AttachInvocationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ingressv1_ingress_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AttachInvocationRequest.ProtoReflect.Descriptor instead.
+func (*AttachInvocationRequest) Descriptor() ([]byte, []int) {
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *AttachInvocationRequest) GetInvocationId() string {
+	if x != nil {
+		return x.InvocationId
+	}
+	return ""
+}
+
+func (x *AttachInvocationRequest) GetInvocationIdProto() *enginev1.InvocationId {
+	if x != nil {
+		return x.InvocationIdProto
+	}
+	return nil
+}
+
+func (x *AttachInvocationRequest) GetTimeoutMs() uint32 {
+	if x != nil {
+		return x.TimeoutMs
+	}
+	return 0
+}
+
+type AttachInvocationResponse struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Output         []byte                 `protobuf:"bytes,1,opt,name=output,proto3" json:"output,omitempty"`
+	FailureMessage string                 `protobuf:"bytes,2,opt,name=failure_message,json=failureMessage,proto3" json:"failure_message,omitempty"`
+	Completed      bool                   `protobuf:"varint,3,opt,name=completed,proto3" json:"completed,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *AttachInvocationResponse) Reset() {
+	*x = AttachInvocationResponse{}
+	mi := &file_ingressv1_ingress_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AttachInvocationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AttachInvocationResponse) ProtoMessage() {}
+
+func (x *AttachInvocationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ingressv1_ingress_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AttachInvocationResponse.ProtoReflect.Descriptor instead.
+func (*AttachInvocationResponse) Descriptor() ([]byte, []int) {
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *AttachInvocationResponse) GetOutput() []byte {
+	if x != nil {
+		return x.Output
+	}
+	return nil
+}
+
+func (x *AttachInvocationResponse) GetFailureMessage() string {
+	if x != nil {
+		return x.FailureMessage
+	}
+	return ""
+}
+
+func (x *AttachInvocationResponse) GetCompleted() bool {
+	if x != nil {
+		return x.Completed
+	}
+	return false
+}
+
+type GetInvocationOutputRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	InvocationId      string                 `protobuf:"bytes,1,opt,name=invocation_id,json=invocationId,proto3" json:"invocation_id,omitempty"`
+	InvocationIdProto *enginev1.InvocationId `protobuf:"bytes,2,opt,name=invocation_id_proto,json=invocationIdProto,proto3" json:"invocation_id_proto,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *GetInvocationOutputRequest) Reset() {
+	*x = GetInvocationOutputRequest{}
+	mi := &file_ingressv1_ingress_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetInvocationOutputRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetInvocationOutputRequest) ProtoMessage() {}
+
+func (x *GetInvocationOutputRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ingressv1_ingress_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetInvocationOutputRequest.ProtoReflect.Descriptor instead.
+func (*GetInvocationOutputRequest) Descriptor() ([]byte, []int) {
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *GetInvocationOutputRequest) GetInvocationId() string {
+	if x != nil {
+		return x.InvocationId
+	}
+	return ""
+}
+
+func (x *GetInvocationOutputRequest) GetInvocationIdProto() *enginev1.InvocationId {
+	if x != nil {
+		return x.InvocationIdProto
+	}
+	return nil
+}
+
+type GetInvocationOutputResponse struct {
+	state          protoimpl.MessageState             `protogen:"open.v1"`
+	Status         GetInvocationOutputResponse_Status `protobuf:"varint,1,opt,name=status,proto3,enum=reflow.ingress.v1.GetInvocationOutputResponse_Status" json:"status,omitempty"`
+	Output         []byte                             `protobuf:"bytes,2,opt,name=output,proto3" json:"output,omitempty"`
+	FailureMessage string                             `protobuf:"bytes,3,opt,name=failure_message,json=failureMessage,proto3" json:"failure_message,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *GetInvocationOutputResponse) Reset() {
+	*x = GetInvocationOutputResponse{}
+	mi := &file_ingressv1_ingress_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetInvocationOutputResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetInvocationOutputResponse) ProtoMessage() {}
+
+func (x *GetInvocationOutputResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ingressv1_ingress_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetInvocationOutputResponse.ProtoReflect.Descriptor instead.
+func (*GetInvocationOutputResponse) Descriptor() ([]byte, []int) {
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *GetInvocationOutputResponse) GetStatus() GetInvocationOutputResponse_Status {
+	if x != nil {
+		return x.Status
+	}
+	return GetInvocationOutputResponse_PENDING
+}
+
+func (x *GetInvocationOutputResponse) GetOutput() []byte {
+	if x != nil {
+		return x.Output
+	}
+	return nil
+}
+
+func (x *GetInvocationOutputResponse) GetFailureMessage() string {
+	if x != nil {
+		return x.FailureMessage
+	}
+	return ""
+}
+
 var File_ingressv1_ingress_proto protoreflect.FileDescriptor
 
 const file_ingressv1_ingress_proto_rawDesc = "" +
@@ -676,13 +963,36 @@ const file_ingressv1_ingress_proto_rawDesc = "" +
 	"\rinvocation_id\x18\x01 \x01(\tR\finvocationId\x12N\n" +
 	"\x13invocation_id_proto\x18\x02 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\x11invocationIdProto\"X\n" +
 	"\x1aDescribeInvocationResponse\x12:\n" +
-	"\x06status\x18\x01 \x01(\v2\".reflow.engine.v1.InvocationStatusR\x06status2\xef\x05\n" +
+	"\x06status\x18\x01 \x01(\v2\".reflow.engine.v1.InvocationStatusR\x06status\"\xad\x01\n" +
+	"\x17AttachInvocationRequest\x12#\n" +
+	"\rinvocation_id\x18\x01 \x01(\tR\finvocationId\x12N\n" +
+	"\x13invocation_id_proto\x18\x02 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\x11invocationIdProto\x12\x1d\n" +
+	"\n" +
+	"timeout_ms\x18\x03 \x01(\rR\ttimeoutMs\"y\n" +
+	"\x18AttachInvocationResponse\x12\x16\n" +
+	"\x06output\x18\x01 \x01(\fR\x06output\x12'\n" +
+	"\x0ffailure_message\x18\x02 \x01(\tR\x0efailureMessage\x12\x1c\n" +
+	"\tcompleted\x18\x03 \x01(\bR\tcompleted\"\x91\x01\n" +
+	"\x1aGetInvocationOutputRequest\x12#\n" +
+	"\rinvocation_id\x18\x01 \x01(\tR\finvocationId\x12N\n" +
+	"\x13invocation_id_proto\x18\x02 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\x11invocationIdProto\"\xf9\x01\n" +
+	"\x1bGetInvocationOutputResponse\x12M\n" +
+	"\x06status\x18\x01 \x01(\x0e25.reflow.ingress.v1.GetInvocationOutputResponse.StatusR\x06status\x12\x16\n" +
+	"\x06output\x18\x02 \x01(\fR\x06output\x12'\n" +
+	"\x0ffailure_message\x18\x03 \x01(\tR\x0efailureMessage\"J\n" +
+	"\x06Status\x12\v\n" +
+	"\aPENDING\x10\x00\x12\x10\n" +
+	"\fCOMPLETED_OK\x10\x01\x12\x14\n" +
+	"\x10COMPLETED_FAILED\x10\x02\x12\v\n" +
+	"\aUNKNOWN\x10\x032\x99\b\n" +
 	"\aIngress\x12\x97\x01\n" +
 	"\x10SubmitInvocation\x12*.reflow.ingress.v1.SubmitInvocationRequest\x1a+.reflow.ingress.v1.SubmitInvocationResponse\"*\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/invocation/{service}/{handler}\x12\x8b\x01\n" +
 	"\x0fAwaitInvocation\x12).reflow.ingress.v1.AwaitInvocationRequest\x1a*.reflow.ingress.v1.AwaitInvocationResponse\"!\x82\xd3\xe4\x93\x02\x1b:\x01*\"\x16/await/{invocation_id}\x12\x99\x01\n" +
 	"\x10ResolveAwakeable\x12*.reflow.ingress.v1.ResolveAwakeableRequest\x1a+.reflow.ingress.v1.ResolveAwakeableResponse\",\x82\xd3\xe4\x93\x02&:\x01*\"!/awakeable/{awakeable_id}/resolve\x12\x80\x01\n" +
 	"\x0eListPartitions\x12(.reflow.ingress.v1.ListPartitionsRequest\x1a).reflow.ingress.v1.ListPartitionsResponse\"\x19\x82\xd3\xe4\x93\x02\x13\x12\x11/admin/partitions\x12\x9c\x01\n" +
-	"\x12DescribeInvocation\x12,.reflow.ingress.v1.DescribeInvocationRequest\x1a-.reflow.ingress.v1.DescribeInvocationResponse\")\x82\xd3\xe4\x93\x02#\x12!/admin/invocation/{invocation_id}B5Z3github.com/twinfer/reflow/proto/ingressv1;ingressv1b\x06proto3"
+	"\x12DescribeInvocation\x12,.reflow.ingress.v1.DescribeInvocationRequest\x1a-.reflow.ingress.v1.DescribeInvocationResponse\")\x82\xd3\xe4\x93\x02#\x12!/admin/invocation/{invocation_id}\x12\x8f\x01\n" +
+	"\x10AttachInvocation\x12*.reflow.ingress.v1.AttachInvocationRequest\x1a+.reflow.ingress.v1.AttachInvocationResponse\"\"\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/attach/{invocation_id}\x12\x95\x01\n" +
+	"\x13GetInvocationOutput\x12-.reflow.ingress.v1.GetInvocationOutputRequest\x1a..reflow.ingress.v1.GetInvocationOutputResponse\"\x1f\x82\xd3\xe4\x93\x02\x19\x12\x17/output/{invocation_id}B5Z3github.com/twinfer/reflow/proto/ingressv1;ingressv1b\x06proto3"
 
 var (
 	file_ingressv1_ingress_proto_rawDescOnce sync.Once
@@ -696,43 +1006,56 @@ func file_ingressv1_ingress_proto_rawDescGZIP() []byte {
 	return file_ingressv1_ingress_proto_rawDescData
 }
 
-var file_ingressv1_ingress_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_ingressv1_ingress_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_ingressv1_ingress_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_ingressv1_ingress_proto_goTypes = []any{
-	(*SubmitInvocationRequest)(nil),    // 0: reflow.ingress.v1.SubmitInvocationRequest
-	(*SubmitInvocationResponse)(nil),   // 1: reflow.ingress.v1.SubmitInvocationResponse
-	(*AwaitInvocationRequest)(nil),     // 2: reflow.ingress.v1.AwaitInvocationRequest
-	(*AwaitInvocationResponse)(nil),    // 3: reflow.ingress.v1.AwaitInvocationResponse
-	(*ResolveAwakeableRequest)(nil),    // 4: reflow.ingress.v1.ResolveAwakeableRequest
-	(*ResolveAwakeableResponse)(nil),   // 5: reflow.ingress.v1.ResolveAwakeableResponse
-	(*ListPartitionsRequest)(nil),      // 6: reflow.ingress.v1.ListPartitionsRequest
-	(*ListPartitionsResponse)(nil),     // 7: reflow.ingress.v1.ListPartitionsResponse
-	(*PartitionInfo)(nil),              // 8: reflow.ingress.v1.PartitionInfo
-	(*DescribeInvocationRequest)(nil),  // 9: reflow.ingress.v1.DescribeInvocationRequest
-	(*DescribeInvocationResponse)(nil), // 10: reflow.ingress.v1.DescribeInvocationResponse
-	(*enginev1.InvocationId)(nil),      // 11: reflow.engine.v1.InvocationId
-	(*enginev1.InvocationStatus)(nil),  // 12: reflow.engine.v1.InvocationStatus
+	(GetInvocationOutputResponse_Status)(0), // 0: reflow.ingress.v1.GetInvocationOutputResponse.Status
+	(*SubmitInvocationRequest)(nil),         // 1: reflow.ingress.v1.SubmitInvocationRequest
+	(*SubmitInvocationResponse)(nil),        // 2: reflow.ingress.v1.SubmitInvocationResponse
+	(*AwaitInvocationRequest)(nil),          // 3: reflow.ingress.v1.AwaitInvocationRequest
+	(*AwaitInvocationResponse)(nil),         // 4: reflow.ingress.v1.AwaitInvocationResponse
+	(*ResolveAwakeableRequest)(nil),         // 5: reflow.ingress.v1.ResolveAwakeableRequest
+	(*ResolveAwakeableResponse)(nil),        // 6: reflow.ingress.v1.ResolveAwakeableResponse
+	(*ListPartitionsRequest)(nil),           // 7: reflow.ingress.v1.ListPartitionsRequest
+	(*ListPartitionsResponse)(nil),          // 8: reflow.ingress.v1.ListPartitionsResponse
+	(*PartitionInfo)(nil),                   // 9: reflow.ingress.v1.PartitionInfo
+	(*DescribeInvocationRequest)(nil),       // 10: reflow.ingress.v1.DescribeInvocationRequest
+	(*DescribeInvocationResponse)(nil),      // 11: reflow.ingress.v1.DescribeInvocationResponse
+	(*AttachInvocationRequest)(nil),         // 12: reflow.ingress.v1.AttachInvocationRequest
+	(*AttachInvocationResponse)(nil),        // 13: reflow.ingress.v1.AttachInvocationResponse
+	(*GetInvocationOutputRequest)(nil),      // 14: reflow.ingress.v1.GetInvocationOutputRequest
+	(*GetInvocationOutputResponse)(nil),     // 15: reflow.ingress.v1.GetInvocationOutputResponse
+	(*enginev1.InvocationId)(nil),           // 16: reflow.engine.v1.InvocationId
+	(*enginev1.InvocationStatus)(nil),       // 17: reflow.engine.v1.InvocationStatus
 }
 var file_ingressv1_ingress_proto_depIdxs = []int32{
-	11, // 0: reflow.ingress.v1.SubmitInvocationResponse.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	11, // 1: reflow.ingress.v1.AwaitInvocationRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
-	8,  // 2: reflow.ingress.v1.ListPartitionsResponse.partitions:type_name -> reflow.ingress.v1.PartitionInfo
-	11, // 3: reflow.ingress.v1.DescribeInvocationRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
-	12, // 4: reflow.ingress.v1.DescribeInvocationResponse.status:type_name -> reflow.engine.v1.InvocationStatus
-	0,  // 5: reflow.ingress.v1.Ingress.SubmitInvocation:input_type -> reflow.ingress.v1.SubmitInvocationRequest
-	2,  // 6: reflow.ingress.v1.Ingress.AwaitInvocation:input_type -> reflow.ingress.v1.AwaitInvocationRequest
-	4,  // 7: reflow.ingress.v1.Ingress.ResolveAwakeable:input_type -> reflow.ingress.v1.ResolveAwakeableRequest
-	6,  // 8: reflow.ingress.v1.Ingress.ListPartitions:input_type -> reflow.ingress.v1.ListPartitionsRequest
-	9,  // 9: reflow.ingress.v1.Ingress.DescribeInvocation:input_type -> reflow.ingress.v1.DescribeInvocationRequest
-	1,  // 10: reflow.ingress.v1.Ingress.SubmitInvocation:output_type -> reflow.ingress.v1.SubmitInvocationResponse
-	3,  // 11: reflow.ingress.v1.Ingress.AwaitInvocation:output_type -> reflow.ingress.v1.AwaitInvocationResponse
-	5,  // 12: reflow.ingress.v1.Ingress.ResolveAwakeable:output_type -> reflow.ingress.v1.ResolveAwakeableResponse
-	7,  // 13: reflow.ingress.v1.Ingress.ListPartitions:output_type -> reflow.ingress.v1.ListPartitionsResponse
-	10, // 14: reflow.ingress.v1.Ingress.DescribeInvocation:output_type -> reflow.ingress.v1.DescribeInvocationResponse
-	10, // [10:15] is the sub-list for method output_type
-	5,  // [5:10] is the sub-list for method input_type
-	5,  // [5:5] is the sub-list for extension type_name
-	5,  // [5:5] is the sub-list for extension extendee
-	0,  // [0:5] is the sub-list for field type_name
+	16, // 0: reflow.ingress.v1.SubmitInvocationResponse.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	16, // 1: reflow.ingress.v1.AwaitInvocationRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
+	9,  // 2: reflow.ingress.v1.ListPartitionsResponse.partitions:type_name -> reflow.ingress.v1.PartitionInfo
+	16, // 3: reflow.ingress.v1.DescribeInvocationRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
+	17, // 4: reflow.ingress.v1.DescribeInvocationResponse.status:type_name -> reflow.engine.v1.InvocationStatus
+	16, // 5: reflow.ingress.v1.AttachInvocationRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
+	16, // 6: reflow.ingress.v1.GetInvocationOutputRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
+	0,  // 7: reflow.ingress.v1.GetInvocationOutputResponse.status:type_name -> reflow.ingress.v1.GetInvocationOutputResponse.Status
+	1,  // 8: reflow.ingress.v1.Ingress.SubmitInvocation:input_type -> reflow.ingress.v1.SubmitInvocationRequest
+	3,  // 9: reflow.ingress.v1.Ingress.AwaitInvocation:input_type -> reflow.ingress.v1.AwaitInvocationRequest
+	5,  // 10: reflow.ingress.v1.Ingress.ResolveAwakeable:input_type -> reflow.ingress.v1.ResolveAwakeableRequest
+	7,  // 11: reflow.ingress.v1.Ingress.ListPartitions:input_type -> reflow.ingress.v1.ListPartitionsRequest
+	10, // 12: reflow.ingress.v1.Ingress.DescribeInvocation:input_type -> reflow.ingress.v1.DescribeInvocationRequest
+	12, // 13: reflow.ingress.v1.Ingress.AttachInvocation:input_type -> reflow.ingress.v1.AttachInvocationRequest
+	14, // 14: reflow.ingress.v1.Ingress.GetInvocationOutput:input_type -> reflow.ingress.v1.GetInvocationOutputRequest
+	2,  // 15: reflow.ingress.v1.Ingress.SubmitInvocation:output_type -> reflow.ingress.v1.SubmitInvocationResponse
+	4,  // 16: reflow.ingress.v1.Ingress.AwaitInvocation:output_type -> reflow.ingress.v1.AwaitInvocationResponse
+	6,  // 17: reflow.ingress.v1.Ingress.ResolveAwakeable:output_type -> reflow.ingress.v1.ResolveAwakeableResponse
+	8,  // 18: reflow.ingress.v1.Ingress.ListPartitions:output_type -> reflow.ingress.v1.ListPartitionsResponse
+	11, // 19: reflow.ingress.v1.Ingress.DescribeInvocation:output_type -> reflow.ingress.v1.DescribeInvocationResponse
+	13, // 20: reflow.ingress.v1.Ingress.AttachInvocation:output_type -> reflow.ingress.v1.AttachInvocationResponse
+	15, // 21: reflow.ingress.v1.Ingress.GetInvocationOutput:output_type -> reflow.ingress.v1.GetInvocationOutputResponse
+	15, // [15:22] is the sub-list for method output_type
+	8,  // [8:15] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_ingressv1_ingress_proto_init() }
@@ -745,13 +1068,14 @@ func file_ingressv1_ingress_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ingressv1_ingress_proto_rawDesc), len(file_ingressv1_ingress_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   11,
+			NumEnums:      1,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_ingressv1_ingress_proto_goTypes,
 		DependencyIndexes: file_ingressv1_ingress_proto_depIdxs,
+		EnumInfos:         file_ingressv1_ingress_proto_enumTypes,
 		MessageInfos:      file_ingressv1_ingress_proto_msgTypes,
 	}.Build()
 	File_ingressv1_ingress_proto = out.File

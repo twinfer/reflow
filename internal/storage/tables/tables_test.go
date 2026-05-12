@@ -607,6 +607,64 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 			t.Errorf("after delete: %v; want ErrNotFound", err)
 		}
 	})
+
+	t.Run(name+"/KeyLease_MissingReturnsNil", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		got, err := tables.KeyLeaseTable{S: s}.Get("Greeter", "user-42")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != nil {
+			t.Errorf("expected nil for missing lease, got %+v", got)
+		}
+	})
+
+	t.Run(name+"/KeyLease_PutGetDelete", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		klt := tables.KeyLeaseTable{S: s}
+		holder := mkID(7, "0123456789abcdef")
+		queued := mkID(7, "fedcba9876543210")
+		want := &enginev1.KeyLeaseStatus{
+			State:             enginev1.KeyLeaseStatus_ACTIVE,
+			CurrentInvocation: holder,
+			Queue:             []*enginev1.InvocationId{queued},
+		}
+
+		b := s.NewBatch()
+		if err := klt.Put(b, "Counter", "shard-0", want); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b)
+
+		got, err := klt.Get("Counter", "shard-0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.GetState() != enginev1.KeyLeaseStatus_ACTIVE {
+			t.Errorf("state mismatch: got %v", got.GetState())
+		}
+		if !bytes.Equal(got.GetCurrentInvocation().GetUuid(), holder.GetUuid()) {
+			t.Errorf("current_invocation mismatch")
+		}
+		if len(got.GetQueue()) != 1 || !bytes.Equal(got.GetQueue()[0].GetUuid(), queued.GetUuid()) {
+			t.Errorf("queue mismatch: %+v", got.GetQueue())
+		}
+
+		b2 := s.NewBatch()
+		if err := klt.Delete(b2, "Counter", "shard-0"); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b2)
+		got, err = klt.Get("Counter", "shard-0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != nil {
+			t.Errorf("expected nil after delete, got %+v", got)
+		}
+	})
 }
 
 func TestTables(t *testing.T) {

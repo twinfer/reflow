@@ -251,15 +251,22 @@ func (*SDKMessage_Error) isSDKMessage_Kind() {}
 //	partial_state: true when state_map is incomplete (Phase 3+).
 //	random_seed : deterministic PRNG seed bound to this invocation.
 type StartInvocation struct {
-	state         protoimpl.MessageState     `protogen:"open.v1"`
-	Id            *enginev1.InvocationId     `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	DebugId       string                     `protobuf:"bytes,2,opt,name=debug_id,json=debugId,proto3" json:"debug_id,omitempty"`
-	Target        *enginev1.InvocationTarget `protobuf:"bytes,3,opt,name=target,proto3" json:"target,omitempty"`
-	Input         []byte                     `protobuf:"bytes,4,opt,name=input,proto3" json:"input,omitempty"`
-	KnownEntries  uint32                     `protobuf:"varint,5,opt,name=known_entries,json=knownEntries,proto3" json:"known_entries,omitempty"`
-	StateMap      []*StateMapEntry           `protobuf:"bytes,6,rep,name=state_map,json=stateMap,proto3" json:"state_map,omitempty"`
-	PartialState  bool                       `protobuf:"varint,7,opt,name=partial_state,json=partialState,proto3" json:"partial_state,omitempty"`
-	RandomSeed    uint64                     `protobuf:"varint,8,opt,name=random_seed,json=randomSeed,proto3" json:"random_seed,omitempty"`
+	state        protoimpl.MessageState     `protogen:"open.v1"`
+	Id           *enginev1.InvocationId     `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	DebugId      string                     `protobuf:"bytes,2,opt,name=debug_id,json=debugId,proto3" json:"debug_id,omitempty"`
+	Target       *enginev1.InvocationTarget `protobuf:"bytes,3,opt,name=target,proto3" json:"target,omitempty"`
+	Input        []byte                     `protobuf:"bytes,4,opt,name=input,proto3" json:"input,omitempty"`
+	KnownEntries uint32                     `protobuf:"varint,5,opt,name=known_entries,json=knownEntries,proto3" json:"known_entries,omitempty"`
+	StateMap     []*StateMapEntry           `protobuf:"bytes,6,rep,name=state_map,json=stateMap,proto3" json:"state_map,omitempty"`
+	PartialState bool                       `protobuf:"varint,7,opt,name=partial_state,json=partialState,proto3" json:"partial_state,omitempty"`
+	RandomSeed   uint64                     `protobuf:"varint,8,opt,name=random_seed,json=randomSeed,proto3" json:"random_seed,omitempty"`
+	// sdk_build_id is an ops-visibility tag the SDK reports on every session
+	// start. The engine logs it but does not validate. Phase 3.
+	SdkBuildId string `protobuf:"bytes,11,opt,name=sdk_build_id,json=sdkBuildId,proto3" json:"sdk_build_id,omitempty"`
+	// retry_policy controls how the engine schedules JERun retries for
+	// non-terminal failures. Zero/absent fields fall back to defaults (see
+	// RunRetryPolicy). Phase 3.
+	RetryPolicy   *enginev1.RunRetryPolicy `protobuf:"bytes,12,opt,name=retry_policy,json=retryPolicy,proto3" json:"retry_policy,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -348,6 +355,20 @@ func (x *StartInvocation) GetRandomSeed() uint64 {
 		return x.RandomSeed
 	}
 	return 0
+}
+
+func (x *StartInvocation) GetSdkBuildId() string {
+	if x != nil {
+		return x.SdkBuildId
+	}
+	return ""
+}
+
+func (x *StartInvocation) GetRetryPolicy() *enginev1.RunRetryPolicy {
+	if x != nil {
+		return x.RetryPolicy
+	}
+	return nil
 }
 
 // ReplayEntry feeds a single journaled entry from the engine to the SDK
@@ -1049,7 +1070,7 @@ const file_sdkv1_sdk_proto_rawDesc = "" +
 	"\rpropose_entry\x18\a \x01(\v2\x1b.reflow.sdk.v1.ProposeEntryH\x00R\fproposeEntry\x12[\n" +
 	"\x16propose_run_completion\x18\b \x01(\v2#.reflow.sdk.v1.ProposeRunCompletionH\x00R\x14proposeRunCompletion\x123\n" +
 	"\x05error\x18\t \x01(\v2\x1b.reflow.sdk.v1.ErrorMessageH\x00R\x05errorB\x06\n" +
-	"\x04kind\"\xd4\x02\n" +
+	"\x04kind\"\xc1\x03\n" +
 	"\x0fStartInvocation\x12.\n" +
 	"\x02id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\x02id\x12\x19\n" +
 	"\bdebug_id\x18\x02 \x01(\tR\adebugId\x12:\n" +
@@ -1059,7 +1080,11 @@ const file_sdkv1_sdk_proto_rawDesc = "" +
 	"\tstate_map\x18\x06 \x03(\v2\x1c.reflow.sdk.v1.StateMapEntryR\bstateMap\x12#\n" +
 	"\rpartial_state\x18\a \x01(\bR\fpartialState\x12\x1f\n" +
 	"\vrandom_seed\x18\b \x01(\x04R\n" +
-	"randomSeed\"C\n" +
+	"randomSeed\x12 \n" +
+	"\fsdk_build_id\x18\v \x01(\tR\n" +
+	"sdkBuildId\x12C\n" +
+	"\fretry_policy\x18\f \x01(\v2 .reflow.engine.v1.RunRetryPolicyR\vretryPolicyJ\x04\b\n" +
+	"\x10\v\"C\n" +
 	"\vReplayEntry\x124\n" +
 	"\x05entry\x18\x01 \x01(\v2\x1e.reflow.engine.v1.JournalEntryR\x05entry\"+\n" +
 	"\bEntryAck\x12\x1f\n" +
@@ -1131,7 +1156,8 @@ var file_sdkv1_sdk_proto_goTypes = []any{
 	(*StateMapEntry)(nil),             // 13: reflow.sdk.v1.StateMapEntry
 	(*enginev1.InvocationId)(nil),     // 14: reflow.engine.v1.InvocationId
 	(*enginev1.InvocationTarget)(nil), // 15: reflow.engine.v1.InvocationTarget
-	(*enginev1.JournalEntry)(nil),     // 16: reflow.engine.v1.JournalEntry
+	(*enginev1.RunRetryPolicy)(nil),   // 16: reflow.engine.v1.RunRetryPolicy
+	(*enginev1.JournalEntry)(nil),     // 17: reflow.engine.v1.JournalEntry
 }
 var file_sdkv1_sdk_proto_depIdxs = []int32{
 	1,  // 0: reflow.sdk.v1.SDKMessage.start:type_name -> reflow.sdk.v1.StartInvocation
@@ -1146,20 +1172,21 @@ var file_sdkv1_sdk_proto_depIdxs = []int32{
 	14, // 9: reflow.sdk.v1.StartInvocation.id:type_name -> reflow.engine.v1.InvocationId
 	15, // 10: reflow.sdk.v1.StartInvocation.target:type_name -> reflow.engine.v1.InvocationTarget
 	13, // 11: reflow.sdk.v1.StartInvocation.state_map:type_name -> reflow.sdk.v1.StateMapEntry
-	16, // 12: reflow.sdk.v1.ReplayEntry.entry:type_name -> reflow.engine.v1.JournalEntry
-	11, // 13: reflow.sdk.v1.Completion.value:type_name -> reflow.sdk.v1.Value
-	10, // 14: reflow.sdk.v1.Completion.failure:type_name -> reflow.sdk.v1.Failure
-	12, // 15: reflow.sdk.v1.Completion.void:type_name -> reflow.sdk.v1.Void
-	10, // 16: reflow.sdk.v1.EndInvocation.failure:type_name -> reflow.sdk.v1.Failure
-	16, // 17: reflow.sdk.v1.ProposeEntry.entry:type_name -> reflow.engine.v1.JournalEntry
-	10, // 18: reflow.sdk.v1.ProposeRunCompletion.failure:type_name -> reflow.sdk.v1.Failure
-	0,  // 19: reflow.sdk.v1.SessionService.Invoke:input_type -> reflow.sdk.v1.SDKMessage
-	0,  // 20: reflow.sdk.v1.SessionService.Invoke:output_type -> reflow.sdk.v1.SDKMessage
-	20, // [20:21] is the sub-list for method output_type
-	19, // [19:20] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	16, // 12: reflow.sdk.v1.StartInvocation.retry_policy:type_name -> reflow.engine.v1.RunRetryPolicy
+	17, // 13: reflow.sdk.v1.ReplayEntry.entry:type_name -> reflow.engine.v1.JournalEntry
+	11, // 14: reflow.sdk.v1.Completion.value:type_name -> reflow.sdk.v1.Value
+	10, // 15: reflow.sdk.v1.Completion.failure:type_name -> reflow.sdk.v1.Failure
+	12, // 16: reflow.sdk.v1.Completion.void:type_name -> reflow.sdk.v1.Void
+	10, // 17: reflow.sdk.v1.EndInvocation.failure:type_name -> reflow.sdk.v1.Failure
+	17, // 18: reflow.sdk.v1.ProposeEntry.entry:type_name -> reflow.engine.v1.JournalEntry
+	10, // 19: reflow.sdk.v1.ProposeRunCompletion.failure:type_name -> reflow.sdk.v1.Failure
+	0,  // 20: reflow.sdk.v1.SessionService.Invoke:input_type -> reflow.sdk.v1.SDKMessage
+	0,  // 21: reflow.sdk.v1.SessionService.Invoke:output_type -> reflow.sdk.v1.SDKMessage
+	21, // [21:22] is the sub-list for method output_type
+	20, // [20:21] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_sdkv1_sdk_proto_init() }

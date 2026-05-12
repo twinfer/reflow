@@ -258,6 +258,11 @@ func (p *Partition) onInvoke(
 	if err != nil {
 		return fmt.Errorf("onInvoke: load status: %w", err)
 	}
+	// transitionOnInvoke records the new Scheduled status; for unkeyed
+	// targets it also emits ActInvoke so the invoker session starts
+	// immediately. For keyed targets we route through the per-key VO gate
+	// (KeyLeaseTable + object_fsm) instead — only the lease holder may
+	// activate; queued invocations sit in Scheduled until the gate releases.
 	next, actions, err := transitionOnInvoke(id, cur, cmd, nowMs)
 	if err != nil {
 		p.cfg.Log.Warn("partition: invalid Invoke transition", "err", err)
@@ -266,6 +271,33 @@ func (p *Partition) onInvoke(
 	if err := inv.Put(batch, id, next); err != nil {
 		return fmt.Errorf("onInvoke: write status: %w", err)
 	}
+
+	target := cmd.GetTarget()
+	keyed := target.GetObjectKey() != ""
+	// transitionOnInvoke is a no-op for Scheduled/Invoked re-entries; only
+	// fresh Free → Scheduled produces actions. We only need to drive the gate
+	// in that case.
+	if keyed && len(actions) > 0 {
+		klt := tables.KeyLeaseTable{S: p.cfg.Snapshotter.Store()}
+		curLease, lerr := klt.Get(target.GetServiceName(), target.GetObjectKey())
+		if lerr != nil {
+			return fmt.Errorf("onInvoke: load key lease: %w", lerr)
+		}
+		var leaseActs []Action
+		sm, nextLease := buildObjectFSM(curLease, func(activated *enginev1.InvocationId) {
+			leaseActs = append(leaseActs, ActInvoke{ID: activated, Target: target})
+		})
+		if ferr := sm.Fire(vobjEnqueue, id); ferr != nil {
+			return fmt.Errorf("onInvoke: vobj fire: %w", ferr)
+		}
+		if perr := klt.Put(batch, target.GetServiceName(), target.GetObjectKey(), nextLease); perr != nil {
+			return fmt.Errorf("onInvoke: write key lease: %w", perr)
+		}
+		// Drop the original ActInvoke from transitionOnInvoke; the gate is
+		// authoritative for keyed activations.
+		actions = leaseActs
+	}
+
 	if isLeader {
 		for _, a := range actions {
 			p.cfg.Collector.Push(a)
@@ -443,11 +475,14 @@ func (p *Partition) onInvokerEffect(
 		// cur (the prior status) rather than the new Completed status.
 		if err == nil {
 			var pl *enginev1.ParentLink
+			var completedTarget *enginev1.InvocationTarget
 			switch s := cur.GetStatus().(type) {
 			case *enginev1.InvocationStatus_Invoked:
 				pl = s.Invoked.GetParentLink()
+				completedTarget = s.Invoked.GetTarget()
 			case *enginev1.InvocationStatus_Suspended:
 				pl = s.Suspended.GetParentLink()
+				completedTarget = s.Suspended.GetTarget()
 			}
 			if pl.GetParentId() != nil {
 				parentActs, perr := p.deliverCallResultToParent(
@@ -460,6 +495,17 @@ func (p *Partition) onInvokerEffect(
 					return perr
 				}
 				actions = append(actions, parentActs...)
+			}
+			// Phase 3 — release the per-key VO lease and activate the next
+			// queued invocation, if any. Guarded by completedTarget != nil
+			// so replay (cur already Completed) is a no-op: the prior
+			// Completed status carries no target on this code path.
+			if completedTarget.GetObjectKey() != "" {
+				leaseActs, rerr := p.releaseKeyLease(batch, completedTarget)
+				if rerr != nil {
+					return rerr
+				}
+				actions = append(actions, leaseActs...)
 			}
 		}
 	case *enginev1.InvokerEffect_Suspended:
@@ -554,6 +600,44 @@ func (p *Partition) deliverCallResultToParent(
 		}
 	}
 	return parentActions, nil
+}
+
+// releaseKeyLease is the Phase 3 companion to the VO gate. When a keyed
+// invocation transitions to Completed, this fires vobjComplete on the
+// per-key FSM and writes the resulting KeyLeaseStatus back into the same
+// Pebble batch. If a queued invocation was waiting, the FSM's onActivate
+// hook captures an ActInvoke for it; the caller appends those actions to
+// the apply path's collector.
+//
+// Idempotent on replay: the caller guards entry via cur.GetStatus() so a
+// second Completed apply pass (which finds cur already Completed) never
+// enters this function.
+func (p *Partition) releaseKeyLease(
+	batch storage.Batch,
+	target *enginev1.InvocationTarget,
+) ([]Action, error) {
+	klt := tables.KeyLeaseTable{S: p.cfg.Snapshotter.Store()}
+	cur, err := klt.Get(target.GetServiceName(), target.GetObjectKey())
+	if err != nil {
+		return nil, fmt.Errorf("releaseKeyLease: load: %w", err)
+	}
+	if cur == nil || cur.GetState() == enginev1.KeyLeaseStatus_IDLE {
+		// Nothing to release. Shouldn't happen for keyed completions, but
+		// tolerate (e.g. crash-recovery replay where the lease was already
+		// rewritten by a prior apply pass).
+		return nil, nil
+	}
+	var leaseActs []Action
+	sm, next := buildObjectFSM(cur, func(activated *enginev1.InvocationId) {
+		leaseActs = append(leaseActs, ActInvoke{ID: activated, Target: target})
+	})
+	if ferr := sm.Fire(vobjComplete); ferr != nil {
+		return nil, fmt.Errorf("releaseKeyLease: vobj fire: %w", ferr)
+	}
+	if perr := klt.Put(batch, target.GetServiceName(), target.GetObjectKey(), next); perr != nil {
+		return nil, fmt.Errorf("releaseKeyLease: write: %w", perr)
+	}
+	return leaseActs, nil
 }
 
 // mintCalleeInvocationID derives a deterministic InvocationId for the

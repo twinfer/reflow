@@ -45,6 +45,52 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type KeyLeaseStatus_State int32
+
+const (
+	KeyLeaseStatus_IDLE   KeyLeaseStatus_State = 0
+	KeyLeaseStatus_ACTIVE KeyLeaseStatus_State = 1
+)
+
+// Enum value maps for KeyLeaseStatus_State.
+var (
+	KeyLeaseStatus_State_name = map[int32]string{
+		0: "IDLE",
+		1: "ACTIVE",
+	}
+	KeyLeaseStatus_State_value = map[string]int32{
+		"IDLE":   0,
+		"ACTIVE": 1,
+	}
+)
+
+func (x KeyLeaseStatus_State) Enum() *KeyLeaseStatus_State {
+	p := new(KeyLeaseStatus_State)
+	*p = x
+	return p
+}
+
+func (x KeyLeaseStatus_State) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (KeyLeaseStatus_State) Descriptor() protoreflect.EnumDescriptor {
+	return file_enginev1_engine_proto_enumTypes[0].Descriptor()
+}
+
+func (KeyLeaseStatus_State) Type() protoreflect.EnumType {
+	return &file_enginev1_engine_proto_enumTypes[0]
+}
+
+func (x KeyLeaseStatus_State) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use KeyLeaseStatus_State.Descriptor instead.
+func (KeyLeaseStatus_State) EnumDescriptor() ([]byte, []int) {
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{43, 0}
+}
+
 // InvocationId carries the partition_key inside the ID so routing never needs
 // to re-parse the target. Mirrors restate types/identifiers.rs:456-461.
 type InvocationId struct {
@@ -1320,6 +1366,7 @@ type JournalEntry struct {
 	//	*JournalEntry_Signal
 	//	*JournalEntry_ClearState
 	//	*JournalEntry_GetEagerState
+	//	*JournalEntry_ClearAllState
 	Entry         isJournalEntry_Entry `protobuf_oneof:"entry"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1495,6 +1542,15 @@ func (x *JournalEntry) GetGetEagerState() *JEGetEagerState {
 	return nil
 }
 
+func (x *JournalEntry) GetClearAllState() *JEClearAllState {
+	if x != nil {
+		if x, ok := x.Entry.(*JournalEntry_ClearAllState); ok {
+			return x.ClearAllState
+		}
+	}
+	return nil
+}
+
 type isJournalEntry_Entry interface {
 	isJournalEntry_Entry()
 }
@@ -1556,6 +1612,11 @@ type JournalEntry_GetEagerState struct {
 	GetEagerState *JEGetEagerState `protobuf:"bytes,15,opt,name=get_eager_state,json=getEagerState,proto3,oneof"`
 }
 
+type JournalEntry_ClearAllState struct {
+	// Phase 3 additions.
+	ClearAllState *JEClearAllState `protobuf:"bytes,16,opt,name=clear_all_state,json=clearAllState,proto3,oneof"`
+}
+
 func (*JournalEntry_Input) isJournalEntry_Entry() {}
 
 func (*JournalEntry_Sleep) isJournalEntry_Entry() {}
@@ -1583,6 +1644,8 @@ func (*JournalEntry_Signal) isJournalEntry_Entry() {}
 func (*JournalEntry_ClearState) isJournalEntry_Entry() {}
 
 func (*JournalEntry_GetEagerState) isJournalEntry_Entry() {}
+
+func (*JournalEntry_ClearAllState) isJournalEntry_Entry() {}
 
 type JEInput struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1989,12 +2052,14 @@ func (x *JEOutput) GetValue() []byte {
 // JERun records the outcome of a deterministic side-effect block. The SDK
 // runs the body once, journals (value or failure_message), and replays
 // store-only on subsequent retries. attempt is bookkeeping for retry
-// policies (Phase 3). Phase 2.
+// policies. retryable distinguishes a terminal error (handler fails) from a
+// transient one (engine schedules a backoff and re-invokes fn). Phase 3.
 type JERun struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Value          []byte                 `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
 	FailureMessage string                 `protobuf:"bytes,2,opt,name=failure_message,json=failureMessage,proto3" json:"failure_message,omitempty"`
 	Attempt        uint32                 `protobuf:"varint,3,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Retryable      bool                   `protobuf:"varint,4,opt,name=retryable,proto3" json:"retryable,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -2050,6 +2115,125 @@ func (x *JERun) GetAttempt() uint32 {
 	return 0
 }
 
+func (x *JERun) GetRetryable() bool {
+	if x != nil {
+		return x.Retryable
+	}
+	return false
+}
+
+// RunRetryPolicy controls exponential backoff for retryable JERun failures.
+// Carried on StartInvocation so the SDK can echo it through to the engine
+// apply arm without per-Run wire traffic. Zero/absent fields fall back to
+// defaults: initial=50ms, factor=2.0, max_interval=10s, max_attempts=0
+// (unlimited). Phase 3.
+type RunRetryPolicy struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	InitialIntervalMs uint64                 `protobuf:"varint,1,opt,name=initial_interval_ms,json=initialIntervalMs,proto3" json:"initial_interval_ms,omitempty"`
+	Factor            float64                `protobuf:"fixed64,2,opt,name=factor,proto3" json:"factor,omitempty"`
+	MaxIntervalMs     uint64                 `protobuf:"varint,3,opt,name=max_interval_ms,json=maxIntervalMs,proto3" json:"max_interval_ms,omitempty"`
+	MaxAttempts       uint32                 `protobuf:"varint,4,opt,name=max_attempts,json=maxAttempts,proto3" json:"max_attempts,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *RunRetryPolicy) Reset() {
+	*x = RunRetryPolicy{}
+	mi := &file_enginev1_engine_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RunRetryPolicy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RunRetryPolicy) ProtoMessage() {}
+
+func (x *RunRetryPolicy) ProtoReflect() protoreflect.Message {
+	mi := &file_enginev1_engine_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RunRetryPolicy.ProtoReflect.Descriptor instead.
+func (*RunRetryPolicy) Descriptor() ([]byte, []int) {
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *RunRetryPolicy) GetInitialIntervalMs() uint64 {
+	if x != nil {
+		return x.InitialIntervalMs
+	}
+	return 0
+}
+
+func (x *RunRetryPolicy) GetFactor() float64 {
+	if x != nil {
+		return x.Factor
+	}
+	return 0
+}
+
+func (x *RunRetryPolicy) GetMaxIntervalMs() uint64 {
+	if x != nil {
+		return x.MaxIntervalMs
+	}
+	return 0
+}
+
+func (x *RunRetryPolicy) GetMaxAttempts() uint32 {
+	if x != nil {
+		return x.MaxAttempts
+	}
+	return 0
+}
+
+// JEClearAllState wipes every state row scoped to the invocation's
+// (service, object_key). Empty body: the target is implied by the
+// surrounding invocation. Apply arm uses StateTable.RangeDelete. Phase 3.
+type JEClearAllState struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JEClearAllState) Reset() {
+	*x = JEClearAllState{}
+	mi := &file_enginev1_engine_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JEClearAllState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JEClearAllState) ProtoMessage() {}
+
+func (x *JEClearAllState) ProtoReflect() protoreflect.Message {
+	mi := &file_enginev1_engine_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JEClearAllState.ProtoReflect.Descriptor instead.
+func (*JEClearAllState) Descriptor() ([]byte, []int) {
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{29}
+}
+
 // JEAwakeable is journaled when a handler mints an awakeable. The actual
 // resolution arrives later as JEAwakeableResult after an external caller
 // hits the ingress resolution endpoint. Phase 2.
@@ -2062,7 +2246,7 @@ type JEAwakeable struct {
 
 func (x *JEAwakeable) Reset() {
 	*x = JEAwakeable{}
-	mi := &file_enginev1_engine_proto_msgTypes[28]
+	mi := &file_enginev1_engine_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2074,7 +2258,7 @@ func (x *JEAwakeable) String() string {
 func (*JEAwakeable) ProtoMessage() {}
 
 func (x *JEAwakeable) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[28]
+	mi := &file_enginev1_engine_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2087,7 +2271,7 @@ func (x *JEAwakeable) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JEAwakeable.ProtoReflect.Descriptor instead.
 func (*JEAwakeable) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{28}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *JEAwakeable) GetAwakeableId() string {
@@ -2110,7 +2294,7 @@ type JEAwakeableResult struct {
 
 func (x *JEAwakeableResult) Reset() {
 	*x = JEAwakeableResult{}
-	mi := &file_enginev1_engine_proto_msgTypes[29]
+	mi := &file_enginev1_engine_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2122,7 +2306,7 @@ func (x *JEAwakeableResult) String() string {
 func (*JEAwakeableResult) ProtoMessage() {}
 
 func (x *JEAwakeableResult) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[29]
+	mi := &file_enginev1_engine_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2135,7 +2319,7 @@ func (x *JEAwakeableResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JEAwakeableResult.ProtoReflect.Descriptor instead.
 func (*JEAwakeableResult) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{29}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *JEAwakeableResult) GetAwakeableId() string {
@@ -2173,7 +2357,7 @@ type JESignal struct {
 
 func (x *JESignal) Reset() {
 	*x = JESignal{}
-	mi := &file_enginev1_engine_proto_msgTypes[30]
+	mi := &file_enginev1_engine_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2185,7 +2369,7 @@ func (x *JESignal) String() string {
 func (*JESignal) ProtoMessage() {}
 
 func (x *JESignal) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[30]
+	mi := &file_enginev1_engine_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2198,7 +2382,7 @@ func (x *JESignal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JESignal.ProtoReflect.Descriptor instead.
 func (*JESignal) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{30}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *JESignal) GetTargetInvocationId() *InvocationId {
@@ -2232,7 +2416,7 @@ type JEClearState struct {
 
 func (x *JEClearState) Reset() {
 	*x = JEClearState{}
-	mi := &file_enginev1_engine_proto_msgTypes[31]
+	mi := &file_enginev1_engine_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2244,7 +2428,7 @@ func (x *JEClearState) String() string {
 func (*JEClearState) ProtoMessage() {}
 
 func (x *JEClearState) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[31]
+	mi := &file_enginev1_engine_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2257,7 +2441,7 @@ func (x *JEClearState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JEClearState.ProtoReflect.Descriptor instead.
 func (*JEClearState) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{31}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *JEClearState) GetKey() string {
@@ -2281,7 +2465,7 @@ type JEGetEagerState struct {
 
 func (x *JEGetEagerState) Reset() {
 	*x = JEGetEagerState{}
-	mi := &file_enginev1_engine_proto_msgTypes[32]
+	mi := &file_enginev1_engine_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2293,7 +2477,7 @@ func (x *JEGetEagerState) String() string {
 func (*JEGetEagerState) ProtoMessage() {}
 
 func (x *JEGetEagerState) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[32]
+	mi := &file_enginev1_engine_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2306,7 +2490,7 @@ func (x *JEGetEagerState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JEGetEagerState.ProtoReflect.Descriptor instead.
 func (*JEGetEagerState) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{32}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *JEGetEagerState) GetKey() string {
@@ -2341,7 +2525,7 @@ type TimerFired struct {
 
 func (x *TimerFired) Reset() {
 	*x = TimerFired{}
-	mi := &file_enginev1_engine_proto_msgTypes[33]
+	mi := &file_enginev1_engine_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2353,7 +2537,7 @@ func (x *TimerFired) String() string {
 func (*TimerFired) ProtoMessage() {}
 
 func (x *TimerFired) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[33]
+	mi := &file_enginev1_engine_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2366,7 +2550,7 @@ func (x *TimerFired) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimerFired.ProtoReflect.Descriptor instead.
 func (*TimerFired) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{33}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *TimerFired) GetInvocationId() *InvocationId {
@@ -2399,7 +2583,7 @@ type PurgeInvocation struct {
 
 func (x *PurgeInvocation) Reset() {
 	*x = PurgeInvocation{}
-	mi := &file_enginev1_engine_proto_msgTypes[34]
+	mi := &file_enginev1_engine_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2411,7 +2595,7 @@ func (x *PurgeInvocation) String() string {
 func (*PurgeInvocation) ProtoMessage() {}
 
 func (x *PurgeInvocation) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[34]
+	mi := &file_enginev1_engine_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2424,7 +2608,7 @@ func (x *PurgeInvocation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PurgeInvocation.ProtoReflect.Descriptor instead.
 func (*PurgeInvocation) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{34}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *PurgeInvocation) GetInvocationId() *InvocationId {
@@ -2452,7 +2636,7 @@ type InvocationStatus struct {
 
 func (x *InvocationStatus) Reset() {
 	*x = InvocationStatus{}
-	mi := &file_enginev1_engine_proto_msgTypes[35]
+	mi := &file_enginev1_engine_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2464,7 +2648,7 @@ func (x *InvocationStatus) String() string {
 func (*InvocationStatus) ProtoMessage() {}
 
 func (x *InvocationStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[35]
+	mi := &file_enginev1_engine_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2477,7 +2661,7 @@ func (x *InvocationStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InvocationStatus.ProtoReflect.Descriptor instead.
 func (*InvocationStatus) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{35}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *InvocationStatus) GetStatus() isInvocationStatus_Status {
@@ -2574,7 +2758,7 @@ type Free struct {
 
 func (x *Free) Reset() {
 	*x = Free{}
-	mi := &file_enginev1_engine_proto_msgTypes[36]
+	mi := &file_enginev1_engine_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2586,7 +2770,7 @@ func (x *Free) String() string {
 func (*Free) ProtoMessage() {}
 
 func (x *Free) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[36]
+	mi := &file_enginev1_engine_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2599,7 +2783,7 @@ func (x *Free) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Free.ProtoReflect.Descriptor instead.
 func (*Free) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{36}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{38}
 }
 
 type Scheduled struct {
@@ -2617,7 +2801,7 @@ type Scheduled struct {
 
 func (x *Scheduled) Reset() {
 	*x = Scheduled{}
-	mi := &file_enginev1_engine_proto_msgTypes[37]
+	mi := &file_enginev1_engine_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2629,7 +2813,7 @@ func (x *Scheduled) String() string {
 func (*Scheduled) ProtoMessage() {}
 
 func (x *Scheduled) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[37]
+	mi := &file_enginev1_engine_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2642,7 +2826,7 @@ func (x *Scheduled) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Scheduled.ProtoReflect.Descriptor instead.
 func (*Scheduled) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{37}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *Scheduled) GetTarget() *InvocationTarget {
@@ -2685,7 +2869,7 @@ type Invoked struct {
 
 func (x *Invoked) Reset() {
 	*x = Invoked{}
-	mi := &file_enginev1_engine_proto_msgTypes[38]
+	mi := &file_enginev1_engine_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2697,7 +2881,7 @@ func (x *Invoked) String() string {
 func (*Invoked) ProtoMessage() {}
 
 func (x *Invoked) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[38]
+	mi := &file_enginev1_engine_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2710,7 +2894,7 @@ func (x *Invoked) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Invoked.ProtoReflect.Descriptor instead.
 func (*Invoked) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{38}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *Invoked) GetTarget() *InvocationTarget {
@@ -2753,7 +2937,7 @@ type Suspended struct {
 
 func (x *Suspended) Reset() {
 	*x = Suspended{}
-	mi := &file_enginev1_engine_proto_msgTypes[39]
+	mi := &file_enginev1_engine_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2765,7 +2949,7 @@ func (x *Suspended) String() string {
 func (*Suspended) ProtoMessage() {}
 
 func (x *Suspended) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[39]
+	mi := &file_enginev1_engine_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2778,7 +2962,7 @@ func (x *Suspended) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Suspended.ProtoReflect.Descriptor instead.
 func (*Suspended) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{39}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *Suspended) GetTarget() *InvocationTarget {
@@ -2821,7 +3005,7 @@ type Completed struct {
 
 func (x *Completed) Reset() {
 	*x = Completed{}
-	mi := &file_enginev1_engine_proto_msgTypes[40]
+	mi := &file_enginev1_engine_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2833,7 +3017,7 @@ func (x *Completed) String() string {
 func (*Completed) ProtoMessage() {}
 
 func (x *Completed) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[40]
+	mi := &file_enginev1_engine_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2846,7 +3030,7 @@ func (x *Completed) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Completed.ProtoReflect.Descriptor instead.
 func (*Completed) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{40}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *Completed) GetTarget() *InvocationTarget {
@@ -2877,6 +3061,79 @@ func (x *Completed) GetCompletedAtMs() uint64 {
 	return 0
 }
 
+// KeyLeaseStatus is the per-(service, object_key) gate enforcing the
+// Virtual Object single-writer invariant. Persisted in KeyLeaseTable; the
+// apply path fires the per-key FSM (internal/engine/object_fsm.go) which
+// reads and writes this message in the same Pebble batch as the invocation
+// status transition. Phase 3.
+//
+// state==IDLE   : no invocation holds the lease; current_invocation unset;
+//
+//	queue empty.
+//
+// state==ACTIVE : current_invocation holds the lease; queue is the FIFO
+//
+//	of pending invocations waiting to run next.
+type KeyLeaseStatus struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	State             KeyLeaseStatus_State   `protobuf:"varint,1,opt,name=state,proto3,enum=reflow.engine.v1.KeyLeaseStatus_State" json:"state,omitempty"`
+	CurrentInvocation *InvocationId          `protobuf:"bytes,2,opt,name=current_invocation,json=currentInvocation,proto3" json:"current_invocation,omitempty"`
+	Queue             []*InvocationId        `protobuf:"bytes,3,rep,name=queue,proto3" json:"queue,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *KeyLeaseStatus) Reset() {
+	*x = KeyLeaseStatus{}
+	mi := &file_enginev1_engine_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *KeyLeaseStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*KeyLeaseStatus) ProtoMessage() {}
+
+func (x *KeyLeaseStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_enginev1_engine_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use KeyLeaseStatus.ProtoReflect.Descriptor instead.
+func (*KeyLeaseStatus) Descriptor() ([]byte, []int) {
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *KeyLeaseStatus) GetState() KeyLeaseStatus_State {
+	if x != nil {
+		return x.State
+	}
+	return KeyLeaseStatus_IDLE
+}
+
+func (x *KeyLeaseStatus) GetCurrentInvocation() *InvocationId {
+	if x != nil {
+		return x.CurrentInvocation
+	}
+	return nil
+}
+
+func (x *KeyLeaseStatus) GetQueue() []*InvocationId {
+	if x != nil {
+		return x.Queue
+	}
+	return nil
+}
+
 // DedupEntry — value stored in the dedup table (per-producer max-seen seq).
 type DedupEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -2888,7 +3145,7 @@ type DedupEntry struct {
 
 func (x *DedupEntry) Reset() {
 	*x = DedupEntry{}
-	mi := &file_enginev1_engine_proto_msgTypes[41]
+	mi := &file_enginev1_engine_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2900,7 +3157,7 @@ func (x *DedupEntry) String() string {
 func (*DedupEntry) ProtoMessage() {}
 
 func (x *DedupEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[41]
+	mi := &file_enginev1_engine_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2913,7 +3170,7 @@ func (x *DedupEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DedupEntry.ProtoReflect.Descriptor instead.
 func (*DedupEntry) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{41}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *DedupEntry) GetSeq() uint64 {
@@ -2949,7 +3206,7 @@ type PartitionMeta struct {
 
 func (x *PartitionMeta) Reset() {
 	*x = PartitionMeta{}
-	mi := &file_enginev1_engine_proto_msgTypes[42]
+	mi := &file_enginev1_engine_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2961,7 +3218,7 @@ func (x *PartitionMeta) String() string {
 func (*PartitionMeta) ProtoMessage() {}
 
 func (x *PartitionMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[42]
+	mi := &file_enginev1_engine_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2974,7 +3231,7 @@ func (x *PartitionMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PartitionMeta.ProtoReflect.Descriptor instead.
 func (*PartitionMeta) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{42}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *PartitionMeta) GetAppliedIndex() uint64 {
@@ -3018,7 +3275,7 @@ type AwakeableEntry struct {
 
 func (x *AwakeableEntry) Reset() {
 	*x = AwakeableEntry{}
-	mi := &file_enginev1_engine_proto_msgTypes[43]
+	mi := &file_enginev1_engine_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3030,7 +3287,7 @@ func (x *AwakeableEntry) String() string {
 func (*AwakeableEntry) ProtoMessage() {}
 
 func (x *AwakeableEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[43]
+	mi := &file_enginev1_engine_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3043,7 +3300,7 @@ func (x *AwakeableEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AwakeableEntry.ProtoReflect.Descriptor instead.
 func (*AwakeableEntry) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{43}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *AwakeableEntry) GetOwner() *InvocationId {
@@ -3078,7 +3335,7 @@ type OutboxEnvelope struct {
 
 func (x *OutboxEnvelope) Reset() {
 	*x = OutboxEnvelope{}
-	mi := &file_enginev1_engine_proto_msgTypes[44]
+	mi := &file_enginev1_engine_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3090,7 +3347,7 @@ func (x *OutboxEnvelope) String() string {
 func (*OutboxEnvelope) ProtoMessage() {}
 
 func (x *OutboxEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[44]
+	mi := &file_enginev1_engine_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3103,7 +3360,7 @@ func (x *OutboxEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutboxEnvelope.ProtoReflect.Descriptor instead.
 func (*OutboxEnvelope) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{44}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *OutboxEnvelope) GetKind() isOutboxEnvelope_Kind {
@@ -3161,7 +3418,7 @@ type SignalSend struct {
 
 func (x *SignalSend) Reset() {
 	*x = SignalSend{}
-	mi := &file_enginev1_engine_proto_msgTypes[45]
+	mi := &file_enginev1_engine_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3173,7 +3430,7 @@ func (x *SignalSend) String() string {
 func (*SignalSend) ProtoMessage() {}
 
 func (x *SignalSend) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[45]
+	mi := &file_enginev1_engine_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3186,7 +3443,7 @@ func (x *SignalSend) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalSend.ProtoReflect.Descriptor instead.
 func (*SignalSend) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{45}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *SignalSend) GetTargetInvocationId() *InvocationId {
@@ -3233,7 +3490,7 @@ type SnapshotMeta struct {
 
 func (x *SnapshotMeta) Reset() {
 	*x = SnapshotMeta{}
-	mi := &file_enginev1_engine_proto_msgTypes[46]
+	mi := &file_enginev1_engine_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3245,7 +3502,7 @@ func (x *SnapshotMeta) String() string {
 func (*SnapshotMeta) ProtoMessage() {}
 
 func (x *SnapshotMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[46]
+	mi := &file_enginev1_engine_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3258,7 +3515,7 @@ func (x *SnapshotMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotMeta.ProtoReflect.Descriptor instead.
 func (*SnapshotMeta) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{46}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *SnapshotMeta) GetShardId() uint64 {
@@ -3388,7 +3645,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x0ffailure_message\x18\x02 \x01(\tR\x0efailureMessage\"6\n" +
 	"\x13InvocationSuspended\x12\x1f\n" +
 	"\vawaiting_on\x18\x01 \x03(\tR\n" +
-	"awaitingOn\"\x80\a\n" +
+	"awaitingOn\"\xcd\a\n" +
 	"\fJournalEntry\x12\x14\n" +
 	"\x05index\x18\x01 \x01(\rR\x05index\x121\n" +
 	"\x05input\x18\x02 \x01(\v2\x19.reflow.engine.v1.JEInputH\x00R\x05input\x121\n" +
@@ -3407,7 +3664,8 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x06signal\x18\r \x01(\v2\x1a.reflow.engine.v1.JESignalH\x00R\x06signal\x12A\n" +
 	"\vclear_state\x18\x0e \x01(\v2\x1e.reflow.engine.v1.JEClearStateH\x00R\n" +
 	"clearState\x12K\n" +
-	"\x0fget_eager_state\x18\x0f \x01(\v2!.reflow.engine.v1.JEGetEagerStateH\x00R\rgetEagerStateB\a\n" +
+	"\x0fget_eager_state\x18\x0f \x01(\v2!.reflow.engine.v1.JEGetEagerStateH\x00R\rgetEagerState\x12K\n" +
+	"\x0fclear_all_state\x18\x10 \x01(\v2!.reflow.engine.v1.JEClearAllStateH\x00R\rclearAllStateB\a\n" +
 	"\x05entry\"\x1f\n" +
 	"\aJEInput\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\fR\x05value\"'\n" +
@@ -3435,11 +3693,18 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\" \n" +
 	"\bJEOutput\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\fR\x05value\"`\n" +
+	"\x05value\x18\x01 \x01(\fR\x05value\"~\n" +
 	"\x05JERun\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\fR\x05value\x12'\n" +
 	"\x0ffailure_message\x18\x02 \x01(\tR\x0efailureMessage\x12\x18\n" +
-	"\aattempt\x18\x03 \x01(\rR\aattempt\"0\n" +
+	"\aattempt\x18\x03 \x01(\rR\aattempt\x12\x1c\n" +
+	"\tretryable\x18\x04 \x01(\bR\tretryable\"\xa3\x01\n" +
+	"\x0eRunRetryPolicy\x12.\n" +
+	"\x13initial_interval_ms\x18\x01 \x01(\x04R\x11initialIntervalMs\x12\x16\n" +
+	"\x06factor\x18\x02 \x01(\x01R\x06factor\x12&\n" +
+	"\x0fmax_interval_ms\x18\x03 \x01(\x04R\rmaxIntervalMs\x12!\n" +
+	"\fmax_attempts\x18\x04 \x01(\rR\vmaxAttempts\"\x11\n" +
+	"\x0fJEClearAllState\"0\n" +
 	"\vJEAwakeable\x12!\n" +
 	"\fawakeable_id\x18\x01 \x01(\tR\vawakeableId\"u\n" +
 	"\x11JEAwakeableResult\x12!\n" +
@@ -3497,7 +3762,15 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x06target\x18\x01 \x01(\v2\".reflow.engine.v1.InvocationTargetR\x06target\x12\x16\n" +
 	"\x06output\x18\x02 \x01(\fR\x06output\x12'\n" +
 	"\x0ffailure_message\x18\x03 \x01(\tR\x0efailureMessage\x12&\n" +
-	"\x0fcompleted_at_ms\x18\x04 \x01(\x06R\rcompletedAtMs\"A\n" +
+	"\x0fcompleted_at_ms\x18\x04 \x01(\x06R\rcompletedAtMs\"\xf2\x01\n" +
+	"\x0eKeyLeaseStatus\x12<\n" +
+	"\x05state\x18\x01 \x01(\x0e2&.reflow.engine.v1.KeyLeaseStatus.StateR\x05state\x12M\n" +
+	"\x12current_invocation\x18\x02 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\x11currentInvocation\x124\n" +
+	"\x05queue\x18\x03 \x03(\v2\x1e.reflow.engine.v1.InvocationIdR\x05queue\"\x1d\n" +
+	"\x05State\x12\b\n" +
+	"\x04IDLE\x10\x00\x12\n" +
+	"\n" +
+	"\x06ACTIVE\x10\x01\"A\n" +
 	"\n" +
 	"DedupEntry\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x04R\x03seq\x12!\n" +
@@ -3542,118 +3815,127 @@ func file_enginev1_engine_proto_rawDescGZIP() []byte {
 	return file_enginev1_engine_proto_rawDescData
 }
 
-var file_enginev1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
+var file_enginev1_engine_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_enginev1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 50)
 var file_enginev1_engine_proto_goTypes = []any{
-	(*InvocationId)(nil),         // 0: reflow.engine.v1.InvocationId
-	(*InvocationTarget)(nil),     // 1: reflow.engine.v1.InvocationTarget
-	(*Dedup)(nil),                // 2: reflow.engine.v1.Dedup
-	(*SelfProposalDedup)(nil),    // 3: reflow.engine.v1.SelfProposalDedup
-	(*ArbitraryDedup)(nil),       // 4: reflow.engine.v1.ArbitraryDedup
-	(*Envelope)(nil),             // 5: reflow.engine.v1.Envelope
-	(*Header)(nil),               // 6: reflow.engine.v1.Header
-	(*Command)(nil),              // 7: reflow.engine.v1.Command
-	(*AnnounceLeader)(nil),       // 8: reflow.engine.v1.AnnounceLeader
-	(*InvokeCommand)(nil),        // 9: reflow.engine.v1.InvokeCommand
-	(*ParentLink)(nil),           // 10: reflow.engine.v1.ParentLink
-	(*InvokerEffect)(nil),        // 11: reflow.engine.v1.InvokerEffect
-	(*JERunProposal)(nil),        // 12: reflow.engine.v1.JERunProposal
-	(*AwakeableResolved)(nil),    // 13: reflow.engine.v1.AwakeableResolved
-	(*SignalDelivered)(nil),      // 14: reflow.engine.v1.SignalDelivered
-	(*JournalEntryAppended)(nil), // 15: reflow.engine.v1.JournalEntryAppended
-	(*InvocationCompleted)(nil),  // 16: reflow.engine.v1.InvocationCompleted
-	(*InvocationSuspended)(nil),  // 17: reflow.engine.v1.InvocationSuspended
-	(*JournalEntry)(nil),         // 18: reflow.engine.v1.JournalEntry
-	(*JEInput)(nil),              // 19: reflow.engine.v1.JEInput
-	(*JESleep)(nil),              // 20: reflow.engine.v1.JESleep
-	(*JESleepResult)(nil),        // 21: reflow.engine.v1.JESleepResult
-	(*JECall)(nil),               // 22: reflow.engine.v1.JECall
-	(*JECallResult)(nil),         // 23: reflow.engine.v1.JECallResult
-	(*JEGetState)(nil),           // 24: reflow.engine.v1.JEGetState
-	(*JESetState)(nil),           // 25: reflow.engine.v1.JESetState
-	(*JEOutput)(nil),             // 26: reflow.engine.v1.JEOutput
-	(*JERun)(nil),                // 27: reflow.engine.v1.JERun
-	(*JEAwakeable)(nil),          // 28: reflow.engine.v1.JEAwakeable
-	(*JEAwakeableResult)(nil),    // 29: reflow.engine.v1.JEAwakeableResult
-	(*JESignal)(nil),             // 30: reflow.engine.v1.JESignal
-	(*JEClearState)(nil),         // 31: reflow.engine.v1.JEClearState
-	(*JEGetEagerState)(nil),      // 32: reflow.engine.v1.JEGetEagerState
-	(*TimerFired)(nil),           // 33: reflow.engine.v1.TimerFired
-	(*PurgeInvocation)(nil),      // 34: reflow.engine.v1.PurgeInvocation
-	(*InvocationStatus)(nil),     // 35: reflow.engine.v1.InvocationStatus
-	(*Free)(nil),                 // 36: reflow.engine.v1.Free
-	(*Scheduled)(nil),            // 37: reflow.engine.v1.Scheduled
-	(*Invoked)(nil),              // 38: reflow.engine.v1.Invoked
-	(*Suspended)(nil),            // 39: reflow.engine.v1.Suspended
-	(*Completed)(nil),            // 40: reflow.engine.v1.Completed
-	(*DedupEntry)(nil),           // 41: reflow.engine.v1.DedupEntry
-	(*PartitionMeta)(nil),        // 42: reflow.engine.v1.PartitionMeta
-	(*AwakeableEntry)(nil),       // 43: reflow.engine.v1.AwakeableEntry
-	(*OutboxEnvelope)(nil),       // 44: reflow.engine.v1.OutboxEnvelope
-	(*SignalSend)(nil),           // 45: reflow.engine.v1.SignalSend
-	(*SnapshotMeta)(nil),         // 46: reflow.engine.v1.SnapshotMeta
+	(KeyLeaseStatus_State)(0),    // 0: reflow.engine.v1.KeyLeaseStatus.State
+	(*InvocationId)(nil),         // 1: reflow.engine.v1.InvocationId
+	(*InvocationTarget)(nil),     // 2: reflow.engine.v1.InvocationTarget
+	(*Dedup)(nil),                // 3: reflow.engine.v1.Dedup
+	(*SelfProposalDedup)(nil),    // 4: reflow.engine.v1.SelfProposalDedup
+	(*ArbitraryDedup)(nil),       // 5: reflow.engine.v1.ArbitraryDedup
+	(*Envelope)(nil),             // 6: reflow.engine.v1.Envelope
+	(*Header)(nil),               // 7: reflow.engine.v1.Header
+	(*Command)(nil),              // 8: reflow.engine.v1.Command
+	(*AnnounceLeader)(nil),       // 9: reflow.engine.v1.AnnounceLeader
+	(*InvokeCommand)(nil),        // 10: reflow.engine.v1.InvokeCommand
+	(*ParentLink)(nil),           // 11: reflow.engine.v1.ParentLink
+	(*InvokerEffect)(nil),        // 12: reflow.engine.v1.InvokerEffect
+	(*JERunProposal)(nil),        // 13: reflow.engine.v1.JERunProposal
+	(*AwakeableResolved)(nil),    // 14: reflow.engine.v1.AwakeableResolved
+	(*SignalDelivered)(nil),      // 15: reflow.engine.v1.SignalDelivered
+	(*JournalEntryAppended)(nil), // 16: reflow.engine.v1.JournalEntryAppended
+	(*InvocationCompleted)(nil),  // 17: reflow.engine.v1.InvocationCompleted
+	(*InvocationSuspended)(nil),  // 18: reflow.engine.v1.InvocationSuspended
+	(*JournalEntry)(nil),         // 19: reflow.engine.v1.JournalEntry
+	(*JEInput)(nil),              // 20: reflow.engine.v1.JEInput
+	(*JESleep)(nil),              // 21: reflow.engine.v1.JESleep
+	(*JESleepResult)(nil),        // 22: reflow.engine.v1.JESleepResult
+	(*JECall)(nil),               // 23: reflow.engine.v1.JECall
+	(*JECallResult)(nil),         // 24: reflow.engine.v1.JECallResult
+	(*JEGetState)(nil),           // 25: reflow.engine.v1.JEGetState
+	(*JESetState)(nil),           // 26: reflow.engine.v1.JESetState
+	(*JEOutput)(nil),             // 27: reflow.engine.v1.JEOutput
+	(*JERun)(nil),                // 28: reflow.engine.v1.JERun
+	(*RunRetryPolicy)(nil),       // 29: reflow.engine.v1.RunRetryPolicy
+	(*JEClearAllState)(nil),      // 30: reflow.engine.v1.JEClearAllState
+	(*JEAwakeable)(nil),          // 31: reflow.engine.v1.JEAwakeable
+	(*JEAwakeableResult)(nil),    // 32: reflow.engine.v1.JEAwakeableResult
+	(*JESignal)(nil),             // 33: reflow.engine.v1.JESignal
+	(*JEClearState)(nil),         // 34: reflow.engine.v1.JEClearState
+	(*JEGetEagerState)(nil),      // 35: reflow.engine.v1.JEGetEagerState
+	(*TimerFired)(nil),           // 36: reflow.engine.v1.TimerFired
+	(*PurgeInvocation)(nil),      // 37: reflow.engine.v1.PurgeInvocation
+	(*InvocationStatus)(nil),     // 38: reflow.engine.v1.InvocationStatus
+	(*Free)(nil),                 // 39: reflow.engine.v1.Free
+	(*Scheduled)(nil),            // 40: reflow.engine.v1.Scheduled
+	(*Invoked)(nil),              // 41: reflow.engine.v1.Invoked
+	(*Suspended)(nil),            // 42: reflow.engine.v1.Suspended
+	(*Completed)(nil),            // 43: reflow.engine.v1.Completed
+	(*KeyLeaseStatus)(nil),       // 44: reflow.engine.v1.KeyLeaseStatus
+	(*DedupEntry)(nil),           // 45: reflow.engine.v1.DedupEntry
+	(*PartitionMeta)(nil),        // 46: reflow.engine.v1.PartitionMeta
+	(*AwakeableEntry)(nil),       // 47: reflow.engine.v1.AwakeableEntry
+	(*OutboxEnvelope)(nil),       // 48: reflow.engine.v1.OutboxEnvelope
+	(*SignalSend)(nil),           // 49: reflow.engine.v1.SignalSend
+	(*SnapshotMeta)(nil),         // 50: reflow.engine.v1.SnapshotMeta
 }
 var file_enginev1_engine_proto_depIdxs = []int32{
-	3,  // 0: reflow.engine.v1.Dedup.self_proposal:type_name -> reflow.engine.v1.SelfProposalDedup
-	4,  // 1: reflow.engine.v1.Dedup.arbitrary:type_name -> reflow.engine.v1.ArbitraryDedup
-	6,  // 2: reflow.engine.v1.Envelope.header:type_name -> reflow.engine.v1.Header
-	7,  // 3: reflow.engine.v1.Envelope.command:type_name -> reflow.engine.v1.Command
-	2,  // 4: reflow.engine.v1.Header.dedup:type_name -> reflow.engine.v1.Dedup
-	8,  // 5: reflow.engine.v1.Command.announce_leader:type_name -> reflow.engine.v1.AnnounceLeader
-	9,  // 6: reflow.engine.v1.Command.invoke:type_name -> reflow.engine.v1.InvokeCommand
-	11, // 7: reflow.engine.v1.Command.invoker_effect:type_name -> reflow.engine.v1.InvokerEffect
-	33, // 8: reflow.engine.v1.Command.timer_fired:type_name -> reflow.engine.v1.TimerFired
-	34, // 9: reflow.engine.v1.Command.purge:type_name -> reflow.engine.v1.PurgeInvocation
-	0,  // 10: reflow.engine.v1.InvokeCommand.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	1,  // 11: reflow.engine.v1.InvokeCommand.target:type_name -> reflow.engine.v1.InvocationTarget
-	10, // 12: reflow.engine.v1.InvokeCommand.parent_link:type_name -> reflow.engine.v1.ParentLink
-	0,  // 13: reflow.engine.v1.ParentLink.parent_id:type_name -> reflow.engine.v1.InvocationId
-	0,  // 14: reflow.engine.v1.InvokerEffect.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	15, // 15: reflow.engine.v1.InvokerEffect.journal_appended:type_name -> reflow.engine.v1.JournalEntryAppended
-	16, // 16: reflow.engine.v1.InvokerEffect.completed:type_name -> reflow.engine.v1.InvocationCompleted
-	17, // 17: reflow.engine.v1.InvokerEffect.suspended:type_name -> reflow.engine.v1.InvocationSuspended
-	12, // 18: reflow.engine.v1.InvokerEffect.run_proposal:type_name -> reflow.engine.v1.JERunProposal
-	13, // 19: reflow.engine.v1.InvokerEffect.awakeable_resolved:type_name -> reflow.engine.v1.AwakeableResolved
-	14, // 20: reflow.engine.v1.InvokerEffect.signal_delivered:type_name -> reflow.engine.v1.SignalDelivered
-	18, // 21: reflow.engine.v1.JournalEntryAppended.entry:type_name -> reflow.engine.v1.JournalEntry
-	19, // 22: reflow.engine.v1.JournalEntry.input:type_name -> reflow.engine.v1.JEInput
-	20, // 23: reflow.engine.v1.JournalEntry.sleep:type_name -> reflow.engine.v1.JESleep
-	21, // 24: reflow.engine.v1.JournalEntry.sleep_result:type_name -> reflow.engine.v1.JESleepResult
-	22, // 25: reflow.engine.v1.JournalEntry.call:type_name -> reflow.engine.v1.JECall
-	23, // 26: reflow.engine.v1.JournalEntry.call_result:type_name -> reflow.engine.v1.JECallResult
-	24, // 27: reflow.engine.v1.JournalEntry.get_state:type_name -> reflow.engine.v1.JEGetState
-	25, // 28: reflow.engine.v1.JournalEntry.set_state:type_name -> reflow.engine.v1.JESetState
-	26, // 29: reflow.engine.v1.JournalEntry.output:type_name -> reflow.engine.v1.JEOutput
-	27, // 30: reflow.engine.v1.JournalEntry.run:type_name -> reflow.engine.v1.JERun
-	28, // 31: reflow.engine.v1.JournalEntry.awakeable:type_name -> reflow.engine.v1.JEAwakeable
-	29, // 32: reflow.engine.v1.JournalEntry.awakeable_result:type_name -> reflow.engine.v1.JEAwakeableResult
-	30, // 33: reflow.engine.v1.JournalEntry.signal:type_name -> reflow.engine.v1.JESignal
-	31, // 34: reflow.engine.v1.JournalEntry.clear_state:type_name -> reflow.engine.v1.JEClearState
-	32, // 35: reflow.engine.v1.JournalEntry.get_eager_state:type_name -> reflow.engine.v1.JEGetEagerState
-	1,  // 36: reflow.engine.v1.JECall.target:type_name -> reflow.engine.v1.InvocationTarget
-	0,  // 37: reflow.engine.v1.JESignal.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
-	0,  // 38: reflow.engine.v1.TimerFired.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	0,  // 39: reflow.engine.v1.PurgeInvocation.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	36, // 40: reflow.engine.v1.InvocationStatus.free:type_name -> reflow.engine.v1.Free
-	37, // 41: reflow.engine.v1.InvocationStatus.scheduled:type_name -> reflow.engine.v1.Scheduled
-	38, // 42: reflow.engine.v1.InvocationStatus.invoked:type_name -> reflow.engine.v1.Invoked
-	39, // 43: reflow.engine.v1.InvocationStatus.suspended:type_name -> reflow.engine.v1.Suspended
-	40, // 44: reflow.engine.v1.InvocationStatus.completed:type_name -> reflow.engine.v1.Completed
-	1,  // 45: reflow.engine.v1.Scheduled.target:type_name -> reflow.engine.v1.InvocationTarget
-	10, // 46: reflow.engine.v1.Scheduled.parent_link:type_name -> reflow.engine.v1.ParentLink
-	1,  // 47: reflow.engine.v1.Invoked.target:type_name -> reflow.engine.v1.InvocationTarget
-	10, // 48: reflow.engine.v1.Invoked.parent_link:type_name -> reflow.engine.v1.ParentLink
-	1,  // 49: reflow.engine.v1.Suspended.target:type_name -> reflow.engine.v1.InvocationTarget
-	10, // 50: reflow.engine.v1.Suspended.parent_link:type_name -> reflow.engine.v1.ParentLink
-	1,  // 51: reflow.engine.v1.Completed.target:type_name -> reflow.engine.v1.InvocationTarget
-	0,  // 52: reflow.engine.v1.AwakeableEntry.owner:type_name -> reflow.engine.v1.InvocationId
-	9,  // 53: reflow.engine.v1.OutboxEnvelope.invoke:type_name -> reflow.engine.v1.InvokeCommand
-	45, // 54: reflow.engine.v1.OutboxEnvelope.signal:type_name -> reflow.engine.v1.SignalSend
-	0,  // 55: reflow.engine.v1.SignalSend.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
-	56, // [56:56] is the sub-list for method output_type
-	56, // [56:56] is the sub-list for method input_type
-	56, // [56:56] is the sub-list for extension type_name
-	56, // [56:56] is the sub-list for extension extendee
-	0,  // [0:56] is the sub-list for field type_name
+	4,  // 0: reflow.engine.v1.Dedup.self_proposal:type_name -> reflow.engine.v1.SelfProposalDedup
+	5,  // 1: reflow.engine.v1.Dedup.arbitrary:type_name -> reflow.engine.v1.ArbitraryDedup
+	7,  // 2: reflow.engine.v1.Envelope.header:type_name -> reflow.engine.v1.Header
+	8,  // 3: reflow.engine.v1.Envelope.command:type_name -> reflow.engine.v1.Command
+	3,  // 4: reflow.engine.v1.Header.dedup:type_name -> reflow.engine.v1.Dedup
+	9,  // 5: reflow.engine.v1.Command.announce_leader:type_name -> reflow.engine.v1.AnnounceLeader
+	10, // 6: reflow.engine.v1.Command.invoke:type_name -> reflow.engine.v1.InvokeCommand
+	12, // 7: reflow.engine.v1.Command.invoker_effect:type_name -> reflow.engine.v1.InvokerEffect
+	36, // 8: reflow.engine.v1.Command.timer_fired:type_name -> reflow.engine.v1.TimerFired
+	37, // 9: reflow.engine.v1.Command.purge:type_name -> reflow.engine.v1.PurgeInvocation
+	1,  // 10: reflow.engine.v1.InvokeCommand.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	2,  // 11: reflow.engine.v1.InvokeCommand.target:type_name -> reflow.engine.v1.InvocationTarget
+	11, // 12: reflow.engine.v1.InvokeCommand.parent_link:type_name -> reflow.engine.v1.ParentLink
+	1,  // 13: reflow.engine.v1.ParentLink.parent_id:type_name -> reflow.engine.v1.InvocationId
+	1,  // 14: reflow.engine.v1.InvokerEffect.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	16, // 15: reflow.engine.v1.InvokerEffect.journal_appended:type_name -> reflow.engine.v1.JournalEntryAppended
+	17, // 16: reflow.engine.v1.InvokerEffect.completed:type_name -> reflow.engine.v1.InvocationCompleted
+	18, // 17: reflow.engine.v1.InvokerEffect.suspended:type_name -> reflow.engine.v1.InvocationSuspended
+	13, // 18: reflow.engine.v1.InvokerEffect.run_proposal:type_name -> reflow.engine.v1.JERunProposal
+	14, // 19: reflow.engine.v1.InvokerEffect.awakeable_resolved:type_name -> reflow.engine.v1.AwakeableResolved
+	15, // 20: reflow.engine.v1.InvokerEffect.signal_delivered:type_name -> reflow.engine.v1.SignalDelivered
+	19, // 21: reflow.engine.v1.JournalEntryAppended.entry:type_name -> reflow.engine.v1.JournalEntry
+	20, // 22: reflow.engine.v1.JournalEntry.input:type_name -> reflow.engine.v1.JEInput
+	21, // 23: reflow.engine.v1.JournalEntry.sleep:type_name -> reflow.engine.v1.JESleep
+	22, // 24: reflow.engine.v1.JournalEntry.sleep_result:type_name -> reflow.engine.v1.JESleepResult
+	23, // 25: reflow.engine.v1.JournalEntry.call:type_name -> reflow.engine.v1.JECall
+	24, // 26: reflow.engine.v1.JournalEntry.call_result:type_name -> reflow.engine.v1.JECallResult
+	25, // 27: reflow.engine.v1.JournalEntry.get_state:type_name -> reflow.engine.v1.JEGetState
+	26, // 28: reflow.engine.v1.JournalEntry.set_state:type_name -> reflow.engine.v1.JESetState
+	27, // 29: reflow.engine.v1.JournalEntry.output:type_name -> reflow.engine.v1.JEOutput
+	28, // 30: reflow.engine.v1.JournalEntry.run:type_name -> reflow.engine.v1.JERun
+	31, // 31: reflow.engine.v1.JournalEntry.awakeable:type_name -> reflow.engine.v1.JEAwakeable
+	32, // 32: reflow.engine.v1.JournalEntry.awakeable_result:type_name -> reflow.engine.v1.JEAwakeableResult
+	33, // 33: reflow.engine.v1.JournalEntry.signal:type_name -> reflow.engine.v1.JESignal
+	34, // 34: reflow.engine.v1.JournalEntry.clear_state:type_name -> reflow.engine.v1.JEClearState
+	35, // 35: reflow.engine.v1.JournalEntry.get_eager_state:type_name -> reflow.engine.v1.JEGetEagerState
+	30, // 36: reflow.engine.v1.JournalEntry.clear_all_state:type_name -> reflow.engine.v1.JEClearAllState
+	2,  // 37: reflow.engine.v1.JECall.target:type_name -> reflow.engine.v1.InvocationTarget
+	1,  // 38: reflow.engine.v1.JESignal.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
+	1,  // 39: reflow.engine.v1.TimerFired.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	1,  // 40: reflow.engine.v1.PurgeInvocation.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	39, // 41: reflow.engine.v1.InvocationStatus.free:type_name -> reflow.engine.v1.Free
+	40, // 42: reflow.engine.v1.InvocationStatus.scheduled:type_name -> reflow.engine.v1.Scheduled
+	41, // 43: reflow.engine.v1.InvocationStatus.invoked:type_name -> reflow.engine.v1.Invoked
+	42, // 44: reflow.engine.v1.InvocationStatus.suspended:type_name -> reflow.engine.v1.Suspended
+	43, // 45: reflow.engine.v1.InvocationStatus.completed:type_name -> reflow.engine.v1.Completed
+	2,  // 46: reflow.engine.v1.Scheduled.target:type_name -> reflow.engine.v1.InvocationTarget
+	11, // 47: reflow.engine.v1.Scheduled.parent_link:type_name -> reflow.engine.v1.ParentLink
+	2,  // 48: reflow.engine.v1.Invoked.target:type_name -> reflow.engine.v1.InvocationTarget
+	11, // 49: reflow.engine.v1.Invoked.parent_link:type_name -> reflow.engine.v1.ParentLink
+	2,  // 50: reflow.engine.v1.Suspended.target:type_name -> reflow.engine.v1.InvocationTarget
+	11, // 51: reflow.engine.v1.Suspended.parent_link:type_name -> reflow.engine.v1.ParentLink
+	2,  // 52: reflow.engine.v1.Completed.target:type_name -> reflow.engine.v1.InvocationTarget
+	0,  // 53: reflow.engine.v1.KeyLeaseStatus.state:type_name -> reflow.engine.v1.KeyLeaseStatus.State
+	1,  // 54: reflow.engine.v1.KeyLeaseStatus.current_invocation:type_name -> reflow.engine.v1.InvocationId
+	1,  // 55: reflow.engine.v1.KeyLeaseStatus.queue:type_name -> reflow.engine.v1.InvocationId
+	1,  // 56: reflow.engine.v1.AwakeableEntry.owner:type_name -> reflow.engine.v1.InvocationId
+	10, // 57: reflow.engine.v1.OutboxEnvelope.invoke:type_name -> reflow.engine.v1.InvokeCommand
+	49, // 58: reflow.engine.v1.OutboxEnvelope.signal:type_name -> reflow.engine.v1.SignalSend
+	1,  // 59: reflow.engine.v1.SignalSend.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
+	60, // [60:60] is the sub-list for method output_type
+	60, // [60:60] is the sub-list for method input_type
+	60, // [60:60] is the sub-list for extension type_name
+	60, // [60:60] is the sub-list for extension extendee
+	0,  // [0:60] is the sub-list for field type_name
 }
 
 func init() { file_enginev1_engine_proto_init() }
@@ -3695,15 +3977,16 @@ func file_enginev1_engine_proto_init() {
 		(*JournalEntry_Signal)(nil),
 		(*JournalEntry_ClearState)(nil),
 		(*JournalEntry_GetEagerState)(nil),
+		(*JournalEntry_ClearAllState)(nil),
 	}
-	file_enginev1_engine_proto_msgTypes[35].OneofWrappers = []any{
+	file_enginev1_engine_proto_msgTypes[37].OneofWrappers = []any{
 		(*InvocationStatus_Free)(nil),
 		(*InvocationStatus_Scheduled)(nil),
 		(*InvocationStatus_Invoked)(nil),
 		(*InvocationStatus_Suspended)(nil),
 		(*InvocationStatus_Completed)(nil),
 	}
-	file_enginev1_engine_proto_msgTypes[44].OneofWrappers = []any{
+	file_enginev1_engine_proto_msgTypes[47].OneofWrappers = []any{
 		(*OutboxEnvelope_Invoke)(nil),
 		(*OutboxEnvelope_Signal)(nil),
 	}
@@ -3712,13 +3995,14 @@ func file_enginev1_engine_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_enginev1_engine_proto_rawDesc), len(file_enginev1_engine_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   47,
+			NumEnums:      1,
+			NumMessages:   50,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_enginev1_engine_proto_goTypes,
 		DependencyIndexes: file_enginev1_engine_proto_depIdxs,
+		EnumInfos:         file_enginev1_engine_proto_enumTypes,
 		MessageInfos:      file_enginev1_engine_proto_msgTypes,
 	}.Build()
 	File_enginev1_engine_proto = out.File

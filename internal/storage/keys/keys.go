@@ -11,6 +11,7 @@
 //	state/<service>/<obj_key>/<state_key>        -> bytes (Phase 2 lazy state)
 //	outbox/<8-byte BE seq>                       -> OutboxEnvelope (Phase 2)
 //	awakeable/<26-byte id>                       -> AwakeableEntry (Phase 2)
+//	keylease/<service>/<obj_key>                 -> KeyLeaseStatus (Phase 3)
 //	dedup/self/<8-byte BE leader_epoch>          -> DedupEntry
 //	dedup/arbitrary/<producer_id>                -> DedupEntry
 //
@@ -44,6 +45,7 @@ const (
 	statePrefix     = "state/"
 	outboxPrefix    = "outbox/"
 	awakeablePrefix = "awakeable/"
+	keyLeasePrefix  = "keylease/"
 	dedupSelfPrefix = "dedup/self/"
 	dedupArbPrefix  = "dedup/arbitrary/"
 )
@@ -218,6 +220,17 @@ func DecodeOutboxKey(key []byte) (uint64, error) {
 
 // AwakeablePrefix returns the awakeable/ namespace prefix.
 func AwakeablePrefix() []byte { return []byte(awakeablePrefix) }
+
+// KeyLeaseKey returns keylease/<service>/<obj_key>. For unkeyed targets
+// callers must skip this namespace entirely; the VO gate is only consulted
+// for keyed invocations.
+func KeyLeaseKey(service, objectKey string) []byte {
+	out := make([]byte, 0, len(keyLeasePrefix)+len(service)+1+len(objectKey))
+	out = append(out, keyLeasePrefix...)
+	out = append(out, service...)
+	out = append(out, '/')
+	return append(out, objectKey...)
+}
 
 // AwakeableKey returns awakeable/<26-byte id>. The caller is responsible
 // for validating the id via ValidateAwakeableID before constructing the

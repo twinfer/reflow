@@ -59,6 +59,27 @@ service Ingress {
       get: "/admin/invocation/{invocation_id}"
     };
   }
+
+  // AttachInvocation blocks (up to deadline) on an existing invocation and
+  // returns its outcome once Completed. Same shape as AwaitInvocation but
+  // explicit about attaching to an already-submitted invocation by id.
+  // Phase 3.
+  rpc AttachInvocation(AttachInvocationRequest) returns (AttachInvocationResponse) {
+    option (google.api.http) = {
+      post: "/attach/{invocation_id}"
+      body: "*"
+    };
+  }
+
+  // GetInvocationOutput is a non-blocking lookup of an invocation's current
+  // outcome. Returns PENDING for still-running invocations, COMPLETED_OK /
+  // COMPLETED_FAILED for terminated ones, UNKNOWN if no such invocation is
+  // known to this node. Phase 3.
+  rpc GetInvocationOutput(GetInvocationOutputRequest) returns (GetInvocationOutputResponse) {
+    option (google.api.http) = {
+      get: "/output/{invocation_id}"
+    };
+  }
 }
 
 message SubmitInvocationRequest {
@@ -130,4 +151,36 @@ message DescribeInvocationRequest {
 
 message DescribeInvocationResponse {
   reflow.engine.v1.InvocationStatus status = 1;
+}
+
+message AttachInvocationRequest {
+  // Path-bound stringified id (preferred).
+  string invocation_id = 1;
+  reflow.engine.v1.InvocationId invocation_id_proto = 2;
+  // Server-side timeout in milliseconds. 0 means use the default-deadline
+  // interceptor's bound (2s). Capped at 60_000 by the server.
+  uint32 timeout_ms = 3;
+}
+
+message AttachInvocationResponse {
+  bytes output = 1;
+  string failure_message = 2;
+  bool completed = 3;
+}
+
+message GetInvocationOutputRequest {
+  string invocation_id = 1;
+  reflow.engine.v1.InvocationId invocation_id_proto = 2;
+}
+
+message GetInvocationOutputResponse {
+  enum Status {
+    PENDING = 0;
+    COMPLETED_OK = 1;
+    COMPLETED_FAILED = 2;
+    UNKNOWN = 3;
+  }
+  Status status = 1;
+  bytes output = 2;
+  string failure_message = 3;
 }

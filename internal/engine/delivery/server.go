@@ -26,12 +26,9 @@ import (
 	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
 )
 
-// RunnerView is the slice of *engine.PartitionRunner the Server uses. A
-// shrink interface so unit tests can stub the runner.
-type RunnerView interface {
-	IsLeader() bool
-	Proposer() *engine.RaftProposer
-}
+// RunnerView is re-exported from engine so unit tests can stub the
+// runner without importing the heavy *PartitionRunner type.
+type RunnerView = engine.RunnerView
 
 // HostView is the slice of *engine.Host the Server depends on. Keeping
 // the dependency narrow makes the server unit-testable without booting a

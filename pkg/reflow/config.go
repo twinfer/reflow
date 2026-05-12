@@ -41,6 +41,17 @@ type NodeConfig struct {
 	// RaftAddr is the host:port dragonboat advertises for inter-node Raft
 	// traffic. For single-node use a localhost port.
 	RaftAddr string `koanf:"raft_addr"`
+	// GossipBindAddr is the address dragonboat's gossip layer binds to
+	// (host:port). Required when Cluster.Peers is non-empty. Phase 4.1.
+	GossipBindAddr string `koanf:"gossip_bind_addr"`
+	// GossipAdvAddr is the address advertised to peers for NAT traversal.
+	// Falls back to GossipBindAddr when empty. Phase 4.1.
+	GossipAdvAddr string `koanf:"gossip_adv_addr"`
+	// DeliveryAddr is the host:port for this node's reflow Delivery gRPC
+	// listener (cross-partition outbox dispatch). Required when
+	// Cluster.Peers is non-empty; advertised via gossip NodeHostMeta so
+	// peers can resolve it. Phase 4.1.
+	DeliveryAddr string `koanf:"delivery_addr"`
 }
 
 // BootstrapMode determines how the node joins the cluster.
@@ -55,10 +66,15 @@ const (
 	BootstrapDiscovery
 )
 
-// Peer is one entry in a static cluster topology.
+// Peer is one entry in a static cluster topology. Phase 4.1: GossipAddr
+// is required when Cluster.Peers is non-empty (every peer entry,
+// including self); NodeHostID is optional and defaults to a stable
+// derivation from NodeID.
 type Peer struct {
-	NodeID   uint64 `koanf:"node_id"`
-	RaftAddr string `koanf:"raft_addr"`
+	NodeID     uint64 `koanf:"node_id"`
+	RaftAddr   string `koanf:"raft_addr"`
+	GossipAddr string `koanf:"gossip_addr"`
+	NodeHostID string `koanf:"node_host_id"`
 }
 
 // ClusterConfig describes the multi-node cluster. Phase 2 ignores Peers,

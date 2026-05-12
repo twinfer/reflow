@@ -5,13 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"google.golang.org/grpc"
 
 	"github.com/twinfer/reflow/internal/engine"
+	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/observability"
+	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
 )
 
 // Run starts a reflow node from cfg and returns a Host. The Host owns
@@ -58,11 +62,16 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 
 	// Bring up the internal engine Host.
 	hcfg := engine.HostConfig{
-		NodeID:        cfg.Node.ID,
-		RaftAddr:      cfg.Node.RaftAddr,
-		DataDir:       cfg.Storage.DataDir,
-		Log:           logger,
-		EnableMetrics: !cfg.Metrics.Disabled,
+		NodeID:         cfg.Node.ID,
+		RaftAddr:       cfg.Node.RaftAddr,
+		DataDir:        cfg.Storage.DataDir,
+		Log:            logger,
+		EnableMetrics:  !cfg.Metrics.Disabled,
+		Handlers:       cfg.Handlers,
+		GossipBindAddr: cfg.Node.GossipBindAddr,
+		GossipAdvAddr:  cfg.Node.GossipAdvAddr,
+		GrpcEndpoint:   cfg.Node.DeliveryAddr,
+		Peers:          toEnginePeers(cfg.Cluster.Peers),
 	}
 	eh, err := engine.NewHost(hcfg)
 	if err != nil {
@@ -72,12 +81,87 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		return nil, fmt.Errorf("reflow: NewHost: %w", err)
 	}
 
+	multiNode := len(hcfg.Peers) > 0
+
+	var deliverySrv *grpc.Server
+	var deliveryLn net.Listener
+	var deliveryClient *delivery.Client
+
+	if multiNode {
+		// Build the delivery client first so partitions get a Sender on
+		// startup. Resolver is the engine.Host itself (PartitionLeaderHint
+		// + NodeEndpoint).
+		dc, dcErr := delivery.NewClient(delivery.ClientConfig{
+			Resolver: eh,
+			Log:      logger,
+		})
+		if dcErr != nil {
+			_ = eh.Close()
+			if metricsCloser != nil {
+				_ = metricsCloser()
+			}
+			return nil, fmt.Errorf("reflow: delivery client: %w", dcErr)
+		}
+		deliveryClient = dc
+		eh.SetCrossShardSender(dc)
+
+		// Start the Delivery gRPC listener on Node.DeliveryAddr — the
+		// same endpoint published via gossip NodeHostMeta. Phase 4.2 may
+		// co-host this with ingress; Phase 4.1 keeps the listener
+		// dedicated to keep startup ordering simple.
+		ln, lnErr := net.Listen("tcp", cfg.Node.DeliveryAddr)
+		if lnErr != nil {
+			_ = dc.Close()
+			_ = eh.Close()
+			if metricsCloser != nil {
+				_ = metricsCloser()
+			}
+			return nil, fmt.Errorf("reflow: listen delivery %s: %w", cfg.Node.DeliveryAddr, lnErr)
+		}
+		gs := grpc.NewServer()
+		deliveryv1.RegisterDeliveryServer(gs, delivery.NewServer(eh, logger))
+		deliverySrv = gs
+		deliveryLn = ln
+		go func() {
+			if err := gs.Serve(ln); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+				logger.Error("reflow: delivery gRPC Serve exited", "err", err)
+			}
+		}()
+		logger.Info("reflow: delivery listening", "addr", ln.Addr().String())
+
+		// Start shard 0 (metadata Raft group) before partition shards so
+		// the partition table is being established as partitions come up.
+		// We don't strictly need to await its leader before starting
+		// partition shards in Phase 4.1 — every node hosts every
+		// partition and the static peer list makes the partition table
+		// redundant on the wire — but starting it first matches the
+		// Phase 4.2 sequence and avoids race-prone test orderings.
+		if _, mErr := eh.StartMetadataShard(); mErr != nil {
+			_ = deliverySrv.Stop
+			_ = ln.Close()
+			_ = dc.Close()
+			_ = eh.Close()
+			if metricsCloser != nil {
+				_ = metricsCloser()
+			}
+			return nil, fmt.Errorf("reflow: StartMetadataShard: %w", mErr)
+		}
+		logger.Info("reflow: metadata shard started", "shard", 0)
+	}
+
 	shards := cfg.Cluster.Shards
 	if len(shards) == 0 {
 		shards = []uint64{1}
 	}
 	for _, sh := range shards {
 		if _, err := eh.StartPartition(sh); err != nil {
+			if deliverySrv != nil {
+				deliverySrv.Stop()
+				_ = deliveryLn.Close()
+			}
+			if deliveryClient != nil {
+				_ = deliveryClient.Close()
+			}
 			_ = eh.Close()
 			if metricsCloser != nil {
 				_ = metricsCloser()
@@ -87,7 +171,30 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		logger.Info("reflow: partition started", "shard", sh)
 	}
 
-	return &Host{engine: eh, metricsCloser: metricsCloser}, nil
+	return &Host{
+		engine:         eh,
+		metricsCloser:  metricsCloser,
+		deliverySrv:    deliverySrv,
+		deliveryLn:     deliveryLn,
+		deliveryClient: deliveryClient,
+	}, nil
+}
+
+// toEnginePeers maps the public Peer type to the internal engine.Peer.
+func toEnginePeers(in []Peer) []engine.Peer {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]engine.Peer, len(in))
+	for i, p := range in {
+		out[i] = engine.Peer{
+			NodeID:     p.NodeID,
+			RaftAddr:   p.RaftAddr,
+			GossipAddr: p.GossipAddr,
+			NodeHostID: p.NodeHostID,
+		}
+	}
+	return out
 }
 
 func validate(cfg Config) error {

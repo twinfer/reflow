@@ -3,8 +3,12 @@ package reflow
 import (
 	"context"
 	"errors"
+	"net"
+
+	"google.golang.org/grpc"
 
 	"github.com/twinfer/reflow/internal/engine"
+	"github.com/twinfer/reflow/internal/engine/delivery"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -13,16 +17,36 @@ import (
 // Host is a thin wrapper over the internal engine.Host. Callers should
 // treat the engine package as private; Host is the stable surface.
 type Host struct {
-	engine        *engine.Host
-	metricsCloser func() error
+	engine         *engine.Host
+	metricsCloser  func() error
+	deliverySrv    *grpc.Server
+	deliveryLn     net.Listener
+	deliveryClient *delivery.Client
 }
 
 // Close stops every partition and the underlying NodeHost. Idempotent.
-// Stops the metrics HTTP server too, if Run started one.
+// Stops the metrics HTTP server, Delivery gRPC server, and pooled
+// delivery client too, if Run started them.
 func (h *Host) Close() error {
 	var firstErr error
+	if h.deliverySrv != nil {
+		h.deliverySrv.GracefulStop()
+		h.deliverySrv = nil
+	}
+	if h.deliveryLn != nil {
+		if err := h.deliveryLn.Close(); err != nil && firstErr == nil && !errors.Is(err, net.ErrClosed) {
+			firstErr = err
+		}
+		h.deliveryLn = nil
+	}
+	if h.deliveryClient != nil {
+		if err := h.deliveryClient.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		h.deliveryClient = nil
+	}
 	if h.engine != nil {
-		if err := h.engine.Close(); err != nil {
+		if err := h.engine.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 		h.engine = nil

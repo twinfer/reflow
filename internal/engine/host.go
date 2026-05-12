@@ -219,6 +219,17 @@ func findPeer(peers []Peer, nodeID uint64) *Peer {
 // phases). Production code should prefer Host-provided methods.
 func (h *Host) NodeHost() *dragonboat.NodeHost { return h.nh }
 
+// SetCrossShardSender installs the cross-shard dispatcher every later
+// StartPartition call will hand to its OutboxService. Must be called
+// before StartPartition for multi-node deployments — partitions that
+// fail to receive a Sender will refuse to dispatch any cross-shard
+// outbox row at runtime. No-op when Peers is empty (single-node). Phase 4.1.
+func (h *Host) SetCrossShardSender(s CrossShardSender) {
+	h.mu.Lock()
+	h.cfg.CrossShardSender = s
+	h.mu.Unlock()
+}
+
 // StartMetadataShard opens the metadata-shard store, registers the cluster
 // FSM with dragonboat, and wires the metadata runner. Phase 4.1: callers
 // pass shardID=0. Only valid when HostConfig.Peers is non-empty; single-
@@ -455,15 +466,20 @@ func (h *Host) Partition(shardID uint64) *PartitionRunner {
 	return h.partitions[shardID]
 }
 
+// RunnerView is the small-interface view of a *PartitionRunner used by
+// the Phase 4.1 Delivery server. Declared here so the delivery package
+// can consume it without importing the heavy PartitionRunner type.
+type RunnerView interface {
+	IsLeader() bool
+	Proposer() *RaftProposer
+}
+
 // PartitionRunner is the small-interface accessor used by Phase 4.1's
 // Delivery server (it accepts a runner satisfying a narrow IsLeader +
 // Proposer surface). Returns nil when shardID is not hosted on this node;
 // callers must treat nil as "not leader" so the sender re-resolves via
 // gossip.
-func (h *Host) PartitionRunner(shardID uint64) interface {
-	IsLeader() bool
-	Proposer() *RaftProposer
-} {
+func (h *Host) PartitionRunner(shardID uint64) RunnerView {
 	r := h.Partition(shardID)
 	if r == nil {
 		return nil

@@ -64,7 +64,10 @@ func loadConfig() (reflow.Config, error) {
 }
 
 // defaultValues are the baked-in defaults. Picked to make `go run
-// ./cmd/reflowd` work out of the box on a developer machine.
+// ./cmd/reflowd` work out of the box on a developer machine. Phase 4.1
+// multi-node fields (node.gossip_bind_addr, node.delivery_addr,
+// cluster.peers) are left empty by default — single-node bootstrap when
+// they are unset.
 func defaultValues() map[string]any {
 	return map[string]any{
 		"node.id":           uint64(1),

@@ -51,7 +51,7 @@ func TestPhase2_HandlerSurvivesKill(t *testing.T) {
 		// waiting on the timer when we Close the host. Past-due fires
 		// would race with leader-gain timing in a way that doesn't
 		// belong in this exit-criterion test.
-		if err := c.Sleep(1500 * time.Millisecond); err != nil {
+		if _, err := c.Sleep(1500 * time.Millisecond).Result(); err != nil {
 			return nil, err
 		}
 		v, err := c.Run("compute", func() ([]byte, error) {
@@ -198,7 +198,7 @@ func TestPhase2_OutgoingCallSurvivesRestart(t *testing.T) {
 		t.Fatalf("Register Callee: %v", err)
 	}
 	if err := reg.Register("Caller", "go", func(c sdk.Context, in []byte) ([]byte, error) {
-		out, err := c.Call(sdk.Target{Service: "Callee", Handler: "do"}, in)
+		out, err := c.Call(sdk.Target{Service: "Callee", Handler: "do"}, in).Result()
 		if err != nil {
 			return nil, err
 		}
@@ -346,7 +346,7 @@ func TestPhase2_5_CallResultDeliveredInline(t *testing.T) {
 		t.Fatalf("Register B: %v", err)
 	}
 	if err := reg.Register("A", "go", func(c sdk.Context, in []byte) ([]byte, error) {
-		out, err := c.Call(sdk.Target{Service: "B", Handler: "echo"}, in)
+		out, err := c.Call(sdk.Target{Service: "B", Handler: "echo"}, in).Result()
 		if err != nil {
 			return nil, err
 		}
@@ -393,7 +393,7 @@ func TestPhase2_5_CallResultSurvivesCallerCrash(t *testing.T) {
 	if err := reg.Register("B", "do", func(c sdk.Context, in []byte) ([]byte, error) {
 		// Sleep gives the test window to crash the host before Callee
 		// finishes — Callee's status is Invoked (mid-handler) at crash time.
-		if err := c.Sleep(800 * time.Millisecond); err != nil {
+		if _, err := c.Sleep(800 * time.Millisecond).Result(); err != nil {
 			return nil, err
 		}
 		calleeRuns.Add(1)
@@ -402,7 +402,7 @@ func TestPhase2_5_CallResultSurvivesCallerCrash(t *testing.T) {
 		t.Fatalf("Register B: %v", err)
 	}
 	if err := reg.Register("A", "go", func(c sdk.Context, in []byte) ([]byte, error) {
-		out, err := c.Call(sdk.Target{Service: "B", Handler: "do"}, in)
+		out, err := c.Call(sdk.Target{Service: "B", Handler: "do"}, in).Result()
 		if err != nil {
 			return nil, err
 		}
@@ -503,7 +503,7 @@ func TestPhase2_5_CallResultSurvivesCalleeCrash(t *testing.T) {
 	var calleeRuns atomic.Int32
 	reg := sdk.NewRegistry()
 	if err := reg.Register("B", "do", func(c sdk.Context, in []byte) ([]byte, error) {
-		if err := c.Sleep(1200 * time.Millisecond); err != nil {
+		if _, err := c.Sleep(1200 * time.Millisecond).Result(); err != nil {
 			return nil, err
 		}
 		calleeRuns.Add(1)
@@ -512,7 +512,7 @@ func TestPhase2_5_CallResultSurvivesCalleeCrash(t *testing.T) {
 		t.Fatalf("Register B: %v", err)
 	}
 	if err := reg.Register("A", "go", func(c sdk.Context, in []byte) ([]byte, error) {
-		out, err := c.Call(sdk.Target{Service: "B", Handler: "do"}, in)
+		out, err := c.Call(sdk.Target{Service: "B", Handler: "do"}, in).Result()
 		if err != nil {
 			return nil, err
 		}

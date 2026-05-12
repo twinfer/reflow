@@ -100,7 +100,7 @@ func TestPhase2_SDK_RunReturnsJournaledValue(t *testing.T) {
 func TestPhase2_SDK_SleepResumesAfterTimerFires(t *testing.T) {
 	reg := sdk.NewRegistry()
 	if err := reg.Register("Sleeper", "wait", func(c sdk.Context, in []byte) ([]byte, error) {
-		if err := c.Sleep(80 * time.Millisecond); err != nil {
+		if _, err := c.Sleep(80 * time.Millisecond).Result(); err != nil {
 			return nil, err
 		}
 		return append([]byte("woke:"), in...), nil

@@ -93,13 +93,19 @@ func (c *invocationContext) allocSlot(span uint32) (start uint32, ok bool) {
 	return start, true
 }
 
-// suspend records a waker token and flips the suspended bit. Subsequent
-// ctx calls short-circuit to ErrSuspended immediately. Always returns
-// sdk.ErrSuspended for callers to propagate.
-func (c *invocationContext) suspend(token string) error {
+// suspend records one or more waker tokens and flips the suspended bit.
+// Subsequent ctx calls short-circuit to ErrSuspended immediately. Always
+// returns sdk.ErrSuspended for callers to propagate.
+//
+// Variadic since Phase 3.5: combinator futures (All/Any) pass the union
+// of their unresolved children's tokens in a single call so the engine
+// surfaces them all on InvocationSuspended.awaiting_on — any one
+// resolution wakes the handler. Single-token call sites still work
+// unchanged.
+func (c *invocationContext) suspend(tokens ...string) error {
 	c.mu.Lock()
 	c.suspended = true
-	c.suspendedOn = append(c.suspendedOn, token)
+	c.suspendedOn = append(c.suspendedOn, tokens...)
 	c.mu.Unlock()
 	return sdk.ErrSuspended
 }
@@ -121,28 +127,28 @@ func divergenceErr(idx uint32, want string, got *enginev1.JournalEntry) error {
 
 // --- sdk.Context method implementations ---
 
-// Sleep journals a JESleep and suspends. On wake-up the timer service
-// has appended JESleepResult at idx+1, which the next session run sees
-// in its journal snapshot and fast-replays.
-func (c *invocationContext) Sleep(d time.Duration) error {
+// Sleep allocates the JESleep / JESleepResult journal pair and returns a
+// Future whose Result blocks until the timer fires. On the first run the
+// SDK proposes JESleep and the engine's timer service eventually appends
+// JESleepResult at start+1; on replay the same allocation finds the
+// existing JESleep and either sees the result already present or
+// re-suspends. The returned byte payload is always nil.
+//
+// Phase 3.5: separating slot allocation (here) from suspension (in
+// Future.Result) lets Sleep compose with other awaitables under All/Any
+// without prematurely entering the suspended state.
+func (c *invocationContext) Sleep(d time.Duration) sdk.Future {
 	start, ok := c.allocSlot(2)
 	if !ok {
-		return sdk.ErrSuspended
+		return &suspendedFuture{}
 	}
 	if existing := c.lookupEntry(start); existing != nil {
-		// Replay path: JESleep must be present at start. JESleepResult
-		// is checked at start+1 — if absent, we re-issue Suspended for
-		// the same waker since the timer hasn't fired yet.
+		// Replay path: JESleep must be present at start; JESleepResult is
+		// checked lazily inside sleepFuture.Poll/Result.
 		if _, isSleep := existing.GetEntry().(*enginev1.JournalEntry_Sleep); !isSleep {
-			return divergenceErr(start, "JESleep", existing)
+			return &erroredFuture{err: divergenceErr(start, "JESleep", existing)}
 		}
-		if result := c.lookupEntry(start + 1); result != nil {
-			if _, isResult := result.GetEntry().(*enginev1.JournalEntry_SleepResult); !isResult {
-				return divergenceErr(start+1, "JESleepResult", result)
-			}
-			return nil
-		}
-		return c.suspend(fmt.Sprintf("sleep:%d", start))
+		return &sleepFuture{ctx: c, start: start}
 	}
 
 	// Live first execution.
@@ -158,9 +164,9 @@ func (c *invocationContext) Sleep(d time.Duration) error {
 		},
 	}
 	if err := c.s.proposeJournal(entry); err != nil {
-		return err
+		return &erroredFuture{err: err}
 	}
-	return c.suspend(fmt.Sprintf("sleep:%d", start))
+	return &sleepFuture{ctx: c, start: start}
 }
 
 // Run wraps a deterministic side-effect block. Replay returns the
@@ -248,28 +254,26 @@ func (c *invocationContext) Run(_ string, fn func() ([]byte, error)) ([]byte, er
 	return value, nil
 }
 
-// Call journals a JECall and suspends; the callee's eventual result
-// arrives as JECallResult at start+1 and is fast-replayed on the next
-// session run. Phase 2 wires the outbox/ingress return path in Steps 8
-// and 13.
-func (c *invocationContext) Call(target sdk.Target, input []byte, opts ...sdk.CallOption) ([]byte, error) {
+// Call allocates the JECall / JECallResult journal pair and returns a
+// Future whose Result blocks until the callee responds. The callee runs
+// in its own invocation; the engine's outbox routes the result back as
+// JECallResult at start+1. On replay the same allocation finds the
+// existing JECall and either sees the result already present or
+// re-suspends through the returned future.
+//
+// Phase 3.5: separating slot allocation (here) from suspension (in
+// Future.Result) lets Call compose with other awaitables under All/Any.
+func (c *invocationContext) Call(target sdk.Target, input []byte, opts ...sdk.CallOption) sdk.Future {
 	resolved := sdk.ApplyCallOptions(opts)
 	start, ok := c.allocSlot(2)
 	if !ok {
-		return nil, sdk.ErrSuspended
+		return &suspendedFuture{}
 	}
 	if existing := c.lookupEntry(start); existing != nil {
 		if _, isCall := existing.GetEntry().(*enginev1.JournalEntry_Call); !isCall {
-			return nil, divergenceErr(start, "JECall", existing)
+			return &erroredFuture{err: divergenceErr(start, "JECall", existing)}
 		}
-		if result := c.lookupEntry(start + 1); result != nil {
-			cr, isResult := result.GetEntry().(*enginev1.JournalEntry_CallResult)
-			if !isResult {
-				return nil, divergenceErr(start+1, "JECallResult", result)
-			}
-			return cloneBytes(cr.CallResult.GetResult()), nil
-		}
-		return nil, c.suspend(fmt.Sprintf("call:%d", start))
+		return &callFuture{ctx: c, start: start}
 	}
 
 	entry := &enginev1.JournalEntry{
@@ -283,9 +287,9 @@ func (c *invocationContext) Call(target sdk.Target, input []byte, opts ...sdk.Ca
 		},
 	}
 	if err := c.s.proposeJournal(entry); err != nil {
-		return nil, err
+		return &erroredFuture{err: err}
 	}
-	return nil, c.suspend(fmt.Sprintf("call:%d", start))
+	return &callFuture{ctx: c, start: start}
 }
 
 // OneWayCall is the fire-and-forget variant. The proto does not yet
@@ -415,15 +419,15 @@ func (c *invocationContext) ClearAllState() error {
 //
 // On the first execution the id is freshly minted; on replay the
 // existing JEAwakeable carries the id used originally.
-func (c *invocationContext) Awakeable() (string, sdk.AwakeableFuture) {
+func (c *invocationContext) Awakeable() (string, sdk.Future) {
 	start, ok := c.allocSlot(2)
 	if !ok {
-		return "", &suspendedAwakeable{ctx: c}
+		return "", &suspendedFuture{}
 	}
 	if existing := c.lookupEntry(start); existing != nil {
 		ak, isAk := existing.GetEntry().(*enginev1.JournalEntry_Awakeable)
 		if !isAk {
-			return "", &erroredAwakeable{err: divergenceErr(start, "JEAwakeable", existing)}
+			return "", &erroredFuture{err: divergenceErr(start, "JEAwakeable", existing)}
 		}
 		return ak.Awakeable.GetAwakeableId(), &awakeableFuture{
 			ctx:       c,
@@ -434,7 +438,7 @@ func (c *invocationContext) Awakeable() (string, sdk.AwakeableFuture) {
 
 	id, err := newAwakeableID()
 	if err != nil {
-		return "", &erroredAwakeable{err: err}
+		return "", &erroredFuture{err: err}
 	}
 	entry := &enginev1.JournalEntry{
 		Index: start,
@@ -443,7 +447,7 @@ func (c *invocationContext) Awakeable() (string, sdk.AwakeableFuture) {
 		},
 	}
 	if err := c.s.proposeJournal(entry); err != nil {
-		return "", &erroredAwakeable{err: err}
+		return "", &erroredFuture{err: err}
 	}
 	return id, &awakeableFuture{ctx: c, originIdx: start, id: id}
 }
@@ -456,41 +460,22 @@ func (c *invocationContext) SendSignal(_ sdk.Target, _ string, _ []byte) error {
 	return errNotImplementedPhase2
 }
 
-// awakeableFuture is the live path: the result will arrive in a future
-// journal entry at originIdx+1.
-type awakeableFuture struct {
-	ctx       *invocationContext
-	originIdx uint32
-	id        string
+// All wraps the supplied futures in an AllResult composite. Results
+// blocks until every child has resolved (or any child surfaces a
+// terminal *Failure). Pure SDK composition: no journal slot is
+// allocated; on replay the same call site reconstructs the wrapper
+// over children with stable journal indices and re-derives the same
+// outcome. Phase 3.5.
+func (c *invocationContext) All(futures ...sdk.Future) sdk.AllResult {
+	return &allResult{ctx: c, children: append([]sdk.Future(nil), futures...)}
 }
 
-func (f *awakeableFuture) Result() ([]byte, error) {
-	if existing := f.ctx.lookupEntry(f.originIdx + 1); existing != nil {
-		ar, ok := existing.GetEntry().(*enginev1.JournalEntry_AwakeableResult)
-		if !ok {
-			return nil, divergenceErr(f.originIdx+1, "JEAwakeableResult", existing)
-		}
-		if msg := ar.AwakeableResult.GetFailureMessage(); msg != "" {
-			return nil, sdk.NewFailure(0, msg)
-		}
-		return cloneBytes(ar.AwakeableResult.GetValue()), nil
-	}
-	return nil, f.ctx.suspend("awakeable:" + f.id)
+// Any wraps the supplied futures in a Future that resolves to the first
+// child (by argument order) found resolved at poll time. Pure SDK
+// composition; no journal slot. Phase 3.5.
+func (c *invocationContext) Any(futures ...sdk.Future) sdk.Future {
+	return &anyFuture{ctx: c, children: append([]sdk.Future(nil), futures...)}
 }
-
-// erroredAwakeable surfaces a setup-time error from Awakeable() via the
-// returned future's Result. Lets the caller decide whether to early-fail
-// or work around it.
-type erroredAwakeable struct{ err error }
-
-func (e *erroredAwakeable) Result() ([]byte, error) { return nil, e.err }
-
-// suspendedAwakeable is returned when Awakeable is called after the
-// context has already been suspended (allocSlot refused). Result
-// short-circuits to ErrSuspended.
-type suspendedAwakeable struct{ ctx *invocationContext }
-
-func (s *suspendedAwakeable) Result() ([]byte, error) { return nil, sdk.ErrSuspended }
 
 // targetToProto converts the public Target into the proto shape.
 func targetToProto(t sdk.Target) *enginev1.InvocationTarget {

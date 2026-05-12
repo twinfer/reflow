@@ -282,7 +282,8 @@ func TestSession_HandlerPanicCaughtAsCompletedFailure(t *testing.T) {
 
 func TestSession_HandlerSuspendsProposesSuspended(t *testing.T) {
 	handler := func(c sdk.Context, _ []byte) ([]byte, error) {
-		return nil, c.Sleep(100 * time.Millisecond)
+		_, err := c.Sleep(100 * time.Millisecond).Result()
+		return nil, err
 	}
 	f := newSessionFixture(t, handler)
 	f.seedInvoked(t)
@@ -398,7 +399,7 @@ func makeRunEntry(idx uint32, value []byte, failure string) *enginev1.JournalEnt
 func TestContext_SleepFirstCallSuspends(t *testing.T) {
 	cf := newCtxFixture(t)
 
-	err := cf.ictx.Sleep(50 * time.Millisecond)
+	_, err := cf.ictx.Sleep(50 * time.Millisecond).Result()
 	if !errors.Is(err, sdk.ErrSuspended) {
 		t.Fatalf("Sleep err = %v; want ErrSuspended", err)
 	}
@@ -424,7 +425,7 @@ func TestContext_SleepReplayWithResultReturnsImmediately(t *testing.T) {
 		makeSleepEntry(1, 12345),
 		makeSleepResultEntry(2, 1),
 	)
-	if err := cf.ictx.Sleep(50 * time.Millisecond); err != nil {
+	if _, err := cf.ictx.Sleep(50 * time.Millisecond).Result(); err != nil {
 		t.Fatalf("Sleep on replay = %v; want nil", err)
 	}
 	if len(cf.fp.effects()) != 0 {
@@ -437,7 +438,7 @@ func TestContext_SleepReplayMissingResultSuspends(t *testing.T) {
 		makeSleepEntry(1, 12345),
 		// no SleepResult — timer not yet fired
 	)
-	if err := cf.ictx.Sleep(50 * time.Millisecond); !errors.Is(err, sdk.ErrSuspended) {
+	if _, err := cf.ictx.Sleep(50 * time.Millisecond).Result(); !errors.Is(err, sdk.ErrSuspended) {
 		t.Fatalf("Sleep replay-no-result err = %v; want ErrSuspended", err)
 	}
 	if len(cf.fp.effects()) != 0 {
@@ -449,7 +450,7 @@ func TestContext_SleepJournalDivergence(t *testing.T) {
 	cf := newCtxFixture(t,
 		makeRunEntry(1, []byte("oops"), ""), // wrong type at idx 1
 	)
-	err := cf.ictx.Sleep(50 * time.Millisecond)
+	_, err := cf.ictx.Sleep(50 * time.Millisecond).Result()
 	if err == nil || !strings.Contains(err.Error(), "divergence") {
 		t.Errorf("Sleep with wrong entry type err = %v; want divergence", err)
 	}
@@ -603,7 +604,7 @@ func TestContext_ClearStateLiveJournals(t *testing.T) {
 
 func TestContext_CallFirstCallSuspends(t *testing.T) {
 	cf := newCtxFixture(t)
-	_, err := cf.ictx.Call(sdk.Target{Service: "T", Handler: "h"}, []byte("input"))
+	_, err := cf.ictx.Call(sdk.Target{Service: "T", Handler: "h"}, []byte("input")).Result()
 	if !errors.Is(err, sdk.ErrSuspended) {
 		t.Fatalf("Call err = %v; want ErrSuspended", err)
 	}
@@ -644,7 +645,7 @@ func TestContext_CallReplayWithResult(t *testing.T) {
 		},
 	}
 	cf := newCtxFixture(t, callEntry, resultEntry)
-	out, err := cf.ictx.Call(sdk.Target{Service: "T", Handler: "h"}, nil)
+	out, err := cf.ictx.Call(sdk.Target{Service: "T", Handler: "h"}, nil).Result()
 	if err != nil {
 		t.Fatalf("Call replay err = %v", err)
 	}
@@ -739,7 +740,7 @@ func TestContext_AwakeableResultPropagatesFailure(t *testing.T) {
 func TestContext_SuspendIsSticky(t *testing.T) {
 	cf := newCtxFixture(t)
 	// First Sleep suspends.
-	if err := cf.ictx.Sleep(time.Millisecond); !errors.Is(err, sdk.ErrSuspended) {
+	if _, err := cf.ictx.Sleep(time.Millisecond).Result(); !errors.Is(err, sdk.ErrSuspended) {
 		t.Fatal("first Sleep did not suspend")
 	}
 	// Second ctx call must also return ErrSuspended without journaling.
@@ -749,7 +750,7 @@ func TestContext_SuspendIsSticky(t *testing.T) {
 	if _, err := cf.ictx.Run("r", func() ([]byte, error) { return nil, nil }); !errors.Is(err, sdk.ErrSuspended) {
 		t.Errorf("Run after suspend err = %v; want ErrSuspended", err)
 	}
-	if _, err := cf.ictx.Call(sdk.Target{Service: "T", Handler: "h"}, nil); !errors.Is(err, sdk.ErrSuspended) {
+	if _, err := cf.ictx.Call(sdk.Target{Service: "T", Handler: "h"}, nil).Result(); !errors.Is(err, sdk.ErrSuspended) {
 		t.Errorf("Call after suspend err = %v; want ErrSuspended", err)
 	}
 	// Only the first Sleep should have proposed an effect.
@@ -818,7 +819,7 @@ func TestContext_InputAndIDExposed(t *testing.T) {
 func TestSession_SleepResumeAfterTimerFires(t *testing.T) {
 	// Handler: Sleep then return.
 	handler := func(c sdk.Context, _ []byte) ([]byte, error) {
-		if err := c.Sleep(50 * time.Millisecond); err != nil {
+		if _, err := c.Sleep(50 * time.Millisecond).Result(); err != nil {
 			return nil, err
 		}
 		return []byte("woke"), nil

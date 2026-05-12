@@ -14,6 +14,7 @@ import (
 	"github.com/lni/dragonboat/v4"
 	"github.com/lni/dragonboat/v4/config"
 	"github.com/lni/dragonboat/v4/raftio"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine/invoker"
 	"github.com/twinfer/reflow/internal/storage"
@@ -23,7 +24,10 @@ import (
 )
 
 // HostConfig configures a reflow node (a process hosting one or more
-// partitions). Phase 1 single-node deployments use NodeID=1.
+// partitions). Phase 1 single-node deployments use NodeID=1 with Peers
+// empty; Phase 4.1 multi-node deployments populate Peers with every
+// cluster member (including self) and supply gossip + Delivery endpoint
+// addresses.
 type HostConfig struct {
 	// NodeID identifies this node in the cluster. Must be > 0.
 	NodeID uint64
@@ -44,6 +48,50 @@ type HostConfig struct {
 	// builds an empty registry and any ActInvoke falls through with a
 	// "no handler" warning. Phase 2.
 	Handlers *sdk.Registry
+
+	// Peers is the static cluster membership known at bootstrap. When
+	// non-empty, the Host runs multi-node: dragonboat gossip is enabled,
+	// NodeHostID-keyed targets are used, and every shard the node hosts
+	// starts with initialMembers covering the full peer set. The current
+	// node's NodeID must appear in Peers. When empty the Host runs
+	// single-node (Phase 1-3.5 behavior: initialMembers={self}). Phase 4.1.
+	Peers []Peer
+	// GossipBindAddr is the address dragonboat's gossip layer binds to
+	// (host:port). Required when Peers is non-empty.
+	GossipBindAddr string
+	// GossipAdvAddr is the address advertised to other peers for NAT
+	// traversal. Falls back to GossipBindAddr when empty.
+	GossipAdvAddr string
+	// GrpcEndpoint is this node's reflow Delivery gRPC endpoint. It is
+	// published via gossip NodeHostMeta so peers can dial it for
+	// cross-partition outbox dispatch. Required when Peers is non-empty.
+	GrpcEndpoint string
+}
+
+// Peer is a static cluster member known at bootstrap. NodeHostID may be
+// left empty; reflow then derives a deterministic ID from NodeID. The
+// derivation is identical on every node, so the static map of
+// NodeID → NodeHostID is consistent cluster-wide without coordination.
+// Phase 4.1.
+type Peer struct {
+	NodeID     uint64
+	RaftAddr   string
+	NodeHostID string
+	// GossipAddr is the peer's GossipAdvAddr; collected here so a node
+	// can populate dragonboat's gossip Seed list from the same Peers
+	// slice that drives Raft membership. Empty for self; required for
+	// every other peer when Peers is non-empty.
+	GossipAddr string
+}
+
+// resolvedNodeHostID returns the explicit override or a deterministic
+// derivation from NodeID. Both peers and self agree on this without
+// coordination, so static bootstrap needs no NodeHostID exchange.
+func (p Peer) resolvedNodeHostID() string {
+	if p.NodeHostID != "" {
+		return p.NodeHostID
+	}
+	return fmt.Sprintf("reflowd-node-%d", p.NodeID)
 }
 
 // Host owns the NodeHost and the per-partition runners.
@@ -91,12 +139,70 @@ func NewHost(cfg HostConfig) (*Host, error) {
 		EnableMetrics:     cfg.EnableMetrics,
 		RaftEventListener: &raftEventListener{host: h},
 	}
+	if len(cfg.Peers) > 0 {
+		if err := applyMultiNodeConfig(&nhConfig, &cfg); err != nil {
+			return nil, err
+		}
+	}
 	nh, err := dragonboat.NewNodeHost(nhConfig)
 	if err != nil {
 		return nil, fmt.Errorf("host: NewNodeHost: %w", err)
 	}
 	h.nh = nh
 	return h, nil
+}
+
+// applyMultiNodeConfig wires the dragonboat NodeHostConfig fields that
+// turn on cross-host gossip + NodeHostID-keyed targets, and packs the
+// reflow gRPC Delivery endpoint into the gossip Meta blob so peers can
+// resolve it via INodeHostRegistry.GetMeta. Phase 4.1.
+func applyMultiNodeConfig(nhConfig *config.NodeHostConfig, cfg *HostConfig) error {
+	self := findPeer(cfg.Peers, cfg.NodeID)
+	if self == nil {
+		return fmt.Errorf("host: NodeID %d not present in Peers", cfg.NodeID)
+	}
+	if cfg.GossipBindAddr == "" {
+		return errors.New("host: GossipBindAddr required when Peers is non-empty")
+	}
+	if cfg.GrpcEndpoint == "" {
+		return errors.New("host: GrpcEndpoint required when Peers is non-empty")
+	}
+	adv := cfg.GossipAdvAddr
+	if adv == "" {
+		adv = cfg.GossipBindAddr
+	}
+	metaBytes, err := proto.Marshal(&enginev1.NodeHostMeta{GrpcEndpoint: cfg.GrpcEndpoint})
+	if err != nil {
+		return fmt.Errorf("host: marshal NodeHostMeta: %w", err)
+	}
+	seeds := make([]string, 0, len(cfg.Peers)-1)
+	for _, p := range cfg.Peers {
+		if p.NodeID == cfg.NodeID {
+			continue
+		}
+		if p.GossipAddr == "" {
+			return fmt.Errorf("host: peer NodeID=%d missing GossipAddr", p.NodeID)
+		}
+		seeds = append(seeds, p.GossipAddr)
+	}
+	nhConfig.DefaultNodeRegistryEnabled = true
+	nhConfig.NodeHostID = self.resolvedNodeHostID()
+	nhConfig.Gossip = config.GossipConfig{
+		BindAddress:      cfg.GossipBindAddr,
+		AdvertiseAddress: adv,
+		Seed:             seeds,
+		Meta:             metaBytes,
+	}
+	return nil
+}
+
+func findPeer(peers []Peer, nodeID uint64) *Peer {
+	for i := range peers {
+		if peers[i].NodeID == nodeID {
+			return &peers[i]
+		}
+	}
+	return nil
 }
 
 // NodeHost returns the underlying dragonboat NodeHost. Exposed for tests and
@@ -195,7 +301,7 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 	h.partitions[shardID] = runner
 	h.mu.Unlock()
 
-	initial := map[uint64]dragonboat.Target{h.cfg.NodeID: h.cfg.RaftAddr}
+	initial := h.initialMembers()
 	if err := h.nh.StartOnDiskReplica(initial, false, pc.Factory(), raftCfg); err != nil {
 		h.mu.Lock()
 		delete(h.partitions, shardID)
@@ -269,6 +375,79 @@ func (h *Host) AwaitLeader(ctx context.Context, shardID uint64) error {
 		case <-tick.C:
 		}
 	}
+}
+
+// initialMembers builds the dragonboat StartOnDiskReplica seed map.
+// Multi-node clusters (Peers populated) use NodeHostID targets so
+// dragonboat's gossip can resolve them to live RaftAddresses; single-node
+// clusters keep the Phase 1 behavior of self-only RaftAddress targets.
+func (h *Host) initialMembers() map[uint64]dragonboat.Target {
+	if len(h.cfg.Peers) == 0 {
+		return map[uint64]dragonboat.Target{h.cfg.NodeID: dragonboat.Target(h.cfg.RaftAddr)}
+	}
+	out := make(map[uint64]dragonboat.Target, len(h.cfg.Peers))
+	for _, p := range h.cfg.Peers {
+		out[p.NodeID] = dragonboat.Target(p.resolvedNodeHostID())
+	}
+	return out
+}
+
+// PartitionLeaderHint returns the believed leader's NodeID for the given
+// shard, sourced from dragonboat gossip (ShardView). Returns (0, false)
+// when gossip is off (single-node) or no leader is known yet. The result
+// is advisory — callers must still tolerate NotLeader responses from
+// the Delivery RPC and re-resolve. Phase 4.1.
+func (h *Host) PartitionLeaderHint(shardID uint64) (uint64, bool) {
+	if h.nh == nil {
+		return 0, false
+	}
+	reg, ok := h.nh.GetNodeHostRegistry()
+	if !ok {
+		return 0, false
+	}
+	view, ok := reg.GetShardInfo(shardID)
+	if !ok || view.LeaderID == 0 {
+		return 0, false
+	}
+	return view.LeaderID, true
+}
+
+// NodeEndpoint returns the reflow Delivery gRPC endpoint advertised via
+// gossip NodeHostMeta by the peer with the given NodeID. Returns
+// ("", false) when gossip is off, the peer is unknown, or its Meta blob
+// has not yet propagated. Phase 4.1.
+func (h *Host) NodeEndpoint(nodeID uint64) (string, bool) {
+	if h.nh == nil {
+		return "", false
+	}
+	reg, ok := h.nh.GetNodeHostRegistry()
+	if !ok {
+		return "", false
+	}
+	nhID := h.nodeHostIDOf(nodeID)
+	if nhID == "" {
+		return "", false
+	}
+	raw, ok := reg.GetMeta(nhID)
+	if !ok {
+		return "", false
+	}
+	var meta enginev1.NodeHostMeta
+	if err := proto.Unmarshal(raw, &meta); err != nil {
+		return "", false
+	}
+	return meta.GetGrpcEndpoint(), meta.GetGrpcEndpoint() != ""
+}
+
+// nodeHostIDOf returns the resolved NodeHostID for a peer NodeID, or
+// "" if the node is not in this Host's static peer set.
+func (h *Host) nodeHostIDOf(nodeID uint64) string {
+	for _, p := range h.cfg.Peers {
+		if p.NodeID == nodeID {
+			return p.resolvedNodeHostID()
+		}
+	}
+	return ""
 }
 
 // raftEventListener implements raftio.IRaftEventListener for dragonboat. It

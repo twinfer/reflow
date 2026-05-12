@@ -2175,8 +2175,11 @@ func (x *JERun) GetRetryable() bool {
 // RunRetryPolicy controls exponential backoff for retryable JERun failures.
 // Carried on StartInvocation so the SDK can echo it through to the engine
 // apply arm without per-Run wire traffic. Zero/absent fields fall back to
-// defaults: initial=50ms, factor=2.0, max_interval=10s, max_attempts=0
-// (unlimited). Phase 3.
+// defaults: initial=50ms, factor=2.0, max_interval=10s, max_attempts=64.
+// max_attempts=0 means "use the default", NOT unlimited — Phase 3 has no
+// cancel/kill, so unbounded retries would poison the VO queue. Callers
+// wanting truly unbounded retries must set max_attempts explicitly (e.g.
+// math.MaxUint32). Phase 3.
 type RunRetryPolicy struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	InitialIntervalMs uint64                 `protobuf:"varint,1,opt,name=initial_interval_ms,json=initialIntervalMs,proto3" json:"initial_interval_ms,omitempty"`

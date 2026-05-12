@@ -7,14 +7,22 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// Default RunRetryPolicy values: matches Restate's defaults plus our
-// "unbounded retries" convention (max_attempts=0 means no cap). The
-// defaults are conservative for transient SDK-fn errors; production
-// services override via StartInvocation.retry_policy. Phase 3.
+// Default RunRetryPolicy values. The cap on attempts matters more than
+// it might look: Phase 3 has no cancel/kill (deferred to Phase 5), so an
+// uncapped stuck handler on a keyed object would poison the VO gate
+// indefinitely — every subsequent invocation queued behind it would
+// never run. 64 attempts covers genuine transient bursts (~9.3 min of
+// wall-clock once the per-attempt delay saturates at max_interval)
+// while guaranteeing eventual terminal-failure surfacing.
+//
+// A zero/absent max_attempts on a caller-supplied policy means "use
+// this default", not "unlimited". Callers that genuinely want unbounded
+// retries can set a very large value (e.g. math.MaxUint32).
 const (
 	defaultRetryInitialInterval = 50 * time.Millisecond
 	defaultRetryFactor          = 2.0
 	defaultRetryMaxInterval     = 10 * time.Second
+	defaultRetryMaxAttempts     = 64
 )
 
 // NextRetryDelay returns the wall-clock backoff for the (attempt+1)th
@@ -22,15 +30,21 @@ const (
 // already executed and failed retryably; attempt=0 is "first failure
 // just happened, wait this long before re-running fn".
 //
-// Returns (0, false) when the policy is exhausted (max_attempts reached).
+// Returns (0, false) when the policy is exhausted (attempt >= max).
 // A nil policy or any zero/absent field is treated as the corresponding
-// default; max_attempts=0 means unlimited.
+// default; in particular, max_attempts=0 means "use defaultRetryMaxAttempts",
+// not unlimited. Callers wanting unbounded retries must set max_attempts
+// to a very large value (e.g. math.MaxUint32) explicitly.
 //
 // The math is exponential with a configurable factor, capped at
 // max_interval. Overflows (NaN, ±Inf, negative) collapse to max_interval
 // so the engine never schedules a non-firing or in-the-past timer.
 func NextRetryDelay(p *enginev1.RunRetryPolicy, attempt uint32) (time.Duration, bool) {
-	if p.GetMaxAttempts() > 0 && attempt >= p.GetMaxAttempts() {
+	maxAttempts := p.GetMaxAttempts()
+	if maxAttempts == 0 {
+		maxAttempts = defaultRetryMaxAttempts
+	}
+	if attempt >= maxAttempts {
 		return 0, false
 	}
 

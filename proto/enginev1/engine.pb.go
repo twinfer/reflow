@@ -527,6 +527,8 @@ type Command struct {
 	//	*Command_Purge
 	//	*Command_RegisterNode
 	//	*Command_UpdatePartitionTable
+	//	*Command_DeliverCallResult
+	//	*Command_OutboxAck
 	Kind          isCommand_Kind `protobuf_oneof:"kind"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -632,6 +634,24 @@ func (x *Command) GetUpdatePartitionTable() *UpdatePartitionTable {
 	return nil
 }
 
+func (x *Command) GetDeliverCallResult() *DeliverCallResult {
+	if x != nil {
+		if x, ok := x.Kind.(*Command_DeliverCallResult); ok {
+			return x.DeliverCallResult
+		}
+	}
+	return nil
+}
+
+func (x *Command) GetOutboxAck() *OutboxAck {
+	if x != nil {
+		if x, ok := x.Kind.(*Command_OutboxAck); ok {
+			return x.OutboxAck
+		}
+	}
+	return nil
+}
+
 type isCommand_Kind interface {
 	isCommand_Kind()
 }
@@ -665,6 +685,19 @@ type Command_UpdatePartitionTable struct {
 	UpdatePartitionTable *UpdatePartitionTable `protobuf:"bytes,7,opt,name=update_partition_table,json=updatePartitionTable,proto3,oneof"`
 }
 
+type Command_DeliverCallResult struct {
+	// Phase 4.1 partition-shard cross-shard delivery commands. The
+	// outbox shuffler ferries DeliverCallResult to the parent's shard
+	// and OutboxAck back to the producer's shard; both ride the same
+	// Delivery gRPC + Raft pipeline as Invoke. Accepted only by
+	// shardID >= 1.
+	DeliverCallResult *DeliverCallResult `protobuf:"bytes,16,opt,name=deliver_call_result,json=deliverCallResult,proto3,oneof"`
+}
+
+type Command_OutboxAck struct {
+	OutboxAck *OutboxAck `protobuf:"bytes,17,opt,name=outbox_ack,json=outboxAck,proto3,oneof"`
+}
+
 func (*Command_AnnounceLeader) isCommand_Kind() {}
 
 func (*Command_Invoke) isCommand_Kind() {}
@@ -678,6 +711,10 @@ func (*Command_Purge) isCommand_Kind() {}
 func (*Command_RegisterNode) isCommand_Kind() {}
 
 func (*Command_UpdatePartitionTable) isCommand_Kind() {}
+
+func (*Command_DeliverCallResult) isCommand_Kind() {}
+
+func (*Command_OutboxAck) isCommand_Kind() {}
 
 // AnnounceLeader is proposed on every shard when its leader changes. It is
 // the only Command variant accepted by both the metadata shard (shardID=0)
@@ -4200,7 +4237,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\acommand\x18\x02 \x01(\v2\x19.reflow.engine.v1.CommandR\acommand\"[\n" +
 	"\x06Header\x12-\n" +
 	"\x05dedup\x18\x01 \x01(\v2\x17.reflow.engine.v1.DedupR\x05dedup\x12\"\n" +
-	"\rcreated_at_ms\x18\x02 \x01(\x06R\vcreatedAtMs\"\x8c\x04\n" +
+	"\rcreated_at_ms\x18\x02 \x01(\x06R\vcreatedAtMs\"\xa1\x05\n" +
 	"\aCommand\x12K\n" +
 	"\x0fannounce_leader\x18\x01 \x01(\v2 .reflow.engine.v1.AnnounceLeaderH\x00R\x0eannounceLeader\x129\n" +
 	"\x06invoke\x18\x02 \x01(\v2\x1f.reflow.engine.v1.InvokeCommandH\x00R\x06invoke\x12H\n" +
@@ -4209,7 +4246,10 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"timerFired\x129\n" +
 	"\x05purge\x18\x05 \x01(\v2!.reflow.engine.v1.PurgeInvocationH\x00R\x05purge\x12E\n" +
 	"\rregister_node\x18\x06 \x01(\v2\x1e.reflow.engine.v1.RegisterNodeH\x00R\fregisterNode\x12^\n" +
-	"\x16update_partition_table\x18\a \x01(\v2&.reflow.engine.v1.UpdatePartitionTableH\x00R\x14updatePartitionTableB\x06\n" +
+	"\x16update_partition_table\x18\a \x01(\v2&.reflow.engine.v1.UpdatePartitionTableH\x00R\x14updatePartitionTable\x12U\n" +
+	"\x13deliver_call_result\x18\x10 \x01(\v2#.reflow.engine.v1.DeliverCallResultH\x00R\x11deliverCallResult\x12<\n" +
+	"\n" +
+	"outbox_ack\x18\x11 \x01(\v2\x1b.reflow.engine.v1.OutboxAckH\x00R\toutboxAckB\x06\n" +
 	"\x04kindJ\x04\b\b\x10\x10\"\xa8\x01\n" +
 	"\x0eAnnounceLeader\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12!\n" +
@@ -4544,69 +4584,71 @@ var file_enginev1_engine_proto_depIdxs = []int32{
 	37, // 9: reflow.engine.v1.Command.purge:type_name -> reflow.engine.v1.PurgeInvocation
 	54, // 10: reflow.engine.v1.Command.register_node:type_name -> reflow.engine.v1.RegisterNode
 	55, // 11: reflow.engine.v1.Command.update_partition_table:type_name -> reflow.engine.v1.UpdatePartitionTable
-	1,  // 12: reflow.engine.v1.InvokeCommand.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	2,  // 13: reflow.engine.v1.InvokeCommand.target:type_name -> reflow.engine.v1.InvocationTarget
-	11, // 14: reflow.engine.v1.InvokeCommand.parent_link:type_name -> reflow.engine.v1.ParentLink
-	1,  // 15: reflow.engine.v1.ParentLink.parent_id:type_name -> reflow.engine.v1.InvocationId
-	1,  // 16: reflow.engine.v1.InvokerEffect.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	16, // 17: reflow.engine.v1.InvokerEffect.journal_appended:type_name -> reflow.engine.v1.JournalEntryAppended
-	17, // 18: reflow.engine.v1.InvokerEffect.completed:type_name -> reflow.engine.v1.InvocationCompleted
-	18, // 19: reflow.engine.v1.InvokerEffect.suspended:type_name -> reflow.engine.v1.InvocationSuspended
-	13, // 20: reflow.engine.v1.InvokerEffect.run_proposal:type_name -> reflow.engine.v1.JERunProposal
-	14, // 21: reflow.engine.v1.InvokerEffect.awakeable_resolved:type_name -> reflow.engine.v1.AwakeableResolved
-	15, // 22: reflow.engine.v1.InvokerEffect.signal_delivered:type_name -> reflow.engine.v1.SignalDelivered
-	29, // 23: reflow.engine.v1.JERunProposal.retry_policy:type_name -> reflow.engine.v1.RunRetryPolicy
-	19, // 24: reflow.engine.v1.JournalEntryAppended.entry:type_name -> reflow.engine.v1.JournalEntry
-	20, // 25: reflow.engine.v1.JournalEntry.input:type_name -> reflow.engine.v1.JEInput
-	21, // 26: reflow.engine.v1.JournalEntry.sleep:type_name -> reflow.engine.v1.JESleep
-	22, // 27: reflow.engine.v1.JournalEntry.sleep_result:type_name -> reflow.engine.v1.JESleepResult
-	23, // 28: reflow.engine.v1.JournalEntry.call:type_name -> reflow.engine.v1.JECall
-	24, // 29: reflow.engine.v1.JournalEntry.call_result:type_name -> reflow.engine.v1.JECallResult
-	25, // 30: reflow.engine.v1.JournalEntry.get_state:type_name -> reflow.engine.v1.JEGetState
-	26, // 31: reflow.engine.v1.JournalEntry.set_state:type_name -> reflow.engine.v1.JESetState
-	27, // 32: reflow.engine.v1.JournalEntry.output:type_name -> reflow.engine.v1.JEOutput
-	28, // 33: reflow.engine.v1.JournalEntry.run:type_name -> reflow.engine.v1.JERun
-	31, // 34: reflow.engine.v1.JournalEntry.awakeable:type_name -> reflow.engine.v1.JEAwakeable
-	32, // 35: reflow.engine.v1.JournalEntry.awakeable_result:type_name -> reflow.engine.v1.JEAwakeableResult
-	33, // 36: reflow.engine.v1.JournalEntry.signal:type_name -> reflow.engine.v1.JESignal
-	34, // 37: reflow.engine.v1.JournalEntry.clear_state:type_name -> reflow.engine.v1.JEClearState
-	35, // 38: reflow.engine.v1.JournalEntry.get_eager_state:type_name -> reflow.engine.v1.JEGetEagerState
-	30, // 39: reflow.engine.v1.JournalEntry.clear_all_state:type_name -> reflow.engine.v1.JEClearAllState
-	2,  // 40: reflow.engine.v1.JECall.target:type_name -> reflow.engine.v1.InvocationTarget
-	1,  // 41: reflow.engine.v1.JESignal.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
-	1,  // 42: reflow.engine.v1.TimerFired.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	1,  // 43: reflow.engine.v1.PurgeInvocation.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	39, // 44: reflow.engine.v1.InvocationStatus.free:type_name -> reflow.engine.v1.Free
-	40, // 45: reflow.engine.v1.InvocationStatus.scheduled:type_name -> reflow.engine.v1.Scheduled
-	41, // 46: reflow.engine.v1.InvocationStatus.invoked:type_name -> reflow.engine.v1.Invoked
-	42, // 47: reflow.engine.v1.InvocationStatus.suspended:type_name -> reflow.engine.v1.Suspended
-	43, // 48: reflow.engine.v1.InvocationStatus.completed:type_name -> reflow.engine.v1.Completed
-	2,  // 49: reflow.engine.v1.Scheduled.target:type_name -> reflow.engine.v1.InvocationTarget
-	11, // 50: reflow.engine.v1.Scheduled.parent_link:type_name -> reflow.engine.v1.ParentLink
-	2,  // 51: reflow.engine.v1.Invoked.target:type_name -> reflow.engine.v1.InvocationTarget
-	11, // 52: reflow.engine.v1.Invoked.parent_link:type_name -> reflow.engine.v1.ParentLink
-	2,  // 53: reflow.engine.v1.Suspended.target:type_name -> reflow.engine.v1.InvocationTarget
-	11, // 54: reflow.engine.v1.Suspended.parent_link:type_name -> reflow.engine.v1.ParentLink
-	2,  // 55: reflow.engine.v1.Completed.target:type_name -> reflow.engine.v1.InvocationTarget
-	0,  // 56: reflow.engine.v1.KeyLeaseStatus.state:type_name -> reflow.engine.v1.KeyLeaseStatus.State
-	1,  // 57: reflow.engine.v1.KeyLeaseStatus.current_invocation:type_name -> reflow.engine.v1.InvocationId
-	1,  // 58: reflow.engine.v1.KeyLeaseStatus.queue:type_name -> reflow.engine.v1.InvocationId
-	1,  // 59: reflow.engine.v1.AwakeableEntry.owner:type_name -> reflow.engine.v1.InvocationId
-	10, // 60: reflow.engine.v1.OutboxEnvelope.invoke:type_name -> reflow.engine.v1.InvokeCommand
-	51, // 61: reflow.engine.v1.OutboxEnvelope.signal:type_name -> reflow.engine.v1.SignalSend
-	49, // 62: reflow.engine.v1.OutboxEnvelope.deliver_call_result:type_name -> reflow.engine.v1.DeliverCallResult
-	50, // 63: reflow.engine.v1.OutboxEnvelope.outbox_ack:type_name -> reflow.engine.v1.OutboxAck
-	1,  // 64: reflow.engine.v1.DeliverCallResult.parent_id:type_name -> reflow.engine.v1.InvocationId
-	1,  // 65: reflow.engine.v1.SignalSend.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
-	56, // 66: reflow.engine.v1.RegisterNode.member:type_name -> reflow.engine.v1.NodeMembership
-	57, // 67: reflow.engine.v1.UpdatePartitionTable.table:type_name -> reflow.engine.v1.PartitionTable
-	59, // 68: reflow.engine.v1.PartitionTable.shards:type_name -> reflow.engine.v1.PartitionTable.ShardsEntry
-	58, // 69: reflow.engine.v1.PartitionTable.ShardsEntry.value:type_name -> reflow.engine.v1.ReplicaSet
-	70, // [70:70] is the sub-list for method output_type
-	70, // [70:70] is the sub-list for method input_type
-	70, // [70:70] is the sub-list for extension type_name
-	70, // [70:70] is the sub-list for extension extendee
-	0,  // [0:70] is the sub-list for field type_name
+	49, // 12: reflow.engine.v1.Command.deliver_call_result:type_name -> reflow.engine.v1.DeliverCallResult
+	50, // 13: reflow.engine.v1.Command.outbox_ack:type_name -> reflow.engine.v1.OutboxAck
+	1,  // 14: reflow.engine.v1.InvokeCommand.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	2,  // 15: reflow.engine.v1.InvokeCommand.target:type_name -> reflow.engine.v1.InvocationTarget
+	11, // 16: reflow.engine.v1.InvokeCommand.parent_link:type_name -> reflow.engine.v1.ParentLink
+	1,  // 17: reflow.engine.v1.ParentLink.parent_id:type_name -> reflow.engine.v1.InvocationId
+	1,  // 18: reflow.engine.v1.InvokerEffect.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	16, // 19: reflow.engine.v1.InvokerEffect.journal_appended:type_name -> reflow.engine.v1.JournalEntryAppended
+	17, // 20: reflow.engine.v1.InvokerEffect.completed:type_name -> reflow.engine.v1.InvocationCompleted
+	18, // 21: reflow.engine.v1.InvokerEffect.suspended:type_name -> reflow.engine.v1.InvocationSuspended
+	13, // 22: reflow.engine.v1.InvokerEffect.run_proposal:type_name -> reflow.engine.v1.JERunProposal
+	14, // 23: reflow.engine.v1.InvokerEffect.awakeable_resolved:type_name -> reflow.engine.v1.AwakeableResolved
+	15, // 24: reflow.engine.v1.InvokerEffect.signal_delivered:type_name -> reflow.engine.v1.SignalDelivered
+	29, // 25: reflow.engine.v1.JERunProposal.retry_policy:type_name -> reflow.engine.v1.RunRetryPolicy
+	19, // 26: reflow.engine.v1.JournalEntryAppended.entry:type_name -> reflow.engine.v1.JournalEntry
+	20, // 27: reflow.engine.v1.JournalEntry.input:type_name -> reflow.engine.v1.JEInput
+	21, // 28: reflow.engine.v1.JournalEntry.sleep:type_name -> reflow.engine.v1.JESleep
+	22, // 29: reflow.engine.v1.JournalEntry.sleep_result:type_name -> reflow.engine.v1.JESleepResult
+	23, // 30: reflow.engine.v1.JournalEntry.call:type_name -> reflow.engine.v1.JECall
+	24, // 31: reflow.engine.v1.JournalEntry.call_result:type_name -> reflow.engine.v1.JECallResult
+	25, // 32: reflow.engine.v1.JournalEntry.get_state:type_name -> reflow.engine.v1.JEGetState
+	26, // 33: reflow.engine.v1.JournalEntry.set_state:type_name -> reflow.engine.v1.JESetState
+	27, // 34: reflow.engine.v1.JournalEntry.output:type_name -> reflow.engine.v1.JEOutput
+	28, // 35: reflow.engine.v1.JournalEntry.run:type_name -> reflow.engine.v1.JERun
+	31, // 36: reflow.engine.v1.JournalEntry.awakeable:type_name -> reflow.engine.v1.JEAwakeable
+	32, // 37: reflow.engine.v1.JournalEntry.awakeable_result:type_name -> reflow.engine.v1.JEAwakeableResult
+	33, // 38: reflow.engine.v1.JournalEntry.signal:type_name -> reflow.engine.v1.JESignal
+	34, // 39: reflow.engine.v1.JournalEntry.clear_state:type_name -> reflow.engine.v1.JEClearState
+	35, // 40: reflow.engine.v1.JournalEntry.get_eager_state:type_name -> reflow.engine.v1.JEGetEagerState
+	30, // 41: reflow.engine.v1.JournalEntry.clear_all_state:type_name -> reflow.engine.v1.JEClearAllState
+	2,  // 42: reflow.engine.v1.JECall.target:type_name -> reflow.engine.v1.InvocationTarget
+	1,  // 43: reflow.engine.v1.JESignal.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
+	1,  // 44: reflow.engine.v1.TimerFired.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	1,  // 45: reflow.engine.v1.PurgeInvocation.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	39, // 46: reflow.engine.v1.InvocationStatus.free:type_name -> reflow.engine.v1.Free
+	40, // 47: reflow.engine.v1.InvocationStatus.scheduled:type_name -> reflow.engine.v1.Scheduled
+	41, // 48: reflow.engine.v1.InvocationStatus.invoked:type_name -> reflow.engine.v1.Invoked
+	42, // 49: reflow.engine.v1.InvocationStatus.suspended:type_name -> reflow.engine.v1.Suspended
+	43, // 50: reflow.engine.v1.InvocationStatus.completed:type_name -> reflow.engine.v1.Completed
+	2,  // 51: reflow.engine.v1.Scheduled.target:type_name -> reflow.engine.v1.InvocationTarget
+	11, // 52: reflow.engine.v1.Scheduled.parent_link:type_name -> reflow.engine.v1.ParentLink
+	2,  // 53: reflow.engine.v1.Invoked.target:type_name -> reflow.engine.v1.InvocationTarget
+	11, // 54: reflow.engine.v1.Invoked.parent_link:type_name -> reflow.engine.v1.ParentLink
+	2,  // 55: reflow.engine.v1.Suspended.target:type_name -> reflow.engine.v1.InvocationTarget
+	11, // 56: reflow.engine.v1.Suspended.parent_link:type_name -> reflow.engine.v1.ParentLink
+	2,  // 57: reflow.engine.v1.Completed.target:type_name -> reflow.engine.v1.InvocationTarget
+	0,  // 58: reflow.engine.v1.KeyLeaseStatus.state:type_name -> reflow.engine.v1.KeyLeaseStatus.State
+	1,  // 59: reflow.engine.v1.KeyLeaseStatus.current_invocation:type_name -> reflow.engine.v1.InvocationId
+	1,  // 60: reflow.engine.v1.KeyLeaseStatus.queue:type_name -> reflow.engine.v1.InvocationId
+	1,  // 61: reflow.engine.v1.AwakeableEntry.owner:type_name -> reflow.engine.v1.InvocationId
+	10, // 62: reflow.engine.v1.OutboxEnvelope.invoke:type_name -> reflow.engine.v1.InvokeCommand
+	51, // 63: reflow.engine.v1.OutboxEnvelope.signal:type_name -> reflow.engine.v1.SignalSend
+	49, // 64: reflow.engine.v1.OutboxEnvelope.deliver_call_result:type_name -> reflow.engine.v1.DeliverCallResult
+	50, // 65: reflow.engine.v1.OutboxEnvelope.outbox_ack:type_name -> reflow.engine.v1.OutboxAck
+	1,  // 66: reflow.engine.v1.DeliverCallResult.parent_id:type_name -> reflow.engine.v1.InvocationId
+	1,  // 67: reflow.engine.v1.SignalSend.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
+	56, // 68: reflow.engine.v1.RegisterNode.member:type_name -> reflow.engine.v1.NodeMembership
+	57, // 69: reflow.engine.v1.UpdatePartitionTable.table:type_name -> reflow.engine.v1.PartitionTable
+	59, // 70: reflow.engine.v1.PartitionTable.shards:type_name -> reflow.engine.v1.PartitionTable.ShardsEntry
+	58, // 71: reflow.engine.v1.PartitionTable.ShardsEntry.value:type_name -> reflow.engine.v1.ReplicaSet
+	72, // [72:72] is the sub-list for method output_type
+	72, // [72:72] is the sub-list for method input_type
+	72, // [72:72] is the sub-list for extension type_name
+	72, // [72:72] is the sub-list for extension extendee
+	0,  // [0:72] is the sub-list for field type_name
 }
 
 func init() { file_enginev1_engine_proto_init() }
@@ -4626,6 +4668,8 @@ func file_enginev1_engine_proto_init() {
 		(*Command_Purge)(nil),
 		(*Command_RegisterNode)(nil),
 		(*Command_UpdatePartitionTable)(nil),
+		(*Command_DeliverCallResult)(nil),
+		(*Command_OutboxAck)(nil),
 	}
 	file_enginev1_engine_proto_msgTypes[11].OneofWrappers = []any{
 		(*InvokerEffect_JournalAppended)(nil),

@@ -26,7 +26,12 @@ type PartitionRunner struct {
 	leadership  *Leadership
 	collector   *ActionCollector
 	invoker     *invoker.Invoker
-	log         *slog.Logger
+	// sender is the cross-shard dispatcher used by the OutboxService for
+	// envelopes whose destination_shard_id is non-local. nil in single-
+	// node deployments; populated by Host.StartPartition when multi-node
+	// is configured. Phase 4.1.
+	sender CrossShardSender
+	log    *slog.Logger
 
 	// timers and outbox are populated by onBecomeLeader and torn down by
 	// onStepDown. dispatchActions reads them on the apply goroutine,
@@ -140,6 +145,7 @@ func (r *PartitionRunner) onBecomeLeader() {
 	r.outbox = NewOutboxService(
 		tables.OutboxTable{S: store},
 		r.proposer,
+		r.sender,
 		r.ShardID,
 		r.log,
 	)

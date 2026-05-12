@@ -67,6 +67,13 @@ type HostConfig struct {
 	// published via gossip NodeHostMeta so peers can dial it for
 	// cross-partition outbox dispatch. Required when Peers is non-empty.
 	GrpcEndpoint string
+
+	// CrossShardSender is the dispatcher partition runners hand to their
+	// OutboxService for envelopes whose destination_shard_id is non-
+	// local. Wired up to an *internal/engine/delivery.Client in
+	// multi-node deployments; nil in single-node deployments (where no
+	// outbox row ever targets a remote shard). Phase 4.1.
+	CrossShardSender CrossShardSender
 }
 
 // Peer is a static cluster member known at bootstrap. NodeHostID may be
@@ -387,6 +394,7 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		proposer:    proposer,
 		leadership:  leadership,
 		collector:   collector,
+		sender:      h.cfg.CrossShardSender,
 		log:         h.log,
 	}
 	// The Invoker is constructed once and survives leader gain/loss

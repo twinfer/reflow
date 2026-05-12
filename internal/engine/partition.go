@@ -12,6 +12,7 @@ import (
 	"github.com/lni/dragonboat/v4/statemachine"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
@@ -38,6 +39,11 @@ type PartitionConfig struct {
 	// the actions accumulated on the leader. It runs inline on the
 	// dragonboat apply goroutine — MUST NOT block on a Raft propose.
 	OnActions func([]Action)
+	// Partitioner maps a partition key to a destination shard id. Used to
+	// stamp destination_shard_id on every outbox row the apply path
+	// produces. Zero value (NumShards=0) yields same-shard for everything,
+	// preserving Phase 1-3.5 single-partition behavior. Phase 4.1.
+	Partitioner routing.Partitioner
 }
 
 // Partition is the dragonboat IOnDiskStateMachine for one reflow partition.
@@ -156,16 +162,61 @@ func (p *Partition) Update(entries []statemachine.Entry) ([]statemachine.Entry, 
 			return nil, err
 		}
 
-		// Outbox pop: when a command was re-injected by a local outbox
-		// shuffler (Arbitrary dedup with "outbox/" producer), the original
-		// row is no longer needed once we've applied. Pop in the same batch
-		// so apply + pop are atomic.
+		// Outbox-source bookkeeping: when a command was re-injected by an
+		// outbox shuffler (Arbitrary dedup with "outbox/" producer), the
+		// dispatch lifecycle depends on whether sender and receiver are the
+		// same shard.
+		//
+		//   - Same-shard outbox: pop the local row in the same batch so
+		//     apply + pop are atomic (Phase 1-3 behavior).
+		//   - Cross-shard outbox: the producer's row lives on a different
+		//     shard's OutboxTable, so we cannot pop it here. Instead we
+		//     enqueue an OutboxAck on the local outbox addressed back to
+		//     the producer shard; the ack flows over Raft (same Delivery
+		//     gRPC pipeline) and pops the producer-side row on apply.
+		//
+		// OutboxAck commands themselves are excluded from the
+		// ack-on-receive path: applying an ack already pops the producer
+		// row in onOutboxAck, and we must not generate acks-for-acks
+		// (would loop). The same applies if we ever see a cross-shard
+		// envelope whose payload is an OutboxAck (defensive guard).
 		if d := env.GetHeader().GetDedup(); d != nil {
 			if arb := d.GetArbitrary(); arb != nil && isOutboxProducer(arb.GetProducerId()) {
-				outboxT := tables.OutboxTable{S: store}
-				if err := outboxT.Pop(batch, arb.GetSeq()); err != nil {
-					p.cfg.Log.Warn("partition: outbox pop failed",
-						"seq", arb.GetSeq(), "producer", arb.GetProducerId(), "err", err)
+				senderShard, senderOK := parseOutboxProducerShard(arb.GetProducerId())
+				switch {
+				case !senderOK:
+					p.cfg.Log.Warn("partition: malformed outbox producer id; cannot route ack",
+						"producer", arb.GetProducerId())
+				case senderShard == p.shardID:
+					outboxT := tables.OutboxTable{S: store}
+					if err := outboxT.Pop(batch, arb.GetSeq()); err != nil {
+						p.cfg.Log.Warn("partition: outbox pop failed",
+							"seq", arb.GetSeq(), "producer", arb.GetProducerId(), "err", err)
+					}
+				default:
+					// Cross-shard: emit an OutboxAck back to the producer
+					// unless the inbound command is itself an ack (no
+					// ack-for-ack).
+					if _, isAck := env.GetCommand().GetKind().(*enginev1.Command_OutboxAck); !isAck {
+						ackEnv := &enginev1.OutboxEnvelope{
+							DestinationShardId: senderShard,
+							Kind: &enginev1.OutboxEnvelope_OutboxAck{
+								OutboxAck: &enginev1.OutboxAck{
+									ProducerShardId: senderShard,
+									ProducerSeq:     arb.GetSeq(),
+								},
+							},
+						}
+						seq := meta.GetNextOutboxSeq()
+						meta.NextOutboxSeq = seq + 1
+						outboxT := tables.OutboxTable{S: store}
+						if err := outboxT.Append(batch, seq, ackEnv); err != nil {
+							p.cfg.Log.Warn("partition: outbox append (ack) failed",
+								"seq", seq, "dest_shard", senderShard, "err", err)
+						} else if isLeader {
+							p.cfg.Collector.Push(ActDispatchOutbox{Seq: seq, Envelope: ackEnv})
+						}
+					}
 				}
 			}
 			if err := dedup.Record(batch, d); err != nil {
@@ -220,6 +271,10 @@ func (p *Partition) applyCommand(
 		return p.onTimerFired(batch, k.TimerFired, now, inv, timers, isLeader)
 	case *enginev1.Command_Purge:
 		return p.onPurge(batch, k.Purge, inv, journal, isLeader)
+	case *enginev1.Command_DeliverCallResult:
+		return p.onDeliverCallResult(batch, k.DeliverCallResult, now, inv, journal, isLeader)
+	case *enginev1.Command_OutboxAck:
+		return p.onOutboxAck(batch, k.OutboxAck)
 	case nil:
 		p.cfg.Log.Warn("partition: envelope has no command kind", "raft_index", raftIndex)
 		return nil
@@ -392,9 +447,11 @@ func (p *Partition) onInvokerEffect(
 				}
 			}
 		case *enginev1.JournalEntry_Call:
+			calleeID := mintCalleeInvocationID(id, entry.GetIndex(), e.Call.GetTarget())
 			env := &enginev1.OutboxEnvelope{
+				DestinationShardId: p.cfg.Partitioner.ShardForInvocation(calleeID),
 				Kind: &enginev1.OutboxEnvelope_Invoke{Invoke: &enginev1.InvokeCommand{
-					InvocationId: mintCalleeInvocationID(id, entry.GetIndex()),
+					InvocationId: calleeID,
 					Target:       e.Call.GetTarget(),
 					Input:        e.Call.GetInput(),
 					// Phase 3: forward the caller-supplied idempotency_key so
@@ -453,6 +510,7 @@ func (p *Partition) onInvokerEffect(
 			}
 		case *enginev1.JournalEntry_Signal:
 			env := &enginev1.OutboxEnvelope{
+				DestinationShardId: p.cfg.Partitioner.ShardForInvocation(e.Signal.GetTargetInvocationId()),
 				Kind: &enginev1.OutboxEnvelope_Signal{Signal: &enginev1.SignalSend{
 					TargetInvocationId: e.Signal.GetTargetInvocationId(),
 					SignalName:         e.Signal.GetSignalName(),
@@ -601,10 +659,11 @@ func (p *Partition) onInvokerEffect(
 			}
 			if pl.GetParentId() != nil {
 				parentActs, perr := p.deliverCallResultToParent(
-					batch, inv, journal, pl,
+					batch, inv, journal, meta, pl,
 					k.Completed.GetOutput(),
 					k.Completed.GetFailureMessage(),
 					nowMs,
+					isLeader,
 				)
 				if perr != nil {
 					return perr
@@ -649,72 +708,161 @@ func (p *Partition) onInvokerEffect(
 	return nil
 }
 
-// deliverCallResultToParent handles the same-partition Phase 2.5 path for
-// returning a callee's result to its parent. Called from onInvokerEffect's
-// Completed arm when the callee's prior Invoked status carried a ParentLink.
+// deliverCallResultToParent dispatches the callee's terminal result back
+// to the parent invocation. When the parent lives on the local partition
+// (parentShard == localShard) the call applies inline via
+// applyCallResultToParent (loads parent status, appends JECallResult,
+// runs transitionOnCallResultDelivered, persists). When the parent lives
+// on a different partition (Phase 4.1) the call enqueues an
+// OutboxEnvelope_DeliverCallResult on the local outbox; the destination
+// partition's apply path will run the same logic via onDeliverCallResult.
 //
-// Steps, all inside the existing Pebble batch:
-//
-//  1. Load the parent's current InvocationStatus.
-//  2. Append JECallResult to the parent's journal at call_index + 1.
-//     Journal append is idempotent at an existing index (see
-//     JournalTable.Append) so replay-on-startup re-applying this effect is
-//     a no-op.
-//  3. Run transitionOnCallResultDelivered on the parent — Suspended wakes
-//     to Invoked + emits ActInvoke + ActDeliverNotification; Invoked emits
-//     only the notification; Completed/late-arrival is a no-op.
-//  4. Persist the parent's new status.
-//
-// Returns the parent-side actions so the caller can push them onto the
-// collector alongside any callee-side actions.
-//
-// Phase 4 (cross-partition) will replace step 1+2+4 with an outbox-style
-// "deliver to parent's shard" effect; the FSM transition (step 3) is
-// unchanged.
+// Returns the parent-side actions to push onto the collector. Cross-shard
+// dispatches return no actions on this side; the destination shard
+// generates the wake actions when DeliverCallResult applies there.
 func (p *Partition) deliverCallResultToParent(
 	batch storage.Batch,
 	inv tables.InvocationTable,
 	journal tables.JournalTable,
+	meta *enginev1.PartitionMeta,
 	pl *enginev1.ParentLink,
 	output []byte,
 	failureMessage string,
 	nowMs uint64,
+	isLeader bool,
 ) ([]Action, error) {
 	parentID := pl.GetParentId()
-	parentStatus, err := inv.Get(parentID)
-	if err != nil {
-		return nil, fmt.Errorf("deliverCallResultToParent: load parent status: %w", err)
+	parentShard := p.cfg.Partitioner.ShardForInvocation(parentID)
+
+	// Same-shard (or single-partition fallback): apply inline.
+	if parentShard == 0 || parentShard == p.shardID {
+		return p.applyCallResultToParent(batch, inv, journal, parentID, pl.GetCallIndex(), output, failureMessage, nowMs)
 	}
-	completionIdx := pl.GetCallIndex() + 1
-	resultEntry := &enginev1.JournalEntry{
-		Index: completionIdx,
-		Entry: &enginev1.JournalEntry_CallResult{
-			CallResult: &enginev1.JECallResult{
+
+	// Cross-shard: enqueue an outbox row addressed to the parent's shard.
+	env := &enginev1.OutboxEnvelope{
+		DestinationShardId: parentShard,
+		Kind: &enginev1.OutboxEnvelope_DeliverCallResult{
+			DeliverCallResult: &enginev1.DeliverCallResult{
+				ParentId:       parentID,
 				CallIndex:      pl.GetCallIndex(),
 				Result:         output,
 				FailureMessage: failureMessage,
 			},
 		},
 	}
+	seq := meta.GetNextOutboxSeq()
+	meta.NextOutboxSeq = seq + 1
+	outboxT := tables.OutboxTable{S: p.cfg.Snapshotter.Store()}
+	if err := outboxT.Append(batch, seq, env); err != nil {
+		return nil, fmt.Errorf("deliverCallResultToParent: outbox append: %w", err)
+	}
+	if isLeader {
+		p.cfg.Collector.Push(ActDispatchOutbox{Seq: seq, Envelope: env})
+	}
+	return nil, nil
+}
+
+// applyCallResultToParent runs the local-side journal + FSM transition
+// for a parent-bound JECallResult. Used by both the same-partition fast
+// path (deliverCallResultToParent inline) and the cross-partition
+// receiver-side apply arm (onDeliverCallResult). Idempotent on replay:
+// JournalTable.Append is a no-op at an existing index, and
+// transitionOnCallResultDelivered is a no-op when the parent is already
+// Completed.
+func (p *Partition) applyCallResultToParent(
+	batch storage.Batch,
+	inv tables.InvocationTable,
+	journal tables.JournalTable,
+	parentID *enginev1.InvocationId,
+	callIndex uint32,
+	output []byte,
+	failureMessage string,
+	nowMs uint64,
+) ([]Action, error) {
+	parentStatus, err := inv.Get(parentID)
+	if err != nil {
+		return nil, fmt.Errorf("applyCallResultToParent: load parent status: %w", err)
+	}
+	completionIdx := callIndex + 1
+	resultEntry := &enginev1.JournalEntry{
+		Index: completionIdx,
+		Entry: &enginev1.JournalEntry_CallResult{
+			CallResult: &enginev1.JECallResult{
+				CallIndex:      callIndex,
+				Result:         output,
+				FailureMessage: failureMessage,
+			},
+		},
+	}
 	if err := journal.Append(batch, parentID, resultEntry); err != nil {
-		return nil, fmt.Errorf("deliverCallResultToParent: journal parent JECallResult: %w", err)
+		return nil, fmt.Errorf("applyCallResultToParent: journal append: %w", err)
 	}
 	parentNext, parentActions, terr := transitionOnCallResultDelivered(
 		parentID, parentStatus, completionIdx, output, failureMessage, nowMs,
 	)
 	if terr != nil {
-		// Mirror onInvokerEffect's policy: log and continue, but don't write
-		// a stale status.
 		p.cfg.Log.Warn("partition: invalid CallResultDelivered transition on parent",
 			"err", terr, "parent_uuid", fmt.Sprintf("%x", parentID.GetUuid()))
 		return nil, nil
 	}
 	if parentNext != nil {
 		if err := inv.Put(batch, parentID, parentNext); err != nil {
-			return nil, fmt.Errorf("deliverCallResultToParent: persist parent status: %w", err)
+			return nil, fmt.Errorf("applyCallResultToParent: persist parent status: %w", err)
 		}
 	}
 	return parentActions, nil
+}
+
+// onDeliverCallResult is the cross-partition apply arm. The DeliverCallResult
+// command landed on the parent's shard via the outbox → Delivery gRPC →
+// Raft pipeline; from here on the logic is identical to the same-shard
+// path. Phase 4.1.
+func (p *Partition) onDeliverCallResult(
+	batch storage.Batch,
+	cmd *enginev1.DeliverCallResult,
+	nowMs uint64,
+	inv tables.InvocationTable,
+	journal tables.JournalTable,
+	isLeader bool,
+) error {
+	actions, err := p.applyCallResultToParent(
+		batch, inv, journal,
+		cmd.GetParentId(), cmd.GetCallIndex(),
+		cmd.GetResult(), cmd.GetFailureMessage(),
+		nowMs,
+	)
+	if err != nil {
+		return err
+	}
+	if isLeader {
+		for _, a := range actions {
+			p.cfg.Collector.Push(a)
+		}
+	}
+	return nil
+}
+
+// onOutboxAck pops the producer-side outbox row referenced by the ack.
+// Same-shard producers receive their ack via the standard
+// arbitrary-dedup pop in the Update loop (because the ack-on-receive
+// path emits an outbox-shaped command); cross-shard producers receive
+// their ack here. Misrouted acks (producer_shard != local) are dropped
+// silently so replays / fan-out cannot corrupt unrelated outboxes.
+func (p *Partition) onOutboxAck(batch storage.Batch, ack *enginev1.OutboxAck) error {
+	if ack.GetProducerShardId() != p.shardID {
+		p.cfg.Log.Warn("partition: OutboxAck for foreign shard; dropping",
+			"ack_producer_shard", ack.GetProducerShardId(),
+			"local_shard", p.shardID,
+			"seq", ack.GetProducerSeq())
+		return nil
+	}
+	outboxT := tables.OutboxTable{S: p.cfg.Snapshotter.Store()}
+	if err := outboxT.Pop(batch, ack.GetProducerSeq()); err != nil {
+		p.cfg.Log.Warn("partition: outbox pop (via ack) failed",
+			"seq", ack.GetProducerSeq(), "err", err)
+	}
+	return nil
 }
 
 // releaseKeyLease is the Phase 3 companion to the VO gate. When a keyed
@@ -775,9 +923,11 @@ func statusTarget(cur *enginev1.InvocationStatus) *enginev1.InvocationTarget {
 // mintCalleeInvocationID derives a deterministic InvocationId for the
 // callee of a JECall, hashing the parent uuid with the JECall journal
 // index. Determinism keeps the result identical across replay on every
-// replica. partition_key is set to the parent's so Phase 2 single-partition
-// deployments route the call to the same shard.
-func mintCalleeInvocationID(parent *enginev1.InvocationId, idx uint32) *enginev1.InvocationId {
+// replica. Phase 4.1: partition_key derives from the target tuple
+// (service, object_key) so cross-partition Call dispatch routes the
+// callee to its owning partition (single-partition deployments still
+// degenerate to the local shard via the Partitioner fallback).
+func mintCalleeInvocationID(parent *enginev1.InvocationId, idx uint32, target *enginev1.InvocationTarget) *enginev1.InvocationId {
 	h := sha256.New()
 	h.Write(parent.GetUuid())
 	var idxBuf [4]byte
@@ -785,7 +935,7 @@ func mintCalleeInvocationID(parent *enginev1.InvocationId, idx uint32) *enginev1
 	h.Write(idxBuf[:])
 	sum := h.Sum(nil)
 	return &enginev1.InvocationId{
-		PartitionKey: parent.GetPartitionKey(),
+		PartitionKey: routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()),
 		Uuid:         append([]byte(nil), sum[:16]...),
 	}
 }

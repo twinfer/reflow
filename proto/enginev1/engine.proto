@@ -99,6 +99,13 @@ message Command {
     // Phase 4.1 metadata-shard commands. Accepted only by shardID=0.
     RegisterNode register_node = 6;
     UpdatePartitionTable update_partition_table = 7;
+    // Phase 4.1 partition-shard cross-shard delivery commands. The
+    // outbox shuffler ferries DeliverCallResult to the parent's shard
+    // and OutboxAck back to the producer's shard; both ride the same
+    // Delivery gRPC + Raft pipeline as Invoke. Accepted only by
+    // shardID >= 1.
+    DeliverCallResult deliver_call_result = 16;
+    OutboxAck outbox_ack = 17;
   }
 }
 

@@ -25,6 +25,19 @@ type IngressProposer interface {
 	ProposeIngress(ctx context.Context, producerID string, seq uint64, cmd *enginev1.Command) error
 }
 
+// CrossShardSender dispatches an outbox envelope to a remote shard's
+// leader via the Delivery gRPC service. Returns ErrNotLeader (from package
+// delivery) when the receiver claims it is not the destination shard's
+// leader; the OutboxService retries on the next Rebuild.
+//
+// Phase 4.1: the durable pop of the producer-side row happens via the
+// reciprocal OutboxAck that flows back over Raft after the receiver
+// applies — the Sender returning nil only means "the receiver accepted
+// responsibility for proposing", not "row is popped".
+type CrossShardSender interface {
+	Send(ctx context.Context, destShardID uint64, producerID string, seq uint64, cmd *enginev1.Command) error
+}
+
 // OutboxService is the leader-only loop that drains the OutboxTable and
 // re-injects each row through the Raft log as a fresh Command. Phase 2
 // single-partition: sender and receiver are the same shard, so the
@@ -43,6 +56,8 @@ type IngressProposer interface {
 type OutboxService struct {
 	table      tables.OutboxTable
 	proposer   IngressProposer
+	sender     CrossShardSender // optional; same-shard-only when nil
+	shardID    uint64
 	producerID string
 	log        *slog.Logger
 
@@ -56,13 +71,18 @@ type OutboxService struct {
 
 // NewOutboxService constructs the shuffler. shardID participates in the
 // producerID so multi-partition deployments don't collide on dedup keys.
-func NewOutboxService(table tables.OutboxTable, proposer IngressProposer, shardID uint64, log *slog.Logger) *OutboxService {
+// sender may be nil for single-node deployments — every envelope's
+// destination_shard_id resolves to the local shard so no cross-shard
+// dispatch ever runs.
+func NewOutboxService(table tables.OutboxTable, proposer IngressProposer, sender CrossShardSender, shardID uint64, log *slog.Logger) *OutboxService {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &OutboxService{
 		table:      table,
 		proposer:   proposer,
+		sender:     sender,
+		shardID:    shardID,
 		producerID: fmt.Sprintf("%sp%d", OutboxProducerPrefix, shardID),
 		log:        log,
 		wake:       make(chan struct{}, 1),
@@ -135,8 +155,24 @@ func (o *OutboxService) Run(ctx context.Context) error {
 					"seq", row.Seq, "envelope", fmt.Sprintf("%T", row.Envelope.GetKind()))
 				continue
 			}
+			destShard := row.Envelope.GetDestinationShardId()
+			sameShard := destShard == 0 || destShard == o.shardID
+
 			propCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			err := o.proposer.ProposeIngress(propCtx, o.producerID, row.Seq, cmd)
+			var err error
+			if sameShard {
+				// Same-shard: re-inject through the local Raft proposer.
+				// The apply-path arbitrary-dedup pop removes the row in
+				// the same Pebble batch the command applies.
+				err = o.proposer.ProposeIngress(propCtx, o.producerID, row.Seq, cmd)
+			} else if o.sender == nil {
+				err = fmt.Errorf("outbox: cross-shard envelope to %d but no Sender configured", destShard)
+			} else {
+				// Cross-shard: ship to the destination shard's leader.
+				// The producer-side row is NOT popped here — wait for an
+				// OutboxAck via Raft (apply emits one on the receiver).
+				err = o.sender.Send(propCtx, destShard, o.producerID, row.Seq, cmd)
+			}
 			cancel()
 			if err == nil {
 				continue
@@ -144,8 +180,8 @@ func (o *OutboxService) Run(ctx context.Context) error {
 			if errors.Is(err, context.Canceled) {
 				return ctx.Err()
 			}
-			o.log.Warn("outbox: propose failed; re-queueing",
-				"seq", row.Seq, "err", err)
+			o.log.Warn("outbox: dispatch failed; re-queueing",
+				"seq", row.Seq, "dest_shard", destShard, "same_shard", sameShard, "err", err)
 			failed = append(failed, row)
 		}
 
@@ -196,6 +232,10 @@ func (o *OutboxService) pendingLen() int {
 
 // outboxEnvelopeToCommand reshapes an OutboxEnvelope into the Command kind
 // the receiver's apply path consumes. Returns nil for unknown variants.
+//
+// Phase 4.1 adds DeliverCallResult and OutboxAck variants. Both are
+// shipped as Command oneof variants of their own — they only land on
+// shards that own a partition state machine, never on shard 0.
 func outboxEnvelopeToCommand(env *enginev1.OutboxEnvelope) *enginev1.Command {
 	switch k := env.GetKind().(type) {
 	case *enginev1.OutboxEnvelope_Invoke:
@@ -215,6 +255,14 @@ func outboxEnvelopeToCommand(env *enginev1.OutboxEnvelope) *enginev1.Command {
 				},
 			}},
 		}
+	case *enginev1.OutboxEnvelope_DeliverCallResult:
+		return &enginev1.Command{
+			Kind: &enginev1.Command_DeliverCallResult{DeliverCallResult: k.DeliverCallResult},
+		}
+	case *enginev1.OutboxEnvelope_OutboxAck:
+		return &enginev1.Command{
+			Kind: &enginev1.Command_OutboxAck{OutboxAck: k.OutboxAck},
+		}
 	default:
 		return nil
 	}
@@ -225,4 +273,19 @@ func outboxEnvelopeToCommand(env *enginev1.OutboxEnvelope) *enginev1.Command {
 // matching OutboxTable row.
 func isOutboxProducer(producerID string) bool {
 	return strings.HasPrefix(producerID, OutboxProducerPrefix)
+}
+
+// parseOutboxProducerShard extracts the sender shard id from an outbox
+// producer id of the form "outbox/p<N>". Returns (0, false) when the
+// producer id is malformed or does not carry the expected prefix.
+func parseOutboxProducerShard(producerID string) (uint64, bool) {
+	if !strings.HasPrefix(producerID, OutboxProducerPrefix+"p") {
+		return 0, false
+	}
+	rest := strings.TrimPrefix(producerID, OutboxProducerPrefix+"p")
+	var n uint64
+	if _, err := fmt.Sscanf(rest, "%d", &n); err != nil {
+		return 0, false
+	}
+	return n, true
 }

@@ -75,7 +75,7 @@ func TestOutbox_FIFOOrdering(t *testing.T) {
 	}
 
 	fp := &fakeIngressProposer{}
-	svc := NewOutboxService(ot, fp, 1, discardLogger())
+	svc := NewOutboxService(ot, fp, nil, 1, discardLogger())
 
 	// Rebuild loads the table into pending.
 	if err := svc.Rebuild(); err != nil {
@@ -114,7 +114,7 @@ func TestOutbox_PushDrainsLiveRows(t *testing.T) {
 	ot := tables.OutboxTable{S: s}
 
 	fp := &fakeIngressProposer{}
-	svc := NewOutboxService(ot, fp, 7, discardLogger())
+	svc := NewOutboxService(ot, fp, nil, 7, discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = svc.Run(ctx) }()
@@ -147,7 +147,7 @@ func TestOutbox_SignalEnvelopeConvertsToInvokerEffect(t *testing.T) {
 	defer s.Close()
 	ot := tables.OutboxTable{S: s}
 	fp := &fakeIngressProposer{}
-	svc := NewOutboxService(ot, fp, 1, discardLogger())
+	svc := NewOutboxService(ot, fp, nil, 1, discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = svc.Run(ctx) }()
@@ -209,7 +209,7 @@ func TestOutbox_IdempotentReinjectionAfterCrash(t *testing.T) {
 	}
 
 	fp := &fakeIngressProposer{}
-	svc := NewOutboxService(ot, fp, 1, discardLogger())
+	svc := NewOutboxService(ot, fp, nil, 1, discardLogger())
 	if err := svc.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestOutbox_PropagateFailureAndRetry(t *testing.T) {
 
 	// Fail the first 2 propose calls; succeed on the third.
 	fp := &fakeIngressProposer{failNext: 2, failWith: errors.New("transient")}
-	svc := NewOutboxService(ot, fp, 1, discardLogger())
+	svc := NewOutboxService(ot, fp, nil, 1, discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = svc.Run(ctx) }()

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/twinfer/reflow/internal/engine"
+	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/pkg/sdk"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -287,7 +288,7 @@ func TestPhase2_OutgoingCallSurvivesRestart(t *testing.T) {
 	// entry index = 1) — see mintCalleeInvocationID in partition.go. We
 	// can poll the Callee's status directly without needing the SDK to
 	// expose it.
-	calleeID := deriveCalleeID(callerID, 1)
+	calleeID := deriveCalleeID(callerID, 1, &enginev1.InvocationTarget{ServiceName: "Callee", HandlerName: "do"})
 	calleeDone := awaitCompleted(t, h2, 1, calleeID, 10*time.Second)
 	if got := string(calleeDone.GetOutput()); got != "from-callee:hello" {
 		t.Errorf("callee post-restart output = %q; want from-callee:hello", got)
@@ -563,7 +564,7 @@ func TestPhase2_5_CallResultSurvivesCalleeCrash(t *testing.T) {
 	// has begun and is suspended on its Sleep. (Callee journal: Input=0,
 	// Sleep=1.) Crashing here lands the host with Callee Suspended-on-
 	// timer, Caller Suspended-on-call-result.
-	calleeID := deriveCalleeID(callerID, 1)
+	calleeID := deriveCalleeID(callerID, 1, &enginev1.InvocationTarget{ServiceName: "B", HandlerName: "do"})
 	if err := waitForJournalEntry(h1, calleeID, 1, 3*time.Second); err != nil {
 		_ = h1.Close()
 		t.Fatalf("callee JESleep not observed: %v", err)
@@ -634,10 +635,11 @@ func bringUpSingleHost(t *testing.T, reg *sdk.Registry) *engine.Host {
 }
 
 // deriveCalleeID mirrors engine.mintCalleeInvocationID: SHA-256 of the
-// parent uuid + 4 big-endian bytes of the call entry index, truncated to
-// 16 bytes. Kept here as a local helper because the engine function is
-// package-private.
-func deriveCalleeID(parent *enginev1.InvocationId, entryIdx uint32) *enginev1.InvocationId {
+// parent uuid + 4 big-endian bytes of the call entry index for the
+// 16-byte uuid; the PartitionKey is derived from the callee's target
+// tuple (service, object_key). Kept here as a local helper because the
+// engine function is package-private.
+func deriveCalleeID(parent *enginev1.InvocationId, entryIdx uint32, target *enginev1.InvocationTarget) *enginev1.InvocationId {
 	h := sha256.New()
 	h.Write(parent.GetUuid())
 	var idxBuf [4]byte
@@ -645,7 +647,7 @@ func deriveCalleeID(parent *enginev1.InvocationId, entryIdx uint32) *enginev1.In
 	h.Write(idxBuf[:])
 	sum := h.Sum(nil)
 	return &enginev1.InvocationId{
-		PartitionKey: parent.GetPartitionKey(),
+		PartitionKey: routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()),
 		Uuid:         sum[:16],
 	}
 }

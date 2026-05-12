@@ -16,6 +16,7 @@ import (
 	"github.com/lni/dragonboat/v4/raftio"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/twinfer/reflow/internal/engine/cluster"
 	"github.com/twinfer/reflow/internal/engine/invoker"
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/tables"
@@ -100,8 +101,9 @@ type Host struct {
 	nh  *dragonboat.NodeHost
 	log *slog.Logger
 
-	mu         sync.RWMutex
-	partitions map[uint64]*PartitionRunner
+	mu              sync.RWMutex
+	partitions      map[uint64]*PartitionRunner
+	metadataRunners map[uint64]*MetadataRunner
 }
 
 // NewHost constructs a Host but does not start any partitions; call
@@ -209,6 +211,132 @@ func findPeer(peers []Peer, nodeID uint64) *Peer {
 // administrative tools (status queries, manual membership changes in later
 // phases). Production code should prefer Host-provided methods.
 func (h *Host) NodeHost() *dragonboat.NodeHost { return h.nh }
+
+// StartMetadataShard opens the metadata-shard store, registers the cluster
+// FSM with dragonboat, and wires the metadata runner. Phase 4.1: callers
+// pass shardID=0. Only valid when HostConfig.Peers is non-empty; single-
+// node deployments have no need for the metadata group.
+func (h *Host) StartMetadataShard() (*MetadataRunner, error) {
+	const shardID uint64 = 0
+	if len(h.cfg.Peers) == 0 {
+		return nil, errors.New("host: StartMetadataShard requires Peers to be populated")
+	}
+	h.mu.Lock()
+	if _, ok := h.metadataRunners[shardID]; ok {
+		h.mu.Unlock()
+		return nil, fmt.Errorf("host: metadata shard %d already started", shardID)
+	}
+	h.mu.Unlock()
+
+	dataDir := filepath.Join(h.cfg.DataDir, "meta", "state")
+	snap, err := NewSnapshotter(dataDir, func(p string) (storage.Store, error) {
+		return storage.OpenPebble(p, nil)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("host: open metadata store: %w", err)
+	}
+
+	// Seed leadership from persisted latest_announced_epoch so a restarted
+	// node bumps past prior leaders' dedup state.
+	var initialEpoch uint64
+	if m, err := (cluster.MetaTable{S: snap.Store()}).Get(); err == nil {
+		initialEpoch = m.GetLatestAnnouncedEpoch()
+	}
+
+	proposer := NewRaftProposer(h.nh, shardID)
+	leadership := NewLeadership(LeadershipConfig{
+		NodeID:       h.cfg.NodeID,
+		Announcer:    proposer,
+		Log:          h.log,
+		InitialEpoch: initialEpoch,
+	})
+
+	runner := &MetadataRunner{
+		ShardID:     shardID,
+		snapshotter: snap,
+		proposer:    proposer,
+		leadership:  leadership,
+		log:         h.log,
+		peers:       append([]Peer(nil), h.cfg.Peers...),
+	}
+	leadership.SetCallbacks(runner.onBecomeLeader, runner.onStepDown)
+
+	fsmCfg := cluster.Config{
+		Snapshotter: snap,
+		Leadership:  leadership,
+		Log:         h.log,
+	}
+	raftCfg := config.Config{
+		ReplicaID:          h.cfg.NodeID,
+		ShardID:            shardID,
+		ElectionRTT:        10,
+		HeartbeatRTT:       1,
+		SnapshotEntries:    10_000,
+		CompactionOverhead: 5_000,
+		CheckQuorum:        true,
+	}
+	h.mu.Lock()
+	if h.metadataRunners == nil {
+		h.metadataRunners = make(map[uint64]*MetadataRunner)
+	}
+	h.metadataRunners[shardID] = runner
+	h.mu.Unlock()
+
+	initial := h.initialMembers()
+	if err := h.nh.StartOnDiskReplica(initial, false, fsmCfg.Factory(), raftCfg); err != nil {
+		h.mu.Lock()
+		delete(h.metadataRunners, shardID)
+		h.mu.Unlock()
+		_ = snap.Close()
+		return nil, fmt.Errorf("host: StartOnDiskReplica (metadata): %w", err)
+	}
+	return runner, nil
+}
+
+// MetadataRunner returns the metadata-shard runner, or nil if shard 0 is
+// not started on this Host.
+func (h *Host) MetadataRunner() *MetadataRunner {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.metadataRunners == nil {
+		return nil
+	}
+	return h.metadataRunners[0]
+}
+
+// PartitionTable performs a linearizable read of the cluster's partition
+// table from shard 0. Returns nil with no error when the table has not yet
+// been written (i.e. shard 0 has not bootstrapped). Phase 4.1.
+func (h *Host) PartitionTable(ctx context.Context) (*enginev1.PartitionTable, error) {
+	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupPartitionTable{})
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return nil, nil
+	}
+	pt, ok := res.(*enginev1.PartitionTable)
+	if !ok {
+		return nil, fmt.Errorf("host: PartitionTable: unexpected lookup type %T", res)
+	}
+	return pt, nil
+}
+
+// AwaitMetadataLeader blocks until shard 0 has a stable leader.
+func (h *Host) AwaitMetadataLeader(ctx context.Context) error {
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if r := h.MetadataRunner(); r != nil && r.IsLeader() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-tick.C:
+		}
+	}
+}
 
 // StartPartition opens the per-partition store, registers the IOnDiskStateMachine
 // with dragonboat, and wires the leader-side runner.
@@ -334,10 +462,15 @@ func (h *Host) Partitions() map[uint64]*PartitionRunner {
 func (h *Host) Close() error {
 	h.mu.Lock()
 	partitions := h.partitions
+	metadataRunners := h.metadataRunners
 	h.partitions = nil
+	h.metadataRunners = nil
 	h.mu.Unlock()
 	for _, p := range partitions {
 		p.onStepDown()
+	}
+	for _, r := range metadataRunners {
+		r.onStepDown()
 	}
 	if h.nh != nil {
 		h.nh.Close()
@@ -462,6 +595,10 @@ func (l *raftEventListener) LeaderUpdated(info raftio.LeaderInfo) {
 		"term", info.Term,
 		"leader_id", info.LeaderID,
 	)
+	if mr := l.host.MetadataRunner(); mr != nil && mr.ShardID == info.ShardID {
+		mr.leadership.OnRaftLeaderChange(info.LeaderID)
+		return
+	}
 	r := l.host.Partition(info.ShardID)
 	if r == nil {
 		l.host.log.Warn("raftEventListener: no runner for shard", "shard", info.ShardID)

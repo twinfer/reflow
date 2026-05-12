@@ -45,17 +45,26 @@ type invocationContext struct {
 	nextIdx     uint32   // next index to allocate (index 0 holds JEInput)
 	suspended   bool     // once true, every ctx call short-circuits to ErrSuspended
 	suspendedOn []string // tokens to surface in InvocationSuspended.awaiting_on
+
+	// stateCache is the eager-preloaded snapshot of this invocation's
+	// (service, object_key) state rows. Populated at session start from
+	// StateTable.ScanObject; updated as the handler journals
+	// SetState/ClearState/ClearAllState. Nil when preload overflowed the
+	// 64 KiB cap — GetState falls back to ErrNotImplementedPhase2 in that
+	// case, matching the existing lazy-path stub. Phase 3.
+	stateCache map[string][]byte
 }
 
 // newInvocationContext constructs an invocationContext for one session
 // run. nextIdx starts at 1 — index 0 is reserved for JEInput, which is
 // not user-allocated.
-func newInvocationContext(s *session, input []byte, journalIndex map[uint32]*enginev1.JournalEntry) *invocationContext {
+func newInvocationContext(s *session, input []byte, journalIndex map[uint32]*enginev1.JournalEntry, stateCache map[string][]byte) *invocationContext {
 	return &invocationContext{
 		s:            s,
 		input:        input,
 		journalIndex: journalIndex,
 		nextIdx:      1,
+		stateCache:   stateCache,
 	}
 }
 
@@ -157,6 +166,20 @@ func (c *invocationContext) Sleep(d time.Duration) error {
 // Run wraps a deterministic side-effect block. Replay returns the
 // journaled outcome; live execution invokes fn once, journals the
 // outcome via JERunProposal, and returns the same value.
+//
+// Phase 3 — fn errors are classified:
+//   - *sdk.Failure (via sdk.NewFailure / errors.As):   terminal; the
+//     failure is journaled as JERun{retryable=false} and surfaced to
+//     the handler on the same call.
+//   - Any other error:                                  retryable; the
+//     engine schedules a backoff timer and re-invokes fn on wake-up.
+//     The handler call suspends and is replayed when the retry fires.
+//
+// Retryable replays: on the next session run, fast-replay finds a
+// JERun{retryable=true, attempt=N} at this slot; rather than returning
+// the stored failure, ctx.Run falls through to live execution with
+// attempt = N+1, journals the new proposal, and either succeeds or
+// keeps retrying.
 func (c *invocationContext) Run(_ string, fn func() ([]byte, error)) ([]byte, error) {
 	if fn == nil {
 		return nil, errors.New("reflow: ctx.Run fn must not be nil")
@@ -165,28 +188,35 @@ func (c *invocationContext) Run(_ string, fn func() ([]byte, error)) ([]byte, er
 	if !ok {
 		return nil, sdk.ErrSuspended
 	}
+
+	var priorAttempt uint32
 	if existing := c.lookupEntry(start); existing != nil {
 		run, isRun := existing.GetEntry().(*enginev1.JournalEntry_Run)
 		if !isRun {
 			return nil, divergenceErr(start, "JERun", existing)
 		}
-		if msg := run.Run.GetFailureMessage(); msg != "" {
-			return nil, sdk.NewFailure(0, msg)
+		if !run.Run.GetRetryable() {
+			// Terminal — replay value or failure.
+			if msg := run.Run.GetFailureMessage(); msg != "" {
+				return nil, sdk.NewFailure(0, msg)
+			}
+			return cloneBytes(run.Run.GetValue()), nil
 		}
-		return cloneBytes(run.Run.GetValue()), nil
+		// Retryable JERun left by a prior failed attempt — re-invoke fn
+		// with the next attempt number.
+		priorAttempt = run.Run.GetAttempt() + 1
 	}
 
-	// Live first execution.
+	// Live execution (first attempt or retry).
 	value, fnErr := fn()
 	var failureMessage string
+	retryable := false
 	if fnErr != nil {
-		// Phase 2 treats any error from fn as terminal failure. Phase 3
-		// will introduce explicit terminal vs. retryable classification
-		// via *sdk.Failure (already used for normal failure plumbing).
 		if f, ok := sdk.AsFailure(fnErr); ok {
 			failureMessage = f.Message
 		} else {
 			failureMessage = fnErr.Error()
+			retryable = true
 		}
 		value = nil
 	}
@@ -198,11 +228,19 @@ func (c *invocationContext) Run(_ string, fn func() ([]byte, error)) ([]byte, er
 				EntryIndex:     start,
 				Value:          value,
 				FailureMessage: failureMessage,
+				Retryable:      retryable,
+				Attempt:        priorAttempt,
 			},
 		},
 	}
 	if err := c.s.proposeEffect(eff); err != nil {
 		return nil, err
+	}
+	if retryable {
+		// Engine schedules the backoff timer; the SDK waits for the
+		// resulting Invoked re-entry, where fast-replay sees the
+		// retryable JERun and falls through to a fresh fn call.
+		return nil, c.suspend(fmt.Sprintf("run-retry:%d", start))
 	}
 	if failureMessage != "" {
 		return nil, sdk.NewFailure(0, failureMessage)
@@ -214,7 +252,8 @@ func (c *invocationContext) Run(_ string, fn func() ([]byte, error)) ([]byte, er
 // arrives as JECallResult at start+1 and is fast-replayed on the next
 // session run. Phase 2 wires the outbox/ingress return path in Steps 8
 // and 13.
-func (c *invocationContext) Call(target sdk.Target, input []byte) ([]byte, error) {
+func (c *invocationContext) Call(target sdk.Target, input []byte, opts ...sdk.CallOption) ([]byte, error) {
+	resolved := sdk.ApplyCallOptions(opts)
 	start, ok := c.allocSlot(2)
 	if !ok {
 		return nil, sdk.ErrSuspended
@@ -237,8 +276,9 @@ func (c *invocationContext) Call(target sdk.Target, input []byte) ([]byte, error
 		Index: start,
 		Entry: &enginev1.JournalEntry_Call{
 			Call: &enginev1.JECall{
-				Target: targetToProto(target),
-				Input:  input,
+				Target:         targetToProto(target),
+				Input:          input,
+				IdempotencyKey: resolved.IdempotencyKey,
 			},
 		},
 	}
@@ -256,12 +296,21 @@ func (c *invocationContext) OneWayCall(_ sdk.Target, _ []byte) error {
 	return errNotImplementedPhase2
 }
 
-// GetState is deferred: implementing it cleanly requires the FSM's
-// command+notification pattern (apply reads the state and appends a
-// follow-up JEGetState carrying the value/present bits). Wired in a
-// subsequent step.
-func (c *invocationContext) GetState(_ string) ([]byte, bool, error) {
-	return nil, false, errNotImplementedPhase2
+// GetState is served from the eager-preloaded stateCache populated at
+// session start (Phase 3). When the cache is nil — set when the eager
+// preload exceeded the 64 KiB cap — GetState reports an unavailable
+// state cache via errNotImplementedPhase2 so the handler can surface a
+// distinct failure. Lazy command+notification fallback is a future
+// extension.
+func (c *invocationContext) GetState(key string) ([]byte, bool, error) {
+	if c.stateCache == nil {
+		return nil, false, errNotImplementedPhase2
+	}
+	v, present := c.stateCache[key]
+	if !present {
+		return nil, false, nil
+	}
+	return cloneBytes(v), true, nil
 }
 
 // SetState writes durable state for key. Single-entry op: the FSM stores
@@ -283,7 +332,17 @@ func (c *invocationContext) SetState(key string, value []byte) error {
 			SetState: &enginev1.JESetState{Key: key, Value: value},
 		},
 	}
-	return c.s.proposeJournal(entry)
+	if err := c.s.proposeJournal(entry); err != nil {
+		return err
+	}
+	// Keep the eager-preloaded cache coherent with the just-journaled
+	// write so subsequent GetState calls in this same run see it.
+	if c.stateCache != nil {
+		c.mu.Lock()
+		c.stateCache[key] = append([]byte(nil), value...)
+		c.mu.Unlock()
+	}
+	return nil
 }
 
 // ClearState removes durable state for key. Same shape as SetState.
@@ -304,7 +363,49 @@ func (c *invocationContext) ClearState(key string) error {
 			ClearState: &enginev1.JEClearState{Key: key},
 		},
 	}
-	return c.s.proposeJournal(entry)
+	if err := c.s.proposeJournal(entry); err != nil {
+		return err
+	}
+	if c.stateCache != nil {
+		c.mu.Lock()
+		delete(c.stateCache, key)
+		c.mu.Unlock()
+	}
+	return nil
+}
+
+// ClearAllState wipes every state row scoped to the invocation's
+// (service, object_key). Journaled as a single JEClearAllState entry; the
+// apply arm executes a Pebble DeleteRange over the object's state prefix.
+// Phase 3.
+func (c *invocationContext) ClearAllState() error {
+	start, ok := c.allocSlot(1)
+	if !ok {
+		return sdk.ErrSuspended
+	}
+	if existing := c.lookupEntry(start); existing != nil {
+		if _, isCAS := existing.GetEntry().(*enginev1.JournalEntry_ClearAllState); !isCAS {
+			return divergenceErr(start, "JEClearAllState", existing)
+		}
+		return nil
+	}
+	entry := &enginev1.JournalEntry{
+		Index: start,
+		Entry: &enginev1.JournalEntry_ClearAllState{
+			ClearAllState: &enginev1.JEClearAllState{},
+		},
+	}
+	if err := c.s.proposeJournal(entry); err != nil {
+		return err
+	}
+	if c.stateCache != nil {
+		c.mu.Lock()
+		for k := range c.stateCache {
+			delete(c.stateCache, k)
+		}
+		c.mu.Unlock()
+	}
+	return nil
 }
 
 // Awakeable mints a new awakeable id, journals JEAwakeable at the

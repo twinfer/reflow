@@ -41,6 +41,7 @@ func newSessionFixture(t *testing.T, handler sdk.Handler) *sessionFixture {
 		fp,
 		NewJournalReader(tables.JournalTable{S: s}),
 		tables.InvocationTable{S: s},
+		tables.StateTable{S: s},
 		transport,
 		discardLogger(),
 	)
@@ -353,6 +354,7 @@ func newCtxFixture(t *testing.T, journalEntries ...*enginev1.JournalEntry) *ctxF
 		fp,
 		NewJournalReader(tables.JournalTable{S: store}),
 		tables.InvocationTable{S: store},
+		tables.StateTable{S: store},
 		transport,
 		discardLogger(),
 	)
@@ -361,7 +363,7 @@ func newCtxFixture(t *testing.T, journalEntries ...*enginev1.JournalEntry) *ctxF
 		idx[e.GetIndex()] = e
 	}
 	return &ctxFixture{
-		ictx: newInvocationContext(sess, nil, idx),
+		ictx: newInvocationContext(sess, nil, idx, nil),
 		fp:   fp,
 		s:    sess,
 	}
@@ -794,10 +796,11 @@ func TestContext_InputAndIDExposed(t *testing.T) {
 		fp,
 		NewJournalReader(tables.JournalTable{S: store}),
 		tables.InvocationTable{S: store},
+		tables.StateTable{S: store},
 		transport,
 		discardLogger(),
 	)
-	ictx := newInvocationContext(sess, []byte("payload"), nil)
+	ictx := newInvocationContext(sess, []byte("payload"), nil, nil)
 
 	if string(ictx.Input()) != "payload" {
 		t.Errorf("Input = %q; want payload", ictx.Input())
@@ -847,6 +850,7 @@ func TestSession_SleepResumeAfterTimerFires(t *testing.T) {
 		fp2,
 		NewJournalReader(tables.JournalTable{S: f.store}),
 		tables.InvocationTable{S: f.store},
+		tables.StateTable{S: f.store},
 		transport,
 		discardLogger(),
 	)
@@ -869,5 +873,126 @@ func TestSession_SleepResumeAfterTimerFires(t *testing.T) {
 	}
 	if string(completed.GetOutput()) != "woke" {
 		t.Errorf("output = %q; want woke", completed.GetOutput())
+	}
+}
+
+// TestSession_PreloadState_HydratesCache exercises the Phase 3 eager-state
+// path: rows present in StateTable for the invocation's (service,
+// object_key) are reflected in GetState via the in-memory cache, without
+// any apply round-trip.
+func TestSession_PreloadState_HydratesCache(t *testing.T) {
+	s := storage.NewMemStore()
+	defer s.Close()
+	target := &enginev1.InvocationTarget{ServiceName: "Counter", HandlerName: "incr", ObjectKey: "user-1"}
+
+	// Seed StateTable with three rows.
+	st := tables.StateTable{S: s}
+	b := s.NewBatch()
+	for _, kv := range [][2]string{{"a", "1"}, {"b", "two"}, {"c", "three!"}} {
+		if err := st.Set(b, target, kv[0], []byte(kv[1])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := b.Commit(true); err != nil {
+		t.Fatal(err)
+	}
+	b.Close()
+
+	sess := &session{
+		id:         newID(1, "preload-inv"),
+		target:     target,
+		stateTable: st,
+		log:        discardLogger(),
+	}
+	cache := sess.preloadState()
+	if cache == nil {
+		t.Fatalf("preloadState returned nil; want hydrated cache")
+	}
+	if string(cache["a"]) != "1" || string(cache["b"]) != "two" || string(cache["c"]) != "three!" {
+		t.Errorf("cache mismatch: %+v", cache)
+	}
+
+	ictx := newInvocationContext(sess, nil, map[uint32]*enginev1.JournalEntry{}, cache)
+	val, present, err := ictx.GetState("b")
+	if err != nil {
+		t.Fatalf("GetState err = %v", err)
+	}
+	if !present || string(val) != "two" {
+		t.Errorf("GetState(b): %q present=%v; want two/true", val, present)
+	}
+	val, present, err = ictx.GetState("absent")
+	if err != nil || present {
+		t.Errorf("GetState(absent): %q present=%v err=%v; want nil/false/nil", val, present, err)
+	}
+}
+
+// TestSession_PreloadState_OverflowReturnsNil verifies the 64 KiB cap.
+func TestSession_PreloadState_OverflowReturnsNil(t *testing.T) {
+	s := storage.NewMemStore()
+	defer s.Close()
+	target := &enginev1.InvocationTarget{ServiceName: "Big", HandlerName: "h", ObjectKey: "obj"}
+	st := tables.StateTable{S: s}
+
+	// One row whose value alone exceeds the cap.
+	big := make([]byte, 64*1024+1)
+	b := s.NewBatch()
+	if err := st.Set(b, target, "huge", big); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Commit(true); err != nil {
+		t.Fatal(err)
+	}
+	b.Close()
+
+	sess := &session{
+		id:         newID(1, "big-inv"),
+		target:     target,
+		stateTable: st,
+		log:        discardLogger(),
+	}
+	if cache := sess.preloadState(); cache != nil {
+		t.Errorf("expected nil cache on overflow; got %d entries", len(cache))
+	}
+}
+
+// TestSession_PreloadState_UnkeyedReturnsNil — unkeyed services have no
+// per-object state contract, so preload short-circuits to nil and the
+// existing not-implemented GetState path remains.
+func TestSession_PreloadState_UnkeyedReturnsNil(t *testing.T) {
+	s := storage.NewMemStore()
+	defer s.Close()
+	sess := &session{
+		id:         newID(1, "unkeyed"),
+		target:     &enginev1.InvocationTarget{ServiceName: "Echo", HandlerName: "h"},
+		stateTable: tables.StateTable{S: s},
+		log:        discardLogger(),
+	}
+	if cache := sess.preloadState(); cache != nil {
+		t.Errorf("unkeyed target should have nil cache; got %+v", cache)
+	}
+}
+
+// TestContext_SetStateUpdatesCache verifies cache stays coherent with
+// in-handler SetState calls.
+func TestContext_SetStateUpdatesCache(t *testing.T) {
+	cf := newCtxFixture(t)
+	cf.ictx.stateCache = map[string][]byte{"existing": []byte("v0")}
+	if err := cf.ictx.SetState("k1", []byte("v1")); err != nil {
+		t.Fatal(err)
+	}
+	if got := cf.ictx.stateCache["k1"]; string(got) != "v1" {
+		t.Errorf("cache[k1] = %q; want v1", got)
+	}
+	if err := cf.ictx.ClearState("existing"); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := cf.ictx.stateCache["existing"]; present {
+		t.Errorf("cache[existing] still present after ClearState")
+	}
+	if err := cf.ictx.ClearAllState(); err != nil {
+		t.Fatal(err)
+	}
+	if len(cf.ictx.stateCache) != 0 {
+		t.Errorf("cache not empty after ClearAllState: %+v", cf.ictx.stateCache)
 	}
 }

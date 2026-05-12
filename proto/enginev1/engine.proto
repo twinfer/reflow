@@ -144,10 +144,26 @@ message InvokerEffect {
 // JERunProposal carries the outcome of a deterministic side-effect block
 // (ctx.Run) from the SDK back to the engine. The FSM applies it by writing
 // a JERun journal entry at entry_index and acking the SDK. Phase 2.
+//
+// Phase 3 additions:
+//   retryable    — set when the SDK classified fn's error as non-terminal
+//                  (anything other than *sdk.Failure). When true the engine
+//                  may compute a backoff via internal/engine/retry.go and
+//                  reschedule the body. Defaults to false → terminal.
+//   attempt      — zero-based retry count this proposal carries: 0 on the
+//                  first failure, N on the (N+1)th attempt. Echoes from the
+//                  prior JERun.attempt + 1 on re-runs.
+//   retry_policy — caller-supplied policy (echoed from StartInvocation
+//                  on each proposal so the apply arm needs no per-invocation
+//                  status fields). Zero values fall back to defaults
+//                  defined in internal/engine/retry.go.
 message JERunProposal {
   uint32 entry_index = 1;
   bytes value = 2;
   string failure_message = 3;
+  bool retryable = 4;
+  uint32 attempt = 5;
+  RunRetryPolicy retry_policy = 6;
 }
 
 // AwakeableResolved is proposed by the partition that owns the resolving
@@ -230,6 +246,11 @@ message JESleepResult {
 message JECall {
   InvocationTarget target = 1;
   bytes input = 2;
+  // Optional idempotency key — when set, the apply arm stamps it onto the
+  // outgoing OutboxEnvelope.Invoke.InvokeCommand.idempotency_key so the
+  // callee's receiving onInvoke runs Phase 3 idempotency dedup against the
+  // (service, handler, object_key, idempotency_key) tuple. Phase 3.
+  string idempotency_key = 3;
 }
 
 message JECallResult {

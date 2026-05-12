@@ -165,6 +165,7 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		Registry:        invoker.NewRegistry(registry),
 		JournalTable:    tables.JournalTable{S: snap.Store()},
 		InvocationTable: tables.InvocationTable{S: snap.Store()},
+		StateTable:      tables.StateTable{S: snap.Store()},
 		Proposer:        proposer,
 		Log:             h.log,
 	})

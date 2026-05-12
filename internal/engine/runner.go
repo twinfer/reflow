@@ -147,6 +147,7 @@ func (r *PartitionRunner) onBecomeLeader() {
 		r.invoker.Rebind(
 			tables.JournalTable{S: store},
 			tables.InvocationTable{S: store},
+			tables.StateTable{S: store},
 		)
 	}
 

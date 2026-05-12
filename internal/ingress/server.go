@@ -54,10 +54,6 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *ingressv1.SubmitInvo
 		return nil, status.Error(codes.InvalidArgument, "service and handler are required")
 	}
 
-	id, err := mintInvocationID()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "mint invocation id: %v", err)
-	}
 	target := &enginev1.InvocationTarget{
 		ServiceName: req.GetService(),
 		HandlerName: req.GetHandler(),
@@ -70,10 +66,41 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *ingressv1.SubmitInvo
 		return nil, status.Errorf(codes.FailedPrecondition, "no partition for shard %d", shardID)
 	}
 
+	// Phase 3 — optimistic idempotency lookup. If a prior submission with
+	// the same (service, handler, object_key, idempotency_key) tuple has
+	// already been accepted, surface its InvocationId directly without
+	// minting a new one or proposing again. A losing race (two ingress
+	// callers miss the lookup, both propose) is handled authoritatively
+	// in the apply path's onInvoke: the second InvokeCommand is dropped.
+	if ik := req.GetIdempotencyKey(); ik != "" {
+		res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupIdempotency{
+			Service:        target.GetServiceName(),
+			Handler:        target.GetHandlerName(),
+			ObjectKey:      target.GetObjectKey(),
+			IdempotencyKey: ik,
+		})
+		if err == nil {
+			if prior, ok := res.(*enginev1.InvocationId); ok && prior != nil {
+				return &ingressv1.SubmitInvocationResponse{
+					InvocationId:    prior,
+					InvocationIdStr: FormatInvocationID(prior),
+				}, nil
+			}
+		}
+		// SyncRead errors fall through to propose; the apply-path dedup
+		// is authoritative and idempotent on retries.
+	}
+
+	id, err := mintInvocationID()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "mint invocation id: %v", err)
+	}
+
 	cmd := &enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-		InvocationId: id,
-		Target:       target,
-		Input:        req.GetInput(),
+		InvocationId:   id,
+		Target:         target,
+		Input:          req.GetInput(),
+		IdempotencyKey: req.GetIdempotencyKey(),
 	}}}
 	producerID := "http/" + FormatInvocationID(id)
 	if err := runner.Proposer().ProposeIngress(ctx, producerID, 1, cmd); err != nil {

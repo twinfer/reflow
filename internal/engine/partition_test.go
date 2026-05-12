@@ -200,6 +200,359 @@ func TestPartition_DedupRejectsDuplicate(t *testing.T) {
 	}
 }
 
+func TestPartition_IdempotencyKey_FirstInvokeWinsSecondDropped(t *testing.T) {
+	p, _, col := newTestPartition(t)
+
+	target := &enginev1.InvocationTarget{ServiceName: "Counter", HandlerName: "incr", ObjectKey: ""}
+	idA := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("aaaaaaaaaaaaaaaa")}
+	idB := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("bbbbbbbbbbbbbbbb")}
+
+	mkInvoke := func(id *enginev1.InvocationId) []byte {
+		return envelope(t, &enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
+			InvocationId:   id,
+			Target:         target,
+			Input:          []byte("in"),
+			IdempotencyKey: "req-1",
+		}}})
+	}
+
+	// First Invoke wins: status registered, ActInvoke emitted.
+	if _, err := p.Update([]statemachine.Entry{{Index: 1, Cmd: mkInvoke(idA)}}); err != nil {
+		t.Fatal(err)
+	}
+	acts := col.Drain()
+	if len(acts) != 1 {
+		t.Fatalf("first invoke: got %d actions, want 1", len(acts))
+	}
+	if a, ok := acts[0].(ActInvoke); !ok || !bytes.Equal(a.ID.GetUuid(), idA.GetUuid()) {
+		t.Errorf("first action: %+v want ActInvoke for idA", acts[0])
+	}
+
+	// Second Invoke with same idempotency_key but new id: dropped, no action,
+	// and idB never appears in InvocationTable.
+	if _, err := p.Update([]statemachine.Entry{{Index: 2, Cmd: mkInvoke(idB)}}); err != nil {
+		t.Fatal(err)
+	}
+	if n := col.Len(); n != 0 {
+		t.Errorf("second invoke: got %d actions, want 0", n)
+	}
+	got, err := p.Lookup(LookupInvocation{ID: idB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := got.(*enginev1.InvocationStatus)
+	if _, free := st.GetStatus().(*enginev1.InvocationStatus_Free); !free && st.GetStatus() != nil {
+		t.Errorf("idB status = %T; want Free/absent", st.GetStatus())
+	}
+
+	// LookupIdempotency returns idA.
+	res, err := p.Lookup(LookupIdempotency{Service: "Counter", Handler: "incr", IdempotencyKey: "req-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior, ok := res.(*enginev1.InvocationId)
+	if !ok || prior == nil {
+		t.Fatalf("LookupIdempotency: %v %T", res, res)
+	}
+	if !bytes.Equal(prior.GetUuid(), idA.GetUuid()) {
+		t.Errorf("LookupIdempotency uuid = %x; want %x", prior.GetUuid(), idA.GetUuid())
+	}
+
+	// LookupIdempotency for an absent key returns a typed-nil *InvocationId.
+	res2, err := p.Lookup(LookupIdempotency{Service: "Counter", Handler: "incr", IdempotencyKey: "req-999"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id, _ := res2.(*enginev1.InvocationId); id != nil {
+		t.Errorf("absent key returned %+v; want nil", id)
+	}
+}
+
+func TestPartition_ClearAllState_WipesAllRowsForObject(t *testing.T) {
+	p, _, col := newTestPartition(t)
+
+	id := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("0123456789abcdef")}
+	target := &enginev1.InvocationTarget{ServiceName: "Counter", HandlerName: "incr", ObjectKey: "user-1"}
+	otherTarget := &enginev1.InvocationTarget{ServiceName: "Counter", HandlerName: "incr", ObjectKey: "user-2"}
+
+	// Seed StateTable with rows on two objects so we can confirm only the
+	// invocation's own object is wiped.
+	store := p.cfg.Snapshotter.Store()
+	st := tables.StateTable{S: store}
+	b := store.NewBatch()
+	for _, k := range []string{"a", "b", "c"} {
+		if err := st.Set(b, target, k, []byte(k+"-val")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.Set(b, otherTarget, "z", []byte("z-val")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Commit(true); err != nil {
+		t.Fatal(err)
+	}
+	b.Close()
+
+	// Move the invocation to Invoked so JEClearAllState's status-target
+	// extraction succeeds.
+	invCmd := envelope(t, &enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
+		InvocationId: id, Target: target, Input: []byte("in"),
+	}}})
+	if _, err := p.Update([]statemachine.Entry{{Index: 1, Cmd: invCmd}}); err != nil {
+		t.Fatal(err)
+	}
+	col.Drain()
+	jApp := envelope(t, &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+		InvocationId: id,
+		Kind: &enginev1.InvokerEffect_JournalAppended{JournalAppended: &enginev1.JournalEntryAppended{
+			Entry: &enginev1.JournalEntry{
+				Index: 0,
+				Entry: &enginev1.JournalEntry_Input{Input: &enginev1.JEInput{Value: []byte("in")}},
+			},
+		}},
+	}}})
+	if _, err := p.Update([]statemachine.Entry{{Index: 2, Cmd: jApp}}); err != nil {
+		t.Fatal(err)
+	}
+	col.Drain()
+
+	// Fire JEClearAllState at journal index 1.
+	clearAll := envelope(t, &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+		InvocationId: id,
+		Kind: &enginev1.InvokerEffect_JournalAppended{JournalAppended: &enginev1.JournalEntryAppended{
+			Entry: &enginev1.JournalEntry{
+				Index: 1,
+				Entry: &enginev1.JournalEntry_ClearAllState{ClearAllState: &enginev1.JEClearAllState{}},
+			},
+		}},
+	}}})
+	if _, err := p.Update([]statemachine.Entry{{Index: 3, Cmd: clearAll}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// All rows on the invocation's object are gone.
+	for _, k := range []string{"a", "b", "c"} {
+		_, present, err := st.Get(target, k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if present {
+			t.Errorf("state[%s] still present after ClearAllState", k)
+		}
+	}
+	// Rows on a different object_key are untouched.
+	v, present, err := st.Get(otherTarget, "z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !present {
+		t.Errorf("user-2/z was wiped by ClearAllState on user-1")
+	}
+	if !bytes.Equal(v, []byte("z-val")) {
+		t.Errorf("user-2/z value drift: %q", v)
+	}
+}
+
+func TestPartition_RunProposal_TerminalWritesJERun(t *testing.T) {
+	p, _, col := newTestPartition(t)
+
+	id := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("0123456789abcdef")}
+	target := &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"}
+
+	// Drive to Invoked first.
+	if _, err := p.Update([]statemachine.Entry{{Index: 1, Cmd: envelope(t, &enginev1.Command{
+		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{InvocationId: id, Target: target, Input: []byte("in")}},
+	})}}); err != nil {
+		t.Fatal(err)
+	}
+	col.Drain()
+	if _, err := p.Update([]statemachine.Entry{{Index: 2, Cmd: envelope(t, &enginev1.Command{
+		Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+			InvocationId: id,
+			Kind: &enginev1.InvokerEffect_JournalAppended{JournalAppended: &enginev1.JournalEntryAppended{
+				Entry: &enginev1.JournalEntry{
+					Index: 0,
+					Entry: &enginev1.JournalEntry_Input{Input: &enginev1.JEInput{Value: []byte("in")}},
+				},
+			}},
+		}},
+	})}}); err != nil {
+		t.Fatal(err)
+	}
+	col.Drain()
+
+	// Terminal Run proposal — retryable=false.
+	terminal := envelope(t, &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+		InvocationId: id,
+		Kind: &enginev1.InvokerEffect_RunProposal{RunProposal: &enginev1.JERunProposal{
+			EntryIndex: 1, Value: []byte("ok"), Retryable: false, Attempt: 0,
+		}},
+	}}})
+	if _, err := p.Update([]statemachine.Entry{{Index: 3, Cmd: terminal}}); err != nil {
+		t.Fatal(err)
+	}
+	// No timer scheduled for terminal proposal.
+	for _, a := range col.Drain() {
+		if _, isTimer := a.(ActRegisterTimer); isTimer {
+			t.Errorf("terminal proposal must not schedule a timer; got %T", a)
+		}
+	}
+
+	// Journal entry at index 1 has retryable=false + value=ok.
+	journal := tables.JournalTable{S: p.cfg.Snapshotter.Store()}
+	got, err := journal.Read(id, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, ok := got.GetEntry().(*enginev1.JournalEntry_Run)
+	if !ok {
+		t.Fatalf("entry at idx 1 is %T; want JERun", got.GetEntry())
+	}
+	if run.Run.GetRetryable() {
+		t.Errorf("retryable=true for terminal proposal")
+	}
+	if !bytes.Equal(run.Run.GetValue(), []byte("ok")) {
+		t.Errorf("value mismatch: %q", run.Run.GetValue())
+	}
+}
+
+func TestPartition_RunProposal_RetryableSchedulesTimer(t *testing.T) {
+	p, _, col := newTestPartition(t)
+
+	id := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("aaaaaaaaaaaaaaaa")}
+	target := &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"}
+
+	if _, err := p.Update([]statemachine.Entry{{Index: 1, Cmd: envelope(t, &enginev1.Command{
+		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{InvocationId: id, Target: target}},
+	})}}); err != nil {
+		t.Fatal(err)
+	}
+	col.Drain()
+	if _, err := p.Update([]statemachine.Entry{{Index: 2, Cmd: envelope(t, &enginev1.Command{
+		Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+			InvocationId: id,
+			Kind: &enginev1.InvokerEffect_JournalAppended{JournalAppended: &enginev1.JournalEntryAppended{
+				Entry: &enginev1.JournalEntry{
+					Index: 0,
+					Entry: &enginev1.JournalEntry_Input{Input: &enginev1.JEInput{Value: []byte("in")}},
+				},
+			}},
+		}},
+	})}}); err != nil {
+		t.Fatal(err)
+	}
+	col.Drain()
+
+	// Retryable proposal — apply must (a) write JERun{retryable=true},
+	// (b) insert a timer, (c) push ActRegisterTimer.
+	retryable := envelope(t, &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+		InvocationId: id,
+		Kind: &enginev1.InvokerEffect_RunProposal{RunProposal: &enginev1.JERunProposal{
+			EntryIndex:     1,
+			FailureMessage: "transient",
+			Retryable:      true,
+			Attempt:        0,
+		}},
+	}}})
+	if _, err := p.Update([]statemachine.Entry{{Index: 3, Cmd: retryable}}); err != nil {
+		t.Fatal(err)
+	}
+	acts := col.Drain()
+	var timerAct *ActRegisterTimer
+	for i := range acts {
+		if rt, ok := acts[i].(ActRegisterTimer); ok {
+			timerAct = &rt
+		}
+	}
+	if timerAct == nil {
+		t.Fatalf("retryable proposal must emit ActRegisterTimer; got %v", acts)
+	}
+	if timerAct.SleepIdx != 1 {
+		t.Errorf("timer sleep_idx = %d; want 1 (JERun journal index)", timerAct.SleepIdx)
+	}
+
+	// Journal entry is JERun{retryable=true}.
+	journal := tables.JournalTable{S: p.cfg.Snapshotter.Store()}
+	got, err := journal.Read(id, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, ok := got.GetEntry().(*enginev1.JournalEntry_Run)
+	if !ok {
+		t.Fatalf("entry at idx 1 is %T; want JERun", got.GetEntry())
+	}
+	if !run.Run.GetRetryable() {
+		t.Errorf("retryable=false; want true")
+	}
+	if run.Run.GetFailureMessage() != "transient" {
+		t.Errorf("failure_message = %q", run.Run.GetFailureMessage())
+	}
+}
+
+func TestPartition_RunProposal_ExhaustedPolicyDemotesToTerminal(t *testing.T) {
+	p, _, col := newTestPartition(t)
+
+	id := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("bbbbbbbbbbbbbbbb")}
+	target := &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"}
+
+	if _, err := p.Update([]statemachine.Entry{{Index: 1, Cmd: envelope(t, &enginev1.Command{
+		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{InvocationId: id, Target: target}},
+	})}}); err != nil {
+		t.Fatal(err)
+	}
+	col.Drain()
+	if _, err := p.Update([]statemachine.Entry{{Index: 2, Cmd: envelope(t, &enginev1.Command{
+		Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+			InvocationId: id,
+			Kind: &enginev1.InvokerEffect_JournalAppended{JournalAppended: &enginev1.JournalEntryAppended{
+				Entry: &enginev1.JournalEntry{
+					Index: 0,
+					Entry: &enginev1.JournalEntry_Input{Input: &enginev1.JEInput{Value: []byte("in")}},
+				},
+			}},
+		}},
+	})}}); err != nil {
+		t.Fatal(err)
+	}
+	col.Drain()
+
+	// max_attempts=2; this is attempt=2 → exhausted → demoted to terminal.
+	proposal := envelope(t, &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+		InvocationId: id,
+		Kind: &enginev1.InvokerEffect_RunProposal{RunProposal: &enginev1.JERunProposal{
+			EntryIndex:     1,
+			FailureMessage: "boom",
+			Retryable:      true,
+			Attempt:        2,
+			RetryPolicy:    &enginev1.RunRetryPolicy{MaxAttempts: 2},
+		}},
+	}}})
+	if _, err := p.Update([]statemachine.Entry{{Index: 3, Cmd: proposal}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range col.Drain() {
+		if _, isTimer := a.(ActRegisterTimer); isTimer {
+			t.Errorf("exhausted policy must not schedule a timer; got %T", a)
+		}
+	}
+
+	journal := tables.JournalTable{S: p.cfg.Snapshotter.Store()}
+	got, err := journal.Read(id, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, ok := got.GetEntry().(*enginev1.JournalEntry_Run)
+	if !ok {
+		t.Fatalf("entry at idx 1 is %T; want JERun", got.GetEntry())
+	}
+	if run.Run.GetRetryable() {
+		t.Errorf("exhausted policy must demote to retryable=false; got true")
+	}
+	if run.Run.GetFailureMessage() != "boom" {
+		t.Errorf("failure_message lost on demotion: %q", run.Run.GetFailureMessage())
+	}
+}
+
 func TestPartition_AnnounceLeaderNotifiesObserver(t *testing.T) {
 	p, lead, _ := newTestPartition(t)
 	cmd := envelope(t, &enginev1.Command{

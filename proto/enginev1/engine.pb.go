@@ -1009,11 +1009,28 @@ func (*InvokerEffect_SignalDelivered) isInvokerEffect_Kind() {}
 // JERunProposal carries the outcome of a deterministic side-effect block
 // (ctx.Run) from the SDK back to the engine. The FSM applies it by writing
 // a JERun journal entry at entry_index and acking the SDK. Phase 2.
+//
+// Phase 3 additions:
+//
+//	retryable    — set when the SDK classified fn's error as non-terminal
+//	               (anything other than *sdk.Failure). When true the engine
+//	               may compute a backoff via internal/engine/retry.go and
+//	               reschedule the body. Defaults to false → terminal.
+//	attempt      — zero-based retry count this proposal carries: 0 on the
+//	               first failure, N on the (N+1)th attempt. Echoes from the
+//	               prior JERun.attempt + 1 on re-runs.
+//	retry_policy — caller-supplied policy (echoed from StartInvocation
+//	               on each proposal so the apply arm needs no per-invocation
+//	               status fields). Zero values fall back to defaults
+//	               defined in internal/engine/retry.go.
 type JERunProposal struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	EntryIndex     uint32                 `protobuf:"varint,1,opt,name=entry_index,json=entryIndex,proto3" json:"entry_index,omitempty"`
 	Value          []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
 	FailureMessage string                 `protobuf:"bytes,3,opt,name=failure_message,json=failureMessage,proto3" json:"failure_message,omitempty"`
+	Retryable      bool                   `protobuf:"varint,4,opt,name=retryable,proto3" json:"retryable,omitempty"`
+	Attempt        uint32                 `protobuf:"varint,5,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	RetryPolicy    *RunRetryPolicy        `protobuf:"bytes,6,opt,name=retry_policy,json=retryPolicy,proto3" json:"retry_policy,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -1067,6 +1084,27 @@ func (x *JERunProposal) GetFailureMessage() string {
 		return x.FailureMessage
 	}
 	return ""
+}
+
+func (x *JERunProposal) GetRetryable() bool {
+	if x != nil {
+		return x.Retryable
+	}
+	return false
+}
+
+func (x *JERunProposal) GetAttempt() uint32 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
+}
+
+func (x *JERunProposal) GetRetryPolicy() *RunRetryPolicy {
+	if x != nil {
+		return x.RetryPolicy
+	}
+	return nil
 }
 
 // AwakeableResolved is proposed by the partition that owns the resolving
@@ -1780,11 +1818,16 @@ func (x *JESleepResult) GetSleepIndex() uint32 {
 }
 
 type JECall struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Target        *InvocationTarget      `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
-	Input         []byte                 `protobuf:"bytes,2,opt,name=input,proto3" json:"input,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Target *InvocationTarget      `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
+	Input  []byte                 `protobuf:"bytes,2,opt,name=input,proto3" json:"input,omitempty"`
+	// Optional idempotency key — when set, the apply arm stamps it onto the
+	// outgoing OutboxEnvelope.Invoke.InvokeCommand.idempotency_key so the
+	// callee's receiving onInvoke runs Phase 3 idempotency dedup against the
+	// (service, handler, object_key, idempotency_key) tuple. Phase 3.
+	IdempotencyKey string `protobuf:"bytes,3,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *JECall) Reset() {
@@ -1829,6 +1872,13 @@ func (x *JECall) GetInput() []byte {
 		return x.Input
 	}
 	return nil
+}
+
+func (x *JECall) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
 }
 
 type JECallResult struct {
@@ -3623,12 +3673,15 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\frun_proposal\x18\x05 \x01(\v2\x1f.reflow.engine.v1.JERunProposalH\x00R\vrunProposal\x12T\n" +
 	"\x12awakeable_resolved\x18\x06 \x01(\v2#.reflow.engine.v1.AwakeableResolvedH\x00R\x11awakeableResolved\x12N\n" +
 	"\x10signal_delivered\x18\a \x01(\v2!.reflow.engine.v1.SignalDeliveredH\x00R\x0fsignalDeliveredB\x06\n" +
-	"\x04kind\"o\n" +
+	"\x04kind\"\xec\x01\n" +
 	"\rJERunProposal\x12\x1f\n" +
 	"\ventry_index\x18\x01 \x01(\rR\n" +
 	"entryIndex\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\x12'\n" +
-	"\x0ffailure_message\x18\x03 \x01(\tR\x0efailureMessage\"u\n" +
+	"\x0ffailure_message\x18\x03 \x01(\tR\x0efailureMessage\x12\x1c\n" +
+	"\tretryable\x18\x04 \x01(\bR\tretryable\x12\x18\n" +
+	"\aattempt\x18\x05 \x01(\rR\aattempt\x12C\n" +
+	"\fretry_policy\x18\x06 \x01(\v2 .reflow.engine.v1.RunRetryPolicyR\vretryPolicy\"u\n" +
 	"\x11AwakeableResolved\x12!\n" +
 	"\fawakeable_id\x18\x01 \x01(\tR\vawakeableId\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\x12'\n" +
@@ -3674,10 +3727,11 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"fire_at_ms\x18\x01 \x01(\x04R\bfireAtMs\"0\n" +
 	"\rJESleepResult\x12\x1f\n" +
 	"\vsleep_index\x18\x01 \x01(\rR\n" +
-	"sleepIndex\"Z\n" +
+	"sleepIndex\"\x83\x01\n" +
 	"\x06JECall\x12:\n" +
 	"\x06target\x18\x01 \x01(\v2\".reflow.engine.v1.InvocationTargetR\x06target\x12\x14\n" +
-	"\x05input\x18\x02 \x01(\fR\x05input\"n\n" +
+	"\x05input\x18\x02 \x01(\fR\x05input\x12'\n" +
+	"\x0fidempotency_key\x18\x03 \x01(\tR\x0eidempotencyKey\"n\n" +
 	"\fJECallResult\x12\x1d\n" +
 	"\n" +
 	"call_index\x18\x01 \x01(\rR\tcallIndex\x12\x16\n" +
@@ -3892,50 +3946,51 @@ var file_enginev1_engine_proto_depIdxs = []int32{
 	13, // 18: reflow.engine.v1.InvokerEffect.run_proposal:type_name -> reflow.engine.v1.JERunProposal
 	14, // 19: reflow.engine.v1.InvokerEffect.awakeable_resolved:type_name -> reflow.engine.v1.AwakeableResolved
 	15, // 20: reflow.engine.v1.InvokerEffect.signal_delivered:type_name -> reflow.engine.v1.SignalDelivered
-	19, // 21: reflow.engine.v1.JournalEntryAppended.entry:type_name -> reflow.engine.v1.JournalEntry
-	20, // 22: reflow.engine.v1.JournalEntry.input:type_name -> reflow.engine.v1.JEInput
-	21, // 23: reflow.engine.v1.JournalEntry.sleep:type_name -> reflow.engine.v1.JESleep
-	22, // 24: reflow.engine.v1.JournalEntry.sleep_result:type_name -> reflow.engine.v1.JESleepResult
-	23, // 25: reflow.engine.v1.JournalEntry.call:type_name -> reflow.engine.v1.JECall
-	24, // 26: reflow.engine.v1.JournalEntry.call_result:type_name -> reflow.engine.v1.JECallResult
-	25, // 27: reflow.engine.v1.JournalEntry.get_state:type_name -> reflow.engine.v1.JEGetState
-	26, // 28: reflow.engine.v1.JournalEntry.set_state:type_name -> reflow.engine.v1.JESetState
-	27, // 29: reflow.engine.v1.JournalEntry.output:type_name -> reflow.engine.v1.JEOutput
-	28, // 30: reflow.engine.v1.JournalEntry.run:type_name -> reflow.engine.v1.JERun
-	31, // 31: reflow.engine.v1.JournalEntry.awakeable:type_name -> reflow.engine.v1.JEAwakeable
-	32, // 32: reflow.engine.v1.JournalEntry.awakeable_result:type_name -> reflow.engine.v1.JEAwakeableResult
-	33, // 33: reflow.engine.v1.JournalEntry.signal:type_name -> reflow.engine.v1.JESignal
-	34, // 34: reflow.engine.v1.JournalEntry.clear_state:type_name -> reflow.engine.v1.JEClearState
-	35, // 35: reflow.engine.v1.JournalEntry.get_eager_state:type_name -> reflow.engine.v1.JEGetEagerState
-	30, // 36: reflow.engine.v1.JournalEntry.clear_all_state:type_name -> reflow.engine.v1.JEClearAllState
-	2,  // 37: reflow.engine.v1.JECall.target:type_name -> reflow.engine.v1.InvocationTarget
-	1,  // 38: reflow.engine.v1.JESignal.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
-	1,  // 39: reflow.engine.v1.TimerFired.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	1,  // 40: reflow.engine.v1.PurgeInvocation.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	39, // 41: reflow.engine.v1.InvocationStatus.free:type_name -> reflow.engine.v1.Free
-	40, // 42: reflow.engine.v1.InvocationStatus.scheduled:type_name -> reflow.engine.v1.Scheduled
-	41, // 43: reflow.engine.v1.InvocationStatus.invoked:type_name -> reflow.engine.v1.Invoked
-	42, // 44: reflow.engine.v1.InvocationStatus.suspended:type_name -> reflow.engine.v1.Suspended
-	43, // 45: reflow.engine.v1.InvocationStatus.completed:type_name -> reflow.engine.v1.Completed
-	2,  // 46: reflow.engine.v1.Scheduled.target:type_name -> reflow.engine.v1.InvocationTarget
-	11, // 47: reflow.engine.v1.Scheduled.parent_link:type_name -> reflow.engine.v1.ParentLink
-	2,  // 48: reflow.engine.v1.Invoked.target:type_name -> reflow.engine.v1.InvocationTarget
-	11, // 49: reflow.engine.v1.Invoked.parent_link:type_name -> reflow.engine.v1.ParentLink
-	2,  // 50: reflow.engine.v1.Suspended.target:type_name -> reflow.engine.v1.InvocationTarget
-	11, // 51: reflow.engine.v1.Suspended.parent_link:type_name -> reflow.engine.v1.ParentLink
-	2,  // 52: reflow.engine.v1.Completed.target:type_name -> reflow.engine.v1.InvocationTarget
-	0,  // 53: reflow.engine.v1.KeyLeaseStatus.state:type_name -> reflow.engine.v1.KeyLeaseStatus.State
-	1,  // 54: reflow.engine.v1.KeyLeaseStatus.current_invocation:type_name -> reflow.engine.v1.InvocationId
-	1,  // 55: reflow.engine.v1.KeyLeaseStatus.queue:type_name -> reflow.engine.v1.InvocationId
-	1,  // 56: reflow.engine.v1.AwakeableEntry.owner:type_name -> reflow.engine.v1.InvocationId
-	10, // 57: reflow.engine.v1.OutboxEnvelope.invoke:type_name -> reflow.engine.v1.InvokeCommand
-	49, // 58: reflow.engine.v1.OutboxEnvelope.signal:type_name -> reflow.engine.v1.SignalSend
-	1,  // 59: reflow.engine.v1.SignalSend.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
-	60, // [60:60] is the sub-list for method output_type
-	60, // [60:60] is the sub-list for method input_type
-	60, // [60:60] is the sub-list for extension type_name
-	60, // [60:60] is the sub-list for extension extendee
-	0,  // [0:60] is the sub-list for field type_name
+	29, // 21: reflow.engine.v1.JERunProposal.retry_policy:type_name -> reflow.engine.v1.RunRetryPolicy
+	19, // 22: reflow.engine.v1.JournalEntryAppended.entry:type_name -> reflow.engine.v1.JournalEntry
+	20, // 23: reflow.engine.v1.JournalEntry.input:type_name -> reflow.engine.v1.JEInput
+	21, // 24: reflow.engine.v1.JournalEntry.sleep:type_name -> reflow.engine.v1.JESleep
+	22, // 25: reflow.engine.v1.JournalEntry.sleep_result:type_name -> reflow.engine.v1.JESleepResult
+	23, // 26: reflow.engine.v1.JournalEntry.call:type_name -> reflow.engine.v1.JECall
+	24, // 27: reflow.engine.v1.JournalEntry.call_result:type_name -> reflow.engine.v1.JECallResult
+	25, // 28: reflow.engine.v1.JournalEntry.get_state:type_name -> reflow.engine.v1.JEGetState
+	26, // 29: reflow.engine.v1.JournalEntry.set_state:type_name -> reflow.engine.v1.JESetState
+	27, // 30: reflow.engine.v1.JournalEntry.output:type_name -> reflow.engine.v1.JEOutput
+	28, // 31: reflow.engine.v1.JournalEntry.run:type_name -> reflow.engine.v1.JERun
+	31, // 32: reflow.engine.v1.JournalEntry.awakeable:type_name -> reflow.engine.v1.JEAwakeable
+	32, // 33: reflow.engine.v1.JournalEntry.awakeable_result:type_name -> reflow.engine.v1.JEAwakeableResult
+	33, // 34: reflow.engine.v1.JournalEntry.signal:type_name -> reflow.engine.v1.JESignal
+	34, // 35: reflow.engine.v1.JournalEntry.clear_state:type_name -> reflow.engine.v1.JEClearState
+	35, // 36: reflow.engine.v1.JournalEntry.get_eager_state:type_name -> reflow.engine.v1.JEGetEagerState
+	30, // 37: reflow.engine.v1.JournalEntry.clear_all_state:type_name -> reflow.engine.v1.JEClearAllState
+	2,  // 38: reflow.engine.v1.JECall.target:type_name -> reflow.engine.v1.InvocationTarget
+	1,  // 39: reflow.engine.v1.JESignal.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
+	1,  // 40: reflow.engine.v1.TimerFired.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	1,  // 41: reflow.engine.v1.PurgeInvocation.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	39, // 42: reflow.engine.v1.InvocationStatus.free:type_name -> reflow.engine.v1.Free
+	40, // 43: reflow.engine.v1.InvocationStatus.scheduled:type_name -> reflow.engine.v1.Scheduled
+	41, // 44: reflow.engine.v1.InvocationStatus.invoked:type_name -> reflow.engine.v1.Invoked
+	42, // 45: reflow.engine.v1.InvocationStatus.suspended:type_name -> reflow.engine.v1.Suspended
+	43, // 46: reflow.engine.v1.InvocationStatus.completed:type_name -> reflow.engine.v1.Completed
+	2,  // 47: reflow.engine.v1.Scheduled.target:type_name -> reflow.engine.v1.InvocationTarget
+	11, // 48: reflow.engine.v1.Scheduled.parent_link:type_name -> reflow.engine.v1.ParentLink
+	2,  // 49: reflow.engine.v1.Invoked.target:type_name -> reflow.engine.v1.InvocationTarget
+	11, // 50: reflow.engine.v1.Invoked.parent_link:type_name -> reflow.engine.v1.ParentLink
+	2,  // 51: reflow.engine.v1.Suspended.target:type_name -> reflow.engine.v1.InvocationTarget
+	11, // 52: reflow.engine.v1.Suspended.parent_link:type_name -> reflow.engine.v1.ParentLink
+	2,  // 53: reflow.engine.v1.Completed.target:type_name -> reflow.engine.v1.InvocationTarget
+	0,  // 54: reflow.engine.v1.KeyLeaseStatus.state:type_name -> reflow.engine.v1.KeyLeaseStatus.State
+	1,  // 55: reflow.engine.v1.KeyLeaseStatus.current_invocation:type_name -> reflow.engine.v1.InvocationId
+	1,  // 56: reflow.engine.v1.KeyLeaseStatus.queue:type_name -> reflow.engine.v1.InvocationId
+	1,  // 57: reflow.engine.v1.AwakeableEntry.owner:type_name -> reflow.engine.v1.InvocationId
+	10, // 58: reflow.engine.v1.OutboxEnvelope.invoke:type_name -> reflow.engine.v1.InvokeCommand
+	49, // 59: reflow.engine.v1.OutboxEnvelope.signal:type_name -> reflow.engine.v1.SignalSend
+	1,  // 60: reflow.engine.v1.SignalSend.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
+	61, // [61:61] is the sub-list for method output_type
+	61, // [61:61] is the sub-list for method input_type
+	61, // [61:61] is the sub-list for extension type_name
+	61, // [61:61] is the sub-list for extension extendee
+	0,  // [0:61] is the sub-list for field type_name
 }
 
 func init() { file_enginev1_engine_proto_init() }

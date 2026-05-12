@@ -49,6 +49,24 @@ func (t StateTable) Clear(b storage.Batch, target *enginev1.InvocationTarget, ke
 	return b.Delete(k)
 }
 
+// ClearObject wipes every state row scoped to (service, object_key). Backed
+// by Pebble's DeleteRange over [StatePrefixForObject, upper-bound) so the
+// cost is independent of the number of rows. Phase 3 — invoked from the
+// apply arm when a JEClearAllState journal entry lands.
+func (t StateTable) ClearObject(b storage.Batch, target *enginev1.InvocationTarget) error {
+	prefix := keys.StatePrefixForObject(target.GetServiceName(), target.GetObjectKey())
+	upper := keys.PrefixUpperBound(prefix)
+	if upper == nil {
+		// PrefixUpperBound returns nil only when prefix is all 0xff — never
+		// the case for our "state/" namespace. Defensive: fall back to
+		// point-deletes by scanning.
+		return t.ScanObject(target, func(key string, _ []byte) error {
+			return t.Clear(b, target, key)
+		})
+	}
+	return b.DeleteRange(prefix, upper)
+}
+
 // ScanObject iterates every (key, value) tuple under (service, object_key)
 // in lexicographic key order. Used for eager-state preload and debugging.
 func (t StateTable) ScanObject(target *enginev1.InvocationTarget, fn func(key string, value []byte) error) error {

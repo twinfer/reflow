@@ -60,8 +60,10 @@ type Context interface {
 
 	// Call invokes target with input and blocks for the response. The
 	// callee runs in its own invocation; this Call appears as a single
-	// journal entry on the caller.
-	Call(target Target, input []byte) ([]byte, error)
+	// journal entry on the caller. Optional CallOptions tune the
+	// invocation — currently WithIdempotencyKey (Phase 3) for the
+	// dedup tuple stamped on the outgoing InvokeCommand.
+	Call(target Target, input []byte, opts ...CallOption) ([]byte, error)
 
 	// OneWayCall invokes target with input and returns immediately. No
 	// response is delivered back to this invocation.
@@ -78,6 +80,12 @@ type Context interface {
 	// ClearState removes durable state for key.
 	ClearState(key string) error
 
+	// ClearAllState wipes every state key scoped to the invocation's
+	// virtual object. Equivalent to calling ClearState for each key,
+	// but performed as a single journal entry + Pebble range delete.
+	// Phase 3.
+	ClearAllState() error
+
 	// Awakeable creates an awakeable scoped to this invocation. The
 	// returned id is a 26-byte "awk_<22 base64url>" string the caller
 	// can hand to external systems via SDK output, signals, or any
@@ -89,6 +97,40 @@ type Context interface {
 	// journaled on the sender side; the receiver's engine apply path
 	// delivers it to the running invocation.
 	SendSignal(target Target, signalName string, payload []byte) error
+}
+
+// CallOption tunes a Call. Pass via Context.Call's variadic argument.
+type CallOption func(*CallOptions)
+
+// CallOptions is the resolved bag of per-Call settings. SDK internals
+// build one from the CallOption variadics and forward into the JECall
+// journal entry. Phase 3.
+type CallOptions struct {
+	// IdempotencyKey, when non-empty, is stamped onto the outgoing
+	// InvokeCommand.idempotency_key so the engine's onInvoke dedups
+	// against (service, handler, object_key, idempotency_key).
+	IdempotencyKey string
+}
+
+// WithIdempotencyKey requests Phase 3 idempotency dedup for this Call.
+// The (target.Service, target.Handler, target.ObjectKey, key) tuple
+// keys the dedup; a second Call with the same tuple from any caller
+// reuses the first invocation rather than creating a new one.
+func WithIdempotencyKey(key string) CallOption {
+	return func(o *CallOptions) { o.IdempotencyKey = key }
+}
+
+// ApplyCallOptions resolves a slice of options into a single CallOptions.
+// Exposed so SDK shim code can collapse the variadic list once and pass
+// the resolved struct down.
+func ApplyCallOptions(opts []CallOption) CallOptions {
+	var resolved CallOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&resolved)
+		}
+	}
+	return resolved
 }
 
 // AwakeableFuture is the per-awakeable handle returned by Context.Awakeable.

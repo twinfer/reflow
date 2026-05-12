@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	"github.com/lni/dragonboat/v4/statemachine"
 	"google.golang.org/protobuf/proto"
@@ -254,6 +255,36 @@ func (p *Partition) onInvoke(
 	isLeader bool,
 ) error {
 	id := cmd.GetInvocationId()
+	target := cmd.GetTarget()
+
+	// Phase 3 idempotency dedup. When idempotency_key is set, the first
+	// InvokeCommand that lands wins; later submissions with the same
+	// (service, handler, object_key, idempotency_key) tuple are dropped
+	// silently. The new InvocationId is NOT registered — the caller that
+	// minted it relied on ingress's optimistic LookupIdempotency to
+	// surface the prior id before propose. Late losers polling on the
+	// minted-but-dropped id will time out; cross-node races can be
+	// hardened in a future phase by writing a redirect status row.
+	if ik := cmd.GetIdempotencyKey(); ik != "" {
+		idemT := tables.IdempotencyTable{S: p.cfg.Snapshotter.Store()}
+		prior, ierr := idemT.Get(target.GetServiceName(), target.GetHandlerName(), target.GetObjectKey(), ik)
+		if ierr != nil {
+			return fmt.Errorf("onInvoke: idempotency lookup: %w", ierr)
+		}
+		if prior != nil {
+			p.cfg.Log.Debug("partition: idempotency hit; dropping duplicate invocation",
+				"prior_uuid", fmt.Sprintf("%x", prior.GetUuid()),
+				"new_uuid", fmt.Sprintf("%x", id.GetUuid()),
+				"service", target.GetServiceName(),
+				"handler", target.GetHandlerName(),
+				"object_key", target.GetObjectKey())
+			return nil
+		}
+		if perr := idemT.Put(batch, target.GetServiceName(), target.GetHandlerName(), target.GetObjectKey(), ik, id); perr != nil {
+			return fmt.Errorf("onInvoke: idempotency record: %w", perr)
+		}
+	}
+
 	cur, err := inv.Get(id)
 	if err != nil {
 		return fmt.Errorf("onInvoke: load status: %w", err)
@@ -272,7 +303,6 @@ func (p *Partition) onInvoke(
 		return fmt.Errorf("onInvoke: write status: %w", err)
 	}
 
-	target := cmd.GetTarget()
 	keyed := target.GetObjectKey() != ""
 	// transitionOnInvoke is a no-op for Scheduled/Invoked re-entries; only
 	// fresh Free → Scheduled produces actions. We only need to drive the gate
@@ -367,6 +397,10 @@ func (p *Partition) onInvokerEffect(
 					InvocationId: mintCalleeInvocationID(id, entry.GetIndex()),
 					Target:       e.Call.GetTarget(),
 					Input:        e.Call.GetInput(),
+					// Phase 3: forward the caller-supplied idempotency_key so
+					// the callee's onInvoke runs the dedup against
+					// (service, handler, object_key, idempotency_key).
+					IdempotencyKey: e.Call.GetIdempotencyKey(),
 					// Phase 2.5: stamp parent_link so the callee's Completed
 					// apply arm can journal JECallResult back on the parent.
 					ParentLink: &enginev1.ParentLink{
@@ -382,6 +416,40 @@ func (p *Partition) onInvokerEffect(
 			}
 			if isLeader {
 				p.cfg.Collector.Push(ActDispatchOutbox{Seq: seq, Envelope: env})
+			}
+		case *enginev1.JournalEntry_SetState:
+			// Phase 3 — persist state rows so eager preload on the next
+			// session start can serve GetState without a journal scan.
+			if t := statusTarget(cur); t != nil {
+				if err := (tables.StateTable{S: store}).Set(batch, t, e.SetState.GetKey(), e.SetState.GetValue()); err != nil {
+					return fmt.Errorf("onInvokerEffect: state set: %w", err)
+				}
+			} else {
+				p.cfg.Log.Warn("partition: JESetState on status without target",
+					"status", fmt.Sprintf("%T", cur.GetStatus()))
+			}
+		case *enginev1.JournalEntry_ClearState:
+			if t := statusTarget(cur); t != nil {
+				if err := (tables.StateTable{S: store}).Clear(batch, t, e.ClearState.GetKey()); err != nil {
+					return fmt.Errorf("onInvokerEffect: state clear: %w", err)
+				}
+			} else {
+				p.cfg.Log.Warn("partition: JEClearState on status without target",
+					"status", fmt.Sprintf("%T", cur.GetStatus()))
+			}
+		case *enginev1.JournalEntry_ClearAllState:
+			// Phase 3 — bulk-wipe every state row scoped to the invocation's
+			// (service, object_key). Target is extracted from the active
+			// status (Invoked/Suspended); Completed/Free/Scheduled here
+			// would indicate a divergent SDK and is dropped with a warning
+			// (we still append the journal entry above for replay parity).
+			if t := statusTarget(cur); t != nil {
+				if err := (tables.StateTable{S: store}).ClearObject(batch, t); err != nil {
+					return fmt.Errorf("onInvokerEffect: state clear-all: %w", err)
+				}
+			} else {
+				p.cfg.Log.Warn("partition: JEClearAllState on status without target",
+					"status", fmt.Sprintf("%T", cur.GetStatus()))
 			}
 		case *enginev1.JournalEntry_Signal:
 			env := &enginev1.OutboxEnvelope{
@@ -403,20 +471,67 @@ func (p *Partition) onInvokerEffect(
 		next, actions, err = transitionOnJournalAppend(id, cur, k.JournalAppended, nowMs)
 	case *enginev1.InvokerEffect_RunProposal:
 		// The SDK has produced the outcome of a ctx.Run body; persist it as
-		// a JERun journal entry at the SDK-allocated index. Replay sees the
-		// stored value; the body is never re-executed.
-		runEntry := &enginev1.JournalEntry{
-			Index: k.RunProposal.GetEntryIndex(),
-			Entry: &enginev1.JournalEntry_Run{Run: &enginev1.JERun{
-				Value:          k.RunProposal.GetValue(),
-				FailureMessage: k.RunProposal.GetFailureMessage(),
-			}},
+		// a JERun journal entry at the SDK-allocated index.
+		//
+		// Phase 3: when retryable=true the apply arm computes a backoff via
+		// NextRetryDelay and schedules a retry timer (reusing TimerTable;
+		// onTimerFired peeks the journal at sleep_index to skip the usual
+		// JESleepResult write when the entry is a JERun). If the policy is
+		// exhausted the proposal demotes to terminal — JERun{retryable=false}
+		// — so the SDK's next fast-replay surfaces the failure to the
+		// handler.
+		rp := k.RunProposal
+		idx := rp.GetEntryIndex()
+		writeRun := func(retryable bool) error {
+			return journal.Append(batch, id, &enginev1.JournalEntry{
+				Index: idx,
+				Entry: &enginev1.JournalEntry_Run{Run: &enginev1.JERun{
+					Value:          rp.GetValue(),
+					FailureMessage: rp.GetFailureMessage(),
+					Attempt:        rp.GetAttempt(),
+					Retryable:      retryable,
+				}},
+			})
 		}
-		if err := journal.Append(batch, id, runEntry); err != nil {
-			return fmt.Errorf("onInvokerEffect: journal append (run): %w", err)
+
+		if !rp.GetRetryable() {
+			if err := writeRun(false); err != nil {
+				return fmt.Errorf("onInvokerEffect: journal append (run): %w", err)
+			}
+			next, actions = cur, nil
+			break
 		}
-		// State stays Invoked; no FSM transition needed. The Invoker session
-		// observes the persisted entry on its next poll.
+
+		// retryable=true — try to schedule a retry.
+		delay, okPolicy := NextRetryDelay(rp.GetRetryPolicy(), rp.GetAttempt())
+		if !okPolicy {
+			// Policy exhausted — demote to terminal.
+			if err := writeRun(false); err != nil {
+				return fmt.Errorf("onInvokerEffect: journal append (run exhausted): %w", err)
+			}
+			next, actions = cur, nil
+			break
+		}
+
+		fireAtMs := nowMs + uint64(delay/time.Millisecond)
+		if fireAtMs <= nowMs {
+			fireAtMs = nowMs + 1
+		}
+		if err := writeRun(true); err != nil {
+			return fmt.Errorf("onInvokerEffect: journal append (run retry): %w", err)
+		}
+		if err := timersT.Insert(batch, fireAtMs, id, idx); err != nil {
+			return fmt.Errorf("onInvokerEffect: timer insert (run retry): %w", err)
+		}
+		if isLeader {
+			p.cfg.Collector.Push(ActRegisterTimer{
+				FireAtMs: fireAtMs,
+				ID:       id,
+				SleepIdx: idx,
+			})
+		}
+		// State stays as-is — the upcoming Suspended effect (proposed by
+		// the SDK after this RunProposal) handles the FSM transition.
 		next, actions = cur, nil
 	case *enginev1.InvokerEffect_AwakeableResolved:
 		akID := k.AwakeableResolved.GetAwakeableId()
@@ -640,6 +755,23 @@ func (p *Partition) releaseKeyLease(
 	return leaseActs, nil
 }
 
+// statusTarget extracts the InvocationTarget from a status. Returns nil
+// for Free/Completed (no active target) and for nil/zero statuses. Used
+// by apply arms that need the (service, object_key) tuple of the running
+// invocation, e.g. JEClearAllState. Phase 3.
+func statusTarget(cur *enginev1.InvocationStatus) *enginev1.InvocationTarget {
+	switch s := cur.GetStatus().(type) {
+	case *enginev1.InvocationStatus_Scheduled:
+		return s.Scheduled.GetTarget()
+	case *enginev1.InvocationStatus_Invoked:
+		return s.Invoked.GetTarget()
+	case *enginev1.InvocationStatus_Suspended:
+		return s.Suspended.GetTarget()
+	default:
+		return nil
+	}
+}
+
 // mintCalleeInvocationID derives a deterministic InvocationId for the
 // callee of a JECall, hashing the parent uuid with the JECall journal
 // index. Determinism keeps the result identical across replay on every
@@ -681,6 +813,31 @@ func (p *Partition) onTimerFired(
 	if delErr := timers.Delete(batch, cmd.GetFireAtMs(), id); delErr != nil {
 		return fmt.Errorf("onTimerFired: delete timer: %w", delErr)
 	}
+
+	// Phase 3: distinguish a Sleep timer from a Run-retry timer. Sleep
+	// timers anchor on a JESleep at sleep_index and require a JESleepResult
+	// at sleep_index+1; retry timers anchor on a JERun at sleep_index
+	// (written by the JERunProposal apply arm) and write no follow-up
+	// journal entry — the SDK's fast-replay sees the JERun{retryable=true}
+	// directly and re-invokes fn.
+	journal := tables.JournalTable{S: p.cfg.Snapshotter.Store()}
+	anchor, anchorErr := journal.Read(id, cmd.GetSleepIndex())
+	if anchorErr == nil {
+		if _, isRun := anchor.GetEntry().(*enginev1.JournalEntry_Run); isRun {
+			if next != nil {
+				if err := inv.Put(batch, id, next); err != nil {
+					return fmt.Errorf("onTimerFired: write status: %w", err)
+				}
+			}
+			if isLeader {
+				for _, a := range actions {
+					p.cfg.Collector.Push(a)
+				}
+			}
+			return nil
+		}
+	}
+
 	// Append a SleepResult journal entry so the SDK sees the wake-up.
 	je := &enginev1.JournalEntry{
 		Index: cmd.GetSleepIndex() + 1,
@@ -751,6 +908,19 @@ type LookupAwakeable struct{ ID string }
 
 func (LookupAwakeable) isLookup() {}
 
+// LookupIdempotency returns the InvocationId previously bound to a
+// (service, handler, object_key, idempotency_key) tuple. Result is
+// *enginev1.InvocationId or nil if not bound. Used by ingress to convert
+// a duplicate SubmitInvocation into a no-op + return-prior-id. Phase 3.
+type LookupIdempotency struct {
+	Service        string
+	Handler        string
+	ObjectKey      string
+	IdempotencyKey string
+}
+
+func (LookupIdempotency) isLookup() {}
+
 // LookupState resolves a single state value. Result is StateLookupResult
 // so callers can distinguish "absent" (Present=false) from "present-but-
 // empty" (Present=true, len(Value)==0). Phase 2.
@@ -790,6 +960,8 @@ func (p *Partition) Lookup(query any) (any, error) {
 			return nil, err
 		}
 		return StateLookupResult{Value: v, Present: present}, nil
+	case LookupIdempotency:
+		return (tables.IdempotencyTable{S: store}).Get(q.Service, q.Handler, q.ObjectKey, q.IdempotencyKey)
 	default:
 		return nil, fmt.Errorf("partition: unknown lookup type %T", query)
 	}

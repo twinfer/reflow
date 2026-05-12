@@ -665,6 +665,87 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 			t.Errorf("expected nil after delete, got %+v", got)
 		}
 	})
+
+	t.Run(name+"/Idempotency_MissingReturnsNil", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		got, err := tables.IdempotencyTable{S: s}.Get("Svc", "h", "k", "ikey")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != nil {
+			t.Errorf("expected nil for missing idempotency entry, got %+v", got)
+		}
+	})
+
+	t.Run(name+"/Idempotency_PutGetRoundtrip", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		idemT := tables.IdempotencyTable{S: s}
+		id := mkID(11, "0123456789abcdef")
+
+		b := s.NewBatch()
+		if err := idemT.Put(b, "Counter", "incr", "user-42", "req-123", id); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b)
+
+		got, err := idemT.Get("Counter", "incr", "user-42", "req-123")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == nil {
+			t.Fatal("expected hit, got nil")
+		}
+		if got.GetPartitionKey() != id.GetPartitionKey() {
+			t.Errorf("partition_key mismatch: got %d", got.GetPartitionKey())
+		}
+		if !bytes.Equal(got.GetUuid(), id.GetUuid()) {
+			t.Errorf("uuid mismatch: got %x", got.GetUuid())
+		}
+
+		// Distinct tuple components produce distinct entries.
+		other, err := idemT.Get("Counter", "incr", "user-42", "req-999")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if other != nil {
+			t.Errorf("expected nil for different idempotency_key, got %+v", other)
+		}
+	})
+
+	t.Run(name+"/Idempotency_AdjacentFieldsDoNotAlias", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		idemT := tables.IdempotencyTable{S: s}
+		idA := mkID(1, "aaaaaaaaaaaaaaaa")
+		idB := mkID(2, "bbbbbbbbbbbbbbbb")
+
+		b := s.NewBatch()
+		// (service="ab", handler="c", "", "k") vs ("a", "bc", "", "k").
+		if err := idemT.Put(b, "ab", "c", "", "k", idA); err != nil {
+			t.Fatal(err)
+		}
+		if err := idemT.Put(b, "a", "bc", "", "k", idB); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b)
+
+		gotA, err := idemT.Get("ab", "c", "", "k")
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotB, err := idemT.Get("a", "bc", "", "k")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(gotA.GetUuid(), idA.GetUuid()) {
+			t.Errorf("tuple A: got %x want %x", gotA.GetUuid(), idA.GetUuid())
+		}
+		if !bytes.Equal(gotB.GetUuid(), idB.GetUuid()) {
+			t.Errorf("tuple B: got %x want %x", gotB.GetUuid(), idB.GetUuid())
+		}
+	})
 }
 
 func TestTables(t *testing.T) {

@@ -66,6 +66,7 @@ type session struct {
 	proposer   Proposer
 	journal    *JournalReader
 	invocation tables.InvocationTable
+	stateTable tables.StateTable
 	log        *slog.Logger
 
 	transport SessionTransport // engine side of the pair
@@ -88,6 +89,7 @@ func newSession(
 	proposer Proposer,
 	journal *JournalReader,
 	invocation tables.InvocationTable,
+	state tables.StateTable,
 	transport SessionTransport,
 	log *slog.Logger,
 ) *session {
@@ -99,6 +101,7 @@ func newSession(
 		proposer:   proposer,
 		journal:    journal,
 		invocation: invocation,
+		stateTable: state,
 		log:        log,
 		transport:  transport,
 		ctx:        ctx,
@@ -157,36 +160,53 @@ func (s *session) run() {
 		}
 	}()
 
-	input, journalIndex, ok := s.prepare()
+	input, journalIndex, stateCache, ok := s.prepare()
 	if !ok {
 		return
 	}
 
 	s.setState(sessBidi)
-	ictx := newInvocationContext(s, input, journalIndex)
+	ictx := newInvocationContext(s, input, journalIndex, stateCache)
 	output, handlerErr := s.runHandler(ictx)
 
 	s.publishOutcome(ictx, output, handlerErr)
 }
 
+// eagerStateMaxBytes caps the eager state preload at session start. When
+// the total payload across all rows for an object exceeds this, the
+// preload is dropped and GetState falls back to its existing
+// not-implemented path. 64 KiB matches the plan's documented limit.
+const eagerStateMaxBytes = 64 * 1024
+
 // prepare runs the Replay phase. Returns the input bytes, the journal
-// index map, and ok=true if the session should proceed to Bidi. A false
-// ok indicates the caller should exit (already completed, status load
-// failed, or shutdown in progress).
-func (s *session) prepare() ([]byte, map[uint32]*enginev1.JournalEntry, bool) {
+// index map, the eager state cache (nil when overflowed or not applicable),
+// and ok=true if the session should proceed to Bidi. A false ok indicates
+// the caller should exit (already completed, status load failed, or
+// shutdown in progress).
+func (s *session) prepare() ([]byte, map[uint32]*enginev1.JournalEntry, map[string][]byte, bool) {
 	s.setState(sessReplay)
+
+	// Phase 3 — log the SDK build id at session start so operators can
+	// correlate behavior changes with SDK upgrades. The value is cached
+	// by sdk.BuildID, so the cost is one map lookup per session.
+	if bid := sdk.BuildID(); bid != "" {
+		s.log.Info("invoker.session: start",
+			"id", invocationIDString(s.id),
+			"sdk_build_id", bid,
+		)
+	}
 
 	status, err := s.invocation.Get(s.id)
 	if err != nil {
 		s.log.Warn("invoker.session: load status failed",
 			"id", invocationIDString(s.id), "err", err)
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 
 	switch st := status.GetStatus().(type) {
 	case nil, *enginev1.InvocationStatus_Free, *enginev1.InvocationStatus_Completed:
 		// Nothing to run.
-		return nil, nil, false
+		return nil, nil, nil, false
 	case *enginev1.InvocationStatus_Scheduled:
 		// First execution: propose JEInput at index 0 to flip
 		// Scheduled → Invoked. SyncPropose blocks until the apply
@@ -202,7 +222,7 @@ func (s *session) prepare() ([]byte, map[uint32]*enginev1.JournalEntry, bool) {
 				s.log.Warn("invoker.session: propose JEInput failed",
 					"id", invocationIDString(s.id), "err", err)
 			}
-			return nil, nil, false
+			return nil, nil, nil, false
 		}
 	case *enginev1.InvocationStatus_Invoked, *enginev1.InvocationStatus_Suspended:
 		// Re-run after suspension or restart. Journal already has JEInput.
@@ -212,7 +232,7 @@ func (s *session) prepare() ([]byte, map[uint32]*enginev1.JournalEntry, bool) {
 	if err != nil {
 		s.log.Warn("invoker.session: load journal failed",
 			"id", invocationIDString(s.id), "err", err)
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 
 	journalIndex := make(map[uint32]*enginev1.JournalEntry, len(entries))
@@ -225,8 +245,56 @@ func (s *session) prepare() ([]byte, map[uint32]*enginev1.JournalEntry, bool) {
 			}
 		}
 	}
-	return input, journalIndex, true
+
+	stateCache := s.preloadState()
+	return input, journalIndex, stateCache, true
 }
+
+// preloadState eagerly reads every state row scoped to this invocation's
+// (service, object_key) into an in-memory map served to GetState. Returns
+// nil when:
+//   - the target has no object_key (unkeyed services have no per-object
+//     state contract in Phase 3)
+//   - the total payload exceeds eagerStateMaxBytes (handler falls back to
+//     the lazy/not-implemented path)
+//   - the scan fails (logged warn; we'd rather skip preload than block
+//     session start)
+//
+// Phase 3.
+func (s *session) preloadState() map[string][]byte {
+	if s.target.GetObjectKey() == "" {
+		return nil
+	}
+	cache := make(map[string][]byte)
+	total := 0
+	overflowed := false
+	err := s.stateTable.ScanObject(s.target, func(key string, value []byte) error {
+		total += len(key) + len(value)
+		if total > eagerStateMaxBytes {
+			overflowed = true
+			return errStatePreloadOverflow
+		}
+		cache[key] = append([]byte(nil), value...)
+		return nil
+	})
+	if overflowed {
+		s.log.Info("invoker.session: state preload overflow; falling back to lazy",
+			"id", invocationIDString(s.id),
+			"limit_bytes", eagerStateMaxBytes,
+		)
+		return nil
+	}
+	if err != nil {
+		s.log.Warn("invoker.session: state preload scan failed",
+			"id", invocationIDString(s.id), "err", err)
+		return nil
+	}
+	return cache
+}
+
+// errStatePreloadOverflow is the sentinel returned from ScanObject's
+// callback to short-circuit a too-large scan.
+var errStatePreloadOverflow = errors.New("state preload overflow")
 
 // runHandler invokes the registered handler on its own goroutine and
 // waits for it to return. Ctx cancellation is observed so abort()

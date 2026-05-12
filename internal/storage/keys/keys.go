@@ -12,6 +12,7 @@
 //	outbox/<8-byte BE seq>                       -> OutboxEnvelope (Phase 2)
 //	awakeable/<26-byte id>                       -> AwakeableEntry (Phase 2)
 //	keylease/<service>/<obj_key>                 -> KeyLeaseStatus (Phase 3)
+//	idempotency/<32-byte sha256>                 -> InvocationId (Phase 3)
 //	dedup/self/<8-byte BE leader_epoch>          -> DedupEntry
 //	dedup/arbitrary/<producer_id>                -> DedupEntry
 //
@@ -23,6 +24,7 @@
 package keys
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -46,6 +48,7 @@ const (
 	outboxPrefix    = "outbox/"
 	awakeablePrefix = "awakeable/"
 	keyLeasePrefix  = "keylease/"
+	idempPrefix     = "idempotency/"
 	dedupSelfPrefix = "dedup/self/"
 	dedupArbPrefix  = "dedup/arbitrary/"
 )
@@ -230,6 +233,29 @@ func KeyLeaseKey(service, objectKey string) []byte {
 	out = append(out, service...)
 	out = append(out, '/')
 	return append(out, objectKey...)
+}
+
+// IdempotencyKey returns idempotency/<sha256(tuple)>. The tuple is the
+// caller-supplied (service, handler, object_key, idempotency_key) hashed
+// with length-prefixed components so adjacent fields never alias. Used by
+// the Phase 3 onInvoke dedup path: a hit means an invocation with the same
+// tuple was already accepted; the stored value is the prior InvocationId.
+func IdempotencyKey(service, handler, objectKey, idempotencyKey string) []byte {
+	h := sha256.New()
+	writeLP := func(s string) {
+		var lp [4]byte
+		binary.BigEndian.PutUint32(lp[:], uint32(len(s)))
+		h.Write(lp[:])
+		h.Write([]byte(s))
+	}
+	writeLP(service)
+	writeLP(handler)
+	writeLP(objectKey)
+	writeLP(idempotencyKey)
+	sum := h.Sum(nil)
+	out := make([]byte, 0, len(idempPrefix)+len(sum))
+	out = append(out, idempPrefix...)
+	return append(out, sum...)
 }
 
 // AwakeableKey returns awakeable/<26-byte id>. The caller is responsible

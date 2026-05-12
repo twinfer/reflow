@@ -101,6 +101,7 @@ func newTestInvoker(t *testing.T, reg *sdk.Registry) (*Invoker, *fakeProposer, s
 		Registry:        NewRegistry(reg),
 		JournalTable:    tables.JournalTable{S: s},
 		InvocationTable: tables.InvocationTable{S: s},
+		StateTable:      tables.StateTable{S: s},
 		Proposer:        fp,
 		Log:             discardLogger(),
 	})

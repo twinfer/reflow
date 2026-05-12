@@ -194,7 +194,9 @@ func TestNamespacesDistinct(t *testing.T) {
 	stateK := StateKey("Svc", "obj", "key")
 	outK := OutboxKey(1)
 	awkK := AwakeableKey("awk_AAAAAAAAAAAAAAAAAAAAAA")
-	all := [][]byte{invK, jouK, timK, stateK, outK, awkK}
+	leaseK := KeyLeaseKey("Svc", "obj")
+	idemK := IdempotencyKey("Svc", "h", "obj", "ikey")
+	all := [][]byte{invK, jouK, timK, stateK, outK, awkK, leaseK, idemK}
 	for i := range all {
 		for j := i + 1; j < len(all); j++ {
 			a, b := all[i], all[j]
@@ -305,6 +307,30 @@ func TestAwakeableKey_RoundtripAndPrefix(t *testing.T) {
 	}
 	if len(k) != len("awakeable/")+26 {
 		t.Errorf("len=%d want %d", len(k), len("awakeable/")+26)
+	}
+}
+
+func TestIdempotencyKey_DeterministicAndSensitive(t *testing.T) {
+	// Same tuple → same key.
+	a := IdempotencyKey("Counter", "incr", "user-1", "req-7")
+	b := IdempotencyKey("Counter", "incr", "user-1", "req-7")
+	if !bytes.Equal(a, b) {
+		t.Fatalf("non-deterministic key: %x vs %x", a, b)
+	}
+	// Length: prefix + 32-byte sha256.
+	if len(a) != len("idempotency/")+32 {
+		t.Errorf("len = %d, want %d", len(a), len("idempotency/")+32)
+	}
+	// Adjacent components must not alias. ("ab","c") vs ("a","bc").
+	k1 := IdempotencyKey("ab", "c", "", "k")
+	k2 := IdempotencyKey("a", "bc", "", "k")
+	if bytes.Equal(k1, k2) {
+		t.Errorf("adjacent-field aliasing: %x", k1)
+	}
+	// Empty object_key vs absent are the same (Phase 3 has only one form).
+	// Distinct idempotency_keys differ.
+	if bytes.Equal(IdempotencyKey("S", "h", "o", "k1"), IdempotencyKey("S", "h", "o", "k2")) {
+		t.Errorf("distinct idempotency keys collided")
 	}
 }
 

@@ -16,6 +16,7 @@ type Config struct {
 	Registry        *Registry
 	JournalTable    tables.JournalTable
 	InvocationTable tables.InvocationTable
+	StateTable      tables.StateTable
 	Proposer        Proposer
 	Log             *slog.Logger
 }
@@ -34,6 +35,7 @@ type Invoker struct {
 	registry        *Registry
 	journal         *JournalReader
 	invocationTable tables.InvocationTable
+	stateTable      tables.StateTable
 	proposer        Proposer
 	log             *slog.Logger
 
@@ -61,6 +63,7 @@ func New(cfg Config) *Invoker {
 		registry:        cfg.Registry,
 		journal:         NewJournalReader(cfg.JournalTable),
 		invocationTable: cfg.InvocationTable,
+		stateTable:      cfg.StateTable,
 		proposer:        cfg.Proposer,
 		log:             log,
 		sessions:        make(map[string]*session),
@@ -71,11 +74,12 @@ func New(cfg Config) *Invoker {
 // Rebind swaps the underlying storage handles after a snapshot recovery
 // has replaced the Pebble DB on disk. Mirrors timer/outbox rebind
 // patterns elsewhere in the engine package.
-func (i *Invoker) Rebind(journal tables.JournalTable, invocations tables.InvocationTable) {
+func (i *Invoker) Rebind(journal tables.JournalTable, invocations tables.InvocationTable, state tables.StateTable) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.journal.Rebind(journal)
 	i.invocationTable = invocations
+	i.stateTable = state
 }
 
 // Start activates the Invoker. Calling Start a second time without an
@@ -185,6 +189,7 @@ func (i *Invoker) installSessionLocked(id *enginev1.InvocationId, target *engine
 		i.proposer,
 		i.journal,
 		i.invocationTable,
+		i.stateTable,
 		engineSide,
 		i.log,
 	)

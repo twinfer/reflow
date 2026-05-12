@@ -234,6 +234,115 @@ func TestIngress_DescribeAndListPartitions(t *testing.T) {
 	}
 }
 
+// TestIngress_AttachAndGetOutput exercises the Phase 3 endpoints:
+//   - GetInvocationOutput returns PENDING before completion and
+//     COMPLETED_OK after; UNKNOWN for an arbitrary unknown id.
+//   - AttachInvocation blocks until Completed and returns the same output.
+func TestIngress_AttachAndGetOutput(t *testing.T) {
+	reg := sdk.NewRegistry()
+	if err := reg.Register("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
+		return append([]byte("echo:"), in...), nil
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	_, rt := bringUpHostWithIngress(t, reg)
+	base := "http://" + rt.HTTPAddr()
+
+	// Submit.
+	submitBody := map[string]any{
+		"input": base64.StdEncoding.EncodeToString([]byte("phase3")),
+	}
+	raw, code := httpPost(t, base+"/invocation/Echo/echo", submitBody)
+	if code != http.StatusOK {
+		t.Fatalf("submit: code=%d body=%s", code, string(raw))
+	}
+	var submitResp struct {
+		InvocationIdStr string `json:"invocationIdStr"`
+	}
+	if err := json.Unmarshal(raw, &submitResp); err != nil {
+		t.Fatalf("submit decode: %v", err)
+	}
+
+	// GetInvocationOutput / AttachInvocation eventually return COMPLETED_OK.
+	outputURL := base + "/output/" + submitResp.InvocationIdStr
+	attachURL := base + "/attach/" + submitResp.InvocationIdStr
+	deadline := time.Now().Add(5 * time.Second)
+	var attachResp struct {
+		Output    string `json:"output"`
+		Completed bool   `json:"completed"`
+	}
+	for time.Now().Before(deadline) {
+		raw, code = httpPost(t, attachURL, map[string]any{"timeoutMs": 1000})
+		if code != http.StatusOK {
+			t.Fatalf("attach: code=%d body=%s", code, string(raw))
+		}
+		if err := json.Unmarshal(raw, &attachResp); err != nil {
+			t.Fatalf("attach decode: %v body=%s", err, string(raw))
+		}
+		if attachResp.Completed {
+			break
+		}
+	}
+	if !attachResp.Completed {
+		t.Fatalf("attach never completed: %+v", attachResp)
+	}
+	got, err := base64.StdEncoding.DecodeString(attachResp.Output)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if string(got) != "echo:phase3" {
+		t.Errorf("attach output = %q; want echo:phase3", string(got))
+	}
+
+	// GetInvocationOutput post-completion: status COMPLETED_OK + output.
+	resp, err := http.Get(outputURL)
+	if err != nil {
+		t.Fatalf("GET output: %v", err)
+	}
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("output: code=%d body=%s", resp.StatusCode, string(raw))
+	}
+	var outResp struct {
+		Status string `json:"status"`
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal(raw, &outResp); err != nil {
+		t.Fatalf("output decode: %v body=%s", err, string(raw))
+	}
+	if outResp.Status != "COMPLETED_OK" {
+		t.Errorf("status = %q; want COMPLETED_OK", outResp.Status)
+	}
+	gotOut, _ := base64.StdEncoding.DecodeString(outResp.Output)
+	if string(gotOut) != "echo:phase3" {
+		t.Errorf("output = %q; want echo:phase3", string(gotOut))
+	}
+
+	// GetInvocationOutput for an unknown id → UNKNOWN. Use a syntactically
+	// valid id whose UUID is all zero (never minted by the ingress's rand).
+	unknown := ingress.FormatInvocationID(makeID(1, make([]byte, 16)))
+	resp, err = http.Get(base + "/output/" + unknown)
+	if err != nil {
+		t.Fatalf("GET output unknown: %v", err)
+	}
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("output unknown: code=%d body=%s", resp.StatusCode, string(raw))
+	}
+	var unkResp struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &unkResp); err != nil {
+		t.Fatalf("unknown decode: %v body=%s", err, string(raw))
+	}
+	// "UNKNOWN" or "PENDING" (Free maps to UNKNOWN; transient errors also UNKNOWN).
+	if unkResp.Status != "UNKNOWN" {
+		t.Errorf("unknown id status = %q; want UNKNOWN", unkResp.Status)
+	}
+}
+
 // TestIngress_SubmitRejectsEmptyService verifies the InvalidArgument path.
 func TestIngress_SubmitRejectsEmptyService(t *testing.T) {
 	reg := sdk.NewRegistry()

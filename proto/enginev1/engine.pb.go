@@ -13,7 +13,7 @@
 //     next_outbox_seq; AwakeableEntry is the awakeable directory value.
 //   Phase 4.1: metadata-shard commands (RegisterNode,
 //     UpdatePartitionTable) land at Command tags 6-7. Remaining
-//     metadata-shard work (RemoveNode, Heartbeat, VersionBarrier)
+//     metadata-shard work (RemoveNode, Heartbeat, etc.)
 //     reserved for Phase 4.2 in tags 8-15. OutboxEnvelope grows
 //     destination_shard_id plus DeliverCallResult and OutboxAck
 //     variants for cross-partition Call result delivery. NodeHostMeta
@@ -564,8 +564,8 @@ func (x *Header) GetCreatedAtMs() uint64 {
 //	2-5   : partition-shard commands (Phase 1)
 //	6-7   : Phase 4.1 metadata-shard commands (RegisterNode,
 //	        UpdatePartitionTable). Tags 8-15 reserved for Phase 4.2+
-//	        (RemoveNode, Heartbeat, VersionBarrier). Do not allocate from
-//	        the reserved range without updating SAD §6.2.
+//	        metadata-shard work. Do not allocate from the reserved
+//	        range without updating SAD §6.2.
 //	16+   : reserved for Phase 2-3 partition-shard additions (Run effects,
 //	        awakeable completions, virtual-object queue ops).
 type Command struct {
@@ -582,7 +582,6 @@ type Command struct {
 	//	*Command_EvictNode
 	//	*Command_BeginRebalanceStep
 	//	*Command_CompleteRebalanceStep
-	//	*Command_UpdateVersionBarrier
 	//	*Command_DeliverCallResult
 	//	*Command_OutboxAck
 	Kind          isCommand_Kind `protobuf_oneof:"kind"`
@@ -717,15 +716,6 @@ func (x *Command) GetCompleteRebalanceStep() *CompleteRebalanceStep {
 	return nil
 }
 
-func (x *Command) GetUpdateVersionBarrier() *UpdateVersionBarrier {
-	if x != nil {
-		if x, ok := x.Kind.(*Command_UpdateVersionBarrier); ok {
-			return x.UpdateVersionBarrier
-		}
-	}
-	return nil
-}
-
 func (x *Command) GetDeliverCallResult() *DeliverCallResult {
 	if x != nil {
 		if x, ok := x.Kind.(*Command_DeliverCallResult); ok {
@@ -792,10 +782,6 @@ type Command_CompleteRebalanceStep struct {
 	CompleteRebalanceStep *CompleteRebalanceStep `protobuf:"bytes,10,opt,name=complete_rebalance_step,json=completeRebalanceStep,proto3,oneof"`
 }
 
-type Command_UpdateVersionBarrier struct {
-	UpdateVersionBarrier *UpdateVersionBarrier `protobuf:"bytes,11,opt,name=update_version_barrier,json=updateVersionBarrier,proto3,oneof"`
-}
-
 type Command_DeliverCallResult struct {
 	// Phase 4.1 partition-shard cross-shard delivery commands. The
 	// outbox shuffler ferries DeliverCallResult to the parent's shard
@@ -828,8 +814,6 @@ func (*Command_EvictNode) isCommand_Kind() {}
 func (*Command_BeginRebalanceStep) isCommand_Kind() {}
 
 func (*Command_CompleteRebalanceStep) isCommand_Kind() {}
-
-func (*Command_UpdateVersionBarrier) isCommand_Kind() {}
 
 func (*Command_DeliverCallResult) isCommand_Kind() {}
 
@@ -4237,14 +4221,9 @@ type PartitionTable struct {
 	// BeginRebalanceStep but not yet CompleteRebalanceStep'd. A new
 	// metadata-leader picks up where the previous one left off by
 	// replaying this list against dragonboat. Phase 4.2.
-	Pending []*RebalanceStep `protobuf:"bytes,3,rep,name=pending,proto3" json:"pending,omitempty"`
-	// version_barrier is the minimum command-declared version this
-	// cluster will accept once enforcement lands (Phase 4.3+). Phase 4.2
-	// round-trips this through shard 0 via UpdateVersionBarrier but
-	// partition FSMs do not yet gate on it. Phase 4.2.
-	VersionBarrier uint64 `protobuf:"varint,4,opt,name=version_barrier,json=versionBarrier,proto3" json:"version_barrier,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	Pending       []*RebalanceStep `protobuf:"bytes,3,rep,name=pending,proto3" json:"pending,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PartitionTable) Reset() {
@@ -4296,13 +4275,6 @@ func (x *PartitionTable) GetPending() []*RebalanceStep {
 		return x.Pending
 	}
 	return nil
-}
-
-func (x *PartitionTable) GetVersionBarrier() uint64 {
-	if x != nil {
-		return x.VersionBarrier
-	}
-	return 0
 }
 
 // ReplicaSet is the per-partition replica list. Order is not significant
@@ -4590,54 +4562,6 @@ func (x *CompleteRebalanceStep) GetStepId() uint64 {
 	return 0
 }
 
-// UpdateVersionBarrier writes PartitionTable.version_barrier on
-// shard 0. Partition FSMs may cache this for future enforcement;
-// Phase 4.2 only round-trips the value (no apply-path rejection).
-// Phase 4.2.
-type UpdateVersionBarrier struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Version       uint64                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *UpdateVersionBarrier) Reset() {
-	*x = UpdateVersionBarrier{}
-	mi := &file_enginev1_engine_proto_msgTypes[62]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *UpdateVersionBarrier) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*UpdateVersionBarrier) ProtoMessage() {}
-
-func (x *UpdateVersionBarrier) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[62]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use UpdateVersionBarrier.ProtoReflect.Descriptor instead.
-func (*UpdateVersionBarrier) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{62}
-}
-
-func (x *UpdateVersionBarrier) GetVersion() uint64 {
-	if x != nil {
-		return x.Version
-	}
-	return 0
-}
-
 var File_enginev1_engine_proto protoreflect.FileDescriptor
 
 const file_enginev1_engine_proto_rawDesc = "" +
@@ -4667,7 +4591,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\acommand\x18\x02 \x01(\v2\x19.reflow.engine.v1.CommandR\acommand\"[\n" +
 	"\x06Header\x12-\n" +
 	"\x05dedup\x18\x01 \x01(\v2\x17.reflow.engine.v1.DedupR\x05dedup\x12\"\n" +
-	"\rcreated_at_ms\x18\x02 \x01(\x06R\vcreatedAtMs\"\xfc\a\n" +
+	"\rcreated_at_ms\x18\x02 \x01(\x06R\vcreatedAtMs\"\x9c\a\n" +
 	"\aCommand\x12K\n" +
 	"\x0fannounce_leader\x18\x01 \x01(\v2 .reflow.engine.v1.AnnounceLeaderH\x00R\x0eannounceLeader\x129\n" +
 	"\x06invoke\x18\x02 \x01(\v2\x1f.reflow.engine.v1.InvokeCommandH\x00R\x06invoke\x12H\n" +
@@ -4681,8 +4605,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"evict_node\x18\b \x01(\v2\x1b.reflow.engine.v1.EvictNodeH\x00R\tevictNode\x12X\n" +
 	"\x14begin_rebalance_step\x18\t \x01(\v2$.reflow.engine.v1.BeginRebalanceStepH\x00R\x12beginRebalanceStep\x12a\n" +
 	"\x17complete_rebalance_step\x18\n" +
-	" \x01(\v2'.reflow.engine.v1.CompleteRebalanceStepH\x00R\x15completeRebalanceStep\x12^\n" +
-	"\x16update_version_barrier\x18\v \x01(\v2&.reflow.engine.v1.UpdateVersionBarrierH\x00R\x14updateVersionBarrier\x12U\n" +
+	" \x01(\v2'.reflow.engine.v1.CompleteRebalanceStepH\x00R\x15completeRebalanceStep\x12U\n" +
 	"\x13deliver_call_result\x18\x10 \x01(\v2#.reflow.engine.v1.DeliverCallResultH\x00R\x11deliverCallResult\x12<\n" +
 	"\n" +
 	"outbox_ack\x18\x11 \x01(\v2\x1b.reflow.engine.v1.OutboxAckH\x00R\toutboxAckB\x06\n" +
@@ -4920,12 +4843,11 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\fnode_host_id\x18\x03 \x01(\tR\n" +
 	"nodeHostId\x12 \n" +
 	"\flast_seen_ms\x18\x04 \x01(\x03R\n" +
-	"lastSeenMs\"\xbe\x02\n" +
+	"lastSeenMs\"\x95\x02\n" +
 	"\x0ePartitionTable\x12D\n" +
 	"\x06shards\x18\x01 \x03(\v2,.reflow.engine.v1.PartitionTable.ShardsEntryR\x06shards\x12)\n" +
 	"\x10assignment_epoch\x18\x02 \x01(\x04R\x0fassignmentEpoch\x129\n" +
-	"\apending\x18\x03 \x03(\v2\x1f.reflow.engine.v1.RebalanceStepR\apending\x12'\n" +
-	"\x0fversion_barrier\x18\x04 \x01(\x04R\x0eversionBarrier\x1aW\n" +
+	"\apending\x18\x03 \x03(\v2\x1f.reflow.engine.v1.RebalanceStepR\apending\x1aW\n" +
 	"\vShardsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x04R\x03key\x122\n" +
 	"\x05value\x18\x02 \x01(\v2\x1c.reflow.engine.v1.ReplicaSetR\x05value:\x028\x01\"'\n" +
@@ -4949,9 +4871,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x04step\x18\x01 \x01(\v2\x1f.reflow.engine.v1.RebalanceStepR\x04step\"K\n" +
 	"\x15CompleteRebalanceStep\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x12\x17\n" +
-	"\astep_id\x18\x02 \x01(\x04R\x06stepId\"0\n" +
-	"\x14UpdateVersionBarrier\x12\x18\n" +
-	"\aversion\x18\x01 \x01(\x04R\aversionB3Z1github.com/twinfer/reflow/proto/enginev1;enginev1b\x06proto3"
+	"\astep_id\x18\x02 \x01(\x04R\x06stepIdB3Z1github.com/twinfer/reflow/proto/enginev1;enginev1b\x06proto3"
 
 var (
 	file_enginev1_engine_proto_rawDescOnce sync.Once
@@ -4966,7 +4886,7 @@ func file_enginev1_engine_proto_rawDescGZIP() []byte {
 }
 
 var file_enginev1_engine_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_enginev1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 64)
+var file_enginev1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
 var file_enginev1_engine_proto_goTypes = []any{
 	(KeyLeaseStatus_State)(0),     // 0: reflow.engine.v1.KeyLeaseStatus.State
 	(RebalanceStep_Kind)(0),       // 1: reflow.engine.v1.RebalanceStep.Kind
@@ -5032,8 +4952,7 @@ var file_enginev1_engine_proto_goTypes = []any{
 	(*RebalanceStep)(nil),         // 61: reflow.engine.v1.RebalanceStep
 	(*BeginRebalanceStep)(nil),    // 62: reflow.engine.v1.BeginRebalanceStep
 	(*CompleteRebalanceStep)(nil), // 63: reflow.engine.v1.CompleteRebalanceStep
-	(*UpdateVersionBarrier)(nil),  // 64: reflow.engine.v1.UpdateVersionBarrier
-	nil,                           // 65: reflow.engine.v1.PartitionTable.ShardsEntry
+	nil,                           // 64: reflow.engine.v1.PartitionTable.ShardsEntry
 }
 var file_enginev1_engine_proto_depIdxs = []int32{
 	5,  // 0: reflow.engine.v1.Dedup.self_proposal:type_name -> reflow.engine.v1.SelfProposalDedup
@@ -5051,75 +4970,74 @@ var file_enginev1_engine_proto_depIdxs = []int32{
 	60, // 12: reflow.engine.v1.Command.evict_node:type_name -> reflow.engine.v1.EvictNode
 	62, // 13: reflow.engine.v1.Command.begin_rebalance_step:type_name -> reflow.engine.v1.BeginRebalanceStep
 	63, // 14: reflow.engine.v1.Command.complete_rebalance_step:type_name -> reflow.engine.v1.CompleteRebalanceStep
-	64, // 15: reflow.engine.v1.Command.update_version_barrier:type_name -> reflow.engine.v1.UpdateVersionBarrier
-	50, // 16: reflow.engine.v1.Command.deliver_call_result:type_name -> reflow.engine.v1.DeliverCallResult
-	51, // 17: reflow.engine.v1.Command.outbox_ack:type_name -> reflow.engine.v1.OutboxAck
-	2,  // 18: reflow.engine.v1.InvokeCommand.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	3,  // 19: reflow.engine.v1.InvokeCommand.target:type_name -> reflow.engine.v1.InvocationTarget
-	12, // 20: reflow.engine.v1.InvokeCommand.parent_link:type_name -> reflow.engine.v1.ParentLink
-	2,  // 21: reflow.engine.v1.ParentLink.parent_id:type_name -> reflow.engine.v1.InvocationId
-	2,  // 22: reflow.engine.v1.InvokerEffect.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	17, // 23: reflow.engine.v1.InvokerEffect.journal_appended:type_name -> reflow.engine.v1.JournalEntryAppended
-	18, // 24: reflow.engine.v1.InvokerEffect.completed:type_name -> reflow.engine.v1.InvocationCompleted
-	19, // 25: reflow.engine.v1.InvokerEffect.suspended:type_name -> reflow.engine.v1.InvocationSuspended
-	14, // 26: reflow.engine.v1.InvokerEffect.run_proposal:type_name -> reflow.engine.v1.JERunProposal
-	15, // 27: reflow.engine.v1.InvokerEffect.awakeable_resolved:type_name -> reflow.engine.v1.AwakeableResolved
-	16, // 28: reflow.engine.v1.InvokerEffect.signal_delivered:type_name -> reflow.engine.v1.SignalDelivered
-	30, // 29: reflow.engine.v1.JERunProposal.retry_policy:type_name -> reflow.engine.v1.RunRetryPolicy
-	20, // 30: reflow.engine.v1.JournalEntryAppended.entry:type_name -> reflow.engine.v1.JournalEntry
-	21, // 31: reflow.engine.v1.JournalEntry.input:type_name -> reflow.engine.v1.JEInput
-	22, // 32: reflow.engine.v1.JournalEntry.sleep:type_name -> reflow.engine.v1.JESleep
-	23, // 33: reflow.engine.v1.JournalEntry.sleep_result:type_name -> reflow.engine.v1.JESleepResult
-	24, // 34: reflow.engine.v1.JournalEntry.call:type_name -> reflow.engine.v1.JECall
-	25, // 35: reflow.engine.v1.JournalEntry.call_result:type_name -> reflow.engine.v1.JECallResult
-	26, // 36: reflow.engine.v1.JournalEntry.get_state:type_name -> reflow.engine.v1.JEGetState
-	27, // 37: reflow.engine.v1.JournalEntry.set_state:type_name -> reflow.engine.v1.JESetState
-	28, // 38: reflow.engine.v1.JournalEntry.output:type_name -> reflow.engine.v1.JEOutput
-	29, // 39: reflow.engine.v1.JournalEntry.run:type_name -> reflow.engine.v1.JERun
-	32, // 40: reflow.engine.v1.JournalEntry.awakeable:type_name -> reflow.engine.v1.JEAwakeable
-	33, // 41: reflow.engine.v1.JournalEntry.awakeable_result:type_name -> reflow.engine.v1.JEAwakeableResult
-	34, // 42: reflow.engine.v1.JournalEntry.signal:type_name -> reflow.engine.v1.JESignal
-	35, // 43: reflow.engine.v1.JournalEntry.clear_state:type_name -> reflow.engine.v1.JEClearState
-	36, // 44: reflow.engine.v1.JournalEntry.get_eager_state:type_name -> reflow.engine.v1.JEGetEagerState
-	31, // 45: reflow.engine.v1.JournalEntry.clear_all_state:type_name -> reflow.engine.v1.JEClearAllState
-	3,  // 46: reflow.engine.v1.JECall.target:type_name -> reflow.engine.v1.InvocationTarget
-	2,  // 47: reflow.engine.v1.JESignal.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
-	2,  // 48: reflow.engine.v1.TimerFired.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	2,  // 49: reflow.engine.v1.PurgeInvocation.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	40, // 50: reflow.engine.v1.InvocationStatus.free:type_name -> reflow.engine.v1.Free
-	41, // 51: reflow.engine.v1.InvocationStatus.scheduled:type_name -> reflow.engine.v1.Scheduled
-	42, // 52: reflow.engine.v1.InvocationStatus.invoked:type_name -> reflow.engine.v1.Invoked
-	43, // 53: reflow.engine.v1.InvocationStatus.suspended:type_name -> reflow.engine.v1.Suspended
-	44, // 54: reflow.engine.v1.InvocationStatus.completed:type_name -> reflow.engine.v1.Completed
-	3,  // 55: reflow.engine.v1.Scheduled.target:type_name -> reflow.engine.v1.InvocationTarget
-	12, // 56: reflow.engine.v1.Scheduled.parent_link:type_name -> reflow.engine.v1.ParentLink
-	3,  // 57: reflow.engine.v1.Invoked.target:type_name -> reflow.engine.v1.InvocationTarget
-	12, // 58: reflow.engine.v1.Invoked.parent_link:type_name -> reflow.engine.v1.ParentLink
-	3,  // 59: reflow.engine.v1.Suspended.target:type_name -> reflow.engine.v1.InvocationTarget
-	12, // 60: reflow.engine.v1.Suspended.parent_link:type_name -> reflow.engine.v1.ParentLink
-	3,  // 61: reflow.engine.v1.Completed.target:type_name -> reflow.engine.v1.InvocationTarget
-	0,  // 62: reflow.engine.v1.KeyLeaseStatus.state:type_name -> reflow.engine.v1.KeyLeaseStatus.State
-	2,  // 63: reflow.engine.v1.KeyLeaseStatus.current_invocation:type_name -> reflow.engine.v1.InvocationId
-	2,  // 64: reflow.engine.v1.KeyLeaseStatus.queue:type_name -> reflow.engine.v1.InvocationId
-	2,  // 65: reflow.engine.v1.AwakeableEntry.owner:type_name -> reflow.engine.v1.InvocationId
-	11, // 66: reflow.engine.v1.OutboxEnvelope.invoke:type_name -> reflow.engine.v1.InvokeCommand
-	52, // 67: reflow.engine.v1.OutboxEnvelope.signal:type_name -> reflow.engine.v1.SignalSend
-	50, // 68: reflow.engine.v1.OutboxEnvelope.deliver_call_result:type_name -> reflow.engine.v1.DeliverCallResult
-	51, // 69: reflow.engine.v1.OutboxEnvelope.outbox_ack:type_name -> reflow.engine.v1.OutboxAck
-	2,  // 70: reflow.engine.v1.DeliverCallResult.parent_id:type_name -> reflow.engine.v1.InvocationId
-	2,  // 71: reflow.engine.v1.SignalSend.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
-	57, // 72: reflow.engine.v1.RegisterNode.member:type_name -> reflow.engine.v1.NodeMembership
-	58, // 73: reflow.engine.v1.UpdatePartitionTable.table:type_name -> reflow.engine.v1.PartitionTable
-	65, // 74: reflow.engine.v1.PartitionTable.shards:type_name -> reflow.engine.v1.PartitionTable.ShardsEntry
-	61, // 75: reflow.engine.v1.PartitionTable.pending:type_name -> reflow.engine.v1.RebalanceStep
-	1,  // 76: reflow.engine.v1.RebalanceStep.kind:type_name -> reflow.engine.v1.RebalanceStep.Kind
-	61, // 77: reflow.engine.v1.BeginRebalanceStep.step:type_name -> reflow.engine.v1.RebalanceStep
-	59, // 78: reflow.engine.v1.PartitionTable.ShardsEntry.value:type_name -> reflow.engine.v1.ReplicaSet
-	79, // [79:79] is the sub-list for method output_type
-	79, // [79:79] is the sub-list for method input_type
-	79, // [79:79] is the sub-list for extension type_name
-	79, // [79:79] is the sub-list for extension extendee
-	0,  // [0:79] is the sub-list for field type_name
+	50, // 15: reflow.engine.v1.Command.deliver_call_result:type_name -> reflow.engine.v1.DeliverCallResult
+	51, // 16: reflow.engine.v1.Command.outbox_ack:type_name -> reflow.engine.v1.OutboxAck
+	2,  // 17: reflow.engine.v1.InvokeCommand.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	3,  // 18: reflow.engine.v1.InvokeCommand.target:type_name -> reflow.engine.v1.InvocationTarget
+	12, // 19: reflow.engine.v1.InvokeCommand.parent_link:type_name -> reflow.engine.v1.ParentLink
+	2,  // 20: reflow.engine.v1.ParentLink.parent_id:type_name -> reflow.engine.v1.InvocationId
+	2,  // 21: reflow.engine.v1.InvokerEffect.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	17, // 22: reflow.engine.v1.InvokerEffect.journal_appended:type_name -> reflow.engine.v1.JournalEntryAppended
+	18, // 23: reflow.engine.v1.InvokerEffect.completed:type_name -> reflow.engine.v1.InvocationCompleted
+	19, // 24: reflow.engine.v1.InvokerEffect.suspended:type_name -> reflow.engine.v1.InvocationSuspended
+	14, // 25: reflow.engine.v1.InvokerEffect.run_proposal:type_name -> reflow.engine.v1.JERunProposal
+	15, // 26: reflow.engine.v1.InvokerEffect.awakeable_resolved:type_name -> reflow.engine.v1.AwakeableResolved
+	16, // 27: reflow.engine.v1.InvokerEffect.signal_delivered:type_name -> reflow.engine.v1.SignalDelivered
+	30, // 28: reflow.engine.v1.JERunProposal.retry_policy:type_name -> reflow.engine.v1.RunRetryPolicy
+	20, // 29: reflow.engine.v1.JournalEntryAppended.entry:type_name -> reflow.engine.v1.JournalEntry
+	21, // 30: reflow.engine.v1.JournalEntry.input:type_name -> reflow.engine.v1.JEInput
+	22, // 31: reflow.engine.v1.JournalEntry.sleep:type_name -> reflow.engine.v1.JESleep
+	23, // 32: reflow.engine.v1.JournalEntry.sleep_result:type_name -> reflow.engine.v1.JESleepResult
+	24, // 33: reflow.engine.v1.JournalEntry.call:type_name -> reflow.engine.v1.JECall
+	25, // 34: reflow.engine.v1.JournalEntry.call_result:type_name -> reflow.engine.v1.JECallResult
+	26, // 35: reflow.engine.v1.JournalEntry.get_state:type_name -> reflow.engine.v1.JEGetState
+	27, // 36: reflow.engine.v1.JournalEntry.set_state:type_name -> reflow.engine.v1.JESetState
+	28, // 37: reflow.engine.v1.JournalEntry.output:type_name -> reflow.engine.v1.JEOutput
+	29, // 38: reflow.engine.v1.JournalEntry.run:type_name -> reflow.engine.v1.JERun
+	32, // 39: reflow.engine.v1.JournalEntry.awakeable:type_name -> reflow.engine.v1.JEAwakeable
+	33, // 40: reflow.engine.v1.JournalEntry.awakeable_result:type_name -> reflow.engine.v1.JEAwakeableResult
+	34, // 41: reflow.engine.v1.JournalEntry.signal:type_name -> reflow.engine.v1.JESignal
+	35, // 42: reflow.engine.v1.JournalEntry.clear_state:type_name -> reflow.engine.v1.JEClearState
+	36, // 43: reflow.engine.v1.JournalEntry.get_eager_state:type_name -> reflow.engine.v1.JEGetEagerState
+	31, // 44: reflow.engine.v1.JournalEntry.clear_all_state:type_name -> reflow.engine.v1.JEClearAllState
+	3,  // 45: reflow.engine.v1.JECall.target:type_name -> reflow.engine.v1.InvocationTarget
+	2,  // 46: reflow.engine.v1.JESignal.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
+	2,  // 47: reflow.engine.v1.TimerFired.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	2,  // 48: reflow.engine.v1.PurgeInvocation.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	40, // 49: reflow.engine.v1.InvocationStatus.free:type_name -> reflow.engine.v1.Free
+	41, // 50: reflow.engine.v1.InvocationStatus.scheduled:type_name -> reflow.engine.v1.Scheduled
+	42, // 51: reflow.engine.v1.InvocationStatus.invoked:type_name -> reflow.engine.v1.Invoked
+	43, // 52: reflow.engine.v1.InvocationStatus.suspended:type_name -> reflow.engine.v1.Suspended
+	44, // 53: reflow.engine.v1.InvocationStatus.completed:type_name -> reflow.engine.v1.Completed
+	3,  // 54: reflow.engine.v1.Scheduled.target:type_name -> reflow.engine.v1.InvocationTarget
+	12, // 55: reflow.engine.v1.Scheduled.parent_link:type_name -> reflow.engine.v1.ParentLink
+	3,  // 56: reflow.engine.v1.Invoked.target:type_name -> reflow.engine.v1.InvocationTarget
+	12, // 57: reflow.engine.v1.Invoked.parent_link:type_name -> reflow.engine.v1.ParentLink
+	3,  // 58: reflow.engine.v1.Suspended.target:type_name -> reflow.engine.v1.InvocationTarget
+	12, // 59: reflow.engine.v1.Suspended.parent_link:type_name -> reflow.engine.v1.ParentLink
+	3,  // 60: reflow.engine.v1.Completed.target:type_name -> reflow.engine.v1.InvocationTarget
+	0,  // 61: reflow.engine.v1.KeyLeaseStatus.state:type_name -> reflow.engine.v1.KeyLeaseStatus.State
+	2,  // 62: reflow.engine.v1.KeyLeaseStatus.current_invocation:type_name -> reflow.engine.v1.InvocationId
+	2,  // 63: reflow.engine.v1.KeyLeaseStatus.queue:type_name -> reflow.engine.v1.InvocationId
+	2,  // 64: reflow.engine.v1.AwakeableEntry.owner:type_name -> reflow.engine.v1.InvocationId
+	11, // 65: reflow.engine.v1.OutboxEnvelope.invoke:type_name -> reflow.engine.v1.InvokeCommand
+	52, // 66: reflow.engine.v1.OutboxEnvelope.signal:type_name -> reflow.engine.v1.SignalSend
+	50, // 67: reflow.engine.v1.OutboxEnvelope.deliver_call_result:type_name -> reflow.engine.v1.DeliverCallResult
+	51, // 68: reflow.engine.v1.OutboxEnvelope.outbox_ack:type_name -> reflow.engine.v1.OutboxAck
+	2,  // 69: reflow.engine.v1.DeliverCallResult.parent_id:type_name -> reflow.engine.v1.InvocationId
+	2,  // 70: reflow.engine.v1.SignalSend.target_invocation_id:type_name -> reflow.engine.v1.InvocationId
+	57, // 71: reflow.engine.v1.RegisterNode.member:type_name -> reflow.engine.v1.NodeMembership
+	58, // 72: reflow.engine.v1.UpdatePartitionTable.table:type_name -> reflow.engine.v1.PartitionTable
+	64, // 73: reflow.engine.v1.PartitionTable.shards:type_name -> reflow.engine.v1.PartitionTable.ShardsEntry
+	61, // 74: reflow.engine.v1.PartitionTable.pending:type_name -> reflow.engine.v1.RebalanceStep
+	1,  // 75: reflow.engine.v1.RebalanceStep.kind:type_name -> reflow.engine.v1.RebalanceStep.Kind
+	61, // 76: reflow.engine.v1.BeginRebalanceStep.step:type_name -> reflow.engine.v1.RebalanceStep
+	59, // 77: reflow.engine.v1.PartitionTable.ShardsEntry.value:type_name -> reflow.engine.v1.ReplicaSet
+	78, // [78:78] is the sub-list for method output_type
+	78, // [78:78] is the sub-list for method input_type
+	78, // [78:78] is the sub-list for extension type_name
+	78, // [78:78] is the sub-list for extension extendee
+	0,  // [0:78] is the sub-list for field type_name
 }
 
 func init() { file_enginev1_engine_proto_init() }
@@ -5142,7 +5060,6 @@ func file_enginev1_engine_proto_init() {
 		(*Command_EvictNode)(nil),
 		(*Command_BeginRebalanceStep)(nil),
 		(*Command_CompleteRebalanceStep)(nil),
-		(*Command_UpdateVersionBarrier)(nil),
 		(*Command_DeliverCallResult)(nil),
 		(*Command_OutboxAck)(nil),
 	}
@@ -5190,7 +5107,7 @@ func file_enginev1_engine_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_enginev1_engine_proto_rawDesc), len(file_enginev1_engine_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   64,
+			NumMessages:   63,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

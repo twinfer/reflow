@@ -227,30 +227,3 @@ func cmdSnapshotList(ctx context.Context, args []string) error {
 	enc.SetIndent("", "  ")
 	return enc.Encode(resp.GetSnapshots())
 }
-
-func cmdVersionBarrier(ctx context.Context, args []string) error {
-	if len(args) == 0 || args[0] != "set" {
-		return errors.New("usage: reflow-cluster version-barrier set --version=V [flags]")
-	}
-	fs := flag.NewFlagSet("version-barrier set", flag.ContinueOnError)
-	tls := registerTLSFlags(fs)
-	version := fs.Uint64("version", 0, "barrier version (required)")
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
-	}
-	if err := tls.validate(); err != nil {
-		return err
-	}
-	cli, err := tls.dial(ctx)
-	if err != nil {
-		return err
-	}
-	defer cli.Close()
-	resp, err := cli.Admin.SetVersionBarrier(ctx, &adminv1.SetVersionBarrierRequest{Version: *version})
-	if err != nil {
-		return err
-	}
-	fmt.Printf("version-barrier=%d assignment_epoch=%d\n",
-		resp.GetVersion(), resp.GetAssignmentEpoch())
-	return nil
-}

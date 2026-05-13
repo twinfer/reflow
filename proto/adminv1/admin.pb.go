@@ -6,9 +6,9 @@
 // a certificate signed by that CA can reach the surface. The reflow-
 // cluster CLI is the canonical client.
 //
-// Mutating RPCs (AddNode, RemoveNode, SetVersionBarrier) translate to
-// shard-0 Raft proposals; the apply arms in the metadata FSM and the
-// metadata-leader rebalancer drive the rest. Read RPCs (ListNodes,
+// Mutating RPCs (AddNode, RemoveNode) translate to shard-0 Raft
+// proposals; the apply arms in the metadata FSM and the metadata-
+// leader rebalancer drive the rest. Read RPCs (ListNodes,
 // ListPartitions, ListSnapshots) issue a SyncRead against shard 0 or
 // the local SnapshotRepository.
 //
@@ -670,102 +670,6 @@ func (x *ListSnapshotsResponse) GetSnapshots() []*SnapshotRef {
 	return nil
 }
 
-type SetVersionBarrierRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Version       uint64                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SetVersionBarrierRequest) Reset() {
-	*x = SetVersionBarrierRequest{}
-	mi := &file_adminv1_admin_proto_msgTypes[13]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SetVersionBarrierRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SetVersionBarrierRequest) ProtoMessage() {}
-
-func (x *SetVersionBarrierRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_adminv1_admin_proto_msgTypes[13]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SetVersionBarrierRequest.ProtoReflect.Descriptor instead.
-func (*SetVersionBarrierRequest) Descriptor() ([]byte, []int) {
-	return file_adminv1_admin_proto_rawDescGZIP(), []int{13}
-}
-
-func (x *SetVersionBarrierRequest) GetVersion() uint64 {
-	if x != nil {
-		return x.Version
-	}
-	return 0
-}
-
-type SetVersionBarrierResponse struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	Version         uint64                 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
-	AssignmentEpoch uint64                 `protobuf:"varint,2,opt,name=assignment_epoch,json=assignmentEpoch,proto3" json:"assignment_epoch,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
-}
-
-func (x *SetVersionBarrierResponse) Reset() {
-	*x = SetVersionBarrierResponse{}
-	mi := &file_adminv1_admin_proto_msgTypes[14]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SetVersionBarrierResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SetVersionBarrierResponse) ProtoMessage() {}
-
-func (x *SetVersionBarrierResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_adminv1_admin_proto_msgTypes[14]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SetVersionBarrierResponse.ProtoReflect.Descriptor instead.
-func (*SetVersionBarrierResponse) Descriptor() ([]byte, []int) {
-	return file_adminv1_admin_proto_rawDescGZIP(), []int{14}
-}
-
-func (x *SetVersionBarrierResponse) GetVersion() uint64 {
-	if x != nil {
-		return x.Version
-	}
-	return 0
-}
-
-func (x *SetVersionBarrierResponse) GetAssignmentEpoch() uint64 {
-	if x != nil {
-		return x.AssignmentEpoch
-	}
-	return 0
-}
-
 var File_adminv1_admin_proto protoreflect.FileDescriptor
 
 const file_adminv1_admin_proto_rawDesc = "" +
@@ -807,12 +711,7 @@ const file_adminv1_admin_proto_rawDesc = "" +
 	"size_bytes\x18\x03 \x01(\x03R\tsizeBytes\x12+\n" +
 	"\x12created_at_unix_ms\x18\x04 \x01(\x03R\x0fcreatedAtUnixMs\"S\n" +
 	"\x15ListSnapshotsResponse\x12:\n" +
-	"\tsnapshots\x18\x01 \x03(\v2\x1c.reflow.admin.v1.SnapshotRefR\tsnapshots\"4\n" +
-	"\x18SetVersionBarrierRequest\x12\x18\n" +
-	"\aversion\x18\x01 \x01(\x04R\aversion\"`\n" +
-	"\x19SetVersionBarrierResponse\x12\x18\n" +
-	"\aversion\x18\x01 \x01(\x04R\aversion\x12)\n" +
-	"\x10assignment_epoch\x18\x02 \x01(\x04R\x0fassignmentEpoch2\x92\x05\n" +
+	"\tsnapshots\x18\x01 \x03(\v2\x1c.reflow.admin.v1.SnapshotRefR\tsnapshots2\xa6\x04\n" +
 	"\x05Admin\x12L\n" +
 	"\aAddNode\x12\x1f.reflow.admin.v1.AddNodeRequest\x1a .reflow.admin.v1.AddNodeResponse\x12U\n" +
 	"\n" +
@@ -820,8 +719,7 @@ const file_adminv1_admin_proto_rawDesc = "" +
 	"\tListNodes\x12!.reflow.admin.v1.ListNodesRequest\x1a\".reflow.admin.v1.ListNodesResponse\x12a\n" +
 	"\x0eListPartitions\x12&.reflow.admin.v1.ListPartitionsRequest\x1a'.reflow.admin.v1.ListPartitionsResponse\x12a\n" +
 	"\x0eCreateSnapshot\x12&.reflow.admin.v1.CreateSnapshotRequest\x1a'.reflow.admin.v1.CreateSnapshotResponse\x12^\n" +
-	"\rListSnapshots\x12%.reflow.admin.v1.ListSnapshotsRequest\x1a&.reflow.admin.v1.ListSnapshotsResponse\x12j\n" +
-	"\x11SetVersionBarrier\x12).reflow.admin.v1.SetVersionBarrierRequest\x1a*.reflow.admin.v1.SetVersionBarrierResponseB1Z/github.com/twinfer/reflow/proto/adminv1;adminv1b\x06proto3"
+	"\rListSnapshots\x12%.reflow.admin.v1.ListSnapshotsRequest\x1a&.reflow.admin.v1.ListSnapshotsResponseB1Z/github.com/twinfer/reflow/proto/adminv1;adminv1b\x06proto3"
 
 var (
 	file_adminv1_admin_proto_rawDescOnce sync.Once
@@ -835,29 +733,27 @@ func file_adminv1_admin_proto_rawDescGZIP() []byte {
 	return file_adminv1_admin_proto_rawDescData
 }
 
-var file_adminv1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_adminv1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_adminv1_admin_proto_goTypes = []any{
-	(*AddNodeRequest)(nil),            // 0: reflow.admin.v1.AddNodeRequest
-	(*AddNodeResponse)(nil),           // 1: reflow.admin.v1.AddNodeResponse
-	(*RemoveNodeRequest)(nil),         // 2: reflow.admin.v1.RemoveNodeRequest
-	(*RemoveNodeResponse)(nil),        // 3: reflow.admin.v1.RemoveNodeResponse
-	(*ListNodesRequest)(nil),          // 4: reflow.admin.v1.ListNodesRequest
-	(*ListNodesResponse)(nil),         // 5: reflow.admin.v1.ListNodesResponse
-	(*ListPartitionsRequest)(nil),     // 6: reflow.admin.v1.ListPartitionsRequest
-	(*ListPartitionsResponse)(nil),    // 7: reflow.admin.v1.ListPartitionsResponse
-	(*CreateSnapshotRequest)(nil),     // 8: reflow.admin.v1.CreateSnapshotRequest
-	(*CreateSnapshotResponse)(nil),    // 9: reflow.admin.v1.CreateSnapshotResponse
-	(*ListSnapshotsRequest)(nil),      // 10: reflow.admin.v1.ListSnapshotsRequest
-	(*SnapshotRef)(nil),               // 11: reflow.admin.v1.SnapshotRef
-	(*ListSnapshotsResponse)(nil),     // 12: reflow.admin.v1.ListSnapshotsResponse
-	(*SetVersionBarrierRequest)(nil),  // 13: reflow.admin.v1.SetVersionBarrierRequest
-	(*SetVersionBarrierResponse)(nil), // 14: reflow.admin.v1.SetVersionBarrierResponse
-	(*enginev1.NodeMembership)(nil),   // 15: reflow.engine.v1.NodeMembership
-	(*enginev1.PartitionTable)(nil),   // 16: reflow.engine.v1.PartitionTable
+	(*AddNodeRequest)(nil),          // 0: reflow.admin.v1.AddNodeRequest
+	(*AddNodeResponse)(nil),         // 1: reflow.admin.v1.AddNodeResponse
+	(*RemoveNodeRequest)(nil),       // 2: reflow.admin.v1.RemoveNodeRequest
+	(*RemoveNodeResponse)(nil),      // 3: reflow.admin.v1.RemoveNodeResponse
+	(*ListNodesRequest)(nil),        // 4: reflow.admin.v1.ListNodesRequest
+	(*ListNodesResponse)(nil),       // 5: reflow.admin.v1.ListNodesResponse
+	(*ListPartitionsRequest)(nil),   // 6: reflow.admin.v1.ListPartitionsRequest
+	(*ListPartitionsResponse)(nil),  // 7: reflow.admin.v1.ListPartitionsResponse
+	(*CreateSnapshotRequest)(nil),   // 8: reflow.admin.v1.CreateSnapshotRequest
+	(*CreateSnapshotResponse)(nil),  // 9: reflow.admin.v1.CreateSnapshotResponse
+	(*ListSnapshotsRequest)(nil),    // 10: reflow.admin.v1.ListSnapshotsRequest
+	(*SnapshotRef)(nil),             // 11: reflow.admin.v1.SnapshotRef
+	(*ListSnapshotsResponse)(nil),   // 12: reflow.admin.v1.ListSnapshotsResponse
+	(*enginev1.NodeMembership)(nil), // 13: reflow.engine.v1.NodeMembership
+	(*enginev1.PartitionTable)(nil), // 14: reflow.engine.v1.PartitionTable
 }
 var file_adminv1_admin_proto_depIdxs = []int32{
-	15, // 0: reflow.admin.v1.ListNodesResponse.nodes:type_name -> reflow.engine.v1.NodeMembership
-	16, // 1: reflow.admin.v1.ListPartitionsResponse.table:type_name -> reflow.engine.v1.PartitionTable
+	13, // 0: reflow.admin.v1.ListNodesResponse.nodes:type_name -> reflow.engine.v1.NodeMembership
+	14, // 1: reflow.admin.v1.ListPartitionsResponse.table:type_name -> reflow.engine.v1.PartitionTable
 	11, // 2: reflow.admin.v1.ListSnapshotsResponse.snapshots:type_name -> reflow.admin.v1.SnapshotRef
 	0,  // 3: reflow.admin.v1.Admin.AddNode:input_type -> reflow.admin.v1.AddNodeRequest
 	2,  // 4: reflow.admin.v1.Admin.RemoveNode:input_type -> reflow.admin.v1.RemoveNodeRequest
@@ -865,16 +761,14 @@ var file_adminv1_admin_proto_depIdxs = []int32{
 	6,  // 6: reflow.admin.v1.Admin.ListPartitions:input_type -> reflow.admin.v1.ListPartitionsRequest
 	8,  // 7: reflow.admin.v1.Admin.CreateSnapshot:input_type -> reflow.admin.v1.CreateSnapshotRequest
 	10, // 8: reflow.admin.v1.Admin.ListSnapshots:input_type -> reflow.admin.v1.ListSnapshotsRequest
-	13, // 9: reflow.admin.v1.Admin.SetVersionBarrier:input_type -> reflow.admin.v1.SetVersionBarrierRequest
-	1,  // 10: reflow.admin.v1.Admin.AddNode:output_type -> reflow.admin.v1.AddNodeResponse
-	3,  // 11: reflow.admin.v1.Admin.RemoveNode:output_type -> reflow.admin.v1.RemoveNodeResponse
-	5,  // 12: reflow.admin.v1.Admin.ListNodes:output_type -> reflow.admin.v1.ListNodesResponse
-	7,  // 13: reflow.admin.v1.Admin.ListPartitions:output_type -> reflow.admin.v1.ListPartitionsResponse
-	9,  // 14: reflow.admin.v1.Admin.CreateSnapshot:output_type -> reflow.admin.v1.CreateSnapshotResponse
-	12, // 15: reflow.admin.v1.Admin.ListSnapshots:output_type -> reflow.admin.v1.ListSnapshotsResponse
-	14, // 16: reflow.admin.v1.Admin.SetVersionBarrier:output_type -> reflow.admin.v1.SetVersionBarrierResponse
-	10, // [10:17] is the sub-list for method output_type
-	3,  // [3:10] is the sub-list for method input_type
+	1,  // 9: reflow.admin.v1.Admin.AddNode:output_type -> reflow.admin.v1.AddNodeResponse
+	3,  // 10: reflow.admin.v1.Admin.RemoveNode:output_type -> reflow.admin.v1.RemoveNodeResponse
+	5,  // 11: reflow.admin.v1.Admin.ListNodes:output_type -> reflow.admin.v1.ListNodesResponse
+	7,  // 12: reflow.admin.v1.Admin.ListPartitions:output_type -> reflow.admin.v1.ListPartitionsResponse
+	9,  // 13: reflow.admin.v1.Admin.CreateSnapshot:output_type -> reflow.admin.v1.CreateSnapshotResponse
+	12, // 14: reflow.admin.v1.Admin.ListSnapshots:output_type -> reflow.admin.v1.ListSnapshotsResponse
+	9,  // [9:15] is the sub-list for method output_type
+	3,  // [3:9] is the sub-list for method input_type
 	3,  // [3:3] is the sub-list for extension type_name
 	3,  // [3:3] is the sub-list for extension extendee
 	0,  // [0:3] is the sub-list for field type_name
@@ -891,7 +785,7 @@ func file_adminv1_admin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_adminv1_admin_proto_rawDesc), len(file_adminv1_admin_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   15,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

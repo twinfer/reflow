@@ -97,7 +97,7 @@ func bringUpThreeNodeCluster(t *testing.T, handlers *sdk.Registry) ([]*nodeRig, 
 			GrpcEndpoint:   allAddrs[i].delivery,
 		})
 		if err != nil {
-			for j := 0; j < i; j++ {
+			for j := range i {
 				rigs[j].close()
 			}
 			t.Fatalf("NewHost(%d): %v", i+1, err)

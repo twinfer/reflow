@@ -251,37 +251,6 @@ func TestPhase4_2_AdminRemoveNode_LogicallyEvicts(t *testing.T) {
 	t.Fatalf("EvictNode apply never zeroed last_seen_ms + enqueued DELETE_REPLICA for node %d", victim)
 }
 
-// TestPhase4_2_AdminSetVersionBarrier_RoundTrips writes a barrier via
-// SetVersionBarrier and observes it back through ListPartitions. Phase
-// 4.2: no apply-path enforcement, just the wire round trip.
-func TestPhase4_2_AdminSetVersionBarrier_RoundTrips(t *testing.T) {
-	rigs, _ := bringUpThreeNodeCluster(t, sdk.NewRegistry())
-	defer closeAll(rigs)
-
-	leader := awaitMetadataLeaderRig(t, rigs, 15*time.Second)
-	awaitMembership(t, leader, 3, 10*time.Second)
-
-	ar := startAdminInsecure(t, leader)
-	defer ar.close()
-	cli, done := dialInsecureAdmin(t, ar.addr())
-	defer done()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if _, err := cli.SetVersionBarrier(ctx, &adminv1.SetVersionBarrierRequest{Version: 42}); err != nil {
-		t.Fatalf("SetVersionBarrier: %v", err)
-	}
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		resp, err := cli.ListPartitions(ctx, &adminv1.ListPartitionsRequest{})
-		if err == nil && resp.GetTable() != nil && resp.GetTable().GetVersionBarrier() == 42 {
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Fatal("version_barrier never reached 42 via ListPartitions")
-}
-
 // TestPhase4_2_AdminMutualTLS_RejectsUnsignedClient builds an admin
 // server wired with operator-CA mTLS and asserts that a client without
 // any cert cannot complete the handshake. Sanity check that the

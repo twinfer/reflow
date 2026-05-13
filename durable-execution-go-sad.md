@@ -207,9 +207,13 @@ metadata group is always authoritative; gossip is only ever a hint.
   set per partition and a monotonic config-change index.
 - Partition assignment epoch: incremented every time the assignment table
   changes; used to fence stale assignment caches.
-- Schema / version barrier: the minimum reflow-server version that must be
-  running cluster-wide before higher-versioned commands are allowed (mirrors
-  restate `VersionBarrier` at `crates/wal-protocol/src/v2.rs:226`).
+- Storage format version: a per-pebble-DB `uint32` marker (`internal/storage/format.go`)
+  written at every shard's open path. Refuses to open a DB written by a binary
+  with a different `StorageFormatVersion`. Replaces the earlier "command-stream
+  VersionBarrier" sketch — the latter answered the wrong question (cross-binary
+  FSM-logic skew on the live command path) at the cost of a permanent wire-
+  format field; the storage marker handles the common case (operator boots a
+  binary against an incompatible data dir) without polluting the proto.
 
 **Bootstrap (no discovery service required):**
 

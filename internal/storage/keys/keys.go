@@ -5,6 +5,7 @@
 // Namespaces (top-level prefixes):
 //
 //	meta                                         -> PartitionMeta singleton
+//	format                                       -> uint32 BE storage_format_version
 //	inv/<24-byte inv_id>                         -> InvocationStatus
 //	journal/<24-byte inv_id>/<4-byte BE u32 idx> -> JournalEntry
 //	timer/<8-byte BE fire_at_ms>/<24-byte id>    -> uint32 sleep_index
@@ -41,6 +42,7 @@ const (
 	awakeableIDLen = 26
 
 	metaPrefix      = "meta"
+	formatPrefix    = "format"
 	invPrefix       = "inv/"
 	journalPrefix   = "journal/"
 	timerPrefix     = "timer/"
@@ -81,6 +83,12 @@ func DecodeInvocationID(buf []byte) (*enginev1.InvocationId, error) {
 
 // MetaKey returns the singleton key for the partition's PartitionMeta record.
 func MetaKey() []byte { return []byte(metaPrefix) }
+
+// FormatVersionKey returns the singleton key for the per-DB storage format
+// version. Value is a 4-byte big-endian uint32. Lives in every reflow pebble
+// DB (metadata shard + per-partition shards) so the local boot path can refuse
+// to open a DB written by an incompatible binary.
+func FormatVersionKey() []byte { return []byte(formatPrefix) }
 
 // InvocationKey returns inv/<24-byte id>.
 func InvocationKey(id *enginev1.InvocationId) ([]byte, error) {

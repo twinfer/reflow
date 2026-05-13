@@ -264,7 +264,7 @@ func (h *Host) StartMetadataShard() (*MetadataRunner, error) {
 
 	dataDir := filepath.Join(h.cfg.DataDir, "meta", "state")
 	snap, err := NewSnapshotter(dataDir, func(p string) (storage.Store, error) {
-		return storage.OpenPebble(p, nil)
+		return storage.OpenPebbleWithFormatGuard(p, nil, storage.StorageFormatVersion)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("host: open metadata store: %w", err)
@@ -426,7 +426,7 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 
 	dataDir := filepath.Join(h.cfg.DataDir, fmt.Sprintf("p%d", shardID), "state")
 	snap, err := NewSnapshotter(dataDir, func(p string) (storage.Store, error) {
-		return storage.OpenPebble(p, nil)
+		return storage.OpenPebbleWithFormatGuard(p, nil, storage.StorageFormatVersion)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("host: open partition store: %w", err)

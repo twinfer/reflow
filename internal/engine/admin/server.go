@@ -316,29 +316,6 @@ func (s *Server) ListSnapshots(ctx context.Context, req *adminv1.ListSnapshotsRe
 	return &adminv1.ListSnapshotsResponse{Snapshots: out}, nil
 }
 
-// SetVersionBarrier proposes UpdateVersionBarrier against shard 0.
-func (s *Server) SetVersionBarrier(ctx context.Context, req *adminv1.SetVersionBarrierRequest) (*adminv1.SetVersionBarrierResponse, error) {
-	if err := s.requireLeader(); err != nil {
-		return nil, err
-	}
-	cmd := &enginev1.Command{
-		Kind: &enginev1.Command_UpdateVersionBarrier{
-			UpdateVersionBarrier: &enginev1.UpdateVersionBarrier{Version: req.GetVersion()},
-		},
-	}
-	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
-	defer cancel()
-	if err := s.runner.Proposer().ProposeSelf(callCtx, cmd); err != nil {
-		return nil, status.Errorf(codes.Internal, "admin: propose UpdateVersionBarrier: %v", err)
-	}
-	pt, _ := s.host.PartitionTable(callCtx)
-	var epoch uint64
-	if pt != nil {
-		epoch = pt.GetAssignmentEpoch()
-	}
-	return &adminv1.SetVersionBarrierResponse{Version: req.GetVersion(), AssignmentEpoch: epoch}, nil
-}
-
 // replicaSetContainsID is a small predicate; cluster has the same logic
 // but its package is below ours in the import graph.
 func replicaSetContainsID(ids []uint64, nodeID uint64) bool {

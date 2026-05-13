@@ -14,7 +14,6 @@
 //	reflow-cluster partitions list   --admin=HOST:PORT
 //	reflow-cluster snapshot create   --admin=HOST:PORT --shard=N
 //	reflow-cluster snapshot list     --admin=HOST:PORT --shard=N
-//	reflow-cluster version-barrier set --admin=HOST:PORT --version=V
 //
 // Every cluster subcommand needs three TLS flags (or matching env vars):
 //
@@ -59,8 +58,6 @@ func main() {
 		err = cmdPartitions(ctx, args)
 	case "snapshot":
 		err = cmdSnapshot(ctx, args)
-	case "version-barrier":
-		err = cmdVersionBarrier(ctx, args)
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 		return
@@ -90,7 +87,6 @@ Cluster:
   partitions list   Print the partition table.
   snapshot create   Trigger an exported snapshot of one partition shard.
   snapshot list     List archived snapshots.
-  version-barrier set  Update the cluster version barrier.
 
 Run any subcommand with --help for its specific flags.
 `)

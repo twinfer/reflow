@@ -13,7 +13,7 @@
 //     next_outbox_seq; AwakeableEntry is the awakeable directory value.
 //   Phase 4.1: metadata-shard commands (RegisterNode,
 //     UpdatePartitionTable) land at Command tags 6-7. Remaining
-//     metadata-shard work (RemoveNode, Heartbeat, VersionBarrier)
+//     metadata-shard work (RemoveNode, Heartbeat, etc.)
 //     reserved for Phase 4.2 in tags 8-15. OutboxEnvelope grows
 //     destination_shard_id plus DeliverCallResult and OutboxAck
 //     variants for cross-partition Call result delivery. NodeHostMeta
@@ -83,8 +83,8 @@ message Header {
 //   2-5   : partition-shard commands (Phase 1)
 //   6-7   : Phase 4.1 metadata-shard commands (RegisterNode,
 //           UpdatePartitionTable). Tags 8-15 reserved for Phase 4.2+
-//           (RemoveNode, Heartbeat, VersionBarrier). Do not allocate from
-//           the reserved range without updating SAD §6.2.
+//           metadata-shard work. Do not allocate from the reserved
+//           range without updating SAD §6.2.
 //   16+   : reserved for Phase 2-3 partition-shard additions (Run effects,
 //           awakeable completions, virtual-object queue ops).
 message Command {
@@ -105,7 +105,6 @@ message Command {
     EvictNode evict_node = 8;
     BeginRebalanceStep begin_rebalance_step = 9;
     CompleteRebalanceStep complete_rebalance_step = 10;
-    UpdateVersionBarrier update_version_barrier = 11;
     // Phase 4.1 partition-shard cross-shard delivery commands. The
     // outbox shuffler ferries DeliverCallResult to the parent's shard
     // and OutboxAck back to the producer's shard; both ride the same
@@ -613,11 +612,6 @@ message PartitionTable {
   // metadata-leader picks up where the previous one left off by
   // replaying this list against dragonboat. Phase 4.2.
   repeated RebalanceStep pending = 3;
-  // version_barrier is the minimum command-declared version this
-  // cluster will accept once enforcement lands (Phase 4.3+). Phase 4.2
-  // round-trips this through shard 0 via UpdateVersionBarrier but
-  // partition FSMs do not yet gate on it. Phase 4.2.
-  uint64 version_barrier = 4;
 }
 
 // ReplicaSet is the per-partition replica list. Order is not significant
@@ -676,10 +670,3 @@ message CompleteRebalanceStep {
   uint64 step_id = 2;
 }
 
-// UpdateVersionBarrier writes PartitionTable.version_barrier on
-// shard 0. Partition FSMs may cache this for future enforcement;
-// Phase 4.2 only round-trips the value (no apply-path rejection).
-// Phase 4.2.
-message UpdateVersionBarrier {
-  uint64 version = 1;
-}

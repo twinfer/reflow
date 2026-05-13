@@ -330,34 +330,6 @@ func TestPhase4_2_Cluster_CompleteRebalanceStep_DeleteRemovesFromReplicaSet(t *t
 	}
 }
 
-func TestPhase4_2_Cluster_UpdateVersionBarrierRoundTrips(t *testing.T) {
-	f, _, st := newTestFSM(t)
-	applyPartitionTable(t, f, 1, &enginev1.PartitionTable{
-		AssignmentEpoch: 1,
-		Shards:          map[uint64]*enginev1.ReplicaSet{1: {NodeIds: []uint64{1, 2, 3}}},
-	})
-	cmd := &enginev1.Command{Kind: &enginev1.Command_UpdateVersionBarrier{
-		UpdateVersionBarrier: &enginev1.UpdateVersionBarrier{Version: 7},
-	}}
-	if _, err := f.Update([]statemachine.Entry{{Index: 2, Cmd: envelope(t, cmd)}}); err != nil {
-		t.Fatal(err)
-	}
-	pt, _ := (PartitionTableTable{S: st}).Get()
-	if pt.GetVersionBarrier() != 7 {
-		t.Fatalf("version_barrier = %d; want 7", pt.GetVersionBarrier())
-	}
-	// Idempotent re-apply must not bump epoch.
-	prevEpoch := pt.GetAssignmentEpoch()
-	if _, err := f.Update([]statemachine.Entry{{Index: 3, Cmd: envelope(t, cmd)}}); err != nil {
-		t.Fatal(err)
-	}
-	pt, _ = (PartitionTableTable{S: st}).Get()
-	if pt.GetAssignmentEpoch() != prevEpoch {
-		t.Fatalf("assignment_epoch changed across same-version re-apply: %d -> %d",
-			prevEpoch, pt.GetAssignmentEpoch())
-	}
-}
-
 func TestPhase4_1_Cluster_UnknownCommandIsDropped(t *testing.T) {
 	f, _, _ := newTestFSM(t)
 	cmd := &enginev1.Command{

@@ -190,8 +190,6 @@ func (f *FSM) applyCommand(
 		return f.applyBeginRebalanceStep(batch, store, k.BeginRebalanceStep, raftIndex)
 	case *enginev1.Command_CompleteRebalanceStep:
 		return f.applyCompleteRebalanceStep(batch, store, k.CompleteRebalanceStep, raftIndex)
-	case *enginev1.Command_UpdateVersionBarrier:
-		return f.applyUpdateVersionBarrier(batch, store, k.UpdateVersionBarrier, raftIndex)
 	case nil:
 		f.cfg.Log.Warn("cluster: envelope has no command kind", "raft_index", raftIndex)
 		return nil, nil
@@ -369,33 +367,6 @@ func (f *FSM) applyCompleteRebalanceStep(
 	}
 	pt.AssignmentEpoch++
 
-	if err := (PartitionTableTable{S: store}).Put(batch, pt); err != nil {
-		return nil, fmt.Errorf("cluster: write partition table: %w", err)
-	}
-	return proto.Clone(pt).(*enginev1.PartitionTable), nil
-}
-
-// applyUpdateVersionBarrier writes the barrier value. Does not bump
-// assignment_epoch (barrier is orthogonal to partition placement).
-func (f *FSM) applyUpdateVersionBarrier(
-	batch storage.Batch,
-	store storage.Store,
-	cmd *enginev1.UpdateVersionBarrier,
-	raftIndex uint64,
-) (*enginev1.PartitionTable, error) {
-	pt, err := (PartitionTableTable{S: store}).Get()
-	if err != nil {
-		return nil, fmt.Errorf("cluster: load partition table: %w", err)
-	}
-	if pt == nil {
-		f.cfg.Log.Warn("cluster: UpdateVersionBarrier before partition table bootstrap; ignoring",
-			"raft_index", raftIndex)
-		return nil, nil
-	}
-	if pt.GetVersionBarrier() == cmd.GetVersion() {
-		return nil, nil
-	}
-	pt.VersionBarrier = cmd.GetVersion()
 	if err := (PartitionTableTable{S: store}).Put(batch, pt); err != nil {
 		return nil, fmt.Errorf("cluster: write partition table: %w", err)
 	}

@@ -22,28 +22,18 @@ func (t JournalTable) Append(b storage.Batch, id *enginev1.InvocationId, e *engi
 	if err != nil {
 		return err
 	}
-	buf, err := proto.Marshal(e)
-	if err != nil {
-		return err
-	}
-	return b.Set(k, buf)
+	return putProto(b, k, e)
 }
 
+// Read returns the entry at (id, index). Returns (nil, ErrNotFound) when
+// the entry does not exist — "required" convention.
 func (t JournalTable) Read(id *enginev1.InvocationId, index uint32) (*enginev1.JournalEntry, error) {
 	k, err := keys.JournalKey(id, index)
 	if err != nil {
 		return nil, err
 	}
-	val, closer, err := t.S.Get(k)
-	if err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return nil, storage.ErrNotFound
-		}
-		return nil, err
-	}
-	defer closer.Close()
 	var e enginev1.JournalEntry
-	if err := proto.Unmarshal(val, &e); err != nil {
+	if err := getProto(t.S, k, &e); err != nil {
 		return nil, err
 	}
 	return &e, nil

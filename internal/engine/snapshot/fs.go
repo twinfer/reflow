@@ -70,7 +70,7 @@ func (r *FSRepository) Put(ctx context.Context, shardID, index uint64, srcDir st
 		return fmt.Errorf("snapshot: open tmp: %w", err)
 	}
 	gz := gzip.NewWriter(f)
-	if err := tarDir(ctx, gz, srcDir); err != nil {
+	if err := TarDir(ctx, gz, srcDir); err != nil {
 		_ = gz.Close()
 		_ = f.Close()
 		_ = os.Remove(tmp)
@@ -119,7 +119,7 @@ func (r *FSRepository) Fetch(ctx context.Context, shardID, index uint64, dstDir 
 	if err := os.MkdirAll(dstDir, 0o755); err != nil {
 		return fmt.Errorf("snapshot: mkdir dst: %w", err)
 	}
-	return untarDir(ctx, gz, dstDir)
+	return UntarDir(ctx, gz, dstDir)
 }
 
 // List enumerates archived snapshots for a shard, sorted by index ascending.
@@ -189,10 +189,10 @@ func (r *FSRepository) enforceRetention(shardID uint64) error {
 	return nil
 }
 
-// tarDir writes the contents of srcDir into w as a tar stream (relative
-// paths, no leading "."). Mirrors internal/engine/snapshotter.go but is
-// reproduced here so this package has no engine-internal dependency.
-func tarDir(ctx context.Context, w io.Writer, srcDir string) error {
+// TarDir writes the contents of srcDir into w as a tar stream (relative
+// paths, no leading "."). Exported so internal/engine's Snapshotter can
+// share the implementation; ctx cancellation is honored between files.
+func TarDir(ctx context.Context, w io.Writer, srcDir string) error {
 	tw := tar.NewWriter(w)
 	defer tw.Close()
 	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
@@ -230,8 +230,9 @@ func tarDir(ctx context.Context, w io.Writer, srcDir string) error {
 	})
 }
 
-// untarDir extracts r into dstDir.
-func untarDir(ctx context.Context, r io.Reader, dstDir string) error {
+// UntarDir extracts r into dstDir. Exported so internal/engine's
+// Snapshotter can share the implementation.
+func UntarDir(ctx context.Context, r io.Reader, dstDir string) error {
 	tr := tar.NewReader(r)
 	for {
 		if ctx.Err() != nil {

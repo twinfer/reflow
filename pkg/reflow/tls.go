@@ -158,10 +158,23 @@ func verifyURISANWellFormed(trustDomain string) func(rawCerts [][]byte, chains [
 	}
 }
 
-// BuildDeliveryServerTLS produces the Delivery-port TLS config: server
-// presents the node leaf cert; client certs must verify against the
-// shared CA AND carry a spiffe://<trustDomain>/node/* URI SAN.
-func BuildDeliveryServerTLS(f TLSFiles, trustDomain string) (*tls.Config, error) {
+// tlsSide selects between server-side and client-side framing of the
+// returned *tls.Config — the only axis that meaningfully differs across
+// reflow's four TLS surfaces. Role enforcement (node/* vs operator/*)
+// lives in the interceptor stack, not here.
+type tlsSide int
+
+const (
+	tlsServerSide tlsSide = iota
+	tlsClientSide
+)
+
+// buildTLS materializes a *tls.Config for one of reflow's mTLS endpoints.
+// All four public Build*TLS functions are thin wrappers over this — the
+// only meaningful axis of variation is side (server vs client framing);
+// trust-domain verification, hot-reload, CA loading, and TLS 1.3 floor
+// are identical across surfaces by design.
+func buildTLS(side tlsSide, f TLSFiles, trustDomain string) (*tls.Config, error) {
 	if err := f.requireForServer(); err != nil {
 		return nil, err
 	}
@@ -176,68 +189,43 @@ func BuildDeliveryServerTLS(f TLSFiles, trustDomain string) (*tls.Config, error)
 	if err != nil {
 		return nil, err
 	}
-	return &tls.Config{
-		GetCertificate:        get,
-		ClientAuth:            tls.RequireAndVerifyClientCert,
-		ClientCAs:             pool,
+	cfg := &tls.Config{
 		VerifyPeerCertificate: verifyURISANWellFormed(trustDomain),
 		MinVersion:            tls.VersionTLS13,
-	}, nil
+	}
+	switch side {
+	case tlsServerSide:
+		cfg.GetCertificate = get
+		cfg.ClientAuth = tls.RequireAndVerifyClientCert
+		cfg.ClientCAs = pool
+	case tlsClientSide:
+		cfg.GetClientCertificate = func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return get(nil)
+		}
+		cfg.RootCAs = pool
+	}
+	return cfg, nil
+}
+
+// BuildDeliveryServerTLS produces the Delivery-port TLS config: server
+// presents the node leaf cert; client certs must verify against the
+// shared CA AND carry a spiffe://<trustDomain>/node/* URI SAN.
+func BuildDeliveryServerTLS(f TLSFiles, trustDomain string) (*tls.Config, error) {
+	return buildTLS(tlsServerSide, f, trustDomain)
 }
 
 // BuildDeliveryClientTLS produces the outbound Delivery client TLS
 // config: presents the node leaf cert; trusts the shared CA for the
 // remote server and requires the server's leaf to be a node/* SVID.
 func BuildDeliveryClientTLS(f TLSFiles, trustDomain string) (*tls.Config, error) {
-	if err := f.requireForServer(); err != nil {
-		return nil, err
-	}
-	if trustDomain == "" {
-		return nil, errors.New("reflow/tls: trust domain is required")
-	}
-	get, err := hotReloadCert(f.CertFile, f.KeyFile)
-	if err != nil {
-		return nil, err
-	}
-	pool, err := loadCAPool(f.CAFile)
-	if err != nil {
-		return nil, err
-	}
-	return &tls.Config{
-		GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
-			return get(nil)
-		},
-		RootCAs:               pool,
-		VerifyPeerCertificate: verifyURISANWellFormed(trustDomain),
-		MinVersion:            tls.VersionTLS13,
-	}, nil
+	return buildTLS(tlsClientSide, f, trustDomain)
 }
 
 // BuildAdminServerTLS produces the Admin-port TLS config: server presents
 // the node leaf cert; client certs must verify against the shared CA AND
 // carry a spiffe://<trustDomain>/operator/* URI SAN.
 func BuildAdminServerTLS(f TLSFiles, trustDomain string) (*tls.Config, error) {
-	if err := f.requireForServer(); err != nil {
-		return nil, err
-	}
-	if trustDomain == "" {
-		return nil, errors.New("reflow/tls: trust domain is required")
-	}
-	get, err := hotReloadCert(f.CertFile, f.KeyFile)
-	if err != nil {
-		return nil, err
-	}
-	pool, err := loadCAPool(f.CAFile)
-	if err != nil {
-		return nil, err
-	}
-	return &tls.Config{
-		GetCertificate:        get,
-		ClientAuth:            tls.RequireAndVerifyClientCert,
-		ClientCAs:             pool,
-		VerifyPeerCertificate: verifyURISANWellFormed(trustDomain),
-		MinVersion:            tls.VersionTLS13,
-	}, nil
+	return buildTLS(tlsServerSide, f, trustDomain)
 }
 
 // BuildAdminClientTLS produces an operator-side TLS config for talking
@@ -247,26 +235,9 @@ func BuildAdminServerTLS(f TLSFiles, trustDomain string) (*tls.Config, error) {
 //
 // Used by the reflow-cluster CLI; not invoked from inside reflowd.
 func BuildAdminClientTLS(operatorCertFile, operatorKeyFile, caFile, trustDomain string) (*tls.Config, error) {
-	if operatorCertFile == "" || operatorKeyFile == "" || caFile == "" {
-		return nil, errors.New("reflow/tls: operator cert+key and CA are required")
-	}
-	if trustDomain == "" {
-		return nil, errors.New("reflow/tls: trust domain is required")
-	}
-	get, err := hotReloadCert(operatorCertFile, operatorKeyFile)
-	if err != nil {
-		return nil, err
-	}
-	pool, err := loadCAPool(caFile)
-	if err != nil {
-		return nil, err
-	}
-	return &tls.Config{
-		GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
-			return get(nil)
-		},
-		RootCAs:               pool,
-		VerifyPeerCertificate: verifyURISANWellFormed(trustDomain),
-		MinVersion:            tls.VersionTLS13,
-	}, nil
+	return buildTLS(tlsClientSide, TLSFiles{
+		CAFile:   caFile,
+		CertFile: operatorCertFile,
+		KeyFile:  operatorKeyFile,
+	}, trustDomain)
 }

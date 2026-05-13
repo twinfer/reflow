@@ -21,45 +21,18 @@ func (s *Server) AttachInvocation(ctx context.Context, req *ingressv1.AttachInvo
 	if err != nil {
 		return nil, err
 	}
-
-	timeout := time.Duration(req.GetTimeoutMs()) * time.Millisecond
-	if timeout <= 0 || timeout > awaitMaxTimeout {
-		timeout = awaitMaxTimeout
+	c, err := s.pollUntilCompleted(ctx, id, req.GetTimeoutMs())
+	if err != nil {
+		return nil, err
 	}
-	deadline := time.Now().Add(timeout)
-	shardID := id.GetPartitionKey()
-	if shardID == 0 {
-		shardID = Phase2ShardID
+	if c == nil {
+		return &ingressv1.AttachInvocationResponse{Completed: false}, nil
 	}
-
-	// One Ticker reused across iterations — see await.go for rationale.
-	ticker := time.NewTicker(awaitPollInterval)
-	defer ticker.Stop()
-
-	for {
-		readCtx, cancel := context.WithTimeout(ctx, time.Second)
-		st, lerr := s.host.LookupInvocationStatus(readCtx, shardID, id)
-		cancel()
-		if lerr == nil && st != nil {
-			if c, ok := st.GetStatus().(*enginev1.InvocationStatus_Completed); ok {
-				return &ingressv1.AttachInvocationResponse{
-					Output:         c.Completed.GetOutput(),
-					FailureMessage: c.Completed.GetFailureMessage(),
-					Completed:      true,
-				}, nil
-			}
-		} else if lerr != nil && !isTransientLookupErr(lerr) {
-			return nil, status.Errorf(codes.Internal, "lookup invocation: %v", lerr)
-		}
-		if time.Now().After(deadline) {
-			return &ingressv1.AttachInvocationResponse{Completed: false}, nil
-		}
-		select {
-		case <-ctx.Done():
-			return nil, status.FromContextError(ctx.Err()).Err()
-		case <-ticker.C:
-		}
-	}
+	return &ingressv1.AttachInvocationResponse{
+		Output:         c.GetOutput(),
+		FailureMessage: c.GetFailureMessage(),
+		Completed:      true,
+	}, nil
 }
 
 // GetInvocationOutput is a non-blocking lookup. Returns PENDING for
@@ -71,10 +44,7 @@ func (s *Server) GetInvocationOutput(ctx context.Context, req *ingressv1.GetInvo
 	if err != nil {
 		return nil, err
 	}
-	shardID := id.GetPartitionKey()
-	if shardID == 0 {
-		shardID = Phase2ShardID
-	}
+	shardID := shardForID(id)
 
 	readCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()

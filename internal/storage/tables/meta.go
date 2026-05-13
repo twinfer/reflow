@@ -8,13 +8,22 @@
 // crates/storage-api/src/lib.rs:112-137, except we model composability through
 // shared Batch rather than a single trait — there is no trait-object overhead
 // in Go and explicit batches make the apply path easier to read.
+//
+// "Row absent" conventions across the package:
+//
+//   - "Default" tables — InvocationTable, MetaTable — return a
+//     semantic zero-value (Free status / empty PartitionMeta) and nil err.
+//     Callers can use the result unconditionally.
+//   - "Required" tables — AwakeableTable, JournalTable, OutboxTable,
+//     DedupTable — return (nil, storage.ErrNotFound). Callers know the
+//     id should exist and treat absent as an error.
+//   - "Optional" tables — IdempotencyTable, KeyLeaseTable, StateTable —
+//     return (nil, nil) for absent. Callers nil-check the result.
+//
+// Marshaling boilerplate lives in protoio.go (getProto / putProto).
 package tables
 
 import (
-	"errors"
-
-	"google.golang.org/protobuf/proto"
-
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/keys"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -23,27 +32,19 @@ import (
 // MetaTable holds the partition-level singleton (applied index, leader epoch).
 type MetaTable struct{ S storage.Store }
 
-// Get returns the PartitionMeta; a zero-value record if the row is absent.
+// Get returns the PartitionMeta; an empty record when the row is absent
+// ("default" convention — see package doc).
 func (t MetaTable) Get() (*enginev1.PartitionMeta, error) {
-	val, closer, err := t.S.Get(keys.MetaKey())
-	if err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return &enginev1.PartitionMeta{}, nil
-		}
-		return nil, err
-	}
-	defer closer.Close()
 	var m enginev1.PartitionMeta
-	if err := proto.Unmarshal(val, &m); err != nil {
+	if err := getProto(t.S, keys.MetaKey(), &m); err != nil {
+		if isNotFound(err) {
+			return &m, nil
+		}
 		return nil, err
 	}
 	return &m, nil
 }
 
 func (t MetaTable) Put(b storage.Batch, m *enginev1.PartitionMeta) error {
-	buf, err := proto.Marshal(m)
-	if err != nil {
-		return err
-	}
-	return b.Set(keys.MetaKey(), buf)
+	return putProto(b, keys.MetaKey(), m)
 }

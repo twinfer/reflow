@@ -3,8 +3,6 @@ package tables
 import (
 	"errors"
 
-	"google.golang.org/protobuf/proto"
-
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/keys"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -19,18 +17,15 @@ import (
 type IdempotencyTable struct{ S storage.Store }
 
 // Get returns the prior InvocationId for the tuple. Returns (nil, nil)
-// when no prior invocation claimed this key.
+// when no prior invocation claimed this key — this is an "optional
+// lookup" table; the apply path branches on prior != nil.
 func (t IdempotencyTable) Get(service, handler, objectKey, idempotencyKey string) (*enginev1.InvocationId, error) {
-	val, closer, err := t.S.Get(keys.IdempotencyKey(service, handler, objectKey, idempotencyKey))
-	if err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer closer.Close()
 	var id enginev1.InvocationId
-	if err := proto.Unmarshal(val, &id); err != nil {
+	err := getProto(t.S, keys.IdempotencyKey(service, handler, objectKey, idempotencyKey), &id)
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, err
 	}
 	return &id, nil
@@ -39,9 +34,5 @@ func (t IdempotencyTable) Get(service, handler, objectKey, idempotencyKey string
 // Put records the InvocationId that claimed the tuple. Called from the
 // apply path's onInvoke when a fresh idempotency_key is seen.
 func (t IdempotencyTable) Put(b storage.Batch, service, handler, objectKey, idempotencyKey string, id *enginev1.InvocationId) error {
-	buf, err := proto.Marshal(id)
-	if err != nil {
-		return err
-	}
-	return b.Set(keys.IdempotencyKey(service, handler, objectKey, idempotencyKey), buf)
+	return putProto(b, keys.IdempotencyKey(service, handler, objectKey, idempotencyKey), id)
 }

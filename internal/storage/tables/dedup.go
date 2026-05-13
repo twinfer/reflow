@@ -1,10 +1,7 @@
 package tables
 
 import (
-	"errors"
 	"fmt"
-
-	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/keys"
@@ -30,16 +27,11 @@ func (t DedupTable) IsDuplicate(d *enginev1.Dedup) (bool, error) {
 		// Dedup with no kind set — treat as "no dedup info"; never dup.
 		return false, nil
 	}
-	val, closer, err := t.S.Get(key)
-	if err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
+	var entry enginev1.DedupEntry
+	if err := getProto(t.S, key, &entry); err != nil {
+		if isNotFound(err) {
 			return false, nil
 		}
-		return false, err
-	}
-	defer closer.Close()
-	var entry enginev1.DedupEntry
-	if err := proto.Unmarshal(val, &entry); err != nil {
 		return false, err
 	}
 	return entry.GetSeq() >= seq, nil
@@ -60,11 +52,7 @@ func (t DedupTable) Record(b storage.Batch, d *enginev1.Dedup) error {
 	if sp := d.GetSelfProposal(); sp != nil {
 		entry.LeaderEpoch = sp.GetLeaderEpoch()
 	}
-	buf, err := proto.Marshal(entry)
-	if err != nil {
-		return err
-	}
-	return b.Set(key, buf)
+	return putProto(b, key, entry)
 }
 
 // dedupKeySeq returns the storage key + sequence number for a Dedup. The

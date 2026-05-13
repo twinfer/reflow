@@ -1,7 +1,7 @@
 package engine
 
 import (
-	"archive/tar"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/twinfer/reflow/internal/engine/snapshot"
 	"github.com/twinfer/reflow/internal/storage"
 )
 
@@ -84,7 +85,7 @@ func (s *Snapshotter) SaveSnapshot(w io.Writer) error {
 	}
 	defer os.RemoveAll(ckpDir)
 
-	return tarDir(w, ckpDir)
+	return snapshot.TarDir(context.Background(), w, ckpDir)
 }
 
 // RecoverFromSnapshot replaces the current data dir with the contents of the
@@ -104,7 +105,7 @@ func (s *Snapshotter) RecoverFromSnapshot(r io.Reader) error {
 	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
 		return err
 	}
-	if err := untarDir(r, stagingDir); err != nil {
+	if err := snapshot.UntarDir(context.Background(), r, stagingDir); err != nil {
 		_ = os.RemoveAll(stagingDir)
 		return fmt.Errorf("snapshotter: untar: %w", err)
 	}
@@ -174,79 +175,5 @@ func (s *Snapshotter) tryReopen() {
 	}
 	if st, err := s.open(s.dataDir); err == nil {
 		s.current = st
-	}
-}
-
-func tarDir(w io.Writer, dir string) error {
-	tw := tar.NewWriter(w)
-	defer tw.Close()
-
-	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(dir, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return nil
-		}
-		h, err := tar.FileInfoHeader(info, rel)
-		if err != nil {
-			return err
-		}
-		h.Name = rel
-		if err := tw.WriteHeader(h); err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		_, copyErr := io.Copy(tw, f)
-		_ = f.Close()
-		return copyErr
-	})
-}
-
-func untarDir(r io.Reader, dir string) error {
-	tr := tar.NewReader(r)
-	for {
-		h, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dir, h.Name)
-		switch h.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				return err
-			}
-		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(h.Mode))
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(f, tr); err != nil {
-				_ = f.Close()
-				return err
-			}
-			if err := f.Close(); err != nil {
-				return err
-			}
-		default:
-			// Skip symlinks etc. Pebble checkpoints contain only regular
-			// files + the top-level directory.
-		}
 	}
 }

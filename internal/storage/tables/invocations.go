@@ -2,7 +2,6 @@ package tables
 
 import (
 	"bytes"
-	"errors"
 
 	"google.golang.org/protobuf/proto"
 
@@ -18,25 +17,20 @@ import (
 type InvocationTable struct{ S storage.Store }
 
 // Get loads an invocation's status. Returns Free if the row is absent
-// (matches restate's default value at
+// ("default" convention — matches restate's default at
 // crates/storage-api/src/invocation_status_table/mod.rs:152-154).
 func (t InvocationTable) Get(id *enginev1.InvocationId) (*enginev1.InvocationStatus, error) {
 	k, err := keys.InvocationKey(id)
 	if err != nil {
 		return nil, err
 	}
-	val, closer, err := t.S.Get(k)
-	if err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
+	var s enginev1.InvocationStatus
+	if err := getProto(t.S, k, &s); err != nil {
+		if isNotFound(err) {
 			return &enginev1.InvocationStatus{
 				Status: &enginev1.InvocationStatus_Free{Free: &enginev1.Free{}},
 			}, nil
 		}
-		return nil, err
-	}
-	defer closer.Close()
-	var s enginev1.InvocationStatus
-	if err := proto.Unmarshal(val, &s); err != nil {
 		return nil, err
 	}
 	return &s, nil
@@ -47,11 +41,7 @@ func (t InvocationTable) Put(b storage.Batch, id *enginev1.InvocationId, s *engi
 	if err != nil {
 		return err
 	}
-	buf, err := proto.Marshal(s)
-	if err != nil {
-		return err
-	}
-	return b.Set(k, buf)
+	return putProto(b, k, s)
 }
 
 func (t InvocationTable) Delete(b storage.Batch, id *enginev1.InvocationId) error {

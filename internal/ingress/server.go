@@ -122,6 +122,17 @@ func (s *Server) routeToShard(_ *enginev1.InvocationTarget) uint64 {
 	return Phase2ShardID
 }
 
+// shardForID returns the partition shard owning the given invocation id.
+// Pre-multi-partition stub: trust partition_key when set, fall back to
+// the Phase 2 single-shard constant. Replaces an `if shardID==0`
+// fixup that was duplicated across every ingress handler.
+func shardForID(id *enginev1.InvocationId) uint64 {
+	if k := id.GetPartitionKey(); k != 0 {
+		return k
+	}
+	return Phase2ShardID
+}
+
 // mintInvocationID generates a fresh 16-byte uuid v4 and packages it under
 // the Phase 2 partition key (1). When multi-partition routing lands, this
 // will derive partition_key from the target tuple before mint.

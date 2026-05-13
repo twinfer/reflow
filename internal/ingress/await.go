@@ -26,16 +26,32 @@ func (s *Server) AwaitInvocation(ctx context.Context, req *ingressv1.AwaitInvoca
 	if err != nil {
 		return nil, err
 	}
+	c, err := s.pollUntilCompleted(ctx, id, req.GetTimeoutMs())
+	if err != nil {
+		return nil, err
+	}
+	if c == nil {
+		return &ingressv1.AwaitInvocationResponse{Completed: false}, nil
+	}
+	return &ingressv1.AwaitInvocationResponse{
+		Output:         c.GetOutput(),
+		FailureMessage: c.GetFailureMessage(),
+		Completed:      true,
+	}, nil
+}
 
-	timeout := time.Duration(req.GetTimeoutMs()) * time.Millisecond
+// pollUntilCompleted long-polls LookupInvocationStatus until the
+// invocation reaches Completed or the timeout fires. Returns the
+// terminal Completed payload on success, nil on timeout, or a gRPC
+// status error on transport failure / context cancellation. timeoutMs
+// is clamped to (0, awaitMaxTimeout]; 0 maps to awaitMaxTimeout.
+func (s *Server) pollUntilCompleted(ctx context.Context, id *enginev1.InvocationId, timeoutMs uint32) (*enginev1.Completed, error) {
+	timeout := time.Duration(timeoutMs) * time.Millisecond
 	if timeout <= 0 || timeout > awaitMaxTimeout {
 		timeout = awaitMaxTimeout
 	}
 	deadline := time.Now().Add(timeout)
-	shardID := id.GetPartitionKey()
-	if shardID == 0 {
-		shardID = Phase2ShardID
-	}
+	shardID := shardForID(id)
 
 	// One Ticker reused across iterations — time.After in a select-loop
 	// allocates a fresh runtime.Timer on every poll that runs to
@@ -49,17 +65,13 @@ func (s *Server) AwaitInvocation(ctx context.Context, req *ingressv1.AwaitInvoca
 		cancel()
 		if err == nil && st != nil {
 			if c, ok := st.GetStatus().(*enginev1.InvocationStatus_Completed); ok {
-				return &ingressv1.AwaitInvocationResponse{
-					Output:         c.Completed.GetOutput(),
-					FailureMessage: c.Completed.GetFailureMessage(),
-					Completed:      true,
-				}, nil
+				return c.Completed, nil
 			}
 		} else if err != nil && !isTransientLookupErr(err) {
 			return nil, status.Errorf(codes.Internal, "lookup invocation: %v", err)
 		}
 		if time.Now().After(deadline) {
-			return &ingressv1.AwaitInvocationResponse{Completed: false}, nil
+			return nil, nil
 		}
 		select {
 		case <-ctx.Done():

@@ -34,10 +34,7 @@ func (s *Server) DescribeInvocation(ctx context.Context, req *ingressv1.Describe
 	if err != nil {
 		return nil, err
 	}
-	shardID := id.GetPartitionKey()
-	if shardID == 0 {
-		shardID = Phase2ShardID
-	}
+	shardID := shardForID(id)
 	// Deadline is guaranteed by withDefaultDeadline at the gRPC server level.
 	st, err := s.host.LookupInvocationStatus(ctx, shardID, id)
 	if err != nil {

@@ -56,6 +56,21 @@ func (t *tlsFlags) dial(ctx context.Context) (*admin.Client, error) {
 	})
 }
 
+// withClient validates the registered TLS flags, dials the admin
+// endpoint, and invokes fn with the live client. Centralizes the
+// validate→dial→defer-close boilerplate every subcommand was repeating.
+func (t *tlsFlags) withClient(ctx context.Context, fn func(*admin.Client) error) error {
+	if err := t.validate(); err != nil {
+		return err
+	}
+	cli, err := t.dial(ctx)
+	if err != nil {
+		return err
+	}
+	defer cli.Close()
+	return fn(cli)
+}
+
 func cmdAddNode(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("add-node", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)
@@ -67,29 +82,23 @@ func cmdAddNode(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := tls.validate(); err != nil {
-		return err
-	}
 	if *nodeID == 0 || *raftAddr == "" || *gossipAddr == "" || *grpcEndpoint == "" {
 		return errors.New("--node-id, --raft-addr, --gossip-addr, --grpc-endpoint are required")
 	}
-	cli, err := tls.dial(ctx)
-	if err != nil {
-		return err
-	}
-	defer cli.Close()
-	resp, err := cli.Admin.AddNode(ctx, &adminv1.AddNodeRequest{
-		NodeId:       *nodeID,
-		RaftAddr:     *raftAddr,
-		GossipAddr:   *gossipAddr,
-		GrpcEndpoint: *grpcEndpoint,
-		NodeHostId:   *nhID,
+	return tls.withClient(ctx, func(cli *admin.Client) error {
+		resp, err := cli.Admin.AddNode(ctx, &adminv1.AddNodeRequest{
+			NodeId:       *nodeID,
+			RaftAddr:     *raftAddr,
+			GossipAddr:   *gossipAddr,
+			GrpcEndpoint: *grpcEndpoint,
+			NodeHostId:   *nhID,
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("AddNode ok (assignment_epoch=%d)\n", resp.GetAssignmentEpoch())
+		return nil
 	})
-	if err != nil {
-		return err
-	}
-	fmt.Printf("AddNode ok (assignment_epoch=%d)\n", resp.GetAssignmentEpoch())
-	return nil
 }
 
 func cmdRemoveNode(ctx context.Context, args []string) error {
@@ -99,23 +108,17 @@ func cmdRemoveNode(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := tls.validate(); err != nil {
-		return err
-	}
 	if *nodeID == 0 {
 		return errors.New("--node-id is required")
 	}
-	cli, err := tls.dial(ctx)
-	if err != nil {
-		return err
-	}
-	defer cli.Close()
-	resp, err := cli.Admin.RemoveNode(ctx, &adminv1.RemoveNodeRequest{NodeId: *nodeID})
-	if err != nil {
-		return err
-	}
-	fmt.Printf("RemoveNode ok (assignment_epoch=%d)\n", resp.GetAssignmentEpoch())
-	return nil
+	return tls.withClient(ctx, func(cli *admin.Client) error {
+		resp, err := cli.Admin.RemoveNode(ctx, &adminv1.RemoveNodeRequest{NodeId: *nodeID})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("RemoveNode ok (assignment_epoch=%d)\n", resp.GetAssignmentEpoch())
+		return nil
+	})
 }
 
 func cmdNodes(ctx context.Context, args []string) error {
@@ -127,21 +130,15 @@ func cmdNodes(ctx context.Context, args []string) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	if err := tls.validate(); err != nil {
-		return err
-	}
-	cli, err := tls.dial(ctx)
-	if err != nil {
-		return err
-	}
-	defer cli.Close()
-	resp, err := cli.Admin.ListNodes(ctx, &adminv1.ListNodesRequest{})
-	if err != nil {
-		return err
-	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(resp.GetNodes())
+	return tls.withClient(ctx, func(cli *admin.Client) error {
+		resp, err := cli.Admin.ListNodes(ctx, &adminv1.ListNodesRequest{})
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(resp.GetNodes())
+	})
 }
 
 func cmdPartitions(ctx context.Context, args []string) error {
@@ -153,21 +150,15 @@ func cmdPartitions(ctx context.Context, args []string) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	if err := tls.validate(); err != nil {
-		return err
-	}
-	cli, err := tls.dial(ctx)
-	if err != nil {
-		return err
-	}
-	defer cli.Close()
-	resp, err := cli.Admin.ListPartitions(ctx, &adminv1.ListPartitionsRequest{})
-	if err != nil {
-		return err
-	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(resp.GetTable())
+	return tls.withClient(ctx, func(cli *admin.Client) error {
+		resp, err := cli.Admin.ListPartitions(ctx, &adminv1.ListPartitionsRequest{})
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(resp.GetTable())
+	})
 }
 
 func cmdSnapshot(ctx context.Context, args []string) error {
@@ -192,24 +183,18 @@ func cmdSnapshotCreate(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := tls.validate(); err != nil {
-		return err
-	}
 	if *shard == 0 {
 		return errors.New("--shard is required")
 	}
-	cli, err := tls.dial(ctx)
-	if err != nil {
-		return err
-	}
-	defer cli.Close()
-	resp, err := cli.Admin.CreateSnapshot(ctx, &adminv1.CreateSnapshotRequest{ShardId: *shard})
-	if err != nil {
-		return err
-	}
-	fmt.Printf("snapshot ok shard=%d index=%d size=%d\n",
-		resp.GetShardId(), resp.GetIndex(), resp.GetSizeBytes())
-	return nil
+	return tls.withClient(ctx, func(cli *admin.Client) error {
+		resp, err := cli.Admin.CreateSnapshot(ctx, &adminv1.CreateSnapshotRequest{ShardId: *shard})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("snapshot ok shard=%d index=%d size=%d\n",
+			resp.GetShardId(), resp.GetIndex(), resp.GetSizeBytes())
+		return nil
+	})
 }
 
 func cmdSnapshotList(ctx context.Context, args []string) error {
@@ -219,22 +204,16 @@ func cmdSnapshotList(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := tls.validate(); err != nil {
-		return err
-	}
 	if *shard == 0 {
 		return errors.New("--shard is required")
 	}
-	cli, err := tls.dial(ctx)
-	if err != nil {
-		return err
-	}
-	defer cli.Close()
-	resp, err := cli.Admin.ListSnapshots(ctx, &adminv1.ListSnapshotsRequest{ShardId: *shard})
-	if err != nil {
-		return err
-	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(resp.GetSnapshots())
+	return tls.withClient(ctx, func(cli *admin.Client) error {
+		resp, err := cli.Admin.ListSnapshots(ctx, &adminv1.ListSnapshotsRequest{ShardId: *shard})
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(resp.GetSnapshots())
+	})
 }

@@ -1,8 +1,6 @@
 package tables
 
 import (
-	"errors"
-
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/storage"
@@ -30,11 +28,7 @@ type OutboxRow struct {
 // Append writes an envelope at the given sequence number. Caller must
 // allocate seq atomically (typically PartitionMeta.next_outbox_seq++).
 func (t OutboxTable) Append(b storage.Batch, seq uint64, env *enginev1.OutboxEnvelope) error {
-	buf, err := proto.Marshal(env)
-	if err != nil {
-		return err
-	}
-	return b.Set(keys.OutboxKey(seq), buf)
+	return putProto(b, keys.OutboxKey(seq), env)
 }
 
 // Pop deletes the row at seq. Called once the shuffler has confirmed the
@@ -43,18 +37,11 @@ func (t OutboxTable) Pop(b storage.Batch, seq uint64) error {
 	return b.Delete(keys.OutboxKey(seq))
 }
 
-// Get loads a single row. Missing → (nil, ErrNotFound).
+// Get loads a single row. Missing → (nil, ErrNotFound) — "required"
+// convention.
 func (t OutboxTable) Get(seq uint64) (*enginev1.OutboxEnvelope, error) {
-	val, closer, err := t.S.Get(keys.OutboxKey(seq))
-	if err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return nil, storage.ErrNotFound
-		}
-		return nil, err
-	}
-	defer closer.Close()
 	var env enginev1.OutboxEnvelope
-	if err := proto.Unmarshal(val, &env); err != nil {
+	if err := getProto(t.S, keys.OutboxKey(seq), &env); err != nil {
 		return nil, err
 	}
 	return &env, nil

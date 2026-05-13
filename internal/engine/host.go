@@ -493,7 +493,6 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		Snapshotter: snap,
 		Leadership:  leadership,
 		Collector:   collector,
-		NowFn:       func() uint64 { return uint64(time.Now().UnixMilli()) },
 		Log:         h.log,
 		OnActions:   runner.dispatchActions,
 		Partitioner: routing.Partitioner{NumShards: h.partitionShardCount()},

@@ -202,7 +202,6 @@ func (m *engineMachine) spinPartition(t *rapid.T, shard uint64, recover bool) {
 		Snapshotter: snap,
 		Leadership:  lead,
 		Collector:   col,
-		NowFn:       func() uint64 { return m.nowPtr.Load() },
 		Partitioner: m.partitioner,
 	})
 	pp := m.parts[si]
@@ -232,9 +231,19 @@ func drawSpecPool(targets []modelTarget) []invSpec {
 
 // applyEnvelope marshals an envelope, advances the per-shard raft index, and
 // feeds it to Partition.Update. Returns the drained Collector contents.
+//
+// Stamps Header.CreatedAtMs from the model clock when unset so the apply
+// path reads a definite "now" — production envelopes always carry it
+// (stamped by the proposer) and the apply path no longer has a fallback.
 func (m *engineMachine) applyEnvelope(t *rapid.T, shard uint64, env *enginev1.Envelope) []Action {
 	si := m.sIdx(shard)
 	m.raftIx[si]++
+	if env.Header == nil {
+		env.Header = &enginev1.Header{}
+	}
+	if env.Header.CreatedAtMs == 0 {
+		env.Header.CreatedAtMs = m.nowPtr.Load()
+	}
 	buf, err := proto.Marshal(env)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

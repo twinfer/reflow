@@ -33,7 +33,6 @@ type PartitionConfig struct {
 	Snapshotter *Snapshotter
 	Leadership  LeadershipObserver
 	Collector   *ActionCollector
-	NowFn       func() uint64
 	Log         *slog.Logger
 	// OnActions, if non-nil, is invoked after each Update batch commits with
 	// the actions accumulated on the leader. It runs inline on the
@@ -68,9 +67,6 @@ type Partition struct {
 func NewPartition(shardID, replicaID uint64, cfg PartitionConfig) *Partition {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
-	}
-	if cfg.NowFn == nil {
-		cfg.NowFn = func() uint64 { return 0 }
 	}
 	if cfg.Collector == nil {
 		cfg.Collector = &ActionCollector{}
@@ -257,7 +253,13 @@ func (p *Partition) applyCommand(
 	timers tables.TimerTable,
 	isLeader bool,
 ) error {
-	now := p.cfg.NowFn()
+	// now is sourced from Header.created_at_ms — stamped once by the
+	// leader-side proposer (see internal/engine/proposer.go) so every
+	// replica reads the same value during Update. All production
+	// envelopes flow through buildSelfProposalEnvelope or
+	// buildIngressEnvelope and are guaranteed to carry the field; tests
+	// that construct bare Envelopes are responsible for stamping it.
+	now := env.GetHeader().GetCreatedAtMs()
 	cmd := env.GetCommand()
 
 	switch k := cmd.GetKind().(type) {
@@ -571,18 +573,11 @@ func (p *Partition) onInvokerEffect(
 			break
 		}
 
-		// base is the leader-stamped wall clock from the proposal — every
-		// replica reads the same value here, which is what keeps the
-		// resulting TimerTable row deterministic across replicas. Falls
-		// back to the local NowFn only for the (transitional) case where
-		// an older proposal in the raft log has now_ms unset.
-		base := rp.GetNowMs()
-		if base == 0 {
-			base = nowMs
-		}
-		fireAtMs := base + uint64(delay/time.Millisecond)
-		if fireAtMs <= base {
-			fireAtMs = base + 1
+		// nowMs is the leader-stamped envelope wall clock — deterministic
+		// across replicas (see applyCommand and proposer.go).
+		fireAtMs := nowMs + uint64(delay/time.Millisecond)
+		if fireAtMs <= nowMs {
+			fireAtMs = nowMs + 1
 		}
 		if err := writeRun(true); err != nil {
 			return fmt.Errorf("onInvokerEffect: journal append (run retry): %w", err)
@@ -1033,7 +1028,7 @@ func (p *Partition) onPurge(
 	if err != nil {
 		return fmt.Errorf("onPurge: load status: %w", err)
 	}
-	if _, _, err := transitionOnPurge(id, cur, p.cfg.NowFn()); err != nil {
+	if _, _, err := transitionOnPurge(id, cur); err != nil {
 		p.cfg.Log.Warn("partition: invalid Purge transition", "err", err)
 		return nil
 	}

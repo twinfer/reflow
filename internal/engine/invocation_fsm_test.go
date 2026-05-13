@@ -274,7 +274,7 @@ func TestTimerFired_OnInvokedEmitsActInvoke(t *testing.T) {
 func TestPurge_FromCompleted(t *testing.T) {
 	id := mkID()
 	target := &enginev1.InvocationTarget{ServiceName: "S"}
-	next, _, err := transitionOnPurge(id, completedStatus(target), 0)
+	next, _, err := transitionOnPurge(id, completedStatus(target))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestPurge_FromCompleted(t *testing.T) {
 func TestPurge_FromInvokedInvalid(t *testing.T) {
 	id := mkID()
 	target := &enginev1.InvocationTarget{ServiceName: "S"}
-	_, _, err := transitionOnPurge(id, invokedStatus(target), 0)
+	_, _, err := transitionOnPurge(id, invokedStatus(target))
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Errorf("expected ErrInvalidTransition, got %v", err)
 	}

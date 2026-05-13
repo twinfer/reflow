@@ -51,7 +51,13 @@ func newTestFSM(t *testing.T) (*FSM, *stubLeadership, storage.Store) {
 
 func envelope(t *testing.T, cmd *enginev1.Command) []byte {
 	t.Helper()
-	buf, err := proto.Marshal(&enginev1.Envelope{Command: cmd})
+	// Stamp Header.CreatedAtMs so the metadata-shard FSM mirrors the
+	// production envelope shape (proposer-stamped) even though shard 0
+	// itself does not consume the timestamp today.
+	buf, err := proto.Marshal(&enginev1.Envelope{
+		Header:  &enginev1.Header{CreatedAtMs: 1_700_000_000_000},
+		Command: cmd,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -36,20 +36,28 @@ func newTestPartition(t *testing.T) (*Partition, *stubLeadership, *ActionCollect
 	lead := &stubLeadership{}
 	lead.leader.Store(true)
 	col := &ActionCollector{}
-	now := uint64(1000)
 	p := NewPartition(1, 1, PartitionConfig{
 		Snapshotter: snap,
 		Leadership:  lead,
 		Collector:   col,
-		NowFn:       func() uint64 { return now },
 	})
 	t.Cleanup(func() { _ = p.Close() })
 	return p, lead, col
 }
 
+// testEnvelopeNowMs is the wall-clock value stamped onto the envelope
+// Header by the test helpers below. Tests don't care about its
+// absolute value — only that it is non-zero so the apply path reads a
+// definite "now" instead of relying on a fallback that no longer
+// exists in production (see partition.applyCommand).
+const testEnvelopeNowMs uint64 = 1_700_000_000_000
+
 func envelope(t *testing.T, cmd *enginev1.Command) []byte {
 	t.Helper()
-	buf, err := proto.Marshal(&enginev1.Envelope{Command: cmd})
+	buf, err := proto.Marshal(&enginev1.Envelope{
+		Header:  &enginev1.Header{CreatedAtMs: testEnvelopeNowMs},
+		Command: cmd,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +67,7 @@ func envelope(t *testing.T, cmd *enginev1.Command) []byte {
 func envelopeWithDedup(t *testing.T, d *enginev1.Dedup, cmd *enginev1.Command) []byte {
 	t.Helper()
 	buf, err := proto.Marshal(&enginev1.Envelope{
-		Header:  &enginev1.Header{Dedup: d},
+		Header:  &enginev1.Header{CreatedAtMs: testEnvelopeNowMs, Dedup: d},
 		Command: cmd,
 	})
 	if err != nil {
@@ -571,7 +579,10 @@ func TestPartition_AnnounceLeaderNotifiesObserver(t *testing.T) {
 func TestPartition_UnknownCommandIsNoop(t *testing.T) {
 	p, _, _ := newTestPartition(t)
 	// Empty Envelope (no command kind set) — must not error.
-	buf, _ := proto.Marshal(&enginev1.Envelope{Command: &enginev1.Command{}})
+	buf, _ := proto.Marshal(&enginev1.Envelope{
+		Header:  &enginev1.Header{CreatedAtMs: testEnvelopeNowMs},
+		Command: &enginev1.Command{},
+	})
 	if _, err := p.Update([]statemachine.Entry{{Index: 1, Cmd: buf}}); err != nil {
 		t.Fatalf("unknown command must not return error; got %v", err)
 	}
@@ -688,7 +699,6 @@ func TestPartition_SnapshotRoundTrip(t *testing.T) {
 		Snapshotter: snapB,
 		Leadership:  leadB,
 		Collector:   &ActionCollector{},
-		NowFn:       func() uint64 { return 1000 },
 	})
 	defer pB.Close()
 

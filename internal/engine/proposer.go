@@ -102,9 +102,18 @@ func (p *RaftProposer) propose(ctx context.Context, env *enginev1.Envelope) erro
 	}
 }
 
+// nowMs samples the leader-side wall clock used by buildSelfProposalEnvelope
+// / buildIngressEnvelope to stamp Header.created_at_ms. The apply path
+// reads that field instead of calling its local NowFn so every replica
+// sees the same value during Update — see partition.applyCommand. Kept
+// as a package var (not a method) so the value is purely propose-time
+// state with no instance lifecycle.
+var nowMs = func() uint64 { return uint64(time.Now().UnixMilli()) }
+
 func buildSelfProposalEnvelope(epoch, seq uint64, cmd *enginev1.Command) *enginev1.Envelope {
 	return &enginev1.Envelope{
 		Header: &enginev1.Header{
+			CreatedAtMs: nowMs(),
 			Dedup: &enginev1.Dedup{
 				Kind: &enginev1.Dedup_SelfProposal{
 					SelfProposal: &enginev1.SelfProposalDedup{
@@ -121,6 +130,7 @@ func buildSelfProposalEnvelope(epoch, seq uint64, cmd *enginev1.Command) *engine
 func buildIngressEnvelope(producerID string, seq uint64, cmd *enginev1.Command) *enginev1.Envelope {
 	return &enginev1.Envelope{
 		Header: &enginev1.Header{
+			CreatedAtMs: nowMs(),
 			Dedup: &enginev1.Dedup{
 				Kind: &enginev1.Dedup_Arbitrary{
 					Arbitrary: &enginev1.ArbitraryDedup{

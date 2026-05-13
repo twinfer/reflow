@@ -371,11 +371,12 @@ func transitionOnCallResultDelivered(
 }
 
 // transitionOnPurge moves a Completed (or Free / nil) row to Free, which the
-// caller treats as "delete the row".
+// caller treats as "delete the row". Takes no wall-clock argument: the
+// resulting Free status carries no timestamps, so the caller has no
+// reason to sample NowFn just to call this.
 func transitionOnPurge(
 	_ *enginev1.InvocationId,
 	cur *enginev1.InvocationStatus,
-	_ uint64,
 ) (*enginev1.InvocationStatus, []Action, error) {
 	switch cur.GetStatus().(type) {
 	case nil, *enginev1.InvocationStatus_Completed, *enginev1.InvocationStatus_Free:

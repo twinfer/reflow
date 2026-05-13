@@ -1,0 +1,27 @@
+// Reflow-wide custom proto options.
+//
+// required_spiffe_role tags a single RPC with the SPIFFE role its
+// caller must hold (e.g. "operator", "operator/admin", "node"). The
+// match semantics are server-side (see internal/engine/admin/authz.go).
+//
+// default_required_spiffe_role does the same at the service level.
+// Methods that omit the method-level annotation inherit this value.
+//
+// Both fields are opaque strings — reflow's role taxonomy lives in the
+// SPIFFE identity layer (pkg/reflow/tls.go), not the IDL.
+
+syntax = "proto3";
+
+package reflow.options.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/twinfer/reflow/proto/optionsv1;optionsv1";
+
+extend google.protobuf.MethodOptions {
+  string required_spiffe_role = 50001;
+}
+
+extend google.protobuf.ServiceOptions {
+  string default_required_spiffe_role = 50002;
+}

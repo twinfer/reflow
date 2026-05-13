@@ -1,10 +1,17 @@
 // Reflow cluster Admin service.
 //
-// Phase 4.2. Every reflowd process hosts an Admin gRPC server on a
-// dedicated port (typically :8082). The server is mTLS-protected with
-// the operator CA as the client trust anchor — only operators holding
-// a certificate signed by that CA can reach the surface. The reflow-
-// cluster CLI is the canonical client.
+// Every reflowd process hosts an Admin gRPC server on a dedicated port
+// (typically :8082). The server is mTLS-protected against the cluster
+// CA; the caller's SPIFFE URI SAN identifies its role
+// (`spiffe://<trust-domain>/operator/<name>` for operators). The
+// reflow-cluster CLI is the canonical client.
+//
+// Authorization is declared in this file. Each RPC carries a required
+// SPIFFE role via (reflow.options.v1.required_spiffe_role) or inherits
+// the service-level default below. The server's AuthzInterceptor
+// (internal/engine/admin/authz.go) rejects mismatches with
+// PermissionDenied. Multi-language clients can introspect the same
+// annotation from generated descriptors.
 //
 // Mutating RPCs (AddNode, RemoveNode) translate to shard-0 Raft
 // proposals; the apply arms in the metadata FSM and the metadata-
@@ -14,17 +21,20 @@
 //
 // CreateSnapshot triggers an immediate dragonboat Exported snapshot of
 // the requested partition shard; the resulting export dir is archived
-// into the configured SnapshotRepository (filesystem driver in 4.2).
+// into the configured SnapshotRepository.
 
 syntax = "proto3";
 
 package reflow.admin.v1;
 
 import "enginev1/engine.proto";
+import "optionsv1/options.proto";
 
 option go_package = "github.com/twinfer/reflow/proto/adminv1;adminv1";
 
 service Admin {
+  option (reflow.options.v1.default_required_spiffe_role) = "operator";
+
   // AddNode registers a new peer with shard 0 and enqueues a rebalance
   // sequence to give the new node a non-voting replica of every
   // existing partition shard. The non-voting replica is promoted to a

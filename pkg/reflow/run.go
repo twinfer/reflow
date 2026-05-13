@@ -301,9 +301,17 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			cleanup()
 			return nil, fmt.Errorf("reflow: admin server: %w", sErr)
 		}
+		policy, perr := admin.AdminMethodPolicy()
+		if perr != nil {
+			cleanup()
+			return nil, fmt.Errorf("reflow: build admin authz policy: %w", perr)
+		}
 		adminSrv = grpc.NewServer(
 			grpc.Creds(credentials.NewTLS(adminTLS)),
-			grpc.UnaryInterceptor(admin.AuditInterceptor(logger)),
+			grpc.ChainUnaryInterceptor(
+				admin.AuditInterceptor(logger),
+				admin.AuthzInterceptor(policy, nil),
+			),
 		)
 		srv.Register(adminSrv)
 		go func() {

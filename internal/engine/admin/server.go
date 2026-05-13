@@ -7,12 +7,15 @@
 // a leader hint in the error message; the reflow-cluster CLI is the
 // canonical client and is responsible for retrying.
 //
-// Authorization is gross-grained: any client whose certificate chain
-// verifies against the configured CA AND whose leaf carries a
-// spiffe://<trust-domain>/operator/<name> URI SAN (enforced in
-// BuildAdminServerTLS) is treated as admin. The parsed PeerIdentity is
-// logged on every call and stashed on the context for future per-RPC
-// policy hooks.
+// Authorization runs in two stages, both fed by the SPIFFE URI SAN on
+// the caller's leaf cert. The transport layer (BuildAdminServerTLS)
+// rejects any handshake whose cert lacks an `operator/*` URI. Inside
+// the gRPC chain, AuditInterceptor parses the URI into a PeerIdentity
+// and stashes it on the context; AuthzInterceptor then consults a
+// per-method policy compiled from proto annotations (see
+// authz.go and the (reflow.options.v1.required_spiffe_role) options
+// on proto/adminv1/admin.proto) and rejects mismatches with
+// PermissionDenied.
 package admin
 
 import (

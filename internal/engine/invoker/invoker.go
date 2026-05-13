@@ -274,9 +274,9 @@ func (i *Invoker) ResumeNonTerminal(table tables.InvocationTable) error {
 	})
 }
 
-// AbortInvocation tears down the named session if one exists. Used on
-// leadership loss (the runner emits ActAbortInvocation per active id)
-// and on explicit Cancel.
+// AbortInvocation tears down the named session if one exists. Called
+// directly from Invoker.Stop on leadership loss; no action type wraps
+// this entry point.
 func (i *Invoker) AbortInvocation(id *enginev1.InvocationId) {
 	key := sessionKey(id)
 	i.mu.Lock()
@@ -289,52 +289,6 @@ func (i *Invoker) AbortInvocation(id *enginev1.InvocationId) {
 		s.abort()
 		<-s.Done()
 	}
-}
-
-// DeliverNotification forwards a Completion to the named session. Step
-// 11 wires it to the session's notification mailbox; Step 10 only
-// validates that a session exists.
-func (i *Invoker) DeliverNotification(
-	id *enginev1.InvocationId,
-	completionID uint32,
-	value []byte,
-	failure string,
-	void bool,
-) {
-	i.mu.Lock()
-	_, ok := i.sessions[sessionKey(id)]
-	i.mu.Unlock()
-	if !ok {
-		// Suspended session — the next StartInvocation will observe the
-		// completion in the journal on replay.
-		return
-	}
-	_ = completionID
-	_ = value
-	_ = failure
-	_ = void
-	// Step 11: route to session's notification channel.
-}
-
-// DeliverAwakeable surfaces an external awakeable resolution to a
-// running session's in-memory state, so a poll observes it without a
-// journal re-read. Step 11 implementation.
-func (i *Invoker) DeliverAwakeable(
-	id *enginev1.InvocationId,
-	awakeableID string,
-	value []byte,
-	failure string,
-) {
-	i.mu.Lock()
-	_, ok := i.sessions[sessionKey(id)]
-	i.mu.Unlock()
-	if !ok {
-		return
-	}
-	_ = awakeableID
-	_ = value
-	_ = failure
-	// Step 11: route to session's awakeable map.
 }
 
 // activeSessions returns a snapshot of currently-active session keys.

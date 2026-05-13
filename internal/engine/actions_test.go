@@ -21,7 +21,7 @@ func TestActionCollector_PushDrainClear(t *testing.T) {
 		t.Errorf("drain didn't reset collector; len = %d", c.Len())
 	}
 
-	c.Push(ActAbortInvocation{})
+	c.Push(ActRegisterTimer{FireAtMs: 2})
 	c.Clear()
 	if c.Len() != 0 {
 		t.Errorf("clear didn't reset; len = %d", c.Len())

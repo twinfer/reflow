@@ -367,18 +367,15 @@ func TestAwakeableResolved_FromSuspended(t *testing.T) {
 	if _, ok := next.GetStatus().(*enginev1.InvocationStatus_Invoked); !ok {
 		t.Fatalf("got %T; want Invoked", next.GetStatus())
 	}
-	if len(actions) != 2 {
-		t.Fatalf("expected 2 actions (ActInvoke + ActDeliverNotification); got %d", len(actions))
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action (ActInvoke); got %d", len(actions))
 	}
-	if _, ok := actions[0].(ActInvoke); !ok {
-		t.Errorf("action[0] = %T; want ActInvoke", actions[0])
-	}
-	notify, ok := actions[1].(ActDeliverNotification)
+	inv, ok := actions[0].(ActInvoke)
 	if !ok {
-		t.Fatalf("action[1] = %T; want ActDeliverNotification", actions[1])
+		t.Fatalf("action[0] = %T; want ActInvoke", actions[0])
 	}
-	if notify.CompletionID != 7 || string(notify.Value) != "v" {
-		t.Errorf("notification fields: %+v", notify)
+	if inv.Target.GetServiceName() != "S" {
+		t.Errorf("ActInvoke target = %q; want S", inv.Target.GetServiceName())
 	}
 }
 
@@ -394,14 +391,10 @@ func TestAwakeableResolved_FromInvokedLiveDelivery(t *testing.T) {
 		t.Errorf("Invoked must remain Invoked (same pointer)")
 	}
 	if len(actions) != 1 {
-		t.Fatalf("expected 1 action; got %d", len(actions))
+		t.Fatalf("expected 1 action (ActInvoke for respawn); got %d", len(actions))
 	}
-	notify, ok := actions[0].(ActDeliverNotification)
-	if !ok {
-		t.Fatalf("action[0] = %T; want ActDeliverNotification", actions[0])
-	}
-	if notify.Failure != "boom" || notify.CompletionID != 9 {
-		t.Errorf("failure delivery fields: %+v", notify)
+	if _, ok := actions[0].(ActInvoke); !ok {
+		t.Fatalf("action[0] = %T; want ActInvoke", actions[0])
 	}
 }
 
@@ -433,12 +426,11 @@ func TestSignalDelivered_FromSuspended(t *testing.T) {
 	if _, ok := next.GetStatus().(*enginev1.InvocationStatus_Invoked); !ok {
 		t.Fatalf("got %T; want Invoked", next.GetStatus())
 	}
-	if len(actions) != 2 {
-		t.Fatalf("expected 2 actions; got %d", len(actions))
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action (ActInvoke); got %d", len(actions))
 	}
-	notify := actions[1].(ActDeliverNotification)
-	if notify.CompletionID != 4 || string(notify.Value) != "payload" {
-		t.Errorf("notify fields: %+v", notify)
+	if _, ok := actions[0].(ActInvoke); !ok {
+		t.Fatalf("action[0] = %T; want ActInvoke", actions[0])
 	}
 }
 
@@ -452,6 +444,9 @@ func TestSignalDelivered_FromInvokedLiveDelivery(t *testing.T) {
 	}
 	if next != cur || len(actions) != 1 {
 		t.Errorf("Invoked live delivery: actions=%d next==cur=%v", len(actions), next == cur)
+	}
+	if _, ok := actions[0].(ActInvoke); !ok {
+		t.Errorf("actions[0] = %T; want ActInvoke", actions[0])
 	}
 }
 
@@ -635,21 +630,11 @@ func TestCallResultDelivered_WakesSuspendedParent(t *testing.T) {
 	if _, ok := next.GetStatus().(*enginev1.InvocationStatus_Invoked); !ok {
 		t.Fatalf("expected Invoked, got %T", next.GetStatus())
 	}
-	if len(actions) != 2 {
-		t.Fatalf("expected ActInvoke + ActDeliverNotification, got %d actions", len(actions))
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action (ActInvoke), got %d actions", len(actions))
 	}
 	if _, ok := actions[0].(ActInvoke); !ok {
 		t.Errorf("actions[0] = %T; want ActInvoke", actions[0])
-	}
-	notify, ok := actions[1].(ActDeliverNotification)
-	if !ok {
-		t.Fatalf("actions[1] = %T; want ActDeliverNotification", actions[1])
-	}
-	if notify.CompletionID != 8 {
-		t.Errorf("notify.CompletionID = %d; want 8", notify.CompletionID)
-	}
-	if string(notify.Value) != "pong" {
-		t.Errorf("notify.Value = %q; want pong", notify.Value)
 	}
 }
 
@@ -667,8 +652,8 @@ func TestCallResultDelivered_OnInvokedJustNotifies(t *testing.T) {
 	if len(actions) != 1 {
 		t.Fatalf("expected 1 action, got %d", len(actions))
 	}
-	if _, ok := actions[0].(ActDeliverNotification); !ok {
-		t.Errorf("actions[0] = %T; want ActDeliverNotification", actions[0])
+	if _, ok := actions[0].(ActInvoke); !ok {
+		t.Errorf("actions[0] = %T; want ActInvoke (respawn)", actions[0])
 	}
 }
 

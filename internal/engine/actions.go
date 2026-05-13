@@ -10,10 +10,13 @@ import (
 // Followers replay the same commands but discard their actions.
 //
 // Mirrors restate crates/worker/src/partition/state_machine/actions.rs:31-114.
-// Phase 1 carried only ActInvoke, the timer pair, ActAbortInvocation, and
-// ActIngressResponse. Phase 2 adds notification + outbox + awakeable
-// delivery actions, and starts emitting ActAbortInvocation on leadership
-// changes.
+// Reflow's surface is narrower than Restate's because the wake path uses
+// "respawn the session via ActInvoke" instead of a bidi notification
+// channel — see invocation_fsm.transitionOnAwakeableResolved. The
+// notification/awakeable/abort/ingress-response actions Restate has
+// were declared here in earlier phases but never wired; they are
+// intentionally absent now and should not be reintroduced without a
+// concurrent reader plan.
 type Action interface{ isAction() }
 
 // ActInvoke asks the invoker to begin (or resume) execution of an invocation.
@@ -43,45 +46,6 @@ type ActDeleteTimer struct {
 
 func (ActDeleteTimer) isAction() {}
 
-// ActAbortInvocation tells the invoker to stop driving an in-flight invocation
-// (e.g. after Cancel or after the leader changes).
-type ActAbortInvocation struct {
-	ID *enginev1.InvocationId
-}
-
-func (ActAbortInvocation) isAction() {}
-
-// ActIngressResponse delivers a completed invocation's output to the caller
-// that initiated it. The RequestID matches the ingress request token.
-type ActIngressResponse struct {
-	RequestID string
-	ID        *enginev1.InvocationId
-	Output    []byte
-	Failure   string
-}
-
-func (ActIngressResponse) isAction() {}
-
-// ActDeliverNotification asks the Invoker to deliver a Completion message
-// to a running session. CompletionID is the journal entry index of the
-// originating command (Sleep, Call, Awakeable, lazy GetState). Exactly one
-// of Value / Failure / Void describes the result:
-//
-//	Failure non-empty             → failure completion
-//	Void true (and Failure empty) → void completion
-//	otherwise                     → value completion carrying Value
-//
-// Phase 2.
-type ActDeliverNotification struct {
-	ID           *enginev1.InvocationId
-	CompletionID uint32
-	Value        []byte
-	Failure      string
-	Void         bool
-}
-
-func (ActDeliverNotification) isAction() {}
-
 // ActDispatchOutbox hands a freshly-appended OutboxEnvelope to the leader's
 // outbox shuffler. The shuffler proposes the envelope's command via
 // ProposeIngress and pops the row once the proposal commits. On crash
@@ -93,21 +57,6 @@ type ActDispatchOutbox struct {
 }
 
 func (ActDispatchOutbox) isAction() {}
-
-// ActDeliverAwakeable surfaces an external awakeable resolution to the
-// Invoker side-band, distinct from the JEAwakeableResult-driven
-// ActDeliverNotification path. The Invoker uses it to update in-memory
-// awakeable bookkeeping for sessions that are currently running (not
-// suspended) so a subsequent ctx.Awakeable poll observes the result
-// without a journal re-read. Phase 2.
-type ActDeliverAwakeable struct {
-	ID          *enginev1.InvocationId
-	AwakeableID string
-	Value       []byte
-	Failure     string
-}
-
-func (ActDeliverAwakeable) isAction() {}
 
 // ActionCollector is a single-goroutine append-only buffer of Actions
 // produced during one Update call. It is owned by the partition's apply path

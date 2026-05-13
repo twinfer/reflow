@@ -230,29 +230,28 @@ func transitionOnTimerFired(
 //
 // Transitions:
 //
-//	Suspended  → Invoked   (+ ActInvoke + ActDeliverNotification)
-//	Invoked    → Invoked   (+ ActDeliverNotification; live session)
+//	Suspended  → Invoked   (+ ActInvoke; respawn session, reload journal)
+//	Invoked    → Invoked   (+ ActInvoke; queue respawn so the running
+//	                        session re-reads journal after exit)
 //	Completed  → Completed (late arrival; no-op)
 //	*          → ErrInvalidTransition
 //
-// On the Suspended path both actions fire: ActInvoke makes the Invoker
-// spawn a fresh session goroutine; ActDeliverNotification is the redundant
-// side-band carrying the completion in case the session's known_entries
-// does not yet include this index. Phase 2.
+// Both wake paths emit ActInvoke. Invoker.StartInvocation idempotently
+// queues a pendingRespawn when a session for the id is still running,
+// and watchSession installs a fresh session as soon as the current one
+// exits. The fresh session's prepare() reloads the journal and the
+// handler poll sees the newly-appended result entry. There is no live
+// in-process notification channel; the action surface is purely "wake
+// + respawn", which matches the SDK's "handler returns ErrSuspended"
+// shape. Phase 2.
 func transitionOnAwakeableResolved(
 	id *enginev1.InvocationId,
 	cur *enginev1.InvocationStatus,
-	completionIdx uint32,
-	value []byte,
-	failure string,
+	_ uint32,
+	_ []byte,
+	_ string,
 	nowMs uint64,
 ) (*enginev1.InvocationStatus, []Action, error) {
-	notify := ActDeliverNotification{
-		ID:           id,
-		CompletionID: completionIdx,
-		Value:        value,
-		Failure:      failure,
-	}
 	switch s := cur.GetStatus().(type) {
 	case *enginev1.InvocationStatus_Suspended:
 		next := &enginev1.InvocationStatus{
@@ -264,9 +263,9 @@ func transitionOnAwakeableResolved(
 				},
 			},
 		}
-		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}, notify}, nil
+		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Invoked:
-		return cur, []Action{notify}, nil
+		return cur, []Action{ActInvoke{ID: id, Target: s.Invoked.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Completed:
 		return cur, nil, nil
 	default:
@@ -281,25 +280,21 @@ func transitionOnAwakeableResolved(
 //
 // Transitions:
 //
-//	Suspended  → Invoked   (+ ActInvoke + ActDeliverNotification void)
-//	Invoked    → Invoked   (+ ActDeliverNotification void)
+//	Suspended  → Invoked   (+ ActInvoke)
+//	Invoked    → Invoked   (+ ActInvoke; queue respawn)
 //	Completed  → Completed (no-op)
 //	*          → ErrInvalidTransition
 //
-// Phase 2.
+// See transitionOnAwakeableResolved for the rationale on the
+// ActInvoke-only wake shape. Phase 2.
 func transitionOnSignalDelivered(
 	id *enginev1.InvocationId,
 	cur *enginev1.InvocationStatus,
-	completionIdx uint32,
+	_ uint32,
 	_ string, // signalName — surfaced via the journal entry, not the action
-	payload []byte,
+	_ []byte,
 	nowMs uint64,
 ) (*enginev1.InvocationStatus, []Action, error) {
-	notify := ActDeliverNotification{
-		ID:           id,
-		CompletionID: completionIdx,
-		Value:        payload,
-	}
 	switch s := cur.GetStatus().(type) {
 	case *enginev1.InvocationStatus_Suspended:
 		next := &enginev1.InvocationStatus{
@@ -311,9 +306,9 @@ func transitionOnSignalDelivered(
 				},
 			},
 		}
-		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}, notify}, nil
+		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Invoked:
-		return cur, []Action{notify}, nil
+		return cur, []Action{ActInvoke{ID: id, Target: s.Invoked.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Completed:
 		return cur, nil, nil
 	default:
@@ -329,26 +324,20 @@ func transitionOnSignalDelivered(
 //
 // Transitions:
 //
-//	Suspended  → Invoked   (+ ActInvoke + ActDeliverNotification)
-//	Invoked    → Invoked   (+ ActDeliverNotification; live session)
+//	Suspended  → Invoked   (+ ActInvoke)
+//	Invoked    → Invoked   (+ ActInvoke; queue respawn)
 //	Completed  → Completed (late arrival; no-op)
 //	*          → ErrInvalidTransition
 //
-// Phase 2.5.
+// See transitionOnAwakeableResolved for the wake-shape rationale. Phase 2.5.
 func transitionOnCallResultDelivered(
 	id *enginev1.InvocationId,
 	cur *enginev1.InvocationStatus,
-	completionIdx uint32,
-	value []byte,
-	failure string,
+	_ uint32,
+	_ []byte,
+	_ string,
 	nowMs uint64,
 ) (*enginev1.InvocationStatus, []Action, error) {
-	notify := ActDeliverNotification{
-		ID:           id,
-		CompletionID: completionIdx,
-		Value:        value,
-		Failure:      failure,
-	}
 	switch s := cur.GetStatus().(type) {
 	case *enginev1.InvocationStatus_Suspended:
 		next := &enginev1.InvocationStatus{
@@ -360,9 +349,9 @@ func transitionOnCallResultDelivered(
 				},
 			},
 		}
-		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}, notify}, nil
+		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Invoked:
-		return cur, []Action{notify}, nil
+		return cur, []Action{ActInvoke{ID: id, Target: s.Invoked.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Completed:
 		return cur, nil, nil
 	default:

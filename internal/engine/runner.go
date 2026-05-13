@@ -94,21 +94,6 @@ func (r *PartitionRunner) dispatchActions(actions []Action) {
 				continue
 			}
 			r.invoker.StartInvocation(act.ID, act.Target)
-		case ActAbortInvocation:
-			if r.invoker == nil {
-				continue
-			}
-			r.invoker.AbortInvocation(act.ID)
-		case ActDeliverNotification:
-			if r.invoker == nil {
-				continue
-			}
-			r.invoker.DeliverNotification(act.ID, act.CompletionID, act.Value, act.Failure, act.Void)
-		case ActDeliverAwakeable:
-			if r.invoker == nil {
-				continue
-			}
-			r.invoker.DeliverAwakeable(act.ID, act.AwakeableID, act.Value, act.Failure)
 		case ActDispatchOutbox:
 			if r.outbox == nil {
 				r.log.Warn("runner: ActDispatchOutbox with no outbox service",
@@ -116,10 +101,6 @@ func (r *PartitionRunner) dispatchActions(actions []Action) {
 				continue
 			}
 			r.outbox.Push(act.Seq, act.Envelope)
-		case ActIngressResponse:
-			// Phase 2: ingress response routing lands with the gRPC
-			// gateway (Step 13). Drop quietly until then so existing FSM
-			// paths can populate the action without crashing.
 		default:
 			r.log.Warn("runner: unhandled action type", "type", a)
 		}

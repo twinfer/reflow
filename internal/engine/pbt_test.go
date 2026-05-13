@@ -296,8 +296,6 @@ func (m *engineMachine) routeActions(t *rapid.T, srcShard uint64, actions []Acti
 					srcShard: srcShard, seq: v.Seq, env: v.Envelope,
 				})
 			}
-		case ActDeliverNotification, ActDeliverAwakeable, ActAbortInvocation, ActIngressResponse:
-			// local — drop
 		default:
 			_ = v
 		}
@@ -893,4 +891,166 @@ func TestEngine_PBT(t *testing.T) {
 		m.init(rt)
 		rt.Repeat(rapid.StateMachineActions(m))
 	})
+}
+
+// TestEngine_InvokedWakeRespawn covers the race the wake-path rewire
+// fixed: a resolution (Awakeable/Signal/CallResult) that arrives while
+// the invocation is still Invoked must emit ActInvoke so the Invoker's
+// pendingRespawn queue picks up the wake even though the running
+// session is mid-flight returning ErrSuspended.
+//
+// Sequence:
+//
+//  1. Invoke                       → Scheduled  (+ ActInvoke)
+//  2. JEInput append               → Invoked
+//  3. SignalDelivered (Invoked!)   → Invoked    (+ ActInvoke for respawn)
+//  4. Suspended                    → Suspended  (handler returned ErrSuspended)
+//  5. SignalDelivered (Suspended)  → Invoked    (+ ActInvoke for restart)
+//  6. Completed                    → Completed
+//
+// Pre-rewire, step 3 emitted only ActDeliverNotification (dropped on the
+// floor by Invoker.DeliverNotification), so the wake was lost. After
+// step 4 the invocation would have been stranded Suspended despite the
+// journal carrying the signal. The assertion at step 3 is the new
+// guarantee.
+func TestEngine_InvokedWakeRespawn(t *testing.T) {
+	p, _, col := newTestPartition(t)
+
+	id := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("wake-respawn-id1")}
+	target := &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"}
+
+	apply := func(idx uint64, cmd *enginev1.Command) []Action {
+		t.Helper()
+		buf, err := proto.Marshal(&enginev1.Envelope{
+			Header:  &enginev1.Header{CreatedAtMs: testEnvelopeNowMs},
+			Command: cmd,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: buf}}); err != nil {
+			t.Fatalf("Update(idx=%d): %v", idx, err)
+		}
+		return col.Drain()
+	}
+
+	requireStatus := func(stage string, want any) {
+		t.Helper()
+		res, err := p.Lookup(LookupInvocation{ID: id})
+		if err != nil {
+			t.Fatalf("%s: Lookup: %v", stage, err)
+		}
+		got := res.(*enginev1.InvocationStatus).GetStatus()
+		switch want.(type) {
+		case *enginev1.InvocationStatus_Scheduled:
+			if _, ok := got.(*enginev1.InvocationStatus_Scheduled); !ok {
+				t.Fatalf("%s: status = %T; want Scheduled", stage, got)
+			}
+		case *enginev1.InvocationStatus_Invoked:
+			if _, ok := got.(*enginev1.InvocationStatus_Invoked); !ok {
+				t.Fatalf("%s: status = %T; want Invoked", stage, got)
+			}
+		case *enginev1.InvocationStatus_Suspended:
+			if _, ok := got.(*enginev1.InvocationStatus_Suspended); !ok {
+				t.Fatalf("%s: status = %T; want Suspended", stage, got)
+			}
+		case *enginev1.InvocationStatus_Completed:
+			if _, ok := got.(*enginev1.InvocationStatus_Completed); !ok {
+				t.Fatalf("%s: status = %T; want Completed", stage, got)
+			}
+		}
+	}
+
+	requireOneActInvoke := func(stage string, actions []Action) {
+		t.Helper()
+		if len(actions) != 1 {
+			t.Fatalf("%s: got %d actions, want 1", stage, len(actions))
+		}
+		if _, ok := actions[0].(ActInvoke); !ok {
+			t.Fatalf("%s: actions[0] = %T; want ActInvoke", stage, actions[0])
+		}
+	}
+
+	// 1. Invoke → Scheduled
+	actions := apply(1, &enginev1.Command{
+		Kind: &enginev1.Command_Invoke{
+			Invoke: &enginev1.InvokeCommand{
+				InvocationId: id, Target: target, Input: []byte("in"),
+			},
+		},
+	})
+	requireOneActInvoke("step 1 (Invoke)", actions)
+	requireStatus("step 1", (*enginev1.InvocationStatus_Scheduled)(nil))
+
+	// 2. JEInput → Invoked
+	apply(2, &enginev1.Command{
+		Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+			InvocationId: id,
+			Kind: &enginev1.InvokerEffect_JournalAppended{
+				JournalAppended: &enginev1.JournalEntryAppended{
+					Entry: &enginev1.JournalEntry{
+						Index: 0,
+						Entry: &enginev1.JournalEntry_Input{Input: &enginev1.JEInput{Value: []byte("in")}},
+					},
+				},
+			},
+		}},
+	})
+	requireStatus("step 2", (*enginev1.InvocationStatus_Invoked)(nil))
+
+	// 3. SignalDelivered arrives while still Invoked — the wake-respawn
+	//    surface. Status stays Invoked but ActInvoke must fire so the
+	//    Invoker queues pendingRespawn for after the in-flight session
+	//    finishes its ErrSuspended unwind.
+	actions = apply(3, &enginev1.Command{
+		Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+			InvocationId: id,
+			Kind: &enginev1.InvokerEffect_SignalDelivered{
+				SignalDelivered: &enginev1.SignalDelivered{
+					SignalName: "sig1", Payload: []byte("p1"),
+				},
+			},
+		}},
+	})
+	requireOneActInvoke("step 3 (live SignalDelivered on Invoked)", actions)
+	requireStatus("step 3", (*enginev1.InvocationStatus_Invoked)(nil))
+
+	// 4. Handler returns ErrSuspended → session proposes Suspended.
+	apply(4, &enginev1.Command{
+		Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+			InvocationId: id,
+			Kind: &enginev1.InvokerEffect_Suspended{
+				Suspended: &enginev1.InvocationSuspended{AwaitingOn: []string{"signal:sig1"}},
+			},
+		}},
+	})
+	requireStatus("step 4", (*enginev1.InvocationStatus_Suspended)(nil))
+
+	// 5. Second signal arrives. Suspended → Invoked, ActInvoke for the
+	//    fresh session start. (This is the standard Suspended-wake path
+	//    that has always worked; included so the test exercises both
+	//    branches end-to-end.)
+	actions = apply(5, &enginev1.Command{
+		Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+			InvocationId: id,
+			Kind: &enginev1.InvokerEffect_SignalDelivered{
+				SignalDelivered: &enginev1.SignalDelivered{
+					SignalName: "sig2", Payload: []byte("p2"),
+				},
+			},
+		}},
+	})
+	requireOneActInvoke("step 5 (Suspended wake)", actions)
+	requireStatus("step 5", (*enginev1.InvocationStatus_Invoked)(nil))
+
+	// 6. Respawned handler runs to completion.
+	apply(6, &enginev1.Command{
+		Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+			InvocationId: id,
+			Kind: &enginev1.InvokerEffect_Completed{
+				Completed: &enginev1.InvocationCompleted{Output: []byte("done")},
+			},
+		}},
+	})
+	requireStatus("step 6", (*enginev1.InvocationStatus_Completed)(nil))
 }

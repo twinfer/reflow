@@ -1,9 +1,13 @@
 # Solution Architecture Document
 # Durable Execution Engine in Go
 
-**Version:** 0.5 (Draft)
-**Date:** 2026-05-11
-**Status:** Phase 1 implemented; positioning + multi-node design locked in
+**Version:** 0.6 (Draft)
+**Date:** 2026-05-13
+**Status:** Phase 1 + Phase 2 invoker + Phase 4.2 multi-node (mTLS admin,
+dynamic membership, DR snapshots) + Phase 4.3 auth consolidation
+(single-CA SPIFFE identity, proto-annotation authz, single Authorizer
+seam) implemented. Phase 3 (Virtual Objects) and Phase 5 (cloud snapshot
+drivers, retention, non-Go SDKs) outstanding.
 
 ---
 
@@ -145,12 +149,13 @@ Each partition is an independent unit: one dragonboat Raft group, one Pebble ins
 
 | Concern | Library | License |
 |---|---|---|
-| Raft consensus + replication | `lni/dragonboat` v4 | Apache 2.0 |
-| Embedded K/V storage | `cockroachdb/pebble` | Apache 2.0 |
-| gRPC / SDK protocol (Phase 2+) | `google.golang.org/grpc` | Apache 2.0 |
-| HTTP/2 ingress (Phase 2+) | `net/http` (stdlib) | — |
+| Raft consensus + replication | `lni/dragonboat/v4` (pre-release pin) | Apache 2.0 |
+| Embedded K/V storage | `cockroachdb/pebble/v2` | Apache 2.0 |
+| gRPC (ingress, admin, delivery, sdk session) | `google.golang.org/grpc` | Apache 2.0 |
+| HTTP/2 ingress (REST gateway) | `grpc-ecosystem/grpc-gateway/v2` | BSD-3 |
 | Snapshot archival (Phase 4 fs, Phase 5 cloud) | `gocloud.dev/blob` | Apache 2.0 |
-| Serialization | `google.golang.org/protobuf` | BSD-3 |
+| Serialization + IDL | `google.golang.org/protobuf` + `buf` v2 | BSD-3 / Apache 2.0 |
+| Authn/Authz | stdlib `crypto/tls`, custom SPIFFE URI mapper + proto-annotation authz (`internal/auth`) | — |
 | Structured logging | `log/slog` (stdlib) | — |
 | Metrics | `prometheus/client_golang` | Apache 2.0 |
 
@@ -158,10 +163,13 @@ The invocation state machine uses a plain switch over the persisted
 `InvocationStatus` discriminated union rather than an FSM library — see §6.4.
 No third-party FSM dependency is required.
 
-`pebble` is pinned to `v0.0.0-20221207173255-0f086d933dac` because
-`lni/dragonboat/v4` (the pre-release in `go.mod`) embeds an older Pebble
-`vfs.FS` shape; upgrading Pebble requires either a newer dragonboat release
-or a `replace` directive aligning the two.
+`go.mod` pins `cockroachdb/pebble/v2 v2.1.5` (the public Pebble API used
+by reflow's `StateStore`) and `lni/dragonboat/v4 v4.0.0-20250723143628-076c7f6497dc`
+(the pre-release that internally still uses pebble v1 for its log store).
+The two coexist because dragonboat's pebble dependency is package-isolated
+behind `cockroachdb/pebble` (no `/v2`) — go's module graph treats them as
+distinct packages. Watch dragonboat for an official v4 release that bumps
+its internal pebble.
 
 ---
 
@@ -169,21 +177,32 @@ or a `replace` directive aligning the two.
 
 ### 6.1 Ingress Layer
 
-Accepts invocations from external callers and SDK service-to-service calls.
+Accepts invocations from external callers. The ingress is the
+client-facing surface; SDK handler streaming is a *separate* gRPC
+service (see §6.10.2), not part of ingress.
 
 **Responsibilities:**
-- Authenticate and parse invocation requests (HTTP/2 + JSON or protobuf)
-- Determine the target partition via consistent hashing on `(service_name, object_key)`
-- Forward invocation commands to the correct Partition Processor via internal gRPC
-- Return invocation ID to caller immediately (async) or stream response (sync/await)
+- Parse invocation requests (HTTP/JSON via grpc-gateway or native gRPC).
+- Determine the target partition via consistent hashing on
+  `(service_name, object_key)`.
+- Forward invocation commands to the correct Partition Processor via
+  internal gRPC (cross-node) or in-process call (co-located).
+- Return invocation ID to caller immediately (async) or stream response
+  (sync/await).
 
 **Routing:**
 ```
 partition_id = hash(service_name + "/" + object_key) % num_partitions
 ```
 
-**SDK Endpoint:**
-Each SDK handler connects back to the ingress over HTTP/2. The runtime drives execution by streaming journal entries; the SDK handler streams commands back. This is a long-lived bidirectional stream per active invocation.
+**gRPC surfaces hosted by reflowd (all distinct, by design):**
+
+| Surface | Port (default) | Auth | Purpose |
+|--|--|--|--|
+| Ingress (`reflow.ingress.v1`) | 8080 | None today (client identity model TBD) | External callers submit invocations, resolve awakeables |
+| SDK session (`reflow.sdk.v1.SessionService`) | 8080 (alongside ingress) | TBD (handler identity model TBD) | Out-of-process handlers — stub returns Unimplemented until routing lands |
+| Delivery (`reflow.delivery.v1`) | 8081 | mTLS, `spiffe://<td>/node/*` enforced by `auth.StreamInterceptor` | Cross-partition / cross-node command forwarding |
+| Admin (`reflow.admin.v1`) | 8082 | mTLS, `spiffe://<td>/operator/*` enforced by `auth.UnaryInterceptor` | Cluster ops: add/remove node, list partitions, snapshot mgmt |
 
 ---
 
@@ -215,52 +234,117 @@ metadata group is always authoritative; gossip is only ever a hint.
   format field; the storage marker handles the common case (operator boots a
   binary against an incompatible data dir) without polluting the proto.
 
-**Bootstrap (no discovery service required):**
+**Bootstrap — static peer list, no discovery service required:**
 
-```bash
-# Founder
-reflowd --node-id=1 --raft-addr=10.0.0.1:9091 \
-        --data-dir=/var/lib/reflow --bootstrap-cluster
+Every node ships with the full `Cluster.Peers` list in its config; there
+is no founder/joiner asymmetry in the `reflowd` binary. The cluster
+forms once a quorum of `NodeHost`s can reach each other.
 
-# Joiners
-reflowd --node-id=2 --raft-addr=10.0.0.2:9091 \
-        --data-dir=/var/lib/reflow --join=10.0.0.1:9091
-reflowd --node-id=3 --raft-addr=10.0.0.3:9091 \
-        --data-dir=/var/lib/reflow --join=10.0.0.1:9091
+```yaml
+# reflowd config (identical shape on every node; only node.id differs)
+node:
+  id: 2
+  raft_addr: 10.0.0.2:9091
+  gossip_bind_addr: 10.0.0.2:9092
+  delivery_addr: 10.0.0.2:8081
+storage:
+  data_dir: /var/lib/reflow
+cluster:
+  peers:
+    - { node_id: 1, raft_addr: 10.0.0.1:9091, gossip_addr: 10.0.0.1:9092, node_host_id: <uuid> }
+    - { node_id: 2, raft_addr: 10.0.0.2:9091, gossip_addr: 10.0.0.2:9092, node_host_id: <uuid> }
+    - { node_id: 3, raft_addr: 10.0.0.3:9091, gossip_addr: 10.0.0.3:9092, node_host_id: <uuid> }
 ```
 
-Each node:
+Each node, in order (`pkg/reflow/run.go:Run`):
 
-1. Constructs a `dragonboat.NodeHost`.
-2. The founder starts shard `0` (the metadata group) with
-   `initialMembers = {1: addr1}` and `join=false`.
-3. Joiners contact the founder via `--join=<addr>`; the founder proposes
-   `RequestAddReplica` against shard `0` and the joiner brings up the
-   metadata replica with `join=true`.
-4. Once the metadata group has a leader, that leader assigns partitions
-   (round-robin or consistent-hash over the node set) and proposes the
-   `PartitionTable`.
-5. Every node observes the partition table and locally calls
-   `StartOnDiskReplica` for the partitions assigned to it. Partitions it
-   no longer owns are stopped via `StopShard`.
+1. Validate config (`Node.ID`, `Node.RaftAddr`, `Storage.DataDir`; mTLS
+   files required when `Cluster.Peers` is non-empty —
+   `cmd/reflowd/main.go:requireTLSWhenMultiNode`).
+2. Build the slog logger, register Prometheus collectors, optionally
+   start `/metrics` HTTP server.
+3. `engine.NewHost` → `dragonboat.NewNodeHost` with
+   `DefaultNodeRegistryEnabled = true`, `NodeHostID = self UUID`, and a
+   `GossipConfig` whose `Seed` is the *other* peers' gossip addrs and
+   whose `Meta` is the proto-marshalled
+   `NodeHostMeta{GrpcEndpoint = Node.DeliveryAddr}`
+   (`internal/engine/host.go:applyMultiNodeConfig`). The NodeHost is up,
+   gossip is running, but no shards have started.
+4. Build the Delivery surface (`pkg/reflow/run.go:96-187`): mTLS server
+   creds (cluster CA + node leaf), gRPC server with
+   `auth.StreamInterceptor`, `delivery.Client` for outbound, and
+   `Host.SetCrossShardSender(client)` so partitions started below get a
+   Sender.
+5. `Host.StartMetadataShard()` opens `${DataDir}/meta/state`, builds the
+   cluster FSM + leadership + proposer, and calls
+   `nh.StartOnDiskReplica(initialMembers, /*join=*/ false, fsm, raftCfg)`
+   (`host.go:321`). `initialMembers` is built from the full peer list as
+   `{node_id → NodeHostID}` targets (`host.go:initialMembers`,
+   line 613-622) so dragonboat gossip resolves them to live raft addrs.
+6. For each `shard_id` in `Cluster.Shards`, `Host.StartPartition`
+   repeats the per-partition equivalent: open Pebble at
+   `${DataDir}/p{shard_id}/state`, build the Invoker bound to the
+   partition's tables, register the leadership callbacks, and call
+   `nh.StartOnDiskReplica(initialMembers, false, fsm, raftCfg)`
+   (`host.go:508`).
+7. Optionally build the snapshot producer (`snapshot.FSRepository` +
+   `RunProducer` goroutine per shard).
+8. Optionally build the Admin surface: mTLS server creds, gRPC server
+   with `auth.UnaryInterceptor`, `adminv1.RegisterAdminServer`.
 
-**Dynamic membership (in-binary CLI, no external service):**
+After `Run` returns, the cluster forms organically. Each NodeHost has
+the full member list; once `floor(N/2)+1` of them can reach each other
+over the Raft RPC, dragonboat elects a leader. The election fires
+`raftEventListener.LeaderUpdated`, which runs
+`Leadership.onBecomeLeader` on the elected node — that proposes
+`AnnounceLeader`, bumps the leader epoch (seeded from
+`MetaTable.latest_announced_epoch` to skip past prior leaders'
+proposals), and starts the leader-only services
+(`TimerService`, `OutboxService`, the Invoker's leader-side loops).
+Followers run the same FSM apply path with leader-only services idle.
+
+**Dynamic membership — partial today (see `OPEN-1` in §9):**
+
+The admin RPC, cluster FSM, and metadata rebalancer that drive
+*post-bootstrap* membership changes all exist:
 
 ```bash
-reflow-cluster add-node    --target=10.0.0.4:9091 --node-id=4
+reflow-cluster add-node    --node-id=4 --raft-addr=10.0.0.4:9091 \
+                           --gossip-addr=10.0.0.4:9092 \
+                           --grpc-endpoint=10.0.0.4:8081 \
+                           --node-host-id=<uuid>
 reflow-cluster remove-node --node-id=2
 ```
 
-These subcommands of `reflowd` proposing through the metadata group:
+- **`add-node`** (`internal/engine/admin/server.go:AddNode`): proposes
+  `RegisterNode{Member}` to shard 0, then enqueues a
+  `BeginRebalanceStep{Kind: PROMOTE_TO_VOTER, AddNodeId}` for every
+  partition the new node should hold. The metadata rebalancer
+  (`internal/engine/metadata_rebalancer.go:227-247`) watches the pending
+  queue and on the metadata leader executes the dragonboat-side call:
+  `SyncRequestAddNonVoting`, then `SyncRequestAddReplica`. On success it
+  proposes `CompleteRebalanceStep`, which updates the persisted replica
+  set and bumps `assignment_epoch`.
+- **`remove-node`**: same path with `EvictNode` →
+  `SyncRequestDeleteReplica`. Works end-to-end today because the leaving
+  node's `reflowd` already has the live membership in its NodeHost; it
+  simply exits when dragonboat removes its replica.
 
-- *Add:* metadata leader proposes the new node into shard `0`, then drives
-  per-partition `RequestAddNonVoting` → wait-for-catch-up →
-  `RequestAddReplica` membership changes for the partitions being
-  reassigned. The new node receives the partition table from shard `0`
-  and starts the partitions it now owns.
-- *Remove:* metadata leader proposes partition reassignments first
-  (`RequestAddReplica` for replacement holders, then `RequestRemoveReplica`
-  for the leaving node), and only removes the node from shard `0` last.
+**The gap.** The cluster-side protocol is complete, but the *joining
+node's own startup* is not. `Host.StartMetadataShard` and
+`Host.StartPartition` both hard-code `nh.StartOnDiskReplica(initial,
+join=false, ...)`. Dragonboat's contract for a node joining an existing
+Raft group is the opposite: `StartOnDiskReplica(nil, join=true, ...)`
+after the existing leader has issued `SyncRequestAddReplica`. Reflow
+has no `join=true` code path and no `reflowd --join` flag.
+
+In practice this means: `add-node` against a live 3-node cluster
+correctly updates the membership on the existing nodes, but the new
+`reflowd` cannot itself come up against an established Raft group. The
+missing pieces are minimal — `HostConfig.JoinExisting bool` flipping
+both `StartOnDiskReplica` calls to `join=true` + `nil` initial members,
+and a corresponding `reflowd` flag / config key. Tracked as **OPEN-1**
+in §9 and as a GitHub issue (filed alongside this SAD revision).
 
 **Failure detection.** Dragonboat's built-in gossip (memberlist/SWIM,
 enabled via `NodeHostConfig.AddressByNodeHostID = true` + `GossipConfig`)
@@ -272,9 +356,10 @@ strongly-consistent decision driven by an eventually-consistent signal.
 
 **Discovery & endpoint resolution.** Two complementary sources:
 
-- *Authoritative (shard 0):* partition table (`shard_id → [node_id ...]`),
-  assignment epoch, schema version barrier. All routing decisions that
-  affect correctness read from here.
+- *Authoritative (shard 0):* partition table (`shard_id → [node_id ...]`)
+  and assignment epoch. All routing decisions that affect correctness
+  read from here. (Schema/format-skew protection lives at the storage
+  layer via `internal/storage/format.go`, not in shard 0.)
 - *Hint cache (dragonboat gossip):* `NodeHostRegistry.GetShardInfo` exposes
   `ShardView{LeaderID, Replicas map[replicaID]raftAddr, Term}` for every
   shard cluster-wide, refreshed by gossip. The per-nodehost `Meta` blob
@@ -347,47 +432,104 @@ FSM state. Illegal transitions log a warning and become no-ops — returning
 an error from `Update` would halt the shard (dragonboat
 `statemachine/disk.go:113`).
 
+The persisted oneof is `{Free, Scheduled, Invoked, Suspended, Completed}`
+(`proto/enginev1/engine.proto`). `Free` is the absence-of-record state
+returned when no row exists for an `InvocationId`. There is no separate
+`Failed` / `Dead` / `Retrying` row — terminal failures land as
+`Completed{failure=...}` and retry backoff is encoded as a `Suspended`
+waiting on a timer.
+
 ```
                     ┌──────────┐
-               ┌───▶│ Pending  │
-               │    └────┬─────┘
-               │         │ scheduled
-               │    ┌────▼─────┐
-               │    │ Scheduled│
-               │    └────┬─────┘
-               │         │ handler_ready
-               │    ┌────▼─────┐
-          retry│    │  Running │◀─────────┐
-               │    └────┬─────┘          │ resume
-               │         │                │
-               │    ┌────▼─────┐    ┌─────┴────┐
-               │    │  Failed  │    │Suspended │
-               │    └────┬─────┘    └──────────┘
-               │         │ has_retries
-               └─────────┘
-                         │ no_retries
+                    │   Free   │  (no row in inv/ table)
+                    └────┬─────┘
+                         │ InvokeCommand applied
                     ┌────▼─────┐
-                    │  Dead    │
-                    └──────────┘
-                         
-                    ┌──────────┐
-                    │Completed │  (terminal, from Running)
+                    │Scheduled │  (queued for invoker; handler not yet picked up)
+                    └────┬─────┘
+                         │ handler claims slot
+                    ┌────▼─────┐
+                    │ Invoked  │◀──────────┐
+                    └────┬─────┘           │ resume (timer / awakeable)
+                         │                 │
+                         │ awaits        ┌─┴──────────┐
+                         ├──────────────▶│  Suspended │
+                         │               └────────────┘
+                         │ EndInvocation
+                    ┌────▼─────┐
+                    │ Completed│  (terminal — value OR failure)
                     └──────────┘
 ```
 
-**Triggers:** `Schedule`, `HandlerReady`, `Suspend`, `Resume`, `Complete`, `Fail`, `Retry`
+**Apply-arm triggers** (each maps to an `InvokerEffect` or external
+command, never an in-FSM action):
 
-**On entry actions:**
-- `Running` → stream journal to SDK handler, begin execution
-- `Suspended` → release handler goroutine, persist suspension state
-- `Completed` → write output to state, notify waiting callers
-- `Retrying` → compute backoff, propose timer entry
+- `InvokeCommand` → `Free → Scheduled`.
+- `JournalAppended(input)` plus invoker registration → `Scheduled → Invoked`.
+- `InvocationSuspended` → `Invoked → Suspended` (records waker IDs).
+- `TimerFired` / `AwakeableResolved` / `SignalDelivered` → `Suspended → Invoked`.
+- `InvocationCompleted` → `Invoked → Completed` (with value or failure).
+- `PurgeInvocation` → row deleted, return to `Free`.
+
+**On-entry actions** (pushed to the leader-only `ActionCollector` after
+the storage batch commits):
+
+- `Invoked` → push `ActInvoke` so the Invoker resumes the handler.
+- `Suspended` → register pending wakers (timer entries already in
+  storage from the same batch; no separate action).
+- `Completed` → write output to state, queue outbox envelopes for any
+  parent invocations, notify in-process awaits.
+
+#### Differences from Restate's `InvocationStatus`
+
+Restate's enum (`restate/crates/storage-api/src/invocation_status_table/mod.rs:142-155`)
+has seven variants: `Scheduled, Inboxed, Invoked, Suspended, Paused,
+Completed, Free`. Reflow has five: the two missing variants are
+`Inboxed` and `Paused`. Both omissions are deliberate.
+
+**No `Inboxed`.** Restate's `Inboxed(InboxedInvocation)`
+(line 144, struct at line 551) carries `inbox_sequence_number` plus
+pre-flight metadata and is used when a virtual-object key is busy:
+the invocation sits in a per-key inbox waiting for the current holder
+to release. The inbox position lives *inside the invocation status
+row*.
+
+Reflow factors this gating out into `KeyLeaseStatus`
+(`proto/enginev1/engine.proto:436`) — a separate row per
+`(service, object_key)` carrying the active invocation id and a FIFO
+queue. The invocation itself stays in `Scheduled` until the lease
+frees. The trade-off: one extra table lookup on apply, in exchange
+for a single FSM shape that's identical for ordinary invocations and
+queued VObject calls. The Restate model is denser; the reflow model
+is simpler to test.
+
+**No `Paused`.** Restate's `Paused(InFlightInvocationMetadata)`
+(line 150) is an *operator-initiated* pause distinct from `Suspended`
+(which awaits an internal completion). Triggered by `OnPausedCommand`
+(`restate/crates/worker/src/partition/state_machine/lifecycle/paused.rs:30`);
+resumed via `manual_resume.rs:49`. Restate keeps the two apart so the
+"paused" condition survives crashes and so the resume command is
+distinct from an automatic wake.
+
+Reflow doesn't expose an operator-pause primitive today. If it lands
+later, the natural shape is a `Suspended` row whose `awaiting_on`
+includes a `pause:<reason>` waker, resumable via an Admin RPC that
+proposes the matching wake — no new status variant needed.
+
+**`Killed` is not a Restate `InvocationStatus` variant.** It appears
+in `InvocationStatusDiscriminants` (line 395) but is never constructed.
+The only `Killed` in restate code is `vqueue_table::Status::Killed`
+(`restate/crates/storage-api/src/vqueue_table/entry_status.rs:43`),
+a queue-entry status one layer down. A killed invocation transitions
+to `Completed` with a kill-flavoured failure — same as reflow.
 
 ---
 
 ### 6.5 Virtual Object State Machine
 
-Also implemented with `qmuntal/stateless`. One FSM per active object key.
+Phase 3. Same shape as §6.4: a persisted oneof per object key in the
+`vobj/` namespace, applied via a plain switch in the FSM. No third-party
+FSM library.
 
 ```
 ┌──────┐  enqueue   ┌────────────┐  queue_empty  ┌──────────┐
@@ -611,26 +753,74 @@ This is the recommended path for Go shops. It's also what makes the
 
 #### 6.10.2 Out-of-process handlers via wire protocol (secondary path)
 
-For non-Go handlers, reflow exposes an HTTP/2 bidirectional streaming
-endpoint mirroring the shape of restate's `service-protocol-v4`. Each
-message is a `RuntimeMessage` (runtime → SDK) or `SDKMessage` (SDK →
-runtime); the framing reserves a `CUSTOM_MESSAGE_MASK` for forward-compat
-(see restate `crates/service-protocol-v4/src/message_codec/mod.rs:33`).
+For non-Go handlers, reflow exposes a proto-defined bidirectional
+streaming protocol. The wire contract lives in
+`proto/sdkv1/sdk.proto`; every frame in either direction is the
+`SDKMessage` oneof envelope (StartInvocation, ReplayEntry, EntryAck,
+Completion on the engine→SDK side; ProposeEntry, ProposeRunCompletion,
+SuspensionRequest, EndInvocation, ErrorMessage on the SDK→engine side;
+ErrorMessage either direction). Message shapes mirror restate's
+`service-protocol-v4` — same lifecycle, adapted for reflow's lazy-state
++ outbox model.
 
 Compatibility note: reflow tracks restate's wire format as a
 *best-effort* compatibility target so existing TS/Python/Java/Kotlin/Rust
-SDKs can connect with minimal adaptation. We do not commit to bug-for-bug
-parity, nor to keeping pace with every Restate release. Non-Go SDKs are
-explicitly out of scope for Phase 1–3 and ride along on whatever effort
-the community contributes.
+SDK semantics translate with minimal adaptation. We do not commit to
+bug-for-bug parity, nor to keeping pace with every Restate release.
+Non-Go SDKs are explicitly out of scope for Phase 1–3 and ride along
+on whatever effort the community contributes.
 
-**Connection lifecycle (wire-protocol path):**
-1. SDK handler registers its endpoint with the ingress on startup.
-2. When the runtime schedules an invocation, it opens an HTTP/2 stream to
-   the handler.
-3. Runtime streams journal entries (replay or new commands).
-4. Handler streams commands back (side effects, state reads/writes, output).
-5. Stream closed on completion or suspension.
+##### Dual transport
+
+The same `sdkv1` message envelope can ride two different transports.
+Reflow ships the first today; the second is documented but unimplemented.
+
+**Transport A — handler dials engine (gRPC bidi, primary).**
+The engine hosts `sdkv1.SessionService.Invoke` as a gRPC bidi-streaming
+RPC. Out-of-process handler SDKs open one long-lived stream per worker
+process and self-register; the engine routes pending `StartInvocation`
+frames to a connected stream. Implementation lives in
+`internal/sdkstream` (stub today, routing pool when the first non-Go
+SDK ships).
+
+- *Wire*: gRPC over HTTP/2 — inherits TLS, the
+  `auth.StreamInterceptor` seam, deadlines, status codes, and
+  metadata for free. No new dependency.
+- *Topology*: handler is the gRPC client; engine is the server.
+  Handlers can run behind NAT, no endpoint registry needed.
+- *Fit*: long-lived worker pools, stateful handlers, on-prem
+  deployments.
+
+**Transport B — engine dials handler (HTTP/2 streaming, future).**
+Mirrors Restate's deployment model: handler hosts an HTTP/2 endpoint;
+engine dials it per invocation. Same `SDKMessage` payloads, framed as
+length-prefixed records over raw HTTP/2 (no gRPC envelope). Engine
+needs an endpoint registry — discovered via an admin RPC or pushed
+through ingress at handler-register time.
+
+- *Wire*: HTTP/2 streaming with `CUSTOM_MESSAGE_MASK` framing for
+  forward-compat (see restate
+  `crates/service-protocol-v4/src/message_codec/mod.rs:33`).
+- *Topology*: handler is the HTTP server; engine is the client.
+  Handler must be reachable on a known endpoint.
+- *Fit*: serverless / FaaS handlers (Lambda, Cloudflare Workers),
+  autoscaled handler fleets, cold-start-friendly invocations.
+
+Transport B is **additive**, not a replacement for A. Adding it later
+introduces a sibling service alongside `SessionService` and a per-handler
+endpoint record in shard 0; the partition Invoker chooses which
+transport to use based on how the handler registered. No proto
+breakage — the envelope shape is shared.
+
+| | Transport A (current) | Transport B (future) |
+|--|--|--|
+| Direction | Handler → engine | Engine → handler |
+| Wire | gRPC bidi over HTTP/2 | Raw HTTP/2 length-prefix |
+| Handler discovery | None — self-registers on connect | Endpoint registry in shard 0 |
+| NAT/firewall | Friendly | Handler must be reachable |
+| Serverless fit | Awkward (long-lived stream) | Native |
+| Long-lived workers | Native | Awkward (engine reconnects per invoke) |
+| Auth seam | `internal/auth.StreamInterceptor` | TBD (likely JWT/OIDC via header) |
 
 ---
 
@@ -790,41 +980,149 @@ encryption is out of scope for Phase 5.
 
 ---
 
+### 6.13 Authentication & Authorization
+
+Reflow's internal gRPC surfaces (Admin, Delivery, future SDK session) run
+under one auth model. The model is:
+
+1. **Transport identity is SPIFFE-shaped, single-CA.**
+   All inter-node and operator traffic uses mTLS against a single cluster
+   CA. Each peer's leaf certificate carries exactly one URI SAN of the form
+   `spiffe://<trust-domain>/<kind>/<name>`. `kind` is `node` for a reflowd
+   peer (Delivery surface) or `operator` for a human/automation principal
+   (Admin surface). Trust domain is configurable; default `reflow.local`.
+   The TLS layer (`pkg/reflow/tls.go`) validates chain + URI
+   well-formedness only — it does **not** enforce role at the handshake.
+
+2. **Identity is mapped to Claims by a ClaimMapper.**
+   Inside the gRPC interceptor, `internal/auth.CertClaimMapper` reads
+   `peer.AuthInfo` → `credentials.TLSInfo` → verified leaf URI and
+   produces a `Claims{Kind, Subject, URI, Extensions}` value. The
+   `ClaimMapper` interface (Temporal-shaped) is the seam where a future
+   `JWTClaimMapper` plugs in for non-cert callers (e.g., ingress clients,
+   serverless handlers in Transport B); `AuthInfo.AuthToken` is already
+   wired but unread today.
+
+3. **Authorization is declared in the proto IDL.**
+   `proto/optionsv1/options.proto` defines two custom options:
+   `required_spiffe_role` (MethodOptions) and
+   `default_required_spiffe_role` (ServiceOptions). Each service annotates
+   itself once; methods override only when they need to differ. At server
+   startup, `auth.BuildMethodPolicy` walks the proto descriptor and
+   compiles a `map[FullMethod]role`. Drift between an annotated proto
+   and missing handler enforcement is impossible — the map is the
+   enforcement.
+
+4. **Authorizer is the single decision point.**
+   `auth.ProtoPolicyAuthorizer` consults the compiled map and answers
+   `Authorize(ctx, claims, &CallTarget{APIName: fullMethod})`. The
+   default `RoleMatcher` is exact-Kind equality (`claims.Kind == required`);
+   sub-role work (`operator/readonly`) plugs in a path-prefix matcher via
+   `WithMatcher(...)`. Fail-closed on unknown methods.
+
+5. **One interceptor pair owns the chain.**
+   `auth.UnaryInterceptor` and `auth.StreamInterceptor` run
+   `ClaimMapper.GetClaims` → audit log → `Authorizer.Authorize` →
+   dispatch (or reject with `Unauthenticated` / `PermissionDenied`).
+   The successful handler sees the `Claims` on context via
+   `auth.ClaimsFromContext(ctx)`.
+
+**Per-surface enforcement matrix:**
+
+| Surface | TLS | ClaimMapper | Authorizer policy source |
+|--|--|--|--|
+| Admin | mTLS, well-formed SPIFFE URI | `CertClaimMapper` | `adminv1.Admin` service annotation: `operator` |
+| Delivery | mTLS, well-formed SPIFFE URI | `CertClaimMapper` | `deliveryv1.Delivery` service annotation: `node` |
+| Ingress | None today | None today | None today (identity model TBD) |
+| SDK session | Stub | Stub | Stub (out-of-process handler identity model TBD) |
+
+**Multi-language clients.** Custom proto options ride on standard
+`google.protobuf.MethodOptions/ServiceOptions`, so any buf-generated
+client can introspect the required role for any method via reflection.
+This is the multi-language equivalent of reflow's Go interceptor —
+clients can render the policy or pre-check before calling.
+
+**Out of scope today (additive later):**
+
+- JWT/OIDC `ClaimMapper` implementation (interface ships; concrete
+  implementation deferred until a specific issuer is chosen).
+- Ingress authz model (different identity story — likely workload
+  identity, not node/operator).
+- SDK-session authz (depends on which transport — A or B — ships first).
+- Sub-role taxonomy (`operator/readonly`, `operator/admin`); reflects
+  via the existing `WithMatcher` hook.
+
+---
+
 ## 7. Key Data Flows
 
 ### 7.1 New Invocation (Happy Path)
 
+Steps 1–6 are identical for both handler-hosting paths; step 7 forks
+on whether the handler runs in-process (the primary path) or behind a
+wire-protocol transport (§6.10.2).
+
 ```
-1. Client POST /invoke/MyService/myMethod
-2. Ingress parses request, computes partition_id
-3. Ingress proposes InvokeCommand to Raft (partition_id)
-4. Raft commits → state machine applies → InvocationRecord written to Pebble
-5. Invocation FSM: Pending → Scheduled
-6. Partition Processor finds available SDK connection for MyService
-7. Invocation FSM: Scheduled → Running
-8. Runtime opens HTTP/2 stream to SDK handler
-9. Runtime streams INPUT journal entry
-10. SDK handler executes, streams commands back
-11. For each command: Partition Processor proposes journal entry to Raft
-12. Entry committed → state machine applies → result streamed back to SDK
-13. SDK streams OUTPUT command
-14. Invocation FSM: Running → Completed
-15. Output stored in Pebble, caller notified
+1.  Client → ingress: POST /invoke/MyService/myMethod (or grpc Invoke).
+2.  Ingress parses request, computes partition_id from
+    hash(service + "/" + object_key) % num_partitions.
+3.  Ingress dispatches InvokeCommand:
+      - same-node partition leader: in-process Proposer.Propose
+      - remote leader: gRPC Delivery.Deliver (mTLS, node/* role)
+4.  Raft replicates the Envelope, the partition FSM applies it
+    inside one storage batch: writes inv/<id>=Scheduled and the
+    JEInput journal row, pushes ActInvoke onto ActionCollector.
+5.  Runner consumes ActInvoke; ActionCollector flushes to the
+    Invoker.
+
+Path A — in-process Go handler (primary):
+6A. Invoker looks up the registered handler in its registry
+    (registered via reflow.RegisterService at boot).
+7A. Invoker spawns a session goroutine bound to reflow.Context.
+    Each Sleep/Run/Call/State op calls Proposer.ProposeSelf to
+    append a JournalEntry; the goroutine blocks on EntryAck.
+8A. On handler return, Invoker proposes EndInvocation. The FSM
+    flips inv/<id> to Completed and runs the on-entry actions
+    (output stored, awaiters notified, outbox enqueued).
+
+Path B — out-of-process handler (Transport A, future-active):
+6B. Invoker selects a connected sdkv1.SessionService stream from
+    the routing pool (handler dialed in at startup).
+7B. Engine sends StartInvocation over the bidi stream. Handler
+    streams ProposeEntry / ProposeRunCompletion frames back;
+    engine proposes each as InvokerEffect.JournalAppended and
+    acks once Raft commits.
+8B. Handler streams EndInvocation. Same on-entry actions as 8A.
 ```
+
+Path A is the typical Go-shop deployment — no network hop between
+handler and journal. Path B is the only path when the handler is in
+another language.
 
 ### 7.2 Crash Recovery
 
 ```
-1. Node crashes mid-invocation
-2. Raft detects leader failure, elects new leader (another node with the partition)
-3. New leader's dragonboat reloads IOnDiskStateMachine from Pebble snapshot
-4. Replays any Raft entries after snapshot
-5. Partition Processor starts on new leader
-6. Scans Pebble for Running/Suspended invocations
-7. Running invocations: FSM set back to Scheduled (handler connection lost)
-8. Re-opens HTTP/2 stream to SDK handler
-9. Streams full journal (from sequence 0) — SDK replays, skips already-done steps
-10. Execution continues from last committed journal entry
+1.  Node crashes mid-invocation.
+2.  Raft detects leader failure, elects new leader on a peer that
+    already replicates the partition.
+3.  New leader's dragonboat reloads IOnDiskStateMachine — Pebble state
+    is already on disk from prior batches; only entries past the
+    applied index are replayed.
+4.  Partition runner starts on the new leader. ActionCollector starts
+    empty.
+5.  Invoker scans the inv/ table for rows in Invoked state and
+    re-queues them. (Suspended rows wait for their wakers — timers
+    rebuilt from timer/, awakeables remain pending.)
+6.  Per re-queued invocation, the Invoker:
+      Path A (in-process Go): spawns a fresh session goroutine; the
+      JournalReader replays committed entries in order, returning
+      cached results to reflow.Context calls so the handler skips
+      already-completed steps. Execution resumes at the first
+      un-journaled call.
+      Path B (out-of-process, future-active): picks a connected
+      sdkv1.SessionService stream, sends StartInvocation with
+      known_entries = current journal length, streams ReplayEntry
+      frames in order, then resumes normal flow.
 ```
 
 ### 7.3 Virtual Object Invocation
@@ -892,14 +1190,17 @@ Minimum production deployment: 3 nodes (Raft quorum = 2).
 | 2 | Node discovery mechanism | Resolved | Embedded metadata Raft group (`shardID=0`) is authoritative for partition ownership; dragonboat's built-in gossip (memberlist/SWIM, no extra dependency) provides endpoint resolution and a leader hint cache. Static peer bootstrap (`--bootstrap-cluster` / `--join`). No external service required. See §6.2. |
 | 3 | In-process Go SDK vs. external SDK only | Resolved | In-process Go SDK is the primary path (§6.10.1). Wire-protocol path supported for non-Go handlers (§6.10.2). |
 | 4 | Partition count default | Resolved | 64 partitions at cluster bootstrap. |
-| 5 | Raft replication factor | Open | Default 3; configurable per deployment; recommended minimum 3 in production. Decided per deployment. |
+| 5 | Raft replication factor | Resolved | Default 3, configurable per deployment via `--replication-factor`. Three is the minimum that tolerates a single failure with quorum; >3 trades write latency for durability. Decided per deployment, no SAD-level open question remains. |
 | 6 | Pebble per-partition vs. shared | Resolved | Per-partition Pebble DB implemented in Phase 1; no `partition_id` prefix in keys. |
-| 7 | Exactly-once for non-idempotent external calls | Open (Phase 2) | Propagate idempotency keys through the `Invoke` command (restate-style); the dedup table already supports the Arbitrary producer path. |
+| 7 | Exactly-once for non-idempotent external calls | Resolved (Phase 2) | Idempotency keys propagate through `Invoke` via the `Dedup` field on `Envelope` (`enginev1/engine.proto`). The dedup table (`dedup/self` for self-proposals, `dedup/arb` for external producers like ingress) is consulted on every apply; duplicates are dropped before state mutation. See `internal/storage/tables/dedup.go` and `internal/storage/tables/idempotency.go`. |
 | 8 | SDK protocol versioning | Resolved | Wire protocol tracks restate service-protocol-v4 as a *best-effort* compat target, not bug-for-bug. Phase 2 in-process Go SDK is the primary path; non-Go SDKs ride along on community effort. |
 | 9 | timerfd vs `time.Timer` | Resolved | `time.Timer` for Phase 1. Revisit only with measured latency requirements. |
 | 10 | `StateStore` alternative implementations | Resolved | `internal/storage.Store` interface; `MemStore` (tests) + `PebbleStore` (production). |
 | 11 | Gossip for failure detection + soft state | Resolved | Use dragonboat's built-in gossip (memberlist/SWIM, vendored inside `lni/dragonboat/v4`) starting Phase 4 — zero extra dependency. Provides SWIM-based liveness, NodeHostID-stable endpoint resolution, and a `ShardView` leader hint cache. Architectural boundary unchanged: gossip is advisory, Raft (shard 0) is authoritative — eviction and partition assignment always go through a Raft proposal. Soft-state dissemination beyond the per-nodehost `Meta` blob is deferred; revisit only if observed load-hint dissemination requirements outgrow `Meta`. |
 | 12 | Object storage for snapshots | Resolved | `SnapshotRepository` interface lands in Phase 4 (filesystem driver) and Phase 5 (S3/GCS/Azure via `gocloud.dev/blob`). Always optional — default deployment is local-only. Hot state never leaves Pebble; only snapshot artifacts and their metadata go to object storage. See §6.12. |
+| 13 | Authn/authz model for internal gRPC | Resolved (Phase 4.3) | Single-CA SPIFFE URI identity over mTLS; `internal/auth` package owns `ClaimMapper` + `Authorizer`; per-RPC policy declared in proto via `optionsv1` annotations. TLS layer reduced to chain + URI well-formedness; role enforcement lives entirely in `auth.UnaryInterceptor` / `auth.StreamInterceptor`. JWT/OIDC mapper is an additive future. Ingress + SDK-session authz are separate identity models, out of scope here. See §6.13. |
+| 14 | SDK transport for non-Go handlers | Resolved (additive) | Reflow ships Transport A (handler dials engine, gRPC bidi via `sdkv1.SessionService`); the wire is in place, routing pool is stubbed pending the first non-Go SDK. Transport B (engine dials handler over raw HTTP/2, Restate-style) is documented as additive — same `SDKMessage` envelope, different transport. See §6.10.2. |
+| OPEN-1 | Joining-node startup against a live cluster | Open | The admin `AddNode` RPC, cluster FSM, and metadata rebalancer that drive cluster-side membership changes work end-to-end (`SyncRequestAddNonVoting` → catch-up → `SyncRequestAddReplica`). The gap is on the joining node's own `reflowd` startup: `Host.StartMetadataShard` and `Host.StartPartition` both hard-code `nh.StartOnDiskReplica(initial, join=false, ...)`. A new peer joining an established Raft group needs `StartOnDiskReplica(nil, join=true, ...)`. Missing pieces are minimal — a `HostConfig.JoinExisting bool` and a `reflowd --join` flag / config key. Tracked as a GitHub issue. |
 
 ---
 
@@ -939,32 +1240,34 @@ Minimum production deployment: 3 nodes (Raft quorum = 2).
 restarts on a single node. ✓ (`TestPhase1_SingleNodeReplayAcrossRestart`,
 `TestPhase1_TimerSurvivesRestart`, `TestPhase1_DedupBlocksDuplicateIngress`)
 
-### Phase 2 — In-process Go SDK + Invoker
+### Phase 2 — In-process Go SDK + Invoker (DONE)
 
-The first-class developer experience lands here: write a Go function,
-register it with `reflowd`, and have it become a durable goroutine.
+The first-class developer experience: write a Go function, register it
+with `reflowd`, have it become a durable goroutine.
 
-- **`reflow.Context`** Go API: `Sleep`, `Run`, `Call`, `OneWayCall`,
-  `Get/Set/ClearState`, `Awakeable`, `SendSignal`.
-- **In-process Invoker** that drives registered Go handlers, performs
-  journal replay on resume, and produces `InvokerEffect` proposals via the
-  partition's `Proposer.ProposeSelf`.
-- **Ingress.** Local HTTP/gRPC entrypoint for invocation submission and
-  awakeable resolution. This is also where `reflow-cluster ...` admin
-  commands land.
-- **Full journal entry types** beyond Phase 1's minimum: `Run` (generic
-  deterministic side-effect), full state ops, awakeable, signals.
-- **Exactly-once side-effect replay** via the journal.
-
-Out-of-process / wire-protocol handler support is *also* in Phase 2 but
-strictly secondary — implemented as a thin shim that turns wire messages
-into the same `InvokerEffect` proposals the in-process Invoker emits.
-SDKs in non-Go languages are not part of Phase 2 itself.
+- **`reflow.Context`** Go API in `pkg/reflow/` and the public API
+  surface there.
+- **In-process Invoker** (`internal/engine/invoker/`) — registry,
+  session goroutines, journal reader for replay, `InvokerEffect`
+  proposals via `Proposer.ProposeSelf`.
+- **Ingress** — gRPC + grpc-gateway in `internal/ingress/`. Awakeable
+  resolution rides the same surface.
+- **Journal entry types** beyond Phase 1: `JERun`, `JEGetState` /
+  `JESetState` / `JEClearState` / `JEClearAllState`, `JEAwakeable` /
+  `JEAwakeableResult`, `JESignal`. Lazy state via `JEGetEagerState` is
+  Phase 3.
+- **Outbox** (`internal/engine/outbox.go`, `internal/storage/tables/outbox.go`)
+  for parent-invocation notifications and cross-partition call results.
+- **Exactly-once side-effect replay** via the journal — verified by
+  property-style integration tests under
+  `internal/engine/integration_phase2_wiring_test.go`.
+- **`sdkv1.SessionService` wire** — the proto contract for Transport A.
+  Server stub (`internal/sdkstream`) returns `Unimplemented`; routing
+  pool lands when the first non-Go SDK appears.
 
 **Exit criteria:** A Go handler with `Sleep`, `Run`, state reads/writes,
-and outgoing `Call`s survives mid-execution process crashes and resumes
-correctly. The handler is registered as a Go function in a `reflowd`-linked
-binary; no separate handler process is required.
+and outgoing `Call`s survives mid-execution crashes and resumes
+correctly. ✓
 
 ### Phase 3 — Virtual Objects
 - VObject status (switch on persisted oneof; no FSM library)
@@ -974,14 +1277,50 @@ binary; no separate handler process is required.
 
 **Exit criteria:** Concurrent invocations on the same object key are serialized correctly under failure.
 
-### Phase 4 — Multi-Node Replication
+### Phase 4 — Multi-Node Replication (DONE through 4.3d)
 
 Target: a 3–10 node cluster. No external coordination service introduced
-(see §6.2).
+(see §6.2). Delivered as four sub-phases:
+
+**4.1 — Embedded metadata Raft + static bootstrap.** Shard 0 hosts
+node membership, partition table, assignment epoch; founder/joiner
+bootstrap via `--bootstrap-cluster` / `--join`.
+
+**4.2 — Dynamic membership + failure detection + DR snapshots + mTLS
+admin (DONE).** Dragonboat gossip (memberlist/SWIM) drives K-of-N
+liveness; SWIM observers turn missed probes into `RemoveNode` proposals
+to shard 0. `reflow-cluster` CLI lands as a subcommand of `reflowd`
+(`add-node`, `remove-node`, `partitions list`, `partition move`).
+`SnapshotRepository` filesystem driver wired (cloud drivers deferred to
+Phase 5). Admin gRPC server (`adminv1`) protected by mTLS against a
+two-CA topology (operator CA + node CA at this point).
+
+**4.3a — Storage format version marker (DONE).** Per-Pebble-DB
+`uint32` marker (`internal/storage/format.go`). Refuses to open a DB
+written by a binary with a different `StorageFormatVersion`. Replaced
+the earlier "command-stream VersionBarrier" sketch.
+
+**4.3b — Single CA + SPIFFE URI SAN identity (DONE).** Collapsed
+operator-CA + node-CA into one cluster CA; role moved into the SPIFFE
+URI SAN (`spiffe://<td>/<kind>/<name>`). TLS verifier checks chain +
+URI prefix at this point.
+
+**4.3c — Proto-annotation authz interceptor (DONE).**
+`proto/optionsv1` defines `required_spiffe_role` (method) and
+`default_required_spiffe_role` (service). Admin service annotated
+`operator`. `AuditInterceptor` + `AuthzInterceptor` enforce against
+the compiled descriptor map.
+
+**4.3d — Authorizer + ClaimMapper consolidation (DONE).** Two-shaped
+authz across Admin and Delivery collapsed into one Temporal-shaped
+`Authorizer` + `ClaimMapper` seam in `internal/auth`. TLS layer reduced
+to URI well-formedness; role enforcement lives entirely in
+`auth.UnaryInterceptor` / `auth.StreamInterceptor`. Delivery service
+annotated `node`. See §6.13.
 
 - **Embedded metadata Raft group** (`shardID = 0`) hosted by the same
   `NodeHost` as partition shards. Holds node list, partition table,
-  partition assignment epoch, schema version barrier.
+  partition assignment epoch.
 - **Static peer bootstrap.** `--bootstrap-cluster` for the founder,
   `--join=<addr>` for joiners. No discovery service required.
 - **`reflow-cluster` admin subcommands** (in the same `reflowd` binary)
@@ -1027,7 +1366,7 @@ add/remove operations.
 - Admin API surface: partition status, invocation inspection, replay
   debugger, `purge_journal` / `kill_invocation` operations.
 - Operational docs: deployment recipes, backup/restore, upgrade
-  procedure (using the version barrier from §6.2).
+  procedure (using the per-DB storage format marker from §6.2).
 - **Non-Go SDKs (community-driven).** TypeScript / Python / Java / Kotlin
   / Rust SDKs talk to reflow via the wire-protocol path (§6.10.2). These
   ride on whatever effort the community contributes; reflow itself

@@ -76,6 +76,15 @@ type HostConfig struct {
 	// multi-node deployments; nil in single-node deployments (where no
 	// outbox row ever targets a remote shard). Phase 4.1.
 	CrossShardSender CrossShardSender
+
+	// NumPartitionShards is the total number of partition shards in the
+	// cluster (the routing modulus). Independent of replication factor
+	// and of peer count: a deployment can host N shards on M peers in any
+	// combination. When zero, the Host falls back to len(Peers) (single-
+	// node → 0 → routing.ShardForKey returns 1; multi-node legacy
+	// behavior preserved) and logs a warning suggesting the caller wire
+	// the explicit value through from its public config.
+	NumPartitionShards uint64
 }
 
 // Peer is a static cluster member known at bootstrap. NodeHostID may be
@@ -487,7 +496,7 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		NowFn:       func() uint64 { return uint64(time.Now().UnixMilli()) },
 		Log:         h.log,
 		OnActions:   runner.dispatchActions,
-		Partitioner: routing.Partitioner{NumShards: uint64(len(h.cfg.Peers))},
+		Partitioner: routing.Partitioner{NumShards: h.partitionShardCount()},
 	}
 	raftCfg := config.Config{
 		ReplicaID:          h.cfg.NodeID,
@@ -666,6 +675,23 @@ func (h *Host) NodeEndpoint(nodeID uint64) (string, bool) {
 		return "", false
 	}
 	return meta.GetGrpcEndpoint(), meta.GetGrpcEndpoint() != ""
+}
+
+// partitionShardCount returns the cluster's partition-shard count
+// (excluding shard 0 / metadata). Prefers the explicit
+// HostConfig.NumPartitionShards; otherwise falls back to len(Peers) for
+// callers that have not yet been migrated to the explicit field. The
+// fallback matches the Phase 4.1 deployment shape (every node hosts
+// every partition shard) but is semantically a conflation of
+// replication and partitioning — see Bug #3 in the codebase review.
+func (h *Host) partitionShardCount() uint64 {
+	if h.cfg.NumPartitionShards > 0 {
+		return h.cfg.NumPartitionShards
+	}
+	// len(Peers) is what the code used before; preserve as fallback so
+	// the integration tests that wire HostConfig directly keep passing
+	// while we migrate callers.
+	return uint64(len(h.cfg.Peers))
 }
 
 // nodeHostIDOf returns the resolved NodeHostID for a peer NodeID, or

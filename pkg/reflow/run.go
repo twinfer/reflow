@@ -67,17 +67,30 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	}
 
 	// Bring up the internal engine Host.
+	//
+	// NumPartitionShards is the routing modulus — independent of peer
+	// count. Phase 4.1 deployments host every shard on every peer so the
+	// two happen to coincide, but the engine must not bake that
+	// assumption in. We pass len(Cluster.Shards) when the caller
+	// specified an explicit shard list, otherwise 1 (single-shard
+	// default that matches the [1] default applied to cfg.Cluster.Shards
+	// below).
+	numShards := uint64(len(cfg.Cluster.Shards))
+	if numShards == 0 {
+		numShards = 1
+	}
 	hcfg := engine.HostConfig{
-		NodeID:         cfg.Node.ID,
-		RaftAddr:       cfg.Node.RaftAddr,
-		DataDir:        cfg.Storage.DataDir,
-		Log:            logger,
-		EnableMetrics:  !cfg.Metrics.Disabled,
-		Handlers:       cfg.Handlers,
-		GossipBindAddr: cfg.Node.GossipBindAddr,
-		GossipAdvAddr:  cfg.Node.GossipAdvAddr,
-		GrpcEndpoint:   cfg.Node.DeliveryAddr,
-		Peers:          toEnginePeers(cfg.Cluster.Peers),
+		NodeID:             cfg.Node.ID,
+		RaftAddr:           cfg.Node.RaftAddr,
+		DataDir:            cfg.Storage.DataDir,
+		Log:                logger,
+		EnableMetrics:      !cfg.Metrics.Disabled,
+		Handlers:           cfg.Handlers,
+		GossipBindAddr:     cfg.Node.GossipBindAddr,
+		GossipAdvAddr:      cfg.Node.GossipAdvAddr,
+		GrpcEndpoint:       cfg.Node.DeliveryAddr,
+		Peers:              toEnginePeers(cfg.Cluster.Peers),
+		NumPartitionShards: numShards,
 	}
 	eh, err := engine.NewHost(hcfg)
 	if err != nil {

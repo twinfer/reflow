@@ -1210,8 +1210,18 @@ type JERunProposal struct {
 	Retryable      bool                   `protobuf:"varint,4,opt,name=retryable,proto3" json:"retryable,omitempty"`
 	Attempt        uint32                 `protobuf:"varint,5,opt,name=attempt,proto3" json:"attempt,omitempty"`
 	RetryPolicy    *RunRetryPolicy        `protobuf:"bytes,6,opt,name=retry_policy,json=retryPolicy,proto3" json:"retry_policy,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// now_ms is the leader-side wall clock at the moment the Invoker
+	// proposed this effect. The Apply path uses it as the base for the
+	// retry timer's fire_at_ms so every replica writes the same value —
+	// otherwise each replica reads its own time.Now() during Update and
+	// persists divergent timestamps to TimerTable, which causes snapshot
+	// byte-mismatch under DR verification. Zero is treated as "leader did
+	// not stamp" for back-compat with older proposals replayed from raft
+	// log; the Apply path then falls back to its local NowFn (the prior
+	// behavior). All new proposals must set this.
+	NowMs         uint64 `protobuf:"varint,7,opt,name=now_ms,json=nowMs,proto3" json:"now_ms,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *JERunProposal) Reset() {
@@ -1284,6 +1294,13 @@ func (x *JERunProposal) GetRetryPolicy() *RunRetryPolicy {
 		return x.RetryPolicy
 	}
 	return nil
+}
+
+func (x *JERunProposal) GetNowMs() uint64 {
+	if x != nil {
+		return x.NowMs
+	}
+	return 0
 }
 
 // AwakeableResolved is proposed by the partition that owns the resolving
@@ -4635,7 +4652,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\frun_proposal\x18\x05 \x01(\v2\x1f.reflow.engine.v1.JERunProposalH\x00R\vrunProposal\x12T\n" +
 	"\x12awakeable_resolved\x18\x06 \x01(\v2#.reflow.engine.v1.AwakeableResolvedH\x00R\x11awakeableResolved\x12N\n" +
 	"\x10signal_delivered\x18\a \x01(\v2!.reflow.engine.v1.SignalDeliveredH\x00R\x0fsignalDeliveredB\x06\n" +
-	"\x04kind\"\xec\x01\n" +
+	"\x04kind\"\x83\x02\n" +
 	"\rJERunProposal\x12\x1f\n" +
 	"\ventry_index\x18\x01 \x01(\rR\n" +
 	"entryIndex\x12\x14\n" +
@@ -4643,7 +4660,8 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x0ffailure_message\x18\x03 \x01(\tR\x0efailureMessage\x12\x1c\n" +
 	"\tretryable\x18\x04 \x01(\bR\tretryable\x12\x18\n" +
 	"\aattempt\x18\x05 \x01(\rR\aattempt\x12C\n" +
-	"\fretry_policy\x18\x06 \x01(\v2 .reflow.engine.v1.RunRetryPolicyR\vretryPolicy\"u\n" +
+	"\fretry_policy\x18\x06 \x01(\v2 .reflow.engine.v1.RunRetryPolicyR\vretryPolicy\x12\x15\n" +
+	"\x06now_ms\x18\a \x01(\x04R\x05nowMs\"u\n" +
 	"\x11AwakeableResolved\x12!\n" +
 	"\fawakeable_id\x18\x01 \x01(\tR\vawakeableId\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\x12'\n" +

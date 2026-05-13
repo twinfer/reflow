@@ -571,9 +571,18 @@ func (p *Partition) onInvokerEffect(
 			break
 		}
 
-		fireAtMs := nowMs + uint64(delay/time.Millisecond)
-		if fireAtMs <= nowMs {
-			fireAtMs = nowMs + 1
+		// base is the leader-stamped wall clock from the proposal — every
+		// replica reads the same value here, which is what keeps the
+		// resulting TimerTable row deterministic across replicas. Falls
+		// back to the local NowFn only for the (transitional) case where
+		// an older proposal in the raft log has now_ms unset.
+		base := rp.GetNowMs()
+		if base == 0 {
+			base = nowMs
+		}
+		fireAtMs := base + uint64(delay/time.Millisecond)
+		if fireAtMs <= base {
+			fireAtMs = base + 1
 		}
 		if err := writeRun(true); err != nil {
 			return fmt.Errorf("onInvokerEffect: journal append (run retry): %w", err)

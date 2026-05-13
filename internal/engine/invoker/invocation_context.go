@@ -227,6 +227,9 @@ func (c *invocationContext) Run(_ string, fn func() ([]byte, error)) ([]byte, er
 		value = nil
 	}
 
+	// now_ms is sampled here at the leader so every Raft replica reads
+	// the same base when computing the retry timer's fire_at_ms in the
+	// JERunProposal Apply arm. See engine.proto JERunProposal.now_ms.
 	eff := &enginev1.InvokerEffect{
 		InvocationId: c.s.id,
 		Kind: &enginev1.InvokerEffect_RunProposal{
@@ -236,6 +239,7 @@ func (c *invocationContext) Run(_ string, fn func() ([]byte, error)) ([]byte, er
 				FailureMessage: failureMessage,
 				Retryable:      retryable,
 				Attempt:        priorAttempt,
+				NowMs:          uint64(time.Now().UnixMilli()),
 			},
 		},
 	}

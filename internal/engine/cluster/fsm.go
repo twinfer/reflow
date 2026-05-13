@@ -245,7 +245,17 @@ func (f *FSM) applyEvictNode(
 		// No partition table yet (pre-bootstrap eviction is meaningless).
 		return nil, nil
 	}
-	for shardID, rs := range pt.GetShards() {
+	// Iterate shards in sorted order so the appended pending steps land in
+	// the same byte sequence on every replica — required for Raft Apply
+	// determinism (snapshot bytes diverge otherwise).
+	shards := pt.GetShards()
+	shardIDs := make([]uint64, 0, len(shards))
+	for shardID := range shards {
+		shardIDs = append(shardIDs, shardID)
+	}
+	slices.Sort(shardIDs)
+	for _, shardID := range shardIDs {
+		rs := shards[shardID]
 		if !replicaSetContains(rs, nodeID) {
 			continue
 		}

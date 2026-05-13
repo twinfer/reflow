@@ -186,6 +186,16 @@ message JERunProposal {
   bool retryable = 4;
   uint32 attempt = 5;
   RunRetryPolicy retry_policy = 6;
+  // now_ms is the leader-side wall clock at the moment the Invoker
+  // proposed this effect. The Apply path uses it as the base for the
+  // retry timer's fire_at_ms so every replica writes the same value —
+  // otherwise each replica reads its own time.Now() during Update and
+  // persists divergent timestamps to TimerTable, which causes snapshot
+  // byte-mismatch under DR verification. Zero is treated as "leader did
+  // not stamp" for back-compat with older proposals replayed from raft
+  // log; the Apply path then falls back to its local NowFn (the prior
+  // behavior). All new proposals must set this.
+  uint64 now_ms = 7;
 }
 
 // AwakeableResolved is proposed by the partition that owns the resolving

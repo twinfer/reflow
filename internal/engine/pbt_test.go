@@ -119,8 +119,8 @@ type engineMachine struct {
 	leases   map[leaseKey]*modelLease // (service,object_key) -> lease state
 
 	// Generator pools (drawn once at init).
-	specPool []invSpec      // paired (id, target) — partition_key consistent with target
-	tgtPool  []modelTarget  // standalone targets for ChildCall child-target draws
+	specPool []invSpec     // paired (id, target) — partition_key consistent with target
+	tgtPool  []modelTarget // standalone targets for ChildCall child-target draws
 	idemKs   []string
 	awkPool  []string
 	sigPool  []string
@@ -217,7 +217,7 @@ func drawSpecPool(targets []modelTarget) []invSpec {
 	uuidNonce := uint64(1)
 	for _, tgt := range targets {
 		pk := routing.PartitionKey(tgt.service, tgt.objectKey)
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			uuid := make([]byte, 16)
 			binary.BigEndian.PutUint64(uuid, uuidNonce)
 			uuidNonce++
@@ -260,7 +260,7 @@ func (m *engineMachine) apply(t *rapid.T, shard uint64, cmd *enginev1.Command) {
 //   - ActRegisterTimer  → capture into pendingTimers.
 //   - ActDeleteTimer    → drop matching pendingTimer.
 //   - ActDispatchOutbox → capture into pendingOutbox (dedup by (srcShard,seq)
-//                         so leader re-emission after Crash doesn't double-count).
+//     so leader re-emission after Crash doesn't double-count).
 //   - everything else   → local-only, drop.
 func (m *engineMachine) routeActions(t *rapid.T, srcShard uint64, actions []Action) {
 	for _, a := range actions {

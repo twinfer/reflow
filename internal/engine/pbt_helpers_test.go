@@ -116,7 +116,7 @@ const (
 )
 
 type modelLease struct {
-	state         modelLeaseState
-	currentIDHex  string
-	queue         []string // hex idKeys, FIFO
+	state        modelLeaseState
+	currentIDHex string
+	queue        []string // hex idKeys, FIFO
 }

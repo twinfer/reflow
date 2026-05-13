@@ -37,6 +37,12 @@ func (s *Server) AwaitInvocation(ctx context.Context, req *ingressv1.AwaitInvoca
 		shardID = Phase2ShardID
 	}
 
+	// One Ticker reused across iterations — time.After in a select-loop
+	// allocates a fresh runtime.Timer on every poll that runs to
+	// completion before it can be GC'd.
+	ticker := time.NewTicker(awaitPollInterval)
+	defer ticker.Stop()
+
 	for {
 		readCtx, cancel := context.WithTimeout(ctx, time.Second)
 		st, err := s.host.LookupInvocationStatus(readCtx, shardID, id)
@@ -58,7 +64,7 @@ func (s *Server) AwaitInvocation(ctx context.Context, req *ingressv1.AwaitInvoca
 		select {
 		case <-ctx.Done():
 			return nil, status.FromContextError(ctx.Err()).Err()
-		case <-time.After(awaitPollInterval):
+		case <-ticker.C:
 		}
 	}
 }

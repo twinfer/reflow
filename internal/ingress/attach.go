@@ -32,6 +32,10 @@ func (s *Server) AttachInvocation(ctx context.Context, req *ingressv1.AttachInvo
 		shardID = Phase2ShardID
 	}
 
+	// One Ticker reused across iterations — see await.go for rationale.
+	ticker := time.NewTicker(awaitPollInterval)
+	defer ticker.Stop()
+
 	for {
 		readCtx, cancel := context.WithTimeout(ctx, time.Second)
 		st, lerr := s.host.LookupInvocationStatus(readCtx, shardID, id)
@@ -53,7 +57,7 @@ func (s *Server) AttachInvocation(ctx context.Context, req *ingressv1.AttachInvo
 		select {
 		case <-ctx.Done():
 			return nil, status.FromContextError(ctx.Err()).Err()
-		case <-time.After(awaitPollInterval):
+		case <-ticker.C:
 		}
 	}
 }

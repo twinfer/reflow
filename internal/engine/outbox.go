@@ -149,10 +149,24 @@ func (o *OutboxService) Run(ctx context.Context) error {
 		for _, row := range batch {
 			cmd := outboxEnvelopeToCommand(row.Envelope)
 			if cmd == nil {
-				// Unknown envelope kind — log and drop; the row remains in
-				// the table so Rebuild on the next leader will retry.
-				o.log.Warn("outbox: skipping envelope with unknown kind",
+				// Unknown envelope kind — propose an empty command through
+				// our own ProducerID/seq so the apply path's
+				// arbitrary-dedup-on-receive arm pops the wedged row.
+				// Without this the row sits forever and Rebuild on every
+				// leader gain re-queues it.
+				o.log.Error("outbox: unknown envelope kind; popping wedged row",
 					"seq", row.Seq, "envelope", fmt.Sprintf("%T", row.Envelope.GetKind()))
+				propCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				err := o.proposer.ProposeIngress(propCtx, o.producerID, row.Seq, &enginev1.Command{})
+				cancel()
+				if err != nil {
+					if errors.Is(err, context.Canceled) {
+						return ctx.Err()
+					}
+					o.log.Warn("outbox: pop-wedge propose failed; will retry",
+						"seq", row.Seq, "err", err)
+					failed = append(failed, row)
+				}
 				continue
 			}
 			destShard := row.Envelope.GetDestinationShardId()
@@ -190,13 +204,15 @@ func (o *OutboxService) Run(ctx context.Context) error {
 			// Failed rows go to the FRONT so seq order is preserved on retry.
 			o.pending = append(failed, o.pending...)
 			o.mu.Unlock()
-			// Brief backoff before retrying so transient errors don't spin.
+			// Brief backoff (with jitter, see retryBackoff) before
+			// retrying so transient errors don't spin and so simultaneous
+			// leader gains across shards don't synchronize their retries.
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-o.stop:
 				return nil
-			case <-time.After(50 * time.Millisecond):
+			case <-time.After(retryBackoff()):
 			}
 		}
 	}

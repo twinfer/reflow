@@ -246,11 +246,19 @@ func (s *Server) CreateSnapshot(ctx context.Context, req *adminv1.CreateSnapshot
 	if err != nil || len(refs) == 0 {
 		return &adminv1.CreateSnapshotResponse{ShardId: req.GetShardId()}, nil
 	}
-	last := refs[len(refs)-1]
+	// Pick the highest-Index ref explicitly instead of trusting List's
+	// slice order — the Repository contract sorts ascending but we
+	// don't want the response to silently flip if that ever changes.
+	latest := refs[0]
+	for _, r := range refs[1:] {
+		if r.Index > latest.Index {
+			latest = r
+		}
+	}
 	return &adminv1.CreateSnapshotResponse{
 		ShardId:   req.GetShardId(),
-		Index:     last.Index,
-		SizeBytes: last.SizeBytes,
+		Index:     latest.Index,
+		SizeBytes: latest.SizeBytes,
 	}, nil
 }
 
@@ -259,7 +267,9 @@ func (s *Server) ListSnapshots(ctx context.Context, req *adminv1.ListSnapshotsRe
 	if s.repo == nil {
 		return nil, status.Error(codes.FailedPrecondition, "admin: snapshot repository not configured")
 	}
-	refs, err := s.repo.List(ctx, req.GetShardId())
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	refs, err := s.repo.List(callCtx, req.GetShardId())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "admin: list snapshots: %v", err)
 	}

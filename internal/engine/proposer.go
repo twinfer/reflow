@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
 	"sync/atomic"
 	"time"
 
@@ -11,6 +12,14 @@ import (
 
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
+
+// retryBackoff returns a randomized short sleep used to space out
+// transient-error retries across replicas. ~50ms base ± 50% so
+// simultaneous leadership transitions don't synchronize their
+// dragonboat re-proposes.
+func retryBackoff() time.Duration {
+	return 25*time.Millisecond + time.Duration(rand.IntN(50))*time.Millisecond
+}
 
 // ErrShardClosed indicates the local partition replica is no longer running.
 // Distinct from dragonboat.ErrShardClosed so callers don't need to import
@@ -93,11 +102,12 @@ func (p *RaftProposer) propose(ctx context.Context, env *enginev1.Envelope) erro
 		if !dragonboat.IsTempError(err) {
 			return err
 		}
-		// Backoff briefly and retry.
+		// Backoff briefly and retry with jitter to avoid replica-wide
+		// synchronization on leadership transitions.
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(50 * time.Millisecond):
+		case <-time.After(retryBackoff()):
 		}
 	}
 }

@@ -33,12 +33,13 @@ type EndpointResolver interface {
 	NodeEndpoint(nodeID uint64) (string, bool)
 }
 
-// ClientConfig collects the small surface of tunables. DialTimeout
-// applies to fresh gRPC connections; SendTimeout to a single round trip.
+// ClientConfig collects the small surface of tunables. SendTimeout
+// bounds a single round trip. Dialing is non-blocking under grpc-go
+// (grpc.NewClient never waits for a connection); the first Send is
+// what surfaces unreachable endpoints, gated by SendTimeout.
 type ClientConfig struct {
 	Resolver    EndpointResolver
 	Log         *slog.Logger
-	DialTimeout time.Duration
 	SendTimeout time.Duration
 	DialOptions []grpc.DialOption // overrides; defaults to insecure for in-cluster.
 }
@@ -71,9 +72,6 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
-	}
-	if cfg.DialTimeout == 0 {
-		cfg.DialTimeout = 5 * time.Second
 	}
 	if cfg.SendTimeout == 0 {
 		cfg.SendTimeout = 5 * time.Second
@@ -154,9 +152,17 @@ func (c *Client) Send(ctx context.Context, destShardID uint64, producerID string
 }
 
 // dial returns the pooled connection for endpoint, creating one on first
-// use. Connections live until Close; the test for staleness is left to
-// gRPC's built-in keepalive (defaults are fine for in-cluster RPCs).
-func (c *Client) dial(ctx context.Context, endpoint string) (*conn, error) {
+// use. grpc.NewClient is non-blocking — the first Send is what surfaces
+// an unreachable endpoint. Connections live until Close; the test for
+// staleness is left to gRPC's built-in keepalive (defaults are fine for
+// in-cluster RPCs).
+//
+// We prefix the target with the passthrough resolver scheme: reflow's
+// endpoints are bare host:port strings (or test-only bufconn names like
+// "bufnet") published over gossip; we don't want grpc.NewClient's default
+// DNS resolver parsing or rejecting them. Connection establishment still
+// goes through whatever WithContextDialer / TLS the caller configured.
+func (c *Client) dial(_ context.Context, endpoint string) (*conn, error) {
 	c.mu.Lock()
 	if existing, ok := c.conns[endpoint]; ok {
 		c.mu.Unlock()
@@ -164,9 +170,7 @@ func (c *Client) dial(ctx context.Context, endpoint string) (*conn, error) {
 	}
 	c.mu.Unlock()
 
-	dialCtx, cancel := context.WithTimeout(ctx, c.cfg.DialTimeout)
-	defer cancel()
-	cc, err := grpc.DialContext(dialCtx, endpoint, c.cfg.DialOptions...)
+	cc, err := grpc.NewClient("passthrough:///"+endpoint, c.cfg.DialOptions...)
 	if err != nil {
 		return nil, err
 	}

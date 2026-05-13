@@ -128,6 +128,12 @@ func (p *Partition) Update(entries []statemachine.Entry) ([]statemachine.Entry, 
 		return nil, fmt.Errorf("partition: load meta: %w", err)
 	}
 
+	// isLeader is sampled once per batch by design — every entry in the
+	// batch sees the same is_leader gate. AnnounceLeader handled inside
+	// this batch updates Leadership state for the *next* batch; this
+	// matches restate's apply pipeline (state_machine/mod.rs:312-313).
+	// If batching ever shrinks to one entry per Update call the choice
+	// becomes moot.
 	isLeader := p.cfg.Leadership.IsLeader()
 	if !isLeader {
 		// Followers replay deterministically but emit no real side effects;
@@ -1071,6 +1077,14 @@ func (p *Partition) onTimerFired(
 	// (written by the JERunProposal apply arm) and write no follow-up
 	// journal entry — the SDK's fast-replay sees the JERun{retryable=true}
 	// directly and re-invokes fn.
+	//
+	// Reads the anchor directly from the store, NOT from the pending
+	// batch. Safe today because TimerFired never coexists with the
+	// anchor's append in the same Update batch — the anchor was written
+	// by an earlier batch (JESleep on Sleep dispatch; JERun on
+	// JERunProposal apply) which committed before the timer can fire.
+	// If batching ever fuses appends with TimerFired in one batch this
+	// read needs to consult the in-flight batch first.
 	journal := tables.JournalTable{S: p.cfg.Snapshotter.Store()}
 	anchor, anchorErr := journal.Read(id, cmd.GetSleepIndex())
 	if anchorErr == nil {

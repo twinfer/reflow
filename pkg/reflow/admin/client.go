@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -29,8 +28,6 @@ type DialOptions struct {
 	OperatorKeyFile  string
 	CAFile           string
 	TrustDomain      string
-	// Timeout caps the dial; zero defaults to 10s.
-	Timeout time.Duration
 }
 
 // Client is the typed admin gRPC client plus its underlying conn so the
@@ -45,13 +42,12 @@ type Client struct {
 var _ io.Closer = (*Client)(nil)
 
 // Dial opens an mTLS gRPC connection to opts.Addr using the supplied
-// operator cert / node CA.
-func Dial(ctx context.Context, opts DialOptions) (*Client, error) {
+// operator cert / node CA. grpc.NewClient is non-blocking — the first
+// RPC the caller issues is what surfaces an unreachable address, gated
+// by the caller's ctx.
+func Dial(_ context.Context, opts DialOptions) (*Client, error) {
 	if opts.Addr == "" {
 		return nil, errors.New("admin: Addr required")
-	}
-	if opts.Timeout == 0 {
-		opts.Timeout = 10 * time.Second
 	}
 	td := opts.TrustDomain
 	if td == "" {
@@ -61,9 +57,7 @@ func Dial(ctx context.Context, opts DialOptions) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("admin: tls: %w", err)
 	}
-	dialCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
-	defer cancel()
-	cc, err := grpc.DialContext(dialCtx, opts.Addr,
+	cc, err := grpc.NewClient("passthrough:///"+opts.Addr,
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
 	if err != nil {
 		return nil, fmt.Errorf("admin: dial %s: %w", opts.Addr, err)

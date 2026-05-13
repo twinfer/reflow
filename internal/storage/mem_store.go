@@ -20,9 +20,18 @@ func NewMemStore() *MemStore {
 	return &MemStore{data: make(map[string][]byte)}
 }
 
-type noopCloser struct{}
+// wipeCloser zeroes the slice it guards when Close is called. MemStore
+// hands these out from Get so callers that use the returned bytes after
+// Close (a use-after-free under Pebble) see zeroed data instead of the
+// silent success a noop closer would have produced.
+type wipeCloser struct{ buf []byte }
 
-func (noopCloser) Close() error { return nil }
+func (c *wipeCloser) Close() error {
+	for i := range c.buf {
+		c.buf[i] = 0
+	}
+	return nil
+}
 
 func (m *MemStore) Get(key []byte) ([]byte, io.Closer, error) {
 	m.mu.RLock()
@@ -32,7 +41,7 @@ func (m *MemStore) Get(key []byte) ([]byte, io.Closer, error) {
 		return nil, nil, ErrNotFound
 	}
 	out := append([]byte(nil), v...)
-	return out, noopCloser{}, nil
+	return out, &wipeCloser{buf: out}, nil
 }
 
 func (m *MemStore) NewBatch() Batch {

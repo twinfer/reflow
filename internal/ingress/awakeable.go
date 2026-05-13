@@ -17,9 +17,10 @@ import (
 // owner's partition. The FSM appends a JEAwakeableResult to the owner's
 // journal and (if Suspended) wakes the invocation.
 //
-// Routing in Phase 2 is single-partition (shard 1). When multi-partition
-// lands, the owner's partition_key in the AwakeableEntry tells us where to
-// propose.
+// TODO(phase-4): Routing here hard-codes shard 1. AwakeableEntry.owner
+// carries the partition_key that should drive shard selection via the
+// Host's Partitioner; until that wiring lands, multi-partition
+// deployments will silently misroute resolutions.
 func (s *Server) ResolveAwakeable(ctx context.Context, req *ingressv1.ResolveAwakeableRequest) (*ingressv1.ResolveAwakeableResponse, error) {
 	awkID := req.GetAwakeableId()
 	if awkID == "" {

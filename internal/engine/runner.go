@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/twinfer/reflow/internal/engine/invoker"
+	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -30,8 +31,9 @@ type PartitionRunner struct {
 	// envelopes whose destination_shard_id is non-local. nil in single-
 	// node deployments; populated by Host.StartPartition when multi-node
 	// is configured. Phase 4.1.
-	sender CrossShardSender
-	log    *slog.Logger
+	sender  CrossShardSender
+	log     *slog.Logger
+	metrics *observability.Metrics
 
 	// timers and outbox are populated by onBecomeLeader and torn down by
 	// onStepDown. dispatchActions reads them on the apply goroutine,
@@ -121,7 +123,7 @@ func (r *PartitionRunner) onBecomeLeader() {
 	r.timers = NewTimerService(
 		tables.TimerTable{S: store},
 		r.proposer,
-		TimerServiceOptions{Log: r.log},
+		TimerServiceOptions{Log: r.log, Metrics: r.metrics},
 	)
 	r.outbox = NewOutboxService(
 		tables.OutboxTable{S: store},

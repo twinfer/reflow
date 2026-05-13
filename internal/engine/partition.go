@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine/routing"
+	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
@@ -43,6 +44,12 @@ type PartitionConfig struct {
 	// produces. Zero value (NumShards=0) yields same-shard for everything,
 	// preserving Phase 1-3.5 single-partition behavior. Phase 4.1.
 	Partitioner routing.Partitioner
+
+	// Metrics, when non-nil, is observed on every applied command:
+	// ApplyTotal (kind, is_leader), ApplyDurationMs (kind), DedupHits,
+	// JournalAppended (entry). Safe to leave nil — every observation is
+	// guarded.
+	Metrics *observability.Metrics
 }
 
 // Partition is the dragonboat IOnDiskStateMachine for one reflow partition.
@@ -147,6 +154,9 @@ func (p *Partition) Update(entries []statemachine.Entry) ([]statemachine.Entry, 
 				return nil, fmt.Errorf("partition: dedup check: %w", err)
 			}
 			if dup {
+				if p.cfg.Metrics != nil {
+					p.cfg.Metrics.DedupHits.Inc()
+				}
 				p.cfg.Log.Debug("partition: duplicate command skipped",
 					"raft_index", ent.Index, "dedup", dedupString(d))
 				meta.AppliedIndex = ent.Index
@@ -154,8 +164,19 @@ func (p *Partition) Update(entries []statemachine.Entry) ([]statemachine.Entry, 
 			}
 		}
 
+		kind := commandKindLabel(env.GetCommand())
+		var applyStart time.Time
+		if p.cfg.Metrics != nil {
+			applyStart = time.Now()
+		}
 		if err := p.applyCommand(batch, &env, ent.Index, meta, inv, journal, timers, isLeader); err != nil {
 			return nil, err
+		}
+		if p.cfg.Metrics != nil {
+			p.cfg.Metrics.ApplyTotal.WithLabelValues(kind, leaderLabel(isLeader)).Inc()
+			p.cfg.Metrics.ApplyDurationMs.WithLabelValues(kind).Observe(
+				float64(time.Since(applyStart).Microseconds()) / 1000.0,
+			)
 		}
 
 		// Outbox-source bookkeeping: when a command was re-injected by an
@@ -241,6 +262,79 @@ func (p *Partition) Update(entries []statemachine.Entry) ([]statemachine.Entry, 
 		}
 	}
 	return entries, nil
+}
+
+// commandKindLabel returns the Prometheus label for a Command's oneof
+// variant. Stable string set so dashboards don't churn when the proto
+// evolves; unknown variants land in "unknown".
+func commandKindLabel(cmd *enginev1.Command) string {
+	switch cmd.GetKind().(type) {
+	case *enginev1.Command_AnnounceLeader:
+		return "AnnounceLeader"
+	case *enginev1.Command_Invoke:
+		return "Invoke"
+	case *enginev1.Command_InvokerEffect:
+		return "InvokerEffect"
+	case *enginev1.Command_TimerFired:
+		return "TimerFired"
+	case *enginev1.Command_Purge:
+		return "Purge"
+	case *enginev1.Command_DeliverCallResult:
+		return "DeliverCallResult"
+	case *enginev1.Command_OutboxAck:
+		return "OutboxAck"
+	case nil:
+		return "empty"
+	default:
+		return "unknown"
+	}
+}
+
+// journalEntryKindLabel returns the Prometheus label for a JournalEntry
+// oneof variant. Mirrors commandKindLabel: stable strings, unknown
+// variants land in "unknown".
+func journalEntryKindLabel(e *enginev1.JournalEntry) string {
+	switch e.GetEntry().(type) {
+	case *enginev1.JournalEntry_Input:
+		return "Input"
+	case *enginev1.JournalEntry_Run:
+		return "Run"
+	case *enginev1.JournalEntry_Sleep:
+		return "Sleep"
+	case *enginev1.JournalEntry_SleepResult:
+		return "SleepResult"
+	case *enginev1.JournalEntry_Call:
+		return "Call"
+	case *enginev1.JournalEntry_CallResult:
+		return "CallResult"
+	case *enginev1.JournalEntry_Awakeable:
+		return "Awakeable"
+	case *enginev1.JournalEntry_AwakeableResult:
+		return "AwakeableResult"
+	case *enginev1.JournalEntry_SetState:
+		return "SetState"
+	case *enginev1.JournalEntry_ClearState:
+		return "ClearState"
+	case *enginev1.JournalEntry_ClearAllState:
+		return "ClearAllState"
+	case *enginev1.JournalEntry_GetState:
+		return "GetState"
+	case *enginev1.JournalEntry_GetEagerState:
+		return "GetEagerState"
+	case *enginev1.JournalEntry_Signal:
+		return "Signal"
+	case *enginev1.JournalEntry_Output:
+		return "Output"
+	default:
+		return "unknown"
+	}
+}
+
+func leaderLabel(isLeader bool) string {
+	if isLeader {
+		return "true"
+	}
+	return "false"
 }
 
 func (p *Partition) applyCommand(
@@ -423,6 +517,9 @@ func (p *Partition) onInvokerEffect(
 		// Persist the journal entry first.
 		if err := journal.Append(batch, id, entry); err != nil {
 			return fmt.Errorf("onInvokerEffect: journal append: %w", err)
+		}
+		if p.cfg.Metrics != nil {
+			p.cfg.Metrics.JournalAppended.WithLabelValues(journalEntryKindLabel(entry)).Inc()
 		}
 		// Per-entry-type side effects: timers, awakeable directory, outbox.
 		switch e := entry.GetEntry().(type) {

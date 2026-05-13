@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -75,6 +76,7 @@ type TimerService struct {
 	proposer Proposer
 	now      func() uint64
 	log      *slog.Logger
+	metrics  *observability.Metrics
 
 	mu   sync.Mutex
 	heap timerHeap
@@ -86,8 +88,9 @@ type TimerService struct {
 
 // TimerServiceOptions tunes a TimerService for tests.
 type TimerServiceOptions struct {
-	Now func() uint64 // injected wall clock; defaults to time.Now()
-	Log *slog.Logger  // structured logger
+	Now     func() uint64 // injected wall clock; defaults to time.Now()
+	Log     *slog.Logger  // structured logger
+	Metrics *observability.Metrics
 }
 
 // NewTimerService constructs the service. proposer may be nil if the service
@@ -104,6 +107,7 @@ func NewTimerService(table tables.TimerTable, proposer Proposer, opts TimerServi
 		proposer: proposer,
 		now:      opts.Now,
 		log:      opts.Log,
+		metrics:  opts.Metrics,
 		wake:     make(chan struct{}, 1),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
@@ -290,6 +294,9 @@ func (ts *TimerService) fireDue(ctx context.Context) {
 		err := ts.proposer.ProposeSelf(propCtx, cmd)
 		cancel()
 		if err == nil {
+			if ts.metrics != nil {
+				ts.metrics.TimerFired.Inc()
+			}
 			continue
 		}
 		// Shutdown-class errors are terminal: do NOT re-push or the next

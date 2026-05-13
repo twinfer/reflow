@@ -51,13 +51,14 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	// once at startup; the metrics handler reuses whichever registry was
 	// passed.
 	var metricsRegisterer prometheus.Registerer
+	var metrics *observability.Metrics
 	if !cfg.Metrics.Disabled {
 		if cfg.Metrics.Registry != nil {
 			metricsRegisterer = cfg.Metrics.Registry
 		} else {
 			metricsRegisterer = prometheus.DefaultRegisterer
 		}
-		_ = observability.NewMetrics(metricsRegisterer)
+		metrics = observability.NewMetrics(metricsRegisterer)
 	}
 
 	// Optionally start the /metrics HTTP server.
@@ -91,6 +92,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		GrpcEndpoint:       cfg.Node.DeliveryAddr,
 		Peers:              toEnginePeers(cfg.Cluster.Peers),
 		NumPartitionShards: numShards,
+		Metrics:            metrics,
 	}
 	eh, err := engine.NewHost(hcfg)
 	if err != nil {
@@ -183,6 +185,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		deliveryMapper := &auth.CertClaimMapper{TrustDomain: cfg.TLS.TrustDomainOrDefault()}
 
 		gsOpts := []grpc.ServerOption{
+			grpc.ChainUnaryInterceptor(auth.UnaryInterceptor(deliveryMapper, deliveryAuthz, logger)),
 			grpc.ChainStreamInterceptor(auth.StreamInterceptor(deliveryMapper, deliveryAuthz, logger)),
 		}
 		if serverCreds != nil {
@@ -207,7 +210,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		// redundant on the wire — but starting it first matches the
 		// Phase 4.2 sequence and avoids race-prone test orderings.
 		if _, mErr := eh.StartMetadataShard(); mErr != nil {
-			_ = deliverySrv.Stop
+			deliverySrv.Stop()
 			_ = ln.Close()
 			_ = dc.Close()
 			_ = eh.Close()
@@ -344,6 +347,9 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			grpc.Creds(credentials.NewTLS(adminTLS)),
 			grpc.ChainUnaryInterceptor(
 				auth.UnaryInterceptor(adminMapper, adminAuthz, logger),
+			),
+			grpc.ChainStreamInterceptor(
+				auth.StreamInterceptor(adminMapper, adminAuthz, logger),
 			),
 		)
 		srv.Register(adminSrv)

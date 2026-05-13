@@ -20,6 +20,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine/cluster"
 	"github.com/twinfer/reflow/internal/engine/invoker"
 	"github.com/twinfer/reflow/internal/engine/routing"
+	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	"github.com/twinfer/reflow/pkg/sdk"
@@ -85,6 +86,12 @@ type HostConfig struct {
 	// behavior preserved) and logs a warning suggesting the caller wire
 	// the explicit value through from its public config.
 	NumPartitionShards uint64
+
+	// Metrics carries the Prometheus collectors observed by the partition
+	// apply path and the timer service. nil disables observation; the
+	// engine never constructs its own — wiring is owned by the caller
+	// (pkg/reflow) to keep the registry decision out of internal/engine.
+	Metrics *observability.Metrics
 }
 
 // Peer is a static cluster member known at bootstrap. NodeHostID may be
@@ -496,7 +503,9 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		Log:         h.log,
 		OnActions:   runner.dispatchActions,
 		Partitioner: routing.Partitioner{NumShards: h.partitionShardCount()},
+		Metrics:     h.cfg.Metrics,
 	}
+	runner.metrics = h.cfg.Metrics
 	raftCfg := config.Config{
 		ReplicaID:          h.cfg.NodeID,
 		ShardID:            shardID,

@@ -255,35 +255,90 @@ func clientTLSWithCert(t *testing.T, certFile, keyFile, caFile string) *tls.Conf
 	}
 }
 
-func TestTLS_BuildAdminServer_RejectsNodeCertAtHandshake(t *testing.T) {
-	dir := t.TempDir()
-	files, _, _ := writeTLSFixtures(t, dir)
-	serverCfg, err := BuildAdminServerTLS(files, testTrustDomain)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Present the node leaf (signed by the same CA) to the Admin server
-	// — its VerifyPeerCertificate must reject because the URI prefix is
-	// /node/ not /operator/.
-	clientCfg := clientTLSWithCert(t, files.CertFile, files.KeyFile, files.CAFile)
-	if err := dialHandshake(t, serverCfg, clientCfg); err == nil {
-		t.Fatal("expected handshake to fail; node cert reached Admin server")
-	} else if !strings.Contains(err.Error(), "prefix") && !strings.Contains(err.Error(), "operator") {
-		t.Logf("got expected handshake error: %v", err)
-	}
-}
-
-func TestTLS_BuildDeliveryServer_RejectsOperatorCertAtHandshake(t *testing.T) {
+// TestTLS_CrossRoleHandshakesSucceed documents the post-4.3d split: the
+// TLS layer accepts any well-formed SPIFFE cert from the trust domain;
+// role enforcement ("node cert may not reach Admin") moved to the gRPC
+// interceptor in internal/auth. The cross-role rejection is covered
+// end-to-end by the auth interceptor unit tests and the Phase 4.2
+// integration test.
+func TestTLS_CrossRoleHandshakesSucceed(t *testing.T) {
 	dir := t.TempDir()
 	files, opCrt, opKey := writeTLSFixtures(t, dir)
-	serverCfg, err := BuildDeliveryServerTLS(files, testTrustDomain)
+
+	t.Run("node cert reaches Admin handshake", func(t *testing.T) {
+		serverCfg, err := BuildAdminServerTLS(files, testTrustDomain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clientCfg := clientTLSWithCert(t, files.CertFile, files.KeyFile, files.CAFile)
+		// We don't assert nil; the server closes after handshake and
+		// the client sees EOF on the first read. Any *handshake* error
+		// would mention "bad certificate" — explicitly reject that.
+		if err := dialHandshake(t, serverCfg, clientCfg); err != nil {
+			if strings.Contains(err.Error(), "bad certificate") {
+				t.Errorf("TLS layer should accept cross-role cert; got handshake rejection: %v", err)
+			}
+		}
+	})
+
+	t.Run("operator cert reaches Delivery handshake", func(t *testing.T) {
+		serverCfg, err := BuildDeliveryServerTLS(files, testTrustDomain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clientCfg := clientTLSWithCert(t, opCrt, opKey, files.CAFile)
+		if err := dialHandshake(t, serverCfg, clientCfg); err != nil {
+			if strings.Contains(err.Error(), "bad certificate") {
+				t.Errorf("TLS layer should accept cross-role cert; got handshake rejection: %v", err)
+			}
+		}
+	})
+}
+
+// TestTLS_RejectsMalformedCertAtHandshake confirms the TLS layer still
+// rejects leaves that fail well-formedness (no URI SAN at all).
+func TestTLS_RejectsMalformedCertAtHandshake(t *testing.T) {
+	dir := t.TempDir()
+	ca, err := pki.NewCA("test-ca")
 	if err != nil {
 		t.Fatal(err)
 	}
-	clientCfg := clientTLSWithCert(t, opCrt, opKey, files.CAFile)
+	caCrt, _, err := ca.WriteSingle(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeURI, _ := pki.BuildSPIFFEID(testTrustDomain, "node", "1")
+	nodeLeaf, err := ca.Issue(pki.LeafOptions{
+		Kind:  pki.LeafNode,
+		Name:  "server",
+		Hosts: []string{"127.0.0.1"},
+		URIs:  []*url.URL{nodeURI},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeCrt, nodeKey, err := pki.WriteMaterial(dir, "server", nodeLeaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Malformed client: no URI SAN.
+	bad, err := ca.Issue(pki.LeafOptions{Kind: pki.LeafOperator, Name: "bad"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	badCrt, badKey, err := pki.WriteMaterial(dir, "bad", bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverCfg, err := BuildAdminServerTLS(
+		TLSFiles{CAFile: caCrt, CertFile: nodeCrt, KeyFile: nodeKey},
+		testTrustDomain,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientCfg := clientTLSWithCert(t, badCrt, badKey, caCrt)
 	if err := dialHandshake(t, serverCfg, clientCfg); err == nil {
-		t.Fatal("expected handshake to fail; operator cert reached Delivery server")
-	} else if !strings.Contains(err.Error(), "prefix") && !strings.Contains(err.Error(), "node") {
-		t.Logf("got expected handshake error: %v", err)
+		t.Fatal("expected handshake to fail for cert without URI SAN")
 	}
 }

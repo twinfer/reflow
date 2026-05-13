@@ -1,21 +1,14 @@
 // Package admin implements reflow's mTLS-protected cluster Admin gRPC
-// surface.
+// surface. It owns the gRPC handlers and the per-RPC business logic
+// (Raft proposals against shard 0, snapshot orchestration). Identity,
+// audit, and authorization all live in internal/auth — the same auth
+// stack drives the Delivery service too.
 //
 // Every mutating RPC translates into a shard-0 Raft proposal via
 // MetadataRunner.Proposer().ProposeSelf, so all admin calls must reach
 // the metadata leader. Non-leader nodes return codes.Unavailable with
 // a leader hint in the error message; the reflow-cluster CLI is the
 // canonical client and is responsible for retrying.
-//
-// Authorization runs in two stages, both fed by the SPIFFE URI SAN on
-// the caller's leaf cert. The transport layer (BuildAdminServerTLS)
-// rejects any handshake whose cert lacks an `operator/*` URI. Inside
-// the gRPC chain, AuditInterceptor parses the URI into a PeerIdentity
-// and stashes it on the context; AuthzInterceptor then consults a
-// per-method policy compiled from proto annotations (see
-// authz.go and the (reflow.options.v1.required_spiffe_role) options
-// on proto/adminv1/admin.proto) and rejects mismatches with
-// PermissionDenied.
 package admin
 
 import (
@@ -23,17 +16,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"github.com/twinfer/reflow/internal/engine"
@@ -100,87 +89,6 @@ func NewServer(cfg Config) (*Server, error) {
 // Register installs s on gs.
 func (s *Server) Register(gs *grpc.Server) {
 	adminv1.RegisterAdminServer(gs, s)
-}
-
-// PeerIdentity is the parsed identity extracted from a verified TLS
-// client certificate's SPIFFE URI SAN.
-type PeerIdentity struct {
-	Kind string // "operator" | "node"
-	Name string // path segment after the kind (numeric id for nodes)
-	URI  *url.URL
-}
-
-// String renders the underlying URI; convenient for logging.
-func (p PeerIdentity) String() string {
-	if p.URI == nil {
-		return ""
-	}
-	return p.URI.String()
-}
-
-type peerIdentityCtxKey struct{}
-
-// PeerIdentityFromContext returns the identity attached by
-// AuditInterceptor, if any.
-func PeerIdentityFromContext(ctx context.Context) (PeerIdentity, bool) {
-	id, ok := ctx.Value(peerIdentityCtxKey{}).(PeerIdentity)
-	return id, ok
-}
-
-// AuditInterceptor is the unary interceptor that pulls caller identity
-// from the verified TLS cert and logs it alongside the RPC name. Rejects
-// callers without a verified chain or without a parseable SPIFFE URI
-// SAN — BuildAdminServerTLS already enforces the URI shape at the
-// transport, but a defense-in-depth check here keeps the audit log
-// honest if someone wires the server without TLS.
-func AuditInterceptor(log *slog.Logger) grpc.UnaryServerInterceptor {
-	if log == nil {
-		log = slog.Default()
-	}
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		id, ok := peerIdentity(ctx)
-		if !ok {
-			return nil, status.Error(codes.Unauthenticated, "admin: client certificate not verified")
-		}
-		log.Info("admin: rpc",
-			"method", info.FullMethod,
-			"kind", id.Kind,
-			"name", id.Name,
-			"uri", id.String())
-		ctx = context.WithValue(ctx, peerIdentityCtxKey{}, id)
-		return handler(ctx, req)
-	}
-}
-
-// peerIdentity extracts a PeerIdentity from a verified TLS client cert.
-// Returns false when no verified chain is present or the leaf is not
-// shaped like a SPIFFE ID with exactly two non-empty path segments
-// (spiffe://<td>/<kind>/<name>).
-func peerIdentity(ctx context.Context) (PeerIdentity, bool) {
-	p, ok := peer.FromContext(ctx)
-	if !ok {
-		return PeerIdentity{}, false
-	}
-	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
-	if !ok {
-		return PeerIdentity{}, false
-	}
-	if len(tlsInfo.State.VerifiedChains) == 0 {
-		return PeerIdentity{}, false
-	}
-	leaf := tlsInfo.State.VerifiedChains[0][0]
-	if len(leaf.URIs) != 1 {
-		return PeerIdentity{}, false
-	}
-	u := leaf.URIs[0]
-	if u.Scheme != "spiffe" || u.Host == "" {
-		return PeerIdentity{}, false
-	}
-	parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return PeerIdentity{}, false
-	}
-	return PeerIdentity{Kind: parts[0], Name: parts[1], URI: u}, true
 }
 
 // requireLeader returns Unavailable when this node is not the metadata

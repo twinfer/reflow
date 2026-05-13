@@ -1,7 +1,7 @@
 // Reflow inter-node Delivery service.
 //
-// Phase 4.1. Every reflowd process hosts a Delivery gRPC server. When a
-// shard's leader-side OutboxService sees an OutboxEnvelope whose
+// Every reflowd process hosts a Delivery gRPC server. When a shard's
+// leader-side OutboxService sees an OutboxEnvelope whose
 // destination_shard_id does not match the local shard, it dials the
 // destination shard's current leader via this service and streams the
 // envelope as a Command. The receiver's Delivery server calls the local
@@ -13,15 +13,23 @@
 // triggers a reciprocal OutboxAck envelope that pops the sender's
 // outbox row. NotLeader carries the receiver's leader hint so the
 // sender can re-resolve via the dragonboat gossip ShardView and retry.
+//
+// Authorization: every RPC on this service requires a SPIFFE
+// "node" role (see the service-level
+// (reflow.options.v1.default_required_spiffe_role) annotation).
+// Enforcement runs in internal/auth's stream interceptor.
 syntax = "proto3";
 
 package reflow.delivery.v1;
 
 import "enginev1/engine.proto";
+import "optionsv1/options.proto";
 
 option go_package = "github.com/twinfer/reflow/proto/deliveryv1;deliveryv1";
 
 service Delivery {
+  option (reflow.options.v1.default_required_spiffe_role) = "node";
+
   // Deliver is a bidirectional stream so the sender can pipeline multiple
   // envelopes and observe acks / not-leader signals without head-of-line
   // blocking. Implementations issue exactly one DeliverResponse per

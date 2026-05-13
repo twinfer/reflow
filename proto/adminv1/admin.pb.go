@@ -8,10 +8,10 @@
 //
 // Authorization is declared in this file. Each RPC carries a required
 // SPIFFE role via (reflow.options.v1.required_spiffe_role) or inherits
-// the service-level default below. The server's AuthzInterceptor
-// (internal/engine/admin/authz.go) rejects mismatches with
-// PermissionDenied. Multi-language clients can introspect the same
-// annotation from generated descriptors.
+// the service-level default below. The shared auth interceptor
+// (internal/auth) rejects mismatches with PermissionDenied.
+// Multi-language clients can introspect the same annotation from
+// generated descriptors.
 //
 // Mutating RPCs (AddNode, RemoveNode) translate to shard-0 Raft
 // proposals; the apply arms in the metadata FSM and the metadata-

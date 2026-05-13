@@ -14,11 +14,13 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/admin"
 	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	"github.com/twinfer/reflow/internal/observability"
+	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
 )
 
@@ -153,7 +155,23 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			}
 			return nil, fmt.Errorf("reflow: listen delivery %s: %w", cfg.Node.DeliveryAddr, lnErr)
 		}
-		var gsOpts []grpc.ServerOption
+		deliveryPolicy, dpErr := auth.BuildMethodPolicy(
+			deliveryv1.File_deliveryv1_delivery_proto.Services().ByName("Delivery"))
+		if dpErr != nil {
+			_ = dc.Close()
+			_ = ln.Close()
+			_ = eh.Close()
+			if metricsCloser != nil {
+				_ = metricsCloser()
+			}
+			return nil, fmt.Errorf("reflow: build delivery authz policy: %w", dpErr)
+		}
+		deliveryAuthz := auth.NewProtoPolicyAuthorizer(deliveryPolicy)
+		deliveryMapper := &auth.CertClaimMapper{TrustDomain: cfg.TLS.TrustDomainOrDefault()}
+
+		gsOpts := []grpc.ServerOption{
+			grpc.ChainStreamInterceptor(auth.StreamInterceptor(deliveryMapper, deliveryAuthz, logger)),
+		}
 		if serverCreds != nil {
 			gsOpts = append(gsOpts, grpc.Creds(serverCreds))
 		}
@@ -301,16 +319,18 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			cleanup()
 			return nil, fmt.Errorf("reflow: admin server: %w", sErr)
 		}
-		policy, perr := admin.AdminMethodPolicy()
+		adminPolicy, perr := auth.BuildMethodPolicy(
+			adminv1.File_adminv1_admin_proto.Services().ByName("Admin"))
 		if perr != nil {
 			cleanup()
 			return nil, fmt.Errorf("reflow: build admin authz policy: %w", perr)
 		}
+		adminAuthz := auth.NewProtoPolicyAuthorizer(adminPolicy)
+		adminMapper := &auth.CertClaimMapper{TrustDomain: cfg.TLS.TrustDomainOrDefault()}
 		adminSrv = grpc.NewServer(
 			grpc.Creds(credentials.NewTLS(adminTLS)),
 			grpc.ChainUnaryInterceptor(
-				admin.AuditInterceptor(logger),
-				admin.AuthzInterceptor(policy, nil),
+				auth.UnaryInterceptor(adminMapper, adminAuthz, logger),
 			),
 		)
 		srv.Register(adminSrv)

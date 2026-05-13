@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/admin"
 	enginesnap "github.com/twinfer/reflow/internal/engine/snapshot"
@@ -28,7 +29,7 @@ import (
 )
 
 // adminRig augments a Phase 4.1 nodeRig with an admin gRPC server.
-// Admin runs without the AuditInterceptor in tests because the
+// Admin runs without the auth interceptor in tests because that
 // interceptor requires mTLS-verified client certs — the dedicated
 // TLS-rejection tests rebuild the rig with TLS+interceptor enabled.
 type adminRig struct {
@@ -264,7 +265,7 @@ func TestPhase4_2_AdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	dir := t.TempDir()
 	files, opCert, opKey := writeAdminTLSFixtures(t, dir)
 
-	// Build a TLS-protected admin server. AuditInterceptor refuses
+	// Build a TLS-protected admin server. The auth interceptor refuses
 	// callers without verified TLS, but Require+VerifyClientCert at the
 	// TLS layer should reject them first.
 	srv, err := admin.NewServer(admin.Config{
@@ -282,9 +283,18 @@ func TestPhase4_2_AdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	adminPolicy, err := auth.BuildMethodPolicy(
+		adminv1.File_adminv1_admin_proto.Services().ByName("Admin"))
+	if err != nil {
+		t.Fatalf("BuildMethodPolicy: %v", err)
+	}
 	gs := grpc.NewServer(
 		grpc.Creds(credentials.NewTLS(tlsCfg)),
-		grpc.UnaryInterceptor(admin.AuditInterceptor(nil)),
+		grpc.ChainUnaryInterceptor(auth.UnaryInterceptor(
+			&auth.CertClaimMapper{TrustDomain: testTrustDomain},
+			auth.NewProtoPolicyAuthorizer(adminPolicy),
+			nil,
+		)),
 	)
 	srv.Register(gs)
 	go func() {

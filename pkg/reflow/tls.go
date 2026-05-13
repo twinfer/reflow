@@ -6,23 +6,24 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 )
 
 // TLSFiles names the three PEM files that drive reflow's mTLS surface.
 //
-// One CA signs every leaf cert (both node and operator). Role is encoded
-// in each leaf's SPIFFE URI SAN, not in which chain it validates against:
+// One CA signs every leaf cert (both node and operator). Each leaf
+// carries a SPIFFE URI SAN that identifies its role:
 //
 //   - Node leaves carry URI spiffe://<trust-domain>/node/<id>.
 //   - Operator leaves carry URI spiffe://<trust-domain>/operator/<name>.
 //
-// The Delivery server's VerifyPeerCertificate requires node/* URIs;
-// the Admin server's requires operator/*. Cross-role certs (e.g. an
-// operator cert presented to the Delivery port) fail the handshake even
-// though the chain validates, because the URI prefix doesn't match.
+// The TLS layer validates the chain and checks URI well-formedness
+// (exactly one URI, scheme=spiffe, host matches trust domain).
+// **Role enforcement** — "node/* required for Delivery, operator/* for
+// Admin" — runs in the gRPC interceptor stack (internal/auth), so one
+// component owns every authorization decision and policy is declared
+// in the proto (proto/optionsv1/options.proto).
 type TLSFiles struct {
 	CAFile   string
 	CertFile string
@@ -128,13 +129,13 @@ func hotReloadCert(certFile, keyFile string) (func(*tls.ClientHelloInfo) (*tls.C
 	}, nil
 }
 
-// verifyURISANRole returns a VerifyPeerCertificate callback that requires
-// the verified leaf's first URI SAN to match
-// spiffe://<trustDomain>/<role>/<non-empty-name>. Defense-in-depth on
-// top of x509 chain validation, so an operator cert can't reach the
-// Delivery port (and vice versa) even though one CA signs both kinds.
-func verifyURISANRole(trustDomain, role string) func(rawCerts [][]byte, chains [][]*x509.Certificate) error {
-	wantPrefix := "/" + role + "/"
+// verifyURISANWellFormed returns a VerifyPeerCertificate callback that
+// requires the verified leaf to carry exactly one URI SAN of the form
+// spiffe://<trustDomain>/<non-empty-path>. It does NOT check the role
+// segment — role enforcement lives in internal/auth (interceptor
+// stack), so one component owns the policy decision. The TLS layer
+// stays a chain + well-formedness check.
+func verifyURISANWellFormed(trustDomain string) func(rawCerts [][]byte, chains [][]*x509.Certificate) error {
 	return func(_ [][]byte, chains [][]*x509.Certificate) error {
 		if len(chains) == 0 || len(chains[0]) == 0 {
 			return errors.New("reflow/tls: no verified chain")
@@ -150,9 +151,8 @@ func verifyURISANRole(trustDomain, role string) func(rawCerts [][]byte, chains [
 		if u.Host != trustDomain {
 			return fmt.Errorf("reflow/tls: leaf trust domain %q; want %q", u.Host, trustDomain)
 		}
-		if !strings.HasPrefix(u.Path, wantPrefix) || len(u.Path) <= len(wantPrefix) {
-			return fmt.Errorf("reflow/tls: leaf URI %q; want prefix spiffe://%s%s<name>",
-				u.String(), trustDomain, wantPrefix)
+		if len(u.Path) <= 1 {
+			return fmt.Errorf("reflow/tls: leaf URI %q has empty path", u.String())
 		}
 		return nil
 	}
@@ -180,7 +180,7 @@ func BuildDeliveryServerTLS(f TLSFiles, trustDomain string) (*tls.Config, error)
 		GetCertificate:        get,
 		ClientAuth:            tls.RequireAndVerifyClientCert,
 		ClientCAs:             pool,
-		VerifyPeerCertificate: verifyURISANRole(trustDomain, "node"),
+		VerifyPeerCertificate: verifyURISANWellFormed(trustDomain),
 		MinVersion:            tls.VersionTLS13,
 	}, nil
 }
@@ -208,7 +208,7 @@ func BuildDeliveryClientTLS(f TLSFiles, trustDomain string) (*tls.Config, error)
 			return get(nil)
 		},
 		RootCAs:               pool,
-		VerifyPeerCertificate: verifyURISANRole(trustDomain, "node"),
+		VerifyPeerCertificate: verifyURISANWellFormed(trustDomain),
 		MinVersion:            tls.VersionTLS13,
 	}, nil
 }
@@ -235,7 +235,7 @@ func BuildAdminServerTLS(f TLSFiles, trustDomain string) (*tls.Config, error) {
 		GetCertificate:        get,
 		ClientAuth:            tls.RequireAndVerifyClientCert,
 		ClientCAs:             pool,
-		VerifyPeerCertificate: verifyURISANRole(trustDomain, "operator"),
+		VerifyPeerCertificate: verifyURISANWellFormed(trustDomain),
 		MinVersion:            tls.VersionTLS13,
 	}, nil
 }
@@ -266,7 +266,7 @@ func BuildAdminClientTLS(operatorCertFile, operatorKeyFile, caFile, trustDomain 
 			return get(nil)
 		},
 		RootCAs:               pool,
-		VerifyPeerCertificate: verifyURISANRole(trustDomain, "node"),
+		VerifyPeerCertificate: verifyURISANWellFormed(trustDomain),
 		MinVersion:            tls.VersionTLS13,
 	}, nil
 }

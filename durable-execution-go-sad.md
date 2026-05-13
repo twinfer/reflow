@@ -3,11 +3,14 @@
 
 **Version:** 0.6 (Draft)
 **Date:** 2026-05-13
-**Status:** Phase 1 + Phase 2 invoker + Phase 4.2 multi-node (mTLS admin,
-dynamic membership, DR snapshots) + Phase 4.3 auth consolidation
-(single-CA SPIFFE identity, proto-annotation authz, single Authorizer
-seam) implemented. Phase 3 (Virtual Objects) and Phase 5 (cloud snapshot
-drivers, retention, non-Go SDKs) outstanding.
+**Status:** Phase 1 + Phase 2 invoker + Phase 3 Virtual Objects (single-
+writer gate, idempotency, retry policy, eager state, attach RPCs) +
+Phase 3.5 combinator futures (`Promise.all` / `Promise.race`) + Phase 4.2
+multi-node (mTLS admin, dynamic membership, DR snapshots) + Phase 4.3
+auth consolidation (single-CA SPIFFE identity, proto-annotation authz,
+single Authorizer seam) implemented. Phase 5 (cloud snapshot drivers,
+retention, non-Go SDKs) outstanding. Open gap: OPEN-1 (joining-node
+startup) — see §9.
 
 ---
 
@@ -156,12 +159,14 @@ Each partition is an independent unit: one dragonboat Raft group, one Pebble ins
 | Snapshot archival (Phase 4 fs, Phase 5 cloud) | `gocloud.dev/blob` | Apache 2.0 |
 | Serialization + IDL | `google.golang.org/protobuf` + `buf` v2 | BSD-3 / Apache 2.0 |
 | Authn/Authz | stdlib `crypto/tls`, custom SPIFFE URI mapper + proto-annotation authz (`internal/auth`) | — |
+| Virtual-Object FSM | `qmuntal/stateless` v1.8.0 | BSD-2 |
 | Structured logging | `log/slog` (stdlib) | — |
 | Metrics | `prometheus/client_golang` | Apache 2.0 |
 
 The invocation state machine uses a plain switch over the persisted
 `InvocationStatus` discriminated union rather than an FSM library — see §6.4.
-No third-party FSM dependency is required.
+The per-key Virtual-Object gate uses `qmuntal/stateless` for clarity around
+the Active-reentry semantics (queue head promotion) — see §6.5.
 
 `go.mod` pins `cockroachdb/pebble/v2 v2.1.5` (the public Pebble API used
 by reflow's `StateStore`) and `lni/dragonboat/v4 v4.0.0-20250723143628-076c7f6497dc`
@@ -527,21 +532,37 @@ to `Completed` with a kill-flavoured failure — same as reflow.
 
 ### 6.5 Virtual Object State Machine
 
-Phase 3. Same shape as §6.4: a persisted oneof per object key in the
-`vobj/` namespace, applied via a plain switch in the FSM. No third-party
-FSM library.
+Phase 3. Each `(service, object_key)` has a `KeyLeaseStatus` row in the
+`keylease/` namespace carrying the active invocation id and a FIFO queue.
+Unlike the invocation FSM, the gate is implemented with `qmuntal/stateless`
+(`internal/engine/object_fsm.go`) — the Active-reentry semantics
+(transitioning Active → Active on `Complete` to promote the queue head)
+were awkward to express as a plain switch and read clearly with
+`stateless`'s `OnEntryFrom` / `PermitDynamic` primitives.
 
 ```
-┌──────┐  enqueue   ┌────────────┐  queue_empty  ┌──────────┐
-│ Idle │──────────▶│ Processing │──────────────▶│ Draining │──▶ Idle
-└──────┘            └─────┬──────┘               └──────────┘
-                          │ enqueue
-                          ▼
-                    (queue pending invocations,
-                     process one at a time)
+                      enqueue (queue head promoted via OnEntryFrom)
+                              ┌─────────────────┐
+                              ▼                 │
+┌──────┐  enqueue   ┌──────────────────┐  complete (queue non-empty)
+│ Idle │──────────▶│      Active      │─────────┘
+└──────┘            │ current + queue  │
+   ▲                └─────────┬────────┘
+   │                          │ complete (queue empty)
+   └──────────────────────────┘
 ```
 
-**Single-writer guarantee:** Only one invocation runs per object key at a time. New invocations for a busy object are enqueued in Pebble and dequeued when the current invocation completes or suspends.
+States: `IDLE`, `ACTIVE`. Triggers: `vobjEnqueue(InvocationId)`,
+`vobjComplete`. The FSM is constructed fresh inside each partition
+apply call, fired against a working copy of `KeyLeaseStatus`, and
+written back via `tables.KeyLeaseTable.Put` in the same Pebble batch
+as the invocation status transition that triggered it
+(`partition.go:onInvoke`, `releaseKeyLease`).
+
+**Single-writer guarantee:** Only the row's `current_invocation` may
+run. New invocations for an `ACTIVE` lease are appended to the queue
+and stay in `Scheduled` status until promoted on the prior holder's
+`Complete`.
 
 ---
 
@@ -1210,7 +1231,7 @@ Minimum production deployment: 3 nodes (Raft quorum = 2).
 |---|---|---|---|
 | Journal replay correctness bugs | High | Critical | Extensive property-based testing; formal spec |
 | GC pauses causing Raft timeouts | Low | Medium | Tune `RTTMillisecond`/`HeartbeatRTT` generously; revisit if measured in load tests. timerfd integration deferred. |
-| Pebble key schema migration | Medium | Medium | `PartitionMeta.version` reserved; schema versioning to land in Phase 2. |
+| Pebble key schema migration | Medium | Medium | Resolved in Phase 4.3a: per-DB `format` key (`internal/storage/format.go`) written on first open and checked on every subsequent open; mismatches fail loud rather than silently corrupting. `VersionBarrier` retired. |
 | dragonboat API stability | Medium | Medium | Pinned to v4 pseudo-version; Pebble pinned to dragonboat's expected commit. Watch for an official v4 release. |
 | SDK protocol breaking changes | Medium | High | Phase 2 will adopt restate service-protocol-v4 wire format (avoid inventing a competing one). |
 | Partition rebalancing data loss | Low | Critical | Phase 4 concern; test membership changes under load when implementing. |
@@ -1269,13 +1290,35 @@ with `reflowd`, have it become a durable goroutine.
 and outgoing `Call`s survives mid-execution crashes and resumes
 correctly. ✓
 
-### Phase 3 — Virtual Objects
-- VObject status (switch on persisted oneof; no FSM library)
-- Object K/V state in Pebble (the reserved `state/` namespace)
-- Invocation queue per object key
-- Single-writer enforcement
+### Phase 3 — Virtual Objects (DONE)
 
-**Exit criteria:** Concurrent invocations on the same object key are serialized correctly under failure.
+- Per-key lease + FIFO queue (`KeyLeaseStatus`); FSM via
+  `qmuntal/stateless` (`internal/engine/object_fsm.go`).
+- Object K/V state in Pebble (`state/` namespace via
+  `tables.StateTable`), with eager-state preload on session start
+  (`JEGetEagerState`).
+- Single-writer gate: only `KeyLeaseStatus.CurrentInvocation` may run;
+  new arrivals for an `ACTIVE` lease queue and stay `Scheduled`.
+- **Idempotency keys** (`tables.IdempotencyTable`): first
+  `(service, handler, object_key, idempotency_key)` wins; later
+  submissions are dropped pre-status-write.
+- **Retry policy** for `Run` blocks: per-entry backoff schedule
+  persisted in the journal; the FSM re-arms timers on each failure
+  until exhaustion.
+- **Attach RPCs**: ingress `Attach` / `GetOutput` resolve an existing
+  invocation's terminal output without re-driving it.
+- Integration coverage: `integration_phase3_test.go`,
+  `integration_phase3_5_test.go`, plus the rapid PBT (§ tests).
+
+**Exit criteria:** Concurrent invocations on the same object key are
+serialized correctly under failure. ✓
+
+### Phase 3.5 — Combinator Futures (DONE)
+
+`Promise.all` / `Promise.race` over awakeable / call / signal
+completions, persisted as a single journal entry whose pending-set
+shrinks as completions land. Lets handlers fan out durable work and
+join on the first-N / all-N without bespoke bookkeeping in user code.
 
 ### Phase 4 — Multi-Node Replication (DONE through 4.3d)
 

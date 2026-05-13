@@ -2,9 +2,14 @@
 //
 // PKI subcommands (offline, no cluster contact needed):
 //
-//	reflow-cluster init-ca      --out=DIR
-//	reflow-cluster issue-cert   --kind=node     --node-id=N --hostname=H  --ca-dir=DIR --out=DIR
-//	reflow-cluster issue-operator --name=NAME   --ca-dir=DIR --out=DIR
+//	reflow-cluster init-ca        --out=DIR
+//	reflow-cluster issue-cert     --kind=node --node-id=N --hostname=H --ca-dir=DIR --out=DIR [--trust-domain=reflow.local]
+//	reflow-cluster issue-operator --name=NAME --ca-dir=DIR --out=DIR [--trust-domain=reflow.local]
+//
+// init-ca writes ca.crt + ca.key. Every leaf is signed by that single
+// CA and carries a SPIFFE URI SAN (spiffe://<trust-domain>/node/<id>
+// or spiffe://<trust-domain>/operator/<name>) that the reflow TLS layer
+// matches against the listener's expected role.
 //
 // Cluster subcommands (mTLS-authenticated against the Admin gRPC port):
 //
@@ -15,11 +20,13 @@
 //	reflow-cluster snapshot create   --admin=HOST:PORT --shard=N
 //	reflow-cluster snapshot list     --admin=HOST:PORT --shard=N
 //
-// Every cluster subcommand needs three TLS flags (or matching env vars):
+// Every cluster subcommand needs the operator's TLS flags (or matching
+// env vars):
 //
-//	--client-cert  $REFLOW_CLIENT_CERT
-//	--client-key   $REFLOW_CLIENT_KEY
-//	--ca           $REFLOW_CA_CERT
+//	--client-cert   $REFLOW_CLIENT_CERT
+//	--client-key    $REFLOW_CLIENT_KEY
+//	--ca            $REFLOW_CA_CERT
+//	--trust-domain  $REFLOW_TRUST_DOMAIN  (defaults to "reflow.local")
 package main
 
 import (

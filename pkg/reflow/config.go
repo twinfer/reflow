@@ -31,10 +31,11 @@ type Config struct {
 	Ingress IngressConfig `koanf:"ingress"`
 	Metrics MetricsConfig `koanf:"metrics"`
 	Logging LoggingConfig `koanf:"logging"`
-	// TLS is the two-CA mTLS configuration (Phase 4.2). Required when
+	// TLS is the single-CA mTLS configuration. Required when
 	// Cluster.Peers is non-empty — Delivery (between nodes) and Admin
 	// (between operators and nodes) both terminate mTLS using the same
-	// node-leaf cert.
+	// node-leaf cert. Role distinction is enforced by SPIFFE URI SANs
+	// on each leaf (see pkg/reflow/tls.go).
 	TLS TLSConfig `koanf:"tls"`
 	// Admin is the cluster admin gRPC surface. Phase 4.2.
 	Admin AdminConfig `koanf:"admin"`
@@ -73,13 +74,27 @@ type SnapshotConfig struct {
 	ScratchDir string `koanf:"scratch_dir"`
 }
 
-// TLSConfig groups the four PEM file paths that drive reflow's mTLS.
-// See pkg/reflow/tls.go for the two-CA contract.
+// TLSConfig groups the PEM file paths that drive reflow's mTLS plus the
+// SPIFFE trust domain stamped on every issued leaf. See pkg/reflow/tls.go
+// for the single-CA + URI-SAN contract.
 type TLSConfig struct {
-	NodeCAFile     string `koanf:"node_ca_file"`
-	OperatorCAFile string `koanf:"operator_ca_file"`
-	NodeCertFile   string `koanf:"node_cert_file"`
-	NodeKeyFile    string `koanf:"node_key_file"`
+	CAFile      string `koanf:"ca_file"`
+	CertFile    string `koanf:"cert_file"`
+	KeyFile     string `koanf:"key_file"`
+	TrustDomain string `koanf:"trust_domain"`
+}
+
+// DefaultTrustDomain is the SPIFFE trust domain used when TLSConfig
+// leaves it empty.
+const DefaultTrustDomain = "reflow.local"
+
+// TrustDomainOrDefault returns the configured trust domain or
+// DefaultTrustDomain when unset.
+func (c TLSConfig) TrustDomainOrDefault() string {
+	if c.TrustDomain == "" {
+		return DefaultTrustDomain
+	}
+	return c.TrustDomain
 }
 
 // files renders TLSConfig as the internal TLSFiles struct used by the
@@ -87,18 +102,18 @@ type TLSConfig struct {
 // surface doesn't depend on tls.go internals.
 func (c TLSConfig) files() TLSFiles {
 	return TLSFiles{
-		NodeCAFile:     c.NodeCAFile,
-		OperatorCAFile: c.OperatorCAFile,
-		NodeCertFile:   c.NodeCertFile,
-		NodeKeyFile:    c.NodeKeyFile,
+		CAFile:   c.CAFile,
+		CertFile: c.CertFile,
+		KeyFile:  c.KeyFile,
 	}
 }
 
 // IsZero reports whether no TLS file paths have been configured. Used by
-// Run to gate "multi-node requires TLS" validation.
+// Run to gate "multi-node requires TLS" validation. TrustDomain is
+// intentionally ignored — it has a sensible default and shouldn't on
+// its own flip cluster-mode wiring.
 func (c TLSConfig) IsZero() bool {
-	return c.NodeCAFile == "" && c.OperatorCAFile == "" &&
-		c.NodeCertFile == "" && c.NodeKeyFile == ""
+	return c.CAFile == "" && c.CertFile == "" && c.KeyFile == ""
 }
 
 // NodeConfig identifies this node in the cluster.

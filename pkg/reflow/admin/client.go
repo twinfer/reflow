@@ -19,13 +19,16 @@ import (
 )
 
 // DialOptions configures Dial. Addr must be a host:port reachable from
-// the caller. OperatorCertFile / OperatorKeyFile / NodeCAFile drive the
-// mTLS handshake (see pkg/reflow/tls.go BuildAdminClientTLS).
+// the caller. OperatorCertFile / OperatorKeyFile / CAFile drive the
+// mTLS handshake (see pkg/reflow/tls.go BuildAdminClientTLS). TrustDomain
+// is the SPIFFE trust domain the server's leaf URI must match; empty
+// falls back to reflow.DefaultTrustDomain.
 type DialOptions struct {
 	Addr             string
 	OperatorCertFile string
 	OperatorKeyFile  string
-	NodeCAFile       string
+	CAFile           string
+	TrustDomain      string
 	// Timeout caps the dial; zero defaults to 10s.
 	Timeout time.Duration
 }
@@ -50,7 +53,11 @@ func Dial(ctx context.Context, opts DialOptions) (*Client, error) {
 	if opts.Timeout == 0 {
 		opts.Timeout = 10 * time.Second
 	}
-	tlsCfg, err := reflow.BuildAdminClientTLS(opts.OperatorCertFile, opts.OperatorKeyFile, opts.NodeCAFile)
+	td := opts.TrustDomain
+	if td == "" {
+		td = reflow.DefaultTrustDomain
+	}
+	tlsCfg, err := reflow.BuildAdminClientTLS(opts.OperatorCertFile, opts.OperatorKeyFile, opts.CAFile, td)
 	if err != nil {
 		return nil, fmt.Errorf("admin: tls: %w", err)
 	}

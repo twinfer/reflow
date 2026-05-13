@@ -6,39 +6,37 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
 
-// TLSFiles names the four PEM files that drive reflow's mTLS surface.
+// TLSFiles names the three PEM files that drive reflow's mTLS surface.
 //
-// Two trust anchors:
+// One CA signs every leaf cert (both node and operator). Role is encoded
+// in each leaf's SPIFFE URI SAN, not in which chain it validates against:
 //
-//   - NodeCAFile signs every node's leaf cert. The Delivery server's
-//     ClientCAs and outbound Delivery clients' RootCAs both anchor on
-//     this CA.
+//   - Node leaves carry URI spiffe://<trust-domain>/node/<id>.
+//   - Operator leaves carry URI spiffe://<trust-domain>/operator/<name>.
 //
-//   - OperatorCAFile signs every operator's leaf cert. The Admin server's
-//     ClientCAs anchor on this CA. Operator certs are not trusted on the
-//     Delivery port and node certs are not trusted on the Admin port.
-//
-// One node-leaf cert (NodeCertFile + NodeKeyFile) is presented by the
-// server on both ports — operators talking to Admin verify it against
-// the NodeCA they were issued by, and peer Delivery clients do the
-// same. The two-CA split lets operator-cert rotation run independently
-// of node-cert rotation. Phase 4.2.
+// The Delivery server's VerifyPeerCertificate requires node/* URIs;
+// the Admin server's requires operator/*. Cross-role certs (e.g. an
+// operator cert presented to the Delivery port) fail the handshake even
+// though the chain validates, because the URI prefix doesn't match.
 type TLSFiles struct {
-	NodeCAFile     string
-	OperatorCAFile string
-	NodeCertFile   string
-	NodeKeyFile    string
+	CAFile   string
+	CertFile string
+	KeyFile  string
 }
 
 // requireForServer validates that every field needed to terminate TLS
 // on a server is populated.
 func (f TLSFiles) requireForServer() error {
-	if f.NodeCertFile == "" || f.NodeKeyFile == "" {
-		return errors.New("reflow/tls: NodeCertFile and NodeKeyFile are required")
+	if f.CertFile == "" || f.KeyFile == "" {
+		return errors.New("reflow/tls: CertFile and KeyFile are required")
+	}
+	if f.CAFile == "" {
+		return errors.New("reflow/tls: CAFile is required")
 	}
 	return nil
 }
@@ -64,7 +62,7 @@ func loadCAPool(path string) (*x509.CertPool, error) {
 // certFile / keyFile when either's mtime advances. The first read happens
 // inside this constructor so configuration errors fail fast at startup.
 // Subsequent reads happen on TLS handshakes; readers see consistent (cert,
-// mtime) snapshots via an atomic pointer swap. Phase 4.2.
+// mtime) snapshots via an atomic pointer swap.
 func hotReloadCert(certFile, keyFile string) (func(*tls.ClientHelloInfo) (*tls.Certificate, error), error) {
 	if certFile == "" || keyFile == "" {
 		return nil, errors.New("reflow/tls: certFile and keyFile required")
@@ -130,102 +128,136 @@ func hotReloadCert(certFile, keyFile string) (func(*tls.ClientHelloInfo) (*tls.C
 	}, nil
 }
 
+// verifyURISANRole returns a VerifyPeerCertificate callback that requires
+// the verified leaf's first URI SAN to match
+// spiffe://<trustDomain>/<role>/<non-empty-name>. Defense-in-depth on
+// top of x509 chain validation, so an operator cert can't reach the
+// Delivery port (and vice versa) even though one CA signs both kinds.
+func verifyURISANRole(trustDomain, role string) func(rawCerts [][]byte, chains [][]*x509.Certificate) error {
+	wantPrefix := "/" + role + "/"
+	return func(_ [][]byte, chains [][]*x509.Certificate) error {
+		if len(chains) == 0 || len(chains[0]) == 0 {
+			return errors.New("reflow/tls: no verified chain")
+		}
+		leaf := chains[0][0]
+		if len(leaf.URIs) != 1 {
+			return fmt.Errorf("reflow/tls: leaf must carry exactly one URI SAN; got %d", len(leaf.URIs))
+		}
+		u := leaf.URIs[0]
+		if u.Scheme != "spiffe" {
+			return fmt.Errorf("reflow/tls: leaf URI scheme %q; want spiffe", u.Scheme)
+		}
+		if u.Host != trustDomain {
+			return fmt.Errorf("reflow/tls: leaf trust domain %q; want %q", u.Host, trustDomain)
+		}
+		if !strings.HasPrefix(u.Path, wantPrefix) || len(u.Path) <= len(wantPrefix) {
+			return fmt.Errorf("reflow/tls: leaf URI %q; want prefix spiffe://%s%s<name>",
+				u.String(), trustDomain, wantPrefix)
+		}
+		return nil
+	}
+}
+
 // BuildDeliveryServerTLS produces the Delivery-port TLS config: server
-// presents the node leaf cert; client certs must verify against the node
-// CA (RequireAndVerifyClientCert). Anchored on node CA in both
-// directions because the only legitimate peers are other reflowd nodes.
-func BuildDeliveryServerTLS(f TLSFiles) (*tls.Config, error) {
+// presents the node leaf cert; client certs must verify against the
+// shared CA AND carry a spiffe://<trustDomain>/node/* URI SAN.
+func BuildDeliveryServerTLS(f TLSFiles, trustDomain string) (*tls.Config, error) {
 	if err := f.requireForServer(); err != nil {
 		return nil, err
 	}
-	if f.NodeCAFile == "" {
-		return nil, errors.New("reflow/tls: NodeCAFile required for Delivery server")
+	if trustDomain == "" {
+		return nil, errors.New("reflow/tls: trust domain is required")
 	}
-	get, err := hotReloadCert(f.NodeCertFile, f.NodeKeyFile)
+	get, err := hotReloadCert(f.CertFile, f.KeyFile)
 	if err != nil {
 		return nil, err
 	}
-	pool, err := loadCAPool(f.NodeCAFile)
+	pool, err := loadCAPool(f.CAFile)
 	if err != nil {
 		return nil, err
 	}
 	return &tls.Config{
-		GetCertificate: get,
-		ClientAuth:     tls.RequireAndVerifyClientCert,
-		ClientCAs:      pool,
-		MinVersion:     tls.VersionTLS13,
+		GetCertificate:        get,
+		ClientAuth:            tls.RequireAndVerifyClientCert,
+		ClientCAs:             pool,
+		VerifyPeerCertificate: verifyURISANRole(trustDomain, "node"),
+		MinVersion:            tls.VersionTLS13,
 	}, nil
 }
 
 // BuildDeliveryClientTLS produces the outbound Delivery client TLS
-// config: presents the node leaf cert; trusts the node CA for the
-// remote server.
-func BuildDeliveryClientTLS(f TLSFiles) (*tls.Config, error) {
+// config: presents the node leaf cert; trusts the shared CA for the
+// remote server and requires the server's leaf to be a node/* SVID.
+func BuildDeliveryClientTLS(f TLSFiles, trustDomain string) (*tls.Config, error) {
 	if err := f.requireForServer(); err != nil {
 		return nil, err
 	}
-	if f.NodeCAFile == "" {
-		return nil, errors.New("reflow/tls: NodeCAFile required for Delivery client")
+	if trustDomain == "" {
+		return nil, errors.New("reflow/tls: trust domain is required")
 	}
-	get, err := hotReloadCert(f.NodeCertFile, f.NodeKeyFile)
+	get, err := hotReloadCert(f.CertFile, f.KeyFile)
 	if err != nil {
 		return nil, err
 	}
-	pool, err := loadCAPool(f.NodeCAFile)
+	pool, err := loadCAPool(f.CAFile)
 	if err != nil {
 		return nil, err
 	}
-	// Outbound dial: gRPC uses GetClientCertificate (separate hook from
-	// GetCertificate). We wrap the same loader.
 	return &tls.Config{
 		GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
 			return get(nil)
 		},
-		RootCAs:    pool,
-		MinVersion: tls.VersionTLS13,
+		RootCAs:               pool,
+		VerifyPeerCertificate: verifyURISANRole(trustDomain, "node"),
+		MinVersion:            tls.VersionTLS13,
 	}, nil
 }
 
 // BuildAdminServerTLS produces the Admin-port TLS config: server presents
-// the node leaf cert; client certs must verify against the operator CA.
-// Only operators-with-valid-operator-certs reach Admin. Phase 4.2.
-func BuildAdminServerTLS(f TLSFiles) (*tls.Config, error) {
+// the node leaf cert; client certs must verify against the shared CA AND
+// carry a spiffe://<trustDomain>/operator/* URI SAN.
+func BuildAdminServerTLS(f TLSFiles, trustDomain string) (*tls.Config, error) {
 	if err := f.requireForServer(); err != nil {
 		return nil, err
 	}
-	if f.OperatorCAFile == "" {
-		return nil, errors.New("reflow/tls: OperatorCAFile required for Admin server")
+	if trustDomain == "" {
+		return nil, errors.New("reflow/tls: trust domain is required")
 	}
-	get, err := hotReloadCert(f.NodeCertFile, f.NodeKeyFile)
+	get, err := hotReloadCert(f.CertFile, f.KeyFile)
 	if err != nil {
 		return nil, err
 	}
-	pool, err := loadCAPool(f.OperatorCAFile)
+	pool, err := loadCAPool(f.CAFile)
 	if err != nil {
 		return nil, err
 	}
 	return &tls.Config{
-		GetCertificate: get,
-		ClientAuth:     tls.RequireAndVerifyClientCert,
-		ClientCAs:      pool,
-		MinVersion:     tls.VersionTLS13,
+		GetCertificate:        get,
+		ClientAuth:            tls.RequireAndVerifyClientCert,
+		ClientCAs:             pool,
+		VerifyPeerCertificate: verifyURISANRole(trustDomain, "operator"),
+		MinVersion:            tls.VersionTLS13,
 	}, nil
 }
 
 // BuildAdminClientTLS produces an operator-side TLS config for talking
-// to the Admin server. Caller supplies an operator leaf cert + key.
-// caFile is the node CA, used to verify the server's node cert. Phase 4.2.
+// to the Admin server. The caller supplies an operator leaf cert + key
+// plus the shared CA used to verify the server's node cert. The server
+// presents a node/* SVID, which the verifier here checks.
 //
 // Used by the reflow-cluster CLI; not invoked from inside reflowd.
-func BuildAdminClientTLS(operatorCertFile, operatorKeyFile, nodeCAFile string) (*tls.Config, error) {
-	if operatorCertFile == "" || operatorKeyFile == "" || nodeCAFile == "" {
-		return nil, errors.New("reflow/tls: operator cert+key and node CA are required")
+func BuildAdminClientTLS(operatorCertFile, operatorKeyFile, caFile, trustDomain string) (*tls.Config, error) {
+	if operatorCertFile == "" || operatorKeyFile == "" || caFile == "" {
+		return nil, errors.New("reflow/tls: operator cert+key and CA are required")
+	}
+	if trustDomain == "" {
+		return nil, errors.New("reflow/tls: trust domain is required")
 	}
 	get, err := hotReloadCert(operatorCertFile, operatorKeyFile)
 	if err != nil {
 		return nil, err
 	}
-	pool, err := loadCAPool(nodeCAFile)
+	pool, err := loadCAPool(caFile)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +265,8 @@ func BuildAdminClientTLS(operatorCertFile, operatorKeyFile, nodeCAFile string) (
 		GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
 			return get(nil)
 		},
-		RootCAs:    pool,
-		MinVersion: tls.VersionTLS13,
+		RootCAs:               pool,
+		VerifyPeerCertificate: verifyURISANRole(trustDomain, "node"),
+		MinVersion:            tls.VersionTLS13,
 	}, nil
 }

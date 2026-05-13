@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -273,7 +274,7 @@ func TestPhase4_2_AdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tlsCfg, err := reflow.BuildAdminServerTLS(files)
+	tlsCfg, err := reflow.BuildAdminServerTLS(files, testTrustDomain)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +293,7 @@ func TestPhase4_2_AdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	t.Cleanup(func() { gs.GracefulStop(); _ = ln.Close() })
 
 	// 1) BuildAdminClientTLS itself refuses empty operator cert.
-	if _, err := reflow.BuildAdminClientTLS("", "", files.NodeCAFile); err == nil {
+	if _, err := reflow.BuildAdminClientTLS("", "", files.CAFile, testTrustDomain); err == nil {
 		t.Fatal("expected BuildAdminClientTLS to reject empty operator cert; got nil err")
 	}
 
@@ -300,7 +301,7 @@ func TestPhase4_2_AdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	//    presents no client cert. The gRPC call must fail because the
 	//    server's ClientAuth = RequireAndVerifyClientCert rejects the
 	//    empty client Certificate message.
-	caBytes, err := os.ReadFile(files.NodeCAFile)
+	caBytes, err := os.ReadFile(files.CAFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +327,7 @@ func TestPhase4_2_AdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	}
 
 	// Sanity: with the proper operator cert + node CA, dial succeeds.
-	good, err := reflow.BuildAdminClientTLS(opCert, opKey, files.NodeCAFile)
+	good, err := reflow.BuildAdminClientTLS(opCert, opKey, files.CAFile, testTrustDomain)
 	if err != nil {
 		t.Fatalf("BuildAdminClientTLS: %v", err)
 	}
@@ -422,25 +423,23 @@ func TestPhase4_2_Snapshot_PartitionExportAndArchive(t *testing.T) {
 // engine_test package so the integration tests stay self-contained.
 func writeAdminTLSFixtures(t *testing.T, dir string) (reflow.TLSFiles, string, string) {
 	t.Helper()
-	nodeCA, err := pki.NewCA("phase4_2-node-ca")
+	ca, err := pki.NewCA("phase4_2-ca")
 	if err != nil {
 		t.Fatal(err)
 	}
-	opCA, err := pki.NewCA("phase4_2-operator-ca")
+	caCrt, _, err := ca.WriteSingle(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodeCAcrt, _, err := nodeCA.Write(dir, "node")
+	nodeURI, err := pki.BuildSPIFFEID(testTrustDomain, "node", "1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	opCAcrt, _, err := opCA.Write(dir, "operator")
-	if err != nil {
-		t.Fatal(err)
-	}
-	leaf, err := nodeCA.Issue(pki.LeafOptions{
-		Kind: pki.LeafNode, Name: "node-1",
+	leaf, err := ca.Issue(pki.LeafOptions{
+		Kind:  pki.LeafNode,
+		Name:  "node-1",
 		Hosts: []string{"127.0.0.1", "localhost"},
+		URIs:  []*url.URL{nodeURI},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -449,7 +448,15 @@ func writeAdminTLSFixtures(t *testing.T, dir string) (reflow.TLSFiles, string, s
 	if err != nil {
 		t.Fatal(err)
 	}
-	opLeaf, err := opCA.Issue(pki.LeafOptions{Kind: pki.LeafOperator, Name: "test-op"})
+	opURI, err := pki.BuildSPIFFEID(testTrustDomain, "operator", "test-op")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opLeaf, err := ca.Issue(pki.LeafOptions{
+		Kind: pki.LeafOperator,
+		Name: "test-op",
+		URIs: []*url.URL{opURI},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,12 +465,13 @@ func writeAdminTLSFixtures(t *testing.T, dir string) (reflow.TLSFiles, string, s
 		t.Fatal(err)
 	}
 	return reflow.TLSFiles{
-		NodeCAFile:     nodeCAcrt,
-		OperatorCAFile: opCAcrt,
-		NodeCertFile:   nodeCrt,
-		NodeKeyFile:    nodeKey,
+		CAFile:   caCrt,
+		CertFile: nodeCrt,
+		KeyFile:  nodeKey,
 	}, opCrt, opKey
 }
+
+const testTrustDomain = "reflow.local"
 
 // awaitable just keeps the `engine` import used when not all code paths
 // hit it; placate vet on Linux builds.

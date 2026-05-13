@@ -12,21 +12,31 @@ import (
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 )
 
-// addTLSFlags installs --client-cert / --client-key / --ca with env fallbacks.
+// addTLSFlags installs --client-cert / --client-key / --ca / --trust-domain
+// with env fallbacks.
 type tlsFlags struct {
-	clientCert string
-	clientKey  string
-	ca         string
-	addr       string
+	clientCert  string
+	clientKey   string
+	ca          string
+	addr        string
+	trustDomain string
 }
 
 func registerTLSFlags(fs *flag.FlagSet) *tlsFlags {
 	f := &tlsFlags{}
 	fs.StringVar(&f.clientCert, "client-cert", os.Getenv("REFLOW_CLIENT_CERT"), "operator cert PEM (env REFLOW_CLIENT_CERT)")
 	fs.StringVar(&f.clientKey, "client-key", os.Getenv("REFLOW_CLIENT_KEY"), "operator key PEM (env REFLOW_CLIENT_KEY)")
-	fs.StringVar(&f.ca, "ca", os.Getenv("REFLOW_CA_CERT"), "node CA PEM (env REFLOW_CA_CERT)")
+	fs.StringVar(&f.ca, "ca", os.Getenv("REFLOW_CA_CERT"), "cluster CA PEM (env REFLOW_CA_CERT)")
 	fs.StringVar(&f.addr, "admin", os.Getenv("REFLOW_ADMIN_ADDR"), "admin gRPC host:port (env REFLOW_ADMIN_ADDR)")
+	fs.StringVar(&f.trustDomain, "trust-domain", envOrDefault("REFLOW_TRUST_DOMAIN", "reflow.local"), "SPIFFE trust domain (env REFLOW_TRUST_DOMAIN)")
 	return f
+}
+
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 func (t *tlsFlags) validate() error {
@@ -41,7 +51,8 @@ func (t *tlsFlags) dial(ctx context.Context) (*admin.Client, error) {
 		Addr:             t.addr,
 		OperatorCertFile: t.clientCert,
 		OperatorKeyFile:  t.clientKey,
-		NodeCAFile:       t.ca,
+		CAFile:           t.ca,
+		TrustDomain:      t.trustDomain,
 	})
 }
 

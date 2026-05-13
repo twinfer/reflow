@@ -100,7 +100,8 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		clientDialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 		var serverCreds credentials.TransportCredentials
 		if !cfg.TLS.IsZero() {
-			clientTLS, tlsErr := BuildDeliveryClientTLS(cfg.TLS.files())
+			td := cfg.TLS.TrustDomainOrDefault()
+			clientTLS, tlsErr := BuildDeliveryClientTLS(cfg.TLS.files(), td)
 			if tlsErr != nil {
 				_ = eh.Close()
 				if metricsCloser != nil {
@@ -110,7 +111,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			}
 			clientDialOpts = []grpc.DialOption{grpc.WithTransportCredentials(credentials.NewTLS(clientTLS))}
 
-			serverTLS, sErr := BuildDeliveryServerTLS(cfg.TLS.files())
+			serverTLS, sErr := BuildDeliveryServerTLS(cfg.TLS.files(), td)
 			if sErr != nil {
 				_ = eh.Close()
 				if metricsCloser != nil {
@@ -277,7 +278,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			cleanup()
 			return nil, errors.New("reflow: admin server requires TLS configuration")
 		}
-		adminTLS, atErr := BuildAdminServerTLS(cfg.TLS.files())
+		adminTLS, atErr := BuildAdminServerTLS(cfg.TLS.files(), cfg.TLS.TrustDomainOrDefault())
 		if atErr != nil {
 			cleanup()
 			return nil, fmt.Errorf("reflow: build admin TLS: %w", atErr)

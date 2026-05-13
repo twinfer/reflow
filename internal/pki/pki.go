@@ -1,10 +1,12 @@
 // Package pki generates a tiny ECDSA-P256-based CA and leaf certificates
-// for reflow's two-CA mTLS surface (node CA + operator CA). Reused by
-// the reflow-cluster init-ca / issue-cert / issue-operator subcommands
-// and by Phase 4.2 integration tests. Phase 4.2.
+// for reflow's single-CA mTLS surface. Both node and operator leaves are
+// signed by the same root; role lives in each leaf's SPIFFE URI SAN
+// (spiffe://<trust-domain>/node/<id>, spiffe://<trust-domain>/operator/<name>).
+// Used by the reflow-cluster init-ca / issue-cert / issue-operator
+// subcommands and by integration tests.
 //
-// Keep this package small and stdlib-only — no external CA, no ACME,
-// no SPIFFE. Operators bringing their own PKI bypass this entirely.
+// Stdlib-only — no external CA, no ACME, no SPIFFE workload-API runtime.
+// Operators bringing their own PKI bypass this package entirely.
 package pki
 
 import (
@@ -18,8 +20,10 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -96,12 +100,15 @@ func NewCA(commonName string) (*CA, error) {
 }
 
 // LeafOptions tunes Issue. Name becomes the leaf's CN. Hosts are the
-// DNS / IP SAN entries (parsed automatically). Validity defaults to
-// DefaultLeafValidity when zero.
+// DNS / IP SAN entries (parsed automatically). URIs are the URI SANs;
+// at least one SPIFFE-formatted URI is expected for production leaves
+// — the TLS verifier in pkg/reflow rejects certs without one. Validity
+// defaults to DefaultLeafValidity when zero.
 type LeafOptions struct {
 	Kind     LeafKind
 	Name     string
 	Hosts    []string
+	URIs     []*url.URL
 	Validity time.Duration
 }
 
@@ -147,6 +154,9 @@ func (ca *CA) Issue(opts LeafOptions) (Material, error) {
 		}
 		template.DNSNames = append(template.DNSNames, h)
 	}
+	if len(opts.URIs) > 0 {
+		template.URIs = append(template.URIs, opts.URIs...)
+	}
 
 	der, err := x509.CreateCertificate(rand.Reader, template, ca.Cert, &priv.PublicKey, ca.Key)
 	if err != nil {
@@ -162,14 +172,33 @@ func (ca *CA) Issue(opts LeafOptions) (Material, error) {
 	}, nil
 }
 
-// WriteCA writes the CA cert + key into dir as <prefix>-ca.crt /
-// <prefix>-ca.key. Returns the absolute paths of both files.
+// Write writes the CA cert + key into dir as <prefix>-ca.crt /
+// <prefix>-ca.key. Returns the absolute paths of both files. For the
+// single-CA layout used by reflow, prefer WriteSingle.
 func (ca *CA) Write(dir, prefix string) (certPath, keyPath string, err error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", "", err
 	}
 	certPath = filepath.Join(dir, prefix+"-ca.crt")
 	keyPath = filepath.Join(dir, prefix+"-ca.key")
+	if err := os.WriteFile(certPath, ca.CertPEM, 0o644); err != nil {
+		return "", "", err
+	}
+	if err := os.WriteFile(keyPath, ca.KeyPEM, 0o600); err != nil {
+		return "", "", err
+	}
+	return certPath, keyPath, nil
+}
+
+// WriteSingle writes the CA into dir as ca.crt / ca.key — the layout
+// reflow uses now that there is one root for both node and operator
+// leaves.
+func (ca *CA) WriteSingle(dir string) (certPath, keyPath string, err error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", "", err
+	}
+	certPath = filepath.Join(dir, "ca.crt")
+	keyPath = filepath.Join(dir, "ca.key")
 	if err := os.WriteFile(certPath, ca.CertPEM, 0o644); err != nil {
 		return "", "", err
 	}
@@ -231,4 +260,25 @@ func randomSerial() (*big.Int, error) {
 		return nil, fmt.Errorf("pki: serial: %w", err)
 	}
 	return n, nil
+}
+
+// BuildSPIFFEID builds a SPIFFE-formatted URL of the form
+// spiffe://<trustDomain>/<role>/<name>. trustDomain must be non-empty,
+// and role and name must not contain "/" — keeping the path strictly
+// two segments lets the verifier do an unambiguous prefix match.
+func BuildSPIFFEID(trustDomain, role, name string) (*url.URL, error) {
+	if trustDomain == "" {
+		return nil, errors.New("pki: SPIFFE trust domain is required")
+	}
+	if role == "" || strings.ContainsRune(role, '/') {
+		return nil, fmt.Errorf("pki: invalid SPIFFE role %q", role)
+	}
+	if name == "" || strings.ContainsRune(name, '/') {
+		return nil, fmt.Errorf("pki: invalid SPIFFE name %q", name)
+	}
+	return &url.URL{
+		Scheme: "spiffe",
+		Host:   trustDomain,
+		Path:   "/" + role + "/" + name,
+	}, nil
 }

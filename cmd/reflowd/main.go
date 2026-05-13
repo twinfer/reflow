@@ -68,25 +68,22 @@ func loadConfig() (reflow.Config, error) {
 }
 
 // requireTLSWhenMultiNode rejects a config where Cluster.Peers is
-// non-empty but any of the four TLS file paths is missing. Phase 4.2
-// makes mTLS mandatory for cross-node Delivery + admin. Single-node
+// non-empty but any of the TLS file paths is missing. Multi-node
+// deployments require mTLS for cross-node Delivery + admin; single-node
 // deployments bypass this check.
 func requireTLSWhenMultiNode(cfg reflow.Config) error {
 	if len(cfg.Cluster.Peers) == 0 {
 		return nil
 	}
 	missing := []string{}
-	if cfg.TLS.NodeCAFile == "" {
-		missing = append(missing, "tls.node_ca_file")
+	if cfg.TLS.CAFile == "" {
+		missing = append(missing, "tls.ca_file")
 	}
-	if cfg.TLS.OperatorCAFile == "" {
-		missing = append(missing, "tls.operator_ca_file")
+	if cfg.TLS.CertFile == "" {
+		missing = append(missing, "tls.cert_file")
 	}
-	if cfg.TLS.NodeCertFile == "" {
-		missing = append(missing, "tls.node_cert_file")
-	}
-	if cfg.TLS.NodeKeyFile == "" {
-		missing = append(missing, "tls.node_key_file")
+	if cfg.TLS.KeyFile == "" {
+		missing = append(missing, "tls.key_file")
 	}
 	if len(missing) == 0 {
 		return nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sync"
@@ -436,7 +437,7 @@ func (c *invocationContext) Awakeable() (string, sdk.Future) {
 		}
 	}
 
-	id, err := newAwakeableID()
+	id, err := newAwakeableID(c.s.id.GetPartitionKey())
 	if err != nil {
 		return "", &erroredFuture{err: err}
 	}
@@ -486,11 +487,18 @@ func targetToProto(t sdk.Target) *enginev1.InvocationTarget {
 	}
 }
 
-// newAwakeableID mints a fresh "awk_<22-char base64url>" identifier. 16
-// random bytes encode to 22 base64url characters with no padding.
-func newAwakeableID() (string, error) {
+// newAwakeableID mints a fresh "awk_<22-char base64url>" identifier whose
+// body encodes the owner invocation's partition_key in the first 8 bytes
+// (big-endian) and 8 random bytes after. The 16-byte body encodes to 22
+// base64url characters with no padding, so the wire shape and length
+// (26 chars total) match the prior random-uuid format.
+//
+// The embedded partition_key lets ingress route a ResolveAwakeable to the
+// owning shard with a single SyncRead — no fan-out across partitions.
+func newAwakeableID(ownerPartitionKey uint64) (string, error) {
 	var buf [16]byte
-	if _, err := rand.Read(buf[:]); err != nil {
+	binary.BigEndian.PutUint64(buf[:8], ownerPartitionKey)
+	if _, err := rand.Read(buf[8:]); err != nil {
 		return "", fmt.Errorf("reflow: awakeable id rng: %w", err)
 	}
 	return "awk_" + base64.RawURLEncoding.EncodeToString(buf[:]), nil

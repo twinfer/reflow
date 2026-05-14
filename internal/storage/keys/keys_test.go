@@ -2,6 +2,7 @@ package keys
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/binary"
 	"math/rand/v2"
 	"sort"
@@ -331,6 +332,37 @@ func TestIdempotencyKey_DeterministicAndSensitive(t *testing.T) {
 	// Distinct idempotency_keys differ.
 	if bytes.Equal(IdempotencyKey("S", "h", "o", "k1"), IdempotencyKey("S", "h", "o", "k2")) {
 		t.Errorf("distinct idempotency keys collided")
+	}
+}
+
+func TestAwakeableOwnerPartitionKey_Roundtrip(t *testing.T) {
+	for _, pk := range []uint64{0, 1, 42, 1 << 31, 1<<63 + 17, ^uint64(0)} {
+		var body [16]byte
+		binary.BigEndian.PutUint64(body[:8], pk)
+		// Last 8 bytes are random in production; the decoder ignores them.
+		body[8], body[15] = 0xDE, 0xAD
+		id := "awk_" + base64.RawURLEncoding.EncodeToString(body[:])
+		got, err := AwakeableOwnerPartitionKey(id)
+		if err != nil {
+			t.Fatalf("pk=%d: %v", pk, err)
+		}
+		if got != pk {
+			t.Errorf("pk roundtrip: got %d, want %d", got, pk)
+		}
+	}
+}
+
+func TestAwakeableOwnerPartitionKey_RejectsMalformed(t *testing.T) {
+	cases := []string{
+		"",
+		"awk_short",
+		"bad_ABCDEFGHIJKLMNOPQRSTUV",
+		"awk_ABCDEFGHIJKLMNOPQRSTU!", // bad charset
+	}
+	for _, id := range cases {
+		if _, err := AwakeableOwnerPartitionKey(id); err == nil {
+			t.Errorf("AwakeableOwnerPartitionKey(%q): want error, got nil", id)
+		}
 	}
 }
 

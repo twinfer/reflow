@@ -26,6 +26,7 @@ package keys
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -37,9 +38,13 @@ const (
 	invocationIDLen = 24 // 8-byte partition_key + 16-byte uuid
 
 	// awakeableIDLen is the fixed wire length of an awakeable identifier:
-	// 4-byte "awk_" prefix + 22-char base64url-encoded UUID body. Anchoring
-	// the length lets prefix scans on awakeable/ stay unambiguous.
-	awakeableIDLen = 26
+	// 4-byte "awk_" prefix + 22-char base64url-encoded 16-byte body. The
+	// body's first 8 bytes are the owning invocation's partition_key
+	// (big-endian); the remaining 8 are random. Anchoring the length lets
+	// prefix scans on awakeable/ stay unambiguous and lets ingress derive
+	// the owner's shard from the id alone — no fan-out lookup needed.
+	awakeableIDLen   = 26
+	awakeableBodyLen = 16
 
 	metaPrefix      = "meta"
 	formatPrefix    = "format"
@@ -274,6 +279,24 @@ func AwakeableKey(id string) []byte {
 	out := make([]byte, 0, len(awakeablePrefix)+len(id))
 	out = append(out, awakeablePrefix...)
 	return append(out, id...)
+}
+
+// AwakeableOwnerPartitionKey returns the owner invocation's partition_key
+// embedded in the awakeable id. Returns an error if the id is malformed or
+// the body isn't base64url-decodable to the expected 16 bytes — callers
+// should treat that as InvalidArgument.
+func AwakeableOwnerPartitionKey(id string) (uint64, error) {
+	if err := ValidateAwakeableID(id); err != nil {
+		return 0, err
+	}
+	body, err := base64.RawURLEncoding.DecodeString(id[4:])
+	if err != nil {
+		return 0, fmt.Errorf("awakeable id body decode: %w", err)
+	}
+	if len(body) != awakeableBodyLen {
+		return 0, fmt.Errorf("awakeable id body length = %d; want %d", len(body), awakeableBodyLen)
+	}
+	return binary.BigEndian.Uint64(body[:8]), nil
 }
 
 // ValidateAwakeableID enforces the awk_<22-char base64url> shape. Used at

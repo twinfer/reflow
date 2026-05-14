@@ -8,6 +8,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/twinfer/reflow/internal/engine"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
@@ -17,17 +18,21 @@ import (
 // owner's partition. The FSM appends a JEAwakeableResult to the owner's
 // journal and (if Suspended) wakes the invocation.
 //
-// TODO(phase-4): Routing here hard-codes shard 1. AwakeableEntry.owner
-// carries the partition_key that should drive shard selection via the
-// Host's Partitioner; until that wiring lands, multi-partition
-// deployments will silently misroute resolutions.
+// The awakeable id carries the owner's partition_key in its first 8
+// decoded bytes (see invoker.newAwakeableID and keys.AwakeableOwnerPartitionKey),
+// so a single SyncRead on the owner's shard suffices — no fan-out across
+// partitions.
 func (s *Server) ResolveAwakeable(ctx context.Context, req *ingressv1.ResolveAwakeableRequest) (*ingressv1.ResolveAwakeableResponse, error) {
 	awkID := req.GetAwakeableId()
 	if awkID == "" {
 		return nil, status.Error(codes.InvalidArgument, "awakeable_id is required")
 	}
+	ownerPK, err := keys.AwakeableOwnerPartitionKey(awkID)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "awakeable_id: %v", err)
+	}
 
-	shardID := Phase2ShardID
+	shardID := s.host.Partitioner().ShardForKey(ownerPK)
 	runner := s.host.Partition(shardID)
 	if runner == nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "no partition for shard %d", shardID)

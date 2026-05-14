@@ -13,10 +13,12 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// nodeRig is the engine_test alias for loadgen.Node, retained so the
-// existing test functions keep their familiar identifier. New tests
-// should prefer loadgen.Node directly.
-type nodeRig = loadgen.Node
+// nodeRig is the engine_test alias for the concrete in-process Node
+// implementation, retained so the existing test functions keep their
+// familiar identifier and direct .Host field access. The subprocess
+// node implementation is intentionally not exposed here — engine
+// integration tests run only in-process.
+type nodeRig = loadgen.InProcessNode
 
 // bringUpThreeNodeCluster is the engine_test shim around
 // loadgen.NewCluster — see internal/loadgen/cluster.go for the actual
@@ -25,7 +27,40 @@ type nodeRig = loadgen.Node
 func bringUpThreeNodeCluster(t *testing.T, handlers *sdk.Registry) ([]*nodeRig, routing.Partitioner) {
 	t.Helper()
 	c := loadgen.NewCluster(t, loadgen.ClusterOptions{N: 3, Handlers: handlers})
-	return c.Nodes, c.Partitioner
+	return asInProcess(t, c.Nodes), c.Partitioner
+}
+
+// asInProcess narrows []loadgen.Node to []*loadgen.InProcessNode.
+// Engine integration tests never set SubprocessNodes, so the
+// assertion always succeeds; a mismatch is a programming error and
+// fails the test loudly.
+func asInProcess(t *testing.T, nodes []loadgen.Node) []*nodeRig {
+	t.Helper()
+	out := make([]*nodeRig, len(nodes))
+	for i, n := range nodes {
+		if n == nil {
+			continue
+		}
+		ip, ok := n.(*loadgen.InProcessNode)
+		if !ok {
+			t.Fatalf("expected *InProcessNode, got %T", n)
+		}
+		out[i] = ip
+	}
+	return out
+}
+
+// asNodeSlice widens []*nodeRig to []loadgen.Node for callers that
+// need to pass into Cluster methods.
+func asNodeSlice(rigs []*nodeRig) []loadgen.Node {
+	out := make([]loadgen.Node, len(rigs))
+	for i, r := range rigs {
+		if r == nil {
+			continue
+		}
+		out[i] = r
+	}
+	return out
 }
 
 func closeAll(rigs []*nodeRig) {
@@ -35,15 +70,24 @@ func closeAll(rigs []*nodeRig) {
 }
 
 func awaitAnyMetadataLeader(ctx context.Context, rigs []*nodeRig) error {
-	return (&loadgen.Cluster{Nodes: rigs}).AwaitAnyMetadataLeader(ctx)
+	return (&loadgen.Cluster{Nodes: asNodeSlice(rigs)}).AwaitAnyMetadataLeader(ctx)
 }
 
 func awaitAnyPartitionLeader(ctx context.Context, rigs []*nodeRig, shardID uint64) error {
-	return (&loadgen.Cluster{Nodes: rigs}).AwaitAnyPartitionLeader(ctx, shardID)
+	return (&loadgen.Cluster{Nodes: asNodeSlice(rigs)}).AwaitAnyPartitionLeader(ctx, shardID)
 }
 
 func findPartitionLeader(rigs []*nodeRig, shardID uint64) *nodeRig {
-	return (&loadgen.Cluster{Nodes: rigs}).FindPartitionLeader(shardID)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	node := (&loadgen.Cluster{Nodes: asNodeSlice(rigs)}).FindPartitionLeader(ctx, shardID)
+	if node == nil {
+		return nil
+	}
+	if ip, ok := node.(*loadgen.InProcessNode); ok {
+		return ip
+	}
+	return nil
 }
 
 // TestMultiNode_StaticThreeNodeBootstrap brings up a 3-node cluster from

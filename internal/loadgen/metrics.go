@@ -75,15 +75,17 @@ func (s *Sampler) Latency() *hdrhistogram.Snapshot {
 //
 // nodes is the live Cluster.Nodes slice; partitionShards is the
 // closed range 1..N. The metadata shard 0 is sampled separately.
-func (s *Sampler) SamplePebble(nodes []*Node, partitionShards uint64) {
+func (s *Sampler) SamplePebble(nodes []Node, partitionShards uint64) {
 	now := time.Now()
 	for _, node := range nodes {
-		if node == nil {
+		ip, ok := node.(*InProcessNode)
+		if !ok || ip == nil {
+			// Subprocess nodes have no local Pebble metrics; skip.
 			continue
 		}
-		nodeID := node.Host.NodeID()
+		nodeID := ip.Host.NodeID()
 		for sh := uint64(1); sh <= partitionShards; sh++ {
-			pr := node.Host.Partition(sh)
+			pr := ip.Host.Partition(sh)
 			if pr == nil {
 				continue
 			}
@@ -103,7 +105,7 @@ func (s *Sampler) SamplePebble(nodes []*Node, partitionShards uint64) {
 // SampleEvery runs SamplePebble at every tick of interval until ctx
 // is cancelled. Call as a goroutine for background sampling during
 // Run.
-func (s *Sampler) SampleEvery(ctx context.Context, interval time.Duration, nodes []*Node, partitionShards uint64) {
+func (s *Sampler) SampleEvery(ctx context.Context, interval time.Duration, nodes []Node, partitionShards uint64) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {

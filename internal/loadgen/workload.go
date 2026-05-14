@@ -11,8 +11,6 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/pkg/sdk"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -37,7 +35,7 @@ type WorkloadConfig struct {
 	// Duration bounds how long Run executes.
 	Duration time.Duration
 	// PollInterval is the cadence the workload uses to poll
-	// LookupInvocationStatus for each in-flight invocation.
+	// DescribeInvocation for each in-flight invocation.
 	PollInterval time.Duration
 }
 
@@ -55,8 +53,8 @@ type WorkloadStats struct {
 	// resolve them.
 	InFlightAtEnd uint64
 	Elapsed       time.Duration
-	// FailedSamples captures up to 10 distinct ProposeIngress error
-	// strings so the operator can see WHAT broke (not just the count).
+	// FailedSamples captures up to 10 distinct submit-error strings so
+	// the operator can see WHAT broke (not just the count).
 	FailedSamples []string
 }
 
@@ -130,7 +128,7 @@ func (cfg WorkloadConfig) Run(ctx context.Context, sampler *Sampler) (WorkloadSt
 					return false
 				}
 				lookupCtx, lc := context.WithTimeout(context.Background(), 500*time.Millisecond)
-				st, err := live.Host.LookupInvocationStatus(lookupCtx, entry.inv.ShardID, entry.inv.ID)
+				st, err := live.DescribeInvocation(lookupCtx, entry.inv.ID)
 				lc()
 				if err != nil || st == nil {
 					return true
@@ -169,30 +167,13 @@ func (cfg WorkloadConfig) Run(ctx context.Context, sampler *Sampler) (WorkloadSt
 		if runCtx.Err() != nil {
 			break
 		}
-		inv := newInvocation(cfg.Service, partitioner)
-		// Pick the current leader for inv.ShardID; if none is known
-		// (election in flight), fall back to any live node that
-		// hosts the shard — dragonboat forwards the propose to
-		// whoever leads. Killed nodes appear as nil in Cluster.Nodes
-		// and must be skipped.
-		leader := cfg.Cluster.FindPartitionLeader(inv.ShardID)
-		var proposer *engine.PartitionRunner
-		if leader != nil {
-			proposer = leader.Host.Partition(inv.ShardID)
-		}
-		if proposer == nil {
-			for _, n := range cfg.Cluster.Nodes {
-				if n == nil {
-					continue
-				}
-				if pr := n.Host.Partition(inv.ShardID); pr != nil {
-					leader = n
-					proposer = pr
-					break
-				}
-			}
-		}
-		if proposer == nil {
+
+		// Submit through any live node. The node's SubmitInvocation
+		// routes server-side via the host's Partitioner (in-process)
+		// or via ingressv1.SubmitInvocation (subprocess) — the workload
+		// no longer needs to pre-pick the leader.
+		node := cfg.Cluster.AnyLiveNode()
+		if node == nil {
 			failed.Add(1)
 			select {
 			case slots <- struct{}{}:
@@ -201,26 +182,20 @@ func (cfg WorkloadConfig) Run(ctx context.Context, sampler *Sampler) (WorkloadSt
 			continue
 		}
 
-		seq := issued.Add(1)
-		// Decouple propose budget from runCtx so end-of-run shrinkage
+		objectKey := randomObjectKey()
+		// Decouple submit budget from runCtx so end-of-run shrinkage
 		// doesn't shorten ctx below dragonboat's RTT-based minimum.
-		// The runCtx still cancels in-flight proposes when fired.
-		proposeCtx, pc := context.WithTimeout(context.Background(), 15*time.Second)
+		// The runCtx still cancels in-flight submits when fired.
+		submitCtx, sc := context.WithTimeout(context.Background(), 15*time.Second)
 		go func(c context.Context, cancel context.CancelFunc) {
 			select {
 			case <-runCtx.Done():
 				cancel()
 			case <-c.Done():
 			}
-		}(proposeCtx, pc)
-		err := proposer.Proposer().ProposeIngress(proposeCtx, "loadgen", seq, &enginev1.Command{
-			Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-				InvocationId: inv.ID,
-				Target:       &enginev1.InvocationTarget{ServiceName: cfg.Service, HandlerName: cfg.Handler},
-				Input:        []byte("x"),
-			}},
-		})
-		pc()
+		}(submitCtx, sc)
+		id, err := node.SubmitInvocation(submitCtx, cfg.Service, cfg.Handler, objectKey, []byte("x"))
+		sc()
 		if err != nil {
 			failed.Add(1)
 			errSampleMu.Lock()
@@ -234,8 +209,13 @@ func (cfg WorkloadConfig) Run(ctx context.Context, sampler *Sampler) (WorkloadSt
 			}
 			continue
 		}
-		// Only successfully-proposed invocations count toward the
-		// in-flight tracking and the post-run invariant set.
+
+		issued.Add(1)
+		inv := IssuedInvocation{
+			ID:      id,
+			ShardID: partitioner.ShardForKey(id.GetPartitionKey()),
+			Service: cfg.Service,
+		}
 		issuedMu.Lock()
 		issuedList = append(issuedList, inv)
 		issuedMu.Unlock()
@@ -267,18 +247,12 @@ type IssuedInvocation struct {
 	Service string
 }
 
-func newInvocation(service string, p routing.Partitioner) IssuedInvocation {
-	var uuidBytes [16]byte
-	_, _ = rand.Read(uuidBytes[:])
-	// Spread keys across shards by varying the object key.
-	objectKey := fmt.Sprintf("k%d", binary.BigEndian.Uint64(uuidBytes[:8])%1024)
-	pk := routing.PartitionKey(service, objectKey)
-	shard := p.ShardForKey(pk)
-	return IssuedInvocation{
-		ID:      &enginev1.InvocationId{PartitionKey: pk, Uuid: uuidBytes[:]},
-		ShardID: shard,
-		Service: service,
-	}
+// randomObjectKey spreads invocations across partitions by sampling
+// from a 1024-entry key namespace.
+func randomObjectKey() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return fmt.Sprintf("k%d", binary.BigEndian.Uint64(b[:])%1024)
 }
 
 func encodeKey(inv IssuedInvocation) string {

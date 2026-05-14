@@ -29,10 +29,11 @@ func LeaderKill(t testing.TB, c *loadgen.Cluster, awaitNewLeader time.Duration) 
 	t.Helper()
 	idx := -1
 	for i, n := range c.Nodes {
-		if n == nil {
+		ip, ok := n.(*loadgen.InProcessNode)
+		if !ok || ip == nil {
 			continue
 		}
-		if mr := n.Host.MetadataRunner(); mr != nil && mr.IsLeader() {
+		if mr := ip.Host.MetadataRunner(); mr != nil && mr.IsLeader() {
 			idx = i
 			break
 		}
@@ -97,10 +98,11 @@ func PartitionLeader(t testing.TB, c *loadgen.Cluster, matrix *loadgen.Partition
 	t.Helper()
 	idx := -1
 	for i, n := range c.Nodes {
-		if n == nil {
+		ip, ok := n.(*loadgen.InProcessNode)
+		if !ok || ip == nil {
 			continue
 		}
-		if mr := n.Host.MetadataRunner(); mr != nil && mr.IsLeader() {
+		if mr := ip.Host.MetadataRunner(); mr != nil && mr.IsLeader() {
 			idx = i
 			break
 		}

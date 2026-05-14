@@ -16,7 +16,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,20 +32,133 @@ import (
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/pkg/sdk"
 	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
+	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// Node owns one in-process reflowd node: the engine Host, the
-// Delivery gRPC server / listener, and the pooled Delivery client
-// the host's outbox uses for cross-shard dispatch.
-type Node struct {
+// PartitionInfo summarizes one shard's leadership state from a single
+// node's point of view. Mirrors ingressv1.PartitionInfo but lives in
+// the loadgen package so callers don't need to import the proto for
+// the bring-up await loop.
+type PartitionInfo struct {
+	ShardID     uint64
+	IsLeader    bool
+	LeaderEpoch uint64
+}
+
+// Node is the abstraction the workload and invariant checker use to
+// drive one cluster member. Two impls exist:
+//
+//   - *InProcessNode wraps an in-process *engine.Host (current default).
+//   - *SubprocessNode (Phase 5, PR5b) spawns cmd/reflow-loadnode and
+//     speaks the existing ingressv1.Ingress gRPC service. Lets tests
+//     SIGKILL a node to exercise torn-write Pebble WAL recovery.
+//
+// Callers that need engine-internal access (Pebble metrics sampler,
+// in-process leader probes inside chaos primitives) type-assert to
+// *InProcessNode and skip the node if the assertion fails. The Node
+// interface itself is the minimum surface the workload needs.
+type Node interface {
+	// SubmitInvocation enqueues a fresh invocation. The destination
+	// shard is derived from (service, objectKey) by the implementation.
+	// Returns the minted invocation id on success.
+	SubmitInvocation(ctx context.Context, service, handler, objectKey string, input []byte) (*enginev1.InvocationId, error)
+
+	// DescribeInvocation returns the current status of an invocation by
+	// id. Returns (nil, nil) if the invocation is not yet visible — the
+	// poller treats that as "still pending."
+	DescribeInvocation(ctx context.Context, id *enginev1.InvocationId) (*enginev1.InvocationStatus, error)
+
+	// ListPartitions returns leadership state for every partition shard
+	// hosted by this node. Used by the bring-up leader-await loop and by
+	// chaos primitives that need to find a partition leader without
+	// reaching into engine internals.
+	ListPartitions(ctx context.Context) ([]PartitionInfo, error)
+
+	// RaftAddr identifies the node within the cluster's bufconn matrix
+	// and the dragonboat peer config. Stable for the node's lifetime.
+	RaftAddr() string
+
+	// Close shuts the node down gracefully. Idempotent.
+	Close()
+
+	// Kill terminates the node abruptly. For subprocess nodes this is
+	// SIGKILL (skips graceful shutdown; exercises Pebble WAL recovery).
+	// For in-process nodes Kill is identical to Close — there's no
+	// separate process to SIGKILL.
+	Kill()
+}
+
+// InProcessNode owns one in-process reflowd node: the engine Host, the
+// Delivery gRPC server / listener, and the pooled Delivery client the
+// host's outbox uses for cross-shard dispatch. Implements Node.
+type InProcessNode struct {
 	Host           *engine.Host
 	DeliveryServer *grpc.Server
 	DeliveryLn     net.Listener
 	DeliveryClient *delivery.Client
+	raftAddr       string
 }
 
+// SubmitInvocation routes (service, objectKey) through the host's
+// Partitioner and proposes an InvokeCommand via the owning partition's
+// ingress proposer — mirrors what ingress.Server.SubmitInvocation does
+// in-process so subprocess and in-process modes share the same routing
+// semantics.
+func (n *InProcessNode) SubmitInvocation(ctx context.Context, service, handler, objectKey string, input []byte) (*enginev1.InvocationId, error) {
+	target := &enginev1.InvocationTarget{
+		ServiceName: service,
+		HandlerName: handler,
+		ObjectKey:   objectKey,
+	}
+	shardID := n.Host.Partitioner().ShardForTarget(target)
+	pr := n.Host.Partition(shardID)
+	if pr == nil {
+		return nil, fmt.Errorf("loadgen: no partition for shard %d", shardID)
+	}
+	id := mintInvocationID(target)
+	cmd := &enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
+		InvocationId: id,
+		Target:       target,
+		Input:        input,
+	}}}
+	producerID := "loadgen/" + formatInvocationKey(id)
+	if err := pr.Proposer().ProposeIngress(ctx, producerID, 1, cmd); err != nil {
+		return nil, err
+	}
+	return id, nil
+}
+
+// DescribeInvocation looks up the invocation's current status via the
+// host's SyncRead path.
+func (n *InProcessNode) DescribeInvocation(ctx context.Context, id *enginev1.InvocationId) (*enginev1.InvocationStatus, error) {
+	pk := id.GetPartitionKey()
+	if pk == 0 {
+		return nil, fmt.Errorf("loadgen: invocation id has no partition_key")
+	}
+	shardID := n.Host.Partitioner().ShardForKey(pk)
+	return n.Host.LookupInvocationStatus(ctx, shardID, id)
+}
+
+// ListPartitions returns leadership state for every partition shard
+// hosted by this node. Mirrors ingressv1.Ingress.ListPartitions.
+func (n *InProcessNode) ListPartitions(_ context.Context) ([]PartitionInfo, error) {
+	parts := n.Host.Partitions()
+	out := make([]PartitionInfo, 0, len(parts))
+	for shardID, runner := range parts {
+		out = append(out, PartitionInfo{
+			ShardID:     shardID,
+			IsLeader:    runner.Leadership().IsLeader(),
+			LeaderEpoch: runner.Leadership().LeaderEpoch(),
+		})
+	}
+	return out, nil
+}
+
+// RaftAddr returns the dragonboat raft endpoint the host advertises.
+func (n *InProcessNode) RaftAddr() string { return n.raftAddr }
+
 // Close gracefully tears the node down. Safe to call multiple times.
-func (n *Node) Close() {
+func (n *InProcessNode) Close() {
 	if n == nil {
 		return
 	}
@@ -59,6 +175,11 @@ func (n *Node) Close() {
 		_ = n.Host.Close()
 	}
 }
+
+// Kill is identical to Close for in-process nodes — there is no
+// separate process to SIGKILL. The Node interface contract is that
+// subprocess impls bypass graceful shutdown; in-process can't.
+func (n *InProcessNode) Kill() { n.Close() }
 
 // ClusterOptions configures NewCluster. N defaults to 3; Handlers is
 // required (pass sdk.NewRegistry() for clusters that don't need any
@@ -78,6 +199,23 @@ type ClusterOptions struct {
 	// nil (TCP behavior unchanged). The same factory instance is
 	// passed to every node so they share the hub + matrix.
 	RaftTransportFactory config.TransportFactory
+
+	// SubprocessNodes, when true, spawns each cluster member as a
+	// reflow-loadnode child process instead of an in-process Host.
+	// Requires LoadnodeBinaryPath. Enables tests to SIGKILL a node and
+	// exercise torn-write Pebble WAL recovery. Default false.
+	SubprocessNodes bool
+
+	// LoadnodeBinaryPath is the absolute path to a pre-built
+	// reflow-loadnode binary. Required when SubprocessNodes is true.
+	// Tests typically build the binary once via BuildLoadnodeBinary
+	// and reuse the result across cluster members.
+	LoadnodeBinaryPath string
+
+	// SubprocessIngressAddrs, when SubprocessNodes is true, supplies
+	// one Ingress gRPC address per node. Allocated up front by the
+	// test so the cluster knows where to dial each subprocess.
+	SubprocessIngressAddrs []string
 }
 
 // nodeAddrs captures the three TCP endpoints a node binds at
@@ -95,7 +233,7 @@ type nodeAddrs struct {
 // methods (KillNode, RestartNode) can rebuild a node in place
 // without re-running the full NewCluster bring-up.
 type Cluster struct {
-	Nodes       []*Node
+	Nodes       []Node
 	Partitioner routing.Partitioner
 
 	addrs    []nodeAddrs
@@ -112,7 +250,9 @@ func (c *Cluster) Close() {
 		return
 	}
 	for _, n := range c.Nodes {
-		n.Close()
+		if n != nil {
+			n.Close()
+		}
 	}
 }
 
@@ -134,7 +274,7 @@ func NewCluster(t testing.TB, opts ClusterOptions) *Cluster {
 	n := opts.N
 
 	cluster := &Cluster{
-		Nodes:       make([]*Node, n),
+		Nodes:       make([]Node, n),
 		Partitioner: routing.Partitioner{NumShards: uint64(n)},
 		addrs:       make([]nodeAddrs, n),
 		dataDirs:    make([]string, n),
@@ -169,33 +309,56 @@ func NewCluster(t testing.TB, opts ClusterOptions) *Cluster {
 		}
 	}
 
-	// Stage 4: shards — metadata first, then partitions. Cluster-
-	// scope because every node must have its NodeHost ready before
-	// any partition shard starts emitting outbox rows.
+	// Stage 4: shards — metadata first, then partitions. In-process
+	// nodes start shards explicitly here so every NodeHost is ready
+	// before any partition emits outbox rows. Subprocess nodes start
+	// shards inside their own main() before they advertise "ready",
+	// so this stage is a no-op for them.
 	for i, node := range cluster.Nodes {
-		if _, err := node.Host.StartMetadataShard(); err != nil {
+		host := inProcessHost(node)
+		if host == nil {
+			continue
+		}
+		if _, err := host.StartMetadataShard(); err != nil {
 			cluster.Close()
 			t.Fatalf("loadgen: StartMetadataShard(%d): %v", i+1, err)
 		}
 	}
 	for i, node := range cluster.Nodes {
+		host := inProcessHost(node)
+		if host == nil {
+			continue
+		}
 		for sh := uint64(1); sh <= uint64(n); sh++ {
-			if _, err := node.Host.StartPartition(sh); err != nil {
+			if _, err := host.StartPartition(sh); err != nil {
 				cluster.Close()
 				t.Fatalf("loadgen: StartPartition(node=%d, shard=%d): %v", i+1, sh, err)
 			}
 		}
 	}
 
-	// Stage 5: leader-await — metadata first, then each partition.
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if err := cluster.AwaitAnyMetadataLeader(ctx); err != nil {
-		cluster.Close()
-		t.Fatalf("loadgen: metadata leader never elected: %v", err)
+	// Stage 5: leader-await — each partition. Subprocess startup is
+	// slower (binary boot + Pebble open + raft replay) than in-process
+	// so the deadline is roomier in that mode.
+	awaitTimeout := 20 * time.Second
+	if opts.SubprocessNodes {
+		awaitTimeout = 60 * time.Second
+	}
+	// AwaitAnyMetadataLeader requires *InProcessNode; subprocess nodes
+	// don't expose MetadataRunner directly, but pkg/reflow.Run starts
+	// the metadata shard before serving ingress, so by the time any
+	// partition is electable, metadata has converged. Use partition
+	// leader convergence as the proxy in subprocess mode.
+	if !opts.SubprocessNodes {
+		ctx, cancel := context.WithTimeout(context.Background(), awaitTimeout)
+		defer cancel()
+		if err := cluster.AwaitAnyMetadataLeader(ctx); err != nil {
+			cluster.Close()
+			t.Fatalf("loadgen: metadata leader never elected: %v", err)
+		}
 	}
 	for sh := uint64(1); sh <= uint64(n); sh++ {
-		ctxSh, cancelSh := context.WithTimeout(context.Background(), 20*time.Second)
+		ctxSh, cancelSh := context.WithTimeout(context.Background(), awaitTimeout)
 		if err := cluster.AwaitAnyPartitionLeader(ctxSh, sh); err != nil {
 			cancelSh()
 			cluster.Close()
@@ -207,16 +370,22 @@ func NewCluster(t testing.TB, opts ClusterOptions) *Cluster {
 	return cluster
 }
 
-// AwaitAnyMetadataLeader blocks until some node leads shard 0.
+// AwaitAnyMetadataLeader blocks until some node leads shard 0. Reaches
+// into the engine-internal MetadataRunner via *InProcessNode; for
+// subprocess nodes (which can't expose MetadataRunner directly) the
+// caller should use AwaitAnyPartitionLeader as the convergence proxy —
+// pkg/reflow.Run sequences metadata → partitions internally, so any
+// partition leader implies metadata has converged.
 func (c *Cluster) AwaitAnyMetadataLeader(ctx context.Context) error {
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		for _, node := range c.Nodes {
-			if node == nil {
+			host := inProcessHost(node)
+			if host == nil {
 				continue
 			}
-			if mr := node.Host.MetadataRunner(); mr != nil && mr.IsLeader() {
+			if mr := host.MetadataRunner(); mr != nil && mr.IsLeader() {
 				return nil
 			}
 		}
@@ -228,7 +397,8 @@ func (c *Cluster) AwaitAnyMetadataLeader(ctx context.Context) error {
 	}
 }
 
-// AwaitAnyPartitionLeader blocks until some node leads shardID.
+// AwaitAnyPartitionLeader blocks until some node leads shardID. Uses
+// the Node interface (works for both in-process and subprocess nodes).
 func (c *Cluster) AwaitAnyPartitionLeader(ctx context.Context, shardID uint64) error {
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
@@ -237,8 +407,14 @@ func (c *Cluster) AwaitAnyPartitionLeader(ctx context.Context, shardID uint64) e
 			if node == nil {
 				continue
 			}
-			if pr := node.Host.Partition(shardID); pr != nil && pr.IsLeader() {
-				return nil
+			parts, err := node.ListPartitions(ctx)
+			if err != nil {
+				continue
+			}
+			for _, p := range parts {
+				if p.ShardID == shardID && p.IsLeader {
+					return nil
+				}
 			}
 		}
 		select {
@@ -249,11 +425,9 @@ func (c *Cluster) AwaitAnyPartitionLeader(ctx context.Context, shardID uint64) e
 	}
 }
 
-// AnyLiveNode returns any non-nil node in the cluster, or nil if
-// every slot has been killed. Used by clients that need to do a
-// linearizable read against the cluster without caring which node
-// serves it (the lookup goes through dragonboat's leader anyway).
-func (c *Cluster) AnyLiveNode() *Node {
+// AnyLiveNode returns any non-nil node in the cluster, or nil if every
+// slot has been killed.
+func (c *Cluster) AnyLiveNode() Node {
 	for _, n := range c.Nodes {
 		if n != nil {
 			return n
@@ -273,31 +447,41 @@ func (c *Cluster) RaftAddr(idx int) string {
 	return c.addrs[idx].raft
 }
 
-// FindPartitionLeader returns the node leading shardID, or nil. The
-// caller should retry; leadership can rotate at any time.
-func (c *Cluster) FindPartitionLeader(shardID uint64) *Node {
+// FindPartitionLeader returns the node leading shardID, or nil. Uses
+// the Node interface so it works for both in-process and subprocess
+// nodes. The caller should retry; leadership can rotate at any time.
+func (c *Cluster) FindPartitionLeader(ctx context.Context, shardID uint64) Node {
 	for _, node := range c.Nodes {
 		if node == nil {
 			continue
 		}
-		if pr := node.Host.Partition(shardID); pr != nil && pr.IsLeader() {
-			return node
+		parts, err := node.ListPartitions(ctx)
+		if err != nil {
+			continue
+		}
+		for _, p := range parts {
+			if p.ShardID == shardID && p.IsLeader {
+				return node
+			}
 		}
 	}
 	return nil
 }
 
-// bringUpNode constructs (or re-constructs) the Host + Delivery
-// stack for cluster.Nodes[idx]. Stages 1-3 of NewCluster's bring-up,
-// idempotent against pre-existing on-disk state (dragonboat detects
-// the existing raft log and resumes; Pebble re-opens the existing
-// dataDir).
+// bringUpNode constructs (or re-constructs) the in-process Host +
+// Delivery stack for cluster.Nodes[idx]. Stages 1-3 of NewCluster's
+// bring-up, idempotent against pre-existing on-disk state (dragonboat
+// detects the existing raft log and resumes; Pebble re-opens the
+// existing dataDir).
 //
 // Does NOT start any shards — callers handle that explicitly so
 // NewCluster can stage shard starts cluster-wide.
 func (c *Cluster) bringUpNode(t testing.TB, idx int) error {
 	t.Helper()
 	addrs := c.addrs[idx]
+	if c.opts.SubprocessNodes {
+		return c.bringUpSubprocessNode(t, idx)
+	}
 	h, err := engine.NewHost(engine.HostConfig{
 		NodeID:               uint64(idx + 1),
 		RaftAddr:             addrs.raft,
@@ -338,11 +522,12 @@ func (c *Cluster) bringUpNode(t testing.TB, idx int) error {
 		}
 	}()
 
-	c.Nodes[idx] = &Node{
+	c.Nodes[idx] = &InProcessNode{
 		Host:           h,
 		DeliveryServer: gs,
 		DeliveryLn:     ln,
 		DeliveryClient: dc,
+		raftAddr:       addrs.raft,
 	}
 	return nil
 }
@@ -365,7 +550,7 @@ func listenWithRetry(addr string, timeout time.Duration) (net.Listener, error) {
 }
 
 // KillNode closes cluster.Nodes[idx] without waiting for graceful
-// shutdown beyond what Host.Close already provides. The node slot
+// shutdown beyond what the node's Kill method provides. The node slot
 // is left as nil so subsequent leader queries skip it. Idempotent.
 //
 // Concurrent fault: callers may KillNode while the workload is
@@ -380,7 +565,7 @@ func (c *Cluster) KillNode(idx int) {
 		return
 	}
 	c.Nodes[idx] = nil
-	node.Close()
+	node.Kill()
 }
 
 // RestartNode re-bootstraps cluster.Nodes[idx] on its original
@@ -403,12 +588,17 @@ func (c *Cluster) RestartNode(t testing.TB, idx int) error {
 	if err := c.bringUpNode(t, idx); err != nil {
 		return fmt.Errorf("bringUpNode: %w", err)
 	}
-	node := c.Nodes[idx]
-	if _, err := node.Host.StartMetadataShard(); err != nil {
+	host := inProcessHost(c.Nodes[idx])
+	if host == nil {
+		// Subprocess nodes auto-start shards in their main() via
+		// reflow.Run; nothing more to do here.
+		return nil
+	}
+	if _, err := host.StartMetadataShard(); err != nil {
 		return fmt.Errorf("StartMetadataShard: %w", err)
 	}
 	for sh := uint64(1); sh <= uint64(len(c.Nodes)); sh++ {
-		if _, err := node.Host.StartPartition(sh); err != nil {
+		if _, err := host.StartPartition(sh); err != nil {
 			return fmt.Errorf("StartPartition(%d): %w", sh, err)
 		}
 	}
@@ -427,4 +617,108 @@ func FreeLocalAddr(t testing.TB) string {
 	addr := l.Addr().String()
 	_ = l.Close()
 	return addr
+}
+
+// inProcessHost returns the engine.Host backing node, or nil if node
+// is not an *InProcessNode (i.e. it's a subprocess node or nil). Used
+// by code paths that need engine-internal access (Pebble metrics,
+// metadata-leader probe) — those callers skip subprocess nodes
+// transparently.
+func inProcessHost(node Node) *engine.Host {
+	if ip, ok := node.(*InProcessNode); ok && ip != nil {
+		return ip.Host
+	}
+	return nil
+}
+
+// bringUpSubprocessNode spawns one reflow-loadnode child and dials its
+// ingress endpoint. Called from bringUpNode when SubprocessNodes is on.
+func (c *Cluster) bringUpSubprocessNode(t testing.TB, idx int) error {
+	t.Helper()
+	if c.opts.LoadnodeBinaryPath == "" {
+		return fmt.Errorf("SubprocessNodes requires LoadnodeBinaryPath")
+	}
+	if len(c.opts.SubprocessIngressAddrs) != len(c.Nodes) {
+		return fmt.Errorf("SubprocessIngressAddrs must have one entry per node (got %d, want %d)",
+			len(c.opts.SubprocessIngressAddrs), len(c.Nodes))
+	}
+	addrs := c.addrs[idx]
+	peersFlag := formatPeersFlag(c.peers)
+	node, err := startSubprocessNode(SubprocessNodeOptions{
+		BinaryPath:     c.opts.LoadnodeBinaryPath,
+		NodeID:         uint64(idx + 1),
+		RaftAddr:       addrs.raft,
+		GossipAddr:     addrs.gossip,
+		DeliveryAddr:   addrs.delivery,
+		IngressAddr:    c.opts.SubprocessIngressAddrs[idx],
+		DataDir:        c.dataDirs[idx],
+		PeersFlag:      peersFlag,
+		NumShards:      uint64(len(c.Nodes)),
+		StartupTimeout: 60 * time.Second,
+		Stderr:         &testWriter{t: t, prefix: fmt.Sprintf("node%d", idx+1)},
+	})
+	if err != nil {
+		return fmt.Errorf("startSubprocessNode: %w", err)
+	}
+	c.Nodes[idx] = node
+	return nil
+}
+
+// formatPeersFlag encodes the cluster's peer list in the form the
+// reflow-loadnode binary's -peers flag expects:
+// "id@raft,gossip;id@raft,gossip;..."
+func formatPeersFlag(peers []engine.Peer) string {
+	parts := make([]string, 0, len(peers))
+	for _, p := range peers {
+		parts = append(parts, fmt.Sprintf("%d@%s,%s", p.NodeID, p.RaftAddr, p.GossipAddr))
+	}
+	return strings.Join(parts, ";")
+}
+
+// testWriter adapts t.Logf to an io.Writer. Used to pipe subprocess
+// stderr into the test's log.
+type testWriter struct {
+	t      testing.TB
+	prefix string
+	buf    []byte
+}
+
+func (w *testWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		i := indexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := string(w.buf[:i])
+		w.buf = w.buf[i+1:]
+		w.t.Logf("%s: %s", w.prefix, line)
+	}
+	return len(p), nil
+}
+
+func indexByte(b []byte, c byte) int {
+	for i, x := range b {
+		if x == c {
+			return i
+		}
+	}
+	return -1
+}
+
+// BuildLoadnodeBinary compiles cmd/reflow-loadnode into a temporary
+// path and returns it. Cached on the test's outer t.TempDir so multiple
+// clusters in the same test share one binary. Call from TestMain or
+// the start of a test that sets SubprocessNodes: true.
+func BuildLoadnodeBinary(t testing.TB) string {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "reflow-loadnode")
+	cmd := exec.Command("go", "build", "-o", bin, "github.com/twinfer/reflow/cmd/reflow-loadnode")
+	cmd.Env = os.Environ()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("BuildLoadnodeBinary: %v\n%s", err, out)
+	}
+	return bin
 }

@@ -57,7 +57,7 @@ poll:
 	for time.Now().Before(deadline) && len(pending) > 0 {
 		for key, inv := range pending {
 			lookupCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-			st, err := live.Host.LookupInvocationStatus(lookupCtx, inv.ShardID, inv.ID)
+			st, err := live.DescribeInvocation(lookupCtx, inv.ID)
 			cancel()
 			if err != nil || st == nil {
 				continue
@@ -91,7 +91,7 @@ poll:
 		// ctx surfaces as "lookup_err=invalid deadline" violations that
 		// mask the real state.
 		lookupCtx, lc := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		st, err := live.Host.LookupInvocationStatus(lookupCtx, inv.ShardID, inv.ID)
+		st, err := live.DescribeInvocation(lookupCtx, inv.ID)
 		lc()
 		switch {
 		case err != nil:

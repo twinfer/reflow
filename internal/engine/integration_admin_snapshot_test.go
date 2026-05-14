@@ -125,10 +125,10 @@ func awaitMembership(t *testing.T, leader *nodeRig, min int, timeout time.Durati
 	return nil
 }
 
-// TestPhase4_2_AdminListNodes confirms the leader's admin surface
+// TestAdminListNodes confirms the leader's admin surface
 // returns every registered node. Membership is bootstrapped by the
 // metadata-leader's RegisterNode propose loop.
-func TestPhase4_2_AdminListNodes(t *testing.T) {
+func TestAdminListNodes(t *testing.T) {
 	rigs, _ := bringUpThreeNodeCluster(t, sdk.NewRegistry())
 	defer closeAll(rigs)
 
@@ -161,9 +161,9 @@ func TestPhase4_2_AdminListNodes(t *testing.T) {
 	}
 }
 
-// TestPhase4_2_AdminListPartitions returns the bootstrap partition
+// TestAdminListPartitions returns the bootstrap partition
 // table observable via the admin surface.
-func TestPhase4_2_AdminListPartitions(t *testing.T) {
+func TestAdminListPartitions(t *testing.T) {
 	rigs, _ := bringUpThreeNodeCluster(t, sdk.NewRegistry())
 	defer closeAll(rigs)
 
@@ -189,10 +189,10 @@ func TestPhase4_2_AdminListPartitions(t *testing.T) {
 	t.Fatal("ListPartitions never returned a 3-shard table")
 }
 
-// TestPhase4_2_AdminRemoveNode_LogicallyEvicts proposes EvictNode and
+// TestAdminRemoveNode_LogicallyEvicts proposes EvictNode and
 // asserts the apply path marks last_seen_ms=0 and enqueues DELETE_REPLICA
 // steps for every shard the node hosted.
-func TestPhase4_2_AdminRemoveNode_LogicallyEvicts(t *testing.T) {
+func TestAdminRemoveNode_LogicallyEvicts(t *testing.T) {
 	rigs, _ := bringUpThreeNodeCluster(t, sdk.NewRegistry())
 	defer closeAll(rigs)
 
@@ -253,11 +253,11 @@ func TestPhase4_2_AdminRemoveNode_LogicallyEvicts(t *testing.T) {
 	t.Fatalf("EvictNode apply never zeroed last_seen_ms + enqueued DELETE_REPLICA for node %d", victim)
 }
 
-// TestPhase4_2_AdminMutualTLS_RejectsUnsignedClient builds an admin
+// TestAdminMutualTLS_RejectsUnsignedClient builds an admin
 // server wired with operator-CA mTLS and asserts that a client without
 // any cert cannot complete the handshake. Sanity check that the
 // transport layer enforces auth.
-func TestPhase4_2_AdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
+func TestAdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	rigs, _ := bringUpThreeNodeCluster(t, sdk.NewRegistry())
 	defer closeAll(rigs)
 	leader := awaitMetadataLeaderRig(t, rigs, 15*time.Second)
@@ -356,10 +356,10 @@ func TestPhase4_2_AdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	}
 }
 
-// TestPhase4_2_Snapshot_PartitionExportAndArchive triggers an exported
+// TestSnapshot_PartitionExportAndArchive triggers an exported
 // snapshot through the engine.Host helper, archives it via the fs
 // repository, and confirms a non-empty Fetch round-trip.
-func TestPhase4_2_Snapshot_PartitionExportAndArchive(t *testing.T) {
+func TestSnapshot_PartitionExportAndArchive(t *testing.T) {
 	rigs, _ := bringUpThreeNodeCluster(t, sdk.NewRegistry())
 	defer closeAll(rigs)
 

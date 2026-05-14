@@ -11,11 +11,11 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// TestPhase4_1_PeerResolvedNodeHostID confirms the deterministic
+// TestPeerResolvedNodeHostID confirms the deterministic
 // NodeHostID derivation is identical for an empty override and the
 // explicit derived form. Every node in the cluster runs the same code,
 // so a static peer list bootstraps without any out-of-band ID exchange.
-func TestPhase4_1_PeerResolvedNodeHostID(t *testing.T) {
+func TestPeerResolvedNodeHostID(t *testing.T) {
 	tests := []struct {
 		name string
 		in   Peer
@@ -33,12 +33,12 @@ func TestPhase4_1_PeerResolvedNodeHostID(t *testing.T) {
 	}
 }
 
-// TestPhase4_1_ApplyMultiNodeConfig_OK packs three peers (self + two
+// TestApplyMultiNodeConfig_OK packs three peers (self + two
 // others) into a NodeHostConfig and asserts every gossip field is set:
 // DefaultNodeRegistryEnabled, NodeHostID for self, BindAddress,
 // AdvertiseAddress, Seed (excluding self), and a Meta blob carrying the
 // expected NodeHostMeta.GrpcEndpoint.
-func TestPhase4_1_ApplyMultiNodeConfig_OK(t *testing.T) {
+func TestApplyMultiNodeConfig_OK(t *testing.T) {
 	cfg := HostConfig{
 		NodeID:         2,
 		RaftAddr:       "10.0.0.2:9091",
@@ -88,10 +88,10 @@ func TestPhase4_1_ApplyMultiNodeConfig_OK(t *testing.T) {
 	}
 }
 
-// TestPhase4_1_ApplyMultiNodeConfig_GossipAdvFallback verifies that
+// TestApplyMultiNodeConfig_GossipAdvFallback verifies that
 // GossipAdvAddr defaults to GossipBindAddr when left empty — a common
 // single-network deployment shorthand.
-func TestPhase4_1_ApplyMultiNodeConfig_GossipAdvFallback(t *testing.T) {
+func TestApplyMultiNodeConfig_GossipAdvFallback(t *testing.T) {
 	cfg := HostConfig{
 		NodeID:         1,
 		RaftAddr:       "10.0.0.1:9091",
@@ -111,10 +111,10 @@ func TestPhase4_1_ApplyMultiNodeConfig_GossipAdvFallback(t *testing.T) {
 	}
 }
 
-// TestPhase4_1_ApplyMultiNodeConfig_RejectsIfSelfMissing rejects a
+// TestApplyMultiNodeConfig_RejectsIfSelfMissing rejects a
 // peer list that does not contain this node's own NodeID. The contract
 // is that every node holds a fully-symmetric Peers slice.
-func TestPhase4_1_ApplyMultiNodeConfig_RejectsIfSelfMissing(t *testing.T) {
+func TestApplyMultiNodeConfig_RejectsIfSelfMissing(t *testing.T) {
 	cfg := HostConfig{
 		NodeID:         9,
 		RaftAddr:       "10.0.0.9:9091",
@@ -132,9 +132,9 @@ func TestPhase4_1_ApplyMultiNodeConfig_RejectsIfSelfMissing(t *testing.T) {
 	}
 }
 
-// TestPhase4_1_ApplyMultiNodeConfig_RejectsMissingBindOrEndpoint
+// TestApplyMultiNodeConfig_RejectsMissingBindOrEndpoint
 // confirms the two required fields are guarded.
-func TestPhase4_1_ApplyMultiNodeConfig_RejectsMissingBindOrEndpoint(t *testing.T) {
+func TestApplyMultiNodeConfig_RejectsMissingBindOrEndpoint(t *testing.T) {
 	base := HostConfig{
 		NodeID:   1,
 		RaftAddr: "10.0.0.1:9091",
@@ -160,11 +160,11 @@ func TestPhase4_1_ApplyMultiNodeConfig_RejectsMissingBindOrEndpoint(t *testing.T
 	}
 }
 
-// TestPhase4_1_ApplyMultiNodeConfig_RejectsInvalidUUIDOverride catches a
+// TestApplyMultiNodeConfig_RejectsInvalidUUIDOverride catches a
 // peer with a NodeHostID override that doesn't parse as RFC 4122 — the
 // same check dragonboat applies inside NewNodeHost, raised here so the
 // error attributes the offending peer.
-func TestPhase4_1_ApplyMultiNodeConfig_RejectsInvalidUUIDOverride(t *testing.T) {
+func TestApplyMultiNodeConfig_RejectsInvalidUUIDOverride(t *testing.T) {
 	cfg := HostConfig{
 		NodeID:         1,
 		RaftAddr:       "10.0.0.1:9091",
@@ -185,10 +185,10 @@ func TestPhase4_1_ApplyMultiNodeConfig_RejectsInvalidUUIDOverride(t *testing.T) 
 	}
 }
 
-// TestPhase4_1_DerivedNodeHostID_IsValidUUID guards the derived form
+// TestDerivedNodeHostID_IsValidUUID guards the derived form
 // against silent drift — dragonboat's NodeHost constructor will reject
 // any non-UUID NodeHostID, and we want that signaled at the resolver.
-func TestPhase4_1_DerivedNodeHostID_IsValidUUID(t *testing.T) {
+func TestDerivedNodeHostID_IsValidUUID(t *testing.T) {
 	for _, id := range []uint64{1, 2, 7, 999, 1<<32 + 1} {
 		p := Peer{NodeID: id}
 		if _, err := uuid.Parse(p.resolvedNodeHostID()); err != nil {
@@ -198,10 +198,10 @@ func TestPhase4_1_DerivedNodeHostID_IsValidUUID(t *testing.T) {
 	}
 }
 
-// TestPhase4_1_InitialMembers_FromPeers verifies StartPartition will
+// TestInitialMembers_FromPeers verifies StartPartition will
 // receive a NodeHostID-keyed initialMembers map when Peers is populated.
 // Single-node fallback is exercised by every existing Phase 1-3 test.
-func TestPhase4_1_InitialMembers_FromPeers(t *testing.T) {
+func TestInitialMembers_FromPeers(t *testing.T) {
 	h := &Host{cfg: HostConfig{
 		NodeID: 2,
 		Peers: []Peer{

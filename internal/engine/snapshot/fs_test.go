@@ -30,7 +30,7 @@ func readFile(t *testing.T, path string) []byte {
 	return b
 }
 
-func TestPhase4_2_FSRepository_PutFetchRoundTrip(t *testing.T) {
+func TestFSRepository_PutFetchRoundTrip(t *testing.T) {
 	root := t.TempDir()
 	src := filepath.Join(t.TempDir(), "export")
 	// Layout an exported-snapshot-shaped directory.
@@ -63,7 +63,7 @@ func TestPhase4_2_FSRepository_PutFetchRoundTrip(t *testing.T) {
 	}
 }
 
-func TestPhase4_2_FSRepository_ListSortedByIndex(t *testing.T) {
+func TestFSRepository_ListSortedByIndex(t *testing.T) {
 	root := t.TempDir()
 	repo := &FSRepository{Root: root}
 	src := filepath.Join(t.TempDir(), "src")
@@ -96,7 +96,7 @@ func TestPhase4_2_FSRepository_ListSortedByIndex(t *testing.T) {
 	}
 }
 
-func TestPhase4_2_FSRepository_RetentionDeletesOldest(t *testing.T) {
+func TestFSRepository_RetentionDeletesOldest(t *testing.T) {
 	root := t.TempDir()
 	repo := &FSRepository{Root: root, Retain: 2}
 	src := filepath.Join(t.TempDir(), "src")
@@ -116,7 +116,7 @@ func TestPhase4_2_FSRepository_RetentionDeletesOldest(t *testing.T) {
 	}
 }
 
-func TestPhase4_2_FSRepository_DeleteIdempotent(t *testing.T) {
+func TestFSRepository_DeleteIdempotent(t *testing.T) {
 	root := t.TempDir()
 	repo := &FSRepository{Root: root}
 	// Delete on absent shard should be a no-op.

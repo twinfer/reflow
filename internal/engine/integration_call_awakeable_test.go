@@ -21,7 +21,7 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// TestPhase2_HandlerSurvivesKill is the Phase 2 exit criterion. A handler
+// TestHandlerSurvivesKill is the Phase 2 exit criterion. A handler
 // doing SetState → Sleep → Run is brought up, suspended on the Sleep
 // timer, the Host is closed (simulating a crash before the Sleep fires),
 // the same DataDir is reopened on a fresh Host, and the invocation must
@@ -38,7 +38,7 @@ import (
 //     and skips the SDK-side proposal entirely.
 //   - Sleep is journaled as JESleep; TimerService rebuilds the pending
 //     timer from PendingTimersTable on leader gain.
-func TestPhase2_HandlerSurvivesKill(t *testing.T) {
+func TestHandlerSurvivesKill(t *testing.T) {
 	var runCount atomic.Int32
 
 	handler := func(c sdk.Context, in []byte) ([]byte, error) {
@@ -175,7 +175,7 @@ func TestPhase2_HandlerSurvivesKill(t *testing.T) {
 	}
 }
 
-// TestPhase2_OutgoingCallSurvivesRestart verifies outbox durability
+// TestOutgoingCallSurvivesRestart verifies outbox durability
 // across a host crash AND the Phase 2.5 Callee→Caller return path:
 // handler Caller invokes handler Callee via ctx.Call; the Host is
 // closed after Caller's JECall is journaled. After reopen, the outbox
@@ -190,7 +190,7 @@ func TestPhase2_HandlerSurvivesKill(t *testing.T) {
 //     re-injected without dedup).
 //   - Phase 2.5 return path: Caller's Completed.Output proves the
 //     JECallResult journal entry was delivered + the session woke up.
-func TestPhase2_OutgoingCallSurvivesRestart(t *testing.T) {
+func TestOutgoingCallSurvivesRestart(t *testing.T) {
 	var calleeRuns atomic.Int32
 
 	reg := sdk.NewRegistry()
@@ -338,12 +338,12 @@ func TestPhase2_OutgoingCallSurvivesRestart(t *testing.T) {
 	}
 }
 
-// TestPhase2_5_CallResultDeliveredInline exercises the Callee→Caller
+// TestCallResultDeliveredInline exercises the Callee→Caller
 // return path on a single host with no crash: Caller calls Callee,
 // Callee returns synchronously, Caller wakes and wraps the value. The
 // straight-line happy path proves the apply arm + FSM transition wiring
 // before the crash variants stress the resume paths.
-func TestPhase2_5_CallResultDeliveredInline(t *testing.T) {
+func TestCallResultDeliveredInline(t *testing.T) {
 	reg := sdk.NewRegistry()
 	if err := reg.Register("B", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
 		return append([]byte("pong:"), in...), nil
@@ -388,11 +388,11 @@ func TestPhase2_5_CallResultDeliveredInline(t *testing.T) {
 	}
 }
 
-// TestPhase2_5_CallResultSurvivesCallerCrash kills the host while
+// TestCallResultSurvivesCallerCrash kills the host while
 // Caller is Suspended awaiting Callee's result. After reopen the
 // outbox + invoker resume paths spin up Callee, the Completed apply
 // arm journals JECallResult on Caller, and Caller resumes to Completed.
-func TestPhase2_5_CallResultSurvivesCallerCrash(t *testing.T) {
+func TestCallResultSurvivesCallerCrash(t *testing.T) {
 	var calleeRuns atomic.Int32
 	reg := sdk.NewRegistry()
 	if err := reg.Register("B", "do", func(c sdk.Context, in []byte) ([]byte, error) {
@@ -493,7 +493,7 @@ func TestPhase2_5_CallResultSurvivesCallerCrash(t *testing.T) {
 	}
 }
 
-// TestPhase2_5_CallResultSurvivesCalleeCrash is the symmetric variant:
+// TestCallResultSurvivesCalleeCrash is the symmetric variant:
 // the host crashes while Callee is mid-handler (its Sleep is ticking).
 // On restart Callee's session re-spawns via ResumeNonTerminal, replays
 // the journal deterministically, finishes its Sleep, returns, and the
@@ -504,7 +504,7 @@ func TestPhase2_5_CallResultSurvivesCallerCrash(t *testing.T) {
 // the same. The differentiator is *what state each invocation is in*
 // when we crash — here we crash later, after Callee has begun and
 // before its result lands.)
-func TestPhase2_5_CallResultSurvivesCalleeCrash(t *testing.T) {
+func TestCallResultSurvivesCalleeCrash(t *testing.T) {
 	var calleeRuns atomic.Int32
 	reg := sdk.NewRegistry()
 	if err := reg.Register("B", "do", func(c sdk.Context, in []byte) ([]byte, error) {
@@ -657,11 +657,11 @@ func deriveCalleeID(parent *enginev1.InvocationId, entryIdx uint32, target *engi
 	}
 }
 
-// TestPhase2_AwakeableResolvedByIngress wires the awakeable path through
+// TestAwakeableResolvedByIngress wires the awakeable path through
 // the real Step 13 ingress: handler mints an awakeable, suspends, an
 // external HTTP POST to /awakeable/{id}/resolve resolves it, and the
 // handler wakes returning the resolved bytes.
-func TestPhase2_AwakeableResolvedByIngress(t *testing.T) {
+func TestAwakeableResolvedByIngress(t *testing.T) {
 	// awakeableCh carries the awakeable ID minted by the handler out to
 	// the test body, which then calls the ingress resolve endpoint.
 	awakeableCh := make(chan string, 1)

@@ -82,7 +82,7 @@ func proposeInvokerEffect(t *testing.T, r *engine.PartitionRunner, eff *enginev1
 	}
 }
 
-func TestPhase1_SingleNodeReplayAcrossRestart(t *testing.T) {
+func TestSingleNodeReplayAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "node1")
 
@@ -174,7 +174,7 @@ func TestPhase1_SingleNodeReplayAcrossRestart(t *testing.T) {
 	}
 }
 
-func TestPhase1_DedupBlocksDuplicateIngress(t *testing.T) {
+func TestDedupBlocksDuplicateIngress(t *testing.T) {
 	dir := t.TempDir()
 	h, r, _ := bringUpSingleNode(t, filepath.Join(dir, "node1"), "")
 	defer h.Close()
@@ -202,7 +202,7 @@ func TestPhase1_DedupBlocksDuplicateIngress(t *testing.T) {
 	t.Fatalf("invocation status not observed as Scheduled within timeout")
 }
 
-func TestPhase1_TimerSurvivesRestart(t *testing.T) {
+func TestTimerSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "node1")
 

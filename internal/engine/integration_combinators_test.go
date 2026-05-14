@@ -108,11 +108,11 @@ func drainAwakeableIDs(t *testing.T, ch <-chan string, n int, timeout time.Durat
 	return out
 }
 
-// TestPhase3_5_All_ResolvesWhenAllChildrenComplete is the happy-path
+// TestCombinator_All_ResolvesWhenAllChildrenComplete is the happy-path
 // test for ctx.All: three awakeables, resolved out of order, handler
 // returns the values concatenated in argument order. Verifies both the
 // composition shape and the argument-order invariant on Results.
-func TestPhase3_5_All_ResolvesWhenAllChildrenComplete(t *testing.T) {
+func TestCombinator_All_ResolvesWhenAllChildrenComplete(t *testing.T) {
 	idsCh := make(chan string, 3)
 	var emitted atomic.Bool
 
@@ -166,12 +166,12 @@ func TestPhase3_5_All_ResolvesWhenAllChildrenComplete(t *testing.T) {
 	}
 }
 
-// TestPhase3_5_All_StaysSuspendedOnPartialResolution verifies the
+// TestCombinator_All_StaysSuspendedOnPartialResolution verifies the
 // re-suspend cycle: every child resolution that doesn't satisfy All
 // must leave the handler in Suspended (not Completed) with the
 // outstanding tokens preserved on awaiting_on so the next resolution
 // can wake it.
-func TestPhase3_5_All_StaysSuspendedOnPartialResolution(t *testing.T) {
+func TestCombinator_All_StaysSuspendedOnPartialResolution(t *testing.T) {
 	idsCh := make(chan string, 3)
 	var emitted atomic.Bool
 
@@ -237,11 +237,11 @@ func TestPhase3_5_All_StaysSuspendedOnPartialResolution(t *testing.T) {
 	}
 }
 
-// TestPhase3_5_Any_ReturnsFirstResolverByArgumentOrder verifies Any
+// TestCombinator_Any_ReturnsFirstResolverByArgumentOrder verifies Any
 // returns the value of the lowest-indexed child whose result is
 // present. Resolving only the middle (index 1) child establishes that
 // Any does not require the leftmost child to be resolved.
-func TestPhase3_5_Any_ReturnsFirstResolverByArgumentOrder(t *testing.T) {
+func TestCombinator_Any_ReturnsFirstResolverByArgumentOrder(t *testing.T) {
 	idsCh := make(chan string, 3)
 	var emitted atomic.Bool
 
@@ -290,12 +290,12 @@ func TestPhase3_5_Any_ReturnsFirstResolverByArgumentOrder(t *testing.T) {
 	}
 }
 
-// TestPhase3_5_AnyOfAwakeableAndSleep_TimeoutPattern exercises the
+// TestCombinator_AnyOfAwakeableAndSleep_TimeoutPattern exercises the
 // canonical timeout idiom: race an external awakeable against a
 // short Sleep so the Sleep wins when the external resolution never
 // arrives. Confirms Sleep is genuinely a Future and composes under
 // the same Any combinator as Awakeable.
-func TestPhase3_5_AnyOfAwakeableAndSleep_TimeoutPattern(t *testing.T) {
+func TestCombinator_AnyOfAwakeableAndSleep_TimeoutPattern(t *testing.T) {
 	reg := sdk.NewRegistry()
 	if err := reg.Register("Timer", "race", func(c sdk.Context, _ []byte) ([]byte, error) {
 		_, never := c.Awakeable()
@@ -333,11 +333,11 @@ func TestPhase3_5_AnyOfAwakeableAndSleep_TimeoutPattern(t *testing.T) {
 	}
 }
 
-// TestPhase3_5_Nested_AllOfAwakeableAndAny verifies that combinators
+// TestCombinator_Nested_AllOfAwakeableAndAny verifies that combinators
 // compose: an All over (awakeable, Any(awakeable, sleep)) completes
 // when the outer awakeable resolves AND the inner Any resolves (here
 // via the Sleep, since its peer awakeable is never resolved).
-func TestPhase3_5_Nested_AllOfAwakeableAndAny(t *testing.T) {
+func TestCombinator_Nested_AllOfAwakeableAndAny(t *testing.T) {
 	outerCh := make(chan string, 1)
 	innerCh := make(chan string, 1)
 	var emitted atomic.Bool
@@ -389,13 +389,13 @@ func TestPhase3_5_Nested_AllOfAwakeableAndAny(t *testing.T) {
 	}
 }
 
-// TestPhase3_5_All_SurvivesRestart resolves one child of an All, kills
+// TestCombinator_All_SurvivesRestart resolves one child of an All, kills
 // the host before the remaining children resolve, restarts, then
 // resolves the rest. The handler must see the same awakeable IDs on
 // replay (journal carries them) and the partial-resolution journal
 // state must drive the same re-suspend behavior so completion fires
 // when the final resolution lands.
-func TestPhase3_5_All_SurvivesRestart(t *testing.T) {
+func TestCombinator_All_SurvivesRestart(t *testing.T) {
 	idsCh := make(chan string, 4)
 	var emitted atomic.Bool
 

@@ -42,11 +42,11 @@ func bringUpForSDKTest(t *testing.T, reg *sdk.Registry) (*engine.Host, *engine.P
 	return h, r
 }
 
-// TestPhase2_SDK_RunReturnsJournaledValue exercises ctx.Run end-to-end:
+// TestSDK_RunReturnsJournaledValue exercises ctx.Run end-to-end:
 // fn is invoked once on the live path, the JERunProposal is committed via
 // Raft, and the handler's return value flows out as the invocation
 // Completed output.
-func TestPhase2_SDK_RunReturnsJournaledValue(t *testing.T) {
+func TestSDK_RunReturnsJournaledValue(t *testing.T) {
 	var runCount atomic.Int32
 
 	reg := sdk.NewRegistry()
@@ -93,12 +93,12 @@ func TestPhase2_SDK_RunReturnsJournaledValue(t *testing.T) {
 	}
 }
 
-// TestPhase2_SDK_SleepResumesAfterTimerFires drives the full
+// TestSDK_SleepResumesAfterTimerFires drives the full
 // Suspended → timer fire → respawn-session → fast-replay → Completed
 // cycle. Demonstrates that the timer service wakes the invocation and the
 // second session run reads the journaled JESleepResult without re-issuing
 // the timer.
-func TestPhase2_SDK_SleepResumesAfterTimerFires(t *testing.T) {
+func TestSDK_SleepResumesAfterTimerFires(t *testing.T) {
 	reg := sdk.NewRegistry()
 	if err := reg.Register("Sleeper", "wait", func(c sdk.Context, in []byte) ([]byte, error) {
 		if _, err := c.Sleep(80 * time.Millisecond).Result(); err != nil {
@@ -129,13 +129,13 @@ func TestPhase2_SDK_SleepResumesAfterTimerFires(t *testing.T) {
 	}
 }
 
-// TestPhase2_SDK_SetStateCompletesOK verifies that ctx.SetState produces a
+// TestSDK_SetStateCompletesOK verifies that ctx.SetState produces a
 // committed journal entry without suspending — the handler returns its
 // result on the same session run. The state write itself is verified
 // transitively (the handler returns a constant; what we really cover here
 // is that the SetState path doesn't accidentally suspend on a missing
 // completion).
-func TestPhase2_SDK_SetStateCompletesOK(t *testing.T) {
+func TestSDK_SetStateCompletesOK(t *testing.T) {
 	reg := sdk.NewRegistry()
 	if err := reg.Register("Stater", "set", func(c sdk.Context, in []byte) ([]byte, error) {
 		if err := c.SetState("k", in); err != nil {
@@ -164,11 +164,11 @@ func TestPhase2_SDK_SetStateCompletesOK(t *testing.T) {
 	}
 }
 
-// TestPhase2_SDK_RunFailureSurfacesAsFailure verifies that an error
+// TestSDK_RunFailureSurfacesAsFailure verifies that an error
 // returned from the Run body lands in InvocationStatus.Completed with a
 // non-empty failure_message, and the handler return path translates the
 // failure cleanly to the engine.
-func TestPhase2_SDK_RunFailureSurfacesAsFailure(t *testing.T) {
+func TestSDK_RunFailureSurfacesAsFailure(t *testing.T) {
 	reg := sdk.NewRegistry()
 	if err := reg.Register("Boom", "fail", func(c sdk.Context, _ []byte) ([]byte, error) {
 		_, err := c.Run("nope", func() ([]byte, error) {

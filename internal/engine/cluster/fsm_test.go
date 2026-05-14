@@ -64,7 +64,7 @@ func envelope(t *testing.T, cmd *enginev1.Command) []byte {
 	return buf
 }
 
-func TestPhase4_1_Cluster_AnnounceLeaderForwarded(t *testing.T) {
+func TestCluster_AnnounceLeaderForwarded(t *testing.T) {
 	f, lead, _ := newTestFSM(t)
 	cmd := &enginev1.Command{
 		Kind: &enginev1.Command_AnnounceLeader{
@@ -79,7 +79,7 @@ func TestPhase4_1_Cluster_AnnounceLeaderForwarded(t *testing.T) {
 	}
 }
 
-func TestPhase4_1_Cluster_RegisterNodePersists(t *testing.T) {
+func TestCluster_RegisterNodePersists(t *testing.T) {
 	f, _, st := newTestFSM(t)
 	mem := &enginev1.NodeMembership{
 		NodeId:     3,
@@ -107,7 +107,7 @@ func TestPhase4_1_Cluster_RegisterNodePersists(t *testing.T) {
 	}
 }
 
-func TestPhase4_1_Cluster_UpdatePartitionTablePersistsAndHooks(t *testing.T) {
+func TestCluster_UpdatePartitionTablePersistsAndHooks(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "meta", "state")
 	st, err := storage.OpenPebble(dir, nil)
 	if err != nil {
@@ -161,7 +161,7 @@ func TestPhase4_1_Cluster_UpdatePartitionTablePersistsAndHooks(t *testing.T) {
 	}
 }
 
-func TestPhase4_1_Cluster_LookupPartitionTable_Empty(t *testing.T) {
+func TestCluster_LookupPartitionTable_Empty(t *testing.T) {
 	f, _, _ := newTestFSM(t)
 	got, err := f.Lookup(LookupPartitionTable{})
 	if err != nil {
@@ -177,7 +177,7 @@ func TestPhase4_1_Cluster_LookupPartitionTable_Empty(t *testing.T) {
 	}
 }
 
-func TestPhase4_1_Cluster_OpenReturnsAppliedIndex(t *testing.T) {
+func TestCluster_OpenReturnsAppliedIndex(t *testing.T) {
 	f, _, _ := newTestFSM(t)
 	// Apply some entry to bump applied_index.
 	cmd := &enginev1.Command{
@@ -221,7 +221,7 @@ func applyRegisterNode(t *testing.T, f *FSM, idx uint64, mem *enginev1.NodeMembe
 	}
 }
 
-func TestPhase4_2_Cluster_EvictNodeZeroesLastSeenAndEnqueuesDeleteSteps(t *testing.T) {
+func TestCluster_EvictNodeZeroesLastSeenAndEnqueuesDeleteSteps(t *testing.T) {
 	f, _, st := newTestFSM(t)
 	applyRegisterNode(t, f, 1, &enginev1.NodeMembership{NodeId: 3, RaftAddr: "10.0.0.3:9091", LastSeenMs: 1700})
 	applyPartitionTable(t, f, 2, &enginev1.PartitionTable{
@@ -266,7 +266,7 @@ func TestPhase4_2_Cluster_EvictNodeZeroesLastSeenAndEnqueuesDeleteSteps(t *testi
 	}
 }
 
-func TestPhase4_2_Cluster_BeginRebalanceStep_IdempotentOnStepID(t *testing.T) {
+func TestCluster_BeginRebalanceStep_IdempotentOnStepID(t *testing.T) {
 	f, _, st := newTestFSM(t)
 	applyPartitionTable(t, f, 1, &enginev1.PartitionTable{
 		AssignmentEpoch: 1,
@@ -288,7 +288,7 @@ func TestPhase4_2_Cluster_BeginRebalanceStep_IdempotentOnStepID(t *testing.T) {
 	}
 }
 
-func TestPhase4_2_Cluster_CompleteRebalanceStep_PromoteAddsToReplicaSet(t *testing.T) {
+func TestCluster_CompleteRebalanceStep_PromoteAddsToReplicaSet(t *testing.T) {
 	f, _, st := newTestFSM(t)
 	applyPartitionTable(t, f, 1, &enginev1.PartitionTable{
 		AssignmentEpoch: 1,
@@ -315,7 +315,7 @@ func TestPhase4_2_Cluster_CompleteRebalanceStep_PromoteAddsToReplicaSet(t *testi
 	}
 }
 
-func TestPhase4_2_Cluster_CompleteRebalanceStep_DeleteRemovesFromReplicaSet(t *testing.T) {
+func TestCluster_CompleteRebalanceStep_DeleteRemovesFromReplicaSet(t *testing.T) {
 	f, _, st := newTestFSM(t)
 	applyPartitionTable(t, f, 1, &enginev1.PartitionTable{
 		AssignmentEpoch: 1,
@@ -336,7 +336,7 @@ func TestPhase4_2_Cluster_CompleteRebalanceStep_DeleteRemovesFromReplicaSet(t *t
 	}
 }
 
-func TestPhase4_1_Cluster_UnknownCommandIsDropped(t *testing.T) {
+func TestCluster_UnknownCommandIsDropped(t *testing.T) {
 	f, _, _ := newTestFSM(t)
 	cmd := &enginev1.Command{
 		// Invoke is a partition-shard variant; shard 0 must drop it without

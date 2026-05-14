@@ -36,7 +36,7 @@ func (h *fakeHost) PartitionLeaderHint(shardID uint64) (uint64, bool) {
 	return 0, false
 }
 
-func TestPhase4_1_DeliveryServer_NotHosted_ReturnsNotLeaderHint(t *testing.T) {
+func TestDeliveryServer_NotHosted_ReturnsNotLeaderHint(t *testing.T) {
 	s := NewServer(&fakeHost{
 		runners: map[uint64]RunnerView{},
 		leader:  map[uint64]uint64{7: 42},
@@ -59,7 +59,7 @@ func TestPhase4_1_DeliveryServer_NotHosted_ReturnsNotLeaderHint(t *testing.T) {
 	}
 }
 
-func TestPhase4_1_DeliveryServer_NotLeader_ReturnsNotLeader(t *testing.T) {
+func TestDeliveryServer_NotLeader_ReturnsNotLeader(t *testing.T) {
 	s := NewServer(&fakeHost{
 		runners: map[uint64]RunnerView{
 			7: &fakeRunner{leader: false},
@@ -76,7 +76,7 @@ func TestPhase4_1_DeliveryServer_NotLeader_ReturnsNotLeader(t *testing.T) {
 	}
 }
 
-func TestPhase4_1_DeliveryServer_MalformedReturnsErr(t *testing.T) {
+func TestDeliveryServer_MalformedReturnsErr(t *testing.T) {
 	s := NewServer(&fakeHost{}, nil)
 	resp := s.handle(context.Background(), &deliveryv1.DeliverRequest{
 		// missing ShardId, ProducerId, Command

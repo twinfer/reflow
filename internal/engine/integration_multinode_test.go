@@ -232,11 +232,11 @@ func findPartitionLeader(rigs []*nodeRig, shardID uint64) *nodeRig {
 	return nil
 }
 
-// TestPhase4_1_StaticThreeNodeBootstrap brings up a 3-node cluster from
+// TestMultiNode_StaticThreeNodeBootstrap brings up a 3-node cluster from
 // static peer config and asserts the steady state: shard 0 has a leader
 // reachable via dragonboat gossip, every partition has a leader, and the
 // per-shard NodeHostRegistry view enumerates all 3 replicas.
-func TestPhase4_1_StaticThreeNodeBootstrap(t *testing.T) {
+func TestMultiNode_StaticThreeNodeBootstrap(t *testing.T) {
 	rigs, _ := bringUpThreeNodeCluster(t, sdk.NewRegistry())
 	defer closeAll(rigs)
 
@@ -266,10 +266,10 @@ func TestPhase4_1_StaticThreeNodeBootstrap(t *testing.T) {
 	}
 }
 
-// TestPhase4_1_GossipMetaCarriesGrpcEndpoint asserts that every node
+// TestMultiNode_GossipMetaCarriesGrpcEndpoint asserts that every node
 // publishes its reflow Delivery gRPC endpoint via gossip NodeHostMeta and
 // peers can resolve it via Host.NodeEndpoint.
-func TestPhase4_1_GossipMetaCarriesGrpcEndpoint(t *testing.T) {
+func TestMultiNode_GossipMetaCarriesGrpcEndpoint(t *testing.T) {
 	rigs, _ := bringUpThreeNodeCluster(t, sdk.NewRegistry())
 	defer closeAll(rigs)
 
@@ -301,10 +301,10 @@ func TestPhase4_1_GossipMetaCarriesGrpcEndpoint(t *testing.T) {
 	}
 }
 
-// TestPhase4_1_PartitionTableLookup confirms shard 0's leader proposes
+// TestMultiNode_PartitionTableLookup confirms shard 0's leader proposes
 // the static partition table on first leader election and a SyncRead from
 // any node observes it.
-func TestPhase4_1_PartitionTableLookup(t *testing.T) {
+func TestMultiNode_PartitionTableLookup(t *testing.T) {
 	rigs, _ := bringUpThreeNodeCluster(t, sdk.NewRegistry())
 	defer closeAll(rigs)
 
@@ -336,11 +336,11 @@ func TestPhase4_1_PartitionTableLookup(t *testing.T) {
 	}
 }
 
-// TestPhase4_1_CrossPartition_CallDelivery is the integration exit
+// TestMultiNode_CrossPartition_CallDelivery is the integration exit
 // criterion: an invocation on the partition that owns target A invokes a
 // handler on the partition that owns target B (different shard), and the
 // result flows back end-to-end across the cluster.
-func TestPhase4_1_CrossPartition_CallDelivery(t *testing.T) {
+func TestMultiNode_CrossPartition_CallDelivery(t *testing.T) {
 	// Caller hashes to shard 3, ServiceB to shard 1 (both with empty
 	// object_key under FNV-1a + NumShards=3). The test still asserts
 	// they differ at runtime — if a future routing change moves them

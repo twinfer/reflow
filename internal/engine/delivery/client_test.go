@@ -94,7 +94,7 @@ func startBufconnDelivery(t *testing.T, srv *stubServer) (*Client, func()) {
 	return cli, cleanup
 }
 
-func TestPhase4_1_DeliveryClient_Ack(t *testing.T) {
+func TestDeliveryClient_Ack(t *testing.T) {
 	srv := &stubServer{
 		respond: func(req *deliveryv1.DeliverRequest) *deliveryv1.DeliverResponse {
 			return &deliveryv1.DeliverResponse{
@@ -115,7 +115,7 @@ func TestPhase4_1_DeliveryClient_Ack(t *testing.T) {
 	}
 }
 
-func TestPhase4_1_DeliveryClient_NotLeader(t *testing.T) {
+func TestDeliveryClient_NotLeader(t *testing.T) {
 	srv := &stubServer{
 		respond: func(req *deliveryv1.DeliverRequest) *deliveryv1.DeliverResponse {
 			return &deliveryv1.DeliverResponse{
@@ -135,7 +135,7 @@ func TestPhase4_1_DeliveryClient_NotLeader(t *testing.T) {
 	}
 }
 
-func TestPhase4_1_DeliveryClient_Err(t *testing.T) {
+func TestDeliveryClient_Err(t *testing.T) {
 	srv := &stubServer{
 		respond: func(req *deliveryv1.DeliverRequest) *deliveryv1.DeliverResponse {
 			return &deliveryv1.DeliverResponse{
@@ -155,7 +155,7 @@ func TestPhase4_1_DeliveryClient_Err(t *testing.T) {
 	}
 }
 
-func TestPhase4_1_DeliveryClient_NoLeaderHint(t *testing.T) {
+func TestDeliveryClient_NoLeaderHint(t *testing.T) {
 	cli, err := NewClient(ClientConfig{
 		Resolver: &stubResolver{
 			leader:   map[uint64]uint64{}, // empty

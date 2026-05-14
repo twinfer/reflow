@@ -42,7 +42,7 @@ func buildID(pk uint64, name string) *enginev1.InvocationId {
 	return &enginev1.InvocationId{PartitionKey: pk, Uuid: b}
 }
 
-// TestPhase2_InvokerWiringEchoCompletes is the smallest end-to-end test
+// TestInvokerWiringEchoCompletes is the smallest end-to-end test
 // that exercises the Step 12 wiring: HostConfig.Handlers → Invoker →
 // session → handler → InvokerEffect.Completed → FSM. A pure echo handler
 // is registered, an Invoke command is proposed via the partition's
@@ -56,7 +56,7 @@ func buildID(pk uint64, name string) *enginev1.InvocationId {
 //     and returns).
 //   - session.publishOutcome failing to propose Completed (status stays
 //     Invoked forever).
-func TestPhase2_InvokerWiringEchoCompletes(t *testing.T) {
+func TestInvokerWiringEchoCompletes(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "node1")
 
@@ -112,11 +112,11 @@ func TestPhase2_InvokerWiringEchoCompletes(t *testing.T) {
 	}
 }
 
-// TestPhase2_InvokerWiringMissingHandlerStaysScheduled verifies that an
+// TestInvokerWiringMissingHandlerStaysScheduled verifies that an
 // Invoke whose target is NOT in the registry leaves the invocation
 // Scheduled (not Completed, not Invoked). The Invoker logs a warning and
 // drops the StartInvocation rather than panicking or transitioning state.
-func TestPhase2_InvokerWiringMissingHandlerStaysScheduled(t *testing.T) {
+func TestInvokerWiringMissingHandlerStaysScheduled(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "node1")
 

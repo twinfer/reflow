@@ -14,14 +14,14 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// TestPhase3_VirtualObject_FIFOSerializesSameKey is the Phase 3 exit
+// TestVirtualObject_FIFOSerializesSameKey is the Phase 3 exit
 // criterion. Five invocations are submitted concurrently against the same
 // (service, object_key); each handler records its observed entry order in
 // shared memory and then sleeps briefly to widen the window for any
 // concurrency bug. The VO gate must serialize them — every handler sees
 // the prior count + 1, and the global completion order matches the
 // submission order.
-func TestPhase3_VirtualObject_FIFOSerializesSameKey(t *testing.T) {
+func TestVirtualObject_FIFOSerializesSameKey(t *testing.T) {
 	const N = 5
 	var (
 		stepMu       sync.Mutex
@@ -150,10 +150,10 @@ func TestPhase3_VirtualObject_FIFOSerializesSameKey(t *testing.T) {
 	}
 }
 
-// TestPhase3_VirtualObject_DistinctKeysRunInParallel is the inverse: the
+// TestVirtualObject_DistinctKeysRunInParallel is the inverse: the
 // VO gate is per-key, so concurrent invocations on different keys must NOT
 // be serialized.
-func TestPhase3_VirtualObject_DistinctKeysRunInParallel(t *testing.T) {
+func TestVirtualObject_DistinctKeysRunInParallel(t *testing.T) {
 	const N = 3
 	var inflightMax atomic.Int32
 	var inflight atomic.Int32
@@ -260,11 +260,11 @@ func TestPhase3_VirtualObject_DistinctKeysRunInParallel(t *testing.T) {
 	}
 }
 
-// TestPhase3_VirtualObject_QueueSurvivesRestart drives two invocations
+// TestVirtualObject_QueueSurvivesRestart drives two invocations
 // against the same key: the first runs and the second queues. The host is
 // closed before either completes; on reopen, the engine resumes from the
 // persisted KeyLeaseStatus and drains the queue in order.
-func TestPhase3_VirtualObject_QueueSurvivesRestart(t *testing.T) {
+func TestVirtualObject_QueueSurvivesRestart(t *testing.T) {
 	var holder atomic.Pointer[string]
 	gate := make(chan struct{})
 	handler := func(_ sdk.Context, in []byte) ([]byte, error) {

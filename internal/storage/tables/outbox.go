@@ -17,7 +17,7 @@ import (
 // ProposeIngress has been Raft-committed. If it crashes between propose
 // and delete, the next leader re-scans and re-proposes — the per-producer
 // DedupTable absorbs the duplicate. Phase 2.
-type OutboxTable struct{ S storage.Store }
+type OutboxTable struct{ S storage.Reader }
 
 // OutboxRow is one entry yielded by ScanFrom.
 type OutboxRow struct {

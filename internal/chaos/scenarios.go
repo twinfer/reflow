@@ -52,6 +52,66 @@ func LeaderKill(t testing.TB, c *loadgen.Cluster, awaitNewLeader time.Duration) 
 	return idx
 }
 
+// IsolateNode cuts the bufconn raft links between cluster.Nodes[idx]
+// and every other live node for dur, then heals them. The cluster
+// must have been constructed with a BufconnTransportFactory backed by
+// matrix; otherwise the Cut/Heal calls are no-ops on a matrix that
+// nothing consults. Used to test partial-partition behavior (a node
+// is unreachable for raft but the rest of the cluster still has
+// quorum among itself).
+func IsolateNode(t testing.TB, c *loadgen.Cluster, idx int, matrix *loadgen.PartitionMatrix, dur time.Duration) {
+	t.Helper()
+	if idx < 0 || idx >= len(c.Nodes) {
+		t.Fatalf("chaos: IsolateNode: idx %d out of range", idx)
+	}
+	self := c.RaftAddr(idx)
+	if self == "" {
+		t.Fatalf("chaos: IsolateNode: no RaftAddr for idx %d", idx)
+	}
+	peers := make([]string, 0, len(c.Nodes)-1)
+	for i := range c.Nodes {
+		if i == idx {
+			continue
+		}
+		if a := c.RaftAddr(i); a != "" {
+			peers = append(peers, a)
+		}
+	}
+	t.Logf("chaos: isolating node=%d (%s) from %d peers for %s", idx+1, self, len(peers), dur)
+	for _, p := range peers {
+		matrix.Cut(self, p)
+	}
+	time.Sleep(dur)
+	for _, p := range peers {
+		matrix.Heal(self, p)
+	}
+	t.Logf("chaos: healed node=%d (%s) after %s", idx+1, self, dur)
+}
+
+// PartitionLeader isolates the current metadata leader from every
+// other peer for dur, then heals. Returns the index of the isolated
+// node. The remaining peers retain links to each other, so they
+// re-elect among themselves while the original leader is offline-
+// from-raft's-perspective.
+func PartitionLeader(t testing.TB, c *loadgen.Cluster, matrix *loadgen.PartitionMatrix, dur time.Duration) int {
+	t.Helper()
+	idx := -1
+	for i, n := range c.Nodes {
+		if n == nil {
+			continue
+		}
+		if mr := n.Host.MetadataRunner(); mr != nil && mr.IsLeader() {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatal("chaos: PartitionLeader: no metadata leader to isolate")
+	}
+	IsolateNode(t, c, idx, matrix, dur)
+	return idx
+}
+
 // RollingRestart cycles every node in order: kill, wait `settle`,
 // restart, await metadata leader, wait `settle` again, advance.
 // Returns when every node has been cycled exactly once.

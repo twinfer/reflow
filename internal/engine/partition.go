@@ -126,11 +126,21 @@ func (p *Partition) Update(entries []statemachine.Entry) ([]statemachine.Entry, 
 	batch := store.NewBatch()
 	defer batch.Close()
 
-	inv := tables.InvocationTable{S: store}
-	journal := tables.JournalTable{S: store}
-	timers := tables.TimerTable{S: store}
-	dedup := tables.DedupTable{S: store}
-	metaT := tables.MetaTable{S: store}
+	// Bind tables to the BATCH (not the store) so reads within this
+	// Update see the writes earlier entries in the same batch made.
+	// Required because a single dragonboat Update may carry multiple
+	// raft entries with read-after-write dependencies (e.g. under
+	// partition-heal catch-up: Ingress → JournalAppend → Complete for
+	// one invocation in a single batch). Without this, the JE/Complete
+	// reads would see the row as Free and the FSM would reject the
+	// transition, stranding the invocation in Scheduled/Invoked.
+	// storage.Batch satisfies storage.Reader; indexed-batch semantics
+	// give read-your-writes coherence.
+	inv := tables.InvocationTable{S: batch}
+	journal := tables.JournalTable{S: batch}
+	timers := tables.TimerTable{S: batch}
+	dedup := tables.DedupTable{S: batch}
+	metaT := tables.MetaTable{S: batch}
 
 	meta, err := metaT.Get()
 	if err != nil {
@@ -220,7 +230,7 @@ func (p *Partition) Update(entries []statemachine.Entry) ([]statemachine.Entry, 
 					p.cfg.Log.Warn("partition: malformed outbox producer id; cannot route ack",
 						"producer", arb.GetProducerId())
 				case senderShard == p.shardID:
-					outboxT := tables.OutboxTable{S: store}
+					outboxT := tables.OutboxTable{S: batch}
 					if err := outboxT.Pop(batch, arb.GetSeq()); err != nil {
 						p.cfg.Log.Warn("partition: outbox pop failed",
 							"seq", arb.GetSeq(), "producer", arb.GetProducerId(), "err", err)
@@ -362,7 +372,7 @@ func (p *Partition) enqueueOutbox(
 ) (uint64, error) {
 	seq := meta.GetNextOutboxSeq()
 	meta.NextOutboxSeq = seq + 1
-	outboxT := tables.OutboxTable{S: store}
+	outboxT := tables.OutboxTable{S: batch}
 	if err := outboxT.Append(batch, seq, env); err != nil {
 		return seq, err
 	}
@@ -454,7 +464,7 @@ func (p *Partition) onInvoke(
 	// minted-but-dropped id will time out; cross-node races can be
 	// hardened in a future phase by writing a redirect status row.
 	if ik := cmd.GetIdempotencyKey(); ik != "" {
-		idemT := tables.IdempotencyTable{S: store}
+		idemT := tables.IdempotencyTable{S: batch}
 		prior, ierr := idemT.Get(target.GetServiceName(), target.GetHandlerName(), target.GetObjectKey(), ik)
 		if ierr != nil {
 			return fmt.Errorf("onInvoke: idempotency lookup: %w", ierr)
@@ -496,7 +506,7 @@ func (p *Partition) onInvoke(
 	// fresh Free → Scheduled produces actions. We only need to drive the gate
 	// in that case.
 	if keyed && len(actions) > 0 {
-		klt := tables.KeyLeaseTable{S: store}
+		klt := tables.KeyLeaseTable{S: batch}
 		curLease, lerr := klt.Get(target.GetServiceName(), target.GetObjectKey())
 		if lerr != nil {
 			return fmt.Errorf("onInvoke: load key lease: %w", lerr)
@@ -540,8 +550,8 @@ func (p *Partition) onInvokerEffect(
 		return fmt.Errorf("onInvokerEffect: load status: %w", err)
 	}
 
-	timersT := tables.TimerTable{S: store}
-	awakeT := tables.AwakeableTable{S: store}
+	timersT := tables.TimerTable{S: batch}
+	awakeT := tables.AwakeableTable{S: batch}
 
 	var (
 		next    *enginev1.InvocationStatus
@@ -608,7 +618,7 @@ func (p *Partition) onInvokerEffect(
 			// Phase 3 — persist state rows so eager preload on the next
 			// session start can serve GetState without a journal scan.
 			if t := statusTarget(cur); t != nil {
-				if err := (tables.StateTable{S: store}).Set(batch, t, e.SetState.GetKey(), e.SetState.GetValue()); err != nil {
+				if err := (tables.StateTable{S: batch}).Set(batch, t, e.SetState.GetKey(), e.SetState.GetValue()); err != nil {
 					return fmt.Errorf("onInvokerEffect: state set: %w", err)
 				}
 			} else {
@@ -617,7 +627,7 @@ func (p *Partition) onInvokerEffect(
 			}
 		case *enginev1.JournalEntry_ClearState:
 			if t := statusTarget(cur); t != nil {
-				if err := (tables.StateTable{S: store}).Clear(batch, t, e.ClearState.GetKey()); err != nil {
+				if err := (tables.StateTable{S: batch}).Clear(batch, t, e.ClearState.GetKey()); err != nil {
 					return fmt.Errorf("onInvokerEffect: state clear: %w", err)
 				}
 			} else {
@@ -631,7 +641,7 @@ func (p *Partition) onInvokerEffect(
 			// would indicate a divergent SDK and is dropped with a warning
 			// (we still append the journal entry above for replay parity).
 			if t := statusTarget(cur); t != nil {
-				if err := (tables.StateTable{S: store}).ClearObject(batch, t); err != nil {
+				if err := (tables.StateTable{S: batch}).ClearObject(batch, t); err != nil {
 					return fmt.Errorf("onInvokerEffect: state clear-all: %w", err)
 				}
 			} else {
@@ -1003,7 +1013,7 @@ func (p *Partition) onOutboxAck(batch storage.Batch, store storage.Store, ack *e
 			"seq", ack.GetProducerSeq())
 		return nil
 	}
-	outboxT := tables.OutboxTable{S: store}
+	outboxT := tables.OutboxTable{S: batch}
 	if err := outboxT.Pop(batch, ack.GetProducerSeq()); err != nil {
 		p.cfg.Log.Warn("partition: outbox pop (via ack) failed",
 			"seq", ack.GetProducerSeq(), "err", err)
@@ -1026,7 +1036,7 @@ func (p *Partition) releaseKeyLease(
 	store storage.Store,
 	target *enginev1.InvocationTarget,
 ) ([]Action, error) {
-	klt := tables.KeyLeaseTable{S: store}
+	klt := tables.KeyLeaseTable{S: batch}
 	cur, err := klt.Get(target.GetServiceName(), target.GetObjectKey())
 	if err != nil {
 		return nil, fmt.Errorf("releaseKeyLease: load: %w", err)
@@ -1126,7 +1136,7 @@ func (p *Partition) onTimerFired(
 	// JERunProposal apply) which committed before the timer can fire.
 	// If batching ever fuses appends with TimerFired in one batch this
 	// read needs to consult the in-flight batch first.
-	journal := tables.JournalTable{S: store}
+	journal := tables.JournalTable{S: batch}
 	anchor, anchorErr := journal.Read(id, cmd.GetSleepIndex())
 	if anchorErr == nil {
 		if _, isRun := anchor.GetEntry().(*enginev1.JournalEntry_Run); isRun {

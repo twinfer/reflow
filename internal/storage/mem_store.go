@@ -103,6 +103,87 @@ type memBatch struct {
 	closed bool
 }
 
+// Get scans the buffered ops newest-first, returning the most recent
+// write (or deletion) that affects key, before falling back to the
+// underlying store. Mirrors pebble.IndexedBatch semantics so partition
+// apply paths can read their own in-batch writes within a single
+// Update call.
+func (b *memBatch) Get(key []byte) ([]byte, io.Closer, error) {
+	if b.closed {
+		return nil, nil, errBatchClosed
+	}
+	for i := len(b.ops) - 1; i >= 0; i-- {
+		op := b.ops[i]
+		switch op.typ {
+		case opSet:
+			if bytes.Equal(op.key, key) {
+				out := append([]byte(nil), op.value...)
+				return out, &wipeCloser{buf: out}, nil
+			}
+		case opDel:
+			if bytes.Equal(op.key, key) {
+				return nil, nil, ErrNotFound
+			}
+		case opDelRange:
+			if bytes.Compare(key, op.key) >= 0 && bytes.Compare(key, op.end) < 0 {
+				return nil, nil, ErrNotFound
+			}
+		}
+	}
+	return b.store.Get(key)
+}
+
+// NewIter returns an iterator that merges the buffered ops on top of
+// the store snapshot. Materialized eagerly because batches are small
+// and the apply loop only scans a handful of keys per Update.
+func (b *memBatch) NewIter(lower, upper []byte) (Iter, error) {
+	if b.closed {
+		return nil, errBatchClosed
+	}
+	b.store.mu.RLock()
+	merged := make(map[string][]byte, len(b.store.data))
+	for k, v := range b.store.data {
+		kb := []byte(k)
+		if lower != nil && bytes.Compare(kb, lower) < 0 {
+			continue
+		}
+		if upper != nil && bytes.Compare(kb, upper) >= 0 {
+			continue
+		}
+		merged[k] = append([]byte(nil), v...)
+	}
+	b.store.mu.RUnlock()
+	for _, op := range b.ops {
+		switch op.typ {
+		case opSet:
+			if lower != nil && bytes.Compare(op.key, lower) < 0 {
+				continue
+			}
+			if upper != nil && bytes.Compare(op.key, upper) >= 0 {
+				continue
+			}
+			merged[string(op.key)] = append([]byte(nil), op.value...)
+		case opDel:
+			delete(merged, string(op.key))
+		case opDelRange:
+			for k := range merged {
+				kb := []byte(k)
+				if bytes.Compare(kb, op.key) >= 0 && bytes.Compare(kb, op.end) < 0 {
+					delete(merged, k)
+				}
+			}
+		}
+	}
+	entries := make([][2][]byte, 0, len(merged))
+	for k, v := range merged {
+		entries = append(entries, [2][]byte{[]byte(k), v})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return bytes.Compare(entries[i][0], entries[j][0]) < 0
+	})
+	return &memIter{entries: entries, idx: -1}, nil
+}
+
 func (b *memBatch) Set(key, value []byte) error {
 	if b.closed {
 		return errBatchClosed

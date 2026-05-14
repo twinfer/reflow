@@ -12,12 +12,14 @@ import (
 // keeps the import noise in each table down to one symbol.
 func isNotFound(err error) bool { return errors.Is(err, storage.ErrNotFound) }
 
-// getProto reads key from s, unmarshals into msg, and returns the
-// storage.Store error verbatim (so callers can branch on
+// getProto reads key from r, unmarshals into msg, and returns the
+// storage error verbatim (so callers can branch on
 // storage.ErrNotFound to apply per-table "absent" conventions). On
-// success msg is populated in place and err is nil.
-func getProto(s storage.Store, key []byte, msg proto.Message) error {
-	val, closer, err := s.Get(key)
+// success msg is populated in place and err is nil. r is any
+// storage.Reader — typically a Store (general reads) or a Batch
+// (read-your-writes within partition.go's apply loop).
+func getProto(r storage.Reader, key []byte, msg proto.Message) error {
+	val, closer, err := r.Get(key)
 	if err != nil {
 		return err
 	}

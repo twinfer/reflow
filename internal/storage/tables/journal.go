@@ -15,7 +15,7 @@ import (
 // Keys are journal/<inv_id>/<u32 BE command_index>, so a prefix scan yields
 // entries in index order. Mirrors restate
 // crates/storage-api/src/journal_table_v2.
-type JournalTable struct{ S storage.Store }
+type JournalTable struct{ S storage.Reader }
 
 func (t JournalTable) Append(b storage.Batch, id *enginev1.InvocationId, e *enginev1.JournalEntry) error {
 	k, err := keys.JournalKey(id, e.GetIndex())

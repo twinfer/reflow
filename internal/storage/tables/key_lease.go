@@ -13,7 +13,7 @@ import (
 // KeyLeaseStatus, fires the per-key FSM in internal/engine/object_fsm.go,
 // and writes the new status back into the same Pebble batch as the
 // invocation status transition that triggered the fire. Phase 3.
-type KeyLeaseTable struct{ S storage.Store }
+type KeyLeaseTable struct{ S storage.Reader }
 
 // Get loads the lease row. Returns (nil, nil) when absent — callers
 // treat that as IDLE with an empty queue. "Optional lookup" convention.

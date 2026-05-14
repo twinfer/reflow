@@ -14,7 +14,7 @@ import (
 //
 // Mirrors restate crates/storage-api/src/invocation_status_table — each row
 // is a single discriminated union (the InvocationStatus oneof).
-type InvocationTable struct{ S storage.Store }
+type InvocationTable struct{ S storage.Reader }
 
 // Get loads an invocation's status. Returns Free if the row is absent
 // ("default" convention — matches restate's default at

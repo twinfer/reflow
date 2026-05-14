@@ -30,7 +30,7 @@ import (
 )
 
 // MetaTable holds the partition-level singleton (applied index, leader epoch).
-type MetaTable struct{ S storage.Store }
+type MetaTable struct{ S storage.Reader }
 
 // Get returns the PartitionMeta; an empty record when the row is absent
 // ("default" convention — see package doc).

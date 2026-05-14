@@ -24,7 +24,7 @@ import (
 // the store (not the in-batch writes), so within-batch records did not
 // hide later entries — and the divergence across replicas left some
 // invocations stuck in Scheduled while others observed Completed.
-type DedupTable struct{ S storage.Store }
+type DedupTable struct{ S storage.Reader }
 
 // IsDuplicate reports whether the incoming Dedup has already been seen.
 func (t DedupTable) IsDuplicate(d *enginev1.Dedup) (bool, error) {

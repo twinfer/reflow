@@ -10,7 +10,7 @@ import (
 // + journal entry index. Populated when a handler mints an awakeable
 // (JEAwakeable), consulted by ingress when an external caller resolves
 // one, and deleted after the resolution is journaled. Phase 2.
-type AwakeableTable struct{ S storage.Store }
+type AwakeableTable struct{ S storage.Reader }
 
 // Put records the directory row. id must already be validated via
 // keys.ValidateAwakeableID; the table itself does not re-check.

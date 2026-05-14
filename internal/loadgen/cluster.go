@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/lni/dragonboat/v4/config"
 	"google.golang.org/grpc"
 
 	"github.com/twinfer/reflow/internal/engine"
@@ -68,6 +69,15 @@ type ClusterOptions struct {
 	Handlers            *sdk.Registry
 	PebbleOptions       func(shardID uint64) *pebble.Options
 	OnSnapshotPersisted func(shardID uint64)
+
+	// RaftTransportFactory, when non-nil, replaces dragonboat's default
+	// TCP raft transport on every node in the cluster. The chaos
+	// harness supplies NewBufconnTransportFactory(hub, matrix) here so
+	// tests can Cut/Heal per-pair links mid-run; production paths and
+	// in-process tests that don't need partition injection leave it
+	// nil (TCP behavior unchanged). The same factory instance is
+	// passed to every node so they share the hub + matrix.
+	RaftTransportFactory config.TransportFactory
 }
 
 // nodeAddrs captures the three TCP endpoints a node binds at
@@ -252,6 +262,17 @@ func (c *Cluster) AnyLiveNode() *Node {
 	return nil
 }
 
+// RaftAddr returns the RaftAddress of cluster.Nodes[idx]. The address
+// is the key bufconn-backed transports use to identify peers, so
+// chaos scenarios that drive a PartitionMatrix dispatch on it. Returns
+// "" for out-of-range indices.
+func (c *Cluster) RaftAddr(idx int) string {
+	if idx < 0 || idx >= len(c.addrs) {
+		return ""
+	}
+	return c.addrs[idx].raft
+}
+
 // FindPartitionLeader returns the node leading shardID, or nil. The
 // caller should retry; leadership can rotate at any time.
 func (c *Cluster) FindPartitionLeader(shardID uint64) *Node {
@@ -278,18 +299,19 @@ func (c *Cluster) bringUpNode(t testing.TB, idx int) error {
 	t.Helper()
 	addrs := c.addrs[idx]
 	h, err := engine.NewHost(engine.HostConfig{
-		NodeID:              uint64(idx + 1),
-		RaftAddr:            addrs.raft,
-		DataDir:             c.dataDirs[idx],
-		RTTMillisecond:      50,
-		NumPartitionShards:  uint64(len(c.Nodes)),
-		Handlers:            c.opts.Handlers,
-		Peers:               c.peers,
-		GossipBindAddr:      addrs.gossip,
-		GossipAdvAddr:       addrs.gossip,
-		GrpcEndpoint:        addrs.delivery,
-		PebbleOptions:       c.opts.PebbleOptions,
-		OnSnapshotPersisted: c.opts.OnSnapshotPersisted,
+		NodeID:               uint64(idx + 1),
+		RaftAddr:             addrs.raft,
+		DataDir:              c.dataDirs[idx],
+		RTTMillisecond:       50,
+		NumPartitionShards:   uint64(len(c.Nodes)),
+		Handlers:             c.opts.Handlers,
+		Peers:                c.peers,
+		GossipBindAddr:       addrs.gossip,
+		GossipAdvAddr:        addrs.gossip,
+		GrpcEndpoint:         addrs.delivery,
+		PebbleOptions:        c.opts.PebbleOptions,
+		OnSnapshotPersisted:  c.opts.OnSnapshotPersisted,
+		RaftTransportFactory: c.opts.RaftTransportFactory,
 	})
 	if err != nil {
 		return fmt.Errorf("NewHost: %w", err)

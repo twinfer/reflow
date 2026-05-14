@@ -24,7 +24,7 @@ import (
 // secondary lookup turns up nothing.
 //
 // Mirrors restate crates/storage-api/src/timer_table.
-type TimerTable struct{ S storage.Store }
+type TimerTable struct{ S storage.Reader }
 
 // Insert writes a new timer (primary + secondary index) to the batch.
 func (t TimerTable) Insert(b storage.Batch, fireAtMs uint64, id *enginev1.InvocationId, sleepIdx uint32) error {

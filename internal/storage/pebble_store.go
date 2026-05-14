@@ -43,7 +43,14 @@ func (s *PebbleStore) Get(key []byte) ([]byte, io.Closer, error) {
 }
 
 func (s *PebbleStore) NewBatch() Batch {
-	return &pebbleBatch{batch: s.db.NewBatch()}
+	// Indexed batch so reads against the batch see in-batch writes plus
+	// the committed DB. Required by partition.go's apply loop: a single
+	// dragonboat Update call may carry multiple entries that read each
+	// other's writes (e.g. Ingress → JEInput → Complete for one
+	// invocation under partition-heal catch-up). A non-indexed batch
+	// would surface those reads as "not found" and corrupt FSM
+	// transitions.
+	return &pebbleBatch{batch: s.db.NewIndexedBatch()}
 }
 
 func (s *PebbleStore) NewIter(lower, upper []byte) (Iter, error) {
@@ -74,6 +81,28 @@ func (s *PebbleStore) Metrics() *pebble.Metrics { return s.db.Metrics() }
 
 type pebbleBatch struct {
 	batch *pebble.Batch
+}
+
+func (b *pebbleBatch) Get(key []byte) ([]byte, io.Closer, error) {
+	v, closer, err := b.batch.Get(key)
+	if err != nil {
+		if errors.Is(err, pebble.ErrNotFound) {
+			return nil, nil, ErrNotFound
+		}
+		return nil, nil, err
+	}
+	return v, closer, nil
+}
+
+func (b *pebbleBatch) NewIter(lower, upper []byte) (Iter, error) {
+	iter, err := b.batch.NewIter(&pebble.IterOptions{
+		LowerBound: lower,
+		UpperBound: upper,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &pebbleIter{iter: iter}, nil
 }
 
 func (b *pebbleBatch) Set(key, value []byte) error {

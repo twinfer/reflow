@@ -108,6 +108,14 @@ type HostConfig struct {
 	// (slow-disk fault injection) or non-default tunables without
 	// having to fork the engine. Phase 5.
 	PebbleOptions func(shardID uint64) *pebble.Options
+
+	// RaftTransportFactory, when non-nil, overrides dragonboat's built-in
+	// TCP raft transport via NodeHostConfig.Expert.TransportFactory. The
+	// production path leaves this nil and uses TCP. The chaos harness
+	// supplies an in-memory bufconn-backed factory plus a shared
+	// PartitionMatrix so tests can Cut/Heal per-pair raft links mid-run
+	// without real ports or reimplementing dragonboat's TCP framing.
+	RaftTransportFactory config.TransportFactory
 }
 
 // Peer is a static cluster member known at bootstrap. NodeHostID may be
@@ -201,6 +209,9 @@ func NewHost(cfg HostConfig) (*Host, error) {
 		if err := applyMultiNodeConfig(&nhConfig, &cfg); err != nil {
 			return nil, err
 		}
+	}
+	if cfg.RaftTransportFactory != nil {
+		nhConfig.Expert.TransportFactory = cfg.RaftTransportFactory
 	}
 	nh, err := dragonboat.NewNodeHost(nhConfig)
 	if err != nil {

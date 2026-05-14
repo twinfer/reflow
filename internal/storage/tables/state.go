@@ -17,7 +17,7 @@ import (
 // resolves the value here and writes a JEGetState completion at the next
 // journal index. Single-writer enforcement across concurrent invocations
 // on the same object is Phase 3.
-type StateTable struct{ S storage.Store }
+type StateTable struct{ S storage.Reader }
 
 // Get returns the raw value bytes for the (target, key) pair. The boolean
 // is false (with err == nil) when the row is absent — handlers distinguish

@@ -85,7 +85,12 @@ poll:
 
 	for _, inv := range pending {
 		state := "unknown"
-		lookupCtx, lc := context.WithTimeout(ctx, 500*time.Millisecond)
+		// Use Background ctx for the final-state probe so that even if
+		// the caller's ctx is already done, we can still observe whether
+		// the row is actually Completed. Otherwise an exhausted parent
+		// ctx surfaces as "lookup_err=invalid deadline" violations that
+		// mask the real state.
+		lookupCtx, lc := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		st, err := live.Host.LookupInvocationStatus(lookupCtx, inv.ShardID, inv.ID)
 		lc()
 		switch {
@@ -113,7 +118,7 @@ poll:
 		}
 		violations = append(violations, Violation{
 			Kind:    "never_completed",
-			Detail:  fmt.Sprintf("shard=%d state=%s", inv.ShardID, state),
+			Detail:  fmt.Sprintf("shard=%d id=%x:%x state=%s", inv.ShardID, inv.ID.GetPartitionKey(), inv.ID.GetUuid(), state),
 			Subject: inv.ID,
 		})
 	}

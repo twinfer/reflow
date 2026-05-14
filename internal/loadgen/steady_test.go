@@ -48,7 +48,12 @@ func TestLoad_SteadyState(t *testing.T) {
 
 	sampler := loadgen.NewSampler()
 
-	ctx, cancel := context.WithTimeout(context.Background(), duration+90*time.Second)
+	// Outer budget must comfortably cover the workload duration plus the
+	// AwaitCompletion timeout below (120s) plus a small grace margin. If
+	// it expires early, AwaitCompletion's final-state lookups derive
+	// from a done ctx and surface as bogus "lookup_err=invalid deadline"
+	// violations even when the invocation actually reached Completed.
+	ctx, cancel := context.WithTimeout(context.Background(), duration+150*time.Second)
 	defer cancel()
 
 	// Background Pebble sampling — runs every sampleEvery until ctx
@@ -88,6 +93,9 @@ func TestLoad_SteadyState(t *testing.T) {
 	}
 
 	if len(violations) > 0 {
+		for i, v := range violations {
+			t.Logf("violation[%d]: kind=%s detail=%s", i, v.Kind, v.Detail)
+		}
 		t.Fatalf("%d invariant violation(s); see %s", len(violations), summary)
 	}
 	if stats.Issued == 0 {

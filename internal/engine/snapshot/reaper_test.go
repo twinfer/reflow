@@ -3,6 +3,7 @@ package snapshot
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -25,11 +26,11 @@ func (r *fakeRepo) insert(shardID, index uint64, createdAt time.Time) {
 	})
 }
 
-func (r *fakeRepo) Put(_ context.Context, _ uint64, _ uint64, _ string) error {
-	return errors.New("fakeRepo: Put not used by reaper tests")
+func (r *fakeRepo) NewWriter(_ context.Context, _, _ uint64) (io.WriteCloser, error) {
+	return nil, errors.New("fakeRepo: NewWriter not used by reaper tests")
 }
-func (r *fakeRepo) Fetch(_ context.Context, _ uint64, _ uint64, _ string) error {
-	return errors.New("fakeRepo: Fetch not used by reaper tests")
+func (r *fakeRepo) NewReader(_ context.Context, _, _ uint64) (io.ReadCloser, error) {
+	return nil, errors.New("fakeRepo: NewReader not used by reaper tests")
 }
 func (r *fakeRepo) List(_ context.Context, shardID uint64) ([]SnapshotRef, error) {
 	r.mu.Lock()

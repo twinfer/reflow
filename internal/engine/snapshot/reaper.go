@@ -30,8 +30,8 @@ type ReaperConfig struct {
 	// Interval between reap cycles. Defaults to 1h when zero.
 	Interval time.Duration
 	Repo     Repository
-	// Retain mirrors the count policy enforced inline by BlobRepository.Put.
-	// 0 disables count-based reaping.
+	// Retain mirrors the count policy enforced inline by
+	// BlobRepository.NewWriter.Close. 0 disables count-based reaping.
 	Retain int
 	// RetentionAge drops anything whose CreatedAt is older than now - this.
 	// 0 disables age-based reaping.

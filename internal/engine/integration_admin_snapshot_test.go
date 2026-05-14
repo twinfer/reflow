@@ -412,8 +412,8 @@ func TestSnapshot_PartitionExportAndArchive(t *testing.T) {
 	}
 	defer bucket.Close()
 	repo := &enginesnap.BlobRepository{Bucket: bucket}
-	if err := repo.Put(ctx, 1, idx, src); err != nil {
-		t.Fatalf("Put: %v", err)
+	if err := enginesnap.SaveDir(ctx, repo, 1, idx, src); err != nil {
+		t.Fatalf("SaveDir: %v", err)
 	}
 	refs, err := repo.List(ctx, 1)
 	if err != nil {
@@ -423,8 +423,8 @@ func TestSnapshot_PartitionExportAndArchive(t *testing.T) {
 		t.Fatalf("List = %+v; want one entry at index %d", refs, idx)
 	}
 	dst := filepath.Join(t.TempDir(), "restored")
-	if err := repo.Fetch(ctx, 1, idx, dst); err != nil {
-		t.Fatalf("Fetch: %v", err)
+	if err := enginesnap.RestoreDir(ctx, repo, 1, idx, dst); err != nil {
+		t.Fatalf("RestoreDir: %v", err)
 	}
 	// Restored dir is non-empty.
 	rentries, err := os.ReadDir(dst)
@@ -452,7 +452,7 @@ func TestAdminDeleteSnapshot(t *testing.T) {
 	defer bucket.Close()
 	repo := &enginesnap.BlobRepository{Bucket: bucket}
 
-	// Seed two archives. The repo Put takes a source dir; reuse a tiny
+	// Seed two archives. SaveDir tars+gzips a source dir; reuse a tiny
 	// scratch dir so we don't need to drive dragonboat for this test.
 	src := t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "f"), []byte("x"), 0o644); err != nil {
@@ -460,11 +460,11 @@ func TestAdminDeleteSnapshot(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := repo.Put(ctx, 1, 100, src); err != nil {
-		t.Fatalf("Put 100: %v", err)
+	if err := enginesnap.SaveDir(ctx, repo, 1, 100, src); err != nil {
+		t.Fatalf("SaveDir 100: %v", err)
 	}
-	if err := repo.Put(ctx, 1, 200, src); err != nil {
-		t.Fatalf("Put 200: %v", err)
+	if err := enginesnap.SaveDir(ctx, repo, 1, 200, src); err != nil {
+		t.Fatalf("SaveDir 200: %v", err)
 	}
 
 	srv, err := admin.NewServer(admin.Config{

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"sort"
 	"strconv"
@@ -30,9 +31,9 @@ import (
 )
 
 // BlobRepository archives snapshots to any gocloud.dev/blob-backed
-// bucket — s3, gs, azblob, file, mem. The directory-based Repository
-// contract is preserved: Put tars + gzips the source directory into a
-// single blob; Fetch streams + untars on the receive side.
+// bucket — s3, gs, azblob, file, mem. The streaming Repository
+// contract is implemented by archiveWriter / archiveReader, which
+// own the gzip + sha256 + sidecar plumbing internally.
 //
 // Object layout (relative to the bucket's prefix):
 //
@@ -46,9 +47,9 @@ import (
 type BlobRepository struct {
 	// Bucket is owned by the repository — Close closes it.
 	Bucket *blob.Bucket
-	// Retain is the per-shard count retention enforced inline after each
-	// successful Put. 0 means "retain all"; the reaper goroutine handles
-	// time-based retention separately.
+	// Retain is the per-shard count retention enforced inline on each
+	// successful NewWriter.Close. 0 means "retain all"; the reaper
+	// goroutine handles time-based and tiered retention separately.
 	Retain int
 }
 
@@ -79,98 +80,73 @@ func (r *BlobRepository) Close() error {
 	return r.Bucket.Close()
 }
 
-// Put streams srcDir as a gzipped tarball into the bucket and writes a
-// sidecar .meta.json with the archive's size and SHA-256. Refuses to
-// overwrite an existing (shardID, index) — callers must Delete first.
-func (r *BlobRepository) Put(ctx context.Context, shardID, index uint64, srcDir string) error {
+// NewWriter opens an upload stream for (shardID, raftIndex). The caller
+// writes raw bytes (typically a tar stream); the returned WriteCloser
+// gzips on the fly, accumulates a sha256, and on Close persists the
+// .meta.json sidecar and enforces inline retention.
+//
+// The archive is durable only after a successful Close. A caller that
+// returns without calling Close (or whose Close errors mid-way) leaves
+// no observable artifact — gocloud's NewWriter only finalizes on
+// successful Close, and the sidecar is written after the archive
+// commits.
+func (r *BlobRepository) NewWriter(ctx context.Context, shardID, raftIndex uint64) (io.WriteCloser, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	if shardID == 0 || index == 0 {
-		return fmt.Errorf("snapshot: shardID and index must be non-zero")
+	if shardID == 0 || raftIndex == 0 {
+		return nil, fmt.Errorf("snapshot: shardID and raftIndex must be non-zero")
 	}
-	key := archiveKey(shardID, index)
+	key := archiveKey(shardID, raftIndex)
 	exists, err := r.Bucket.Exists(ctx, key)
 	if err != nil {
-		return fmt.Errorf("snapshot: probe %s: %w", key, err)
+		return nil, fmt.Errorf("snapshot: probe %s: %w", key, err)
 	}
 	if exists {
-		return fmt.Errorf("snapshot: (%d, %d) already archived", shardID, index)
+		return nil, fmt.Errorf("snapshot: (%d, %d) already archived", shardID, raftIndex)
 	}
-
-	w, err := r.Bucket.NewWriter(ctx, key, nil)
+	bw, err := r.Bucket.NewWriter(ctx, key, nil)
 	if err != nil {
-		return fmt.Errorf("snapshot: open writer %s: %w", key, err)
+		return nil, fmt.Errorf("snapshot: open writer %s: %w", key, err)
 	}
-	hash := sha256.New()
-	mw := io.MultiWriter(w, hash)
-	gz := gzip.NewWriter(mw)
-	tarErr := TarDir(ctx, gz, srcDir)
-	closeGzErr := gz.Close()
-	closeWErr := w.Close()
-	if tarErr != nil {
-		// Best-effort cleanup of the partial blob.
-		_ = r.Bucket.Delete(context.Background(), key)
-		return fmt.Errorf("snapshot: tar: %w", tarErr)
-	}
-	if closeGzErr != nil {
-		_ = r.Bucket.Delete(context.Background(), key)
-		return fmt.Errorf("snapshot: close gzip: %w", closeGzErr)
-	}
-	if closeWErr != nil {
-		_ = r.Bucket.Delete(context.Background(), key)
-		return fmt.Errorf("snapshot: close blob writer: %w", closeWErr)
-	}
-
-	// Fetch the archive's persisted size from the bucket — local byte
-	// counters miss any provider-side rewriting (e.g. chunked encoding).
-	attrs, err := r.Bucket.Attributes(ctx, key)
-	if err != nil {
-		_ = r.Bucket.Delete(context.Background(), key)
-		return fmt.Errorf("snapshot: attrs after upload: %w", err)
-	}
-
-	meta := &enginev1.SnapshotMeta{
-		ShardId:        shardID,
-		RaftIndex:      index,
-		ChecksumSha256: hex.EncodeToString(hash.Sum(nil)),
-		CreatedAtMs:    uint64(time.Now().UnixMilli()),
-	}
-	metaBytes, err := protojson.Marshal(meta)
-	if err != nil {
-		_ = r.Bucket.Delete(context.Background(), key)
-		return fmt.Errorf("snapshot: marshal meta: %w", err)
-	}
-	if err := r.Bucket.WriteAll(ctx, metaKey(shardID, index), metaBytes, nil); err != nil {
-		_ = r.Bucket.Delete(context.Background(), key)
-		return fmt.Errorf("snapshot: write meta: %w", err)
-	}
-	_ = attrs // attrs.Size is observable via List; we don't need it stored locally
-
-	if r.Retain > 0 {
-		if err := r.enforceRetention(ctx, shardID); err != nil {
-			return fmt.Errorf("snapshot: enforce retention: %w", err)
-		}
-	}
-	return nil
+	h := sha256.New()
+	// gzip writes into a MultiWriter so the hash sees the same
+	// compressed bytes the bucket stores. Operators verifying the
+	// sidecar against `sha256sum snapshot-*.tar.gz` get a match.
+	gz := gzip.NewWriter(io.MultiWriter(bw, h))
+	return &archiveWriter{
+		ctx:     ctx,
+		repo:    r,
+		shard:   shardID,
+		index:   raftIndex,
+		bucketW: bw,
+		gz:      gz,
+		hash:    h,
+	}, nil
 }
 
-// Fetch streams the archive for (shardID, index) into dstDir.
-func (r *BlobRepository) Fetch(ctx context.Context, shardID, index uint64, dstDir string) error {
+// NewReader opens a download stream for (shardID, raftIndex). gzip is
+// stripped automatically — callers see the raw tar bytes that were
+// originally written. The returned error satisfies
+// gcerrors.Code(err) == gcerrors.NotFound when the snapshot is absent.
+func (r *BlobRepository) NewReader(ctx context.Context, shardID, raftIndex uint64) (io.ReadCloser, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	rd, err := r.Bucket.NewReader(ctx, archiveKey(shardID, index), nil)
+	bucketR, err := r.Bucket.NewReader(ctx, archiveKey(shardID, raftIndex), nil)
 	if err != nil {
-		return fmt.Errorf("snapshot: open reader: %w", err)
+		// Surface gcerrors.NotFound unwrapped so callers can detect.
+		if gcerrors.Code(err) == gcerrors.NotFound {
+			return nil, err
+		}
+		return nil, fmt.Errorf("snapshot: open reader: %w", err)
 	}
-	defer rd.Close()
-	gz, err := gzip.NewReader(rd)
+	gz, err := gzip.NewReader(bucketR)
 	if err != nil {
-		return fmt.Errorf("snapshot: open gzip: %w", err)
+		_ = bucketR.Close()
+		return nil, fmt.Errorf("snapshot: open gzip: %w", err)
 	}
-	defer gz.Close()
-	return UntarDir(ctx, gz, dstDir)
+	return &archiveReader{rd: bucketR, gz: gz}, nil
 }
 
 // List enumerates archived snapshots for a shard, sorted by Index ascending.
@@ -211,11 +187,11 @@ func (r *BlobRepository) List(ctx context.Context, shardID uint64) ([]SnapshotRe
 
 // Delete removes the archive and its sidecar. Idempotent against
 // missing keys (NotFound is swallowed for each leg).
-func (r *BlobRepository) Delete(ctx context.Context, shardID, index uint64) error {
-	if err := r.deleteIfPresent(ctx, archiveKey(shardID, index)); err != nil {
+func (r *BlobRepository) Delete(ctx context.Context, shardID, raftIndex uint64) error {
+	if err := r.deleteIfPresent(ctx, archiveKey(shardID, raftIndex)); err != nil {
 		return err
 	}
-	return r.deleteIfPresent(ctx, metaKey(shardID, index))
+	return r.deleteIfPresent(ctx, metaKey(shardID, raftIndex))
 }
 
 func (r *BlobRepository) deleteIfPresent(ctx context.Context, key string) error {
@@ -241,6 +217,113 @@ func (r *BlobRepository) enforceRetention(ctx context.Context, shardID uint64) e
 		}
 	}
 	return nil
+}
+
+// archiveWriter is the streaming WriteCloser returned by
+// BlobRepository.NewWriter. Bytes flow caller → gzip → (bucket | sha256).
+type archiveWriter struct {
+	ctx     context.Context
+	repo    *BlobRepository
+	shard   uint64
+	index   uint64
+	bucketW *blob.Writer
+	gz      *gzip.Writer
+	hash    hash.Hash
+	closed  bool
+	// writeErr latches the first Write error; subsequent calls are
+	// short-circuited and Close performs cleanup.
+	writeErr error
+}
+
+func (w *archiveWriter) Write(p []byte) (int, error) {
+	if w.closed {
+		return 0, errors.New("snapshot: write after close")
+	}
+	if w.writeErr != nil {
+		return 0, w.writeErr
+	}
+	n, err := w.gz.Write(p)
+	if err != nil {
+		w.writeErr = err
+	}
+	return n, err
+}
+
+// Close finalizes the archive. On any failure path the partial blob
+// and any sidecar are best-effort removed so abandoned writers leave
+// no observable artifact.
+func (w *archiveWriter) Close() error {
+	if w.closed {
+		return nil
+	}
+	w.closed = true
+
+	abort := func(cause error) error {
+		_ = w.repo.Bucket.Delete(context.Background(), archiveKey(w.shard, w.index))
+		_ = w.repo.Bucket.Delete(context.Background(), metaKey(w.shard, w.index))
+		return cause
+	}
+
+	if w.writeErr != nil {
+		_ = w.gz.Close()
+		_ = w.bucketW.Close()
+		return abort(fmt.Errorf("snapshot: write: %w", w.writeErr))
+	}
+	if err := w.gz.Close(); err != nil {
+		_ = w.bucketW.Close()
+		return abort(fmt.Errorf("snapshot: close gzip: %w", err))
+	}
+	if err := w.bucketW.Close(); err != nil {
+		return abort(fmt.Errorf("snapshot: close blob writer: %w", err))
+	}
+
+	// Fetch the archive's persisted size from the bucket — local byte
+	// counters miss any provider-side rewriting (e.g. chunked encoding).
+	attrs, err := w.repo.Bucket.Attributes(w.ctx, archiveKey(w.shard, w.index))
+	if err != nil {
+		return abort(fmt.Errorf("snapshot: attrs after upload: %w", err))
+	}
+
+	meta := &enginev1.SnapshotMeta{
+		ShardId:        w.shard,
+		RaftIndex:      w.index,
+		ChecksumSha256: hex.EncodeToString(w.hash.Sum(nil)),
+		CreatedAtMs:    uint64(time.Now().UnixMilli()),
+	}
+	metaBytes, err := protojson.Marshal(meta)
+	if err != nil {
+		return abort(fmt.Errorf("snapshot: marshal meta: %w", err))
+	}
+	if err := w.repo.Bucket.WriteAll(w.ctx, metaKey(w.shard, w.index), metaBytes, nil); err != nil {
+		return abort(fmt.Errorf("snapshot: write meta: %w", err))
+	}
+	_ = attrs // attrs.Size is observable via List; we don't need it stored locally.
+
+	if w.repo.Retain > 0 {
+		if err := w.repo.enforceRetention(w.ctx, w.shard); err != nil {
+			return fmt.Errorf("snapshot: enforce retention: %w", err)
+		}
+	}
+	return nil
+}
+
+// archiveReader is the streaming ReadCloser returned by
+// BlobRepository.NewReader. Closes both the gzip wrapper and the
+// underlying bucket reader, joining any errors.
+type archiveReader struct {
+	rd     *blob.Reader
+	gz     *gzip.Reader
+	closed bool
+}
+
+func (r *archiveReader) Read(p []byte) (int, error) { return r.gz.Read(p) }
+
+func (r *archiveReader) Close() error {
+	if r.closed {
+		return nil
+	}
+	r.closed = true
+	return errors.Join(r.gz.Close(), r.rd.Close())
 }
 
 // OpenBucket opens a gocloud.dev/blob bucket from a URL string. Thin

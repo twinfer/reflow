@@ -941,22 +941,34 @@ catch-up and operator-facing backup / restore / migration workflows.
 **Interface:**
 
 ```go
-type SnapshotRepository interface {
-    // Save streams a snapshot for (shardID, raftIndex). Atomic: if Save
-    // returns nil the snapshot is durable and discoverable by List.
-    Save(ctx context.Context, shardID, raftIndex uint64, r io.Reader) error
+type Repository interface {
+    // NewWriter opens an upload stream for (shardID, raftIndex). The
+    // returned WriteCloser frames bytes through gzip + sha256
+    // internally; Close finalizes the archive, writes the .meta.json
+    // sidecar, and enforces inline retention. Atomic on Close —
+    // abandoned writers leave no observable artifact. Refuses
+    // overwrite when (shardID, raftIndex) already exists.
+    NewWriter(ctx context.Context, shardID, raftIndex uint64) (io.WriteCloser, error)
 
-    // Load streams the snapshot identified by (shardID, raftIndex).
-    // Returns ErrNotFound if absent.
-    Load(ctx context.Context, shardID, raftIndex uint64) (io.ReadCloser, error)
+    // NewReader opens a download stream for (shardID, raftIndex);
+    // gzip is stripped automatically. Returns an error satisfying
+    // gcerrors.Code(err) == gcerrors.NotFound when absent.
+    NewReader(ctx context.Context, shardID, raftIndex uint64) (io.ReadCloser, error)
 
-    // List enumerates snapshots for a shard, newest first.
-    List(ctx context.Context, shardID uint64) ([]SnapshotID, error)
+    // List returns refs sorted by index ascending.
+    List(ctx context.Context, shardID uint64) ([]SnapshotRef, error)
 
-    // Delete removes a snapshot. Used by retention.
+    // Delete removes (shardID, raftIndex); no-op when absent.
     Delete(ctx context.Context, shardID, raftIndex uint64) error
 }
 ```
+
+The writer/reader shape (instead of `Save(io.Reader)/Load(io.ReadCloser)`)
+mirrors `gocloud.dev/blob.Bucket.NewWriter` directly and lets the
+tee path into `Snapshotter.SaveSnapshot` use `io.MultiWriter(dragonboatW, repoW)`
+with no `io.Pipe` plumbing. Callers archiving a directory use the
+package-level `SaveDir` / `RestoreDir` helpers, which wrap
+`TarDir` / `UntarDir` around the stream.
 
 **Library: `gocloud.dev/blob`.** Apache 2.0, single interface over S3 /
 GCS / Azure Blob / local filesystem / in-memory. `BlobRepository`

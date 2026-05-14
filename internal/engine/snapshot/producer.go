@@ -101,7 +101,7 @@ func SnapshotOnce(ctx context.Context, cfg ProducerConfig) error {
 	if len(entries) == 1 && entries[0].IsDir() {
 		src = filepath.Join(scratch, entries[0].Name())
 	}
-	if err := cfg.Repo.Put(ctx, cfg.ShardID, idx, src); err != nil {
+	if err := SaveDir(ctx, cfg.Repo, cfg.ShardID, idx, src); err != nil {
 		return fmt.Errorf("snapshot: archive: %w", err)
 	}
 	cfg.Log.Info("snapshot: archived",

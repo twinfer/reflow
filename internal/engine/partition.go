@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -393,7 +394,7 @@ func (p *Partition) applyCommand(
 	case *enginev1.Command_TimerFired:
 		return p.onTimerFired(batch, store, k.TimerFired, now, inv, timers, isLeader)
 	case *enginev1.Command_Purge:
-		return p.onPurge(batch, k.Purge, inv, journal, isLeader)
+		return p.onPurge(batch, k.Purge, inv, journal, timers, isLeader)
 	case *enginev1.Command_DeliverCallResult:
 		return p.onDeliverCallResult(batch, store, k.DeliverCallResult, now, inv, journal, isLeader)
 	case *enginev1.Command_OutboxAck:
@@ -1141,7 +1142,8 @@ func (p *Partition) onPurge(
 	cmd *enginev1.PurgeInvocation,
 	inv tables.InvocationTable,
 	journal tables.JournalTable,
-	_ bool,
+	timers tables.TimerTable,
+	isLeader bool,
 ) error {
 	id := cmd.GetInvocationId()
 	cur, err := inv.Get(id)
@@ -1157,6 +1159,29 @@ func (p *Partition) onPurge(
 	}
 	if err := journal.DeletePrefix(batch, id); err != nil {
 		return fmt.Errorf("onPurge: delete journal: %w", err)
+	}
+
+	// Reap any pending timer rows for this invocation. The timer keyspace
+	// is sorted by fire_at_ms first, so finding rows for one id requires
+	// scanning the whole table. Acceptable here (purge is a cleanup path,
+	// not the hot path), but a timer_idx/<id>/<fire_at> companion table
+	// would be the right scale fix when the timer set grows large.
+	var pending []tables.TimerEntry
+	if err := timers.ScanAll(func(e tables.TimerEntry) error {
+		if bytes.Equal(e.ID.GetUuid(), id.GetUuid()) && e.ID.GetPartitionKey() == id.GetPartitionKey() {
+			pending = append(pending, e)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("onPurge: scan timers: %w", err)
+	}
+	for _, e := range pending {
+		if err := timers.Delete(batch, e.FireAtMs, e.ID); err != nil {
+			return fmt.Errorf("onPurge: delete timer: %w", err)
+		}
+		if isLeader {
+			p.cfg.Collector.Push(ActDeleteTimer{FireAtMs: e.FireAtMs, ID: e.ID})
+		}
 	}
 	return nil
 }

@@ -668,6 +668,74 @@ func TestPartition_SleepInsertsTimerAndSurvives(t *testing.T) {
 	}
 }
 
+func TestPartition_PurgeReapsPendingTimers(t *testing.T) {
+	p, _, col := newTestPartition(t)
+
+	id := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("0123456789abcdef")}
+	target := &enginev1.InvocationTarget{ServiceName: "S"}
+
+	// Invoke → Input → Sleep (registers timer) → Complete → Purge.
+	mustApply := func(idx uint64, cmd *enginev1.Command) {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mustApply(1, &enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
+		InvocationId: id, Target: target,
+	}}})
+	mustApply(2, &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+		InvocationId: id,
+		Kind: &enginev1.InvokerEffect_JournalAppended{JournalAppended: &enginev1.JournalEntryAppended{
+			Entry: &enginev1.JournalEntry{Index: 0, Entry: &enginev1.JournalEntry_Input{Input: &enginev1.JEInput{}}},
+		}},
+	}}})
+	mustApply(3, &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+		InvocationId: id,
+		Kind: &enginev1.InvokerEffect_JournalAppended{JournalAppended: &enginev1.JournalEntryAppended{
+			Entry: &enginev1.JournalEntry{Index: 1, Entry: &enginev1.JournalEntry_Sleep{Sleep: &enginev1.JESleep{FireAtMs: 9999}}},
+		}},
+	}}})
+	mustApply(4, &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+		InvocationId: id,
+		Kind:         &enginev1.InvokerEffect_Completed{Completed: &enginev1.InvocationCompleted{Output: []byte("ok")}},
+	}}})
+	col.Drain()
+
+	mustApply(5, &enginev1.Command{Kind: &enginev1.Command_Purge{Purge: &enginev1.PurgeInvocation{
+		InvocationId: id,
+	}}})
+
+	// Timer row must be gone.
+	store := p.cfg.Snapshotter.Store()
+	timersT := tables.TimerTable{S: store}
+	var remaining int
+	_ = timersT.ScanAll(func(e tables.TimerEntry) error {
+		if e.FireAtMs == 9999 && bytes.Equal(e.ID.GetUuid(), id.GetUuid()) {
+			remaining++
+		}
+		return nil
+	})
+	if remaining != 0 {
+		t.Errorf("expected 0 pending timer rows after purge; got %d", remaining)
+	}
+
+	// ActDeleteTimer must have been emitted.
+	var deleted *ActDeleteTimer
+	for _, a := range col.Drain() {
+		if d, ok := a.(ActDeleteTimer); ok {
+			deleted = &d
+		}
+	}
+	if deleted == nil {
+		t.Fatal("expected ActDeleteTimer; got none")
+	}
+	if deleted.FireAtMs != 9999 {
+		t.Errorf("ActDeleteTimer.FireAtMs = %d; want 9999", deleted.FireAtMs)
+	}
+}
+
 func TestPartition_SnapshotRoundTrip(t *testing.T) {
 	p, _, _ := newTestPartition(t)
 

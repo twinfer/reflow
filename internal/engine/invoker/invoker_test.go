@@ -296,13 +296,23 @@ func TestSessionKey_Stable(t *testing.T) {
 func TestInvoker_StartInvocationBeforeStart(t *testing.T) {
 	r := sdk.NewRegistry()
 	_ = r.Register("S", "h", blockingHandler)
-	inv, _, _ := newTestInvoker(t, r)
+	inv, _, s := newTestInvoker(t, r)
 
-	// StartInvocation before Start: must not spawn a session.
-	inv.StartInvocation(newID(1, "x"), &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"})
+	target := &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"}
+	id := newID(1, "x")
+	seedInvoked(t, s, id, target)
+
+	// StartInvocation before Start: must be buffered, not dropped. No
+	// session spawns yet (started=false), but the request is queued.
+	inv.StartInvocation(id, target)
 	if got := inv.activeSessions(); len(got) != 0 {
-		t.Errorf("active = %v; want none (Start not called)", got)
+		t.Errorf("active before Start = %v; want none", got)
 	}
+
+	// Start drains the buffer and the deferred session spawns.
+	inv.Start(context.Background())
+	defer inv.Stop()
+	waitForSessionCount(t, inv, 1)
 }
 
 func TestInvoker_StartInvocationMissingHandler(t *testing.T) {

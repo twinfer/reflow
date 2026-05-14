@@ -47,9 +47,22 @@ type Invoker struct {
 	// TimerFired (or other wake) races a session's in-flight Suspended
 	// propose. Keyed by sessionKey.
 	pendingRespawn map[string]*enginev1.InvocationTarget
-	ctx            context.Context
-	cancel         context.CancelFunc
-	started        bool
+	// pendingStart buffers StartInvocation calls that arrived while
+	// started=false. Drained by Start. Closes the race where the apply
+	// goroutine emits ActInvoke through dispatchActions during the
+	// window between Leadership.OnAnnounceLeader flipping IsLeader=true
+	// (synchronously) and PartitionRunner.onBecomeLeader's goroutine
+	// reaching invoker.Start. Without this buffer, those calls were
+	// dropped and the rows stayed Scheduled until external retry.
+	pendingStart []pendingStartReq
+	ctx          context.Context
+	cancel       context.CancelFunc
+	started      bool
+}
+
+type pendingStartReq struct {
+	id     *enginev1.InvocationId
+	target *enginev1.InvocationTarget
 }
 
 // New constructs an Invoker. The returned value is inactive until Start
@@ -85,14 +98,28 @@ func (i *Invoker) Rebind(journal tables.JournalTable, invocations tables.Invocat
 // Start activates the Invoker. Calling Start a second time without an
 // intervening Stop is a programming error but does not panic — the
 // previous context is replaced.
+//
+// Drains any StartInvocation requests that arrived before Start. Those
+// requests come from the apply path: Leadership.OnAnnounceLeader flips
+// IsLeader synchronously, after which subsequent apply batches emit
+// ActInvoke through dispatchActions. PartitionRunner.onBecomeLeader runs
+// in a fresh goroutine and may not have called Start yet by the time the
+// apply pump reaches the next batch — without the drain, those wakes
+// would be lost.
 func (i *Invoker) Start(ctx context.Context) {
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	if i.cancel != nil {
 		i.cancel()
 	}
 	i.ctx, i.cancel = context.WithCancel(ctx)
 	i.started = true
+	pending := i.pendingStart
+	i.pendingStart = nil
+	i.mu.Unlock()
+
+	for _, r := range pending {
+		i.StartInvocation(r.id, r.target)
+	}
 }
 
 // Stop tears down every active session and waits for their goroutines
@@ -103,6 +130,7 @@ func (i *Invoker) Stop() {
 	sessions := i.sessions
 	i.sessions = make(map[string]*session)
 	i.pendingRespawn = make(map[string]*enginev1.InvocationTarget)
+	i.pendingStart = nil
 	i.cancel = nil
 	i.started = false
 	i.mu.Unlock()
@@ -125,9 +153,8 @@ func (i *Invoker) Stop() {
 func (i *Invoker) StartInvocation(id *enginev1.InvocationId, target *enginev1.InvocationTarget) {
 	i.mu.Lock()
 	if !i.started {
+		i.pendingStart = append(i.pendingStart, pendingStartReq{id: id, target: target})
 		i.mu.Unlock()
-		i.log.Warn("invoker: StartInvocation before Start; dropping",
-			"id", invocationIDString(id))
 		return
 	}
 	key := sessionKey(id)
@@ -225,14 +252,14 @@ func (i *Invoker) watchSession(id *enginev1.InvocationId, key string, s *session
 // Invoked invocation. Called from PartitionRunner.onBecomeLeader after
 // Start.
 //
-// Why this is needed: ActInvoke is emitted from FSM transitions inside
-// applyCommand. On a single-node partition, replay-on-startup re-applies
-// committed Raft log entries BEFORE leadership election completes, and
-// the apply path's dispatchActions calls StartInvocation while the
-// Invoker is not yet started — those calls are dropped with a warning.
-// Without this resume step, any Scheduled/Invoked invocation that
-// committed before the previous Host closed would never get a session
-// on the new leader.
+// Why this is needed: when this node was a follower for the prior
+// leadership scope, the apply path skipped ActInvoke emission (isLeader
+// gate in partition.go), so dispatchActions never saw those rows. On
+// promotion the new leader must re-spawn sessions for any Scheduled or
+// Invoked invocation that committed before its leadership began. The
+// pre-Start StartInvocation drain in Start() handles the orthogonal
+// goroutine race where dispatchActions runs after Leadership flips but
+// before invoker.Start; resume covers the on-disk catch-up case.
 //
 // Suspended invocations are intentionally NOT resumed here: they will
 // be woken by their pending wake-event (TimerFired / AwakeableResolved

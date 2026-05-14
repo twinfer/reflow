@@ -7,6 +7,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/twinfer/reflow/internal/engine"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
@@ -50,4 +51,37 @@ func (s *Server) DescribeInvocation(ctx context.Context, req *ingressv1.Describe
 		}}, nil
 	}
 	return &ingressv1.DescribeInvocationResponse{Status: st}, nil
+}
+
+// GetObjectState reads a single state row for a virtual object. Routes to
+// the partition owning (service, object_key) via the Host's Partitioner.
+// present=false (not an error) signals an absent key, distinct from a
+// present-but-empty value.
+func (s *Server) GetObjectState(ctx context.Context, req *ingressv1.GetObjectStateRequest) (*ingressv1.GetObjectStateResponse, error) {
+	if req.GetService() == "" {
+		return nil, status.Error(codes.InvalidArgument, "service is required")
+	}
+	if req.GetStateKey() == "" {
+		return nil, status.Error(codes.InvalidArgument, "state_key is required")
+	}
+	target := &enginev1.InvocationTarget{
+		ServiceName: req.GetService(),
+		ObjectKey:   req.GetObjectKey(),
+	}
+	shardID := s.host.Partitioner().ShardForTarget(target)
+	res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupState{
+		Target: target,
+		Key:    req.GetStateKey(),
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "lookup state: %v", err)
+	}
+	r, ok := res.(engine.StateLookupResult)
+	if !ok {
+		return nil, status.Errorf(codes.Internal, "lookup state: unexpected type %T", res)
+	}
+	return &ingressv1.GetObjectStateResponse{
+		Value:   r.Value,
+		Present: r.Present,
+	}, nil
 }

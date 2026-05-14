@@ -33,6 +33,7 @@ const (
 	Ingress_DescribeInvocation_FullMethodName  = "/reflow.ingress.v1.Ingress/DescribeInvocation"
 	Ingress_AttachInvocation_FullMethodName    = "/reflow.ingress.v1.Ingress/AttachInvocation"
 	Ingress_GetInvocationOutput_FullMethodName = "/reflow.ingress.v1.Ingress/GetInvocationOutput"
+	Ingress_GetObjectState_FullMethodName      = "/reflow.ingress.v1.Ingress/GetObjectState"
 )
 
 // IngressClient is the client API for Ingress service.
@@ -67,6 +68,11 @@ type IngressClient interface {
 	// COMPLETED_FAILED for terminated ones, UNKNOWN if no such invocation is
 	// known to this node. Phase 3.
 	GetInvocationOutput(ctx context.Context, in *GetInvocationOutputRequest, opts ...grpc.CallOption) (*GetInvocationOutputResponse, error)
+	// GetObjectState reads a single state value for a virtual object.
+	// Read-only admin endpoint; routes to the partition owning the object
+	// by hashing (service, object_key) through the cluster Partitioner.
+	// Returns present=false (not an error) when the key is absent.
+	GetObjectState(ctx context.Context, in *GetObjectStateRequest, opts ...grpc.CallOption) (*GetObjectStateResponse, error)
 }
 
 type ingressClient struct {
@@ -147,6 +153,16 @@ func (c *ingressClient) GetInvocationOutput(ctx context.Context, in *GetInvocati
 	return out, nil
 }
 
+func (c *ingressClient) GetObjectState(ctx context.Context, in *GetObjectStateRequest, opts ...grpc.CallOption) (*GetObjectStateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetObjectStateResponse)
+	err := c.cc.Invoke(ctx, Ingress_GetObjectState_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // IngressServer is the server API for Ingress service.
 // All implementations must embed UnimplementedIngressServer
 // for forward compatibility.
@@ -179,6 +195,11 @@ type IngressServer interface {
 	// COMPLETED_FAILED for terminated ones, UNKNOWN if no such invocation is
 	// known to this node. Phase 3.
 	GetInvocationOutput(context.Context, *GetInvocationOutputRequest) (*GetInvocationOutputResponse, error)
+	// GetObjectState reads a single state value for a virtual object.
+	// Read-only admin endpoint; routes to the partition owning the object
+	// by hashing (service, object_key) through the cluster Partitioner.
+	// Returns present=false (not an error) when the key is absent.
+	GetObjectState(context.Context, *GetObjectStateRequest) (*GetObjectStateResponse, error)
 	mustEmbedUnimplementedIngressServer()
 }
 
@@ -209,6 +230,9 @@ func (UnimplementedIngressServer) AttachInvocation(context.Context, *AttachInvoc
 }
 func (UnimplementedIngressServer) GetInvocationOutput(context.Context, *GetInvocationOutputRequest) (*GetInvocationOutputResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetInvocationOutput not implemented")
+}
+func (UnimplementedIngressServer) GetObjectState(context.Context, *GetObjectStateRequest) (*GetObjectStateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetObjectState not implemented")
 }
 func (UnimplementedIngressServer) mustEmbedUnimplementedIngressServer() {}
 func (UnimplementedIngressServer) testEmbeddedByValue()                 {}
@@ -357,6 +381,24 @@ func _Ingress_GetInvocationOutput_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Ingress_GetObjectState_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetObjectStateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IngressServer).GetObjectState(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Ingress_GetObjectState_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IngressServer).GetObjectState(ctx, req.(*GetObjectStateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Ingress_ServiceDesc is the grpc.ServiceDesc for Ingress service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -391,6 +433,10 @@ var Ingress_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetInvocationOutput",
 			Handler:    _Ingress_GetInvocationOutput_Handler,
+		},
+		{
+			MethodName: "GetObjectState",
+			Handler:    _Ingress_GetObjectState_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

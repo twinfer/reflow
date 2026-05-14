@@ -345,6 +345,105 @@ func TestIngress_AttachAndGetOutput(t *testing.T) {
 }
 
 // TestIngress_SubmitRejectsEmptyService verifies the InvalidArgument path.
+// TestIngress_GetObjectState submits an invocation that writes state for
+// a virtual object, then reads it back via the admin endpoint. Also
+// covers the absent-key path (present=false, not an error).
+func TestIngress_GetObjectState(t *testing.T) {
+	reg := sdk.NewRegistry()
+	if err := reg.Register("Stater", "set", func(c sdk.Context, in []byte) ([]byte, error) {
+		if err := c.SetState("k", in); err != nil {
+			return nil, err
+		}
+		return []byte("ok"), nil
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	_, rt := bringUpHostWithIngress(t, reg)
+	base := "http://" + rt.HTTPAddr()
+
+	// Submit with object_key="obj-1" so state is scoped under (Stater, obj-1).
+	submitBody := map[string]any{
+		"objectKey": "obj-1",
+		"input":     base64.StdEncoding.EncodeToString([]byte("payload")),
+	}
+	raw, code := httpPost(t, base+"/invocation/Stater/set", submitBody)
+	if code != http.StatusOK {
+		t.Fatalf("submit: code=%d body=%s", code, string(raw))
+	}
+	var submitResp struct {
+		InvocationIdStr string `json:"invocationIdStr"`
+	}
+	if err := json.Unmarshal(raw, &submitResp); err != nil {
+		t.Fatalf("submit decode: %v", err)
+	}
+
+	// Wait for completion so the state write has applied.
+	attachURL := base + "/attach/" + submitResp.InvocationIdStr
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, code = httpPost(t, attachURL, map[string]any{"timeoutMs": 1000})
+		if code != http.StatusOK {
+			t.Fatalf("attach: code=%d body=%s", code, string(raw))
+		}
+		var att struct {
+			Completed bool `json:"completed"`
+		}
+		_ = json.Unmarshal(raw, &att)
+		if att.Completed {
+			break
+		}
+	}
+
+	// Read state back.
+	resp, err := http.Get(base + "/admin/object/Stater/obj-1/state/k")
+	if err != nil {
+		t.Fatalf("GET state: %v", err)
+	}
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get state: code=%d body=%s", resp.StatusCode, string(raw))
+	}
+	var stateResp struct {
+		Value   string `json:"value"`
+		Present bool   `json:"present"`
+	}
+	if err := json.Unmarshal(raw, &stateResp); err != nil {
+		t.Fatalf("state decode: %v (body=%s)", err, string(raw))
+	}
+	if !stateResp.Present {
+		t.Fatalf("present = false; want true (body=%s)", string(raw))
+	}
+	got, err := base64.StdEncoding.DecodeString(stateResp.Value)
+	if err != nil {
+		t.Fatalf("decode value: %v", err)
+	}
+	if string(got) != "payload" {
+		t.Errorf("value = %q; want payload", string(got))
+	}
+
+	// Absent key on a never-touched object → present=false, no error.
+	resp, err = http.Get(base + "/admin/object/Stater/never-existed/state/missing")
+	if err != nil {
+		t.Fatalf("GET absent state: %v", err)
+	}
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get absent state: code=%d body=%s", resp.StatusCode, string(raw))
+	}
+	stateResp = struct {
+		Value   string `json:"value"`
+		Present bool   `json:"present"`
+	}{}
+	if err := json.Unmarshal(raw, &stateResp); err != nil {
+		t.Fatalf("absent state decode: %v", err)
+	}
+	if stateResp.Present {
+		t.Errorf("absent key reported present=true")
+	}
+}
+
 func TestIngress_SubmitRejectsEmptyService(t *testing.T) {
 	reg := sdk.NewRegistry()
 	_, rt := bringUpHostWithIngress(t, reg)

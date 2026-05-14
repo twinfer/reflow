@@ -80,6 +80,16 @@ service Ingress {
       get: "/output/{invocation_id}"
     };
   }
+
+  // GetObjectState reads a single state value for a virtual object.
+  // Read-only admin endpoint; routes to the partition owning the object
+  // by hashing (service, object_key) through the cluster Partitioner.
+  // Returns present=false (not an error) when the key is absent.
+  rpc GetObjectState(GetObjectStateRequest) returns (GetObjectStateResponse) {
+    option (google.api.http) = {
+      get: "/admin/object/{service}/{object_key}/state/{state_key}"
+    };
+  }
 }
 
 message SubmitInvocationRequest {
@@ -171,6 +181,23 @@ message AttachInvocationResponse {
 message GetInvocationOutputRequest {
   string invocation_id = 1;
   reflow.engine.v1.InvocationId invocation_id_proto = 2;
+}
+
+message GetObjectStateRequest {
+  // Path-bound: service name.
+  string service = 1;
+  // Path-bound: object key.
+  string object_key = 2;
+  // Path-bound: state key within the object.
+  string state_key = 3;
+}
+
+message GetObjectStateResponse {
+  // Raw state value bytes. Empty when present=false.
+  bytes value = 1;
+  // True when a row exists for (service, object_key, state_key); false
+  // when absent. Distinguishes "absent" from "present-but-empty".
+  bool present = 2;
 }
 
 message GetInvocationOutputResponse {

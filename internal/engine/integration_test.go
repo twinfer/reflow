@@ -32,10 +32,11 @@ func bringUpSingleNode(t *testing.T, dir, raftAddr string) (*engine.Host, *engin
 		raftAddr = freeLocalAddr(t)
 	}
 	h, err := engine.NewHost(engine.HostConfig{
-		NodeID:         1,
-		RaftAddr:       raftAddr,
-		DataDir:        dir,
-		RTTMillisecond: 50,
+		NodeID:             1,
+		RaftAddr:           raftAddr,
+		DataDir:            dir,
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)

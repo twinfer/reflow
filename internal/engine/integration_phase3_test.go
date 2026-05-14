@@ -61,11 +61,12 @@ func TestPhase3_VirtualObject_FIFOSerializesSameKey(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "node1")
 	h, err := engine.NewHost(engine.HostConfig{
-		NodeID:         1,
-		RaftAddr:       freeLocalAddr(t),
-		DataDir:        dataDir,
-		RTTMillisecond: 50,
-		Handlers:       reg,
+		NodeID:             1,
+		RaftAddr:           freeLocalAddr(t),
+		DataDir:            dataDir,
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -181,11 +182,12 @@ func TestPhase3_VirtualObject_DistinctKeysRunInParallel(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "node1")
 	h, err := engine.NewHost(engine.HostConfig{
-		NodeID:         1,
-		RaftAddr:       freeLocalAddr(t),
-		DataDir:        dataDir,
-		RTTMillisecond: 50,
-		Handlers:       reg,
+		NodeID:             1,
+		RaftAddr:           freeLocalAddr(t),
+		DataDir:            dataDir,
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -284,11 +286,12 @@ func TestPhase3_VirtualObject_QueueSurvivesRestart(t *testing.T) {
 	dataDir := filepath.Join(dir, "node1")
 	raftAddr := freeLocalAddr(t)
 	h1, err := engine.NewHost(engine.HostConfig{
-		NodeID:         1,
-		RaftAddr:       raftAddr,
-		DataDir:        dataDir,
-		RTTMillisecond: 50,
-		Handlers:       reg,
+		NodeID:             1,
+		RaftAddr:           raftAddr,
+		DataDir:            dataDir,
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -363,11 +366,12 @@ func TestPhase3_VirtualObject_QueueSurvivesRestart(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 	h2, err := engine.NewHost(engine.HostConfig{
-		NodeID:         1,
-		RaftAddr:       raftAddr,
-		DataDir:        dataDir,
-		RTTMillisecond: 50,
-		Handlers:       reg2,
+		NodeID:             1,
+		RaftAddr:           raftAddr,
+		DataDir:            dataDir,
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+		Handlers:           reg2,
 	})
 	if err != nil {
 		t.Fatalf("NewHost (resume): %v", err)

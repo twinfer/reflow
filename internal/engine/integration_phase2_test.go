@@ -75,11 +75,12 @@ func TestPhase2_HandlerSurvivesKill(t *testing.T) {
 	raftAddr := freeLocalAddr(t)
 
 	h1, err := engine.NewHost(engine.HostConfig{
-		NodeID:         1,
-		RaftAddr:       raftAddr,
-		DataDir:        dataDir,
-		RTTMillisecond: 50,
-		Handlers:       reg,
+		NodeID:             1,
+		RaftAddr:           raftAddr,
+		DataDir:            dataDir,
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -136,11 +137,12 @@ func TestPhase2_HandlerSurvivesKill(t *testing.T) {
 
 	// Reopen on the same DataDir with the same handler binding.
 	h2, err := engine.NewHost(engine.HostConfig{
-		NodeID:         1,
-		RaftAddr:       raftAddr,
-		DataDir:        dataDir,
-		RTTMillisecond: 50,
-		Handlers:       reg,
+		NodeID:             1,
+		RaftAddr:           raftAddr,
+		DataDir:            dataDir,
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost (restart): %v", err)
@@ -215,11 +217,12 @@ func TestPhase2_OutgoingCallSurvivesRestart(t *testing.T) {
 	raftAddr := freeLocalAddr(t)
 
 	h1, err := engine.NewHost(engine.HostConfig{
-		NodeID:         1,
-		RaftAddr:       raftAddr,
-		DataDir:        dataDir,
-		RTTMillisecond: 50,
-		Handlers:       reg,
+		NodeID:             1,
+		RaftAddr:           raftAddr,
+		DataDir:            dataDir,
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -264,11 +267,12 @@ func TestPhase2_OutgoingCallSurvivesRestart(t *testing.T) {
 	}
 
 	h2, err := engine.NewHost(engine.HostConfig{
-		NodeID:         1,
-		RaftAddr:       raftAddr,
-		DataDir:        dataDir,
-		RTTMillisecond: 50,
-		Handlers:       reg,
+		NodeID:             1,
+		RaftAddr:           raftAddr,
+		DataDir:            dataDir,
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost (restart): %v", err)
@@ -418,7 +422,7 @@ func TestPhase2_5_CallResultSurvivesCallerCrash(t *testing.T) {
 
 	h1, err := engine.NewHost(engine.HostConfig{
 		NodeID: 1, RaftAddr: raftAddr, DataDir: dataDir,
-		RTTMillisecond: 50, Handlers: reg,
+		RTTMillisecond: 50, NumPartitionShards: 1, Handlers: reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -464,7 +468,7 @@ func TestPhase2_5_CallResultSurvivesCallerCrash(t *testing.T) {
 
 	h2, err := engine.NewHost(engine.HostConfig{
 		NodeID: 1, RaftAddr: raftAddr, DataDir: dataDir,
-		RTTMillisecond: 50, Handlers: reg,
+		RTTMillisecond: 50, NumPartitionShards: 1, Handlers: reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost (restart): %v", err)
@@ -528,7 +532,7 @@ func TestPhase2_5_CallResultSurvivesCalleeCrash(t *testing.T) {
 
 	h1, err := engine.NewHost(engine.HostConfig{
 		NodeID: 1, RaftAddr: raftAddr, DataDir: dataDir,
-		RTTMillisecond: 50, Handlers: reg,
+		RTTMillisecond: 50, NumPartitionShards: 1, Handlers: reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -576,7 +580,7 @@ func TestPhase2_5_CallResultSurvivesCalleeCrash(t *testing.T) {
 
 	h2, err := engine.NewHost(engine.HostConfig{
 		NodeID: 1, RaftAddr: raftAddr, DataDir: dataDir,
-		RTTMillisecond: 50, Handlers: reg,
+		RTTMillisecond: 50, NumPartitionShards: 1, Handlers: reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost (restart): %v", err)
@@ -615,9 +619,10 @@ func bringUpSingleHost(t *testing.T, reg *sdk.Registry) *engine.Host {
 	dir := t.TempDir()
 	h, err := engine.NewHost(engine.HostConfig{
 		NodeID: 1, RaftAddr: freeLocalAddr(t),
-		DataDir:        filepath.Join(dir, "node1"),
-		RTTMillisecond: 50,
-		Handlers:       reg,
+		DataDir:            filepath.Join(dir, "node1"),
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -770,11 +775,12 @@ func bringUpHostWithIngress(t *testing.T, reg *sdk.Registry) (*engine.Host, *ing
 	t.Helper()
 	dir := t.TempDir()
 	h, err := engine.NewHost(engine.HostConfig{
-		NodeID:         1,
-		RaftAddr:       freeLocalAddr(t),
-		DataDir:        filepath.Join(dir, "node1"),
-		RTTMillisecond: 50,
-		Handlers:       reg,
+		NodeID:             1,
+		RaftAddr:           freeLocalAddr(t),
+		DataDir:            filepath.Join(dir, "node1"),
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)

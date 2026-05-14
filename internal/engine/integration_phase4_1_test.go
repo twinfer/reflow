@@ -86,15 +86,16 @@ func bringUpThreeNodeCluster(t *testing.T, handlers *sdk.Registry) ([]*nodeRig, 
 	// Stage 1: construct Hosts (NodeHost starts here; no shards yet).
 	for i := range n {
 		h, err := engine.NewHost(engine.HostConfig{
-			NodeID:         uint64(i + 1),
-			RaftAddr:       allAddrs[i].raft,
-			DataDir:        dataDirs[i],
-			RTTMillisecond: 50,
-			Handlers:       handlers,
-			Peers:          peers,
-			GossipBindAddr: allAddrs[i].gossip,
-			GossipAdvAddr:  allAddrs[i].gossip,
-			GrpcEndpoint:   allAddrs[i].delivery,
+			NodeID:             uint64(i + 1),
+			RaftAddr:           allAddrs[i].raft,
+			DataDir:            dataDirs[i],
+			RTTMillisecond:     50,
+			NumPartitionShards: n,
+			Handlers:           handlers,
+			Peers:              peers,
+			GossipBindAddr:     allAddrs[i].gossip,
+			GossipAdvAddr:      allAddrs[i].gossip,
+			GrpcEndpoint:       allAddrs[i].delivery,
 		})
 		if err != nil {
 			for j := range i {

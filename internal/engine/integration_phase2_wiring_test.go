@@ -69,11 +69,12 @@ func TestPhase2_InvokerWiringEchoCompletes(t *testing.T) {
 
 	raftAddr := freeLocalAddr(t)
 	h, err := engine.NewHost(engine.HostConfig{
-		NodeID:         1,
-		RaftAddr:       raftAddr,
-		DataDir:        dataDir,
-		RTTMillisecond: 50,
-		Handlers:       reg,
+		NodeID:             1,
+		RaftAddr:           raftAddr,
+		DataDir:            dataDir,
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -121,11 +122,12 @@ func TestPhase2_InvokerWiringMissingHandlerStaysScheduled(t *testing.T) {
 
 	raftAddr := freeLocalAddr(t)
 	h, err := engine.NewHost(engine.HostConfig{
-		NodeID:         1,
-		RaftAddr:       raftAddr,
-		DataDir:        dataDir,
-		RTTMillisecond: 50,
-		Handlers:       sdk.NewRegistry(), // empty
+		NodeID:             1,
+		RaftAddr:           raftAddr,
+		DataDir:            dataDir,
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+		Handlers:           sdk.NewRegistry(), // empty
 	})
 	if err != nil {
 		t.Fatal(err)

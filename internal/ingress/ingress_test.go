@@ -44,11 +44,12 @@ func bringUpHostWithIngress(t *testing.T, reg *sdk.Registry) (*engine.Host, *ing
 	t.Helper()
 	dir := t.TempDir()
 	h, err := engine.NewHost(engine.HostConfig{
-		NodeID:         1,
-		RaftAddr:       freeAddr(t),
-		DataDir:        filepath.Join(dir, "node1"),
-		RTTMillisecond: 50,
-		Handlers:       reg,
+		NodeID:             1,
+		RaftAddr:           freeAddr(t),
+		DataDir:            filepath.Join(dir, "node1"),
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)

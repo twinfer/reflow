@@ -427,11 +427,12 @@ func TestPhase3_5_All_SurvivesRestart(t *testing.T) {
 	regBefore := sdk.NewRegistry()
 	register(regBefore)
 	hBefore, err := engine.NewHost(engine.HostConfig{
-		NodeID:         1,
-		RaftAddr:       raftAddr,
-		DataDir:        dataDir,
-		RTTMillisecond: 50,
-		Handlers:       regBefore,
+		NodeID:             1,
+		RaftAddr:           raftAddr,
+		DataDir:            dataDir,
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+		Handlers:           regBefore,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -488,11 +489,12 @@ func TestPhase3_5_All_SurvivesRestart(t *testing.T) {
 	regAfter := sdk.NewRegistry()
 	register(regAfter)
 	hAfter, err := engine.NewHost(engine.HostConfig{
-		NodeID:         1,
-		RaftAddr:       raftAddr,
-		DataDir:        dataDir,
-		RTTMillisecond: 50,
-		Handlers:       regAfter,
+		NodeID:             1,
+		RaftAddr:           raftAddr,
+		DataDir:            dataDir,
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+		Handlers:           regAfter,
 	})
 	if err != nil {
 		t.Fatalf("NewHost after restart: %v", err)

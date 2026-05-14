@@ -38,11 +38,12 @@ func freeAddr(t *testing.T) string {
 func TestSessionServiceStub_ReturnsUnimplemented(t *testing.T) {
 	dir := t.TempDir()
 	h, err := engine.NewHost(engine.HostConfig{
-		NodeID:         1,
-		RaftAddr:       freeAddr(t),
-		DataDir:        filepath.Join(dir, "node1"),
-		RTTMillisecond: 50,
-		Handlers:       sdk.NewRegistry(),
+		NodeID:             1,
+		RaftAddr:           freeAddr(t),
+		DataDir:            filepath.Join(dir, "node1"),
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+		Handlers:           sdk.NewRegistry(),
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)

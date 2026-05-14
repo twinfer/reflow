@@ -136,9 +136,23 @@ func (l *Leadership) OnRaftLeaderChange(raftLeaderID uint64) {
 
 	switch {
 	case raftLeaderID == l.nodeID:
-		// We are now the raft leader. Run for partition leadership unless
-		// we already are / are about to be one.
-		if l.state == Follower {
+		// We are now the raft leader. Run for partition leadership
+		// unless we are already Leader for the most recent announced
+		// epoch — re-running candidacy from a Leader state would emit a
+		// stale duplicate AnnounceLeader.
+		//
+		// Critically, we re-run from Candidate as well. Under load,
+		// transient term churn can leave us in Candidate with an
+		// AnnounceLeader that never landed (another peer won that
+		// epoch). When dragonboat later re-elects us as raft leader, a
+		// Follower-only guard would silently swallow the signal and
+		// leave us stuck — observed in TestChaos_LeaderLoss as
+		// invocations stranded in Scheduled because onBecomeLeader
+		// never fires. Bumping leaderEpoch on every re-entry is safe:
+		// any in-flight AnnounceLeader for the prior epoch hits the
+		// lower-epoch path in OnAnnounceLeader and is harmlessly
+		// ignored.
+		if !(l.state == Leader && l.leaderEpoch >= l.latestAnnouncedEpoch) {
 			l.leaderEpoch++
 			l.state = Candidate
 			runCandidate = true
@@ -147,10 +161,11 @@ func (l *Leadership) OnRaftLeaderChange(raftLeaderID uint64) {
 	case raftLeaderID != 0:
 		// Someone else is raft leader. If we thought we were the partition
 		// leader, step down.
-		if l.state == Leader {
+		switch l.state {
+		case Leader:
 			l.state = Follower
 			fireStepDown = true
-		} else if l.state == Candidate {
+		case Candidate:
 			l.state = Follower
 		}
 	}

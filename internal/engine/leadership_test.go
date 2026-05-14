@@ -141,6 +141,92 @@ func TestLeadership_LowerEpochAnnounceIgnoredByLeader(t *testing.T) {
 	}
 }
 
+// TestLeadership_ReElectionFromCandidate covers the case where
+// OnRaftLeaderChange(self) is called a second time while we are still
+// Candidate from a prior epoch whose AnnounceLeader never landed.
+// Before the fix, the Follower-only guard in OnRaftLeaderChange swallowed
+// the second signal, leaving the node permanently stuck as Candidate and
+// never firing onBecomeLeader — reproduced in TestChaos_LeaderLoss as
+// invocations stranded in Scheduled. The fix re-runs candidacy at a
+// higher epoch on any self-raft-leader signal that is not "already Leader
+// for the most recent announced epoch."
+func TestLeadership_ReElectionFromCandidate(t *testing.T) {
+	ann := &fakeAnnouncer{}
+	l := NewLeadership(LeadershipConfig{NodeID: 1, Announcer: ann})
+
+	var became atomic.Bool
+	l.SetCallbacks(func() { became.Store(true) }, nil)
+
+	// First raft-leader signal: bump to Candidate at epoch 1, propose
+	// AnnounceLeader. Do NOT apply it — simulates the case where another
+	// peer won that epoch's race.
+	l.OnRaftLeaderChange(1)
+	waitFor(t, func() bool { return len(ann.Cmds()) == 1 }, "first AnnounceLeader proposed")
+	if l.State() != Candidate {
+		t.Fatalf("state after first OnRaftLeaderChange = %s; want Candidate", l.State())
+	}
+	if l.LeaderEpoch() != 1 {
+		t.Fatalf("epoch after first OnRaftLeaderChange = %d; want 1", l.LeaderEpoch())
+	}
+
+	// Second raft-leader signal (e.g. after a kill that re-elected us).
+	// Must re-run candidacy at a higher epoch even though state is still
+	// Candidate from the prior round.
+	l.OnRaftLeaderChange(1)
+	waitFor(t, func() bool { return len(ann.Cmds()) == 2 }, "second AnnounceLeader proposed")
+	if l.State() != Candidate {
+		t.Errorf("state after second OnRaftLeaderChange = %s; want Candidate", l.State())
+	}
+	if got := l.LeaderEpoch(); got != 2 {
+		t.Errorf("epoch after second OnRaftLeaderChange = %d; want 2", got)
+	}
+	if c := ann.Cmds()[1].GetAnnounceLeader(); c.GetLeaderEpoch() != 2 {
+		t.Errorf("second AnnounceLeader epoch = %d; want 2", c.GetLeaderEpoch())
+	}
+
+	// Applying the second-epoch AnnounceLeader promotes to Leader.
+	l.OnAnnounceLeader(&enginev1.AnnounceLeader{NodeId: 1, LeaderEpoch: 2})
+	waitFor(t, func() bool { return became.Load() }, "onBecomeLeader fired")
+	if l.State() != Leader {
+		t.Errorf("state = %s; want Leader", l.State())
+	}
+
+	// A late, lower-epoch (epoch=1) AnnounceLeader arriving from the
+	// original race must be ignored — the latest epoch wins.
+	l.OnAnnounceLeader(&enginev1.AnnounceLeader{NodeId: 1, LeaderEpoch: 1})
+	if l.State() != Leader {
+		t.Errorf("stale lower-epoch announce changed state to %s", l.State())
+	}
+}
+
+// TestLeadership_NoOpWhenAlreadyLeaderForLatestEpoch ensures the relaxed
+// re-entry guard does not re-propose AnnounceLeader when we are already
+// the leader for the most recent epoch (e.g. dragonboat re-fires
+// LeaderUpdated for the same term).
+func TestLeadership_NoOpWhenAlreadyLeaderForLatestEpoch(t *testing.T) {
+	ann := &fakeAnnouncer{}
+	l := NewLeadership(LeadershipConfig{NodeID: 1, Announcer: ann})
+
+	l.OnRaftLeaderChange(1)
+	waitFor(t, func() bool { return len(ann.Cmds()) == 1 }, "first AnnounceLeader proposed")
+	l.OnAnnounceLeader(&enginev1.AnnounceLeader{NodeId: 1, LeaderEpoch: 1})
+	waitFor(t, func() bool { return l.State() == Leader }, "Leader")
+
+	// Spurious repeat of the same raft leadership signal must not
+	// trigger a new candidacy.
+	l.OnRaftLeaderChange(1)
+	time.Sleep(20 * time.Millisecond)
+	if got := len(ann.Cmds()); got != 1 {
+		t.Errorf("AnnounceLeader proposals after repeat signal = %d; want 1", got)
+	}
+	if l.State() != Leader {
+		t.Errorf("state = %s; want Leader (unchanged)", l.State())
+	}
+	if l.LeaderEpoch() != 1 {
+		t.Errorf("epoch = %d; want 1 (unchanged)", l.LeaderEpoch())
+	}
+}
+
 func TestLeadership_OtherRaftLeaderStepsDown(t *testing.T) {
 	ann := &fakeAnnouncer{}
 	l := NewLeadership(LeadershipConfig{NodeID: 1, Announcer: ann})

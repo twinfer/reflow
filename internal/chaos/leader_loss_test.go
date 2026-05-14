@@ -18,41 +18,39 @@ import (
 // every issued invocation reaches Completed within the post-run
 // deadline. The killed node stays down for the rest of the run.
 //
-// KNOWN FAILURE — this test is expected to fail until the
-// AnnounceLeader-on-failover gap below is closed:
+// KNOWN FAILURE — this test fails on a dragonboat-layer issue
+// that lives outside the engine code:
 //
 // After the metadata leader is killed mid-flight, dragonboat
-// elects new raft leaders for each partition shard on the
-// surviving nodes (visible in the raft logs as "[NNNNN:NNNNN]
-// t3 became leader"), but PartitionRunner.onBecomeLeader is
-// never invoked on those new leaders. Symptom: the
-// "partition: became leader" INFO log fires once during
-// initial bring-up and then never again after the kill, while
-// dragonboat-level "raft became leader" events do fire on
-// the surviving replicas. Because onBecomeLeader never runs,
-// Invoker.Start is never called and ResumeNonTerminal is never
-// invoked — every Scheduled row whose session lived on the
-// killed node is stranded until the test cleanup tears the
-// cluster down. Observed loss tracks the in-flight window at
-// kill time (~10% at rate=50 RPS, 30s, single kill).
+// is slow to elect new raft leaders for the partition shards
+// on the surviving nodes. In observed runs the surviving
+// replicas don't even reach `became candidate` for ~25s after
+// the kill and don't reach `became leader` within the 30s
+// workload + 120s AwaitCompletion window. Because no new raft
+// leader exists, no LeaderUpdated fires, the engine never runs
+// candidacy, no AnnounceLeader is proposed, and any
+// in-flight invocation whose session lived on the killed node
+// stays Scheduled/Invoked until the test cleanup. Observed
+// loss tracks the in-flight window at kill time (~10% at
+// rate=50 RPS, 30s, single kill).
 //
-// Suspected location: the Leadership.OnRaftLeaderChange →
-// runCandidate → propose AnnounceLeader → OnAnnounceLeader
-// chain in internal/engine/leadership.go. Either the propose
-// never fires, never commits, or commits with the wrong
-// (epoch, nodeId) so OnAnnounceLeader's Candidate→Leader
-// transition is skipped. Investigation is the next PR's scope.
+// Two engine-side races have been closed and the test stays
+// red regardless of them:
+//   - Pre-Start StartInvocation buffer (invoker.go) — closes
+//     the apply→dispatchActions race that fired before
+//     PartitionRunner.onBecomeLeader's goroutine reached
+//     invoker.Start.
+//   - Candidacy re-entry from non-Follower state (leadership.go
+//     OnRaftLeaderChange) — closes the case where a survivor
+//     was stuck in Candidate from a prior failed candidacy and
+//     would have swallowed a fresh LeaderUpdated targeting
+//     itself.
 //
-// The pre-Start StartInvocation buffer added in the same
-// commit as this docstring update closes a separate, narrower
-// race (apply-pump emits ActInvoke between Leadership flipping
-// IsLeader=true synchronously and the onBecomeLeader goroutine
-// reaching invoker.Start) and is independently correct, but
-// does not close this test on its own.
-//
-// The test stays enabled so the harness surfaces the bug loudly
-// in every loadtest run; close it on green once the recovery gap
-// is fixed.
+// The remaining gap is dragonboat election tuning (likely
+// RTTMillisecond and election timeout under closing-node
+// churn) and possibly the in-process transport's behavior on
+// abrupt Host.Close. Close this docstring on green once that
+// path is fixed.
 //
 // Invocation:
 //

@@ -9,6 +9,7 @@
 //	inv/<24-byte inv_id>                         -> InvocationStatus
 //	journal/<24-byte inv_id>/<4-byte BE u32 idx> -> JournalEntry
 //	timer/<8-byte BE fire_at_ms>/<24-byte id>    -> uint32 sleep_index
+//	timer_idx/<24-byte id>/<8-byte BE fire_at_ms> -> "" (secondary index)
 //	state/<service>/<obj_key>/<state_key>        -> bytes (Phase 2 lazy state)
 //	outbox/<8-byte BE seq>                       -> OutboxEnvelope (Phase 2)
 //	awakeable/<26-byte id>                       -> AwakeableEntry (Phase 2)
@@ -51,6 +52,7 @@ const (
 	invPrefix       = "inv/"
 	journalPrefix   = "journal/"
 	timerPrefix     = "timer/"
+	timerIdxPrefix  = "timer_idx/"
 	statePrefix     = "state/"
 	outboxPrefix    = "outbox/"
 	awakeablePrefix = "awakeable/"
@@ -163,6 +165,51 @@ func DecodeTimerKey(key []byte) (uint64, *enginev1.InvocationId, error) {
 	fireAt := binary.BigEndian.Uint64(key[p : p+8])
 	id, err := DecodeInvocationID(key[p+8:])
 	return fireAt, id, err
+}
+
+// TimerIdxKey returns timer_idx/<24-byte id>/<8-byte BE fire_at>. The
+// secondary index lets onPurge find every pending timer for an
+// invocation with a single bounded range scan instead of walking the
+// whole timer/ namespace.
+func TimerIdxKey(id *enginev1.InvocationId, fireAtMs uint64) ([]byte, error) {
+	raw, err := EncodeInvocationID(id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(timerIdxPrefix)+invocationIDLen+8)
+	out = append(out, timerIdxPrefix...)
+	out = append(out, raw...)
+	var fireBuf [8]byte
+	binary.BigEndian.PutUint64(fireBuf[:], fireAtMs)
+	return append(out, fireBuf[:]...), nil
+}
+
+// TimerIdxPrefixForID returns timer_idx/<24-byte id>/, suitable for a
+// range scan over every secondary-index row for one invocation.
+func TimerIdxPrefixForID(id *enginev1.InvocationId) ([]byte, error) {
+	raw, err := EncodeInvocationID(id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(timerIdxPrefix)+invocationIDLen)
+	out = append(out, timerIdxPrefix...)
+	return append(out, raw...), nil
+}
+
+// DecodeTimerIdxKey extracts (invocation_id, fireAtMs) from a secondary-
+// index key.
+func DecodeTimerIdxKey(key []byte) (*enginev1.InvocationId, uint64, error) {
+	want := len(timerIdxPrefix) + invocationIDLen + 8
+	if len(key) != want {
+		return nil, 0, fmt.Errorf("timer_idx key length = %d; want %d", len(key), want)
+	}
+	p := len(timerIdxPrefix)
+	id, err := DecodeInvocationID(key[p : p+invocationIDLen])
+	if err != nil {
+		return nil, 0, err
+	}
+	fireAt := binary.BigEndian.Uint64(key[p+invocationIDLen:])
+	return id, fireAt, nil
 }
 
 // DedupSelfKey returns dedup/self/<8-byte BE leader_epoch>.

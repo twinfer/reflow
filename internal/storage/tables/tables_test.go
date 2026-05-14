@@ -749,6 +749,72 @@ func TestTables(t *testing.T) {
 }
 
 // Defensive: ensure raw timer values aren't being misparsed across edits.
+func TestTimer_ScanByInvocation(t *testing.T) {
+	s := storage.NewMemStore()
+	defer s.Close()
+	tt := tables.TimerTable{S: s}
+	idA := mkID(1, "aaaaaaaaaaaaaaaa")
+	idB := mkID(1, "bbbbbbbbbbbbbbbb")
+
+	b := s.NewBatch()
+	for _, fireAt := range []uint64{200, 50, 100} {
+		if err := tt.Insert(b, fireAt, idA, 7); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tt.Insert(b, 75, idB, 9); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, b)
+
+	// ScanByInvocation(idA) returns idA's three fire_at_ms in ascending
+	// order and ignores idB.
+	var got []uint64
+	if err := tt.ScanByInvocation(idA, func(fireAt uint64) error {
+		got = append(got, fireAt)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []uint64{50, 100, 200}
+	if len(got) != len(want) {
+		t.Fatalf("got %v; want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("[%d] = %d; want %d", i, got[i], want[i])
+		}
+	}
+
+	// Delete one — both primary and secondary should drop, ScanByInvocation
+	// reflects it.
+	b2 := s.NewBatch()
+	if err := tt.Delete(b2, 100, idA); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, b2)
+
+	got = got[:0]
+	_ = tt.ScanByInvocation(idA, func(fireAt uint64) error {
+		got = append(got, fireAt)
+		return nil
+	})
+	if len(got) != 2 || got[0] != 50 || got[1] != 200 {
+		t.Errorf("after delete: got %v; want [50 200]", got)
+	}
+	// Primary side must also be gone (no row at fire_at=100 for idA).
+	var primaryCount int
+	_ = tt.ScanAll(func(e tables.TimerEntry) error {
+		if e.FireAtMs == 100 && bytes.Equal(e.ID.GetUuid(), idA.GetUuid()) {
+			primaryCount++
+		}
+		return nil
+	})
+	if primaryCount != 0 {
+		t.Errorf("primary row at fire_at=100 not deleted (count=%d)", primaryCount)
+	}
+}
+
 func TestTimer_RawValueIs4BytesBE(t *testing.T) {
 	s := storage.NewMemStore()
 	defer s.Close()

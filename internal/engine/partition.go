@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -1161,26 +1160,22 @@ func (p *Partition) onPurge(
 		return fmt.Errorf("onPurge: delete journal: %w", err)
 	}
 
-	// Reap any pending timer rows for this invocation. The timer keyspace
-	// is sorted by fire_at_ms first, so finding rows for one id requires
-	// scanning the whole table. Acceptable here (purge is a cleanup path,
-	// not the hot path), but a timer_idx/<id>/<fire_at> companion table
-	// would be the right scale fix when the timer set grows large.
-	var pending []tables.TimerEntry
-	if err := timers.ScanAll(func(e tables.TimerEntry) error {
-		if bytes.Equal(e.ID.GetUuid(), id.GetUuid()) && e.ID.GetPartitionKey() == id.GetPartitionKey() {
-			pending = append(pending, e)
-		}
+	// Reap any pending timer rows for this invocation via the secondary
+	// index (timer_idx/<id>/<fire_at>). Bounded by per-invocation timer
+	// count, not the global timer table size.
+	var pending []uint64
+	if err := timers.ScanByInvocation(id, func(fireAt uint64) error {
+		pending = append(pending, fireAt)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("onPurge: scan timers: %w", err)
 	}
-	for _, e := range pending {
-		if err := timers.Delete(batch, e.FireAtMs, e.ID); err != nil {
+	for _, fireAt := range pending {
+		if err := timers.Delete(batch, fireAt, id); err != nil {
 			return fmt.Errorf("onPurge: delete timer: %w", err)
 		}
 		if isLeader {
-			p.cfg.Collector.Push(ActDeleteTimer{FireAtMs: e.FireAtMs, ID: e.ID})
+			p.cfg.Collector.Push(ActDeleteTimer{FireAtMs: fireAt, ID: id})
 		}
 	}
 	return nil

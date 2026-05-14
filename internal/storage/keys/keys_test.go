@@ -139,6 +139,38 @@ func TestTimerKeyRoundtrip(t *testing.T) {
 	}
 }
 
+func TestTimerIdxKey_RoundtripAndPrefix(t *testing.T) {
+	idA := testID(t, 0x42, "abcdefghijklmnop")
+	idB := testID(t, 0x42, "zyxwvutsrqponmlk")
+
+	k, err := TimerIdxKey(idA, 1234567)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotID, fireAt, err := DecodeTimerIdxKey(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fireAt != 1234567 {
+		t.Errorf("fireAt = %d; want 1234567", fireAt)
+	}
+	if gotID.GetPartitionKey() != 0x42 || !bytes.Equal(gotID.GetUuid(), idA.GetUuid()) {
+		t.Errorf("id roundtrip failed: %+v", gotID)
+	}
+
+	// Two ids with the same partition_key must produce disjoint prefixes;
+	// a prefix scan over idA's range must not see idB's rows.
+	pa, _ := TimerIdxPrefixForID(idA)
+	pb, _ := TimerIdxPrefixForID(idB)
+	if bytes.Equal(pa, pb) {
+		t.Fatalf("prefix collision between distinct ids")
+	}
+	kB, _ := TimerIdxKey(idB, 999)
+	if bytes.HasPrefix(kB, pa) {
+		t.Errorf("idB key falls within idA prefix scan range")
+	}
+}
+
 func TestPrefixUpperBound(t *testing.T) {
 	cases := []struct {
 		name string

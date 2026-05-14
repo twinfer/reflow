@@ -16,12 +16,6 @@ import (
 // TestChaos_RollingRestart runs a steady-state workload while
 // every node is killed and restarted exactly once in sequence.
 //
-// KNOWN FAILURE — see TestChaos_LeaderLoss docstring for the
-// AnnounceLeader-on-failover root cause. A rolling cycle is
-// strictly worse than a single kill because each cycle's
-// failover replays the same gap. Kept enabled to surface the
-// bug loudly until the recovery path is fixed.
-//
 // Invocation:
 //
 //	go test -tags=loadtest -timeout=15m -run=TestChaos_RollingRestart \

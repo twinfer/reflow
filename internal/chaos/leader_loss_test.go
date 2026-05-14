@@ -18,40 +18,6 @@ import (
 // every issued invocation reaches Completed within the post-run
 // deadline. The killed node stays down for the rest of the run.
 //
-// KNOWN FAILURE — this test fails on a dragonboat-layer issue
-// that lives outside the engine code:
-//
-// After the metadata leader is killed mid-flight, dragonboat
-// is slow to elect new raft leaders for the partition shards
-// on the surviving nodes. In observed runs the surviving
-// replicas don't even reach `became candidate` for ~25s after
-// the kill and don't reach `became leader` within the 30s
-// workload + 120s AwaitCompletion window. Because no new raft
-// leader exists, no LeaderUpdated fires, the engine never runs
-// candidacy, no AnnounceLeader is proposed, and any
-// in-flight invocation whose session lived on the killed node
-// stays Scheduled/Invoked until the test cleanup. Observed
-// loss tracks the in-flight window at kill time (~10% at
-// rate=50 RPS, 30s, single kill).
-//
-// Two engine-side races have been closed and the test stays
-// red regardless of them:
-//   - Pre-Start StartInvocation buffer (invoker.go) — closes
-//     the apply→dispatchActions race that fired before
-//     PartitionRunner.onBecomeLeader's goroutine reached
-//     invoker.Start.
-//   - Candidacy re-entry from non-Follower state (leadership.go
-//     OnRaftLeaderChange) — closes the case where a survivor
-//     was stuck in Candidate from a prior failed candidacy and
-//     would have swallowed a fresh LeaderUpdated targeting
-//     itself.
-//
-// The remaining gap is dragonboat election tuning (likely
-// RTTMillisecond and election timeout under closing-node
-// churn) and possibly the in-process transport's behavior on
-// abrupt Host.Close. Close this docstring on green once that
-// path is fixed.
-//
 // Invocation:
 //
 //	go test -tags=loadtest -timeout=10m -run=TestChaos_LeaderLoss \

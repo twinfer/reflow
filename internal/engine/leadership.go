@@ -153,7 +153,23 @@ func (l *Leadership) OnRaftLeaderChange(raftLeaderID uint64) {
 		// lower-epoch path in OnAnnounceLeader and is harmlessly
 		// ignored.
 		if !(l.state == Leader && l.leaderEpoch >= l.latestAnnouncedEpoch) {
-			l.leaderEpoch++
+			// Bump leaderEpoch past any epoch already announced on
+			// this shard, not just our own prior value. Required for
+			// dedup correctness: self-proposal dedup keys are
+			// (leader_epoch, seq) with no node_id, so two leaders that
+			// share an epoch collide on disk. A node that was a
+			// follower through a prior leader's tenure observed
+			// AnnounceLeader applies that set latestAnnouncedEpoch
+			// without touching leaderEpoch; without this max(), our
+			// fresh candidacy reuses an epoch the prior leader had
+			// already issued self-proposals under, the DedupTable
+			// silently absorbs our AnnounceLeader as a duplicate, and
+			// Leadership.OnAnnounceLeader never fires. Net effect:
+			// raft says we're leader, reflow never knows, partition
+			// stays headless until cluster teardown. Observed as ~3%
+			// invocations stuck Scheduled on the shard whose leader
+			// changed during partition heal.
+			l.leaderEpoch = max(l.leaderEpoch, l.latestAnnouncedEpoch) + 1
 			l.state = Candidate
 			runCandidate = true
 			candidateEpoch = l.leaderEpoch

@@ -24,16 +24,6 @@ import (
 // Post-run invariant: every issued invocation reaches a terminal
 // state within the AwaitCompletion deadline.
 //
-// KNOWN FAILURE — same class as TestChaos_LeaderLoss. The bufconn
-// transport itself is verified (transport-level Cut/Heal work, clean
-// teardown), but isolating a node that hosts a partition leader
-// strands a small fraction of in-flight invocations in Scheduled/
-// Invoked after the partition heals (~3% at 50 RPS, 30s, single
-// 10s isolation). The remaining gap is the same dragonboat-layer
-// election-delay issue documented on TestChaos_LeaderLoss; this
-// test will go green when that path is fixed. Close this docstring
-// at that point.
-//
 // Invocation:
 //
 //	go test -tags=loadtest -timeout=10m -run=TestChaos_LeaderIsolated \

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cockroachdb/pebble/v2"
 	"github.com/google/uuid"
 	"github.com/lni/dragonboat/v4"
 	"github.com/lni/dragonboat/v4/config"
@@ -98,6 +99,15 @@ type HostConfig struct {
 	// non-blocking send into a buffered-1 channel consumed by the
 	// snapshot archive producer). Phase 5.
 	OnSnapshotPersisted func(shardID uint64)
+
+	// PebbleOptions, when non-nil, is consulted on each per-shard Pebble
+	// open (both metadata shard 0 and partition shards 1..N). The
+	// returned *pebble.Options is passed straight to pebble.Open; nil
+	// means "use Pebble defaults" (the production path). The hook
+	// exists to let the load/chaos harness inject a vfs.FS wrapper
+	// (slow-disk fault injection) or non-default tunables without
+	// having to fork the engine. Phase 5.
+	PebbleOptions func(shardID uint64) *pebble.Options
 }
 
 // Peer is a static cluster member known at bootstrap. NodeHostID may be
@@ -268,6 +278,16 @@ func findPeer(peers []Peer, nodeID uint64) *Peer {
 // phases). Production code should prefer Host-provided methods.
 func (h *Host) NodeHost() *dragonboat.NodeHost { return h.nh }
 
+// pebbleOptionsFor returns the per-shard Pebble options, or nil when
+// the caller did not supply a hook (the production default — Pebble
+// applies its own defaults).
+func (h *Host) pebbleOptionsFor(shardID uint64) *pebble.Options {
+	if h.cfg.PebbleOptions == nil {
+		return nil
+	}
+	return h.cfg.PebbleOptions(shardID)
+}
+
 // SetCrossShardSender installs the cross-shard dispatcher every later
 // StartPartition call will hand to its OutboxService. Must be called
 // before StartPartition for multi-node deployments — partitions that
@@ -297,7 +317,7 @@ func (h *Host) StartMetadataShard() (*MetadataRunner, error) {
 
 	dataDir := filepath.Join(h.cfg.DataDir, "meta", "state")
 	snap, err := NewSnapshotter(dataDir, func(p string) (storage.Store, error) {
-		return storage.OpenPebbleWithFormatGuard(p, nil, storage.StorageFormatVersion)
+		return storage.OpenPebbleWithFormatGuard(p, h.pebbleOptionsFor(shardID), storage.StorageFormatVersion)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("host: open metadata store: %w", err)
@@ -473,7 +493,7 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 
 	dataDir := filepath.Join(h.cfg.DataDir, fmt.Sprintf("p%d", shardID), "state")
 	snap, err := NewSnapshotter(dataDir, func(p string) (storage.Store, error) {
-		return storage.OpenPebbleWithFormatGuard(p, nil, storage.StorageFormatVersion)
+		return storage.OpenPebbleWithFormatGuard(p, h.pebbleOptionsFor(shardID), storage.StorageFormatVersion)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("host: open partition store: %w", err)

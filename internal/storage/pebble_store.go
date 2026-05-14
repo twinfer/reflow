@@ -67,6 +67,11 @@ func (s *PebbleStore) Checkpoint(destDir string) error {
 func (s *PebbleStore) Flush() error { return s.db.Flush() }
 func (s *PebbleStore) Close() error { return s.db.Close() }
 
+// Metrics returns the live pebble.Metrics snapshot. Used by the load
+// harness to sample write amplification, L0 file count, compaction
+// stats, and block-cache hit rate during sustained workload.
+func (s *PebbleStore) Metrics() *pebble.Metrics { return s.db.Metrics() }
+
 type pebbleBatch struct {
 	batch *pebble.Batch
 }

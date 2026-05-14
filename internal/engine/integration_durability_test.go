@@ -3,25 +3,18 @@ package engine_test
 import (
 	"context"
 	"fmt"
-	"net"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/twinfer/reflow/internal/engine"
+	"github.com/twinfer/reflow/internal/loadgen"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-func freeLocalAddr(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := l.Addr().String()
-	_ = l.Close()
-	return addr
-}
+// freeLocalAddr is a thin shim into loadgen.FreeLocalAddr so the
+// existing engine_test call sites don't have to migrate imports.
+func freeLocalAddr(t *testing.T) string { return loadgen.FreeLocalAddr(t) }
 
 // bringUpSingleNode starts a one-partition Host. The raftAddr argument lets
 // callers reuse the same advertised address across restarts so dragonboat's

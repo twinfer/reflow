@@ -50,7 +50,7 @@ func (a *adminRig) close() {
 		_ = a.adminLn.Close()
 	}
 	if a.nodeRig != nil {
-		a.nodeRig.close()
+		a.nodeRig.Close()
 	}
 }
 
@@ -60,8 +60,8 @@ func (a *adminRig) close() {
 func startAdminInsecure(t *testing.T, r *nodeRig) *adminRig {
 	t.Helper()
 	srv, err := admin.NewServer(admin.Config{
-		Host:   r.host,
-		Runner: r.host.MetadataRunner(),
+		Host:   r.Host,
+		Runner: r.Host.MetadataRunner(),
 	})
 	if err != nil {
 		t.Fatalf("admin.NewServer: %v", err)
@@ -100,7 +100,7 @@ func awaitMetadataLeaderRig(t *testing.T, rigs []*nodeRig, timeout time.Duration
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		for _, r := range rigs {
-			if mr := r.host.MetadataRunner(); mr != nil && mr.IsLeader() {
+			if mr := r.Host.MetadataRunner(); mr != nil && mr.IsLeader() {
 				return r
 			}
 		}
@@ -116,7 +116,7 @@ func awaitMembership(t *testing.T, leader *nodeRig, min int, timeout time.Durati
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		members, err := leader.host.Membership(ctx)
+		members, err := leader.Host.Membership(ctx)
 		cancel()
 		if err == nil && len(members) >= min {
 			return members
@@ -206,7 +206,7 @@ func TestAdminRemoveNode_LogicallyEvicts(t *testing.T) {
 	victim := uint64(0)
 	for _, r := range rigs {
 		if r != leader {
-			victim = r.host.NodeID()
+			victim = r.Host.NodeID()
 			break
 		}
 	}
@@ -229,8 +229,8 @@ func TestAdminRemoveNode_LogicallyEvicts(t *testing.T) {
 	// shard the node was in.
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		members, _ := leader.host.Membership(ctx)
-		pt, _ := leader.host.PartitionTable(ctx)
+		members, _ := leader.Host.Membership(ctx)
+		pt, _ := leader.Host.PartitionTable(ctx)
 		marked := false
 		for _, m := range members {
 			if m.GetNodeId() == victim && m.GetLastSeenMs() == 0 {
@@ -271,8 +271,8 @@ func TestAdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	// callers without verified TLS, but Require+VerifyClientCert at the
 	// TLS layer should reject them first.
 	srv, err := admin.NewServer(admin.Config{
-		Host:   leader.host,
-		Runner: leader.host.MetadataRunner(),
+		Host:   leader.Host,
+		Runner: leader.Host.MetadataRunner(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -385,7 +385,7 @@ func TestSnapshot_PartitionExportAndArchive(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	idx, err := owner.host.SnapshotPartitionToDir(ctx, 1, exportDir)
+	idx, err := owner.Host.SnapshotPartitionToDir(ctx, 1, exportDir)
 	if err != nil {
 		t.Fatalf("SnapshotPartitionToDir: %v", err)
 	}
@@ -468,8 +468,8 @@ func TestAdminDeleteSnapshot(t *testing.T) {
 	}
 
 	srv, err := admin.NewServer(admin.Config{
-		Host:   leader.host,
-		Runner: leader.host.MetadataRunner(),
+		Host:   leader.Host,
+		Runner: leader.Host.MetadataRunner(),
 		Repo:   repo,
 	})
 	if err != nil {

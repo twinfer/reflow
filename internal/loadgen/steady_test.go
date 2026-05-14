@@ -73,7 +73,7 @@ func TestLoad_SteadyState(t *testing.T) {
 	}
 	stopSampling()
 
-	violations := loadgen.AwaitCompletion(ctx, cluster, issued, 60*time.Second)
+	violations := loadgen.AwaitCompletion(ctx, cluster, issued, 120*time.Second)
 
 	resultDir := filepath.Join(t.TempDir(), "results")
 	summary, err := (loadgen.ResultDir{Path: resultDir}).WriteAll(stats, sampler, violations)

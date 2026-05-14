@@ -70,11 +70,28 @@ type ClusterOptions struct {
 	OnSnapshotPersisted func(shardID uint64)
 }
 
+// nodeAddrs captures the three TCP endpoints a node binds at
+// bootstrap. Persisted on Cluster so RestartNode can rebind to the
+// same addresses (dragonboat's static peer config does not tolerate
+// address changes).
+type nodeAddrs struct {
+	raft, gossip, delivery string
+}
+
 // Cluster is the bootstrap result: the live nodes and the
 // Partitioner that matches the cluster's shard count.
+//
+// The unexported fields persist enough state that fault-injection
+// methods (KillNode, RestartNode) can rebuild a node in place
+// without re-running the full NewCluster bring-up.
 type Cluster struct {
 	Nodes       []*Node
 	Partitioner routing.Partitioner
+
+	addrs    []nodeAddrs
+	peers    []engine.Peer
+	dataDirs []string
+	opts     ClusterOptions
 }
 
 // Close tears every node down. Safe even when bring-up failed
@@ -106,90 +123,45 @@ func NewCluster(t testing.TB, opts ClusterOptions) *Cluster {
 	}
 	n := opts.N
 
-	type addrs struct {
-		raft, gossip, delivery string
-	}
 	cluster := &Cluster{
 		Nodes:       make([]*Node, n),
 		Partitioner: routing.Partitioner{NumShards: uint64(n)},
+		addrs:       make([]nodeAddrs, n),
+		dataDirs:    make([]string, n),
+		opts:        opts,
 	}
-	allAddrs := make([]addrs, n)
-	for i := range allAddrs {
-		allAddrs[i] = addrs{
+	for i := range cluster.addrs {
+		cluster.addrs[i] = nodeAddrs{
 			raft:     FreeLocalAddr(t),
 			gossip:   FreeLocalAddr(t),
 			delivery: FreeLocalAddr(t),
 		}
 	}
 
-	peers := make([]engine.Peer, n)
-	for i := range peers {
-		peers[i] = engine.Peer{
+	cluster.peers = make([]engine.Peer, n)
+	for i := range cluster.peers {
+		cluster.peers[i] = engine.Peer{
 			NodeID:     uint64(i + 1),
-			RaftAddr:   allAddrs[i].raft,
-			GossipAddr: allAddrs[i].gossip,
+			RaftAddr:   cluster.addrs[i].raft,
+			GossipAddr: cluster.addrs[i].gossip,
 		}
 	}
 
-	dataDirs := make([]string, n)
 	for i := range n {
-		dataDirs[i] = filepath.Join(t.TempDir(), fmt.Sprintf("node%d", i+1))
+		cluster.dataDirs[i] = filepath.Join(t.TempDir(), fmt.Sprintf("node%d", i+1))
 	}
 
-	// Stage 1: construct Hosts.
+	// Stages 1-3: per-node bring-up — same loop body as RestartNode.
 	for i := range n {
-		h, err := engine.NewHost(engine.HostConfig{
-			NodeID:              uint64(i + 1),
-			RaftAddr:            allAddrs[i].raft,
-			DataDir:             dataDirs[i],
-			RTTMillisecond:      50,
-			NumPartitionShards:  uint64(n),
-			Handlers:            opts.Handlers,
-			Peers:               peers,
-			GossipBindAddr:      allAddrs[i].gossip,
-			GossipAdvAddr:       allAddrs[i].gossip,
-			GrpcEndpoint:        allAddrs[i].delivery,
-			PebbleOptions:       opts.PebbleOptions,
-			OnSnapshotPersisted: opts.OnSnapshotPersisted,
-		})
-		if err != nil {
+		if err := cluster.bringUpNode(t, i); err != nil {
 			cluster.Close()
-			t.Fatalf("loadgen: NewHost(%d): %v", i+1, err)
+			t.Fatalf("loadgen: bringUpNode(%d): %v", i+1, err)
 		}
-		cluster.Nodes[i] = &Node{Host: h}
 	}
 
-	// Stage 2: Delivery clients (resolver = own host) as CrossShardSender.
-	for i, node := range cluster.Nodes {
-		dc, err := delivery.NewClient(delivery.ClientConfig{Resolver: node.Host})
-		if err != nil {
-			cluster.Close()
-			t.Fatalf("loadgen: delivery.NewClient(%d): %v", i+1, err)
-		}
-		node.DeliveryClient = dc
-		node.Host.SetCrossShardSender(dc)
-	}
-
-	// Stage 3: Delivery servers — must be live before any partition
-	// can produce cross-shard envelopes.
-	for i, node := range cluster.Nodes {
-		ln, err := net.Listen("tcp", allAddrs[i].delivery)
-		if err != nil {
-			cluster.Close()
-			t.Fatalf("loadgen: listen delivery(%d): %v", i+1, err)
-		}
-		gs := grpc.NewServer()
-		deliveryv1.RegisterDeliveryServer(gs, delivery.NewServer(node.Host, nil))
-		node.DeliveryLn = ln
-		node.DeliveryServer = gs
-		go func() {
-			if err := gs.Serve(ln); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-				t.Logf("loadgen: delivery Serve(%d) exited: %v", i+1, err)
-			}
-		}()
-	}
-
-	// Stage 4: shards — metadata first, then partitions.
+	// Stage 4: shards — metadata first, then partitions. Cluster-
+	// scope because every node must have its NodeHost ready before
+	// any partition shard starts emitting outbox rows.
 	for i, node := range cluster.Nodes {
 		if _, err := node.Host.StartMetadataShard(); err != nil {
 			cluster.Close()
@@ -267,6 +239,19 @@ func (c *Cluster) AwaitAnyPartitionLeader(ctx context.Context, shardID uint64) e
 	}
 }
 
+// AnyLiveNode returns any non-nil node in the cluster, or nil if
+// every slot has been killed. Used by clients that need to do a
+// linearizable read against the cluster without caring which node
+// serves it (the lookup goes through dragonboat's leader anyway).
+func (c *Cluster) AnyLiveNode() *Node {
+	for _, n := range c.Nodes {
+		if n != nil {
+			return n
+		}
+	}
+	return nil
+}
+
 // FindPartitionLeader returns the node leading shardID, or nil. The
 // caller should retry; leadership can rotate at any time.
 func (c *Cluster) FindPartitionLeader(shardID uint64) *Node {
@@ -276,6 +261,133 @@ func (c *Cluster) FindPartitionLeader(shardID uint64) *Node {
 		}
 		if pr := node.Host.Partition(shardID); pr != nil && pr.IsLeader() {
 			return node
+		}
+	}
+	return nil
+}
+
+// bringUpNode constructs (or re-constructs) the Host + Delivery
+// stack for cluster.Nodes[idx]. Stages 1-3 of NewCluster's bring-up,
+// idempotent against pre-existing on-disk state (dragonboat detects
+// the existing raft log and resumes; Pebble re-opens the existing
+// dataDir).
+//
+// Does NOT start any shards — callers handle that explicitly so
+// NewCluster can stage shard starts cluster-wide.
+func (c *Cluster) bringUpNode(t testing.TB, idx int) error {
+	t.Helper()
+	addrs := c.addrs[idx]
+	h, err := engine.NewHost(engine.HostConfig{
+		NodeID:              uint64(idx + 1),
+		RaftAddr:            addrs.raft,
+		DataDir:             c.dataDirs[idx],
+		RTTMillisecond:      50,
+		NumPartitionShards:  uint64(len(c.Nodes)),
+		Handlers:            c.opts.Handlers,
+		Peers:               c.peers,
+		GossipBindAddr:      addrs.gossip,
+		GossipAdvAddr:       addrs.gossip,
+		GrpcEndpoint:        addrs.delivery,
+		PebbleOptions:       c.opts.PebbleOptions,
+		OnSnapshotPersisted: c.opts.OnSnapshotPersisted,
+	})
+	if err != nil {
+		return fmt.Errorf("NewHost: %w", err)
+	}
+
+	dc, err := delivery.NewClient(delivery.ClientConfig{Resolver: h})
+	if err != nil {
+		_ = h.Close()
+		return fmt.Errorf("delivery.NewClient: %w", err)
+	}
+	h.SetCrossShardSender(dc)
+
+	ln, err := listenWithRetry(addrs.delivery, 2*time.Second)
+	if err != nil {
+		_ = dc.Close()
+		_ = h.Close()
+		return fmt.Errorf("listen delivery: %w", err)
+	}
+	gs := grpc.NewServer()
+	deliveryv1.RegisterDeliveryServer(gs, delivery.NewServer(h, nil))
+	go func() {
+		if err := gs.Serve(ln); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			t.Logf("loadgen: delivery Serve(%d) exited: %v", idx+1, err)
+		}
+	}()
+
+	c.Nodes[idx] = &Node{
+		Host:           h,
+		DeliveryServer: gs,
+		DeliveryLn:     ln,
+		DeliveryClient: dc,
+	}
+	return nil
+}
+
+// listenWithRetry retries net.Listen briefly to ride out TIME_WAIT
+// or other transient bind failures that can follow a recent Close.
+// Returns immediately on success; gives up after timeout.
+func listenWithRetry(addr string, timeout time.Duration) (net.Listener, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		ln, err := net.Listen("tcp", addr)
+		if err == nil {
+			return ln, nil
+		}
+		lastErr = err
+		time.Sleep(50 * time.Millisecond)
+	}
+	return nil, lastErr
+}
+
+// KillNode closes cluster.Nodes[idx] without waiting for graceful
+// shutdown beyond what Host.Close already provides. The node slot
+// is left as nil so subsequent leader queries skip it. Idempotent.
+//
+// Concurrent fault: callers may KillNode while the workload is
+// running; the workload's leader-pick falls through to a surviving
+// node on the next attempt.
+func (c *Cluster) KillNode(idx int) {
+	if idx < 0 || idx >= len(c.Nodes) {
+		return
+	}
+	node := c.Nodes[idx]
+	if node == nil {
+		return
+	}
+	c.Nodes[idx] = nil
+	node.Close()
+}
+
+// RestartNode re-bootstraps cluster.Nodes[idx] on its original
+// addresses + dataDir, restarts its metadata shard and every
+// partition shard, and returns when the dragonboat NodeHost is
+// live. Caller is responsible for awaiting any leader-stability
+// invariants needed by the scenario.
+//
+// Requires KillNode to have been called first (or the original
+// node to be nil); returns an error otherwise so accidental
+// double-bring-up is loud.
+func (c *Cluster) RestartNode(t testing.TB, idx int) error {
+	t.Helper()
+	if idx < 0 || idx >= len(c.Nodes) {
+		return fmt.Errorf("loadgen: RestartNode: idx %d out of range", idx)
+	}
+	if c.Nodes[idx] != nil {
+		return fmt.Errorf("loadgen: RestartNode: node %d still running (call KillNode first)", idx+1)
+	}
+	if err := c.bringUpNode(t, idx); err != nil {
+		return fmt.Errorf("bringUpNode: %w", err)
+	}
+	node := c.Nodes[idx]
+	if _, err := node.Host.StartMetadataShard(); err != nil {
+		return fmt.Errorf("StartMetadataShard: %w", err)
+	}
+	for sh := uint64(1); sh <= uint64(len(c.Nodes)); sh++ {
+		if _, err := node.Host.StartPartition(sh); err != nil {
+			return fmt.Errorf("StartPartition(%d): %w", sh, err)
 		}
 	}
 	return nil

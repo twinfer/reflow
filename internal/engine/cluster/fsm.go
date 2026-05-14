@@ -30,6 +30,7 @@ type SnapshotterRef interface {
 	Store() storage.Store
 	SaveSnapshot(w io.Writer) error
 	RecoverFromSnapshot(r io.Reader) error
+	Close() error
 }
 
 // Config is the inert configuration for a metadata FSM instance.
@@ -468,6 +469,14 @@ func (f *FSM) RecoverFromSnapshot(r io.Reader, _ <-chan struct{}) error {
 	return f.cfg.Snapshotter.RecoverFromSnapshot(r)
 }
 
-// Close releases FSM-owned resources. The snapshotter's underlying store is
-// managed by the host, not closed here.
-func (f *FSM) Close() error { return nil }
+// Close releases the underlying snapshotter (and its Pebble store).
+// Mirrors partition.Partition.Close: dragonboat calls this when the
+// NodeHost shuts the FSM down, and without it the metadata shard's
+// per-shard Pebble lock leaks for the lifetime of the process —
+// blocking any in-process restart of the host.
+func (f *FSM) Close() error {
+	if f.cfg.Snapshotter != nil {
+		return f.cfg.Snapshotter.Close()
+	}
+	return nil
+}

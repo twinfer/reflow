@@ -28,6 +28,21 @@ func AwaitCompletion(ctx context.Context, c *Cluster, issued []IssuedInvocation,
 	if len(issued) == 0 || c == nil || len(c.Nodes) == 0 {
 		return nil
 	}
+	live := c.AnyLiveNode()
+	if live == nil {
+		// No live node to issue lookups against; mark every
+		// pending invocation as unknown rather than silently
+		// returning success.
+		out := make([]Violation, 0, len(issued))
+		for _, inv := range issued {
+			out = append(out, Violation{
+				Kind:    "never_completed",
+				Detail:  fmt.Sprintf("shard=%d state=no_live_node", inv.ShardID),
+				Subject: inv.ID,
+			})
+		}
+		return out
+	}
 	deadline := time.Now().Add(timeout)
 	pending := make(map[string]IssuedInvocation, len(issued))
 	for _, inv := range issued {
@@ -42,7 +57,7 @@ poll:
 	for time.Now().Before(deadline) && len(pending) > 0 {
 		for key, inv := range pending {
 			lookupCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-			st, err := c.Nodes[0].Host.LookupInvocationStatus(lookupCtx, inv.ShardID, inv.ID)
+			st, err := live.Host.LookupInvocationStatus(lookupCtx, inv.ShardID, inv.ID)
 			cancel()
 			if err != nil || st == nil {
 				continue
@@ -69,9 +84,36 @@ poll:
 	}
 
 	for _, inv := range pending {
+		state := "unknown"
+		lookupCtx, lc := context.WithTimeout(ctx, 500*time.Millisecond)
+		st, err := live.Host.LookupInvocationStatus(lookupCtx, inv.ShardID, inv.ID)
+		lc()
+		switch {
+		case err != nil:
+			state = fmt.Sprintf("lookup_err=%v", err)
+		case st == nil:
+			state = "nil_status"
+		case st.GetStatus() == nil:
+			state = "no_kind"
+		default:
+			switch st.GetStatus().(type) {
+			case *enginev1.InvocationStatus_Free:
+				state = "Free"
+			case *enginev1.InvocationStatus_Scheduled:
+				state = "Scheduled"
+			case *enginev1.InvocationStatus_Invoked:
+				state = "Invoked"
+			case *enginev1.InvocationStatus_Suspended:
+				state = "Suspended"
+			case *enginev1.InvocationStatus_Completed:
+				state = "Completed(missed_by_poller)"
+			default:
+				state = fmt.Sprintf("%T", st.GetStatus())
+			}
+		}
 		violations = append(violations, Violation{
 			Kind:    "never_completed",
-			Detail:  fmt.Sprintf("shard=%d", inv.ShardID),
+			Detail:  fmt.Sprintf("shard=%d state=%s", inv.ShardID, state),
 			Subject: inv.ID,
 		})
 	}

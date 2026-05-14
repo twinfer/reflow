@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/pkg/sdk"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -124,8 +125,12 @@ func (cfg WorkloadConfig) Run(ctx context.Context, sampler *Sampler) (WorkloadSt
 			inflight.Range(func(k, v any) bool {
 				key := k.(string)
 				entry := v.(inflightEntry)
+				live := cfg.Cluster.AnyLiveNode()
+				if live == nil {
+					return false
+				}
 				lookupCtx, lc := context.WithTimeout(context.Background(), 500*time.Millisecond)
-				st, err := cfg.Cluster.Nodes[0].Host.LookupInvocationStatus(lookupCtx, entry.inv.ShardID, entry.inv.ID)
+				st, err := live.Host.LookupInvocationStatus(lookupCtx, entry.inv.ShardID, entry.inv.ID)
 				lc()
 				if err != nil || st == nil {
 					return true
@@ -165,24 +170,24 @@ func (cfg WorkloadConfig) Run(ctx context.Context, sampler *Sampler) (WorkloadSt
 			break
 		}
 		inv := newInvocation(cfg.Service, partitioner)
-		// Pick the local node that leads inv.ShardID, falling back to
-		// node 0 if no leader is currently known — ProposeIngress
-		// will surface the not-leader error and the poller will
-		// observe nothing for this id; the post-run invariant check
-		// catches the orphan.
+		// Pick the current leader for inv.ShardID; if none is known
+		// (election in flight), fall back to any live node that
+		// hosts the shard — dragonboat forwards the propose to
+		// whoever leads. Killed nodes appear as nil in Cluster.Nodes
+		// and must be skipped.
 		leader := cfg.Cluster.FindPartitionLeader(inv.ShardID)
-		if leader == nil {
-			leader = cfg.Cluster.Nodes[0]
+		var proposer *engine.PartitionRunner
+		if leader != nil {
+			proposer = leader.Host.Partition(inv.ShardID)
 		}
-		proposer := leader.Host.Partition(inv.ShardID)
 		if proposer == nil {
-			// Local node doesn't host this shard. Fall back to any
-			// node that does — every node hosts every shard in the
-			// loadgen cluster.
 			for _, n := range cfg.Cluster.Nodes {
-				if n.Host.Partition(inv.ShardID) != nil {
+				if n == nil {
+					continue
+				}
+				if pr := n.Host.Partition(inv.ShardID); pr != nil {
 					leader = n
-					proposer = n.Host.Partition(inv.ShardID)
+					proposer = pr
 					break
 				}
 			}

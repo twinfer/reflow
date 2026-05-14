@@ -31,6 +31,7 @@ type stubSnapshotter struct{ store storage.Store }
 func (s *stubSnapshotter) Store() storage.Store                  { return s.store }
 func (s *stubSnapshotter) SaveSnapshot(_ io.Writer) error        { return nil }
 func (s *stubSnapshotter) RecoverFromSnapshot(_ io.Reader) error { return nil }
+func (s *stubSnapshotter) Close() error                          { return nil }
 
 func newTestFSM(t *testing.T) (*FSM, *stubLeadership, storage.Store) {
 	t.Helper()

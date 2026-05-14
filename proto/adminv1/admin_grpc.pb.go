@@ -50,6 +50,7 @@ const (
 	Admin_ListPartitions_FullMethodName = "/reflow.admin.v1.Admin/ListPartitions"
 	Admin_CreateSnapshot_FullMethodName = "/reflow.admin.v1.Admin/CreateSnapshot"
 	Admin_ListSnapshots_FullMethodName  = "/reflow.admin.v1.Admin/ListSnapshots"
+	Admin_DeleteSnapshot_FullMethodName = "/reflow.admin.v1.Admin/DeleteSnapshot"
 )
 
 // AdminClient is the client API for Admin service.
@@ -75,6 +76,9 @@ type AdminClient interface {
 	CreateSnapshot(ctx context.Context, in *CreateSnapshotRequest, opts ...grpc.CallOption) (*CreateSnapshotResponse, error)
 	// ListSnapshots enumerates archived snapshots for a partition shard.
 	ListSnapshots(ctx context.Context, in *ListSnapshotsRequest, opts ...grpc.CallOption) (*ListSnapshotsResponse, error)
+	// DeleteSnapshot removes a single archived snapshot. Idempotent —
+	// returns OK when the snapshot is already absent.
+	DeleteSnapshot(ctx context.Context, in *DeleteSnapshotRequest, opts ...grpc.CallOption) (*DeleteSnapshotResponse, error)
 }
 
 type adminClient struct {
@@ -145,6 +149,16 @@ func (c *adminClient) ListSnapshots(ctx context.Context, in *ListSnapshotsReques
 	return out, nil
 }
 
+func (c *adminClient) DeleteSnapshot(ctx context.Context, in *DeleteSnapshotRequest, opts ...grpc.CallOption) (*DeleteSnapshotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteSnapshotResponse)
+	err := c.cc.Invoke(ctx, Admin_DeleteSnapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServer is the server API for Admin service.
 // All implementations must embed UnimplementedAdminServer
 // for forward compatibility.
@@ -168,6 +182,9 @@ type AdminServer interface {
 	CreateSnapshot(context.Context, *CreateSnapshotRequest) (*CreateSnapshotResponse, error)
 	// ListSnapshots enumerates archived snapshots for a partition shard.
 	ListSnapshots(context.Context, *ListSnapshotsRequest) (*ListSnapshotsResponse, error)
+	// DeleteSnapshot removes a single archived snapshot. Idempotent —
+	// returns OK when the snapshot is already absent.
+	DeleteSnapshot(context.Context, *DeleteSnapshotRequest) (*DeleteSnapshotResponse, error)
 	mustEmbedUnimplementedAdminServer()
 }
 
@@ -195,6 +212,9 @@ func (UnimplementedAdminServer) CreateSnapshot(context.Context, *CreateSnapshotR
 }
 func (UnimplementedAdminServer) ListSnapshots(context.Context, *ListSnapshotsRequest) (*ListSnapshotsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListSnapshots not implemented")
+}
+func (UnimplementedAdminServer) DeleteSnapshot(context.Context, *DeleteSnapshotRequest) (*DeleteSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteSnapshot not implemented")
 }
 func (UnimplementedAdminServer) mustEmbedUnimplementedAdminServer() {}
 func (UnimplementedAdminServer) testEmbeddedByValue()               {}
@@ -325,6 +345,24 @@ func _Admin_ListSnapshots_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Admin_DeleteSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServer).DeleteSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Admin_DeleteSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServer).DeleteSnapshot(ctx, req.(*DeleteSnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Admin_ServiceDesc is the grpc.ServiceDesc for Admin service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -355,6 +393,10 @@ var Admin_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListSnapshots",
 			Handler:    _Admin_ListSnapshots_Handler,
+		},
+		{
+			MethodName: "DeleteSnapshot",
+			Handler:    _Admin_DeleteSnapshot_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

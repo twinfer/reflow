@@ -18,8 +18,8 @@ func TestBuildMethodPolicy_InheritsAdminServiceDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildMethodPolicy: %v", err)
 	}
-	if got := len(policy); got != 6 {
-		t.Errorf("policy entries = %d; want 6", got)
+	if got := len(policy); got != 7 {
+		t.Errorf("policy entries = %d; want 7", got)
 	}
 	for fullMethod, role := range policy {
 		if !strings.HasPrefix(fullMethod, "/reflow.admin.v1.Admin/") {

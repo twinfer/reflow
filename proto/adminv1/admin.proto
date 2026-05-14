@@ -54,6 +54,9 @@ service Admin {
   rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
   // ListSnapshots enumerates archived snapshots for a partition shard.
   rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
+  // DeleteSnapshot removes a single archived snapshot. Idempotent —
+  // returns OK when the snapshot is already absent.
+  rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
 }
 
 message AddNodeRequest {
@@ -107,4 +110,10 @@ message SnapshotRef {
 message ListSnapshotsResponse {
   repeated SnapshotRef snapshots = 1;
 }
+
+message DeleteSnapshotRequest {
+  uint64 shard_id = 1;
+  uint64 index = 2;
+}
+message DeleteSnapshotResponse {}
 

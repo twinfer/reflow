@@ -54,21 +54,33 @@ type AdminConfig struct {
 	Disabled bool `koanf:"disabled"`
 }
 
-// SnapshotConfig configures the per-partition DR snapshot producer
-// and the archive repository (filesystem driver only in Phase 4.2).
+// SnapshotConfig configures the per-partition DR snapshot producer,
+// the archive repository, and the retention reaper.
+//
+// The URL selects the gocloud.dev/blob driver:
+//
+//	file:///mnt/reflow-snaps       local filesystem (dev / NFS / shared volume)
+//	s3://bucket?prefix=reflow/     AWS S3
+//	gs://bucket?prefix=reflow/     Google Cloud Storage
+//	azblob://container?prefix=…    Azure Blob Storage
+//	mem://                         in-memory (tests only)
+//
+// Provider-native flags (SSE-KMS, CMEK, Azure SSE, regions, custom
+// endpoints) ride on the URL query string; reflow doesn't interpret
+// them — see https://gocloud.dev/concepts/urls/.
 type SnapshotConfig struct {
+	// URL identifies the snapshot bucket. Empty disables archiving;
+	// admin snapshot RPCs return FailedPrecondition.
+	URL string `koanf:"url"`
 	// Interval between automatic snapshot cycles per partition shard.
 	// Zero disables the producer; admin RPC CreateSnapshot still works.
 	Interval time.Duration `koanf:"interval"`
-	// Retain is the per-shard retention count handed to the FSRepository.
-	// 0 means "retain all".
+	// Retain is the per-shard count retention enforced inline on Put.
+	// 0 means "retain all". Combine with RetentionAge for time-based GC.
 	Retain int `koanf:"retain"`
-	// Driver selects the repository implementation. Empty disables
-	// archiving (admin snapshot RPCs return FailedPrecondition). Phase
-	// 4.2 only recognizes "fs".
-	Driver string `koanf:"driver"`
-	// FSRoot is the filesystem root for Driver="fs".
-	FSRoot string `koanf:"fs_root"`
+	// RetentionAge drops archives whose mod time is older than this.
+	// 0 disables age-based reaping. The reaper polls at hourly cadence.
+	RetentionAge time.Duration `koanf:"retention_age"`
 	// ScratchDir is where dragonboat Exported snapshots land before
 	// archiving. Empty falls back to $TMPDIR/reflow-snapshot-scratch.
 	ScratchDir string `koanf:"scratch_dir"`

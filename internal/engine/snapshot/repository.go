@@ -1,11 +1,14 @@
 // Package snapshot is the off-host snapshot archive for reflow's
-// partition shards. Phase 4.2.
+// partition shards.
 //
 // Dragonboat already streams snapshots between live replicas
 // internally; this package is purely for disaster recovery — archive a
-// point-in-time Exported snapshot somewhere durable (Phase 4.2 ships a
-// filesystem driver) so that a totally-cold cluster can be reseeded
-// via tools.ImportSnapshot.
+// point-in-time Exported snapshot somewhere durable so that a
+// totally-cold cluster can be reseeded via tools.ImportSnapshot.
+//
+// The Repository contract is directory-oriented (Put/Fetch take a
+// filesystem path). BlobRepository is the single concrete implementation
+// and covers every gocloud.dev/blob scheme: s3, gs, azblob, file, mem.
 package snapshot
 
 import (
@@ -21,9 +24,9 @@ type SnapshotRef struct {
 	CreatedAt time.Time
 }
 
-// Repository is the abstract archive. Phase 4.2 ships only the
-// filesystem driver (FSRepository); S3 / GCS land later behind the
-// same surface.
+// Repository is the abstract archive. BlobRepository is the only
+// concrete implementation; it covers every gocloud.dev/blob scheme
+// (s3, gs, azblob, file, mem).
 type Repository interface {
 	// Put archives the contents of srcDir as the snapshot for
 	// (shardID, index). Returns an error if a snapshot with the same

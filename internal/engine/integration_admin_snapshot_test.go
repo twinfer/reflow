@@ -21,11 +21,13 @@ import (
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/admin"
 	enginesnap "github.com/twinfer/reflow/internal/engine/snapshot"
+
 	"github.com/twinfer/reflow/internal/pki"
 	"github.com/twinfer/reflow/pkg/reflow"
 	"github.com/twinfer/reflow/pkg/sdk"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"gocloud.dev/blob"
 )
 
 // adminRig augments a Phase 4.1 nodeRig with an admin gRPC server.
@@ -404,7 +406,12 @@ func TestSnapshot_PartitionExportAndArchive(t *testing.T) {
 		src = filepath.Join(exportDir, entries[0].Name())
 	}
 
-	repo := &enginesnap.FSRepository{Root: t.TempDir()}
+	bucket, err := blob.OpenBucket(ctx, "mem://")
+	if err != nil {
+		t.Fatalf("open bucket: %v", err)
+	}
+	defer bucket.Close()
+	repo := &enginesnap.BlobRepository{Bucket: bucket}
 	if err := repo.Put(ctx, 1, idx, src); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -426,6 +433,80 @@ func TestSnapshot_PartitionExportAndArchive(t *testing.T) {
 	}
 	if len(rentries) == 0 {
 		t.Fatal("restored snapshot dir is empty")
+	}
+}
+
+// TestAdminDeleteSnapshot puts two archives, deletes one via the
+// admin RPC, and verifies List returns only the survivor.
+func TestAdminDeleteSnapshot(t *testing.T) {
+	rigs, _ := bringUpThreeNodeCluster(t, sdk.NewRegistry())
+	defer closeAll(rigs)
+
+	leader := awaitMetadataLeaderRig(t, rigs, 15*time.Second)
+	awaitMembership(t, leader, 3, 10*time.Second)
+
+	bucket, err := blob.OpenBucket(context.Background(), "mem://")
+	if err != nil {
+		t.Fatalf("open bucket: %v", err)
+	}
+	defer bucket.Close()
+	repo := &enginesnap.BlobRepository{Bucket: bucket}
+
+	// Seed two archives. The repo Put takes a source dir; reuse a tiny
+	// scratch dir so we don't need to drive dragonboat for this test.
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := repo.Put(ctx, 1, 100, src); err != nil {
+		t.Fatalf("Put 100: %v", err)
+	}
+	if err := repo.Put(ctx, 1, 200, src); err != nil {
+		t.Fatalf("Put 200: %v", err)
+	}
+
+	srv, err := admin.NewServer(admin.Config{
+		Host:   leader.host,
+		Runner: leader.host.MetadataRunner(),
+		Repo:   repo,
+	})
+	if err != nil {
+		t.Fatalf("admin.NewServer: %v", err)
+	}
+	ln, err := net.Listen("tcp", freeLocalAddr(t))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	gs := grpc.NewServer()
+	srv.Register(gs)
+	go func() { _ = gs.Serve(ln) }()
+	t.Cleanup(func() { gs.GracefulStop(); _ = ln.Close() })
+
+	cli, done := dialInsecureAdmin(t, ln.Addr().String())
+	defer done()
+
+	if _, err := cli.DeleteSnapshot(ctx, &adminv1.DeleteSnapshotRequest{
+		ShardId: 1, Index: 100,
+	}); err != nil {
+		t.Fatalf("DeleteSnapshot: %v", err)
+	}
+
+	resp, err := cli.ListSnapshots(ctx, &adminv1.ListSnapshotsRequest{ShardId: 1})
+	if err != nil {
+		t.Fatalf("ListSnapshots: %v", err)
+	}
+	got := resp.GetSnapshots()
+	if len(got) != 1 || got[0].GetIndex() != 200 {
+		t.Fatalf("after delete: %+v; want only index=200", got)
+	}
+
+	// Idempotent: deleting the same key again succeeds.
+	if _, err := cli.DeleteSnapshot(ctx, &adminv1.DeleteSnapshotRequest{
+		ShardId: 1, Index: 100,
+	}); err != nil {
+		t.Fatalf("second DeleteSnapshot: %v", err)
 	}
 }
 

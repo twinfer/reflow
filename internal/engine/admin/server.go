@@ -262,6 +262,26 @@ func (s *Server) CreateSnapshot(ctx context.Context, req *adminv1.CreateSnapshot
 	}, nil
 }
 
+// DeleteSnapshot removes (shard_id, index) from the configured
+// repository. Idempotent — succeeds when the snapshot is already absent.
+func (s *Server) DeleteSnapshot(ctx context.Context, req *adminv1.DeleteSnapshotRequest) (*adminv1.DeleteSnapshotResponse, error) {
+	if s.repo == nil {
+		return nil, status.Error(codes.FailedPrecondition, "admin: snapshot repository not configured")
+	}
+	if req.GetShardId() == 0 {
+		return nil, status.Error(codes.InvalidArgument, "admin: shard_id required")
+	}
+	if req.GetIndex() == 0 {
+		return nil, status.Error(codes.InvalidArgument, "admin: index required")
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	if err := s.repo.Delete(callCtx, req.GetShardId(), req.GetIndex()); err != nil {
+		return nil, status.Errorf(codes.Internal, "admin: delete snapshot: %v", err)
+	}
+	return &adminv1.DeleteSnapshotResponse{}, nil
+}
+
 // ListSnapshots delegates to Repository.List.
 func (s *Server) ListSnapshots(ctx context.Context, req *adminv1.ListSnapshotsRequest) (*adminv1.ListSnapshotsResponse, error) {
 	if s.repo == nil {

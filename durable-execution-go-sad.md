@@ -959,28 +959,36 @@ type SnapshotRepository interface {
 ```
 
 **Library: `gocloud.dev/blob`.** Apache 2.0, single interface over S3 /
-GCS / Azure Blob / local filesystem / in-memory. The local-filesystem
-driver (`fileblob`) is used in development; the in-memory driver
-(`memblob`) is used in tests; the cloud drivers ship in Phase 5.
+GCS / Azure Blob / local filesystem / in-memory. `BlobRepository`
+(`internal/engine/snapshot/blob.go`) is the only concrete implementation
+and covers every scheme: `s3`, `gs`, `azblob`, `file`, `mem`.
 
 **Object layout:**
 
 ```
-{prefix}/p{shardID:08d}/snapshot-{raftIndex:020d}.tar
+{prefix}/p{shardID:08d}/snapshot-{raftIndex:020d}.tar.gz
 {prefix}/p{shardID:08d}/snapshot-{raftIndex:020d}.meta.json
 ```
 
-The `.meta.json` carries `{shard_id, raft_index, leader_epoch,
-reflow_version, checksum, created_at_ms}` so an operator listing a
-bucket can identify snapshots without unpacking them.
+The archive is gzip-compressed tar; DR snapshots are cold and gzip is a
+~30–50% size win over raw tar. The `.meta.json` sidecar (protojson-
+serialized `enginev1.SnapshotMeta`) carries `{shard_id, raft_index,
+leader_epoch, reflow_version, checksum_sha256, created_at_ms}` so an
+operator listing a bucket can identify snapshots without unpacking them.
 
-**Configuration:**
+**Configuration:** `Snapshot.URL` selects the bucket; gocloud's native
+`?prefix=` URL parameter places the archive under a sub-folder.
 
-```bash
-reflowd --snapshot-store=s3://bucket/reflow      # cloud
-reflowd --snapshot-store=file:///mnt/snaps       # NFS / shared volume
-reflowd                                          # default: local only
 ```
+file:///mnt/reflow-snaps          local fs / NFS / shared volume
+s3://my-bucket?prefix=reflow/     AWS S3
+gs://my-bucket?prefix=reflow/     Google Cloud Storage
+azblob://my-container?prefix=…    Azure Blob Storage
+mem://                            in-memory (tests only)
+```
+
+Empty `Snapshot.URL` disables archiving; admin snapshot RPCs return
+`FailedPrecondition`.
 
 **Wiring into the snapshot path:**
 
@@ -993,14 +1001,20 @@ reflowd                                          # default: local only
 - A joining replica's catch-up path consults `List(shardID)` to pick the
   newest available snapshot.
 
-**Retention (Phase 5):** policies pruned by a small reaper goroutine on
-the metadata leader:
+**Retention.** Count and age policies pruned by a per-shard reaper
+goroutine; tiered (GFS-style) remains future work.
 
-- `--snapshot-retention-count=N` — keep last N per shard.
-- `--snapshot-retention-age=720h` — keep snapshots younger than the
-  duration.
-- `--snapshot-retention-policy=tiered` — GFS-style: daily for 7d, weekly
-  for 4w, monthly for 1y.
+- `Snapshot.Retain=N` — keep last N per shard. Enforced inline on
+  `BlobRepository.Put`; also re-checked by the reaper.
+- `Snapshot.RetentionAge=720h` — drop archives whose mod time is older
+  than the duration. Enforced by the reaper at hourly cadence.
+- Tiered (daily for 7d, weekly for 4w, monthly for 1y) — deferred;
+  separate design + PR.
+
+The reaper runs on every node (not metadata-leader-only) because
+`Repository.Delete` is idempotent against missing keys — duplicate
+deletes are benign. Revisit only if Delete RPS to the object store
+becomes a billing concern.
 
 **Encryption.** Server-side encryption (S3 SSE-KMS, GCS CMEK, Azure
 SSE) is supported by passing the cloud-provider-native flags through;
@@ -1417,11 +1431,14 @@ add/remove operations.
 
 ### Phase 5 — Production Hardening
 
-- **Cloud-backed `SnapshotRepository` drivers** (S3, GCS, Azure Blob via
-  `gocloud.dev/blob`). Retention policies (`count`, `age`, `tiered`).
-  Operator-facing `reflow snapshot list/restore/prune` commands.
-  Server-side encryption supported via cloud-native flags. Disaster
-  recovery + cluster migration runbooks. See §6.12.
+- **Cloud-backed `SnapshotRepository` drivers (DONE).** Single
+  `BlobRepository` over `gocloud.dev/blob` covers S3, GCS, Azure Blob,
+  filesystem, and in-memory. `.meta.json` sidecar per archive. Count +
+  age retention via a per-shard reaper goroutine; tiered policy
+  deferred. Admin `DeleteSnapshot` RPC + `reflow-cluster snapshot
+  delete` CLI. Server-side encryption flows through gocloud URL
+  parameters. Restore RPC and DR/migration runbooks remain future work.
+  See §6.12.
 - Pebble snapshot tuning (compaction, log retention, checkpoint cadence).
 - Load testing + chaos testing harness (jepsen-style at small scale).
 - Admin API surface: partition status, invocation inspection, replay

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -246,13 +247,17 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 
 	// Phase 4.2 surfaces below this point. All optional + multi-node-only.
 	var (
-		adminSrv    *grpc.Server
-		adminLn     net.Listener
-		snapshotCxl context.CancelFunc
+		adminSrv     *grpc.Server
+		adminLn      net.Listener
+		snapshotCxl  context.CancelFunc
+		snapshotRepo *snapshot.BlobRepository
 	)
 	cleanup := func() {
 		if snapshotCxl != nil {
 			snapshotCxl()
+		}
+		if snapshotRepo != nil {
+			_ = snapshotRepo.Close()
 		}
 		if adminSrv != nil {
 			adminSrv.Stop()
@@ -273,32 +278,50 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		}
 	}
 
-	var snapshotRepo snapshot.Repository
-	if multiNode && cfg.Snapshot.Driver == "fs" {
-		if cfg.Snapshot.FSRoot == "" {
+	var snapshotRepoIface snapshot.Repository
+	if multiNode && cfg.Snapshot.URL != "" {
+		bucket, err := snapshot.OpenBucket(context.Background(), cfg.Snapshot.URL)
+		if err != nil {
 			cleanup()
-			return nil, errors.New("reflow: Snapshot.FSRoot required when Driver=fs")
+			return nil, fmt.Errorf("reflow: open snapshot bucket: %w", err)
 		}
-		snapshotRepo = &snapshot.FSRepository{
-			Root:   cfg.Snapshot.FSRoot,
+		snapshotRepo = &snapshot.BlobRepository{
+			Bucket: bucket,
 			Retain: cfg.Snapshot.Retain,
 		}
+		snapshotRepoIface = snapshotRepo
+		snapCtx, cancel := context.WithCancel(context.Background())
+		snapshotCxl = cancel
 		if cfg.Snapshot.Interval > 0 {
-			snapCtx, cancel := context.WithCancel(context.Background())
-			snapshotCxl = cancel
 			source := &engine.HostSnapshotSource{Host: eh}
 			for _, sh := range shards {
 				go snapshot.RunProducer(snapCtx, snapshot.ProducerConfig{
 					ShardID:    sh,
 					Interval:   cfg.Snapshot.Interval,
 					Source:     source,
-					Repo:       snapshotRepo,
+					Repo:       snapshotRepoIface,
 					ScratchDir: cfg.Snapshot.ScratchDir,
 					Log:        logger,
 				})
 			}
 			logger.Info("reflow: snapshot producer started",
 				"interval", cfg.Snapshot.Interval, "shards", shards)
+		}
+		if cfg.Snapshot.Retain > 0 || cfg.Snapshot.RetentionAge > 0 {
+			for _, sh := range shards {
+				go snapshot.RunReaper(snapCtx, snapshot.ReaperConfig{
+					ShardID:      sh,
+					Interval:     time.Hour,
+					Repo:         snapshotRepoIface,
+					Retain:       cfg.Snapshot.Retain,
+					RetentionAge: cfg.Snapshot.RetentionAge,
+					Log:          logger,
+				})
+			}
+			logger.Info("reflow: snapshot reaper started",
+				"retain", cfg.Snapshot.Retain,
+				"retention_age", cfg.Snapshot.RetentionAge,
+				"shards", shards)
 		}
 	}
 
@@ -326,7 +349,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		srv, sErr := admin.NewServer(admin.Config{
 			Host:       eh,
 			Runner:     runner,
-			Repo:       snapshotRepo,
+			Repo:       snapshotRepoIface,
 			Source:     &engine.HostSnapshotSource{Host: eh},
 			Log:        logger,
 			ScratchDir: cfg.Snapshot.ScratchDir,
@@ -370,6 +393,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		adminSrv:       adminSrv,
 		adminLn:        adminLn,
 		snapshotCxl:    snapshotCxl,
+		snapshotRepo:   snapshotRepo,
 	}, nil
 }
 

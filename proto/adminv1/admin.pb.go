@@ -678,6 +678,94 @@ func (x *ListSnapshotsResponse) GetSnapshots() []*SnapshotRef {
 	return nil
 }
 
+type DeleteSnapshotRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ShardId       uint64                 `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
+	Index         uint64                 `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteSnapshotRequest) Reset() {
+	*x = DeleteSnapshotRequest{}
+	mi := &file_adminv1_admin_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteSnapshotRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteSnapshotRequest) ProtoMessage() {}
+
+func (x *DeleteSnapshotRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteSnapshotRequest.ProtoReflect.Descriptor instead.
+func (*DeleteSnapshotRequest) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *DeleteSnapshotRequest) GetShardId() uint64 {
+	if x != nil {
+		return x.ShardId
+	}
+	return 0
+}
+
+func (x *DeleteSnapshotRequest) GetIndex() uint64 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+type DeleteSnapshotResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteSnapshotResponse) Reset() {
+	*x = DeleteSnapshotResponse{}
+	mi := &file_adminv1_admin_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteSnapshotResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteSnapshotResponse) ProtoMessage() {}
+
+func (x *DeleteSnapshotResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteSnapshotResponse.ProtoReflect.Descriptor instead.
+func (*DeleteSnapshotResponse) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{14}
+}
+
 var File_adminv1_admin_proto protoreflect.FileDescriptor
 
 const file_adminv1_admin_proto_rawDesc = "" +
@@ -719,7 +807,11 @@ const file_adminv1_admin_proto_rawDesc = "" +
 	"size_bytes\x18\x03 \x01(\x03R\tsizeBytes\x12+\n" +
 	"\x12created_at_unix_ms\x18\x04 \x01(\x03R\x0fcreatedAtUnixMs\"S\n" +
 	"\x15ListSnapshotsResponse\x12:\n" +
-	"\tsnapshots\x18\x01 \x03(\v2\x1c.reflow.admin.v1.SnapshotRefR\tsnapshots2\xb4\x04\n" +
+	"\tsnapshots\x18\x01 \x03(\v2\x1c.reflow.admin.v1.SnapshotRefR\tsnapshots\"H\n" +
+	"\x15DeleteSnapshotRequest\x12\x19\n" +
+	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x12\x14\n" +
+	"\x05index\x18\x02 \x01(\x04R\x05index\"\x18\n" +
+	"\x16DeleteSnapshotResponse2\x97\x05\n" +
 	"\x05Admin\x12L\n" +
 	"\aAddNode\x12\x1f.reflow.admin.v1.AddNodeRequest\x1a .reflow.admin.v1.AddNodeResponse\x12U\n" +
 	"\n" +
@@ -727,7 +819,8 @@ const file_adminv1_admin_proto_rawDesc = "" +
 	"\tListNodes\x12!.reflow.admin.v1.ListNodesRequest\x1a\".reflow.admin.v1.ListNodesResponse\x12a\n" +
 	"\x0eListPartitions\x12&.reflow.admin.v1.ListPartitionsRequest\x1a'.reflow.admin.v1.ListPartitionsResponse\x12a\n" +
 	"\x0eCreateSnapshot\x12&.reflow.admin.v1.CreateSnapshotRequest\x1a'.reflow.admin.v1.CreateSnapshotResponse\x12^\n" +
-	"\rListSnapshots\x12%.reflow.admin.v1.ListSnapshotsRequest\x1a&.reflow.admin.v1.ListSnapshotsResponse\x1a\f\x92\xb5\x18\boperatorB1Z/github.com/twinfer/reflow/proto/adminv1;adminv1b\x06proto3"
+	"\rListSnapshots\x12%.reflow.admin.v1.ListSnapshotsRequest\x1a&.reflow.admin.v1.ListSnapshotsResponse\x12a\n" +
+	"\x0eDeleteSnapshot\x12&.reflow.admin.v1.DeleteSnapshotRequest\x1a'.reflow.admin.v1.DeleteSnapshotResponse\x1a\f\x92\xb5\x18\boperatorB1Z/github.com/twinfer/reflow/proto/adminv1;adminv1b\x06proto3"
 
 var (
 	file_adminv1_admin_proto_rawDescOnce sync.Once
@@ -741,7 +834,7 @@ func file_adminv1_admin_proto_rawDescGZIP() []byte {
 	return file_adminv1_admin_proto_rawDescData
 }
 
-var file_adminv1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_adminv1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_adminv1_admin_proto_goTypes = []any{
 	(*AddNodeRequest)(nil),          // 0: reflow.admin.v1.AddNodeRequest
 	(*AddNodeResponse)(nil),         // 1: reflow.admin.v1.AddNodeResponse
@@ -756,12 +849,14 @@ var file_adminv1_admin_proto_goTypes = []any{
 	(*ListSnapshotsRequest)(nil),    // 10: reflow.admin.v1.ListSnapshotsRequest
 	(*SnapshotRef)(nil),             // 11: reflow.admin.v1.SnapshotRef
 	(*ListSnapshotsResponse)(nil),   // 12: reflow.admin.v1.ListSnapshotsResponse
-	(*enginev1.NodeMembership)(nil), // 13: reflow.engine.v1.NodeMembership
-	(*enginev1.PartitionTable)(nil), // 14: reflow.engine.v1.PartitionTable
+	(*DeleteSnapshotRequest)(nil),   // 13: reflow.admin.v1.DeleteSnapshotRequest
+	(*DeleteSnapshotResponse)(nil),  // 14: reflow.admin.v1.DeleteSnapshotResponse
+	(*enginev1.NodeMembership)(nil), // 15: reflow.engine.v1.NodeMembership
+	(*enginev1.PartitionTable)(nil), // 16: reflow.engine.v1.PartitionTable
 }
 var file_adminv1_admin_proto_depIdxs = []int32{
-	13, // 0: reflow.admin.v1.ListNodesResponse.nodes:type_name -> reflow.engine.v1.NodeMembership
-	14, // 1: reflow.admin.v1.ListPartitionsResponse.table:type_name -> reflow.engine.v1.PartitionTable
+	15, // 0: reflow.admin.v1.ListNodesResponse.nodes:type_name -> reflow.engine.v1.NodeMembership
+	16, // 1: reflow.admin.v1.ListPartitionsResponse.table:type_name -> reflow.engine.v1.PartitionTable
 	11, // 2: reflow.admin.v1.ListSnapshotsResponse.snapshots:type_name -> reflow.admin.v1.SnapshotRef
 	0,  // 3: reflow.admin.v1.Admin.AddNode:input_type -> reflow.admin.v1.AddNodeRequest
 	2,  // 4: reflow.admin.v1.Admin.RemoveNode:input_type -> reflow.admin.v1.RemoveNodeRequest
@@ -769,14 +864,16 @@ var file_adminv1_admin_proto_depIdxs = []int32{
 	6,  // 6: reflow.admin.v1.Admin.ListPartitions:input_type -> reflow.admin.v1.ListPartitionsRequest
 	8,  // 7: reflow.admin.v1.Admin.CreateSnapshot:input_type -> reflow.admin.v1.CreateSnapshotRequest
 	10, // 8: reflow.admin.v1.Admin.ListSnapshots:input_type -> reflow.admin.v1.ListSnapshotsRequest
-	1,  // 9: reflow.admin.v1.Admin.AddNode:output_type -> reflow.admin.v1.AddNodeResponse
-	3,  // 10: reflow.admin.v1.Admin.RemoveNode:output_type -> reflow.admin.v1.RemoveNodeResponse
-	5,  // 11: reflow.admin.v1.Admin.ListNodes:output_type -> reflow.admin.v1.ListNodesResponse
-	7,  // 12: reflow.admin.v1.Admin.ListPartitions:output_type -> reflow.admin.v1.ListPartitionsResponse
-	9,  // 13: reflow.admin.v1.Admin.CreateSnapshot:output_type -> reflow.admin.v1.CreateSnapshotResponse
-	12, // 14: reflow.admin.v1.Admin.ListSnapshots:output_type -> reflow.admin.v1.ListSnapshotsResponse
-	9,  // [9:15] is the sub-list for method output_type
-	3,  // [3:9] is the sub-list for method input_type
+	13, // 9: reflow.admin.v1.Admin.DeleteSnapshot:input_type -> reflow.admin.v1.DeleteSnapshotRequest
+	1,  // 10: reflow.admin.v1.Admin.AddNode:output_type -> reflow.admin.v1.AddNodeResponse
+	3,  // 11: reflow.admin.v1.Admin.RemoveNode:output_type -> reflow.admin.v1.RemoveNodeResponse
+	5,  // 12: reflow.admin.v1.Admin.ListNodes:output_type -> reflow.admin.v1.ListNodesResponse
+	7,  // 13: reflow.admin.v1.Admin.ListPartitions:output_type -> reflow.admin.v1.ListPartitionsResponse
+	9,  // 14: reflow.admin.v1.Admin.CreateSnapshot:output_type -> reflow.admin.v1.CreateSnapshotResponse
+	12, // 15: reflow.admin.v1.Admin.ListSnapshots:output_type -> reflow.admin.v1.ListSnapshotsResponse
+	14, // 16: reflow.admin.v1.Admin.DeleteSnapshot:output_type -> reflow.admin.v1.DeleteSnapshotResponse
+	10, // [10:17] is the sub-list for method output_type
+	3,  // [3:10] is the sub-list for method input_type
 	3,  // [3:3] is the sub-list for extension type_name
 	3,  // [3:3] is the sub-list for extension extendee
 	0,  // [0:3] is the sub-list for field type_name
@@ -793,7 +890,7 @@ func file_adminv1_admin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_adminv1_admin_proto_rawDesc), len(file_adminv1_admin_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

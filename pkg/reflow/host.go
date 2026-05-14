@@ -9,6 +9,7 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/delivery"
+	"github.com/twinfer/reflow/internal/engine/snapshot"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -23,9 +24,10 @@ type Host struct {
 	deliveryLn     net.Listener
 	deliveryClient *delivery.Client
 	// Phase 4.2: admin gRPC server + snapshot producer lifecycle.
-	adminSrv    *grpc.Server
-	adminLn     net.Listener
-	snapshotCxl context.CancelFunc
+	adminSrv     *grpc.Server
+	adminLn      net.Listener
+	snapshotCxl  context.CancelFunc
+	snapshotRepo *snapshot.BlobRepository
 }
 
 // Close stops every partition and the underlying NodeHost. Idempotent.
@@ -36,6 +38,12 @@ func (h *Host) Close() error {
 	if h.snapshotCxl != nil {
 		h.snapshotCxl()
 		h.snapshotCxl = nil
+	}
+	if h.snapshotRepo != nil {
+		if err := h.snapshotRepo.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		h.snapshotRepo = nil
 	}
 	if h.adminSrv != nil {
 		h.adminSrv.GracefulStop()

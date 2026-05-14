@@ -163,7 +163,7 @@ func cmdPartitions(ctx context.Context, args []string) error {
 
 func cmdSnapshot(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: reflow-cluster snapshot {create|list} [flags]")
+		return errors.New("usage: reflow-cluster snapshot {create|list|delete} [flags]")
 	}
 	sub := args[0]
 	switch sub {
@@ -171,6 +171,8 @@ func cmdSnapshot(ctx context.Context, args []string) error {
 		return cmdSnapshotCreate(ctx, args[1:])
 	case "list":
 		return cmdSnapshotList(ctx, args[1:])
+	case "delete":
+		return cmdSnapshotDelete(ctx, args[1:])
 	default:
 		return fmt.Errorf("snapshot: unknown subcommand %q", sub)
 	}
@@ -215,5 +217,31 @@ func cmdSnapshotList(ctx context.Context, args []string) error {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(resp.GetSnapshots())
+	})
+}
+
+func cmdSnapshotDelete(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("snapshot delete", flag.ContinueOnError)
+	tls := registerTLSFlags(fs)
+	shard := fs.Uint64("shard", 0, "partition shard id (required)")
+	index := fs.Uint64("index", 0, "snapshot index (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *shard == 0 {
+		return errors.New("--shard is required")
+	}
+	if *index == 0 {
+		return errors.New("--index is required")
+	}
+	return tls.withClient(ctx, func(cli *admin.Client) error {
+		if _, err := cli.Admin.DeleteSnapshot(ctx, &adminv1.DeleteSnapshotRequest{
+			ShardId: *shard,
+			Index:   *index,
+		}); err != nil {
+			return err
+		}
+		fmt.Printf("snapshot deleted shard=%d index=%d\n", *shard, *index)
+		return nil
 	})
 }

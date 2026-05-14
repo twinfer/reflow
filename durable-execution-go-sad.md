@@ -1001,15 +1001,22 @@ Empty `Snapshot.URL` disables archiving; admin snapshot RPCs return
 - A joining replica's catch-up path consults `List(shardID)` to pick the
   newest available snapshot.
 
-**Retention.** Count and age policies pruned by a per-shard reaper
-goroutine; tiered (GFS-style) remains future work.
+**Retention.** Three policies, pruned by a per-shard reaper goroutine:
 
-- `Snapshot.Retain=N` — keep last N per shard. Enforced inline on
-  `BlobRepository.Put`; also re-checked by the reaper.
-- `Snapshot.RetentionAge=720h` — drop archives whose mod time is older
-  than the duration. Enforced by the reaper at hourly cadence.
-- Tiered (daily for 7d, weekly for 4w, monthly for 1y) — deferred;
-  separate design + PR.
+- `Snapshot.Retain=N` — count: keep last N per shard. Enforced inline
+  on `BlobRepository.Put` and re-checked by the reaper.
+- `Snapshot.RetentionAge=720h` — age: drop archives whose mod time is
+  older than the duration. Enforced by the reaper at hourly cadence.
+- `Snapshot.TieredDaily / TieredWeekly / TieredMonthly` — GFS-style:
+  keep one ref per recent UTC day / ISO week / calendar month, up to
+  the configured slot count. Tiers cascade (a daily ref's week+month
+  are "covered" — sibling refs in the same span aren't promoted to a
+  coarser tier).
+
+Tiered is exclusive: any non-zero `Tiered*` knob puts the shard's
+reaper into tiered mode and disables both count and age policies for
+that shard. A typical GFS preset — last 7 daily, 4 weekly, 12 monthly
+— is `TieredDaily: 7, TieredWeekly: 4, TieredMonthly: 12`.
 
 The reaper runs on every node (not metadata-leader-only) because
 `Repository.Delete` is idempotent against missing keys — duplicate
@@ -1433,12 +1440,11 @@ add/remove operations.
 
 - **Cloud-backed `SnapshotRepository` drivers (DONE).** Single
   `BlobRepository` over `gocloud.dev/blob` covers S3, GCS, Azure Blob,
-  filesystem, and in-memory. `.meta.json` sidecar per archive. Count +
-  age retention via a per-shard reaper goroutine; tiered policy
-  deferred. Admin `DeleteSnapshot` RPC + `reflow-cluster snapshot
-  delete` CLI. Server-side encryption flows through gocloud URL
-  parameters. Restore RPC and DR/migration runbooks remain future work.
-  See §6.12.
+  filesystem, and in-memory. `.meta.json` sidecar per archive. Count,
+  age, and GFS tiered retention via a per-shard reaper goroutine.
+  Admin `DeleteSnapshot` RPC + `reflow-cluster snapshot delete` CLI.
+  Server-side encryption flows through gocloud URL parameters. Restore
+  RPC and DR/migration runbooks remain future work. See §6.12.
 - Pebble snapshot tuning (compaction, log retention, checkpoint cadence).
 - Load testing + chaos testing harness (jepsen-style at small scale).
 - Admin API surface: partition status, invocation inspection, replay

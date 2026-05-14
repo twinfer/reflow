@@ -307,20 +307,27 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			logger.Info("reflow: snapshot producer started",
 				"interval", cfg.Snapshot.Interval, "shards", shards)
 		}
-		if cfg.Snapshot.Retain > 0 || cfg.Snapshot.RetentionAge > 0 {
+		hasTiered := cfg.Snapshot.TieredDaily > 0 || cfg.Snapshot.TieredWeekly > 0 || cfg.Snapshot.TieredMonthly > 0
+		if cfg.Snapshot.Retain > 0 || cfg.Snapshot.RetentionAge > 0 || hasTiered {
 			for _, sh := range shards {
 				go snapshot.RunReaper(snapCtx, snapshot.ReaperConfig{
-					ShardID:      sh,
-					Interval:     time.Hour,
-					Repo:         snapshotRepoIface,
-					Retain:       cfg.Snapshot.Retain,
-					RetentionAge: cfg.Snapshot.RetentionAge,
-					Log:          logger,
+					ShardID:       sh,
+					Interval:      time.Hour,
+					Repo:          snapshotRepoIface,
+					Retain:        cfg.Snapshot.Retain,
+					RetentionAge:  cfg.Snapshot.RetentionAge,
+					TieredDaily:   cfg.Snapshot.TieredDaily,
+					TieredWeekly:  cfg.Snapshot.TieredWeekly,
+					TieredMonthly: cfg.Snapshot.TieredMonthly,
+					Log:           logger,
 				})
 			}
 			logger.Info("reflow: snapshot reaper started",
 				"retain", cfg.Snapshot.Retain,
 				"retention_age", cfg.Snapshot.RetentionAge,
+				"tiered_daily", cfg.Snapshot.TieredDaily,
+				"tiered_weekly", cfg.Snapshot.TieredWeekly,
+				"tiered_monthly", cfg.Snapshot.TieredMonthly,
 				"shards", shards)
 		}
 	}

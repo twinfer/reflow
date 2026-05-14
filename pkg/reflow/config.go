@@ -81,6 +81,17 @@ type SnapshotConfig struct {
 	// RetentionAge drops archives whose mod time is older than this.
 	// 0 disables age-based reaping. The reaper polls at hourly cadence.
 	RetentionAge time.Duration `koanf:"retention_age"`
+	// TieredDaily / TieredWeekly / TieredMonthly enable GFS-style
+	// retention: keep one archive per recent UTC day / ISO week /
+	// calendar month, up to the configured slot count. Any non-zero
+	// value puts the shard's reaper into tiered mode and disables both
+	// Retain and RetentionAge for that shard.
+	//
+	// A common policy — "last 7 daily, 4 weekly, 12 monthly" — is:
+	//   TieredDaily: 7, TieredWeekly: 4, TieredMonthly: 12.
+	TieredDaily   int `koanf:"tiered_daily"`
+	TieredWeekly  int `koanf:"tiered_weekly"`
+	TieredMonthly int `koanf:"tiered_monthly"`
 	// ScratchDir is where dragonboat Exported snapshots land before
 	// archiving. Empty falls back to $TMPDIR/reflow-snapshot-scratch.
 	ScratchDir string `koanf:"scratch_dir"`

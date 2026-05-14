@@ -74,6 +74,29 @@ func (t TimerTable) ScanAll(fn func(TimerEntry) error) error {
 	return t.scanRange(prefix, keys.PrefixUpperBound(prefix), fn)
 }
 
+// ScanAllIndex iterates every secondary-index row in the partition. Yields
+// (id, fire_at_ms) pairs in encoded (id, fire_at_ms) order. Used by tests
+// to assert the primary↔secondary invariant.
+func (t TimerTable) ScanAllIndex(fn func(id *enginev1.InvocationId, fireAtMs uint64) error) error {
+	lower := keys.TimerIdxPrefix()
+	upper := keys.PrefixUpperBound(lower)
+	iter, err := t.S.NewIter(lower, upper)
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+	for ok := iter.First(); ok; ok = iter.Next() {
+		id, fireAt, err := keys.DecodeTimerIdxKey(iter.Key())
+		if err != nil {
+			return err
+		}
+		if err := fn(id, fireAt); err != nil {
+			return err
+		}
+	}
+	return iter.Error()
+}
+
 // ScanByInvocation iterates the fire_at_ms of every pending timer for one
 // invocation via the secondary index. Bounded by the per-invocation timer
 // count (typically 1-2), not the global timer table size. Used by onPurge.

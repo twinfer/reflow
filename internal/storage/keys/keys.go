@@ -184,6 +184,10 @@ func TimerIdxKey(id *enginev1.InvocationId, fireAtMs uint64) ([]byte, error) {
 	return append(out, fireBuf[:]...), nil
 }
 
+// TimerIdxPrefix returns the timer_idx/ namespace prefix, suitable for a
+// range scan over every secondary-index row in the partition.
+func TimerIdxPrefix() []byte { return []byte(timerIdxPrefix) }
+
 // TimerIdxPrefixForID returns timer_idx/<24-byte id>/, suitable for a
 // range scan over every secondary-index row for one invocation.
 func TimerIdxPrefixForID(id *enginev1.InvocationId) ([]byte, error) {

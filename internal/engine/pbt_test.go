@@ -112,6 +112,9 @@ type engineMachine struct {
 	pendingTimers map[timerKey]pendingTimer
 	pendingOutbox []modelOutboxRow // dedup-by-(srcShard,seq) on append
 
+	// Per-shard NextOutboxSeq high-water mark; Check asserts monotonic.
+	prevOutboxSeq [numShards]uint64
+
 	// Model (global across shards; classified by id.PartitionKey).
 	invs     map[string]*modelInv     // hex(uuid) -> inv
 	idemPool map[idemKey]string       // (svc,handler,objKey,key) -> winning idHex
@@ -851,6 +854,103 @@ func (m *engineMachine) Check(t *rapid.T) {
 				t.Fatalf("lease %+v shard=%d: queued %s status=%v, want mScheduled",
 					lk, shard, qHex, statusOf(q))
 			}
+		}
+	}
+
+	// Timer invariants: per shard, primary set == secondary set, and the
+	// resulting (id, fire_at) set matches the model's pendingTimers
+	// filtered to invocations hosted on that shard. The G5 reap on
+	// Complete and the secondary index pair-writes both flow through this
+	// check; a regression in either drops it on the floor.
+	for s := uint64(1); s <= numShards; s++ {
+		store := m.snaps[m.sIdx(s)].Store()
+		tt := tables.TimerTable{S: store}
+
+		type timerRow struct {
+			idHex    string
+			fireAtMs uint64
+		}
+		primary := map[timerRow]struct{}{}
+		_ = tt.ScanAll(func(e tables.TimerEntry) error {
+			primary[timerRow{idHex: idHex(e.ID), fireAtMs: e.FireAtMs}] = struct{}{}
+			return nil
+		})
+		secondary := map[timerRow]struct{}{}
+		_ = tt.ScanAllIndex(func(id *enginev1.InvocationId, fireAtMs uint64) error {
+			secondary[timerRow{idHex: idHex(id), fireAtMs: fireAtMs}] = struct{}{}
+			return nil
+		})
+		for r := range primary {
+			if _, ok := secondary[r]; !ok {
+				t.Fatalf("timer index: shard=%d primary has %+v but secondary missing", s, r)
+			}
+		}
+		for r := range secondary {
+			if _, ok := primary[r]; !ok {
+				t.Fatalf("timer index: shard=%d secondary has %+v but primary missing", s, r)
+			}
+		}
+
+		// Compare against the model. Build the model-expected set for
+		// this shard from pendingTimers.
+		modelSet := map[timerRow]struct{}{}
+		for _, pt := range m.pendingTimers {
+			if m.shardOf(pt.id) != s {
+				continue
+			}
+			modelSet[timerRow{idHex: idHex(pt.id), fireAtMs: pt.fireAtMs}] = struct{}{}
+		}
+		for r := range primary {
+			if _, ok := modelSet[r]; !ok {
+				t.Fatalf("timer rows: shard=%d SUT has %+v, model missing (action emission gap?)", s, r)
+			}
+		}
+		for r := range modelSet {
+			if _, ok := primary[r]; !ok {
+				t.Fatalf("timer rows: shard=%d model has %+v, SUT missing (apply-side leak?)", s, r)
+			}
+		}
+	}
+
+	// Outbox high-water-mark monotonicity (PartitionMeta.NextOutboxSeq).
+	// Rolling back to a lower value would imply a divergent Apply or a
+	// snapshot recovery that lost durable state; both are bugs.
+	for s := uint64(1); s <= numShards; s++ {
+		meta, err := (tables.MetaTable{S: m.snaps[m.sIdx(s)].Store()}).Get()
+		if err != nil {
+			t.Fatalf("MetaTable.Get shard=%d: %v", s, err)
+		}
+		cur := meta.GetNextOutboxSeq()
+		if cur < m.prevOutboxSeq[m.sIdx(s)] {
+			t.Fatalf("outbox seq: shard=%d went backwards: prev=%d cur=%d",
+				s, m.prevOutboxSeq[m.sIdx(s)], cur)
+		}
+		m.prevOutboxSeq[m.sIdx(s)] = cur
+	}
+
+	// Awakeable directory ↔ model parity. For every model-registered
+	// awakeable, the SUT row must exist on the owner's shard and point
+	// to the same owner. The reverse — orphan SUT row not in model — is
+	// caught indirectly: the model adds entries on RegisterAwakeable and
+	// removes them on AwakeableResolved, which are also the only SUT
+	// write/delete paths.
+	for awk, ownerHex := range m.awks {
+		owner := m.invs[ownerHex]
+		if owner == nil {
+			continue
+		}
+		shard := m.shardOf(owner.id)
+		row, err := (tables.AwakeableTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(awk)
+		if err != nil {
+			t.Fatalf("AwakeableTable.Get shard=%d %q: %v", shard, awk, err)
+		}
+		if row == nil {
+			t.Fatalf("awakeable %q: model expects owner=%s shard=%d; SUT row absent",
+				awk, ownerHex, shard)
+		}
+		if idHex(row.GetOwner()) != ownerHex {
+			t.Fatalf("awakeable %q shard=%d: SUT owner=%s, model owner=%s",
+				awk, shard, idHex(row.GetOwner()), ownerHex)
 		}
 	}
 }

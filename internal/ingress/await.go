@@ -26,7 +26,11 @@ func (s *Server) AwaitInvocation(ctx context.Context, req *ingressv1.AwaitInvoca
 	if err != nil {
 		return nil, err
 	}
-	c, err := s.pollUntilCompleted(ctx, id, req.GetTimeoutMs())
+	shardID, err := s.shardForID(id)
+	if err != nil {
+		return nil, err
+	}
+	c, err := s.pollUntilCompleted(ctx, id, shardID, req.GetTimeoutMs())
 	if err != nil {
 		return nil, err
 	}
@@ -45,13 +49,12 @@ func (s *Server) AwaitInvocation(ctx context.Context, req *ingressv1.AwaitInvoca
 // terminal Completed payload on success, nil on timeout, or a gRPC
 // status error on transport failure / context cancellation. timeoutMs
 // is clamped to (0, awaitMaxTimeout]; 0 maps to awaitMaxTimeout.
-func (s *Server) pollUntilCompleted(ctx context.Context, id *enginev1.InvocationId, timeoutMs uint32) (*enginev1.Completed, error) {
+func (s *Server) pollUntilCompleted(ctx context.Context, id *enginev1.InvocationId, shardID uint64, timeoutMs uint32) (*enginev1.Completed, error) {
 	timeout := time.Duration(timeoutMs) * time.Millisecond
 	if timeout <= 0 || timeout > awaitMaxTimeout {
 		timeout = awaitMaxTimeout
 	}
 	deadline := time.Now().Add(timeout)
-	shardID := shardForID(id)
 
 	// One Ticker reused across iterations — time.After in a select-loop
 	// allocates a fresh runtime.Timer on every poll that runs to

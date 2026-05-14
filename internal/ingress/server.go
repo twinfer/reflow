@@ -2,8 +2,10 @@
 // via grpc-gateway) for submitting invocations, awaiting their results,
 // resolving awakeables, and read-only admin queries.
 //
-// Phase 2 routes everything to a single partition (shard 1). The
-// RouteToShard helper is the seam for Phase 4 consistent hashing.
+// Routing goes through the Host's Partitioner: SubmitInvocation hashes
+// (service, object_key) into a partition_key and stamps it onto the new
+// InvocationId; lookup handlers (await, describe, get-output) trust the
+// partition_key already on the id.
 package ingress
 
 import (
@@ -17,13 +19,10 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/twinfer/reflow/internal/engine"
+	"github.com/twinfer/reflow/internal/engine/routing"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
-
-// Phase2ShardID is the single partition hosted in Phase 2 deployments.
-// Replaced by RouteToShard once Phase 4 lands consistent hashing.
-const Phase2ShardID uint64 = 1
 
 // Server implements ingressv1.IngressServer over an engine.Host. Constructed
 // once per process and registered on both the gRPC server and the
@@ -45,10 +44,10 @@ func NewServer(h *engine.Host, log *slog.Logger) *Server {
 	return &Server{host: h, log: log}
 }
 
-// SubmitInvocation mints a fresh InvocationId, derives the owning partition
-// (Phase 2: always shard 1), and proposes an InvokeCommand via the
-// partition's ingress proposer. Returns the id; the caller must poll
-// AwaitInvocation (or use SSE once Phase 5 lands).
+// SubmitInvocation mints a fresh InvocationId stamped with the
+// partition_key derived from (service, object_key), then proposes an
+// InvokeCommand via the owning partition's ingress proposer. Returns the
+// id; the caller must poll AwaitInvocation (or use SSE once Phase 5 lands).
 func (s *Server) SubmitInvocation(ctx context.Context, req *ingressv1.SubmitInvocationRequest) (*ingressv1.SubmitInvocationResponse, error) {
 	if req.GetService() == "" || req.GetHandler() == "" {
 		return nil, status.Error(codes.InvalidArgument, "service and handler are required")
@@ -91,7 +90,7 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *ingressv1.SubmitInvo
 		// is authoritative and idempotent on retries.
 	}
 
-	id, err := mintInvocationID()
+	id, err := mintInvocationID(target)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "mint invocation id: %v", err)
 	}
@@ -115,28 +114,27 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *ingressv1.SubmitInvo
 	}, nil
 }
 
-// routeToShard picks the owning partition for a target. Phase 2 stub: always
-// shard 1. Phase 4 will hash (service, object_key) into the partition table
-// from the metadata shard.
-func (s *Server) routeToShard(_ *enginev1.InvocationTarget) uint64 {
-	return Phase2ShardID
+// routeToShard picks the owning partition for a target by hashing
+// (service, object_key) through the Host's Partitioner.
+func (s *Server) routeToShard(target *enginev1.InvocationTarget) uint64 {
+	return s.host.Partitioner().ShardForTarget(target)
 }
 
 // shardForID returns the partition shard owning the given invocation id.
-// Pre-multi-partition stub: trust partition_key when set, fall back to
-// the Phase 2 single-shard constant. Replaces an `if shardID==0`
-// fixup that was duplicated across every ingress handler.
-func shardForID(id *enginev1.InvocationId) uint64 {
-	if k := id.GetPartitionKey(); k != 0 {
-		return k
+// The partition_key is stamped at mint time and is authoritative — an id
+// with zero partition_key is malformed and rejected as InvalidArgument.
+func (s *Server) shardForID(id *enginev1.InvocationId) (uint64, error) {
+	pk := id.GetPartitionKey()
+	if pk == 0 {
+		return 0, status.Error(codes.InvalidArgument, "invocation id has no partition_key")
 	}
-	return Phase2ShardID
+	return s.host.Partitioner().ShardForKey(pk), nil
 }
 
-// mintInvocationID generates a fresh 16-byte uuid v4 and packages it under
-// the Phase 2 partition key (1). When multi-partition routing lands, this
-// will derive partition_key from the target tuple before mint.
-func mintInvocationID() (*enginev1.InvocationId, error) {
+// mintInvocationID generates a fresh 16-byte UUIDv4 and stamps the
+// partition_key derived from the target's (service, object_key) tuple,
+// pinning the id to a specific shard for its lifetime.
+func mintInvocationID(target *enginev1.InvocationTarget) (*enginev1.InvocationId, error) {
 	uuid := make([]byte, 16)
 	if _, err := rand.Read(uuid); err != nil {
 		return nil, fmt.Errorf("rand: %w", err)
@@ -145,7 +143,7 @@ func mintInvocationID() (*enginev1.InvocationId, error) {
 	uuid[6] = (uuid[6] & 0x0f) | 0x40
 	uuid[8] = (uuid[8] & 0x3f) | 0x80
 	return &enginev1.InvocationId{
-		PartitionKey: Phase2ShardID,
+		PartitionKey: routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()),
 		Uuid:         uuid,
 	}, nil
 }

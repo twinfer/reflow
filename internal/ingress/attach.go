@@ -21,7 +21,11 @@ func (s *Server) AttachInvocation(ctx context.Context, req *ingressv1.AttachInvo
 	if err != nil {
 		return nil, err
 	}
-	c, err := s.pollUntilCompleted(ctx, id, req.GetTimeoutMs())
+	shardID, err := s.shardForID(id)
+	if err != nil {
+		return nil, err
+	}
+	c, err := s.pollUntilCompleted(ctx, id, shardID, req.GetTimeoutMs())
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +48,10 @@ func (s *Server) GetInvocationOutput(ctx context.Context, req *ingressv1.GetInvo
 	if err != nil {
 		return nil, err
 	}
-	shardID := shardForID(id)
+	shardID, err := s.shardForID(id)
+	if err != nil {
+		return nil, err
+	}
 
 	readCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()

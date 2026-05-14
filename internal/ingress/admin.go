@@ -34,7 +34,10 @@ func (s *Server) DescribeInvocation(ctx context.Context, req *ingressv1.Describe
 	if err != nil {
 		return nil, err
 	}
-	shardID := shardForID(id)
+	shardID, err := s.shardForID(id)
+	if err != nil {
+		return nil, err
+	}
 	// Deadline is guaranteed by withDefaultDeadline at the gRPC server level.
 	st, err := s.host.LookupInvocationStatus(ctx, shardID, id)
 	if err != nil {

@@ -393,7 +393,7 @@ func (p *Partition) applyCommand(
 	case *enginev1.Command_TimerFired:
 		return p.onTimerFired(batch, store, k.TimerFired, now, inv, timers, isLeader)
 	case *enginev1.Command_Purge:
-		return p.onPurge(batch, k.Purge, inv, journal, timers, isLeader)
+		return p.onPurge(batch, k.Purge, inv, journal)
 	case *enginev1.Command_DeliverCallResult:
 		return p.onDeliverCallResult(batch, store, k.DeliverCallResult, now, inv, journal, isLeader)
 	case *enginev1.Command_OutboxAck:
@@ -799,6 +799,29 @@ func (p *Partition) onInvokerEffect(
 				}
 				actions = append(actions, leaseActs...)
 			}
+			// Reap any pending sleep/retry timers for this invocation via
+			// the secondary timer index. Bounded by per-invocation timer
+			// count, not the global timer table size. The cur switch
+			// above only matches Invoked/Suspended, so the idempotent
+			// Completed → Completed replay falls through with
+			// completedTarget=nil and the reap is naturally skipped.
+			if completedTarget != nil {
+				var pending []uint64
+				if err := timersT.ScanByInvocation(id, func(fireAt uint64) error {
+					pending = append(pending, fireAt)
+					return nil
+				}); err != nil {
+					return fmt.Errorf("onInvokerEffect: scan timers (complete): %w", err)
+				}
+				for _, fireAt := range pending {
+					if err := timersT.Delete(batch, fireAt, id); err != nil {
+						return fmt.Errorf("onInvokerEffect: delete timer (complete): %w", err)
+					}
+					if isLeader {
+						actions = append(actions, ActDeleteTimer{FireAtMs: fireAt, ID: id})
+					}
+				}
+			}
 		}
 	case *enginev1.InvokerEffect_Suspended:
 		next, actions, err = transitionOnSuspend(id, cur, k.Suspended, nowMs)
@@ -1141,8 +1164,6 @@ func (p *Partition) onPurge(
 	cmd *enginev1.PurgeInvocation,
 	inv tables.InvocationTable,
 	journal tables.JournalTable,
-	timers tables.TimerTable,
-	isLeader bool,
 ) error {
 	id := cmd.GetInvocationId()
 	cur, err := inv.Get(id)
@@ -1159,25 +1180,9 @@ func (p *Partition) onPurge(
 	if err := journal.DeletePrefix(batch, id); err != nil {
 		return fmt.Errorf("onPurge: delete journal: %w", err)
 	}
-
-	// Reap any pending timer rows for this invocation via the secondary
-	// index (timer_idx/<id>/<fire_at>). Bounded by per-invocation timer
-	// count, not the global timer table size.
-	var pending []uint64
-	if err := timers.ScanByInvocation(id, func(fireAt uint64) error {
-		pending = append(pending, fireAt)
-		return nil
-	}); err != nil {
-		return fmt.Errorf("onPurge: scan timers: %w", err)
-	}
-	for _, fireAt := range pending {
-		if err := timers.Delete(batch, fireAt, id); err != nil {
-			return fmt.Errorf("onPurge: delete timer: %w", err)
-		}
-		if isLeader {
-			p.cfg.Collector.Push(ActDeleteTimer{FireAtMs: fireAt, ID: id})
-		}
-	}
+	// Timer rows are reaped on the Invoked/Suspended → Completed
+	// transition (see InvokerEffect_Completed apply arm); transitionOnPurge
+	// requires Completed, so no pending timer can survive into Purge.
 	return nil
 }
 

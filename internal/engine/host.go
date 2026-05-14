@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -130,6 +131,13 @@ type Host struct {
 	mu              sync.RWMutex
 	partitions      map[uint64]*PartitionRunner
 	metadataRunners map[uint64]*MetadataRunner
+	// startMu serializes StartPartition calls per shardID so concurrent
+	// callers — typically an explicit boot loop racing the
+	// OnPartitionTable hook — cannot both attempt to open the same
+	// per-shard Pebble directory (pebble fails the second open with
+	// "lock held"). The second caller waits, observes the partition is
+	// already running, and returns the existing runner.
+	startMu map[uint64]*sync.Mutex
 }
 
 // NewHost constructs a Host but does not start any partitions; call
@@ -161,6 +169,7 @@ func NewHost(cfg HostConfig) (*Host, error) {
 		cfg:        cfg,
 		log:        cfg.Log,
 		partitions: make(map[uint64]*PartitionRunner),
+		startMu:    make(map[uint64]*sync.Mutex),
 	}
 
 	nhConfig := config.NodeHostConfig{
@@ -313,9 +322,10 @@ func (h *Host) StartMetadataShard() (*MetadataRunner, error) {
 	leadership.SetCallbacks(runner.onBecomeLeader, runner.onStepDown)
 
 	fsmCfg := cluster.Config{
-		Snapshotter: snap,
-		Leadership:  leadership,
-		Log:         h.log,
+		Snapshotter:      snap,
+		Leadership:       leadership,
+		Log:              h.log,
+		OnPartitionTable: h.onPartitionTable,
 	}
 	raftCfg := config.Config{
 		ReplicaID:          h.cfg.NodeID,
@@ -428,15 +438,28 @@ func (h *Host) AwaitMetadataLeader(ctx context.Context) error {
 }
 
 // StartPartition opens the per-partition store, registers the IOnDiskStateMachine
-// with dragonboat, and wires the leader-side runner.
+// with dragonboat, and wires the leader-side runner. Idempotent: a second
+// call for an already-running shard returns the existing runner. Serialized
+// per shardID so concurrent callers (e.g. boot loop racing the
+// OnPartitionTable hook) cannot collide on the per-shard Pebble open.
 func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 	if shardID == 0 {
 		return nil, errors.New("host: shardID must be > 0")
 	}
 	h.mu.Lock()
-	if _, ok := h.partitions[shardID]; ok {
+	sm := h.startMu[shardID]
+	if sm == nil {
+		sm = &sync.Mutex{}
+		h.startMu[shardID] = sm
+	}
+	h.mu.Unlock()
+	sm.Lock()
+	defer sm.Unlock()
+
+	h.mu.Lock()
+	if r, ok := h.partitions[shardID]; ok {
 		h.mu.Unlock()
-		return nil, fmt.Errorf("host: partition %d already started", shardID)
+		return r, nil
 	}
 	h.mu.Unlock()
 
@@ -543,6 +566,59 @@ func (h *Host) Partition(shardID uint64) *PartitionRunner {
 // HostConfig.NumPartitionShards; cluster-stable in Phase 4.1.
 func (h *Host) Partitioner() routing.Partitioner {
 	return routing.Partitioner{NumShards: h.cfg.NumPartitionShards}
+}
+
+// onPartitionTable reacts to a freshly-committed PartitionTable by starting
+// any locally-owned shards not yet running on this node. Wired as the
+// cluster FSM's OnPartitionTable hook (see StartMetadataShard).
+//
+// Runs on the metadata FSM apply goroutine — StartPartition is offloaded
+// to a goroutine so per-shard Pebble open + dragonboat StartOnDiskReplica
+// do not stall further commits. StopPartition for ownership loss is
+// deferred (logged as a warning); the rebalancer leaves drained replicas
+// in place until an explicit StopPartition lands as a follow-up.
+func (h *Host) onPartitionTable(pt *enginev1.PartitionTable) {
+	if pt == nil {
+		return
+	}
+	self := h.cfg.NodeID
+	h.mu.RLock()
+	var toStart []uint64
+	for shardID, rs := range pt.GetShards() {
+		if shardID == 0 {
+			continue
+		}
+		if !slices.Contains(rs.GetNodeIds(), self) {
+			continue
+		}
+		if _, running := h.partitions[shardID]; running {
+			continue
+		}
+		toStart = append(toStart, shardID)
+	}
+	var notOwned []uint64
+	for shardID := range h.partitions {
+		rs := pt.GetShards()[shardID]
+		if rs == nil || !slices.Contains(rs.GetNodeIds(), self) {
+			notOwned = append(notOwned, shardID)
+		}
+	}
+	h.mu.RUnlock()
+
+	for _, shardID := range toStart {
+		go func(sh uint64) {
+			if _, err := h.StartPartition(sh); err != nil {
+				h.log.Warn("host: OnPartitionTable: StartPartition failed",
+					"shard", sh, "err", err)
+				return
+			}
+			h.log.Info("host: OnPartitionTable: started shard", "shard", sh)
+		}(shardID)
+	}
+	for _, shardID := range notOwned {
+		h.log.Warn("host: OnPartitionTable: shard no longer locally owned; StopPartition deferred",
+			"shard", shardID)
+	}
 }
 
 // RunnerView is the small-interface view of a *PartitionRunner used by

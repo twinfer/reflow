@@ -668,13 +668,18 @@ func TestPartition_SleepInsertsTimerAndSurvives(t *testing.T) {
 	}
 }
 
-func TestPartition_PurgeReapsPendingTimers(t *testing.T) {
+// TestPartition_CompleteReapsPendingTimers verifies that an invocation
+// reaching the Completed terminal state (whether via success or failure)
+// reaps any still-pending sleep/retry timer rows in the same apply batch,
+// not just on later Purge. The reap fires on transition from Invoked/
+// Suspended → Completed; the idempotent Completed → Completed replay
+// path is naturally skipped because completedTarget is nil on that arm.
+func TestPartition_CompleteReapsPendingTimers(t *testing.T) {
 	p, _, col := newTestPartition(t)
 
 	id := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("0123456789abcdef")}
 	target := &enginev1.InvocationTarget{ServiceName: "S"}
 
-	// Invoke → Input → Sleep (registers timer) → Complete → Purge.
 	mustApply := func(idx uint64, cmd *enginev1.Command) {
 		t.Helper()
 		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
@@ -697,17 +702,14 @@ func TestPartition_PurgeReapsPendingTimers(t *testing.T) {
 			Entry: &enginev1.JournalEntry{Index: 1, Entry: &enginev1.JournalEntry_Sleep{Sleep: &enginev1.JESleep{FireAtMs: 9999}}},
 		}},
 	}}})
+	col.Drain()
+
 	mustApply(4, &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
 		InvocationId: id,
 		Kind:         &enginev1.InvokerEffect_Completed{Completed: &enginev1.InvocationCompleted{Output: []byte("ok")}},
 	}}})
-	col.Drain()
 
-	mustApply(5, &enginev1.Command{Kind: &enginev1.Command_Purge{Purge: &enginev1.PurgeInvocation{
-		InvocationId: id,
-	}}})
-
-	// Timer row must be gone.
+	// Timer row must be gone after completion (not waiting for Purge).
 	store := p.cfg.Snapshotter.Store()
 	timersT := tables.TimerTable{S: store}
 	var remaining int
@@ -718,10 +720,10 @@ func TestPartition_PurgeReapsPendingTimers(t *testing.T) {
 		return nil
 	})
 	if remaining != 0 {
-		t.Errorf("expected 0 pending timer rows after purge; got %d", remaining)
+		t.Errorf("expected 0 pending timer rows after Complete; got %d", remaining)
 	}
 
-	// ActDeleteTimer must have been emitted.
+	// ActDeleteTimer must have been emitted by the Complete apply path.
 	var deleted *ActDeleteTimer
 	for _, a := range col.Drain() {
 		if d, ok := a.(ActDeleteTimer); ok {
@@ -733,6 +735,18 @@ func TestPartition_PurgeReapsPendingTimers(t *testing.T) {
 	}
 	if deleted.FireAtMs != 9999 {
 		t.Errorf("ActDeleteTimer.FireAtMs = %d; want 9999", deleted.FireAtMs)
+	}
+
+	// Idempotent re-apply of Complete must not re-reap (no timer rows
+	// remain, no new ActDeleteTimer).
+	mustApply(5, &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+		InvocationId: id,
+		Kind:         &enginev1.InvokerEffect_Completed{Completed: &enginev1.InvocationCompleted{Output: []byte("ok")}},
+	}}})
+	for _, a := range col.Drain() {
+		if _, ok := a.(ActDeleteTimer); ok {
+			t.Errorf("idempotent Complete replay re-emitted ActDeleteTimer")
+		}
 	}
 }
 

@@ -379,6 +379,24 @@ strongly-consistent decision driven by an eventually-consistent signal.
 shards are the unit of scalability; rebalancing reassigns shards across
 nodes without renaming partition_keys.
 
+*Rationale (see §9 rows 1 & 4).* Constant `N` keeps routing fully
+deterministic forever: `shard = PartitionKey % N` agrees across stale
+nodes, ingress clients holding old `InvocationId`s, and the metadata-shard
+FSM, with no epoch number or `(N, key)` tuple to carry. It also avoids the
+split/merge protocol (atomic key-range move across two Pebble DBs + two
+dragonboat groups + two leader log positions while in-flight invocations,
+timers, and outbox rows are live) — a class of bugs we explicitly opt out
+of. The unit of scale-out is moving a shard between nodes (Phase 4
+rebalancer), not changing `N`. The trade is a hard ceiling on horizontal
+scale (~`N` busy leaders) and permanent hot-key skew if a single
+`(service, object_key)` becomes dominant; both are acceptable inside the
+target envelope. Online resize of `N` is therefore **not supported** —
+`Host.Partitioner()` reads `cfg.NumPartitionShards` at boot and never
+recomputes the modulus from the metadata shard. *Shard reassignment*
+across nodes (the rebalancer's job) is independent of this and remains in
+scope: nodes still react to `PartitionTable` updates by starting /
+stopping local Raft replicas as ownership shifts.
+
 **Hard boundary the design enforces:** the metadata Raft group is the only
 authoritative source of partition ownership. No node ever processes a
 command for a partition it does not own according to its locally-observed

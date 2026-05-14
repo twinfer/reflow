@@ -29,15 +29,23 @@ type ProducerConfig struct {
 	Repo     Repository
 	// ScratchDir is where Exported snapshots land before being archived.
 	// Sub-directories (one per snapshot attempt) are created inside it
-	// and removed after Put completes.
+	// and removed after SaveDir completes.
 	ScratchDir string
-	Log        *slog.Logger
+	// Trigger, when non-nil, is an additional wake source: any receive
+	// causes the producer to run a SnapshotOnce immediately, in
+	// addition to the periodic Interval. The host fans dragonboat's
+	// SaveSnapshot callbacks into this channel so archives track
+	// real snapshot activity instead of waiting for the next tick.
+	// Buffered-1 with drop-on-full at the sender keeps the cost of a
+	// busy SaveSnapshot stream bounded.
+	Trigger <-chan struct{}
+	Log     *slog.Logger
 }
 
-// RunProducer blocks until ctx is cancelled. On every Interval tick it
-// requests an Exported snapshot from Source, archives it into Repo, and
-// cleans up the scratch directory. Errors are logged; no retry-with-
-// backoff yet — the next tick is the retry.
+// RunProducer blocks until ctx is cancelled. On every Interval tick (or
+// Trigger send) it requests an Exported snapshot from Source, archives
+// it into Repo, and cleans up the scratch directory. Errors are logged;
+// no retry-with-backoff yet — the next tick or trigger is the retry.
 func RunProducer(ctx context.Context, cfg ProducerConfig) {
 	if cfg.Interval <= 0 {
 		cfg.Interval = time.Hour
@@ -47,18 +55,22 @@ func RunProducer(ctx context.Context, cfg ProducerConfig) {
 	}
 	t := time.NewTicker(cfg.Interval)
 	defer t.Stop()
+	// Nil-channel receives block forever; assigning the (possibly nil)
+	// Trigger to a local channel lets us select on it uniformly.
+	trigger := cfg.Trigger
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := SnapshotOnce(ctx, cfg); err != nil {
-				if errors.Is(err, context.Canceled) {
-					return
-				}
-				cfg.Log.Warn("snapshot: producer cycle failed",
-					"shard", cfg.ShardID, "err", err)
+		case <-trigger:
+		}
+		if err := SnapshotOnce(ctx, cfg); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
 			}
+			cfg.Log.Warn("snapshot: producer cycle failed",
+				"shard", cfg.ShardID, "err", err)
 		}
 	}
 }

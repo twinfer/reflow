@@ -81,6 +81,19 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	if numShards == 0 {
 		numShards = 1
 	}
+	// Allocate one buffered-1 trigger channel per partition shard
+	// upfront so the OnSnapshotPersisted hook installed on the Host
+	// has somewhere to fan signals into. The snapshot producer
+	// (started later) consumes from these channels; consumer-less
+	// signals queue up to one and drop after — bounded and benign.
+	shards := cfg.Cluster.Shards
+	if len(shards) == 0 {
+		shards = []uint64{1}
+	}
+	snapshotTriggers := make(map[uint64]chan struct{}, len(shards))
+	for _, sh := range shards {
+		snapshotTriggers[sh] = make(chan struct{}, 1)
+	}
 	hcfg := engine.HostConfig{
 		NodeID:             cfg.Node.ID,
 		RaftAddr:           cfg.Node.RaftAddr,
@@ -94,6 +107,18 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		Peers:              toEnginePeers(cfg.Cluster.Peers),
 		NumPartitionShards: numShards,
 		Metrics:            metrics,
+		OnSnapshotPersisted: func(shardID uint64) {
+			ch, ok := snapshotTriggers[shardID]
+			if !ok {
+				return
+			}
+			select {
+			case ch <- struct{}{}:
+			default:
+				// A trigger is already pending; drop. Producer will
+				// pick it up on its next iteration.
+			}
+		},
 	}
 	eh, err := engine.NewHost(hcfg)
 	if err != nil {
@@ -223,10 +248,6 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		logger.Info("reflow: metadata shard started", "shard", 0)
 	}
 
-	shards := cfg.Cluster.Shards
-	if len(shards) == 0 {
-		shards = []uint64{1}
-	}
 	for _, sh := range shards {
 		if _, err := eh.StartPartition(sh); err != nil {
 			if deliverySrv != nil {
@@ -301,6 +322,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 					Source:     source,
 					Repo:       snapshotRepoIface,
 					ScratchDir: cfg.Snapshot.ScratchDir,
+					Trigger:    snapshotTriggers[sh],
 					Log:        logger,
 				})
 			}

@@ -800,3 +800,35 @@ func TestPartition_SnapshotRoundTrip(t *testing.T) {
 		t.Errorf("post-recover status = %T; want Scheduled", gotStatus)
 	}
 }
+
+// TestPartition_OnSnapshotPersistedFiresAfterSaveSnapshot covers the
+// Phase 5 post-hoc archive trigger: a successful SaveSnapshot must
+// invoke the OnSnapshotPersisted hook so the archive producer can run.
+func TestPartition_OnSnapshotPersistedFiresAfterSaveSnapshot(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "p", "state")
+	snap, err := NewSnapshotter(dir, func(path string) (storage.Store, error) {
+		return storage.OpenPebble(path, nil)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lead := &stubLeadership{}
+	lead.leader.Store(true)
+
+	var fired atomic.Bool
+	p := NewPartition(1, 1, PartitionConfig{
+		Snapshotter:         snap,
+		Leadership:          lead,
+		Collector:           &ActionCollector{},
+		OnSnapshotPersisted: func() { fired.Store(true) },
+	})
+	t.Cleanup(func() { _ = p.Close() })
+
+	var buf bytes.Buffer
+	if err := p.SaveSnapshot(nil, &buf, nil); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if !fired.Load() {
+		t.Fatal("OnSnapshotPersisted was not invoked after successful SaveSnapshot")
+	}
+}

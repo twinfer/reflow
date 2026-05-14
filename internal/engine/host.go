@@ -90,6 +90,14 @@ type HostConfig struct {
 	// engine never constructs its own — wiring is owned by the caller
 	// (pkg/reflow) to keep the registry decision out of internal/engine.
 	Metrics *observability.Metrics
+
+	// OnSnapshotPersisted, when non-nil, is invoked after a successful
+	// Partition.SaveSnapshot. The shardID identifies which partition
+	// just snapshotted. Runs on the dragonboat snapshot goroutine —
+	// MUST be non-blocking (the conventional implementation is a
+	// non-blocking send into a buffered-1 channel consumed by the
+	// snapshot archive producer). Phase 5.
+	OnSnapshotPersisted func(shardID uint64)
 }
 
 // Peer is a static cluster member known at bootstrap. NodeHostID may be
@@ -527,6 +535,9 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		OnActions:   runner.dispatchActions,
 		Partitioner: routing.Partitioner{NumShards: h.cfg.NumPartitionShards},
 		Metrics:     h.cfg.Metrics,
+	}
+	if hook := h.cfg.OnSnapshotPersisted; hook != nil {
+		pc.OnSnapshotPersisted = func() { hook(shardID) }
 	}
 	runner.metrics = h.cfg.Metrics
 	raftCfg := config.Config{

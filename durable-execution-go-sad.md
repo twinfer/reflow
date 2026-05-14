@@ -1004,14 +1004,22 @@ Empty `Snapshot.URL` disables archiving; admin snapshot RPCs return
 
 **Wiring into the snapshot path:**
 
-- `Snapshotter.SaveSnapshot` (`internal/engine/snapshotter.go`) tees the
-  tar stream to both dragonboat's `io.Writer` and the repository upload
-  when a repository is configured. Single Pebble Checkpoint feeds both.
-- `Snapshotter.RecoverFromSnapshot`: try repository first
-  (`Load(shardID, raftIndex)`); fall back to dragonboat snapshot
-  transfer on miss or unconfigured.
-- A joining replica's catch-up path consults `List(shardID)` to pick the
-  newest available snapshot.
+- `Partition.SaveSnapshot` (`internal/engine/partition.go`) invokes a
+  non-blocking `OnSnapshotPersisted` hook after dragonboat's snapshot
+  write succeeds. The host fans the hook into a per-shard buffered-1
+  trigger channel consumed by `snapshot.RunProducer`, which kicks an
+  independent archive cycle (fresh Pebble checkpoint via
+  `RequestSnapshot{Exported=true}` → `BlobRepository.SaveDir`). This
+  is post-hoc rather than a tee: a slow object-store upload can never
+  back-pressure dragonboat's inter-replica snapshot transfer, at the
+  cost of one extra Pebble checkpoint (hard-link cheap) per archive.
+- The producer still runs on `Snapshot.Interval` as a periodic
+  fallback, so archives happen even when dragonboat is otherwise
+  quiet.
+- Cold-bootstrap restore (seeding a brand-new cluster from the
+  archive) is an operator-driven workflow that pre-stages the
+  archive into dragonboat's snapshot directory before node start. It
+  is not threaded into the dragonboat `RecoverFromSnapshot` callback.
 
 **Retention.** Three policies, pruned by a per-shard reaper goroutine:
 

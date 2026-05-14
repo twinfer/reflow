@@ -50,6 +50,15 @@ type PartitionConfig struct {
 	// JournalAppended (entry). Safe to leave nil — every observation is
 	// guarded.
 	Metrics *observability.Metrics
+
+	// OnSnapshotPersisted, when non-nil, is invoked after a successful
+	// SaveSnapshot. It runs inline on the dragonboat snapshot
+	// goroutine and MUST NOT block — the intended pattern is a
+	// non-blocking send to a buffered-1 trigger channel consumed by
+	// the snapshot producer. Used by Phase 5 to opportunistically
+	// archive on real snapshot events instead of only on the
+	// producer's periodic tick.
+	OnSnapshotPersisted func()
 }
 
 // Partition is the dragonboat IOnDiskStateMachine for one reflow partition.
@@ -1282,9 +1291,16 @@ func (p *Partition) PrepareSnapshot() (any, error) { return nil, nil }
 
 // SaveSnapshot writes a tar of a fresh Pebble checkpoint to w. May run
 // concurrent with Update per dragonboat disk.go:37-43 — Pebble Checkpoint is
-// online so this is safe.
+// online so this is safe. On success, fires OnSnapshotPersisted (if
+// configured) so the archive producer can run opportunistically.
 func (p *Partition) SaveSnapshot(_ any, w io.Writer, _ <-chan struct{}) error {
-	return p.cfg.Snapshotter.SaveSnapshot(w)
+	if err := p.cfg.Snapshotter.SaveSnapshot(w); err != nil {
+		return err
+	}
+	if p.cfg.OnSnapshotPersisted != nil {
+		p.cfg.OnSnapshotPersisted()
+	}
+	return nil
 }
 
 // RecoverFromSnapshot replaces the on-disk state with the snapshot stream and

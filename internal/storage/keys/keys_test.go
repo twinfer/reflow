@@ -203,14 +203,26 @@ func TestPrefixUpperBound_NoAliasing(t *testing.T) {
 }
 
 func TestDedupKeys(t *testing.T) {
-	selfA := DedupSelfKey(1)
-	selfB := DedupSelfKey(2)
+	selfA := DedupSelfKey(1, 0)
+	selfB := DedupSelfKey(2, 0)
 	if bytes.Compare(selfA, selfB) >= 0 {
 		t.Errorf("dedup self keys not in epoch order")
 	}
-	arb := DedupArbitraryKey("client-x")
+	selfA0 := DedupSelfKey(1, 0)
+	selfA1 := DedupSelfKey(1, 1)
+	if bytes.Compare(selfA0, selfA1) >= 0 {
+		t.Errorf("dedup self keys not in seq order within an epoch")
+	}
+	if bytes.Equal(selfA0, selfA1) {
+		t.Errorf("dedup self keys at different seq must differ")
+	}
+	arb := DedupArbitraryKey("client-x", 0)
 	if !bytes.HasPrefix(arb, []byte("dedup/arbitrary/")) {
 		t.Errorf("bad arbitrary prefix: %q", arb)
+	}
+	arb1 := DedupArbitraryKey("client-x", 1)
+	if bytes.Equal(arb, arb1) {
+		t.Errorf("dedup arbitrary keys at different seq must differ")
 	}
 	// Self and arbitrary share the dedup/ prefix; ensure they remain in
 	// distinct ranges (no key in one can be a prefix of a key in the other).

@@ -15,8 +15,8 @@
 //	awakeable/<26-byte id>                       -> AwakeableEntry (Phase 2)
 //	keylease/<service>/<obj_key>                 -> KeyLeaseStatus (Phase 3)
 //	idempotency/<32-byte sha256>                 -> InvocationId (Phase 3)
-//	dedup/self/<8-byte BE leader_epoch>          -> DedupEntry
-//	dedup/arbitrary/<producer_id>                -> DedupEntry
+//	dedup/self/<8-byte BE leader_epoch>/<8-byte BE seq>          -> DedupEntry
+//	dedup/arbitrary/<producer_id>/<8-byte BE seq>                -> DedupEntry
 //
 // All multi-byte integers in keys are big-endian so lexicographic byte order
 // equals numeric order. Invocation IDs are encoded as a fixed 24-byte raw
@@ -216,20 +216,37 @@ func DecodeTimerIdxKey(key []byte) (*enginev1.InvocationId, uint64, error) {
 	return id, fireAt, nil
 }
 
-// DedupSelfKey returns dedup/self/<8-byte BE leader_epoch>.
-func DedupSelfKey(leaderEpoch uint64) []byte {
-	out := make([]byte, 0, len(dedupSelfPrefix)+8)
+// DedupSelfKey returns dedup/self/<8-byte BE leader_epoch>/<8-byte BE seq>.
+// Exact-match presence semantics: each (epoch, seq) pair gets its own key so
+// dedup tolerates concurrent goroutines allocating seq atomically and
+// submitting to raft out-of-order. A high-water-mark scheme would
+// false-positive in that case: replica A applies seq=N+1 first, records the
+// high-water as N+1, then applies seq=N — IsDuplicate sees N+1 >= N and
+// skips the fresh propose. Distinct replicas diverge depending on whether
+// seq=N and seq=N+1 land in the same Update batch (where the in-batch dedup
+// record is invisible to the within-batch IsDuplicate read).
+func DedupSelfKey(leaderEpoch, seq uint64) []byte {
+	out := make([]byte, 0, len(dedupSelfPrefix)+16)
 	out = append(out, dedupSelfPrefix...)
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], leaderEpoch)
+	out = append(out, buf[:]...)
+	binary.BigEndian.PutUint64(buf[:], seq)
 	return append(out, buf[:]...)
 }
 
-// DedupArbitraryKey returns dedup/arbitrary/<producer_id>.
-func DedupArbitraryKey(producerID string) []byte {
-	out := make([]byte, 0, len(dedupArbPrefix)+len(producerID))
+// DedupArbitraryKey returns dedup/arbitrary/<producer_id>/<8-byte BE seq>.
+// Exact-match keying for the same reason as DedupSelfKey — concurrent
+// producers (e.g. loadgen goroutines) allocate seq from a shared atomic
+// counter and submit out-of-order to dragonboat.
+func DedupArbitraryKey(producerID string, seq uint64) []byte {
+	out := make([]byte, 0, len(dedupArbPrefix)+len(producerID)+1+8)
 	out = append(out, dedupArbPrefix...)
-	return append(out, producerID...)
+	out = append(out, producerID...)
+	out = append(out, '/')
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], seq)
+	return append(out, buf[:]...)
 }
 
 // StatePrefix returns the state/ namespace prefix. Exported so other

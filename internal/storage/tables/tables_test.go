@@ -324,16 +324,19 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		if !dup {
 			t.Fatal("second IsDuplicate should be true")
 		}
-		// A lower-seq entry in the same epoch is also a duplicate (out of
-		// order).
+		// Exact-match keying: a lower-seq propose in the same epoch is a
+		// FRESH entry, not a duplicate. The old high-water-mark scheme
+		// would have rejected it, but that scheme false-positived when
+		// concurrent goroutines allocated seq atomically and submitted to
+		// raft out-of-order.
 		dLower := &enginev1.Dedup{Kind: &enginev1.Dedup_SelfProposal{
 			SelfProposal: &enginev1.SelfProposalDedup{LeaderEpoch: 1, Seq: 3},
 		}}
 		dup, _ = dt.IsDuplicate(dLower)
-		if !dup {
-			t.Fatal("lower-seq should be dup")
+		if dup {
+			t.Fatal("lower-seq must not be dup under exact-match keying")
 		}
-		// A higher seq is not a duplicate.
+		// A higher seq is not a duplicate either — fresh entry.
 		dHigher := &enginev1.Dedup{Kind: &enginev1.Dedup_SelfProposal{
 			SelfProposal: &enginev1.SelfProposalDedup{LeaderEpoch: 1, Seq: 6},
 		}}

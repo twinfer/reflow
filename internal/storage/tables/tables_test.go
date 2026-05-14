@@ -271,18 +271,6 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		_ = tt.Insert(b, 300, idA, 2)
 		commit(t, b)
 
-		// ScanDue at t=150 -> only the 100ms timer
-		var due []tables.TimerEntry
-		if err := tt.ScanDue(150, func(e tables.TimerEntry) error {
-			due = append(due, e)
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if len(due) != 1 || due[0].FireAtMs != 100 {
-			t.Errorf("ScanDue(150) = %+v; want one entry at 100", due)
-		}
-
 		// ScanAll yields all three in order
 		var all []tables.TimerEntry
 		if err := tt.ScanAll(func(e tables.TimerEntry) error {
@@ -484,7 +472,7 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 	})
 
-	t.Run(name+"/Outbox_AppendPopGet", func(t *testing.T) {
+	t.Run(name+"/Outbox_AppendPop", func(t *testing.T) {
 		s := open(t)
 		defer s.Close()
 		ot := tables.OutboxTable{S: s}
@@ -502,13 +490,18 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 		commit(t, b)
 
-		got, err := ot.Get(1)
-		if err != nil {
+		var rows []tables.OutboxRow
+		if err := ot.ScanFrom(0, func(r tables.OutboxRow) error {
+			rows = append(rows, r)
+			return nil
+		}); err != nil {
 			t.Fatal(err)
 		}
-		inv := got.GetInvoke()
-		if inv == nil || string(inv.GetInput()) != "payload" {
-			t.Errorf("get: %+v", got)
+		if len(rows) != 1 || rows[0].Seq != 1 {
+			t.Fatalf("ScanFrom = %+v; want one row at seq=1", rows)
+		}
+		if inv := rows[0].Envelope.GetInvoke(); inv == nil || string(inv.GetInput()) != "payload" {
+			t.Errorf("envelope: %+v", rows[0].Envelope)
 		}
 
 		b2 := s.NewBatch()
@@ -516,8 +509,15 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 			t.Fatal(err)
 		}
 		commit(t, b2)
-		if _, err := ot.Get(1); !errors.Is(err, storage.ErrNotFound) {
-			t.Errorf("after pop: %v; want ErrNotFound", err)
+		rows = nil
+		if err := ot.ScanFrom(0, func(r tables.OutboxRow) error {
+			rows = append(rows, r)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 0 {
+			t.Errorf("after pop: %d rows; want 0", len(rows))
 		}
 	})
 
@@ -620,7 +620,7 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 	})
 
-	t.Run(name+"/KeyLease_PutGetDelete", func(t *testing.T) {
+	t.Run(name+"/KeyLease_PutGet", func(t *testing.T) {
 		s := open(t)
 		defer s.Close()
 		klt := tables.KeyLeaseTable{S: s}
@@ -650,19 +650,6 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 		if len(got.GetQueue()) != 1 || !bytes.Equal(got.GetQueue()[0].GetUuid(), queued.GetUuid()) {
 			t.Errorf("queue mismatch: %+v", got.GetQueue())
-		}
-
-		b2 := s.NewBatch()
-		if err := klt.Delete(b2, "Counter", "shard-0"); err != nil {
-			t.Fatal(err)
-		}
-		commit(t, b2)
-		got, err = klt.Get("Counter", "shard-0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got != nil {
-			t.Errorf("expected nil after delete, got %+v", got)
 		}
 	})
 

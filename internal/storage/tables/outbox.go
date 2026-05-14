@@ -37,16 +37,6 @@ func (t OutboxTable) Pop(b storage.Batch, seq uint64) error {
 	return b.Delete(keys.OutboxKey(seq))
 }
 
-// Get loads a single row. Missing → (nil, ErrNotFound) — "required"
-// convention.
-func (t OutboxTable) Get(seq uint64) (*enginev1.OutboxEnvelope, error) {
-	var env enginev1.OutboxEnvelope
-	if err := getProto(t.S, keys.OutboxKey(seq), &env); err != nil {
-		return nil, err
-	}
-	return &env, nil
-}
-
 // ScanFrom iterates outbox rows with seq >= fromSeq in ascending order.
 // Pass fromSeq=0 to scan everything. Returning a non-nil error aborts.
 func (t OutboxTable) ScanFrom(fromSeq uint64, fn func(OutboxRow) error) error {

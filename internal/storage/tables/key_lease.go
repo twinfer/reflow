@@ -33,10 +33,3 @@ func (t KeyLeaseTable) Get(service, objectKey string) (*enginev1.KeyLeaseStatus,
 func (t KeyLeaseTable) Put(b storage.Batch, service, objectKey string, s *enginev1.KeyLeaseStatus) error {
 	return putProto(b, keys.KeyLeaseKey(service, objectKey), s)
 }
-
-// Delete removes the lease row. Used when an object's queue drains to IDLE
-// to avoid leaving empty rows around (optional — IDLE with empty queue is
-// also a valid absent state).
-func (t KeyLeaseTable) Delete(b storage.Batch, service, objectKey string) error {
-	return b.Delete(keys.KeyLeaseKey(service, objectKey))
-}

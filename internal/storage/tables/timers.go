@@ -53,27 +53,6 @@ func (t TimerTable) ScanAll(fn func(TimerEntry) error) error {
 	return t.scanRange(prefix, keys.PrefixUpperBound(prefix), fn)
 }
 
-// ScanDue iterates timers whose fire_at_ms <= nowMs, in fire-time order.
-func (t TimerTable) ScanDue(nowMs uint64, fn func(TimerEntry) error) error {
-	prefix := keys.TimerPrefix()
-
-	// Build the exclusive upper bound: timer/<nowMs+1><0...>.
-	upper := make([]byte, 0, len(prefix)+8)
-	upper = append(upper, prefix...)
-	var fireBuf [8]byte
-	// Inclusive of nowMs ⇒ exclusive of nowMs+1. Saturate at MaxUint64 to
-	// avoid wraparound (then everything is due).
-	switch {
-	case nowMs == ^uint64(0):
-		return t.ScanAll(fn)
-	default:
-		binary.BigEndian.PutUint64(fireBuf[:], nowMs+1)
-	}
-	upper = append(upper, fireBuf[:]...)
-
-	return t.scanRange(prefix, upper, fn)
-}
-
 func (t TimerTable) scanRange(lower, upper []byte, fn func(TimerEntry) error) error {
 	iter, err := t.S.NewIter(lower, upper)
 	if err != nil {

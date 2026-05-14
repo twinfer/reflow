@@ -42,7 +42,6 @@ type MetadataRunner struct {
 	host *Host
 
 	mu           sync.Mutex
-	leaderCtx    context.Context
 	leaderCancel context.CancelFunc
 }
 
@@ -71,7 +70,6 @@ func (r *MetadataRunner) onBecomeLeader() {
 	if r.leaderCancel != nil {
 		r.leaderCancel()
 	}
-	r.leaderCtx = leaderCtx
 	r.leaderCancel = cancel
 	r.mu.Unlock()
 
@@ -89,7 +87,6 @@ func (r *MetadataRunner) onStepDown() {
 	r.log.Info("metadata: stepped down", "shard", r.ShardID)
 	r.mu.Lock()
 	cancel := r.leaderCancel
-	r.leaderCtx = nil
 	r.leaderCancel = nil
 	r.mu.Unlock()
 	if cancel != nil {

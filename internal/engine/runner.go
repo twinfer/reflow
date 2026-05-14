@@ -43,7 +43,6 @@ type PartitionRunner struct {
 	outbox *OutboxService
 
 	mu           sync.Mutex
-	leaderCtx    context.Context
 	leaderCancel context.CancelFunc
 	timerDone    chan struct{}
 	outboxDone   chan struct{}
@@ -160,7 +159,6 @@ func (r *PartitionRunner) onBecomeLeader() {
 	if r.leaderCancel != nil {
 		r.leaderCancel()
 	}
-	r.leaderCtx = leaderCtx
 	r.leaderCancel = cancel
 	r.timerDone = timerDone
 	r.outboxDone = outboxDone
@@ -209,7 +207,6 @@ func (r *PartitionRunner) onStepDown() {
 	cancel := r.leaderCancel
 	timerDone := r.timerDone
 	outboxDone := r.outboxDone
-	r.leaderCtx = nil
 	r.leaderCancel = nil
 	r.timerDone = nil
 	r.outboxDone = nil

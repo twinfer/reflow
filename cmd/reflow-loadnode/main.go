@@ -78,7 +78,7 @@ func run() error {
 	}
 
 	reg := sdk.NewRegistry()
-	if err := reg.Register("loadgen.Hello", "echo", loadgen.HelloHandler); err != nil {
+	if err := reg.RegisterService("loadgen.Hello", "echo", loadgen.HelloHandler); err != nil {
 		return fmt.Errorf("register handler: %w", err)
 	}
 

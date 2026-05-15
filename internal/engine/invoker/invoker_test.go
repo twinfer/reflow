@@ -167,7 +167,7 @@ func newID(pk uint64, uuid string) *enginev1.InvocationId {
 func TestRegistry_LookupViaTarget(t *testing.T) {
 	r := sdk.NewRegistry()
 	called := 0
-	if err := r.Register("Greeter", "hello", func(_ sdk.Context, _ []byte) ([]byte, error) {
+	if err := r.RegisterService("Greeter", "hello", func(_ sdk.Context, _ []byte) ([]byte, error) {
 		called++
 		return nil, nil
 	}); err != nil {
@@ -298,7 +298,7 @@ func TestSessionKey_Stable(t *testing.T) {
 
 func TestInvoker_StartInvocationBeforeStart(t *testing.T) {
 	r := sdk.NewRegistry()
-	_ = r.Register("S", "h", blockingHandler)
+	_ = r.RegisterService("S", "h", blockingHandler)
 	inv, _, s := newTestInvoker(t, r)
 
 	target := &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"}
@@ -331,7 +331,7 @@ func TestInvoker_StartInvocationMissingHandler(t *testing.T) {
 
 func TestInvoker_StartInvocationSpawnsSession(t *testing.T) {
 	r := sdk.NewRegistry()
-	_ = r.Register("S", "h", blockingHandler)
+	_ = r.RegisterService("S", "h", blockingHandler)
 	inv, _, s := newTestInvoker(t, r)
 	inv.Start(context.Background())
 	defer inv.Stop()
@@ -352,7 +352,7 @@ func TestInvoker_StartInvocationSpawnsSession(t *testing.T) {
 
 func TestInvoker_AbortInvocation(t *testing.T) {
 	r := sdk.NewRegistry()
-	_ = r.Register("S", "h", blockingHandler)
+	_ = r.RegisterService("S", "h", blockingHandler)
 	inv, _, s := newTestInvoker(t, r)
 	inv.Start(context.Background())
 
@@ -373,7 +373,7 @@ func TestInvoker_AbortInvocation(t *testing.T) {
 
 func TestInvoker_Stop(t *testing.T) {
 	r := sdk.NewRegistry()
-	_ = r.Register("S", "h", blockingHandler)
+	_ = r.RegisterService("S", "h", blockingHandler)
 	inv, _, s := newTestInvoker(t, r)
 	inv.Start(context.Background())
 

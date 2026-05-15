@@ -97,7 +97,7 @@ func httpPost(t *testing.T, url string, body any) ([]byte, int) {
 // Host → Invoker round-trip.
 func TestIngress_SubmitAndAwaitEcho(t *testing.T) {
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
+	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
 		return append([]byte("echo:"), in...), nil
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -164,7 +164,7 @@ func TestIngress_SubmitAndAwaitEcho(t *testing.T) {
 // reports Completed for a finished invocation.
 func TestIngress_DescribeAndListPartitions(t *testing.T) {
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
+	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
 		return in, nil
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -241,7 +241,7 @@ func TestIngress_DescribeAndListPartitions(t *testing.T) {
 //   - AttachInvocation blocks until Completed and returns the same output.
 func TestIngress_AttachAndGetOutput(t *testing.T) {
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
+	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
 		return append([]byte("echo:"), in...), nil
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -350,7 +350,7 @@ func TestIngress_AttachAndGetOutput(t *testing.T) {
 // covers the absent-key path (present=false, not an error).
 func TestIngress_GetObjectState(t *testing.T) {
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Stater", "set", func(c sdk.Context, in []byte) ([]byte, error) {
+	if err := reg.RegisterService("Stater", "set", func(c sdk.Context, in []byte) ([]byte, error) {
 		if err := c.SetState("k", in); err != nil {
 			return nil, err
 		}

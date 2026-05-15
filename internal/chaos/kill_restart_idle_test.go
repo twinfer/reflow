@@ -38,7 +38,7 @@ import (
 //	    -v ./internal/chaos/...
 func TestChaos_KillRestartIdle(t *testing.T) {
 	reg := sdk.NewRegistry()
-	if err := reg.Register("noop", "fn", loadgen.HelloHandler); err != nil {
+	if err := reg.RegisterService("noop", "fn", loadgen.HelloHandler); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 

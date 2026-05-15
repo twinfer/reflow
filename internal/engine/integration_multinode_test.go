@@ -206,7 +206,7 @@ func TestMultiNode_CrossPartition_CallDelivery(t *testing.T) {
 	const callerSvc = "Caller"
 	const calleeSvc = "ServiceB"
 	reg := sdk.NewRegistry()
-	if err := reg.Register(callerSvc, "go", func(c sdk.Context, in []byte) ([]byte, error) {
+	if err := reg.RegisterService(callerSvc, "go", func(c sdk.Context, in []byte) ([]byte, error) {
 		out, err := c.Call(sdk.Target{Service: calleeSvc, Handler: "do"}, in).Result()
 		if err != nil {
 			return nil, err
@@ -215,7 +215,7 @@ func TestMultiNode_CrossPartition_CallDelivery(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register %s: %v", callerSvc, err)
 	}
-	if err := reg.Register(calleeSvc, "do", func(_ sdk.Context, in []byte) ([]byte, error) {
+	if err := reg.RegisterService(calleeSvc, "do", func(_ sdk.Context, in []byte) ([]byte, error) {
 		return append([]byte("b:"), in...), nil
 	}); err != nil {
 		t.Fatalf("Register %s: %v", calleeSvc, err)

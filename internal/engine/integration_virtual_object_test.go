@@ -53,7 +53,7 @@ func TestVirtualObject_FIFOSerializesSameKey(t *testing.T) {
 	}
 
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Counter", "incr", handler); err != nil {
+	if err := reg.RegisterService("Counter", "incr", handler); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -174,7 +174,7 @@ func TestVirtualObject_DistinctKeysRunInParallel(t *testing.T) {
 	}
 
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Counter", "incr", handler); err != nil {
+	if err := reg.RegisterService("Counter", "incr", handler); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -277,7 +277,7 @@ func TestVirtualObject_QueueSurvivesRestart(t *testing.T) {
 	}
 
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Counter", "incr", handler); err != nil {
+	if err := reg.RegisterService("Counter", "incr", handler); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -361,7 +361,7 @@ func TestVirtualObject_QueueSurvivesRestart(t *testing.T) {
 		return []byte("done:" + s), nil
 	}
 	reg2 := sdk.NewRegistry()
-	if err := reg2.Register("Counter", "incr", handler2); err != nil {
+	if err := reg2.RegisterService("Counter", "incr", handler2); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	h2, err := engine.NewHost(engine.HostConfig{

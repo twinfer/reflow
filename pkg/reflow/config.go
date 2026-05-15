@@ -1,8 +1,9 @@
 // Package reflow is the public entrypoint for embedding the reflow durable
 // execution engine in a Go binary. Construct a Config (programmatically or
-// via pkg/reflow/config loaders), register handlers on Config.Handlers,
-// then call Run. Internal types in /internal/engine are not part of the
-// stable API.
+// via pkg/reflow/config loaders), register in-process handlers on
+// Config.Handlers.Registry (and / or remote handlers via
+// Config.Handlers.Endpoints), then call Run. Internal types in
+// /internal/engine are not part of the stable API.
 package reflow
 
 import (
@@ -38,7 +39,40 @@ type Config struct {
 	Admin    AdminConfig    `koanf:"admin"`
 	Auth     AuthConfig     `koanf:"auth"`
 	Snapshot SnapshotConfig `koanf:"snapshot"`
-	Handlers *sdk.Registry  `koanf:"-"`
+	Handlers HandlersConfig `koanf:"handlers"`
+}
+
+// HandlersConfig groups the handler-related knobs. Registry holds the
+// in-process handlers reflow.Run installs on the embedded engine; the
+// koanf:"-" tag keeps it out of the config loader because closures
+// cannot round-trip through YAML / JSON.
+//
+// Endpoints lists remote-handler URLs reflow.Run auto-registers as
+// deployments at metadata-leader bootstrap. Each URL goes through the
+// same admin.RegisterDeployment path operators would call by hand, so
+// the engine discovers handlers, persists a DeploymentRecord on shard
+// 0, and surfaces the deployment_id for inbound invocations to pin to.
+// Single-node deployments have no shard 0; in that mode Endpoints is
+// logged-and-skipped.
+type HandlersConfig struct {
+	// Registry holds in-process handlers. nil means "no in-process
+	// handlers" — the engine still runs but every routed invocation
+	// without a deployment_id is dropped with a warn.
+	Registry *sdk.Registry `koanf:"-"`
+
+	// Endpoints lists remote-handler URLs to auto-register at bootstrap.
+	// Each URL is dialed for protocol discovery (GET /discover for
+	// http/https, gRPC Discovery.Discover for grpc/grpcs) and the
+	// resulting handlers are persisted via Command_RegisterDeployment.
+	Endpoints []HandlerEndpoint `koanf:"endpoints"`
+}
+
+// HandlerEndpoint is one remote-handler URL the operator wants Run to
+// register at startup. URL must be parseable and use one of the supported
+// schemes (grpc://, grpcs://, http://, https://). The transport tag the
+// engine persists is derived from the scheme.
+type HandlerEndpoint struct {
+	URL string `koanf:"url"`
 }
 
 // DeliveryConfig configures the cross-shard Delivery gRPC surface used

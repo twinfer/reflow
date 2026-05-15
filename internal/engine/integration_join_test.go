@@ -34,7 +34,7 @@ func TestMultiNode_JoinExistingCluster(t *testing.T) {
 	const svc = "JoinSvc"
 	const handler = "do"
 	reg := sdk.NewRegistry()
-	if err := reg.Register(svc, handler, func(_ sdk.Context, in []byte) ([]byte, error) {
+	if err := reg.RegisterService(svc, handler, func(_ sdk.Context, in []byte) ([]byte, error) {
 		return append([]byte("joined:"), in...), nil
 	}); err != nil {
 		t.Fatalf("Register: %v", err)

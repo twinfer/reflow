@@ -61,7 +61,7 @@ func TestInvokerWiringEchoCompletes(t *testing.T) {
 	dataDir := filepath.Join(dir, "node1")
 
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Echo", "echo", func(_ sdk.Context, input []byte) ([]byte, error) {
+	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, input []byte) ([]byte, error) {
 		return append([]byte("echo:"), input...), nil
 	}); err != nil {
 		t.Fatalf("Register: %v", err)

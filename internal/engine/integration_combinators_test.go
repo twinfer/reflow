@@ -116,7 +116,7 @@ func TestCombinator_All_ResolvesWhenAllChildrenComplete(t *testing.T) {
 	var emitted atomic.Bool
 
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Joiner", "all", func(c sdk.Context, _ []byte) ([]byte, error) {
+	if err := reg.RegisterService("Joiner", "all", func(c sdk.Context, _ []byte) ([]byte, error) {
 		id1, f1 := c.Awakeable()
 		id2, f2 := c.Awakeable()
 		id3, f3 := c.Awakeable()
@@ -175,7 +175,7 @@ func TestCombinator_All_StaysSuspendedOnPartialResolution(t *testing.T) {
 	var emitted atomic.Bool
 
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Joiner", "partial", func(c sdk.Context, _ []byte) ([]byte, error) {
+	if err := reg.RegisterService("Joiner", "partial", func(c sdk.Context, _ []byte) ([]byte, error) {
 		id1, f1 := c.Awakeable()
 		id2, f2 := c.Awakeable()
 		id3, f3 := c.Awakeable()
@@ -245,7 +245,7 @@ func TestCombinator_Any_ReturnsFirstResolverByArgumentOrder(t *testing.T) {
 	var emitted atomic.Bool
 
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Racer", "any", func(c sdk.Context, _ []byte) ([]byte, error) {
+	if err := reg.RegisterService("Racer", "any", func(c sdk.Context, _ []byte) ([]byte, error) {
 		id1, f1 := c.Awakeable()
 		id2, f2 := c.Awakeable()
 		id3, f3 := c.Awakeable()
@@ -296,7 +296,7 @@ func TestCombinator_Any_ReturnsFirstResolverByArgumentOrder(t *testing.T) {
 // the same Any combinator as Awakeable.
 func TestCombinator_AnyOfAwakeableAndSleep_TimeoutPattern(t *testing.T) {
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Timer", "race", func(c sdk.Context, _ []byte) ([]byte, error) {
+	if err := reg.RegisterService("Timer", "race", func(c sdk.Context, _ []byte) ([]byte, error) {
 		_, never := c.Awakeable()
 		short := c.Sleep(60 * time.Millisecond)
 		// Any picks the first resolved by argument order. The
@@ -342,7 +342,7 @@ func TestCombinator_Nested_AllOfAwakeableAndAny(t *testing.T) {
 	var emitted atomic.Bool
 
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Nest", "ed", func(c sdk.Context, _ []byte) ([]byte, error) {
+	if err := reg.RegisterService("Nest", "ed", func(c sdk.Context, _ []byte) ([]byte, error) {
 		outerID, outerF := c.Awakeable()
 		innerID, innerAwakeable := c.Awakeable()
 		short := c.Sleep(60 * time.Millisecond)
@@ -399,7 +399,7 @@ func TestCombinator_All_SurvivesRestart(t *testing.T) {
 	var emitted atomic.Bool
 
 	register := func(reg *sdk.Registry) {
-		if err := reg.Register("Persist", "all", func(c sdk.Context, _ []byte) ([]byte, error) {
+		if err := reg.RegisterService("Persist", "all", func(c sdk.Context, _ []byte) ([]byte, error) {
 			id1, f1 := c.Awakeable()
 			id2, f2 := c.Awakeable()
 			// emitted is per-process; both pre- and post-crash runs

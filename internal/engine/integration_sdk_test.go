@@ -50,7 +50,7 @@ func TestSDK_RunReturnsJournaledValue(t *testing.T) {
 	var runCount atomic.Int32
 
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Runner", "go", func(c sdk.Context, _ []byte) ([]byte, error) {
+	if err := reg.RegisterService("Runner", "go", func(c sdk.Context, _ []byte) ([]byte, error) {
 		v, err := c.Run("compute", func() ([]byte, error) {
 			runCount.Add(1)
 			return []byte("computed"), nil
@@ -100,7 +100,7 @@ func TestSDK_RunReturnsJournaledValue(t *testing.T) {
 // the timer.
 func TestSDK_SleepResumesAfterTimerFires(t *testing.T) {
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Sleeper", "wait", func(c sdk.Context, in []byte) ([]byte, error) {
+	if err := reg.RegisterService("Sleeper", "wait", func(c sdk.Context, in []byte) ([]byte, error) {
 		if _, err := c.Sleep(80 * time.Millisecond).Result(); err != nil {
 			return nil, err
 		}
@@ -137,7 +137,7 @@ func TestSDK_SleepResumesAfterTimerFires(t *testing.T) {
 // completion).
 func TestSDK_SetStateCompletesOK(t *testing.T) {
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Stater", "set", func(c sdk.Context, in []byte) ([]byte, error) {
+	if err := reg.RegisterService("Stater", "set", func(c sdk.Context, in []byte) ([]byte, error) {
 		if err := c.SetState("k", in); err != nil {
 			return nil, err
 		}
@@ -170,7 +170,7 @@ func TestSDK_SetStateCompletesOK(t *testing.T) {
 // failure cleanly to the engine.
 func TestSDK_RunFailureSurfacesAsFailure(t *testing.T) {
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Boom", "fail", func(c sdk.Context, _ []byte) ([]byte, error) {
+	if err := reg.RegisterService("Boom", "fail", func(c sdk.Context, _ []byte) ([]byte, error) {
 		_, err := c.Run("nope", func() ([]byte, error) {
 			return nil, sdk.NewFailure(7, "kaboom")
 		})

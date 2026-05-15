@@ -21,6 +21,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
+	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
 )
 
@@ -33,7 +34,7 @@ import (
 //	    Node:    reflow.NodeConfig{ID: 1, RaftAddr: "127.0.0.1:5410"},
 //	    Storage: reflow.StorageConfig{DataDir: "/var/lib/reflow"},
 //	}
-//	cfg.Handlers = sdk.NewRegistry()
+//	cfg.Handlers.Registry = sdk.NewRegistry()
 //	host, err := reflow.Run(ctx, cfg)
 func Run(ctx context.Context, cfg Config) (*Host, error) {
 	if err := validate(cfg); err != nil {
@@ -82,7 +83,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		DataDir:            cfg.Storage.DataDir,
 		Log:                logger,
 		EnableMetrics:      !cfg.Metrics.Disabled,
-		Handlers:           cfg.Handlers,
+		Handlers:           cfg.Handlers.Registry,
 		GossipBindAddr:     cfg.Node.GossipBindAddr,
 		GossipAdvAddr:      cfg.Node.GossipAdvAddr,
 		GrpcEndpoint:       cfg.Node.DeliveryAddr,
@@ -259,7 +260,7 @@ func startDeliveryListener(
 // producer + admin server, then packages everything into a Host. Errors
 // here are surfaced by the caller which runs the bail cleanup.
 func finishStartup(
-	_ context.Context,
+	ctx context.Context,
 	cfg Config,
 	eh *engine.Host,
 	multiNode bool,
@@ -403,6 +404,18 @@ func finishStartup(
 		}()
 		logger.Info("reflow: admin listening", "addr", adminLn.Addr().String(),
 			"driver", string(adminCreds.Driver))
+
+		// Auto-seed remote-handler deployments from config. Runs as a
+		// background goroutine so a slow handler endpoint doesn't block
+		// Run; each failure is logged and the next endpoint is tried.
+		// ctx is the Run caller's context — cancelling it cancels the
+		// seed loop.
+		if len(cfg.Handlers.Endpoints) > 0 {
+			go autoSeedEndpoints(ctx, srv, runner, cfg.Handlers.Endpoints, logger)
+		}
+	} else if len(cfg.Handlers.Endpoints) > 0 {
+		logger.Warn("reflow: Handlers.Endpoints requires admin server (multi-node + Admin.Addr); skipping",
+			"endpoints", len(cfg.Handlers.Endpoints))
 	}
 
 	return &Host{
@@ -419,6 +432,53 @@ func finishStartup(
 		snapshotCxl:    snapshotCxl,
 		snapshotRepo:   snapshotRepo,
 	}, nil
+}
+
+// autoSeedEndpoints waits for shard 0 leadership, then issues
+// RegisterDeployment once per endpoint via the admin server's internal
+// path. Already-registered endpoints aren't deduplicated — each call
+// produces a fresh deployment_id because RegisterDeployment mints a new
+// UUID per invocation. Operators who don't want duplicate registrations
+// on every restart should configure endpoints via koanf only for one-shot
+// seeding and unset the field for subsequent boots.
+//
+// Runs as a fire-and-forget goroutine; logs each outcome at INFO / WARN.
+func autoSeedEndpoints(ctx context.Context, srv *admin.Server, runner *engine.MetadataRunner, endpoints []HandlerEndpoint, log *slog.Logger) {
+	// Wait for shard 0 leadership before registering. The poll cadence
+	// is 200ms — fast enough to feel snappy in tests, slow enough that
+	// a non-leader node doesn't spin a CPU. Bound the wait so a stuck
+	// startup doesn't keep the goroutine alive forever.
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		if runner != nil && runner.IsLeader() {
+			break
+		}
+		if time.Now().After(deadline) {
+			log.Warn("reflow: auto-seed endpoints: shard 0 leadership not reached within 2m; skipping",
+				"endpoints", len(endpoints))
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+
+	for _, ep := range endpoints {
+		if ctx.Err() != nil {
+			return
+		}
+		regCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		resp, err := srv.RegisterDeployment(regCtx, &adminv1.RegisterDeploymentRequest{Url: ep.URL})
+		cancel()
+		if err != nil {
+			log.Warn("reflow: auto-seed endpoint failed", "url", ep.URL, "err", err)
+			continue
+		}
+		log.Info("reflow: auto-seed endpoint registered",
+			"url", ep.URL, "deployment_id", resp.GetDeploymentId())
+	}
 }
 
 // toEnginePeers maps the public Peer type to the internal engine.Peer.

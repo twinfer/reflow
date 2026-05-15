@@ -9,7 +9,7 @@ import (
 func TestRegistry_RegisterAndLookup(t *testing.T) {
 	r := NewRegistry()
 	h := func(_ Context, _ []byte) ([]byte, error) { return nil, nil }
-	if err := r.Register("Greeter", "hello", h); err != nil {
+	if err := r.RegisterService("Greeter", "hello", h); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	if r.Len() != 1 {

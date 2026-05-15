@@ -29,7 +29,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "reflowd: %v\n", err)
 		os.Exit(2)
 	}
-	cfg.Handlers = sdk.NewRegistry()
+	cfg.Handlers.Registry = sdk.NewRegistry()
 	// User binaries register handlers here before reflow.Run; reflowd
 	// ships with an empty registry — useful for smoke-testing the
 	// ingress + admin endpoints without a real workload.

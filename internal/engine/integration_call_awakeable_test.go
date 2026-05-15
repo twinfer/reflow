@@ -66,7 +66,7 @@ func TestHandlerSurvivesKill(t *testing.T) {
 	}
 
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Survivor", "go", handler); err != nil {
+	if err := reg.RegisterService("Survivor", "go", handler); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -194,13 +194,13 @@ func TestOutgoingCallSurvivesRestart(t *testing.T) {
 	var calleeRuns atomic.Int32
 
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Callee", "do", func(_ sdk.Context, in []byte) ([]byte, error) {
+	if err := reg.RegisterService("Callee", "do", func(_ sdk.Context, in []byte) ([]byte, error) {
 		calleeRuns.Add(1)
 		return append([]byte("from-callee:"), in...), nil
 	}); err != nil {
 		t.Fatalf("Register Callee: %v", err)
 	}
-	if err := reg.Register("Caller", "go", func(c sdk.Context, in []byte) ([]byte, error) {
+	if err := reg.RegisterService("Caller", "go", func(c sdk.Context, in []byte) ([]byte, error) {
 		out, err := c.Call(sdk.Target{Service: "Callee", Handler: "do"}, in).Result()
 		if err != nil {
 			return nil, err
@@ -345,12 +345,12 @@ func TestOutgoingCallSurvivesRestart(t *testing.T) {
 // before the crash variants stress the resume paths.
 func TestCallResultDeliveredInline(t *testing.T) {
 	reg := sdk.NewRegistry()
-	if err := reg.Register("B", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
+	if err := reg.RegisterService("B", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
 		return append([]byte("pong:"), in...), nil
 	}); err != nil {
 		t.Fatalf("Register B: %v", err)
 	}
-	if err := reg.Register("A", "go", func(c sdk.Context, in []byte) ([]byte, error) {
+	if err := reg.RegisterService("A", "go", func(c sdk.Context, in []byte) ([]byte, error) {
 		out, err := c.Call(sdk.Target{Service: "B", Handler: "echo"}, in).Result()
 		if err != nil {
 			return nil, err
@@ -395,7 +395,7 @@ func TestCallResultDeliveredInline(t *testing.T) {
 func TestCallResultSurvivesCallerCrash(t *testing.T) {
 	var calleeRuns atomic.Int32
 	reg := sdk.NewRegistry()
-	if err := reg.Register("B", "do", func(c sdk.Context, in []byte) ([]byte, error) {
+	if err := reg.RegisterService("B", "do", func(c sdk.Context, in []byte) ([]byte, error) {
 		// Sleep gives the test window to crash the host before Callee
 		// finishes — Callee's status is Invoked (mid-handler) at crash time.
 		if _, err := c.Sleep(800 * time.Millisecond).Result(); err != nil {
@@ -406,7 +406,7 @@ func TestCallResultSurvivesCallerCrash(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register B: %v", err)
 	}
-	if err := reg.Register("A", "go", func(c sdk.Context, in []byte) ([]byte, error) {
+	if err := reg.RegisterService("A", "go", func(c sdk.Context, in []byte) ([]byte, error) {
 		out, err := c.Call(sdk.Target{Service: "B", Handler: "do"}, in).Result()
 		if err != nil {
 			return nil, err
@@ -507,7 +507,7 @@ func TestCallResultSurvivesCallerCrash(t *testing.T) {
 func TestCallResultSurvivesCalleeCrash(t *testing.T) {
 	var calleeRuns atomic.Int32
 	reg := sdk.NewRegistry()
-	if err := reg.Register("B", "do", func(c sdk.Context, in []byte) ([]byte, error) {
+	if err := reg.RegisterService("B", "do", func(c sdk.Context, in []byte) ([]byte, error) {
 		if _, err := c.Sleep(1200 * time.Millisecond).Result(); err != nil {
 			return nil, err
 		}
@@ -516,7 +516,7 @@ func TestCallResultSurvivesCalleeCrash(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register B: %v", err)
 	}
-	if err := reg.Register("A", "go", func(c sdk.Context, in []byte) ([]byte, error) {
+	if err := reg.RegisterService("A", "go", func(c sdk.Context, in []byte) ([]byte, error) {
 		out, err := c.Call(sdk.Target{Service: "B", Handler: "do"}, in).Result()
 		if err != nil {
 			return nil, err
@@ -668,7 +668,7 @@ func TestAwakeableResolvedByIngress(t *testing.T) {
 	var emitted atomic.Bool
 
 	reg := sdk.NewRegistry()
-	if err := reg.Register("Awaiter", "wait", func(c sdk.Context, _ []byte) ([]byte, error) {
+	if err := reg.RegisterService("Awaiter", "wait", func(c sdk.Context, _ []byte) ([]byte, error) {
 		id, fut := c.Awakeable()
 		// Only publish the id once across replays. After resolution the
 		// session respawns and re-enters this branch; emitting again

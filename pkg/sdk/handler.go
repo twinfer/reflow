@@ -103,13 +103,6 @@ func (r *Registry) RegisterWorkflow(service, handler string, fn Handler) error {
 	return r.register(service, handler, fn, KindWorkflow)
 }
 
-// Register adds fn as a service-kind handler. Equivalent to
-// RegisterService and retained as a thin shim for callers that pre-date
-// the kind-aware API; removed once every call site migrates.
-func (r *Registry) Register(service, handler string, fn Handler) error {
-	return r.register(service, handler, fn, KindService)
-}
-
 func (r *Registry) register(service, handler string, fn Handler, kind Kind) error {
 	if service == "" {
 		return fmt.Errorf("sdk: Register: service must be non-empty")

@@ -6,12 +6,16 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
 // Config carries the dependencies the Invoker needs at construction
-// time. All fields except Log are required.
+// time. All fields except Log are required. DeploymentResolver and
+// WireDispatcher are optional — when nil, every invocation falls back to
+// the in-process registry path. The codec governs wire-payload
+// marshalling and defaults to protobuf.
 type Config struct {
 	Registry        *Registry
 	JournalTable    tables.JournalTable
@@ -19,6 +23,29 @@ type Config struct {
 	StateTable      tables.StateTable
 	Proposer        Proposer
 	Log             *slog.Logger
+
+	// Deployments resolves a stamped deployment_id to a DeploymentRecord
+	// so installSessionLocked can branch between in-proc dispatch (no
+	// record or transport == "inproc") and wire dispatch (transport ==
+	// "grpc" | "grpcs" | "http" | "https").
+	Deployments DeploymentResolver
+
+	// WireDispatcher opens a remote-handler Stream against a DeploymentRecord.
+	// Required when a non-inproc deployment is registered; nil when the
+	// host only serves in-process handlers.
+	WireDispatcher WireDispatcher
+
+	// Codec governs wire payload encoding (default protobuf).
+	Codec handlerclient.Codec
+}
+
+// sessionHandle is the union view of *session (inproc) and *wireSession
+// (wire) that Invoker tracks per-id. Both types provide the same
+// lifecycle methods so the sessions map can hold either.
+type sessionHandle interface {
+	start()
+	abort()
+	Done() <-chan struct{}
 }
 
 // Invoker owns the in-process invocation sessions for one partition.
@@ -37,10 +64,13 @@ type Invoker struct {
 	invocationTable tables.InvocationTable
 	stateTable      tables.StateTable
 	proposer        Proposer
+	deployments     DeploymentResolver
+	dispatcher      WireDispatcher
+	codec           handlerclient.Codec
 	log             *slog.Logger
 
 	mu       sync.Mutex
-	sessions map[string]*session
+	sessions map[string]sessionHandle
 	// pendingRespawn holds StartInvocation requests that arrived while a
 	// session was still in the map. The cleanup goroutine drains an entry
 	// here after the session exits, ensuring no wake-up is lost when a
@@ -72,14 +102,21 @@ func New(cfg Config) *Invoker {
 	if log == nil {
 		log = slog.Default()
 	}
+	codec := cfg.Codec
+	if codec == nil {
+		codec = handlerclient.DefaultCodec()
+	}
 	return &Invoker{
 		registry:        cfg.Registry,
 		journal:         NewJournalReader(cfg.JournalTable),
 		invocationTable: cfg.InvocationTable,
 		stateTable:      cfg.StateTable,
 		proposer:        cfg.Proposer,
+		deployments:     cfg.Deployments,
+		dispatcher:      cfg.WireDispatcher,
+		codec:           codec,
 		log:             log,
-		sessions:        make(map[string]*session),
+		sessions:        make(map[string]sessionHandle),
 		pendingRespawn:  make(map[string]*enginev1.InvocationTarget),
 	}
 }
@@ -128,7 +165,7 @@ func (i *Invoker) Stop() {
 	i.mu.Lock()
 	cancel := i.cancel
 	sessions := i.sessions
-	i.sessions = make(map[string]*session)
+	i.sessions = make(map[string]sessionHandle)
 	i.pendingRespawn = make(map[string]*enginev1.InvocationTarget)
 	i.pendingStart = nil
 	i.cancel = nil
@@ -188,13 +225,72 @@ func (i *Invoker) StartInvocation(id *enginev1.InvocationId, target *enginev1.In
 
 // installSessionLocked constructs the session and installs it in the
 // sessions map. MUST be called with i.mu held; returns the session and
-// true on success, or (nil, false) when no handler is registered or the
-// invoker is no longer started. Does NOT call s.start() — the caller
-// drops the lock before doing so.
-func (i *Invoker) installSessionLocked(id *enginev1.InvocationId, target *enginev1.InvocationTarget, key string) (*session, bool) {
+// true on success, or (nil, false) when no dispatch path is available
+// (no handler AND no wire deployment) or the invoker is no longer
+// started. Does NOT call s.start() — the caller drops the lock before
+// doing so.
+//
+// Dispatch selection:
+//   - Read the persisted InvocationStatus to retrieve the stamped
+//     deployment_id (Phase 5c).
+//   - If deployments resolver yields a record whose transport is not
+//     "inproc", install a wireSession (requires WireDispatcher).
+//   - Otherwise look up the handler in the in-process registry and
+//     install the inproc session. A missing handler + missing wire
+//     deployment is the only path that drops with a warn — preserving
+//     the existing "stays Scheduled" behaviour observed by
+//     TestInvokerWiringMissingHandlerStaysScheduled.
+func (i *Invoker) installSessionLocked(id *enginev1.InvocationId, target *enginev1.InvocationTarget, key string) (sessionHandle, bool) {
 	if !i.started {
 		return nil, false
 	}
+
+	var rec *enginev1.DeploymentRecord
+	if i.deployments != nil {
+		status, err := i.invocationTable.Get(id)
+		if err != nil {
+			i.log.Warn("invoker: load status for dispatch failed",
+				"id", invocationIDString(id), "err", err)
+			return nil, false
+		}
+		if depID := status.GetDeploymentId(); depID != "" {
+			rec, err = i.deployments.Resolve(depID)
+			if err != nil {
+				i.log.Warn("invoker: resolve deployment failed",
+					"id", invocationIDString(id),
+					"deployment_id", depID,
+					"err", err)
+				// Fall through to in-proc lookup — the deployment may be
+				// the synthetic inproc record that the resolver doesn't
+				// know about on this node.
+			}
+		}
+	}
+
+	if rec != nil && rec.GetTransport() != "inproc" {
+		if i.dispatcher == nil {
+			i.log.Warn("invoker: wire deployment requires WireDispatcher; dropping",
+				"id", invocationIDString(id),
+				"deployment_id", rec.GetId(),
+				"transport", rec.GetTransport())
+			return nil, false
+		}
+		s := newWireSession(
+			i.ctx,
+			id,
+			target,
+			rec,
+			i.dispatcher,
+			i.codec,
+			i.proposer,
+			i.invocationTable,
+			i.journal,
+			i.log,
+		)
+		i.sessions[key] = s
+		return s, true
+	}
+
 	handler, kind, ok := i.registry.Lookup(target)
 	if !ok {
 		i.log.Warn("invoker: no handler registered; dropping",
@@ -205,9 +301,9 @@ func (i *Invoker) installSessionLocked(id *enginev1.InvocationId, target *engine
 		return nil, false
 	}
 	// kind rides on the session today purely as metadata; per-kind
-	// dispatch (object key locks, workflow lifecycle) lands once
-	// commit 5c wires deployment-aware routing.
-	// The chanTransport pair is held for the wire-shim path (commit 5d);
+	// dispatch (object key locks, workflow lifecycle) lands as kind-
+	// aware routing matures.
+	// The chanTransport pair is held for legacy in-process plumbing;
 	// the in-process Go SDK ignores it and drives the handler directly
 	// via *inprocContext. Closing it on session exit is enough.
 	engineSide, _ := NewChanTransport()
@@ -233,9 +329,9 @@ func (i *Invoker) installSessionLocked(id *enginev1.InvocationId, target *engine
 // arrived while the session was running, installs a fresh session for
 // the pending target — all under one lock acquisition so a concurrent
 // StartInvocation cannot install a duplicate session.
-func (i *Invoker) watchSession(id *enginev1.InvocationId, key string, s *session) {
+func (i *Invoker) watchSession(id *enginev1.InvocationId, key string, s sessionHandle) {
 	<-s.Done()
-	var next *session
+	var next sessionHandle
 	i.mu.Lock()
 	if cur, ok := i.sessions[key]; ok && cur == s {
 		delete(i.sessions, key)

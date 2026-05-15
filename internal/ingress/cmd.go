@@ -30,9 +30,9 @@ type Config struct {
 	// Log is the structured logger; defaults to slog.Default.
 	Log *slog.Logger
 	// ExtraGRPC registers additional services on the ingress gRPC server
-	// before Serve is called. Used by internal/sdkstream to host the
-	// SDK session protocol on the same port as Ingress without making
-	// ingress directly depend on the sdkstream package.
+	// before Serve is called. Operators wire optional services here so
+	// the ingress port can multiplex without ingress depending on
+	// downstream packages.
 	ExtraGRPC func(*grpc.Server)
 }
 

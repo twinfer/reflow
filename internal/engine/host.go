@@ -20,6 +20,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine/cluster"
+	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/engine/invoker"
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/observability"
@@ -171,6 +172,11 @@ type Host struct {
 	// "lock held"). The second caller waits, observes the partition is
 	// already running, and returns the existing runner.
 	startMu map[uint64]*sync.Mutex
+	// handlerRegistry caches remote-deployment clients keyed by
+	// deployment_id. Populated lazily by the wire dispatcher on first
+	// use of a deployment; entries are evicted when a DeploymentRecord
+	// is overwritten with a different URL.
+	handlerRegistry *handlerclient.Registry
 }
 
 // NewHost constructs a Host but does not start any partitions; call
@@ -199,10 +205,11 @@ func NewHost(cfg HostConfig) (*Host, error) {
 	}
 
 	h := &Host{
-		cfg:        cfg,
-		log:        cfg.Log,
-		partitions: make(map[uint64]*PartitionRunner),
-		startMu:    make(map[uint64]*sync.Mutex),
+		cfg:             cfg,
+		log:             cfg.Log,
+		partitions:      make(map[uint64]*PartitionRunner),
+		startMu:         make(map[uint64]*sync.Mutex),
+		handlerRegistry: newHandlerRegistry(),
 	}
 
 	nhConfig := config.NodeHostConfig{
@@ -599,6 +606,8 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		InvocationTable: tables.InvocationTable{S: snap.Store()},
 		StateTable:      tables.StateTable{S: snap.Store()},
 		Proposer:        proposer,
+		Deployments:     invoker.DeploymentResolverFunc(h.resolveDeployment),
+		WireDispatcher:  hostWireDispatcher{h: h},
 		Log:             h.log,
 	})
 
@@ -745,14 +754,19 @@ func (h *Host) Close() error {
 	h.mu.Lock()
 	partitions := h.partitions
 	metadataRunners := h.metadataRunners
+	hr := h.handlerRegistry
 	h.partitions = nil
 	h.metadataRunners = nil
+	h.handlerRegistry = nil
 	h.mu.Unlock()
 	for _, p := range partitions {
 		p.onStepDown()
 	}
 	for _, r := range metadataRunners {
 		r.onStepDown()
+	}
+	if hr != nil {
+		_ = hr.Close()
 	}
 	if h.nh != nil {
 		h.nh.Close()

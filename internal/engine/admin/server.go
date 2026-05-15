@@ -13,23 +13,34 @@ package admin
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
+
+// protocolVersion is the wire-protocol version this engine speaks; the
+// handler-side discovery response must advertise the same string.
+const protocolVersion = "v1"
 
 // Server implements adminv1.AdminServer.
 type Server struct {
@@ -317,21 +328,111 @@ func (s *Server) ListSnapshots(ctx context.Context, req *adminv1.ListSnapshotsRe
 }
 
 // RegisterDeployment accepts a remote-handler URL, dials its discovery
-// endpoint, and proposes Command_RegisterDeployment to shard 0. Phase 5c
-// ships only the API stub — the engine-side handlerclient lands in
-// commit 5d, so any URL is rejected with UNIMPLEMENTED. The synthetic
-// inproc deployment is registered internally at metadata-leader
+// endpoint, and proposes Command_RegisterDeployment to shard 0. The
+// synthetic inproc deployment is registered internally at metadata-leader
 // bootstrap, NOT via this RPC; operators do not see it.
-func (s *Server) RegisterDeployment(_ context.Context, req *adminv1.RegisterDeploymentRequest) (*adminv1.RegisterDeploymentResponse, error) {
+//
+// Today (5d.1) only gRPC schemes (grpc://, grpcs://) are wired; raw HTTP/2
+// (https://, http://) lands in 5d.2.
+func (s *Server) RegisterDeployment(ctx context.Context, req *adminv1.RegisterDeploymentRequest) (*adminv1.RegisterDeploymentResponse, error) {
 	if err := s.requireLeader(); err != nil {
 		return nil, err
 	}
-	url := req.GetUrl()
-	if url == "" {
+	raw := req.GetUrl()
+	if raw == "" {
 		return nil, status.Error(codes.InvalidArgument, "admin: url required")
 	}
-	return nil, status.Errorf(codes.Unimplemented,
-		"admin: RegisterDeployment not yet implemented for url %q — remote-handler dispatch lands in commit 5d", url)
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "admin: parse url: %v", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	transport, err := transportForScheme(scheme)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "admin: %v", err)
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+
+	resp, err := discoverGRPC(callCtx, u)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "admin: discovery: %v", err)
+	}
+	if got := resp.GetProtocolVersion(); got != protocolVersion {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"admin: handler advertised protocol %q; engine speaks %q", got, protocolVersion)
+	}
+
+	deploymentID := uuid.NewString()
+	rec := &enginev1.DeploymentRecord{
+		Id:             deploymentID,
+		Url:            raw,
+		Transport:      transport,
+		RegisteredAtMs: uint64(time.Now().UnixMilli()),
+	}
+	for _, h := range resp.GetHandlers() {
+		for _, name := range h.GetHandlerNames() {
+			rec.Handlers = append(rec.Handlers, &enginev1.DeploymentHandler{
+				Service: h.GetService(),
+				Handler: name,
+				Kind:    uint32(h.GetKind()),
+			})
+		}
+	}
+
+	cmd := &enginev1.Command{
+		Kind: &enginev1.Command_RegisterDeployment{
+			RegisterDeployment: &enginev1.RegisterDeployment{Record: rec},
+		},
+	}
+	if err := s.runner.Proposer().ProposeSelf(callCtx, cmd); err != nil {
+		return nil, status.Errorf(codes.Internal, "admin: propose RegisterDeployment: %v", err)
+	}
+	return &adminv1.RegisterDeploymentResponse{DeploymentId: deploymentID}, nil
+}
+
+// transportForScheme maps URL schemes to the persisted transport tag.
+// inproc is internally reserved and rejected here so operators can't
+// shadow the synthetic in-proc deployment.
+func transportForScheme(scheme string) (string, error) {
+	switch scheme {
+	case "grpc", "grpcs":
+		return "grpc", nil
+	case "http", "https":
+		return "https", nil
+	case "inproc":
+		return "", errors.New("inproc:// is internal; cannot be registered via RegisterDeployment")
+	case "":
+		return "", errors.New("url missing scheme")
+	default:
+		return "", fmt.Errorf("unsupported scheme %q", scheme)
+	}
+}
+
+// discoverGRPC opens a one-shot gRPC dial to u.Host and calls
+// DiscoveryService.Discover. Plain gRPC for "grpc://", TLS for
+// "grpcs://"; raw HTTP/2 discovery (5d.2) is a separate code path.
+func discoverGRPC(ctx context.Context, u *url.URL) (*protocolv1.DiscoveryResponse, error) {
+	if u.Host == "" {
+		return nil, errors.New("url missing host:port")
+	}
+	var opts []grpc.DialOption
+	switch strings.ToLower(u.Scheme) {
+	case "grpc":
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	case "grpcs":
+		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})))
+	default:
+		return nil, fmt.Errorf("scheme %q is not a gRPC URL", u.Scheme)
+	}
+	cc, err := grpc.NewClient(u.Host, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+	defer func() { _ = cc.Close() }()
+	client := protocolv1.NewDiscoveryServiceClient(cc)
+	return client.Discover(ctx, &protocolv1.DiscoveryRequest{ProtocolVersion: protocolVersion})
 }
 
 // replicaSetContainsID is a small predicate; cluster has the same logic

@@ -133,36 +133,8 @@ func (r *MetadataRunner) bootstrap(ctx context.Context) {
 		}
 	}
 
-	// Phase 4.1 static assignment: one partition shard per peer index
-	// (shard ids 1..N), every shard replicated on every peer. The
-	// resulting table is identical across the cluster so any leader's
-	// proposal yields the same byte sequence.
-	pt := &enginev1.PartitionTable{
-		Shards:          make(map[uint64]*enginev1.ReplicaSet, len(r.peers)),
-		AssignmentEpoch: r.leadership.LeaderEpoch(),
-	}
-	replicas := make([]uint64, 0, len(r.peers))
-	for _, p := range r.peers {
-		replicas = append(replicas, p.NodeID)
-	}
-	for i := range r.peers {
-		shardID := uint64(i + 1)
-		// Defensive copy so future mutations don't alias.
-		rs := append([]uint64(nil), replicas...)
-		pt.Shards[shardID] = &enginev1.ReplicaSet{NodeIds: rs}
-	}
-	// MetaReplicas seeds the metadata Raft group's voting set. On fresh
-	// bootstrap this is the static peer set; on a leader-gain re-run the
-	// rebalance pipeline may already have added or removed members, so
-	// read the existing on-disk MetaReplicas and re-propose it verbatim
-	// (UpdatePartitionTable is a full overwrite — proposers are
-	// responsible for sending the complete desired state).
-	if existing, err := (cluster.PartitionTableTable{S: r.snapshotter.Store()}).Get(); err == nil &&
-		existing != nil && len(existing.GetMetaReplicas().GetNodeIds()) > 0 {
-		pt.MetaReplicas = existing.GetMetaReplicas()
-	} else {
-		pt.MetaReplicas = &enginev1.ReplicaSet{NodeIds: append([]uint64(nil), replicas...)}
-	}
+	existing, _ := (cluster.PartitionTableTable{S: r.snapshotter.Store()}).Get()
+	pt := buildBootstrapTable(r.peers, existing, r.leadership.LeaderEpoch())
 	cmd := &enginev1.Command{
 		Kind: &enginev1.Command_UpdatePartitionTable{
 			UpdatePartitionTable: &enginev1.UpdatePartitionTable{Table: pt},
@@ -177,4 +149,43 @@ func (r *MetadataRunner) bootstrap(ctx context.Context) {
 	}
 	r.log.Info("metadata: bootstrap proposals committed",
 		"shard", r.ShardID, "partition_count", len(pt.Shards))
+}
+
+// buildBootstrapTable produces the PartitionTable the metadata-leader
+// bootstrap proposer will send via UpdatePartitionTable. Pure function
+// (no I/O, no logging) so the merge-vs-seed logic is unit-testable
+// without spinning a real dragonboat.
+//
+// UpdatePartitionTable is a full overwrite, so the bootstrap proposer
+// is responsible for sending the complete desired state every time.
+// Both pt.Shards and pt.MetaReplicas obey the same rule: re-use the
+// existing on-disk value when present (so a leader-gain re-run
+// preserves whatever the rebalance pipeline has done since boot);
+// otherwise seed from the static peer set (the fresh-bootstrap path).
+//
+// Phase 4.1 static assignment: one partition shard per peer index
+// (shard ids 1..N), every shard replicated on every peer.
+func buildBootstrapTable(peers []Peer, existing *enginev1.PartitionTable, leaderEpoch uint64) *enginev1.PartitionTable {
+	pt := &enginev1.PartitionTable{AssignmentEpoch: leaderEpoch}
+	replicas := make([]uint64, 0, len(peers))
+	for _, p := range peers {
+		replicas = append(replicas, p.NodeID)
+	}
+	if existing != nil && len(existing.GetShards()) > 0 {
+		pt.Shards = existing.GetShards()
+	} else {
+		pt.Shards = make(map[uint64]*enginev1.ReplicaSet, len(peers))
+		for i := range peers {
+			shardID := uint64(i + 1)
+			// Defensive copy so future mutations don't alias.
+			rs := append([]uint64(nil), replicas...)
+			pt.Shards[shardID] = &enginev1.ReplicaSet{NodeIds: rs}
+		}
+	}
+	if existing != nil && len(existing.GetMetaReplicas().GetNodeIds()) > 0 {
+		pt.MetaReplicas = existing.GetMetaReplicas()
+	} else {
+		pt.MetaReplicas = &enginev1.ReplicaSet{NodeIds: append([]uint64(nil), replicas...)}
+	}
+	return pt
 }

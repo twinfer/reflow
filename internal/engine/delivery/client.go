@@ -49,9 +49,9 @@ type ClientConfig struct {
 // per endpoint behind a mutex so the request/response correlation stays
 // trivially one-to-one (echoed by the seq field on the wire).
 //
-// Phase 4.1 favors correctness over throughput: a single in-flight send
-// per endpoint is plenty for the 3-node cluster and avoids interleaving
-// concerns. Phase 4.2 can lift this if pipelining becomes a bottleneck.
+// Favors correctness over throughput: a single in-flight send per
+// endpoint avoids interleaving concerns. Pipelining can be added if it
+// becomes a bottleneck.
 type Client struct {
 	cfg ClientConfig
 

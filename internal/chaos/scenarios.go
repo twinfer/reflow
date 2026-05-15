@@ -5,8 +5,6 @@
 // cluster is stable again. Workload-side correctness is the
 // caller's responsibility — pair a scenario with a running
 // loadgen.WorkloadConfig and check post-run invariants.
-//
-// Phase 5: see durable-execution-go-sad.md §10.
 package chaos
 
 import (

@@ -37,8 +37,8 @@ func TestNextRetryDelay_NilPolicyUsesDefaults(t *testing.T) {
 
 // TestNextRetryDelay_NilPolicyExhaustsAtDefaultMax verifies the default
 // cap fires at defaultRetryMaxAttempts. The exact value matters here:
-// Phase 3 has no cancel/kill, so a stuck handler must eventually surface
-// as terminal so a queued VO key isn't poisoned indefinitely.
+// a stuck handler must eventually surface as terminal so a queued VO
+// key isn't poisoned indefinitely.
 func TestNextRetryDelay_NilPolicyExhaustsAtDefaultMax(t *testing.T) {
 	if _, ok := NextRetryDelay(nil, defaultRetryMaxAttempts-1); !ok {
 		t.Errorf("attempt=%d (one before cap): exhausted; want ok", defaultRetryMaxAttempts-1)

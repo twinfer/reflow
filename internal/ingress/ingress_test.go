@@ -235,7 +235,7 @@ func TestIngress_DescribeAndListPartitions(t *testing.T) {
 	}
 }
 
-// TestIngress_AttachAndGetOutput exercises the Phase 3 endpoints:
+// TestIngress_AttachAndGetOutput exercises the attach and output endpoints:
 //   - GetInvocationOutput returns PENDING before completion and
 //     COMPLETED_OK after; UNKNOWN for an arbitrary unknown id.
 //   - AttachInvocation blocks until Completed and returns the same output.

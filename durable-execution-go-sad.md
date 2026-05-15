@@ -3,14 +3,13 @@
 
 **Version:** 0.6 (Draft)
 **Date:** 2026-05-13
-**Status:** Phase 1 + Phase 2 invoker + Phase 3 Virtual Objects (single-
-writer gate, idempotency, retry policy, eager state, attach RPCs) +
-Phase 3.5 combinator futures (`Promise.all` / `Promise.race`) + Phase 4.2
-multi-node (mTLS admin, dynamic membership, DR snapshots) + Phase 4.3
-auth consolidation (single-CA SPIFFE identity, proto-annotation authz,
-single Authorizer seam) implemented. Phase 5 (cloud snapshot drivers,
-retention, non-Go SDKs) outstanding. Open gap: OPEN-1 (joining-node
-startup) — see §9.
+**Status:** Single-node foundation, in-process Go SDK + Invoker, Virtual
+Objects (single-writer gate, idempotency, retry policy, eager state, attach
+RPCs), combinator futures (`Promise.all` / `Promise.race`), multi-node
+replication (mTLS admin, dynamic membership, DR snapshots), and auth
+consolidation (single-CA SPIFFE identity, proto-annotation authz, single
+Authorizer seam) implemented. Cloud snapshot drivers, retention, and non-Go
+SDKs outstanding. Open gap: OPEN-1 (joining-node startup) — see §9.
 
 ---
 
@@ -69,7 +68,7 @@ one process with one data directory.
   SDK and journal. A wire-protocol path (HTTP/2) is supported for
   cross-language handlers but is not the primary developer experience.
 - **Virtual Objects.** Stateful entities with single-writer consistency
-  and durable K/V state (Phase 3).
+  and durable K/V state.
 - **Workflows.** Long-running, multi-step processes with durable timers
   and suspension.
 - **Exactly-once side effects.** External calls are deduplicated via
@@ -92,9 +91,8 @@ one process with one data directory.
   server to run. Cluster coordination is in-binary via an embedded
   metadata Raft group (see §6.2).
 - **Object storage as a hard dependency.** S3/GCS/Azure Blob is an
-  **optional** backend for snapshot archival (Phase 4–5). The default
-  deployment uses local filesystem snapshots only and remains
-  zero-external-dep.
+  **optional** backend for snapshot archival. The default deployment uses
+  local filesystem snapshots only and remains zero-external-dep.
 - **Temporal-scale concurrency targets.** Designed for thousands of
   in-flight invocations on a small cluster, not millions on a hundred-node
   fleet.
@@ -156,7 +154,7 @@ Each partition is an independent unit: one dragonboat Raft group, one Pebble ins
 | Embedded K/V storage | `cockroachdb/pebble/v2` | Apache 2.0 |
 | gRPC (ingress, admin, delivery, sdk session) | `google.golang.org/grpc` | Apache 2.0 |
 | HTTP/2 ingress (REST gateway) | `grpc-ecosystem/grpc-gateway/v2` | BSD-3 |
-| Snapshot archival (Phase 4 fs, Phase 5 cloud) | `gocloud.dev/blob` | Apache 2.0 |
+| Snapshot archival (filesystem + cloud blob) | `gocloud.dev/blob` | Apache 2.0 |
 | Serialization + IDL | `google.golang.org/protobuf` + `buf` v2 | BSD-3 / Apache 2.0 |
 | Authn/Authz | stdlib `crypto/tls`, custom SPIFFE URI mapper + proto-annotation authz (`internal/auth`) | — |
 | Virtual-Object FSM | `qmuntal/stateless` v1.8.0 | BSD-2 |
@@ -368,9 +366,9 @@ strongly-consistent decision driven by an eventually-consistent signal.
 - *Hint cache (dragonboat gossip):* `NodeHostRegistry.GetShardInfo` exposes
   `ShardView{LeaderID, Replicas map[replicaID]raftAddr, Term}` for every
   shard cluster-wide, refreshed by gossip. The per-nodehost `Meta` blob
-  carries the reflow gRPC endpoint so cross-partition delivery (Phase 4)
-  can dial directly by `NodeHostID` without re-reading shard 0 on the hot
-  path. On `NOT_LEADER` from the RPC, fall back to shard 0 and retry.
+  carries the reflow gRPC endpoint so cross-partition delivery can dial
+  directly by `NodeHostID` without re-reading shard 0 on the hot path.
+  On `NOT_LEADER` from the RPC, fall back to shard 0 and retry.
   Gossip is *never* a source of truth — it just makes routing fast and
   decouples node identity from raft addresses (k8s IP churn no longer
   requires a shard-0 proposal).
@@ -386,8 +384,8 @@ FSM, with no epoch number or `(N, key)` tuple to carry. It also avoids the
 split/merge protocol (atomic key-range move across two Pebble DBs + two
 dragonboat groups + two leader log positions while in-flight invocations,
 timers, and outbox rows are live) — a class of bugs we explicitly opt out
-of. The unit of scale-out is moving a shard between nodes (Phase 4
-rebalancer), not changing `N`. The trade is a hard ceiling on horizontal
+of. The unit of scale-out is moving a shard between nodes via the rebalancer,
+not changing `N`. The trade is a hard ceiling on horizontal
 scale (~`N` busy leaders) and permanent hot-key skew if a single
 `(service, object_key)` becomes dominant; both are acceptable inside the
 target envelope. Online resize of `N` is therefore **not supported** —
@@ -539,18 +537,11 @@ later, the natural shape is a `Suspended` row whose `awaiting_on`
 includes a `pause:<reason>` waker, resumable via an Admin RPC that
 proposes the matching wake — no new status variant needed.
 
-**`Killed` is not a Restate `InvocationStatus` variant.** It appears
-in `InvocationStatusDiscriminants` (line 395) but is never constructed.
-The only `Killed` in restate code is `vqueue_table::Status::Killed`
-(`restate/crates/storage-api/src/vqueue_table/entry_status.rs:43`),
-a queue-entry status one layer down. A killed invocation transitions
-to `Completed` with a kill-flavoured failure — same as reflow.
-
 ---
 
 ### 6.5 Virtual Object State Machine
 
-Phase 3. Each `(service, object_key)` has a `KeyLeaseStatus` row in the
+Each `(service, object_key)` has a `KeyLeaseStatus` row in the
 `keylease/` namespace carrying the active invocation id and a FIFO queue.
 Unlike the invocation FSM, the gate is implemented with `qmuntal/stateless`
 (`internal/engine/object_fsm.go`) — the Active-reentry semantics
@@ -619,24 +610,25 @@ grows beyond a threshold. Each snapshot is a Pebble Checkpoint
 when on a real filesystem — tarred into the writer dragonboat hands us
 (`internal/engine/snapshotter.go`).
 
-Phase 1 ships the local-only path: snapshots transit between replicas
-over dragonboat's own snapshot-transfer protocol; the only on-disk
-artifact is the in-flight Checkpoint dir, deleted after upload. Log is
-truncated past the snapshot index. Disk usage stays bounded regardless
-of uptime.
+Snapshots transit between replicas over dragonboat's own snapshot-transfer
+protocol; the only on-disk artifact is the in-flight Checkpoint dir, deleted
+after upload. Log is truncated past the snapshot index. Disk usage stays
+bounded regardless of uptime.
 
-Phase 4 introduces the `SnapshotRepository` abstraction (see §6.12):
+The `SnapshotRepository` abstraction (see §6.12) is an optional archival
+layer on top:
 
 - Snapshots are still produced by the same Pebble Checkpoint path.
 - When a repository is configured, `SaveSnapshot` tees the tar stream
   to both dragonboat's writer and the repository. A joining replica
   attempts a repository download before falling back to dragonboat
   snapshot transfer.
-- When no repository is configured (default), behavior is identical to
-  Phase 1.
+- When no repository is configured (default), only the dragonboat
+  transfer path is active.
 
-Phase 5 brings the cloud-backed repository drivers (S3, GCS, Azure
-Blob), retention policy, and operator-facing `reflow snapshot` commands.
+Cloud-backed repository drivers (S3, GCS, Azure Blob), retention policy,
+and operator-facing `reflow snapshot` commands are implemented via a single
+`BlobRepository` over `gocloud.dev/blob`.
 
 The metadata shard (`shardID=0`) participates in the same mechanism;
 its snapshots are small but include the partition table and are
@@ -661,7 +653,7 @@ journal/        journal/<24-byte invocation_id>/<4-byte BE idx>  JournalEntry (p
 
 timer/          timer/<8-byte BE fire_at_ms>/<24-byte id>        uint32 sleep_index
 
-state/          state/<service>/<obj_key>/<state_key>            reserved for Phase 3
+state/          state/<service>/<obj_key>/<state_key>            Virtual Object K/V state
 
 dedup/self/     dedup/self/<8-byte BE leader_epoch>              DedupEntry (proto)
 dedup/arb/      dedup/arbitrary/<producer_id>                    DedupEntry (proto)
@@ -722,12 +714,12 @@ This ensures exactly-once semantics for all external calls.
 Durable timers are persisted in the partition's `timer/` table and driven
 by a leader-only Go service.
 
-**Implementation (Phase 1):** A single goroutine using `time.Timer` for
-wakeups. Honest about GC: under heavy memory pressure, `time.Timer` may
-deliver slightly late because the scheduler is itself paused. For Phase 1
-this is acceptable — durable timers don't lose entries, they may just fire
-late. A `timerfd`+`epoll` upgrade (or migration to a JIT-friendly clock) is
-deferred until a measured latency requirement justifies the complexity.
+**Implementation:** A single goroutine using `time.Timer` for wakeups.
+Under heavy memory pressure `time.Timer` may deliver slightly late because
+the Go scheduler is itself paused — durable timers don't lose entries, they
+may just fire late. A `timerfd`+`epoll` upgrade (or migration to a
+JIT-friendly clock) is deferred until a measured latency requirement
+justifies the complexity.
 
 **Architecture:** The TimerService owns an in-memory min-heap of timers
 sorted by `(fire_at_ms, invocation_id)`. It is constructed for every
@@ -746,8 +738,7 @@ partition but only `Run`s on the leader; followers' service is idle.
    command via `RaftProposer.ProposeSelf`.
 3. On commit, the FSM deletes the timer row, appends a `SleepResult`
    journal entry, and transitions the invocation status from Suspended →
-   Invoked (pushing `ActInvoke` so the leader can resume execution in
-   Phase 2).
+   Invoked (pushing `ActInvoke` so the leader can resume execution).
 
 **On leader gain:** `TimerService.Rebuild` scans the persistent `timer/`
 prefix and rebuilds the heap. No timers are lost.
@@ -806,8 +797,8 @@ Compatibility note: reflow tracks restate's wire format as a
 *best-effort* compatibility target so existing TS/Python/Java/Kotlin/Rust
 SDK semantics translate with minimal adaptation. We do not commit to
 bug-for-bug parity, nor to keeping pace with every Restate release.
-Non-Go SDKs are explicitly out of scope for Phase 1–3 and ride along
-on whatever effort the community contributes.
+Non-Go SDKs are community-driven and ride along on whatever effort the
+community contributes.
 
 ##### Dual transport
 
@@ -923,7 +914,7 @@ This keeps the state machine logic decoupled from Pebble, enables unit testing w
 
 ---
 
-### 6.12 Snapshot Repository (Phase 4+)
+### 6.12 Snapshot Repository
 
 Object storage is reflow's snapshot **archival** layer. It is optional: the
 default deployment uses only the local filesystem and remains
@@ -1046,7 +1037,7 @@ becomes a billing concern.
 **Encryption.** Server-side encryption (S3 SSE-KMS, GCS CMEK, Azure
 SSE) is supported by passing the cloud-provider-native flags through;
 `gocloud.dev/blob` exposes them as URL parameters. Client-side
-encryption is out of scope for Phase 5.
+encryption is not currently supported.
 
 **Explicit non-features:**
 
@@ -1271,14 +1262,14 @@ Minimum production deployment: 3 nodes (Raft quorum = 2).
 | 3 | In-process Go SDK vs. external SDK only | Resolved | In-process Go SDK is the primary path (§6.10.1). Wire-protocol path supported for non-Go handlers (§6.10.2). |
 | 4 | Partition count default | Resolved | 64 partitions at cluster bootstrap. |
 | 5 | Raft replication factor | Resolved | Default 3, configurable per deployment via `--replication-factor`. Three is the minimum that tolerates a single failure with quorum; >3 trades write latency for durability. Decided per deployment, no SAD-level open question remains. |
-| 6 | Pebble per-partition vs. shared | Resolved | Per-partition Pebble DB implemented in Phase 1; no `partition_id` prefix in keys. |
-| 7 | Exactly-once for non-idempotent external calls | Resolved (Phase 2) | Idempotency keys propagate through `Invoke` via the `Dedup` field on `Envelope` (`enginev1/engine.proto`). The dedup table (`dedup/self` for self-proposals, `dedup/arb` for external producers like ingress) is consulted on every apply; duplicates are dropped before state mutation. See `internal/storage/tables/dedup.go` and `internal/storage/tables/idempotency.go`. |
-| 8 | SDK protocol versioning | Resolved | Wire protocol tracks restate service-protocol-v4 as a *best-effort* compat target, not bug-for-bug. Phase 2 in-process Go SDK is the primary path; non-Go SDKs ride along on community effort. |
-| 9 | timerfd vs `time.Timer` | Resolved | `time.Timer` for Phase 1. Revisit only with measured latency requirements. |
+| 6 | Pebble per-partition vs. shared | Resolved | Per-partition Pebble DB; no `partition_id` prefix in keys. |
+| 7 | Exactly-once for non-idempotent external calls | Resolved | Idempotency keys propagate through `Invoke` via the `Dedup` field on `Envelope` (`enginev1/engine.proto`). The dedup table (`dedup/self` for self-proposals, `dedup/arb` for external producers like ingress) is consulted on every apply; duplicates are dropped before state mutation. See `internal/storage/tables/dedup.go` and `internal/storage/tables/idempotency.go`. |
+| 8 | SDK protocol versioning | Resolved | Wire protocol tracks restate service-protocol-v4 as a *best-effort* compat target, not bug-for-bug. In-process Go SDK is the primary path; non-Go SDKs ride along on community effort. |
+| 9 | timerfd vs `time.Timer` | Resolved | `time.Timer`; revisit only with measured latency requirements. |
 | 10 | `StateStore` alternative implementations | Resolved | `internal/storage.Store` interface; `MemStore` (tests) + `PebbleStore` (production). |
-| 11 | Gossip for failure detection + soft state | Resolved | Use dragonboat's built-in gossip (memberlist/SWIM, vendored inside `lni/dragonboat/v4`) starting Phase 4 — zero extra dependency. Provides SWIM-based liveness, NodeHostID-stable endpoint resolution, and a `ShardView` leader hint cache. Architectural boundary unchanged: gossip is advisory, Raft (shard 0) is authoritative — eviction and partition assignment always go through a Raft proposal. Soft-state dissemination beyond the per-nodehost `Meta` blob is deferred; revisit only if observed load-hint dissemination requirements outgrow `Meta`. |
-| 12 | Object storage for snapshots | Resolved | `SnapshotRepository` interface lands in Phase 4 (filesystem driver) and Phase 5 (S3/GCS/Azure via `gocloud.dev/blob`). Always optional — default deployment is local-only. Hot state never leaves Pebble; only snapshot artifacts and their metadata go to object storage. See §6.12. |
-| 13 | Authn/authz model for internal gRPC | Resolved (Phase 4.3) | Single-CA SPIFFE URI identity over mTLS; `internal/auth` package owns `ClaimMapper` + `Authorizer`; per-RPC policy declared in proto via `optionsv1` annotations. TLS layer reduced to chain + URI well-formedness; role enforcement lives entirely in `auth.UnaryInterceptor` / `auth.StreamInterceptor`. JWT/OIDC mapper is an additive future. Ingress + SDK-session authz are separate identity models, out of scope here. See §6.13. |
+| 11 | Gossip for failure detection + soft state | Resolved | dragonboat's built-in gossip (memberlist/SWIM, vendored inside `lni/dragonboat/v4`) — zero extra dependency. Provides SWIM-based liveness, NodeHostID-stable endpoint resolution, and a `ShardView` leader hint cache. Architectural boundary unchanged: gossip is advisory, Raft (shard 0) is authoritative — eviction and partition assignment always go through a Raft proposal. Soft-state dissemination beyond the per-nodehost `Meta` blob is deferred; revisit only if observed load-hint dissemination requirements outgrow `Meta`. |
+| 12 | Object storage for snapshots | Resolved | `SnapshotRepository` interface with filesystem and cloud drivers (S3/GCS/Azure via `gocloud.dev/blob`). Always optional — default deployment is local-only. Hot state never leaves Pebble; only snapshot artifacts and their metadata go to object storage. See §6.12. |
+| 13 | Authn/authz model for internal gRPC | Resolved | Single-CA SPIFFE URI identity over mTLS; `internal/auth` package owns `ClaimMapper` + `Authorizer`; per-RPC policy declared in proto via `optionsv1` annotations. TLS layer reduced to chain + URI well-formedness; role enforcement lives entirely in `auth.UnaryInterceptor` / `auth.StreamInterceptor`. JWT/OIDC mapper is an additive future. Ingress + SDK-session authz are separate identity models, out of scope here. See §6.13. |
 | 14 | SDK transport for non-Go handlers | Resolved (additive) | Reflow ships Transport A (handler dials engine, gRPC bidi via `sdkv1.SessionService`); the wire is in place, routing pool is stubbed pending the first non-Go SDK. Transport B (engine dials handler over raw HTTP/2, Restate-style) is documented as additive — same `SDKMessage` envelope, different transport. See §6.10.2. |
 | OPEN-1 | Joining-node startup against a live cluster | Open | The admin `AddNode` RPC, cluster FSM, and metadata rebalancer that drive cluster-side membership changes work end-to-end (`SyncRequestAddNonVoting` → catch-up → `SyncRequestAddReplica`). The gap is on the joining node's own `reflowd` startup: `Host.StartMetadataShard` and `Host.StartPartition` both hard-code `nh.StartOnDiskReplica(initial, join=false, ...)`. A new peer joining an established Raft group needs `StartOnDiskReplica(nil, join=true, ...)`. Missing pieces are minimal — a `HostConfig.JoinExisting bool` and a `reflowd --join` flag / config key. Tracked as a GitHub issue. |
 
@@ -1290,16 +1281,16 @@ Minimum production deployment: 3 nodes (Raft quorum = 2).
 |---|---|---|---|
 | Journal replay correctness bugs | High | Critical | Extensive property-based testing; formal spec |
 | GC pauses causing Raft timeouts | Low | Medium | Tune `RTTMillisecond`/`HeartbeatRTT` generously; revisit if measured in load tests. timerfd integration deferred. |
-| Pebble key schema migration | Medium | Medium | Resolved in Phase 4.3a: per-DB `format` key (`internal/storage/format.go`) written on first open and checked on every subsequent open; mismatches fail loud rather than silently corrupting. `VersionBarrier` retired. |
+| Pebble key schema migration | Medium | Medium | Resolved: per-DB `format` key (`internal/storage/format.go`) written on first open and checked on every subsequent open; mismatches fail loud rather than silently corrupting. `VersionBarrier` retired. |
 | dragonboat API stability | Medium | Medium | Pinned to v4 pseudo-version; Pebble pinned to dragonboat's expected commit. Watch for an official v4 release. |
-| SDK protocol breaking changes | Medium | High | Phase 2 will adopt restate service-protocol-v4 wire format (avoid inventing a competing one). |
-| Partition rebalancing data loss | Low | Critical | Phase 4 concern; test membership changes under load when implementing. |
+| SDK protocol breaking changes | Medium | High | Tracks restate service-protocol-v4 wire format as a best-effort compat target (avoid inventing a competing one). |
+| Partition rebalancing data loss | Low | Critical | Test membership changes under load; chaos test coverage in `internal/chaos/`. |
 
 ---
 
-## 11. Phased Delivery
+## 11. Delivery History
 
-### Phase 1 — Single Node Foundation (DONE)
+### Single Node Foundation
 - Per-partition Pebble DB + typed key codec (`internal/storage/keys`,
   `internal/storage`).
 - Typed storage tables (`internal/storage/tables`) for invocations,
@@ -1313,14 +1304,10 @@ Minimum production deployment: 3 nodes (Raft quorum = 2).
 - Leader-only TimerService with restart rebuild.
 - Snapshotter with close → swap → reopen lifecycle.
 - Prometheus metrics + structured logging + `cmd/reflowd` single binary.
-- Integration tests cover: replay across restart, dedup blocking, timer
-  survives restart.
+- Integration tests: replay across restart, dedup blocking, timer survives
+  restart.
 
-**Exit criteria:** Invocations persist and replay correctly across process
-restarts on a single node. ✓ (`TestPhase1_SingleNodeReplayAcrossRestart`,
-`TestPhase1_TimerSurvivesRestart`, `TestPhase1_DedupBlocksDuplicateIngress`)
-
-### Phase 2 — In-process Go SDK + Invoker (DONE)
+### In-process Go SDK + Invoker
 
 The first-class developer experience: write a Go function, register it
 with `reflowd`, have it become a durable goroutine.
@@ -1332,24 +1319,19 @@ with `reflowd`, have it become a durable goroutine.
   proposals via `Proposer.ProposeSelf`.
 - **Ingress** — gRPC + grpc-gateway in `internal/ingress/`. Awakeable
   resolution rides the same surface.
-- **Journal entry types** beyond Phase 1: `JERun`, `JEGetState` /
-  `JESetState` / `JEClearState` / `JEClearAllState`, `JEAwakeable` /
-  `JEAwakeableResult`, `JESignal`. Lazy state via `JEGetEagerState` is
-  Phase 3.
+- **Journal entry types**: `JERun`, `JEGetState` / `JESetState` /
+  `JEClearState` / `JEClearAllState`, `JEAwakeable` / `JEAwakeableResult`,
+  `JESignal`. Eager state via `JEGetEagerState` (see Virtual Objects below).
 - **Outbox** (`internal/engine/outbox.go`, `internal/storage/tables/outbox.go`)
   for parent-invocation notifications and cross-partition call results.
 - **Exactly-once side-effect replay** via the journal — verified by
   property-style integration tests under
-  `internal/engine/integration_phase2_wiring_test.go`.
+  `internal/engine/integration_invoker_wiring_test.go`.
 - **`sdkv1.SessionService` wire** — the proto contract for Transport A.
   Server stub (`internal/sdkstream`) returns `Unimplemented`; routing
   pool lands when the first non-Go SDK appears.
 
-**Exit criteria:** A Go handler with `Sleep`, `Run`, state reads/writes,
-and outgoing `Call`s survives mid-execution crashes and resumes
-correctly. ✓
-
-### Phase 3 — Virtual Objects (DONE)
+### Virtual Objects
 
 - Per-key lease + FIFO queue (`KeyLeaseStatus`); FSM via
   `qmuntal/stateless` (`internal/engine/object_fsm.go`).
@@ -1366,59 +1348,51 @@ correctly. ✓
   until exhaustion.
 - **Attach RPCs**: ingress `Attach` / `GetOutput` resolve an existing
   invocation's terminal output without re-driving it.
-- Integration coverage: `integration_phase3_test.go`,
-  `integration_phase3_5_test.go`, plus the rapid PBT (§ tests).
+- Integration coverage: `integration_virtual_object_test.go`,
+  `integration_combinators_test.go`, plus the rapid PBT tests.
 
-**Exit criteria:** Concurrent invocations on the same object key are
-serialized correctly under failure. ✓
-
-### Phase 3.5 — Combinator Futures (DONE)
+### Combinator Futures
 
 `Promise.all` / `Promise.race` over awakeable / call / signal
 completions, persisted as a single journal entry whose pending-set
 shrinks as completions land. Lets handlers fan out durable work and
 join on the first-N / all-N without bespoke bookkeeping in user code.
 
-### Phase 4 — Multi-Node Replication (DONE through 4.3d)
+### Multi-Node Replication
 
 Target: a 3–10 node cluster. No external coordination service introduced
-(see §6.2). Delivered as four sub-phases:
+(see §6.2).
 
-**4.1 — Embedded metadata Raft + static bootstrap.** Shard 0 hosts
-node membership, partition table, assignment epoch; founder/joiner
-bootstrap via `--bootstrap-cluster` / `--join`.
+**Embedded metadata Raft + static bootstrap.** Shard 0 hosts node
+membership, partition table, assignment epoch; founder/joiner bootstrap via
+`--bootstrap-cluster` / `--join`.
 
-**4.2 — Dynamic membership + failure detection + DR snapshots + mTLS
-admin (DONE).** Dragonboat gossip (memberlist/SWIM) drives K-of-N
-liveness; SWIM observers turn missed probes into `RemoveNode` proposals
-to shard 0. `reflow-cluster` CLI lands as a subcommand of `reflowd`
-(`add-node`, `remove-node`, `partitions list`, `partition move`).
-`SnapshotRepository` filesystem driver wired (cloud drivers deferred to
-Phase 5). Admin gRPC server (`adminv1`) protected by mTLS against a
-two-CA topology (operator CA + node CA at this point).
+**Dynamic membership + failure detection + DR snapshots + mTLS admin.**
+Dragonboat gossip (memberlist/SWIM) drives K-of-N liveness; SWIM observers
+turn missed probes into `RemoveNode` proposals to shard 0. `reflow-cluster`
+CLI lands as a subcommand of `reflowd` (`add-node`, `remove-node`,
+`partitions list`, `partition move`). `SnapshotRepository` filesystem driver
+wired. Admin gRPC server (`adminv1`) protected by mTLS.
 
-**4.3a — Storage format version marker (DONE).** Per-Pebble-DB
-`uint32` marker (`internal/storage/format.go`). Refuses to open a DB
-written by a binary with a different `StorageFormatVersion`. Replaced
-the earlier "command-stream VersionBarrier" sketch.
+**Storage format version marker.** Per-Pebble-DB `uint32` marker
+(`internal/storage/format.go`). Refuses to open a DB written by a binary
+with a different `StorageFormatVersion`. Replaced the earlier
+"command-stream VersionBarrier" sketch.
 
-**4.3b — Single CA + SPIFFE URI SAN identity (DONE).** Collapsed
-operator-CA + node-CA into one cluster CA; role moved into the SPIFFE
-URI SAN (`spiffe://<td>/<kind>/<name>`). TLS verifier checks chain +
-URI prefix at this point.
+**Single CA + SPIFFE URI SAN identity.** Collapsed operator-CA + node-CA
+into one cluster CA; role moved into the SPIFFE URI SAN
+(`spiffe://<td>/<kind>/<name>`). TLS verifier checks chain + URI prefix.
 
-**4.3c — Proto-annotation authz interceptor (DONE).**
-`proto/optionsv1` defines `required_spiffe_role` (method) and
-`default_required_spiffe_role` (service). Admin service annotated
-`operator`. `AuditInterceptor` + `AuthzInterceptor` enforce against
-the compiled descriptor map.
+**Proto-annotation authz interceptor.** `proto/optionsv1` defines
+`required_spiffe_role` (method) and `default_required_spiffe_role`
+(service). Admin service annotated `operator`. `AuditInterceptor` +
+`AuthzInterceptor` enforce against the compiled descriptor map.
 
-**4.3d — Authorizer + ClaimMapper consolidation (DONE).** Two-shaped
-authz across Admin and Delivery collapsed into one Temporal-shaped
-`Authorizer` + `ClaimMapper` seam in `internal/auth`. TLS layer reduced
-to URI well-formedness; role enforcement lives entirely in
-`auth.UnaryInterceptor` / `auth.StreamInterceptor`. Delivery service
-annotated `node`. See §6.13.
+**Authorizer + ClaimMapper consolidation.** Two-shaped authz across Admin
+and Delivery collapsed into one Temporal-shaped `Authorizer` + `ClaimMapper`
+seam in `internal/auth`. TLS layer reduced to URI well-formedness; role
+enforcement lives entirely in `auth.UnaryInterceptor` /
+`auth.StreamInterceptor`. Delivery service annotated `node`. See §6.13.
 
 - **Embedded metadata Raft group** (`shardID = 0`) hosted by the same
   `NodeHost` as partition shards. Holds node list, partition table,
@@ -1445,10 +1419,9 @@ annotated `node`. See §6.13.
   `NodeHostRegistry.GetShardInfo` for `ShardView{LeaderID, Replicas,
   Term}`. Cross-partition delivery dials by `NodeHostID` without re-reading
   shard 0 on the hot path; `NOT_LEADER` triggers a fallback re-read.
-- **`SnapshotRepository` abstraction (filesystem driver).** New replicas
-  joining a partition try the repository before falling back to
-  dragonboat snapshot transfer. Local-fs driver only in Phase 4 (`file://`
-  paths); cloud drivers land in Phase 5. See §6.12.
+- **`SnapshotRepository` abstraction.** New replicas joining a partition
+  try the repository before falling back to dragonboat snapshot transfer.
+  See §6.12.
 
 **Exit criteria:** A 3-node cluster sustains invocation progress through
 single-node failures with no data loss, recovers when the failed node
@@ -1456,9 +1429,9 @@ returns, and tolerates a planned `remove-node` of any single member.
 Chaos tests cover network partitions, leader oscillation, and concurrent
 add/remove operations.
 
-### Phase 5 — Production Hardening
+### Production Hardening (in progress)
 
-- **Cloud-backed `SnapshotRepository` drivers (DONE).** Single
+- **Cloud-backed `SnapshotRepository` drivers (done).** Single
   `BlobRepository` over `gocloud.dev/blob` covers S3, GCS, Azure Blob,
   filesystem, and in-memory. `.meta.json` sidecar per archive. Count,
   age, and GFS tiered retention via a per-shard reaper goroutine.

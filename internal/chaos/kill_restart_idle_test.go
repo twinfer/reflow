@@ -16,13 +16,13 @@ import (
 // against an idle cluster — the lower-bound sanity check that the
 // primitives themselves work cleanly with no workload running.
 //
-// Two-phase structure (kept simple to isolate failure mode):
+// Two-step structure (kept simple to isolate failure mode):
 //
-//   - Phase 1: kill the current metadata leader and verify every
+//   - Step 1: kill the current metadata leader and verify every
 //     partition shard still has a leader on the surviving n-1
 //     replicas. This catches bugs where kill alone destabilizes
 //     unrelated shards.
-//   - Phase 2: restart the killed node and verify the cluster
+//   - Step 2: restart the killed node and verify the cluster
 //     remains stable. This catches bugs in the rejoin path (Pebble
 //     lock release, dragonboat NodeHostDir re-open, etc.) without
 //     concurrent traffic muddying the signal.
@@ -45,7 +45,7 @@ func TestChaos_KillRestartIdle(t *testing.T) {
 	cluster := loadgen.NewCluster(t, loadgen.ClusterOptions{N: 3, Handlers: reg})
 	defer cluster.Close()
 
-	// Phase 1: kill the metadata leader and verify the surviving
+	// Step 1 — kill the metadata leader and verify the surviving
 	// 2-node majority can still elect leaders on every shard.
 	killedIdx := chaos.LeaderKill(t, cluster, 30*time.Second)
 	for sh := uint64(1); sh <= 3; sh++ {
@@ -58,7 +58,7 @@ func TestChaos_KillRestartIdle(t *testing.T) {
 	}
 	t.Logf("kill phase complete; all shards have leaders on n-1 nodes")
 
-	// Phase 2: restart the killed node and verify the cluster stays
+	// Step 2 — restart the killed node and verify the cluster stays
 	// stable (still has leaders for every shard, possibly the same
 	// pre-kill ones since rejoin doesn't transfer leadership).
 	if err := cluster.RestartNode(t, killedIdx); err != nil {

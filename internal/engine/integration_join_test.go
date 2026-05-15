@@ -40,7 +40,7 @@ func TestMultiNode_JoinExistingCluster(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	// Phase 1 — bring up the 3-node cluster.
+	// Step 1 — bring up the 3-node cluster.
 	c := loadgen.NewCluster(t, loadgen.ClusterOptions{N: 3, Handlers: reg})
 	defer c.Close()
 	rigs := asInProcess(t, c.Nodes)
@@ -72,7 +72,7 @@ func TestMultiNode_JoinExistingCluster(t *testing.T) {
 		t.Fatalf("await partition table: %v", err)
 	}
 
-	// Phase 2 — allocate addresses for node 4 and bring up its NodeHost
+	// Step 2 — allocate addresses for node 4 and bring up its NodeHost
 	// with JoinExisting=true. Shards are started later, after the
 	// existing cluster has admitted node 4 into each shard's Raft
 	// configuration.
@@ -105,7 +105,7 @@ func TestMultiNode_JoinExistingCluster(t *testing.T) {
 	}
 	defer h4.Close()
 
-	// Phase 3 — drive the cluster-side AddNode workflow: RegisterNode
+	// Step 3 — drive the cluster-side AddNode workflow: RegisterNode
 	// for ID=4, then PROMOTE_TO_VOTER on every partition shard. The
 	// rebalancer running on the metadata leader picks the steps up and
 	// fires SyncRequestAddReplica against dragonboat; node 4's gossip is
@@ -162,7 +162,7 @@ func TestMultiNode_JoinExistingCluster(t *testing.T) {
 		proposeStep(shardID)
 	}
 
-	// Phase 4 — wait for the rebalancer to drive every PROMOTE_TO_VOTER
+	// Step 4 — wait for the rebalancer to drive every PROMOTE_TO_VOTER
 	// step to completion. Observable via PartitionTable.Shards[sh].NodeIds
 	// containing the new ID.
 	growCtx, growCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -171,7 +171,7 @@ func TestMultiNode_JoinExistingCluster(t *testing.T) {
 		t.Fatalf("await partition membership add: %v", err)
 	}
 
-	// Phase 5 — on the joining host, start the metadata shard then
+	// Step 5 — on the joining host, start the metadata shard then
 	// every partition shard. HostConfig.JoinExisting routes through
 	// StartOnDiskReplica(nil, true, ...) so dragonboat catches the
 	// replica up rather than seeding it.
@@ -184,7 +184,7 @@ func TestMultiNode_JoinExistingCluster(t *testing.T) {
 		}
 	}
 
-	// Phase 6 — verify the joiner serves traffic. Propose an invocation
+	// Step 6 — verify the joiner serves traffic. Propose an invocation
 	// for a target that hashes to some shard and confirm the joiner
 	// returns the resulting Completed status via a linearizable read.
 	target := &enginev1.InvocationTarget{ServiceName: svc, HandlerName: handler}
@@ -229,7 +229,7 @@ func TestMultiNode_JoinExistingCluster(t *testing.T) {
 		t.Fatalf("joining node did not observe Completed status within deadline (shard=%d)", shard)
 	}
 
-	// Phase 7 — prove the joiner is a real shard-0 member. SyncRead on
+	// Step 7 — prove the joiner is a real shard-0 member. SyncRead on
 	// shard 0 (PartitionTable / Membership) only succeeds if the local
 	// NodeHost is a current voter, so a successful read is itself the
 	// assertion.

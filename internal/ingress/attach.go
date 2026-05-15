@@ -15,7 +15,7 @@ import (
 // (or the timeout fires) and returns its outcome. Same long-poll pattern
 // as AwaitInvocation; the distinction is explicit intent: "I already
 // submitted this id; give me its result" vs. "I just submitted, give
-// me the result of that submission". Phase 3.
+// me the result of that submission".
 func (s *Server) AttachInvocation(ctx context.Context, req *ingressv1.AttachInvocationRequest) (*ingressv1.AttachInvocationResponse, error) {
 	id, err := resolveID(req.GetInvocationId(), req.GetInvocationIdProto())
 	if err != nil {
@@ -42,7 +42,6 @@ func (s *Server) AttachInvocation(ctx context.Context, req *ingressv1.AttachInvo
 // GetInvocationOutput is a non-blocking lookup. Returns PENDING for
 // non-terminal invocations, COMPLETED_OK / COMPLETED_FAILED for terminal
 // ones, and UNKNOWN if the invocation_id is not registered on this node.
-// Phase 3.
 func (s *Server) GetInvocationOutput(ctx context.Context, req *ingressv1.GetInvocationOutputRequest) (*ingressv1.GetInvocationOutputResponse, error) {
 	id, err := resolveID(req.GetInvocationId(), req.GetInvocationIdProto())
 	if err != nil {

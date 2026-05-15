@@ -1,10 +1,10 @@
 // Package sdkstream hosts the gRPC bidi-streaming entrypoint for
 // out-of-process SDKs (TypeScript, Python, future Rust, etc.).
 //
-// Phase 2 ships the wire contract (proto/sdkv1.SessionService) and a
-// server-side stub registered alongside the ingress gRPC server. The stub
-// returns Unimplemented on Invoke so external clients can discover the
-// service descriptor via reflection without crashing the engine.
+// The wire contract (proto/sdkv1.SessionService) is registered alongside
+// the ingress gRPC server as a stub that returns Unimplemented on Invoke
+// so external clients can discover the service descriptor via reflection
+// without crashing the engine.
 //
 // Production wiring lands when a non-Go SDK exists:
 //
@@ -32,8 +32,8 @@ import (
 	sdkv1 "github.com/twinfer/reflow/proto/sdkv1"
 )
 
-// Server implements sdkv1.SessionServiceServer. Phase 2 returns
-// Unimplemented; later phases route the stream into an out-of-process
+// Server implements sdkv1.SessionServiceServer. Currently returns
+// Unimplemented; full wiring routes the stream into an out-of-process
 // handler pool. Stateless, safe for concurrent use.
 type Server struct {
 	sdkv1.UnimplementedSessionServiceServer
@@ -51,9 +51,9 @@ func New(host *engine.Host, log *slog.Logger) *Server {
 	return &Server{host: host, log: log}
 }
 
-// Invoke is the bidi-streaming session protocol. Phase 2 stub: rejects
-// all attempts with Unimplemented and logs the connection. Clients can
-// still discover the method via gRPC reflection.
+// Invoke is the bidi-streaming session protocol. Stub implementation:
+// rejects all attempts with Unimplemented and logs the connection. Clients
+// can still discover the method via gRPC reflection.
 func (s *Server) Invoke(stream sdkv1.SessionService_InvokeServer) error {
 	peer := "unknown"
 	if p, ok := peerFromCtx(stream); ok {
@@ -61,7 +61,7 @@ func (s *Server) Invoke(stream sdkv1.SessionService_InvokeServer) error {
 	}
 	s.log.Info("sdkstream: Invoke stream opened (stub, returning Unimplemented)", "peer", peer)
 	return status.Error(codes.Unimplemented,
-		"sdkstream: SessionService.Invoke is a Phase 2 stub; out-of-process SDK routing is not yet wired")
+		"sdkstream: SessionService.Invoke is not yet wired; out-of-process SDK routing lands with the first non-Go SDK")
 }
 
 // Register adds the stub to an existing gRPC server. Hook from

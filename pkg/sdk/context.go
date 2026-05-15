@@ -46,8 +46,8 @@ type Context interface {
 	// the handler resumes exactly when it would have, even if the
 	// process was down for some of the interval.
 	//
-	// Phase 3.5: returning a Future lets Sleep race against other
-	// awaitables, e.g. Any(callFuture, sleepFuture) for a timeout.
+	// Returning a Future lets Sleep race against other awaitables,
+	// e.g. Any(callFuture, sleepFuture) for a timeout.
 	Sleep(d time.Duration) Future
 
 	// Run executes fn at most once and journals the outcome. On every
@@ -59,19 +59,19 @@ type Context interface {
 	//
 	// If fn returns a *Failure, the failure is recorded as terminal and
 	// future replays return the same Failure. Any other error is
-	// treated as transient (Phase 2: retried indefinitely; Phase 3 adds
-	// policies).
+	// treated as transient and retried according to the configured
+	// backoff policy.
 	Run(name string, fn func() ([]byte, error)) ([]byte, error)
 
 	// Call invokes target with input. The returned Future resolves to
 	// the callee's response (use Result to block until it lands). The
 	// callee runs in its own invocation; this Call appears as a single
 	// journal entry on the caller. Optional CallOptions tune the
-	// invocation — currently WithIdempotencyKey (Phase 3) for the
-	// dedup tuple stamped on the outgoing InvokeCommand.
+	// invocation — currently WithIdempotencyKey for the dedup tuple
+	// stamped on the outgoing InvokeCommand.
 	//
-	// Phase 3.5: returning a Future instead of blocking inline lets the
-	// handler compose Call with other awaitables via All / Any.
+	// Returning a Future instead of blocking inline lets the handler
+	// compose Call with other awaitables via All / Any.
 	Call(target Target, input []byte, opts ...CallOption) Future
 
 	// OneWayCall invokes target with input and returns immediately. No
@@ -92,7 +92,6 @@ type Context interface {
 	// ClearAllState wipes every state key scoped to the invocation's
 	// virtual object. Equivalent to calling ClearState for each key,
 	// but performed as a single journal entry + Pebble range delete.
-	// Phase 3.
 	ClearAllState() error
 
 	// Awakeable creates an awakeable scoped to this invocation. The
@@ -111,7 +110,7 @@ type Context interface {
 	// All is pure SDK composition over the children: it does not allocate
 	// a journal slot. On replay it reconstructs from the same children
 	// (each holding stable journal indices) and re-derives the same
-	// outcome deterministically. Phase 3.5.
+	// outcome deterministically.
 	All(futures ...Future) AllResult
 
 	// Any returns a Future that resolves to the first child future to
@@ -119,7 +118,7 @@ type Context interface {
 	// children already resolved, the lowest-indexed argument wins —
 	// resolution wall-clock order on the original run does not matter.
 	// On terminal *Failure of the winning child, Any's Result surfaces
-	// that failure. Phase 3.5.
+	// that failure.
 	Any(futures ...Future) Future
 
 	// SendSignal delivers signalName + payload to target. The signal is
@@ -133,7 +132,7 @@ type CallOption func(*CallOptions)
 
 // CallOptions is the resolved bag of per-Call settings. SDK internals
 // build one from the CallOption variadics and forward into the JECall
-// journal entry. Phase 3.
+// journal entry.
 type CallOptions struct {
 	// IdempotencyKey, when non-empty, is stamped onto the outgoing
 	// InvokeCommand.idempotency_key so the engine's onInvoke dedups
@@ -141,10 +140,10 @@ type CallOptions struct {
 	IdempotencyKey string
 }
 
-// WithIdempotencyKey requests Phase 3 idempotency dedup for this Call.
-// The (target.Service, target.Handler, target.ObjectKey, key) tuple
-// keys the dedup; a second Call with the same tuple from any caller
-// reuses the first invocation rather than creating a new one.
+// WithIdempotencyKey requests idempotency dedup for this Call. The
+// (target.Service, target.Handler, target.ObjectKey, key) tuple keys
+// the dedup; a second Call with the same tuple from any caller reuses
+// the first invocation rather than creating a new one.
 func WithIdempotencyKey(key string) CallOption {
 	return func(o *CallOptions) { o.IdempotencyKey = key }
 }
@@ -175,7 +174,7 @@ func ApplyCallOptions(opts []CallOption) CallOptions {
 // children to Poller (see below) and will panic on any Future obtained
 // outside Context methods. This keeps replay determinism predictable:
 // only futures backed by journal indices may participate in
-// suspend/wake. Phase 3.5.
+// suspend/wake.
 type Future interface {
 	Result() (value []byte, err error)
 }
@@ -193,7 +192,7 @@ type Future interface {
 //
 // Poller is exported so the engine invoker package can implement it,
 // but it is part of the implementation contract — user code should not
-// rely on it. Phase 3.5.
+// rely on it.
 type Poller interface {
 	Poll() (resolved bool, pendingTokens []string)
 }
@@ -207,7 +206,6 @@ type Poller interface {
 // type differs ([][]byte vs []byte). Nest combinators by feeding Any
 // outputs (which are Futures) into All; conversely, an AllResult is not
 // directly composable as a child — call Results and rewrap if needed.
-// Phase 3.5.
 type AllResult interface {
 	Results() (values [][]byte, err error)
 }

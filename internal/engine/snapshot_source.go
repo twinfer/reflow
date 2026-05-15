@@ -7,7 +7,7 @@ import (
 )
 
 // HostSnapshotSource adapts *Host to the snapshot.Source interface.
-// Used by the snapshot producer + Admin.CreateSnapshot RPC. Phase 4.2.
+// Used by the snapshot producer + Admin.CreateSnapshot RPC.
 type HostSnapshotSource struct{ Host *Host }
 
 var _ snapshot.Source = (*HostSnapshotSource)(nil)

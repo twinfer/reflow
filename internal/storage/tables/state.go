@@ -13,10 +13,10 @@ import (
 // state/<service>/<object_key>/<state_key>; unkeyed services pass
 // object_key="".
 //
-// Phase 2 is lazy-state: handler reads issue a JEGetState command, the FSM
-// resolves the value here and writes a JEGetState completion at the next
-// journal index. Single-writer enforcement across concurrent invocations
-// on the same object is Phase 3.
+// Handler reads issue a JEGetState command; the FSM resolves the value here
+// and writes a JEGetState completion at the next journal index.
+// Single-writer enforcement across concurrent invocations on the same object
+// is handled by the key-lease FSM in internal/engine/object_fsm.go.
 type StateTable struct{ S storage.Reader }
 
 // Get returns the raw value bytes for the (target, key) pair. The boolean
@@ -51,8 +51,8 @@ func (t StateTable) Clear(b storage.Batch, target *enginev1.InvocationTarget, ke
 
 // ClearObject wipes every state row scoped to (service, object_key). Backed
 // by Pebble's DeleteRange over [StatePrefixForObject, upper-bound) so the
-// cost is independent of the number of rows. Phase 3 — invoked from the
-// apply arm when a JEClearAllState journal entry lands.
+// cost is independent of the number of rows. Invoked from the apply arm
+// when a JEClearAllState journal entry lands.
 func (t StateTable) ClearObject(b storage.Batch, target *enginev1.InvocationTarget) error {
 	prefix := keys.StatePrefixForObject(target.GetServiceName(), target.GetObjectKey())
 	upper := keys.PrefixUpperBound(prefix)

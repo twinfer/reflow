@@ -7,8 +7,6 @@
 // reuse the same in-process cluster shape via a thin wrapper, and the
 // load-running test files in this package can carry //go:build
 // loadtest without splitting the bootstrap implementation in two.
-//
-// Phase 5: see durable-execution-go-sad.md §10.
 package loadgen
 
 import (
@@ -49,9 +47,9 @@ type PartitionInfo struct {
 // drive one cluster member. Two impls exist:
 //
 //   - *InProcessNode wraps an in-process *engine.Host (current default).
-//   - *SubprocessNode (Phase 5, PR5b) spawns cmd/reflow-loadnode and
-//     speaks the existing ingressv1.Ingress gRPC service. Lets tests
-//     SIGKILL a node to exercise torn-write Pebble WAL recovery.
+//   - *SubprocessNode spawns cmd/reflow-loadnode and speaks the existing
+//     ingressv1.Ingress gRPC service. Lets tests SIGKILL a node to
+//     exercise torn-write Pebble WAL recovery.
 //
 // Callers that need engine-internal access (Pebble metrics sampler,
 // in-process leader probes inside chaos primitives) type-assert to

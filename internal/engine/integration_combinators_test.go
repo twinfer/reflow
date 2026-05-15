@@ -19,7 +19,7 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// Phase 3.5 integration tests cover combinator futures (ctx.All / ctx.Any):
+// Integration tests for combinator futures (ctx.All / ctx.Any):
 //
 //   - All resolves only when every child has resolved; partial resolution
 //     leaves the handler Suspended on the remaining tokens.
@@ -31,8 +31,7 @@ import (
 //     composition over journal entries that are themselves durable.
 //
 // All tests bring up a single-node host + ingress and resolve awakeables
-// via the HTTP endpoint, matching the established Phase 2 / 2.5 test
-// shape so the harness stays one-of.
+// via the HTTP endpoint.
 
 // resolveAwakeable POSTs the value to /awakeable/{id}/resolve, retrying
 // while the server reports NotFound. The JEAwakeable journal write

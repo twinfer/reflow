@@ -8,12 +8,11 @@ import (
 )
 
 // Default RunRetryPolicy values. The cap on attempts matters more than
-// it might look: Phase 3 has no cancel/kill (deferred to Phase 5), so an
-// uncapped stuck handler on a keyed object would poison the VO gate
-// indefinitely — every subsequent invocation queued behind it would
-// never run. 64 attempts covers genuine transient bursts (~9.3 min of
-// wall-clock once the per-attempt delay saturates at max_interval)
-// while guaranteeing eventual terminal-failure surfacing.
+// it might look: an uncapped stuck handler on a keyed object would
+// poison the VO gate indefinitely — every subsequent invocation queued
+// behind it would never run. 64 attempts covers genuine transient bursts
+// (~9.3 min of wall-clock once the per-attempt delay saturates at
+// max_interval) while guaranteeing eventual terminal-failure surfacing.
 //
 // A zero/absent max_attempts on a caller-supplied policy means "use
 // this default", not "unlimited". Callers that genuinely want unbounded

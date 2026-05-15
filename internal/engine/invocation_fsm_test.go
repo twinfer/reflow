@@ -176,7 +176,7 @@ func TestComplete_FromInvoked(t *testing.T) {
 	}
 }
 
-// TestComplete_FromSuspended documents Phase 2.5's race tolerance:
+// TestComplete_FromSuspended documents the race tolerance:
 // a wake-event (TimerFired / AwakeableResolved / CallResult) can land
 // between the SDK's in-flight Suspended propose and the next ActInvoke
 // commit, causing the new session that completes the handler to send
@@ -292,10 +292,10 @@ func TestPurge_FromInvokedInvalid(t *testing.T) {
 	}
 }
 
-// Phase 2: new JournalEntry kinds are accepted in Invoked state as no-op
-// state transitions. The wildcard logic in transitionOnJournalAppend
-// covers them — these tests pin that behavior down.
-func TestJournalAppend_Phase2EntryTypesNoOpFromInvoked(t *testing.T) {
+// New JournalEntry kinds are accepted in Invoked state as no-op state
+// transitions. The wildcard logic in transitionOnJournalAppend covers
+// them — these tests pin that behavior down.
+func TestJournalAppend_NewEntryTypesAreNoOpFromInvoked(t *testing.T) {
 	id := mkID()
 	target := &enginev1.InvocationTarget{ServiceName: "S"}
 	cases := []struct {
@@ -460,7 +460,7 @@ func TestSignalDelivered_FromCompletedNoop(t *testing.T) {
 	}
 }
 
-// ---- Phase 2.5: ParentLink propagation ----
+// ---- ParentLink propagation ----
 
 func mkParentLink() *enginev1.ParentLink {
 	return &enginev1.ParentLink{
@@ -617,7 +617,7 @@ func TestSignalDelivered_PropagatesParentLink(t *testing.T) {
 	assertParentLink(t, parentLinkOf(next), pl)
 }
 
-// ---- Phase 2.5: transitionOnCallResultDelivered ----
+// ---- transitionOnCallResultDelivered ----
 
 func TestCallResultDelivered_WakesSuspendedParent(t *testing.T) {
 	id := mkID()

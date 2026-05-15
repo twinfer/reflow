@@ -1,7 +1,6 @@
 // Package routing computes the destination partition shard for a given
-// target. Phase 4.1 uses a static configuration (number of shards comes
-// from the PartitionTable persisted on shard 0); Phase 4.2 will introduce
-// sparse placement and consult a richer ShardView.
+// target using a static configuration (number of shards comes from the
+// PartitionTable persisted on shard 0).
 //
 // The shard ids returned here are 1-indexed: shard 0 is reserved for the
 // metadata Raft group (see internal/engine/cluster). When the cluster
@@ -27,8 +26,7 @@ type Partitioner struct {
 // object_key) tuple. The tuple is hashed with FNV-1a so the result is
 // platform-independent and identical across nodes. Empty object_key (used
 // for unkeyed services) hashes consistently — every invocation of the same
-// unkeyed service routes to the same shard, which is the expected
-// per-service single-partition behavior in Phase 4.1.
+// unkeyed service routes to the same shard.
 func PartitionKey(service, objectKey string) uint64 {
 	h := fnv.New64a()
 	// Length-prefix each component so adjacent fields cannot collide
@@ -65,9 +63,7 @@ func (p Partitioner) ShardForInvocation(id *enginev1.InvocationId) uint64 {
 
 // FromPartitionTable constructs a Partitioner whose NumShards matches the
 // size of the persisted PartitionTable. Returns a zero Partitioner (which
-// ShardForKey treats as "fall back to shard 1") when pt is nil or empty,
-// which keeps the same single-partition behavior the system used before
-// Phase 4.1.
+// ShardForKey treats as "fall back to shard 1") when pt is nil or empty.
 func FromPartitionTable(pt *enginev1.PartitionTable) Partitioner {
 	if pt == nil {
 		return Partitioner{}

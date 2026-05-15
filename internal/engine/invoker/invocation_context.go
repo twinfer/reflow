@@ -14,10 +14,10 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// errNotImplementedPhase2 marks ctx methods whose engine-side wiring is
-// scheduled for a later step in Phase 2. The handler sees this as a
-// regular error and may report it back to the caller.
-var errNotImplementedPhase2 = errors.New("reflow: ctx operation not yet implemented in Phase 2")
+// errNotImplemented marks ctx methods whose engine-side wiring is not
+// yet complete. The handler sees this as a regular error and may report
+// it back to the caller.
+var errNotImplemented = errors.New("reflow: ctx operation not yet implemented")
 
 // invocationContext is the in-process implementation of sdk.Context used
 // by the Go SDK. One instance lives per session run (every replay
@@ -51,8 +51,8 @@ type invocationContext struct {
 	// (service, object_key) state rows. Populated at session start from
 	// StateTable.ScanObject; updated as the handler journals
 	// SetState/ClearState/ClearAllState. Nil when preload overflowed the
-	// 64 KiB cap — GetState falls back to ErrNotImplementedPhase2 in that
-	// case, matching the existing lazy-path stub. Phase 3.
+	// 64 KiB cap — GetState returns errNotImplemented in that case
+	// (lazy-state fallback is not yet wired).
 	stateCache map[string][]byte
 }
 
@@ -98,11 +98,10 @@ func (c *invocationContext) allocSlot(span uint32) (start uint32, ok bool) {
 // Subsequent ctx calls short-circuit to ErrSuspended immediately. Always
 // returns sdk.ErrSuspended for callers to propagate.
 //
-// Variadic since Phase 3.5: combinator futures (All/Any) pass the union
-// of their unresolved children's tokens in a single call so the engine
-// surfaces them all on InvocationSuspended.awaiting_on — any one
-// resolution wakes the handler. Single-token call sites still work
-// unchanged.
+// Variadic: combinator futures (All/Any) pass the union of their
+// unresolved children's tokens in a single call so the engine surfaces
+// them all on InvocationSuspended.awaiting_on — any one resolution
+// wakes the handler. Single-token call sites still work unchanged.
 func (c *invocationContext) suspend(tokens ...string) error {
 	c.mu.Lock()
 	c.suspended = true
@@ -135,9 +134,9 @@ func divergenceErr(idx uint32, want string, got *enginev1.JournalEntry) error {
 // existing JESleep and either sees the result already present or
 // re-suspends. The returned byte payload is always nil.
 //
-// Phase 3.5: separating slot allocation (here) from suspension (in
-// Future.Result) lets Sleep compose with other awaitables under All/Any
-// without prematurely entering the suspended state.
+// Separating slot allocation (here) from suspension (in Future.Result)
+// lets Sleep compose with other awaitables under All/Any without
+// prematurely entering the suspended state.
 func (c *invocationContext) Sleep(d time.Duration) sdk.Future {
 	start, ok := c.allocSlot(2)
 	if !ok {
@@ -174,7 +173,7 @@ func (c *invocationContext) Sleep(d time.Duration) sdk.Future {
 // journaled outcome; live execution invokes fn once, journals the
 // outcome via JERunProposal, and returns the same value.
 //
-// Phase 3 — fn errors are classified:
+// fn errors are classified:
 //   - *sdk.Failure (via sdk.NewFailure / errors.As):   terminal; the
 //     failure is journaled as JERun{retryable=false} and surfaced to
 //     the handler on the same call.
@@ -262,8 +261,8 @@ func (c *invocationContext) Run(_ string, fn func() ([]byte, error)) ([]byte, er
 // existing JECall and either sees the result already present or
 // re-suspends through the returned future.
 //
-// Phase 3.5: separating slot allocation (here) from suspension (in
-// Future.Result) lets Call compose with other awaitables under All/Any.
+// Separating slot allocation (here) from suspension (in Future.Result)
+// lets Call compose with other awaitables under All/Any.
 func (c *invocationContext) Call(target sdk.Target, input []byte, opts ...sdk.CallOption) sdk.Future {
 	resolved := sdk.ApplyCallOptions(opts)
 	start, ok := c.allocSlot(2)
@@ -294,22 +293,20 @@ func (c *invocationContext) Call(target sdk.Target, input []byte, opts ...sdk.Ca
 }
 
 // OneWayCall is the fire-and-forget variant. The proto does not yet
-// model JEOneWayCall — Phase 2 Step 11 ships the engine-side scaffolding
-// for the two-way Call path; the one-way wire-up follows once the
-// proto and outbox shuffler grow a JEOneWayCall slot.
+// model JEOneWayCall — the one-way wire-up follows once the proto and
+// outbox shuffler grow a JEOneWayCall slot.
 func (c *invocationContext) OneWayCall(_ sdk.Target, _ []byte) error {
-	return errNotImplementedPhase2
+	return errNotImplemented
 }
 
 // GetState is served from the eager-preloaded stateCache populated at
-// session start (Phase 3). When the cache is nil — set when the eager
-// preload exceeded the 64 KiB cap — GetState reports an unavailable
-// state cache via errNotImplementedPhase2 so the handler can surface a
-// distinct failure. Lazy command+notification fallback is a future
-// extension.
+// session start. When the cache is nil — set when the eager preload
+// exceeded the 64 KiB cap — GetState reports an unavailable state cache
+// via errNotImplemented so the handler can surface a distinct failure.
+// Lazy command+notification fallback is a future extension.
 func (c *invocationContext) GetState(key string) ([]byte, bool, error) {
 	if c.stateCache == nil {
-		return nil, false, errNotImplementedPhase2
+		return nil, false, errNotImplemented
 	}
 	v, present := c.stateCache[key]
 	if !present {
@@ -382,7 +379,6 @@ func (c *invocationContext) ClearState(key string) error {
 // ClearAllState wipes every state row scoped to the invocation's
 // (service, object_key). Journaled as a single JEClearAllState entry; the
 // apply arm executes a Pebble DeleteRange over the object's state prefix.
-// Phase 3.
 func (c *invocationContext) ClearAllState() error {
 	start, ok := c.allocSlot(1)
 	if !ok {
@@ -454,11 +450,11 @@ func (c *invocationContext) Awakeable() (string, sdk.Future) {
 }
 
 // SendSignal is deferred. JESignal targets an InvocationId, but the
-// public sdk.Target carries (Service, Handler, Key) — Phase 2 lacks the
-// resolver from target+key to a live invocation. Returns
-// errNotImplementedPhase2 until the receiver-side routing is wired.
+// public sdk.Target carries (Service, Handler, Key) — the resolver from
+// target+key to a live invocation is not yet wired. Returns
+// errNotImplemented until the receiver-side routing is available.
 func (c *invocationContext) SendSignal(_ sdk.Target, _ string, _ []byte) error {
-	return errNotImplementedPhase2
+	return errNotImplemented
 }
 
 // All wraps the supplied futures in an AllResult composite. Results
@@ -466,14 +462,14 @@ func (c *invocationContext) SendSignal(_ sdk.Target, _ string, _ []byte) error {
 // terminal *Failure). Pure SDK composition: no journal slot is
 // allocated; on replay the same call site reconstructs the wrapper
 // over children with stable journal indices and re-derives the same
-// outcome. Phase 3.5.
+// outcome.
 func (c *invocationContext) All(futures ...sdk.Future) sdk.AllResult {
 	return &allResult{ctx: c, children: append([]sdk.Future(nil), futures...)}
 }
 
 // Any wraps the supplied futures in a Future that resolves to the first
 // child (by argument order) found resolved at poll time. Pure SDK
-// composition; no journal slot. Phase 3.5.
+// composition; no journal slot.
 func (c *invocationContext) Any(futures ...sdk.Future) sdk.Future {
 	return &anyFuture{ctx: c, children: append([]sdk.Future(nil), futures...)}
 }

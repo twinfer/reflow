@@ -10,11 +10,11 @@
 //	journal/<24-byte inv_id>/<4-byte BE u32 idx> -> JournalEntry
 //	timer/<8-byte BE fire_at_ms>/<24-byte id>    -> uint32 sleep_index
 //	timer_idx/<24-byte id>/<8-byte BE fire_at_ms> -> "" (secondary index)
-//	state/<service>/<obj_key>/<state_key>        -> bytes (Phase 2 lazy state)
-//	outbox/<8-byte BE seq>                       -> OutboxEnvelope (Phase 2)
-//	awakeable/<26-byte id>                       -> AwakeableEntry (Phase 2)
-//	keylease/<service>/<obj_key>                 -> KeyLeaseStatus (Phase 3)
-//	idempotency/<32-byte sha256>                 -> InvocationId (Phase 3)
+//	state/<service>/<obj_key>/<state_key>        -> bytes (lazy handler state)
+//	outbox/<8-byte BE seq>                       -> OutboxEnvelope
+//	awakeable/<26-byte id>                       -> AwakeableEntry
+//	keylease/<service>/<obj_key>                 -> KeyLeaseStatus
+//	idempotency/<32-byte sha256>                 -> InvocationId
 //	dedup/self/<8-byte BE leader_epoch>/<8-byte BE seq>          -> DedupEntry
 //	dedup/arbitrary/<producer_id>/<8-byte BE seq>                -> DedupEntry
 //
@@ -319,8 +319,8 @@ func KeyLeaseKey(service, objectKey string) []byte {
 // IdempotencyKey returns idempotency/<sha256(tuple)>. The tuple is the
 // caller-supplied (service, handler, object_key, idempotency_key) hashed
 // with length-prefixed components so adjacent fields never alias. Used by
-// the Phase 3 onInvoke dedup path: a hit means an invocation with the same
-// tuple was already accepted; the stored value is the prior InvocationId.
+// the onInvoke dedup path: a hit means an invocation with the same tuple
+// was already accepted; the stored value is the prior InvocationId.
 func IdempotencyKey(service, handler, objectKey, idempotencyKey string) []byte {
 	h := sha256.New()
 	writeLP := func(s string) {

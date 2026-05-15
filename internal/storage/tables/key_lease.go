@@ -12,7 +12,7 @@ import (
 // Object single-writer invariant. The apply path reads the current
 // KeyLeaseStatus, fires the per-key FSM in internal/engine/object_fsm.go,
 // and writes the new status back into the same Pebble batch as the
-// invocation status transition that triggered the fire. Phase 3.
+// invocation status transition that triggered the fire.
 type KeyLeaseTable struct{ S storage.Reader }
 
 // Get loads the lease row. Returns (nil, nil) when absent — callers

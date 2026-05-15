@@ -1,10 +1,8 @@
 // Package reflow is the public entrypoint for embedding the reflow durable
 // execution engine in a Go binary. Construct a Config (programmatically or
 // via pkg/reflow/config loaders), register handlers on Config.Handlers,
-// then call Run.
-//
-// Phase 2 surface only. Internal types in /internal/engine are not part of
-// the stable API.
+// then call Run. Internal types in /internal/engine are not part of the
+// stable API.
 package reflow
 
 import (
@@ -37,14 +35,14 @@ type Config struct {
 	// node-leaf cert. Role distinction is enforced by SPIFFE URI SANs
 	// on each leaf (see pkg/reflow/tls.go).
 	TLS TLSConfig `koanf:"tls"`
-	// Admin is the cluster admin gRPC surface. Phase 4.2.
+	// Admin is the cluster admin gRPC surface.
 	Admin AdminConfig `koanf:"admin"`
-	// Snapshot configures the off-host DR snapshot archive. Phase 4.2.
+	// Snapshot configures the off-host DR snapshot archive.
 	Snapshot SnapshotConfig `koanf:"snapshot"`
 	Handlers *sdk.Registry  `koanf:"-"`
 }
 
-// AdminConfig configures the admin gRPC server. Phase 4.2.
+// AdminConfig configures the admin gRPC server.
 type AdminConfig struct {
 	// Addr is the listen address for the admin gRPC server. Empty
 	// disables the server (single-node deployments rarely need it).
@@ -148,15 +146,15 @@ type NodeConfig struct {
 	// traffic. For single-node use a localhost port.
 	RaftAddr string `koanf:"raft_addr"`
 	// GossipBindAddr is the address dragonboat's gossip layer binds to
-	// (host:port). Required when Cluster.Peers is non-empty. Phase 4.1.
+	// (host:port). Required when Cluster.Peers is non-empty.
 	GossipBindAddr string `koanf:"gossip_bind_addr"`
 	// GossipAdvAddr is the address advertised to peers for NAT traversal.
-	// Falls back to GossipBindAddr when empty. Phase 4.1.
+	// Falls back to GossipBindAddr when empty.
 	GossipAdvAddr string `koanf:"gossip_adv_addr"`
 	// DeliveryAddr is the host:port for this node's reflow Delivery gRPC
 	// listener (cross-partition outbox dispatch). Required when
 	// Cluster.Peers is non-empty; advertised via gossip NodeHostMeta so
-	// peers can resolve it. Phase 4.1.
+	// peers can resolve it.
 	DeliveryAddr string `koanf:"delivery_addr"`
 }
 
@@ -164,18 +162,17 @@ type NodeConfig struct {
 type BootstrapMode int
 
 const (
-	// BootstrapSingleNode runs the node alone. Phase 2 default.
+	// BootstrapSingleNode runs the node alone with no peers.
 	BootstrapSingleNode BootstrapMode = iota
-	// BootstrapStaticPeers reads peers from ClusterConfig.Peers. Phase 4.
+	// BootstrapStaticPeers reads peers from ClusterConfig.Peers.
 	BootstrapStaticPeers
-	// BootstrapDiscovery uses gossip/discovery to find peers. Phase 5.
+	// BootstrapDiscovery uses gossip/discovery to find peers (not yet implemented).
 	BootstrapDiscovery
 )
 
-// Peer is one entry in a static cluster topology. Phase 4.1: GossipAddr
-// is required when Cluster.Peers is non-empty (every peer entry,
-// including self); NodeHostID is optional and defaults to a stable
-// derivation from NodeID.
+// Peer is one entry in a static cluster topology. GossipAddr is required
+// when Cluster.Peers is non-empty (every peer entry, including self);
+// NodeHostID is optional and defaults to a stable derivation from NodeID.
 type Peer struct {
 	NodeID     uint64 `koanf:"node_id"`
 	RaftAddr   string `koanf:"raft_addr"`
@@ -183,25 +180,25 @@ type Peer struct {
 	NodeHostID string `koanf:"node_host_id"`
 }
 
-// ClusterConfig describes the multi-node cluster. Phase 2 ignores Peers,
-// BootstrapMode, and RaftTLSCert (single-node only); Phase 4 wires them.
+// ClusterConfig describes the multi-node cluster. Single-node deployments
+// leave Peers empty and BootstrapMode at the default BootstrapSingleNode.
 //
 // Secrets-as-config: RaftTLSCert is the actual cert material loaded by a
 // koanf provider (Vault, AWS SM, GCP SM, file, env). No inline ${secret:}
 // template — the chosen koanf provider populates the field directly.
 type ClusterConfig struct {
-	// Shards lists the partition shard IDs this node should host. Phase 2
-	// defaults to []uint64{1} when empty.
+	// Shards lists the partition shard IDs this node should host. Defaults
+	// to []uint64{1} when empty.
 	Shards []uint64 `koanf:"shards"`
-	// Peers is the static topology for BootstrapStaticPeers. Phase 4.
+	// Peers is the static topology for BootstrapStaticPeers.
 	Peers []Peer `koanf:"peers"`
-	// BootstrapMode selects how the cluster forms. Phase 4.
+	// BootstrapMode selects how the cluster forms.
 	BootstrapMode BootstrapMode `koanf:"bootstrap_mode"`
 	// RaftTLSCert is the PEM-encoded TLS cert for inter-node Raft
 	// transport, typically populated from a secret-store provider
-	// (Vault, AWS SM). Phase 4+.
+	// (Vault, AWS SM).
 	RaftTLSCert []byte `koanf:"raft_tls_cert"`
-	// RaftTLSKey is the matching private key. Phase 4+.
+	// RaftTLSKey is the matching private key.
 	RaftTLSKey []byte `koanf:"raft_tls_key"`
 	// JoinExisting, when true, starts this node as a joiner of an
 	// already-running cluster: dragonboat StartOnDiskReplica is called
@@ -215,8 +212,7 @@ type ClusterConfig struct {
 }
 
 // SnapshotRepository abstracts the destination for partition snapshots
-// (SAD §6.12). Phase 2 does not ship any driver; nil means "local only".
-// The interface body lands when the first driver does, in Phase 2.5+.
+// (SAD §6.12). nil means "local only" (no remote archival).
 type SnapshotRepository any
 
 // StorageConfig configures the on-disk state.

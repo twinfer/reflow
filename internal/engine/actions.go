@@ -14,14 +14,11 @@ import (
 // "respawn the session via ActInvoke" instead of a bidi notification
 // channel — see invocation_fsm.transitionOnAwakeableResolved. The
 // notification/awakeable/abort/ingress-response actions Restate has
-// were declared here in earlier phases but never wired; they are
-// intentionally absent now and should not be reintroduced without a
-// concurrent reader plan.
+// were never wired here; they are intentionally absent and should not
+// be reintroduced without a concurrent reader plan.
 type Action interface{ isAction() }
 
 // ActInvoke asks the invoker to begin (or resume) execution of an invocation.
-// In Phase 1 the invoker is a stub; the test harness observes ActInvoke and
-// synthesises InvokerEffect commands directly.
 type ActInvoke struct {
 	ID     *enginev1.InvocationId
 	Target *enginev1.InvocationTarget
@@ -50,7 +47,7 @@ func (ActDeleteTimer) isAction() {}
 // outbox shuffler. The shuffler proposes the envelope's command via
 // ProposeIngress and pops the row once the proposal commits. On crash
 // before pop, the next leader rescans the OutboxTable and re-proposes —
-// DedupTable absorbs the duplicate. Phase 2.
+// DedupTable absorbs the duplicate.
 type ActDispatchOutbox struct {
 	Seq      uint64
 	Envelope *enginev1.OutboxEnvelope
@@ -65,6 +62,7 @@ type ActionCollector struct {
 	actions []Action
 }
 
+// Push appends a to the collector's buffer.
 func (c *ActionCollector) Push(a Action) {
 	c.actions = append(c.actions, a)
 }

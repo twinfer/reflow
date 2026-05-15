@@ -13,7 +13,7 @@ import (
 // dragonboat v4 statemachine/disk.go:113).
 var ErrInvalidTransition = errors.New("invocation fsm: invalid transition")
 
-// transitionOnInvoke handles a new InvokeCommand. Phase 1 transitions:
+// transitionOnInvoke handles a new InvokeCommand. Transitions:
 //
 //	Free       → Scheduled (+ ActInvoke)
 //	Scheduled  → Scheduled (no-op; idempotent duplicate)
@@ -62,10 +62,10 @@ func transitionOnInvoke(
 // the FSM agnostic to the exact entry-type taxonomy.
 //
 // Outbox queueing for Call / OneWayCall / outbound JESignal is layered on
-// in partition.go before the transition runs — Step 7 wires that arm.
-// Phase 2 entry types (JERun, JEAwakeable, JEAwakeableResult, JESignal,
-// JEClearState, JEGetEagerState) are accepted by the Invoked / Suspended
-// arms without per-type cases.
+// in partition.go before the transition runs.
+// All JournalEntry kinds (JERun, JEAwakeable, JEAwakeableResult, JESignal,
+// JEClearState, JEGetEagerState, etc.) are accepted by the Invoked /
+// Suspended arms without per-type cases.
 func transitionOnJournalAppend(
 	id *enginev1.InvocationId,
 	cur *enginev1.InvocationStatus,
@@ -243,7 +243,7 @@ func transitionOnTimerFired(
 // handler poll sees the newly-appended result entry. There is no live
 // in-process notification channel; the action surface is purely "wake
 // + respawn", which matches the SDK's "handler returns ErrSuspended"
-// shape. Phase 2.
+// shape.
 func transitionOnAwakeableResolved(
 	id *enginev1.InvocationId,
 	cur *enginev1.InvocationStatus,
@@ -274,7 +274,7 @@ func transitionOnAwakeableResolved(
 }
 
 // transitionOnSignalDelivered handles an InvokerEffect.SignalDelivered.
-// Same wake-up shape as transitionOnAwakeableResolved — Phase 2 does not
+// Same wake-up shape as transitionOnAwakeableResolved — the FSM does not
 // filter Suspended.awaiting_on by signal name; the session goroutine
 // inspects its waker queue on resume.
 //
@@ -286,7 +286,7 @@ func transitionOnAwakeableResolved(
 //	*          → ErrInvalidTransition
 //
 // See transitionOnAwakeableResolved for the rationale on the
-// ActInvoke-only wake shape. Phase 2.
+// ActInvoke-only wake shape.
 func transitionOnSignalDelivered(
 	id *enginev1.InvocationId,
 	cur *enginev1.InvocationStatus,
@@ -329,7 +329,7 @@ func transitionOnSignalDelivered(
 //	Completed  → Completed (late arrival; no-op)
 //	*          → ErrInvalidTransition
 //
-// See transitionOnAwakeableResolved for the wake-shape rationale. Phase 2.5.
+// See transitionOnAwakeableResolved for the wake-shape rationale.
 func transitionOnCallResultDelivered(
 	id *enginev1.InvocationId,
 	cur *enginev1.InvocationStatus,

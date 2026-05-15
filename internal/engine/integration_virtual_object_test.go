@@ -14,13 +14,12 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// TestVirtualObject_FIFOSerializesSameKey is the Phase 3 exit
-// criterion. Five invocations are submitted concurrently against the same
-// (service, object_key); each handler records its observed entry order in
-// shared memory and then sleeps briefly to widen the window for any
-// concurrency bug. The VO gate must serialize them — every handler sees
-// the prior count + 1, and the global completion order matches the
-// submission order.
+// TestVirtualObject_FIFOSerializesSameKey submits five invocations
+// concurrently against the same (service, object_key); each handler
+// records its observed entry order in shared memory and then sleeps
+// briefly to widen the window for any concurrency bug. The VO gate must
+// serialize them — every handler sees the prior count + 1, and the
+// global completion order matches the submission order.
 func TestVirtualObject_FIFOSerializesSameKey(t *testing.T) {
 	const N = 5
 	var (

@@ -9,7 +9,7 @@ import (
 // AwakeableTable is the directory mapping awakeable_id → owning invocation
 // + journal entry index. Populated when a handler mints an awakeable
 // (JEAwakeable), consulted by ingress when an external caller resolves
-// one, and deleted after the resolution is journaled. Phase 2.
+// one, and deleted after the resolution is journaled.
 type AwakeableTable struct{ S storage.Reader }
 
 // Put records the directory row. id must already be validated via

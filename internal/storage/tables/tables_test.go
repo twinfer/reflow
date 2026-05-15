@@ -214,8 +214,8 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 	})
 
-	// Phase 2.5: lock the JournalTable.Append contract that the apply path
-	// relies on when re-running InvokerEffects on replay (e.g., parent-side
+	// Lock the JournalTable.Append contract that the apply path relies on
+	// when re-running InvokerEffects on replay (e.g., parent-side
 	// JECallResult written from a callee's Completed effect). Two re-appends
 	// of the same entry must converge to the same stored bytes. The FSM
 	// guarantees content-determinism per (id, index); the storage layer is

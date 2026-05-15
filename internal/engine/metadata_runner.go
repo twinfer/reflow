@@ -16,7 +16,7 @@ import (
 // much smaller surface area: there are no timers, no outbox, and no
 // Invoker — shard 0 only stores cluster ownership state.
 //
-// Phase 4.1 responsibilities:
+// Responsibilities:
 //   - Track leadership via Leadership + raftEventListener (re-used from
 //     the partition path).
 //   - On leader gain, propose UpdatePartitionTable with the static
@@ -39,7 +39,7 @@ type MetadataRunner struct {
 
 	// host is the back-reference handed in by Host.StartMetadataShard so
 	// the rebalancer can call dragonboat membership APIs + Host helpers
-	// (PartitionTable, Membership, nodeHostIDOf). Phase 4.2.
+	// (PartitionTable, Membership, nodeHostIDOf).
 	host *Host
 
 	mu           sync.Mutex
@@ -56,7 +56,8 @@ func (r *MetadataRunner) Proposer() *RaftProposer { return r.proposer }
 func (r *MetadataRunner) Leadership() *Leadership { return r.leadership }
 
 // IsLeader reports whether this node currently believes it is the
-// metadata-shard leader. Advisory; the durable test is OnAnnounceLeader.
+// metadata-shard leader. Advisory: leadership is confirmed only when an
+// AnnounceLeader command commits through Raft.
 func (r *MetadataRunner) IsLeader() bool { return r.leadership.IsLeader() }
 
 // onBecomeLeader proposes the bootstrap partition table + per-peer
@@ -76,9 +77,9 @@ func (r *MetadataRunner) onBecomeLeader() {
 
 	go r.bootstrap(leaderCtx)
 	if r.host != nil {
-		// Phase 4.2: spawn the rebalancer + failure-detection ticker
-		// once shard 0 bootstrap has been kicked off. Both share the
-		// leader-scoped context so step-down tears everything down.
+		// Spawn the rebalancer + failure-detection ticker once shard 0
+		// bootstrap has been kicked off. Both share the leader-scoped
+		// context so step-down tears everything down.
 		go newMetadataRebalancer(r.host, r).run(leaderCtx)
 	}
 }
@@ -96,15 +97,14 @@ func (r *MetadataRunner) onStepDown() {
 }
 
 // bootstrap proposes the static partition table and a RegisterNode for
-// every peer. Phase 4.1 assignment: every partition shard 1..len(peers) is
-// hosted by every node (RF=N). The number of partition shards is taken
-// from the larger of (a) the assignment we'd write here and (b) the
-// already-persisted table — once 4.2 introduces dynamic shard counts we
-// will read the count from a config field instead.
+// every peer. The static assignment gives every partition shard
+// 1..len(peers) to every node (RF=N). The number of partition shards is
+// taken from the larger of (a) the assignment we'd write here and (b) the
+// already-persisted table.
 //
 // Re-proposed on every leader gain. UpdatePartitionTable is an idempotent
 // singleton overwrite; RegisterNode is an upsert. Slow stale leaders that
-// come back online write the same content — harmless in 4.1.
+// come back online write the same content — harmless.
 func (r *MetadataRunner) bootstrap(ctx context.Context) {
 	if len(r.peers) == 0 {
 		// Single-node deployments don't reach here (StartMetadataShard is
@@ -163,8 +163,8 @@ func (r *MetadataRunner) bootstrap(ctx context.Context) {
 // preserves whatever the rebalance pipeline has done since boot);
 // otherwise seed from the static peer set (the fresh-bootstrap path).
 //
-// Phase 4.1 static assignment: one partition shard per peer index
-// (shard ids 1..N), every shard replicated on every peer.
+// The static assignment creates one partition shard per peer index
+// (shard ids 1..N), replicated on every peer.
 func buildBootstrapTable(peers []Peer, existing *enginev1.PartitionTable, leaderEpoch uint64) *enginev1.PartitionTable {
 	pt := &enginev1.PartitionTable{AssignmentEpoch: leaderEpoch}
 	replicas := make([]uint64, 0, len(peers))

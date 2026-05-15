@@ -18,9 +18,9 @@ const (
 )
 
 // AwaitInvocation polls SyncRead until the named invocation reaches the
-// Completed status or the timeout fires. SSE/streaming is Phase 5; Phase 2
-// uses server-side polling and bounds the wait at awaitMaxTimeout so a
-// stalled handler can't hold the gRPC stream open indefinitely.
+// Completed status or the timeout fires. Uses server-side polling and bounds
+// the wait at awaitMaxTimeout so a stalled handler can't hold the gRPC
+// stream open indefinitely.
 func (s *Server) AwaitInvocation(ctx context.Context, req *ingressv1.AwaitInvocationRequest) (*ingressv1.AwaitInvocationResponse, error) {
 	id, err := resolveID(req.GetInvocationId(), req.GetInvocationIdProto())
 	if err != nil {
@@ -93,8 +93,7 @@ func isTransientLookupErr(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
-	// Conservative: leave the rest to higher-level retry. Phase 4
-	// multi-node will tighten this when we have leadership transitions
-	// to ride through.
+	// Conservative: leave the rest to higher-level retry. This can be
+	// tightened once leadership-transition error types are stable.
 	return false
 }

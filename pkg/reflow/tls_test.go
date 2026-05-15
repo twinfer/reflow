@@ -255,12 +255,12 @@ func clientTLSWithCert(t *testing.T, certFile, keyFile, caFile string) *tls.Conf
 	}
 }
 
-// TestTLS_CrossRoleHandshakesSucceed documents the post-4.3d split: the
+// TestTLS_CrossRoleHandshakesSucceed documents the TLS/authz split: the
 // TLS layer accepts any well-formed SPIFFE cert from the trust domain;
 // role enforcement ("node cert may not reach Admin") moved to the gRPC
 // interceptor in internal/auth. The cross-role rejection is covered
-// end-to-end by the auth interceptor unit tests and the Phase 4.2
-// integration test.
+// end-to-end by the auth interceptor unit tests and the admin integration
+// tests.
 func TestTLS_CrossRoleHandshakesSucceed(t *testing.T) {
 	dir := t.TempDir()
 	files, opCrt, opKey := writeTLSFixtures(t, dir)

@@ -18,8 +18,7 @@ var ErrSuspended = errors.New("reflow: invocation suspended")
 // receive the same Failure on every read.
 //
 // Any non-*Failure error returned from a handler is treated as transient
-// and triggers a retry. Phase 2 retries indefinitely; Phase 3 adds
-// backoff and max-attempt policies.
+// and triggers a retry with the configured backoff policy.
 type Failure struct {
 	// Code is an application-defined error code. Reflow itself never
 	// interprets the value; it is round-tripped through the wire as-is.

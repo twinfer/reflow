@@ -1,7 +1,5 @@
 // Package invoker hosts the leader-only goroutines that drive registered
-// reflow handlers through their durable state machine. Phase 2 Step 10
-// lands the scaffolding (types, lifecycle, transport, journal reader);
-// Step 11 fills in the per-session goroutine.
+// reflow handlers through their durable state machine.
 package invoker
 
 import (

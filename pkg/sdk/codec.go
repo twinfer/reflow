@@ -33,11 +33,11 @@ import (
 //
 // To layer behaviors (encryption, compression), wrap a base codec —
 // e.g. NewEncryptingCodec(JSONCodec{}, key). Each layer should append a
-// content tag to a metadata sidecar; Phase 2 has no metadata channel, so
-// composition is left to the user until Phase 3 wires per-entry metadata.
+// content tag to a metadata sidecar; reflow has no per-entry metadata
+// channel today, so composition is left to the user.
 type PayloadCodec interface {
 	// Name returns a short, stable identifier for the codec. Used for
-	// debug logs and (in future phases) for per-payload metadata so a
+	// debug logs and future per-payload metadata so a
 	// reader can pick the right codec by tag. Format: "encoding/scheme",
 	// e.g. "json/default", "proto/binary", "bytes/raw".
 	Name() string

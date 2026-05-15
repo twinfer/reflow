@@ -11,9 +11,9 @@ import (
 // fallbacks for partial info. Empty string when no build info is
 // available (e.g. some tests, or "go run" builds).
 //
-// The engine logs this string on every session start (Phase 3) so
-// operators can correlate behavior changes with SDK upgrades. The value
-// is computed once at process startup and cached.
+// The engine logs this string on every session start so operators can
+// correlate behavior changes with SDK upgrades. The value is computed
+// once at process startup and cached.
 func BuildID() string {
 	buildIDOnce.Do(func() { buildID = computeBuildID() })
 	return buildID

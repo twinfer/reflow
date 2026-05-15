@@ -126,8 +126,8 @@ func (s *session) abort() {
 func (s *session) Done() <-chan struct{} { return s.done }
 
 // setState atomically transitions to next, logging the previous→next
-// move. Phase 2 does not enforce a finite-state automaton on the
-// transitions — Restate's checks live one layer up in the SDK side.
+// move. Transition validity is not enforced here — Restate's checks
+// live one layer up in the SDK side.
 func (s *session) setState(next sessionState) {
 	s.mu.Lock()
 	prev := s.state
@@ -186,9 +186,9 @@ const eagerStateMaxBytes = 64 * 1024
 func (s *session) prepare() ([]byte, map[uint32]*enginev1.JournalEntry, map[string][]byte, bool) {
 	s.setState(sessReplay)
 
-	// Phase 3 — log the SDK build id at session start so operators can
-	// correlate behavior changes with SDK upgrades. The value is cached
-	// by sdk.BuildID, so the cost is one map lookup per session.
+	// Log the SDK build id at session start so operators can correlate
+	// behavior changes with SDK upgrades. The value is cached by
+	// sdk.BuildID, so the cost is one map lookup per session.
 	if bid := sdk.BuildID(); bid != "" {
 		s.log.Info("invoker.session: start",
 			"id", invocationIDString(s.id),
@@ -254,13 +254,11 @@ func (s *session) prepare() ([]byte, map[uint32]*enginev1.JournalEntry, map[stri
 // (service, object_key) into an in-memory map served to GetState. Returns
 // nil when:
 //   - the target has no object_key (unkeyed services have no per-object
-//     state contract in Phase 3)
+//     state)
 //   - the total payload exceeds eagerStateMaxBytes (handler falls back to
 //     the lazy/not-implemented path)
 //   - the scan fails (logged warn; we'd rather skip preload than block
 //     session start)
-//
-// Phase 3.
 func (s *session) preloadState() map[string][]byte {
 	if s.target.GetObjectKey() == "" {
 		return nil
@@ -337,8 +335,8 @@ func (s *session) runHandler(ictx *invocationContext) ([]byte, error) {
 // and returned ProposeSelf's error to the handler) we still mark the
 // invocation Completed with the error text. The alternative — bailing
 // silently — leaves the invocation Invoked with no path forward, since
-// no future event re-fires ActInvoke. Restate Phase 3 introduces retry
-// policies; Phase 2 favours visibility over silent stalls.
+// no future event re-fires ActInvoke. Surfacing the error as a terminal
+// Completed failure favours visibility over silent stalls.
 func (s *session) publishOutcome(ictx *invocationContext, output []byte, handlerErr error) {
 	if s.ctx.Err() != nil || errors.Is(handlerErr, context.Canceled) {
 		return

@@ -801,9 +801,9 @@ func TestPartition_SnapshotRoundTrip(t *testing.T) {
 	}
 }
 
-// TestPartition_OnSnapshotPersistedFiresAfterSaveSnapshot covers the
-// Phase 5 post-hoc archive trigger: a successful SaveSnapshot must
-// invoke the OnSnapshotPersisted hook so the archive producer can run.
+// TestPartition_OnSnapshotPersistedFiresAfterSaveSnapshot verifies that
+// a successful SaveSnapshot invokes the OnSnapshotPersisted hook so the
+// archive producer can run.
 func TestPartition_OnSnapshotPersistedFiresAfterSaveSnapshot(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "p", "state")
 	snap, err := NewSnapshotter(dir, func(path string) (storage.Store, error) {

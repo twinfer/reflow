@@ -21,10 +21,10 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// TestHandlerSurvivesKill is the Phase 2 exit criterion. A handler
-// doing SetState → Sleep → Run is brought up, suspended on the Sleep
-// timer, the Host is closed (simulating a crash before the Sleep fires),
-// the same DataDir is reopened on a fresh Host, and the invocation must
+// TestHandlerSurvivesKill verifies kill-9 safety. A handler doing
+// SetState → Sleep → Run is brought up, suspended on the Sleep timer,
+// the Host is closed (simulating a crash before the Sleep fires), the
+// same DataDir is reopened on a fresh Host, and the invocation must
 // resume to Completed with the Run body executed exactly once.
 //
 // Why a single Run-count check proves "kill -9 safety":
@@ -175,21 +175,21 @@ func TestHandlerSurvivesKill(t *testing.T) {
 	}
 }
 
-// TestOutgoingCallSurvivesRestart verifies outbox durability
-// across a host crash AND the Phase 2.5 Callee→Caller return path:
-// handler Caller invokes handler Callee via ctx.Call; the Host is
-// closed after Caller's JECall is journaled. After reopen, the outbox
-// shuffler re-injects Callee's InvokeCommand, Callee runs to Completed,
-// and the partition's Completed apply arm journals a JECallResult on
-// Caller's journal. Caller's suspended session resumes, observes the
-// JECallResult on replay, wraps the value, and returns.
+// TestOutgoingCallSurvivesRestart verifies outbox durability across a
+// host crash and the Callee→Caller return path: handler Caller invokes
+// handler Callee via ctx.Call; the Host is closed after Caller's JECall
+// is journaled. After reopen, the outbox shuffler re-injects Callee's
+// InvokeCommand, Callee runs to Completed, and the partition's Completed
+// apply arm journals a JECallResult on Caller's journal. Caller's
+// suspended session resumes, observes the JECallResult on replay, wraps
+// the value, and returns.
 //
 // This test simultaneously covers:
 //   - Outbox durability + dedup: Callee runs exactly once across restart
 //     (the calleeRuns counter would exceed 1 if the outbox shuffler
 //     re-injected without dedup).
-//   - Phase 2.5 return path: Caller's Completed.Output proves the
-//     JECallResult journal entry was delivered + the session woke up.
+//   - Caller's Completed.Output proves the JECallResult journal entry
+//     was delivered and the session woke up.
 func TestOutgoingCallSurvivesRestart(t *testing.T) {
 	var calleeRuns atomic.Int32
 
@@ -308,8 +308,8 @@ func TestOutgoingCallSurvivesRestart(t *testing.T) {
 		t.Errorf("callee executions across restart = %d; want exactly 1 (outbox dedup)", got)
 	}
 
-	// Phase 2.5: Caller must also reach Completed after the JECallResult
-	// is journaled on its side and its session is resumed.
+	// Caller must also reach Completed after the JECallResult is journaled
+	// on its side and its session is resumed.
 	callerDone := awaitCompleted(t, h2, 1, callerID, 10*time.Second)
 	if got := string(callerDone.GetOutput()); got != "caller-wrap:from-callee:hello" {
 		t.Errorf("caller post-restart output = %q; want caller-wrap:from-callee:hello", got)
@@ -499,7 +499,7 @@ func TestCallResultSurvivesCallerCrash(t *testing.T) {
 // the journal deterministically, finishes its Sleep, returns, and the
 // JECallResult delivery wakes Caller.
 //
-// (Note: in single-node Phase 2.5 the "callee crash" and "caller crash"
+// (Note: in single-node mode the "callee crash" and "caller crash"
 // scenarios both crash the same host, so structurally the lifecycle is
 // the same. The differentiator is *what state each invocation is in*
 // when we crash — here we crash later, after Callee has begun and

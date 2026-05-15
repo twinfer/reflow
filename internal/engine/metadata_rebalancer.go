@@ -31,8 +31,10 @@ import (
 // is a shard-0 apply-arm no-op, and re-running a dragonboat membership
 // change against the current membership returns harmlessly.
 //
-// Dragonboat's gossip events are not exposed to user code; see the Phase
-// 4.2 plan for the rationale behind polling.
+// Dragonboat's gossip events are not exposed to user code; polling is
+// used instead because the memberlist NotifyLeave callback arrives
+// outside the dragonboat event loop and cannot safely drive Raft proposals
+// directly.
 type metadataRebalancer struct {
 	host    *Host
 	runner  *MetadataRunner
@@ -48,8 +50,8 @@ type metadataRebalancer struct {
 	missCounts map[uint64]int // node_id -> consecutive missed observations
 }
 
-// rebalancerDefaults centralize the cadence knobs. Phase 4.2 ships them
-// as constants; configurability is a 4.3+ concern.
+// rebalancerDefaults centralize the cadence knobs. Configurability is
+// a future extension.
 const (
 	defaultRebalancerPollInterval  = 1 * time.Second
 	defaultRebalancerMissThreshold = 10

@@ -14,10 +14,8 @@ import (
 // (allResult, anyFuture) layer pure composition over child Pollers.
 //
 // All types here implement both sdk.Future / sdk.AllResult and the
-// sealed sdk.Poller — combinators down-cast via the Poller
-// interface; the sealed markers keep external implementations out.
-//
-// Phase 3.5.
+// sealed sdk.Poller — combinators down-cast via the Poller interface;
+// the sealed markers keep external implementations out.
 
 // --- Call ---
 

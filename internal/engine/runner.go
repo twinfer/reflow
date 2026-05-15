@@ -30,7 +30,7 @@ type PartitionRunner struct {
 	// sender is the cross-shard dispatcher used by the OutboxService for
 	// envelopes whose destination_shard_id is non-local. nil in single-
 	// node deployments; populated by Host.StartPartition when multi-node
-	// is configured. Phase 4.1.
+	// is configured.
 	sender  CrossShardSender
 	log     *slog.Logger
 	metrics *observability.Metrics
@@ -62,7 +62,8 @@ func (r *PartitionRunner) Snapshotter() *Snapshotter { return r.snapshotter }
 // code should reach the Invoker through actions dispatched by the FSM.
 func (r *PartitionRunner) Invoker() *invoker.Invoker { return r.invoker }
 
-// IsLeader is a convenience accessor.
+// IsLeader reports whether this partition replica currently believes itself
+// to be the Raft leader.
 func (r *PartitionRunner) IsLeader() bool { return r.leadership.IsLeader() }
 
 // dispatchActions is called by the Partition FSM (inside its Update path,
@@ -229,8 +230,8 @@ func (r *PartitionRunner) onStepDown() {
 // Compile-time check that LeadershipObserver is implemented.
 var _ LeadershipObserver = (*Leadership)(nil)
 
-// Phase 1 also exposes a tiny helper to fetch the InvocationStatus directly
-// from the partition's store; tests use this to avoid a SyncRead round-trip.
+// StatusOf fetches the InvocationStatus directly from the partition's store;
+// tests use this to avoid a SyncRead round-trip.
 func (r *PartitionRunner) StatusOf(id *enginev1.InvocationId) (*enginev1.InvocationStatus, error) {
 	return (tables.InvocationTable{S: r.snapshotter.Store()}).Get(id)
 }

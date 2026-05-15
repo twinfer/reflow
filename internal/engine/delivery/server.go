@@ -1,5 +1,5 @@
 // Package delivery implements the inter-node Delivery gRPC service used
-// for cross-partition outbox dispatch in Phase 4.1.
+// for cross-partition outbox dispatch.
 //
 // Sender side (Client): when a shard's leader-side OutboxService sees an
 // OutboxEnvelope addressed to a different shard, it dials the destination

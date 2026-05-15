@@ -47,7 +47,8 @@ func NewServer(h *engine.Host, log *slog.Logger) *Server {
 // SubmitInvocation mints a fresh InvocationId stamped with the
 // partition_key derived from (service, object_key), then proposes an
 // InvokeCommand via the owning partition's ingress proposer. Returns the
-// id; the caller must poll AwaitInvocation (or use SSE once Phase 5 lands).
+// id; the caller may poll AwaitInvocation or use AttachInvocation to wait
+// for the result.
 func (s *Server) SubmitInvocation(ctx context.Context, req *ingressv1.SubmitInvocationRequest) (*ingressv1.SubmitInvocationResponse, error) {
 	if req.GetService() == "" || req.GetHandler() == "" {
 		return nil, status.Error(codes.InvalidArgument, "service and handler are required")
@@ -65,12 +66,12 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *ingressv1.SubmitInvo
 		return nil, status.Errorf(codes.FailedPrecondition, "no partition for shard %d", shardID)
 	}
 
-	// Phase 3 — optimistic idempotency lookup. If a prior submission with
-	// the same (service, handler, object_key, idempotency_key) tuple has
-	// already been accepted, surface its InvocationId directly without
-	// minting a new one or proposing again. A losing race (two ingress
-	// callers miss the lookup, both propose) is handled authoritatively
-	// in the apply path's onInvoke: the second InvokeCommand is dropped.
+	// Optimistic idempotency lookup. If a prior submission with the same
+	// (service, handler, object_key, idempotency_key) tuple has already
+	// been accepted, surface its InvocationId directly without minting a
+	// new one or proposing again. A losing race (two ingress callers miss
+	// the lookup, both propose) is handled authoritatively in the apply
+	// path's onInvoke: the second InvokeCommand is dropped.
 	if ik := req.GetIdempotencyKey(); ik != "" {
 		res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupIdempotency{
 			Service:        target.GetServiceName(),

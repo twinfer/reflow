@@ -71,8 +71,8 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	// Bring up the internal engine Host.
 	//
 	// NumPartitionShards is the routing modulus — independent of peer
-	// count. Phase 4.1 deployments host every shard on every peer so the
-	// two happen to coincide, but the engine must not bake that
+	// count. Multi-node deployments may host every shard on every peer
+	// so the two happen to coincide, but the engine must not bake that
 	// assumption in. We pass len(Cluster.Shards) when the caller
 	// specified an explicit shard list, otherwise 1 (single-shard
 	// default that matches the [1] default applied to cfg.Cluster.Shards
@@ -136,11 +136,11 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	var deliveryClient *delivery.Client
 
 	if multiNode {
-		// Phase 4.2: build the Delivery TLS material upfront so both
-		// the outbound client and the inbound server share one node
-		// cert. When TLS files are absent, fall back to insecure for
-		// dev/test ergonomics — Step 8 (reflowd CLI) enforces
-		// "multi-node requires TLS" at the binary level.
+		// Build the Delivery TLS material upfront so both the outbound
+		// client and the inbound server share one node cert. When TLS
+		// files are absent, fall back to insecure for dev/test ergonomics
+		// — the reflowd CLI enforces "multi-node requires TLS" at the
+		// binary level.
 		clientDialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 		var serverCreds credentials.TransportCredentials
 		if !cfg.TLS.IsZero() {
@@ -185,9 +185,9 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		eh.SetCrossShardSender(dc)
 
 		// Start the Delivery gRPC listener on Node.DeliveryAddr — the
-		// same endpoint published via gossip NodeHostMeta. Phase 4.2 may
-		// co-host this with ingress; Phase 4.1 keeps the listener
-		// dedicated to keep startup ordering simple.
+		// same endpoint published via gossip NodeHostMeta. The listener
+		// is kept dedicated to ingress to maintain a clean startup
+		// ordering.
 		ln, lnErr := net.Listen("tcp", cfg.Node.DeliveryAddr)
 		if lnErr != nil {
 			_ = dc.Close()
@@ -231,11 +231,9 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 
 		// Start shard 0 (metadata Raft group) before partition shards so
 		// the partition table is being established as partitions come up.
-		// We don't strictly need to await its leader before starting
-		// partition shards in Phase 4.1 — every node hosts every
-		// partition and the static peer list makes the partition table
-		// redundant on the wire — but starting it first matches the
-		// Phase 4.2 sequence and avoids race-prone test orderings.
+		// Starting it first avoids race-prone test orderings even when
+		// every node hosts every partition and the static peer list makes
+		// the partition table redundant on the wire.
 		if _, mErr := eh.StartMetadataShard(); mErr != nil {
 			deliverySrv.Stop()
 			_ = ln.Close()
@@ -267,7 +265,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		logger.Info("reflow: partition started", "shard", sh)
 	}
 
-	// Phase 4.2 surfaces below this point. All optional + multi-node-only.
+	// Optional multi-node surfaces (admin server, snapshot producer).
 	var (
 		adminSrv     *grpc.Server
 		adminLn      net.Listener

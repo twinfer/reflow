@@ -23,11 +23,10 @@ type Host struct {
 	deliverySrv    *grpc.Server
 	deliveryLn     net.Listener
 	deliveryClient *delivery.Client
-	// Phase 4.2: admin gRPC server + snapshot producer lifecycle.
-	adminSrv     *grpc.Server
-	adminLn      net.Listener
-	snapshotCxl  context.CancelFunc
-	snapshotRepo *snapshot.BlobRepository
+	adminSrv       *grpc.Server
+	adminLn        net.Listener
+	snapshotCxl    context.CancelFunc
+	snapshotRepo   *snapshot.BlobRepository
 }
 
 // Close stops every partition and the underlying NodeHost. Idempotent.
@@ -109,6 +108,5 @@ func (h *Host) LookupInvocationStatus(ctx context.Context, shardID uint64, id *e
 
 // Engine returns the underlying internal engine.Host. Reserved for tests
 // that need access to internal hooks (Partition, NodeHost). Not part of
-// the stable API; future Phase 2 steps will move test helpers under this
-// package and shrink the engine surface.
+// the stable API.
 func (h *Host) Engine() *engine.Host { return h.engine }

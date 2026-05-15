@@ -30,10 +30,10 @@ import (
 	"gocloud.dev/blob"
 )
 
-// adminRig augments a Phase 4.1 nodeRig with an admin gRPC server.
-// Admin runs without the auth interceptor in tests because that
-// interceptor requires mTLS-verified client certs — the dedicated
-// TLS-rejection tests rebuild the rig with TLS+interceptor enabled.
+// adminRig augments a nodeRig with an admin gRPC server. Admin runs
+// without the auth interceptor in tests because that interceptor requires
+// mTLS-verified client certs — the dedicated TLS-rejection tests rebuild
+// the rig with TLS+interceptor enabled.
 type adminRig struct {
 	nodeRig *nodeRig
 	adminLn net.Listener

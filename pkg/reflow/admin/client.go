@@ -1,7 +1,7 @@
 // Package admin holds the shared admin gRPC client used by the
 // reflow-cluster CLI and by integration tests. Thin wrapper over the
 // generated adminv1.AdminClient that handles mTLS dial + connection
-// cleanup. Phase 4.2.
+// cleanup.
 package admin
 
 import (

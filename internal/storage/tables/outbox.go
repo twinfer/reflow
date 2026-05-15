@@ -16,7 +16,7 @@ import (
 // Crash-safety: the shuffler only deletes a row after the matching
 // ProposeIngress has been Raft-committed. If it crashes between propose
 // and delete, the next leader re-scans and re-proposes — the per-producer
-// DedupTable absorbs the duplicate. Phase 2.
+// DedupTable absorbs the duplicate.
 type OutboxTable struct{ S storage.Reader }
 
 // OutboxRow is one entry yielded by ScanFrom.

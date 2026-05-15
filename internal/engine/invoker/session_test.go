@@ -762,24 +762,24 @@ func TestContext_SuspendIsSticky(t *testing.T) {
 func TestContext_OneWayCallStub(t *testing.T) {
 	cf := newCtxFixture(t)
 	err := cf.ictx.OneWayCall(sdk.Target{Service: "T", Handler: "h"}, nil)
-	if !errors.Is(err, errNotImplementedPhase2) {
-		t.Errorf("OneWayCall err = %v; want errNotImplementedPhase2", err)
+	if !errors.Is(err, errNotImplemented) {
+		t.Errorf("OneWayCall err = %v; want errNotImplemented", err)
 	}
 }
 
 func TestContext_GetStateStub(t *testing.T) {
 	cf := newCtxFixture(t)
 	_, _, err := cf.ictx.GetState("k")
-	if !errors.Is(err, errNotImplementedPhase2) {
-		t.Errorf("GetState err = %v; want errNotImplementedPhase2", err)
+	if !errors.Is(err, errNotImplemented) {
+		t.Errorf("GetState err = %v; want errNotImplemented", err)
 	}
 }
 
 func TestContext_SendSignalStub(t *testing.T) {
 	cf := newCtxFixture(t)
 	err := cf.ictx.SendSignal(sdk.Target{Service: "T", Handler: "h"}, "boom", nil)
-	if !errors.Is(err, errNotImplementedPhase2) {
-		t.Errorf("SendSignal err = %v; want errNotImplementedPhase2", err)
+	if !errors.Is(err, errNotImplemented) {
+		t.Errorf("SendSignal err = %v; want errNotImplemented", err)
 	}
 }
 
@@ -877,10 +877,10 @@ func TestSession_SleepResumeAfterTimerFires(t *testing.T) {
 	}
 }
 
-// TestSession_PreloadState_HydratesCache exercises the Phase 3 eager-state
-// path: rows present in StateTable for the invocation's (service,
-// object_key) are reflected in GetState via the in-memory cache, without
-// any apply round-trip.
+// TestSession_PreloadState_HydratesCache exercises the eager-state path:
+// rows present in StateTable for the invocation's (service, object_key)
+// are reflected in GetState via the in-memory cache, without any apply
+// round-trip.
 func TestSession_PreloadState_HydratesCache(t *testing.T) {
 	s := storage.NewMemStore()
 	defer s.Close()

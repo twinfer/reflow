@@ -26,12 +26,12 @@ func retryBackoff() time.Duration {
 // dragonboat directly.
 var ErrShardClosed = errors.New("proposer: shard closed")
 
-// RaftProposer is the only Proposer implementation in Phase 1. It wraps a
-// dragonboat NodeHost with reflow's envelope framing and dedup stamping.
+// RaftProposer wraps a dragonboat NodeHost with reflow's envelope framing
+// and dedup stamping.
 //
 // Mirrors restate crates/worker/src/partition/leadership/self_proposer.rs:36-58,
 // minus the background batching appender — dragonboat's SyncPropose blocks
-// until commit, so Phase 1 takes a synchronous path.
+// until commit, so proposals take a synchronous path.
 type RaftProposer struct {
 	nh      *dragonboat.NodeHost
 	shardID uint64
@@ -58,7 +58,7 @@ func (p *RaftProposer) SetEpoch(epoch uint64) {
 func (p *RaftProposer) LeaderEpoch() uint64 { return p.leaderEpoch.Load() }
 
 // ProposeSelf appends a self-proposal command to the Raft log. Used by the
-// leader-side TimerService and (Phase 2) Invoker.
+// leader-side TimerService and Invoker.
 func (p *RaftProposer) ProposeSelf(ctx context.Context, cmd *enginev1.Command) error {
 	epoch := p.leaderEpoch.Load()
 	seq := p.nextSeq.Add(1)
@@ -69,7 +69,7 @@ func (p *RaftProposer) ProposeSelf(ctx context.Context, cmd *enginev1.Command) e
 // ProposeIngress appends a command from an external producer (e.g., the
 // ingress gateway). producerID + seq must be monotonic per producer so the
 // dedup table can reject retries; callers typically use a UUID + nanosecond
-// timestamp for "good enough" uniqueness in Phase 1.
+// timestamp for "good enough" uniqueness.
 func (p *RaftProposer) ProposeIngress(ctx context.Context, producerID string, seq uint64, cmd *enginev1.Command) error {
 	env := buildIngressEnvelope(producerID, seq, cmd)
 	return p.propose(ctx, env)

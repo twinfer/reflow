@@ -30,17 +30,17 @@ type IngressProposer interface {
 // delivery) when the receiver claims it is not the destination shard's
 // leader; the OutboxService retries on the next Rebuild.
 //
-// Phase 4.1: the durable pop of the producer-side row happens via the
-// reciprocal OutboxAck that flows back over Raft after the receiver
-// applies — the Sender returning nil only means "the receiver accepted
-// responsibility for proposing", not "row is popped".
+// The durable pop of the producer-side row happens via the reciprocal
+// OutboxAck that flows back over Raft after the receiver applies — the
+// Sender returning nil only means "the receiver accepted responsibility
+// for proposing", not "row is popped".
 type CrossShardSender interface {
 	Send(ctx context.Context, destShardID uint64, producerID string, seq uint64, cmd *enginev1.Command) error
 }
 
 // OutboxService is the leader-only loop that drains the OutboxTable and
-// re-injects each row through the Raft log as a fresh Command. Phase 2
-// single-partition: sender and receiver are the same shard, so the
+// re-injects each row through the Raft log as a fresh Command. In the
+// single-partition case, sender and receiver are the same shard, so the
 // receiver's apply path pops the row in the same batch it applies.
 //
 // Crash-safety: SyncPropose returning success means the receiver applied,
@@ -248,10 +248,9 @@ func (o *OutboxService) pendingLen() int {
 
 // outboxEnvelopeToCommand reshapes an OutboxEnvelope into the Command kind
 // the receiver's apply path consumes. Returns nil for unknown variants.
-//
-// Phase 4.1 adds DeliverCallResult and OutboxAck variants. Both are
-// shipped as Command oneof variants of their own — they only land on
-// shards that own a partition state machine, never on shard 0.
+// DeliverCallResult and OutboxAck are shipped as Command oneof variants
+// of their own — they only land on shards that own a partition state
+// machine, never on shard 0.
 func outboxEnvelopeToCommand(env *enginev1.OutboxEnvelope) *enginev1.Command {
 	switch k := env.GetKind().(type) {
 	case *enginev1.OutboxEnvelope_Invoke:

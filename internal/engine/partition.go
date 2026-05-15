@@ -21,8 +21,8 @@ import (
 )
 
 // LeadershipObserver is the subset of leadership behavior the FSM needs. It
-// is intentionally narrow; Step 11 supplies a concrete *Leadership that
-// implements it.
+// is intentionally narrow; the concrete *Leadership implements it and is
+// wired by Host.StartPartition.
 type LeadershipObserver interface {
 	IsLeader() bool
 	OnAnnounceLeader(cmd *enginev1.AnnounceLeader)
@@ -42,7 +42,7 @@ type PartitionConfig struct {
 	// Partitioner maps a partition key to a destination shard id. Used to
 	// stamp destination_shard_id on every outbox row the apply path
 	// produces. Zero value (NumShards=0) yields same-shard for everything,
-	// preserving Phase 1-3.5 single-partition behavior. Phase 4.1.
+	// preserving single-partition behavior for single-node deployments.
 	Partitioner routing.Partitioner
 
 	// Metrics, when non-nil, is observed on every applied command:
@@ -52,23 +52,18 @@ type PartitionConfig struct {
 	Metrics *observability.Metrics
 
 	// OnSnapshotPersisted, when non-nil, is invoked after a successful
-	// SaveSnapshot. It runs inline on the dragonboat snapshot
-	// goroutine and MUST NOT block — the intended pattern is a
-	// non-blocking send to a buffered-1 trigger channel consumed by
-	// the snapshot producer. Used by Phase 5 to opportunistically
-	// archive on real snapshot events instead of only on the
-	// producer's periodic tick.
+	// SaveSnapshot. It runs inline on the dragonboat snapshot goroutine
+	// and MUST NOT block — the intended pattern is a non-blocking send to
+	// a buffered-1 trigger channel consumed by the snapshot producer,
+	// allowing opportunistic archiving on real snapshot events.
 	OnSnapshotPersisted func()
 }
 
 // Partition is the dragonboat IOnDiskStateMachine for one reflow partition.
 //
-// Mirrors restate crates/worker/src/partition/state_machine/mod.rs:305-343
-// (the apply path) and partition/mod.rs:1049-1063 (the dedup check).
-//
 // Important contract notes (dragonboat v4 statemachine/disk.go):
-//   - Update returning an error halts the shard (line 113). Logical/unknown
-//     command bugs MUST be logged-and-continued.
+//   - Update returning an error halts the shard. Logical/unknown command bugs
+//     MUST be logged-and-continued, never returned.
 //   - Update is serial; Lookup and SaveSnapshot may run concurrently.
 //   - Open MUST return the highest applied Raft index from storage.
 type Partition struct {
@@ -210,7 +205,7 @@ func (p *Partition) Update(entries []statemachine.Entry) ([]statemachine.Entry, 
 		// same shard.
 		//
 		//   - Same-shard outbox: pop the local row in the same batch so
-		//     apply + pop are atomic (Phase 1-3 behavior).
+		//     apply + pop are atomic.
 		//   - Cross-shard outbox: the producer's row lives on a different
 		//     shard's OutboxTable, so we cannot pop it here. Instead we
 		//     enqueue an OutboxAck on the local outbox addressed back to
@@ -455,14 +450,14 @@ func (p *Partition) onInvoke(
 	id := cmd.GetInvocationId()
 	target := cmd.GetTarget()
 
-	// Phase 3 idempotency dedup. When idempotency_key is set, the first
+	// Idempotency dedup. When idempotency_key is set, the first
 	// InvokeCommand that lands wins; later submissions with the same
 	// (service, handler, object_key, idempotency_key) tuple are dropped
 	// silently. The new InvocationId is NOT registered — the caller that
 	// minted it relied on ingress's optimistic LookupIdempotency to
 	// surface the prior id before propose. Late losers polling on the
 	// minted-but-dropped id will time out; cross-node races can be
-	// hardened in a future phase by writing a redirect status row.
+	// hardened in a future improvement by writing a redirect status row.
 	if ik := cmd.GetIdempotencyKey(); ik != "" {
 		idemT := tables.IdempotencyTable{S: batch}
 		prior, ierr := idemT.Get(target.GetServiceName(), target.GetHandlerName(), target.GetObjectKey(), ik)
@@ -599,12 +594,12 @@ func (p *Partition) onInvokerEffect(
 					InvocationId: calleeID,
 					Target:       e.Call.GetTarget(),
 					Input:        e.Call.GetInput(),
-					// Phase 3: forward the caller-supplied idempotency_key so
-					// the callee's onInvoke runs the dedup against
-					// (service, handler, object_key, idempotency_key).
+					// Forward the caller-supplied idempotency_key so the
+					// callee's onInvoke runs dedup against (service, handler,
+					// object_key, idempotency_key).
 					IdempotencyKey: e.Call.GetIdempotencyKey(),
-					// Phase 2.5: stamp parent_link so the callee's Completed
-					// apply arm can journal JECallResult back on the parent.
+					// Stamp parent_link so the callee's Completed apply arm
+					// can journal JECallResult back on the parent.
 					ParentLink: &enginev1.ParentLink{
 						ParentId:  id,
 						CallIndex: entry.GetIndex(),
@@ -615,8 +610,8 @@ func (p *Partition) onInvokerEffect(
 				return fmt.Errorf("onInvokerEffect: outbox append (call): %w", err)
 			}
 		case *enginev1.JournalEntry_SetState:
-			// Phase 3 — persist state rows so eager preload on the next
-			// session start can serve GetState without a journal scan.
+			// Persist state rows so eager preload on the next session start
+			// can serve GetState without a journal scan.
 			if t := statusTarget(cur); t != nil {
 				if err := (tables.StateTable{S: batch}).Set(batch, t, e.SetState.GetKey(), e.SetState.GetValue()); err != nil {
 					return fmt.Errorf("onInvokerEffect: state set: %w", err)
@@ -635,11 +630,11 @@ func (p *Partition) onInvokerEffect(
 					"status", fmt.Sprintf("%T", cur.GetStatus()))
 			}
 		case *enginev1.JournalEntry_ClearAllState:
-			// Phase 3 — bulk-wipe every state row scoped to the invocation's
-			// (service, object_key). Target is extracted from the active
-			// status (Invoked/Suspended); Completed/Free/Scheduled here
-			// would indicate a divergent SDK and is dropped with a warning
-			// (we still append the journal entry above for replay parity).
+			// Bulk-wipe every state row scoped to the invocation's (service,
+			// object_key). Target is extracted from the active status
+			// (Invoked/Suspended); Completed/Free/Scheduled here would
+			// indicate a divergent SDK and is dropped with a warning (we
+			// still append the journal entry above for replay parity).
 			if t := statusTarget(cur); t != nil {
 				if err := (tables.StateTable{S: batch}).ClearObject(batch, t); err != nil {
 					return fmt.Errorf("onInvokerEffect: state clear-all: %w", err)
@@ -666,7 +661,7 @@ func (p *Partition) onInvokerEffect(
 		// The SDK has produced the outcome of a ctx.Run body; persist it as
 		// a JERun journal entry at the SDK-allocated index.
 		//
-		// Phase 3: when retryable=true the apply arm computes a backoff via
+		// When retryable=true the apply arm computes a backoff via
 		// NextRetryDelay and schedules a retry timer (reusing TimerTable;
 		// onTimerFired peeks the journal at sleep_index to skip the usual
 		// JESleepResult write when the entry is a JERun). If the policy is
@@ -764,11 +759,10 @@ func (p *Partition) onInvokerEffect(
 			nowMs,
 		)
 	case *enginev1.InvokerEffect_SignalDelivered:
-		// Phase 2: receive-side journal entry is deferred; the FSM still
-		// transitions state so a suspended invocation wakes up. CompletionID
-		// is left at 0 — the Invoker session inspects its waker queue on
-		// resume rather than relying on the notification carrying a real
-		// index. Step 11 may revisit.
+		// Receive-side journal entry is deferred; the FSM still transitions
+		// state so a suspended invocation wakes up. CompletionID is left at
+		// 0 — the Invoker session inspects its waker queue on resume rather
+		// than relying on the notification carrying a real index.
 		next, actions, err = transitionOnSignalDelivered(
 			id, cur, 0,
 			k.SignalDelivered.GetSignalName(),
@@ -777,9 +771,9 @@ func (p *Partition) onInvokerEffect(
 		)
 	case *enginev1.InvokerEffect_Completed:
 		next, actions, err = transitionOnComplete(id, cur, k.Completed, nowMs)
-		// Phase 2.5 — deliver JECallResult to the parent invocation if this
-		// callee was spawned via ctx.Call. Extract parent_link from either
-		// Invoked or Suspended (both are valid pre-Completed states; see
+		// Deliver JECallResult to the parent invocation if this callee was
+		// spawned via ctx.Call. Extract parent_link from either Invoked or
+		// Suspended (both are valid pre-Completed states; see
 		// transitionOnComplete's race-safety note). Completed → Completed
 		// is idempotent and must NOT re-deliver — that's why we read from
 		// cur (the prior status) rather than the new Completed status.
@@ -807,10 +801,10 @@ func (p *Partition) onInvokerEffect(
 				}
 				actions = append(actions, parentActs...)
 			}
-			// Phase 3 — release the per-key VO lease and activate the next
-			// queued invocation, if any. Guarded by completedTarget != nil
-			// so replay (cur already Completed) is a no-op: the prior
-			// Completed status carries no target on this code path.
+			// Release the per-key VO lease and activate the next queued
+			// invocation, if any. Guarded by completedTarget != nil so
+			// replay (cur already Completed) is a no-op: the prior Completed
+			// status carries no target on this code path.
 			if completedTarget.GetObjectKey() != "" {
 				leaseActs, rerr := p.releaseKeyLease(batch, store, completedTarget)
 				if rerr != nil {
@@ -873,7 +867,7 @@ func (p *Partition) onInvokerEffect(
 // (parentShard == localShard) the call applies inline via
 // applyCallResultToParent (loads parent status, appends JECallResult,
 // runs transitionOnCallResultDelivered, persists). When the parent lives
-// on a different partition (Phase 4.1) the call enqueues an
+// on a different partition the call enqueues an
 // OutboxEnvelope_DeliverCallResult on the local outbox; the destination
 // partition's apply path will run the same logic via onDeliverCallResult.
 //
@@ -971,8 +965,7 @@ func (p *Partition) applyCallResultToParent(
 
 // onDeliverCallResult is the cross-partition apply arm. The DeliverCallResult
 // command landed on the parent's shard via the outbox → Delivery gRPC →
-// Raft pipeline; from here on the logic is identical to the same-shard
-// path. Phase 4.1.
+// Raft pipeline; from here on the logic is identical to the same-shard path.
 func (p *Partition) onDeliverCallResult(
 	batch storage.Batch,
 	_ storage.Store,
@@ -1021,12 +1014,12 @@ func (p *Partition) onOutboxAck(batch storage.Batch, store storage.Store, ack *e
 	return nil
 }
 
-// releaseKeyLease is the Phase 3 companion to the VO gate. When a keyed
-// invocation transitions to Completed, this fires vobjComplete on the
-// per-key FSM and writes the resulting KeyLeaseStatus back into the same
-// Pebble batch. If a queued invocation was waiting, the FSM's onActivate
-// hook captures an ActInvoke for it; the caller appends those actions to
-// the apply path's collector.
+// releaseKeyLease handles VO gate cleanup. When a keyed invocation
+// transitions to Completed, this fires vobjComplete on the per-key FSM
+// and writes the resulting KeyLeaseStatus back into the same Pebble
+// batch. If a queued invocation was waiting, the FSM's onActivate hook
+// captures an ActInvoke for it; the caller appends those actions to the
+// apply path's collector.
 //
 // Idempotent on replay: the caller guards entry via cur.GetStatus() so a
 // second Completed apply pass (which finds cur already Completed) never
@@ -1063,7 +1056,7 @@ func (p *Partition) releaseKeyLease(
 // statusTarget extracts the InvocationTarget from a status. Returns nil
 // for Free/Completed (no active target) and for nil/zero statuses. Used
 // by apply arms that need the (service, object_key) tuple of the running
-// invocation, e.g. JEClearAllState. Phase 3.
+// invocation, e.g. JEClearAllState.
 func statusTarget(cur *enginev1.InvocationStatus) *enginev1.InvocationTarget {
 	switch s := cur.GetStatus().(type) {
 	case *enginev1.InvocationStatus_Scheduled:
@@ -1080,10 +1073,10 @@ func statusTarget(cur *enginev1.InvocationStatus) *enginev1.InvocationTarget {
 // mintCalleeInvocationID derives a deterministic InvocationId for the
 // callee of a JECall, hashing the parent uuid with the JECall journal
 // index. Determinism keeps the result identical across replay on every
-// replica. Phase 4.1: partition_key derives from the target tuple
-// (service, object_key) so cross-partition Call dispatch routes the
-// callee to its owning partition (single-partition deployments still
-// degenerate to the local shard via the Partitioner fallback).
+// replica. The partition_key is derived from the target tuple (service,
+// object_key) so cross-partition Call dispatch routes the callee to its
+// owning partition (single-partition deployments degenerate to the local
+// shard via the Partitioner fallback).
 func mintCalleeInvocationID(parent *enginev1.InvocationId, idx uint32, target *enginev1.InvocationTarget) *enginev1.InvocationId {
 	h := sha256.New()
 	h.Write(parent.GetUuid())
@@ -1122,9 +1115,9 @@ func (p *Partition) onTimerFired(
 		return fmt.Errorf("onTimerFired: delete timer: %w", delErr)
 	}
 
-	// Phase 3: distinguish a Sleep timer from a Run-retry timer. Sleep
-	// timers anchor on a JESleep at sleep_index and require a JESleepResult
-	// at sleep_index+1; retry timers anchor on a JERun at sleep_index
+	// Distinguish a Sleep timer from a Run-retry timer. Sleep timers
+	// anchor on a JESleep at sleep_index and require a JESleepResult at
+	// sleep_index+1; retry timers anchor on a JERun at sleep_index
 	// (written by the JERunProposal apply arm) and write no follow-up
 	// journal entry — the SDK's fast-replay sees the JERun{retryable=true}
 	// directly and re-invokes fn.
@@ -1205,8 +1198,9 @@ func (p *Partition) onPurge(
 	return nil
 }
 
-// Lookup is invoked by dragonboat for linearizable reads. Phase 1 supports a
-// small fixed set of typed queries.
+// Lookup is the sealed marker interface for linearizable-read query types
+// accepted by (*Partition).Lookup. Implement isLookup() to add a new
+// query variant.
 type Lookup interface{ isLookup() }
 
 // LookupInvocation returns the InvocationStatus for the given id.
@@ -1220,8 +1214,8 @@ type LookupAppliedIndex struct{}
 func (LookupAppliedIndex) isLookup() {}
 
 // LookupAwakeable returns the AwakeableEntry for an id, or
-// storage.ErrNotFound. Used by ingress to find the partition that owns an
-// outstanding awakeable. Phase 2.
+// storage.ErrNotFound. Used by ingress to find the partition that owns
+// an outstanding awakeable.
 type LookupAwakeable struct{ ID string }
 
 func (LookupAwakeable) isLookup() {}
@@ -1229,7 +1223,7 @@ func (LookupAwakeable) isLookup() {}
 // LookupIdempotency returns the InvocationId previously bound to a
 // (service, handler, object_key, idempotency_key) tuple. Result is
 // *enginev1.InvocationId or nil if not bound. Used by ingress to convert
-// a duplicate SubmitInvocation into a no-op + return-prior-id. Phase 3.
+// a duplicate SubmitInvocation into a no-op + return-prior-id.
 type LookupIdempotency struct {
 	Service        string
 	Handler        string
@@ -1241,7 +1235,7 @@ func (LookupIdempotency) isLookup() {}
 
 // LookupState resolves a single state value. Result is StateLookupResult
 // so callers can distinguish "absent" (Present=false) from "present-but-
-// empty" (Present=true, len(Value)==0). Phase 2.
+// empty" (Present=true, len(Value)==0).
 type LookupState struct {
 	Target *enginev1.InvocationTarget
 	Key    string
@@ -1255,7 +1249,9 @@ type StateLookupResult struct {
 	Present bool
 }
 
-// Lookup implements statemachine.IOnDiskStateMachine.
+// Lookup performs a linearizable read against the partition's on-disk store.
+// query must be one of the Lookup marker types defined in this package;
+// an unrecognised type returns an error. Implements statemachine.IOnDiskStateMachine.
 func (p *Partition) Lookup(query any) (any, error) {
 	store := p.cfg.Snapshotter.Store()
 	if store == nil {

@@ -200,7 +200,7 @@ func TestDerivedNodeHostID_IsValidUUID(t *testing.T) {
 
 // TestInitialMembers_FromPeers verifies StartPartition will
 // receive a NodeHostID-keyed initialMembers map when Peers is populated.
-// Single-node fallback is exercised by every existing Phase 1-3 test.
+// Single-node fallback is exercised by every existing single-node test.
 func TestInitialMembers_FromPeers(t *testing.T) {
 	h := &Host{cfg: HostConfig{
 		NodeID: 2,

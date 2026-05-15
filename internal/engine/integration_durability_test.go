@@ -79,7 +79,7 @@ func TestSingleNodeReplayAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "node1")
 
-	// Phase A: bring up node, drive an invocation to completion through
+	// Step A: bring up node, drive an invocation to completion through
 	// Input -> Sleep -> SleepResult -> Output -> Completed.
 	h, r, raftAddr := bringUpSingleNode(t, dataDir, "")
 	_ = raftAddr
@@ -145,7 +145,7 @@ func TestSingleNodeReplayAcrossRestart(t *testing.T) {
 		t.Fatalf("invocation did not reach Completed pre-restart")
 	}
 
-	// Phase B: close and reopen.
+	// Step B: close and reopen.
 	if err := h.Close(); err != nil {
 		t.Fatal(err)
 	}

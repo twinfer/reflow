@@ -12,8 +12,8 @@ import (
 )
 
 // awaitCompleted polls SyncRead until the invocation reaches Completed
-// or the deadline expires. Used by Phase 2 wiring tests that don't yet
-// have an ingress-side response channel.
+// or the deadline expires. Used by wiring tests that don't yet have an
+// ingress-side response channel.
 func awaitCompleted(t *testing.T, h *engine.Host, shardID uint64, id *enginev1.InvocationId, timeout time.Duration) *enginev1.Completed {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

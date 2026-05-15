@@ -38,11 +38,10 @@ type Config struct {
 	Snapshotter SnapshotterRef
 	Leadership  LeadershipObserver
 	Log         *slog.Logger
-	// OnBecomeLeaderTable, if non-nil, is invoked after each Update batch
-	// commits whenever the metadata shard's PartitionTable has been
-	// observed for the first time on this replica. Phase 4.2 will use
-	// this to drive ownership-driven shard start/stop. Phase 4.1 it is
-	// unused except by tests.
+	// OnPartitionTable, if non-nil, is invoked after each Update batch
+	// commits when that batch contained an UpdatePartitionTable command.
+	// The argument is the freshly applied table. Intended to drive
+	// ownership-based shard start/stop on the metadata-leader's host.
 	OnPartitionTable func(*enginev1.PartitionTable)
 }
 
@@ -117,11 +116,11 @@ func (f *FSM) Update(entries []statemachine.Entry) ([]statemachine.Entry, error)
 		}
 
 		// Shard 0 accepts only SelfProposal dedup (AnnounceLeader from
-		// runCandidate). RegisterNode / UpdatePartitionTable in Phase 4.1
-		// are also proposed as SelfProposal by the metadata leader, so
-		// dedup is uniformly self-epoch + seq. We don't import the dedup
-		// table here: there's no cross-shard ingress on shard 0 in 4.1.
-		// Phase 4.2 introduces arbitrary-source proposals (admin CLI).
+		// runCandidate). RegisterNode / UpdatePartitionTable are also
+		// proposed as SelfProposal by the metadata leader, so dedup is
+		// uniformly self-epoch + seq. The dedup table is not imported here:
+		// there is no cross-shard ingress on shard 0 currently; admin CLI
+		// proposals would require arbitrary-source dedup if introduced.
 
 		applied, err := f.applyCommand(batch, &env, ent.Index, store)
 		if err != nil {

@@ -13,7 +13,6 @@ import (
 // apply path's onInvoke consults this table on every InvokeCommand that
 // carries a non-empty idempotency_key — a hit means a prior submission
 // already created the invocation, and the new InvocationId is dropped.
-// Phase 3.
 type IdempotencyTable struct{ S storage.Reader }
 
 // Get returns the prior InvocationId for the tuple. Returns (nil, nil)

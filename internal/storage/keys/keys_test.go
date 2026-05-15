@@ -372,7 +372,7 @@ func TestIdempotencyKey_DeterministicAndSensitive(t *testing.T) {
 	if bytes.Equal(k1, k2) {
 		t.Errorf("adjacent-field aliasing: %x", k1)
 	}
-	// Empty object_key vs absent are the same (Phase 3 has only one form).
+	// Empty object_key vs absent are the same (only one canonical form).
 	// Distinct idempotency_keys differ.
 	if bytes.Equal(IdempotencyKey("S", "h", "o", "k1"), IdempotencyKey("S", "h", "o", "k2")) {
 		t.Errorf("distinct idempotency keys collided")

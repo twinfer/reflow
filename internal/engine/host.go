@@ -30,10 +30,9 @@ import (
 )
 
 // HostConfig configures a reflow node (a process hosting one or more
-// partitions). Phase 1 single-node deployments use NodeID=1 with Peers
-// empty; Phase 4.1 multi-node deployments populate Peers with every
-// cluster member (including self) and supply gossip + Delivery endpoint
-// addresses.
+// partitions). Single-node deployments use NodeID=1 with Peers empty;
+// multi-node deployments populate Peers with every cluster member
+// (including self) and supply gossip + Delivery endpoint addresses.
 type HostConfig struct {
 	// NodeID identifies this node in the cluster. Must be > 0.
 	NodeID uint64
@@ -52,7 +51,7 @@ type HostConfig struct {
 	// Handlers is the public SDK registry the leader-side Invoker resolves
 	// against on ActInvoke dispatch. Nil is acceptable — the partition
 	// builds an empty registry and any ActInvoke falls through with a
-	// "no handler" warning. Phase 2.
+	// "no handler" warning.
 	Handlers *sdk.Registry
 
 	// Peers is the static cluster membership known at bootstrap. When
@@ -60,7 +59,7 @@ type HostConfig struct {
 	// NodeHostID-keyed targets are used, and every shard the node hosts
 	// starts with initialMembers covering the full peer set. The current
 	// node's NodeID must appear in Peers. When empty the Host runs
-	// single-node (Phase 1-3.5 behavior: initialMembers={self}). Phase 4.1.
+	// single-node (initialMembers={self}).
 	Peers []Peer
 	// GossipBindAddr is the address dragonboat's gossip layer binds to
 	// (host:port). Required when Peers is non-empty.
@@ -77,7 +76,7 @@ type HostConfig struct {
 	// OutboxService for envelopes whose destination_shard_id is non-
 	// local. Wired up to an *internal/engine/delivery.Client in
 	// multi-node deployments; nil in single-node deployments (where no
-	// outbox row ever targets a remote shard). Phase 4.1.
+	// outbox row ever targets a remote shard).
 	CrossShardSender CrossShardSender
 
 	// NumPartitionShards is the total number of partition shards in the
@@ -93,20 +92,18 @@ type HostConfig struct {
 	Metrics *observability.Metrics
 
 	// OnSnapshotPersisted, when non-nil, is invoked after a successful
-	// Partition.SaveSnapshot. The shardID identifies which partition
-	// just snapshotted. Runs on the dragonboat snapshot goroutine —
-	// MUST be non-blocking (the conventional implementation is a
-	// non-blocking send into a buffered-1 channel consumed by the
-	// snapshot archive producer). Phase 5.
+	// Partition.SaveSnapshot. The shardID identifies which partition just
+	// snapshotted. Runs on the dragonboat snapshot goroutine — MUST be
+	// non-blocking (the conventional implementation is a non-blocking send
+	// into a buffered-1 channel consumed by the snapshot archive producer).
 	OnSnapshotPersisted func(shardID uint64)
 
 	// PebbleOptions, when non-nil, is consulted on each per-shard Pebble
 	// open (both metadata shard 0 and partition shards 1..N). The
 	// returned *pebble.Options is passed straight to pebble.Open; nil
-	// means "use Pebble defaults" (the production path). The hook
-	// exists to let the load/chaos harness inject a vfs.FS wrapper
-	// (slow-disk fault injection) or non-default tunables without
-	// having to fork the engine. Phase 5.
+	// means "use Pebble defaults" (the production path). The hook exists
+	// to let the load/chaos harness inject a vfs.FS wrapper (slow-disk
+	// fault injection) or non-default tunables without forking the engine.
 	PebbleOptions func(shardID uint64) *pebble.Options
 
 	// JoinExisting, when true, starts every shard with
@@ -133,7 +130,6 @@ type HostConfig struct {
 // left empty; reflow then derives a deterministic ID from NodeID. The
 // derivation is identical on every node, so the static map of
 // NodeID → NodeHostID is consistent cluster-wide without coordination.
-// Phase 4.1.
 type Peer struct {
 	NodeID     uint64
 	RaftAddr   string
@@ -235,7 +231,7 @@ func NewHost(cfg HostConfig) (*Host, error) {
 // applyMultiNodeConfig wires the dragonboat NodeHostConfig fields that
 // turn on cross-host gossip + NodeHostID-keyed targets, and packs the
 // reflow gRPC Delivery endpoint into the gossip Meta blob so peers can
-// resolve it via INodeHostRegistry.GetMeta. Phase 4.1.
+// resolve it via INodeHostRegistry.GetMeta.
 func applyMultiNodeConfig(nhConfig *config.NodeHostConfig, cfg *HostConfig) error {
 	self := findPeer(cfg.Peers, cfg.NodeID)
 	if self == nil {
@@ -296,8 +292,7 @@ func findPeer(peers []Peer, nodeID uint64) *Peer {
 }
 
 // NodeHost returns the underlying dragonboat NodeHost. Exposed for tests and
-// administrative tools (status queries, manual membership changes in later
-// phases). Production code should prefer Host-provided methods.
+// administrative tooling. Production code should prefer Host-provided methods.
 func (h *Host) NodeHost() *dragonboat.NodeHost { return h.nh }
 
 // pebbleOptionsFor returns the per-shard Pebble options, or nil when
@@ -314,7 +309,7 @@ func (h *Host) pebbleOptionsFor(shardID uint64) *pebble.Options {
 // StartPartition call will hand to its OutboxService. Must be called
 // before StartPartition for multi-node deployments — partitions that
 // fail to receive a Sender will refuse to dispatch any cross-shard
-// outbox row at runtime. No-op when Peers is empty (single-node). Phase 4.1.
+// outbox row at runtime. No-op when Peers is empty (single-node).
 func (h *Host) SetCrossShardSender(s CrossShardSender) {
 	h.mu.Lock()
 	h.cfg.CrossShardSender = s
@@ -322,9 +317,9 @@ func (h *Host) SetCrossShardSender(s CrossShardSender) {
 }
 
 // StartMetadataShard opens the metadata-shard store, registers the cluster
-// FSM with dragonboat, and wires the metadata runner. Phase 4.1: callers
-// pass shardID=0. Only valid when HostConfig.Peers is non-empty; single-
-// node deployments have no need for the metadata group.
+// FSM with dragonboat, and wires the metadata runner. Callers pass
+// shardID=0. Only valid when HostConfig.Peers is non-empty; single-node
+// deployments have no need for the metadata group.
 func (h *Host) StartMetadataShard() (*MetadataRunner, error) {
 	const shardID uint64 = 0
 	if len(h.cfg.Peers) == 0 {
@@ -417,7 +412,7 @@ func (h *Host) MetadataRunner() *MetadataRunner {
 
 // PartitionTable performs a linearizable read of the cluster's partition
 // table from shard 0. Returns nil with no error when the table has not yet
-// been written (i.e. shard 0 has not bootstrapped). Phase 4.1.
+// been written (i.e. shard 0 has not bootstrapped).
 func (h *Host) PartitionTable(ctx context.Context) (*enginev1.PartitionTable, error) {
 	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupPartitionTable{})
 	if err != nil {
@@ -444,7 +439,7 @@ func (h *Host) NodeID() uint64 { return h.cfg.NodeID }
 // is created at dstDir holding the snapshot files.
 //
 // Wraps nh.SyncRequestSnapshot so callers (admin RPCs, snapshot
-// producers) do not import dragonboat. Phase 4.2.
+// producers) do not import dragonboat.
 func (h *Host) SnapshotPartitionToDir(ctx context.Context, shardID uint64, dstDir string) (uint64, error) {
 	if h.nh == nil {
 		return 0, errors.New("host: NodeHost not initialized")
@@ -455,7 +450,6 @@ func (h *Host) SnapshotPartitionToDir(ctx context.Context, shardID uint64, dstDi
 
 // Membership performs a linearizable read of shard 0's membership table.
 // Returns an empty slice (not nil) when no rows have been registered yet.
-// Phase 4.2.
 func (h *Host) Membership(ctx context.Context) ([]*enginev1.NodeMembership, error) {
 	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupMembership{})
 	if err != nil {
@@ -616,7 +610,7 @@ func (h *Host) Partition(shardID uint64) *PartitionRunner {
 }
 
 // Partitioner returns the cluster's routing partitioner. Sourced from
-// HostConfig.NumPartitionShards; cluster-stable in Phase 4.1.
+// HostConfig.NumPartitionShards.
 func (h *Host) Partitioner() routing.Partitioner {
 	return routing.Partitioner{NumShards: h.cfg.NumPartitionShards}
 }
@@ -675,18 +669,17 @@ func (h *Host) onPartitionTable(pt *enginev1.PartitionTable) {
 }
 
 // RunnerView is the small-interface view of a *PartitionRunner used by
-// the Phase 4.1 Delivery server. Declared here so the delivery package
-// can consume it without importing the heavy PartitionRunner type.
+// the Delivery server. Declared here so the delivery package can consume
+// it without importing the heavy PartitionRunner type.
 type RunnerView interface {
 	IsLeader() bool
 	Proposer() *RaftProposer
 }
 
-// PartitionRunner is the small-interface accessor used by Phase 4.1's
-// Delivery server (it accepts a runner satisfying a narrow IsLeader +
-// Proposer surface). Returns nil when shardID is not hosted on this node;
-// callers must treat nil as "not leader" so the sender re-resolves via
-// gossip.
+// PartitionRunner returns the small-interface view used by the Delivery
+// server (it accepts a runner satisfying a narrow IsLeader + Proposer
+// surface). Returns nil when shardID is not hosted on this node; callers
+// must treat nil as "not leader" so the sender re-resolves via gossip.
 func (h *Host) PartitionRunner(shardID uint64) RunnerView {
 	r := h.Partition(shardID)
 	if r == nil {
@@ -761,7 +754,7 @@ func (h *Host) AwaitLeader(ctx context.Context, shardID uint64) error {
 // initialMembers builds the dragonboat StartOnDiskReplica seed map.
 // Multi-node clusters (Peers populated) use NodeHostID targets so
 // dragonboat's gossip can resolve them to live RaftAddresses; single-node
-// clusters keep the Phase 1 behavior of self-only RaftAddress targets.
+// clusters use a self-only RaftAddress target.
 func (h *Host) initialMembers() map[uint64]dragonboat.Target {
 	if len(h.cfg.Peers) == 0 {
 		return map[uint64]dragonboat.Target{h.cfg.NodeID: dragonboat.Target(h.cfg.RaftAddr)}
@@ -789,7 +782,7 @@ func (h *Host) startMembers() (map[uint64]dragonboat.Target, bool) {
 // shard, sourced from dragonboat gossip (ShardView). Returns (0, false)
 // when gossip is off (single-node) or no leader is known yet. The result
 // is advisory — callers must still tolerate NotLeader responses from
-// the Delivery RPC and re-resolve. Phase 4.1.
+// the Delivery RPC and re-resolve.
 func (h *Host) PartitionLeaderHint(shardID uint64) (uint64, bool) {
 	if h.nh == nil {
 		return 0, false
@@ -808,7 +801,7 @@ func (h *Host) PartitionLeaderHint(shardID uint64) (uint64, bool) {
 // NodeEndpoint returns the reflow Delivery gRPC endpoint advertised via
 // gossip NodeHostMeta by the peer with the given NodeID. Returns
 // ("", false) when gossip is off, the peer is unknown, or its Meta blob
-// has not yet propagated. Phase 4.1.
+// has not yet propagated.
 func (h *Host) NodeEndpoint(nodeID uint64) (string, bool) {
 	if h.nh == nil {
 		return "", false

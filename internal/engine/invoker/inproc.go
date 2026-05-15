@@ -19,7 +19,7 @@ import (
 // it back to the caller.
 var errNotImplemented = errors.New("reflow: ctx operation not yet implemented")
 
-// invocationContext is the in-process implementation of sdk.Context used
+// inprocContext is the in-process implementation of sdk.Context used
 // by the Go SDK. One instance lives per session run (every replay
 // produces a fresh struct so journalIndex and the per-handler counter
 // stay snapshot-pure).
@@ -37,7 +37,7 @@ var errNotImplemented = errors.New("reflow: ctx operation not yet implemented")
 // progress through the proposer but do not back-update the snapshot.
 // That is fine because each handler-allocated index is used at most
 // once: subsequent ctx calls always advance past it.
-type invocationContext struct {
+type inprocContext struct {
 	s            *session
 	input        []byte
 	journalIndex map[uint32]*enginev1.JournalEntry
@@ -56,11 +56,11 @@ type invocationContext struct {
 	stateCache map[string][]byte
 }
 
-// newInvocationContext constructs an invocationContext for one session
+// newInprocContext constructs an inprocContext for one session
 // run. nextIdx starts at 1 — index 0 is reserved for JEInput, which is
 // not user-allocated.
-func newInvocationContext(s *session, input []byte, journalIndex map[uint32]*enginev1.JournalEntry, stateCache map[string][]byte) *invocationContext {
-	return &invocationContext{
+func newInprocContext(s *session, input []byte, journalIndex map[uint32]*enginev1.JournalEntry, stateCache map[string][]byte) *inprocContext {
+	return &inprocContext{
 		s:            s,
 		input:        input,
 		journalIndex: journalIndex,
@@ -71,19 +71,19 @@ func newInvocationContext(s *session, input []byte, journalIndex map[uint32]*eng
 
 // Context returns the session-scoped go context. Cancelled when the
 // session is torn down (abort, leader-loss, host shutdown).
-func (c *invocationContext) Context() context.Context { return c.s.ctx }
+func (c *inprocContext) Context() context.Context { return c.s.ctx }
 
 // Input returns the original input bytes. Same value on every replay.
-func (c *invocationContext) Input() []byte { return c.input }
+func (c *inprocContext) Input() []byte { return c.input }
 
 // InvocationID returns the durable identifier. Stable across replays.
-func (c *invocationContext) InvocationID() *enginev1.InvocationId { return c.s.id }
+func (c *inprocContext) InvocationID() *enginev1.InvocationId { return c.s.id }
 
 // allocSlot reserves a contiguous range of entry indices [start,
 // start+span). For completable ops span=2 (command + result); for
 // write-only ops span=1. Returns ok=false when the context is already
 // suspended — the caller should treat that as sdk.ErrSuspended.
-func (c *invocationContext) allocSlot(span uint32) (start uint32, ok bool) {
+func (c *inprocContext) allocSlot(span uint32) (start uint32, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.suspended {
@@ -102,7 +102,7 @@ func (c *invocationContext) allocSlot(span uint32) (start uint32, ok bool) {
 // unresolved children's tokens in a single call so the engine surfaces
 // them all on InvocationSuspended.awaiting_on — any one resolution
 // wakes the handler. Single-token call sites still work unchanged.
-func (c *invocationContext) suspend(tokens ...string) error {
+func (c *inprocContext) suspend(tokens ...string) error {
 	c.mu.Lock()
 	c.suspended = true
 	c.suspendedOn = append(c.suspendedOn, tokens...)
@@ -112,7 +112,7 @@ func (c *invocationContext) suspend(tokens ...string) error {
 
 // lookupEntry returns the journal entry at idx, or nil. Read-only on the
 // snapshot — safe without the mutex.
-func (c *invocationContext) lookupEntry(idx uint32) *enginev1.JournalEntry {
+func (c *inprocContext) lookupEntry(idx uint32) *enginev1.JournalEntry {
 	return c.journalIndex[idx]
 }
 
@@ -137,7 +137,7 @@ func divergenceErr(idx uint32, want string, got *enginev1.JournalEntry) error {
 // Separating slot allocation (here) from suspension (in Future.Result)
 // lets Sleep compose with other awaitables under All/Any without
 // prematurely entering the suspended state.
-func (c *invocationContext) Sleep(d time.Duration) sdk.Future {
+func (c *inprocContext) Sleep(d time.Duration) sdk.Future {
 	start, ok := c.allocSlot(2)
 	if !ok {
 		return &suspendedFuture{}
@@ -186,7 +186,7 @@ func (c *invocationContext) Sleep(d time.Duration) sdk.Future {
 // the stored failure, ctx.Run falls through to live execution with
 // attempt = N+1, journals the new proposal, and either succeeds or
 // keeps retrying.
-func (c *invocationContext) Run(_ string, fn func() ([]byte, error)) ([]byte, error) {
+func (c *inprocContext) Run(_ string, fn func() ([]byte, error)) ([]byte, error) {
 	if fn == nil {
 		return nil, errors.New("reflow: ctx.Run fn must not be nil")
 	}
@@ -263,7 +263,7 @@ func (c *invocationContext) Run(_ string, fn func() ([]byte, error)) ([]byte, er
 //
 // Separating slot allocation (here) from suspension (in Future.Result)
 // lets Call compose with other awaitables under All/Any.
-func (c *invocationContext) Call(target sdk.Target, input []byte, opts ...sdk.CallOption) sdk.Future {
+func (c *inprocContext) Call(target sdk.Target, input []byte, opts ...sdk.CallOption) sdk.Future {
 	resolved := sdk.ApplyCallOptions(opts)
 	start, ok := c.allocSlot(2)
 	if !ok {
@@ -295,7 +295,7 @@ func (c *invocationContext) Call(target sdk.Target, input []byte, opts ...sdk.Ca
 // OneWayCall is the fire-and-forget variant. The proto does not yet
 // model JEOneWayCall — the one-way wire-up follows once the proto and
 // outbox shuffler grow a JEOneWayCall slot.
-func (c *invocationContext) OneWayCall(_ sdk.Target, _ []byte) error {
+func (c *inprocContext) OneWayCall(_ sdk.Target, _ []byte) error {
 	return errNotImplemented
 }
 
@@ -304,7 +304,7 @@ func (c *invocationContext) OneWayCall(_ sdk.Target, _ []byte) error {
 // exceeded the 64 KiB cap — GetState reports an unavailable state cache
 // via errNotImplemented so the handler can surface a distinct failure.
 // Lazy command+notification fallback is a future extension.
-func (c *invocationContext) GetState(key string) ([]byte, bool, error) {
+func (c *inprocContext) GetState(key string) ([]byte, bool, error) {
 	if c.stateCache == nil {
 		return nil, false, errNotImplemented
 	}
@@ -317,7 +317,7 @@ func (c *invocationContext) GetState(key string) ([]byte, bool, error) {
 
 // SetState writes durable state for key. Single-entry op: the FSM stores
 // the value in StateTable when it applies the JESetState.
-func (c *invocationContext) SetState(key string, value []byte) error {
+func (c *inprocContext) SetState(key string, value []byte) error {
 	start, ok := c.allocSlot(1)
 	if !ok {
 		return sdk.ErrSuspended
@@ -348,7 +348,7 @@ func (c *invocationContext) SetState(key string, value []byte) error {
 }
 
 // ClearState removes durable state for key. Same shape as SetState.
-func (c *invocationContext) ClearState(key string) error {
+func (c *inprocContext) ClearState(key string) error {
 	start, ok := c.allocSlot(1)
 	if !ok {
 		return sdk.ErrSuspended
@@ -379,7 +379,7 @@ func (c *invocationContext) ClearState(key string) error {
 // ClearAllState wipes every state row scoped to the invocation's
 // (service, object_key). Journaled as a single JEClearAllState entry; the
 // apply arm executes a Pebble DeleteRange over the object's state prefix.
-func (c *invocationContext) ClearAllState() error {
+func (c *inprocContext) ClearAllState() error {
 	start, ok := c.allocSlot(1)
 	if !ok {
 		return sdk.ErrSuspended
@@ -416,7 +416,7 @@ func (c *invocationContext) ClearAllState() error {
 //
 // On the first execution the id is freshly minted; on replay the
 // existing JEAwakeable carries the id used originally.
-func (c *invocationContext) Awakeable() (string, sdk.Future) {
+func (c *inprocContext) Awakeable() (string, sdk.Future) {
 	start, ok := c.allocSlot(2)
 	if !ok {
 		return "", &suspendedFuture{}
@@ -453,7 +453,7 @@ func (c *invocationContext) Awakeable() (string, sdk.Future) {
 // public sdk.Target carries (Service, Handler, Key) — the resolver from
 // target+key to a live invocation is not yet wired. Returns
 // errNotImplemented until the receiver-side routing is available.
-func (c *invocationContext) SendSignal(_ sdk.Target, _ string, _ []byte) error {
+func (c *inprocContext) SendSignal(_ sdk.Target, _ string, _ []byte) error {
 	return errNotImplemented
 }
 
@@ -463,14 +463,14 @@ func (c *invocationContext) SendSignal(_ sdk.Target, _ string, _ []byte) error {
 // allocated; on replay the same call site reconstructs the wrapper
 // over children with stable journal indices and re-derives the same
 // outcome.
-func (c *invocationContext) All(futures ...sdk.Future) sdk.AllResult {
+func (c *inprocContext) All(futures ...sdk.Future) sdk.AllResult {
 	return &allResult{ctx: c, children: append([]sdk.Future(nil), futures...)}
 }
 
 // Any wraps the supplied futures in a Future that resolves to the first
 // child (by argument order) found resolved at poll time. Pure SDK
 // composition; no journal slot.
-func (c *invocationContext) Any(futures ...sdk.Future) sdk.Future {
+func (c *inprocContext) Any(futures ...sdk.Future) sdk.Future {
 	return &anyFuture{ctx: c, children: append([]sdk.Future(nil), futures...)}
 }
 

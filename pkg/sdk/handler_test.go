@@ -15,12 +15,58 @@ func TestRegistry_RegisterAndLookup(t *testing.T) {
 	if r.Len() != 1 {
 		t.Errorf("Len = %d; want 1", r.Len())
 	}
-	got, ok := r.Lookup(&Target{Service: "Greeter", Handler: "hello", Key: "ignored"})
+	got, kind, ok := r.Lookup(&Target{Service: "Greeter", Handler: "hello", Key: "ignored"})
 	if !ok {
 		t.Fatal("Lookup: not found")
 	}
 	if got == nil {
 		t.Fatal("Lookup: nil handler")
+	}
+	if kind != KindService {
+		t.Errorf("kind = %v; want service (Register defaults to service)", kind)
+	}
+}
+
+func TestRegistry_KindAwareRegistration(t *testing.T) {
+	r := NewRegistry()
+	h := func(_ Context, _ []byte) ([]byte, error) { return nil, nil }
+
+	cases := []struct {
+		name string
+		fn   func(svc, hdr string, h Handler) error
+		want Kind
+	}{
+		{"service", r.RegisterService, KindService},
+		{"object", r.RegisterObject, KindObject},
+		{"workflow", r.RegisterWorkflow, KindWorkflow},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.fn(tc.name+"Svc", "h", h); err != nil {
+				t.Fatalf("Register%s: %v", tc.name, err)
+			}
+			_, got, ok := r.Lookup(&Target{Service: tc.name + "Svc", Handler: "h"})
+			if !ok {
+				t.Fatal("Lookup miss")
+			}
+			if got != tc.want {
+				t.Errorf("kind = %v; want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestKind_String(t *testing.T) {
+	cases := map[Kind]string{
+		KindUnspecified: "unspecified",
+		KindService:     "service",
+		KindObject:      "object",
+		KindWorkflow:    "workflow",
+	}
+	for k, want := range cases {
+		if got := k.String(); got != want {
+			t.Errorf("%d.String() = %q; want %q", k, got, want)
+		}
 	}
 }
 
@@ -38,7 +84,7 @@ func TestRegistry_RejectsBadInputs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := r.Register(tc.svc, tc.hdr, tc.fn)
+			err := r.RegisterService(tc.svc, tc.hdr, tc.fn)
 			if err == nil {
 				t.Fatal("expected error; got nil")
 			}
@@ -52,10 +98,12 @@ func TestRegistry_RejectsBadInputs(t *testing.T) {
 func TestRegistry_RejectsDuplicate(t *testing.T) {
 	r := NewRegistry()
 	h := func(_ Context, _ []byte) ([]byte, error) { return nil, nil }
-	if err := r.Register("S", "h", h); err != nil {
+	if err := r.RegisterService("S", "h", h); err != nil {
 		t.Fatal(err)
 	}
-	err := r.Register("S", "h", h)
+	// Duplicate across kinds is still a collision — (service, handler) is
+	// the namespace, kind is metadata.
+	err := r.RegisterObject("S", "h", h)
 	if err == nil || !strings.Contains(err.Error(), "already registered") {
 		t.Errorf("duplicate err=%v; want 'already registered'", err)
 	}
@@ -63,10 +111,10 @@ func TestRegistry_RejectsDuplicate(t *testing.T) {
 
 func TestRegistry_LookupMissing(t *testing.T) {
 	r := NewRegistry()
-	if _, ok := r.Lookup(&Target{Service: "Nope", Handler: "x"}); ok {
+	if _, _, ok := r.Lookup(&Target{Service: "Nope", Handler: "x"}); ok {
 		t.Error("expected miss")
 	}
-	if _, ok := r.Lookup(nil); ok {
+	if _, _, ok := r.Lookup(nil); ok {
 		t.Error("nil target: expected miss")
 	}
 }

@@ -15,17 +15,17 @@ type Registry struct {
 }
 
 // NewRegistry wraps the given sdk.Registry. A nil inner is accepted; all
-// lookups then return (nil, false).
+// lookups then return (nil, KindUnspecified, false).
 func NewRegistry(inner *sdk.Registry) *Registry {
 	return &Registry{inner: inner}
 }
 
-// Lookup returns the handler for target's (ServiceName, HandlerName). The
-// ObjectKey is ignored for handler lookup but is used elsewhere for
-// routing.
-func (r *Registry) Lookup(target *enginev1.InvocationTarget) (sdk.Handler, bool) {
+// Lookup returns the handler for target's (ServiceName, HandlerName) and
+// the registered Kind. The ObjectKey is ignored for handler lookup but is
+// used elsewhere for routing.
+func (r *Registry) Lookup(target *enginev1.InvocationTarget) (sdk.Handler, sdk.Kind, bool) {
 	if r == nil || r.inner == nil || target == nil {
-		return nil, false
+		return nil, sdk.KindUnspecified, false
 	}
 	return r.inner.Lookup(&sdk.Target{
 		Service: target.GetServiceName(),

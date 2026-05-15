@@ -176,9 +176,12 @@ func TestRegistry_LookupViaTarget(t *testing.T) {
 	w := NewRegistry(r)
 
 	target := &enginev1.InvocationTarget{ServiceName: "Greeter", HandlerName: "hello", ObjectKey: "ignored"}
-	h, ok := w.Lookup(target)
+	h, kind, ok := w.Lookup(target)
 	if !ok || h == nil {
 		t.Fatal("Lookup miss")
+	}
+	if kind != sdk.KindService {
+		t.Errorf("kind = %v; want service", kind)
 	}
 	if _, err := h(nil, nil); err != nil {
 		t.Fatalf("h: %v", err)
@@ -187,17 +190,17 @@ func TestRegistry_LookupViaTarget(t *testing.T) {
 		t.Errorf("called = %d; want 1", called)
 	}
 
-	if _, ok := w.Lookup(&enginev1.InvocationTarget{ServiceName: "Nope", HandlerName: "x"}); ok {
+	if _, _, ok := w.Lookup(&enginev1.InvocationTarget{ServiceName: "Nope", HandlerName: "x"}); ok {
 		t.Error("expected miss")
 	}
 }
 
 func TestRegistry_NilInner(t *testing.T) {
 	w := NewRegistry(nil)
-	if _, ok := w.Lookup(&enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"}); ok {
+	if _, _, ok := w.Lookup(&enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"}); ok {
 		t.Error("nil inner: expected miss")
 	}
-	if _, ok := w.Lookup(nil); ok {
+	if _, _, ok := w.Lookup(nil); ok {
 		t.Error("nil target: expected miss")
 	}
 }

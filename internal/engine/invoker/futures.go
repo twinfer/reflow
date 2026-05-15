@@ -22,7 +22,7 @@ import (
 // callFuture is the deferred handle returned by Context.Call. start is
 // the JECall journal index; the matching JECallResult lands at start+1.
 type callFuture struct {
-	ctx   *invocationContext
+	ctx   *inprocContext
 	start uint32
 }
 
@@ -56,7 +56,7 @@ func (f *callFuture) Result() ([]byte, error) {
 // the JESleep journal index; the matching JESleepResult lands at start+1.
 // The byte payload is always nil — the resolution itself is the signal.
 type sleepFuture struct {
-	ctx   *invocationContext
+	ctx   *inprocContext
 	start uint32
 }
 
@@ -84,7 +84,7 @@ func (f *sleepFuture) Result() ([]byte, error) {
 // JEAwakeableResult lands at originIdx+1. id is the externally-resolvable
 // awakeable identifier the engine wakes on.
 type awakeableFuture struct {
-	ctx       *invocationContext
+	ctx       *inprocContext
 	originIdx uint32
 	id        string
 }
@@ -134,7 +134,7 @@ func (s *suspendedFuture) Result() ([]byte, error) { return nil, sdk.ErrSuspende
 // blocks until every child has resolved, then returns their values in
 // the same order.
 type allResult struct {
-	ctx      *invocationContext
+	ctx      *inprocContext
 	children []sdk.Future
 }
 
@@ -187,7 +187,7 @@ func (a *allResult) Results() ([][]byte, error) {
 // argument order, not wall-clock — the journal records resolutions
 // independently, so replay must pick the same winner deterministically.
 type anyFuture struct {
-	ctx      *invocationContext
+	ctx      *inprocContext
 	children []sdk.Future
 }
 

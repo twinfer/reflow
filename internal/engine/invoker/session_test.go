@@ -38,6 +38,7 @@ func newSessionFixture(t *testing.T, handler sdk.Handler) *sessionFixture {
 		id,
 		target,
 		handler,
+		sdk.KindService,
 		fp,
 		NewJournalReader(tables.JournalTable{S: s}),
 		tables.InvocationTable{S: s},
@@ -330,13 +331,13 @@ func TestSession_AbortCancelsHandler(t *testing.T) {
 	}
 }
 
-// --- invocationContext tests ---
+// --- inprocContext tests ---
 
-// ctxFixture binds a fresh invocationContext to a real session backed by
+// ctxFixture binds a fresh inprocContext to a real session backed by
 // a fakeProposer. Use when the unit under test is one of the ctx
 // methods rather than the run() lifecycle.
 type ctxFixture struct {
-	ictx *invocationContext
+	ictx *inprocContext
 	fp   *fakeProposer
 	s    *session
 }
@@ -352,6 +353,7 @@ func newCtxFixture(t *testing.T, journalEntries ...*enginev1.JournalEntry) *ctxF
 		newID(1, "ctx-inv"),
 		&enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"},
 		nil,
+		sdk.KindService,
 		fp,
 		NewJournalReader(tables.JournalTable{S: store}),
 		tables.InvocationTable{S: store},
@@ -364,7 +366,7 @@ func newCtxFixture(t *testing.T, journalEntries ...*enginev1.JournalEntry) *ctxF
 		idx[e.GetIndex()] = e
 	}
 	return &ctxFixture{
-		ictx: newInvocationContext(sess, nil, idx, nil),
+		ictx: newInprocContext(sess, nil, idx, nil),
 		fp:   fp,
 		s:    sess,
 	}
@@ -794,6 +796,7 @@ func TestContext_InputAndIDExposed(t *testing.T) {
 		id,
 		&enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"},
 		nil,
+		sdk.KindService,
 		fp,
 		NewJournalReader(tables.JournalTable{S: store}),
 		tables.InvocationTable{S: store},
@@ -801,7 +804,7 @@ func TestContext_InputAndIDExposed(t *testing.T) {
 		transport,
 		discardLogger(),
 	)
-	ictx := newInvocationContext(sess, []byte("payload"), nil, nil)
+	ictx := newInprocContext(sess, []byte("payload"), nil, nil)
 
 	if string(ictx.Input()) != "payload" {
 		t.Errorf("Input = %q; want payload", ictx.Input())
@@ -848,6 +851,7 @@ func TestSession_SleepResumeAfterTimerFires(t *testing.T) {
 		f.id,
 		f.target,
 		handler,
+		sdk.KindService,
 		fp2,
 		NewJournalReader(tables.JournalTable{S: f.store}),
 		tables.InvocationTable{S: f.store},
@@ -913,7 +917,7 @@ func TestSession_PreloadState_HydratesCache(t *testing.T) {
 		t.Errorf("cache mismatch: %+v", cache)
 	}
 
-	ictx := newInvocationContext(sess, nil, map[uint32]*enginev1.JournalEntry{}, cache)
+	ictx := newInprocContext(sess, nil, map[uint32]*enginev1.JournalEntry{}, cache)
 	val, present, err := ictx.GetState("b")
 	if err != nil {
 		t.Fatalf("GetState err = %v", err)

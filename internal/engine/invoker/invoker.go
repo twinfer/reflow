@@ -195,7 +195,7 @@ func (i *Invoker) installSessionLocked(id *enginev1.InvocationId, target *engine
 	if !i.started {
 		return nil, false
 	}
-	handler, ok := i.registry.Lookup(target)
+	handler, kind, ok := i.registry.Lookup(target)
 	if !ok {
 		i.log.Warn("invoker: no handler registered; dropping",
 			"id", invocationIDString(id),
@@ -204,15 +204,19 @@ func (i *Invoker) installSessionLocked(id *enginev1.InvocationId, target *engine
 		)
 		return nil, false
 	}
-	// The chanTransport pair is held for the wire-shim path (Step 15);
+	// kind rides on the session today purely as metadata; per-kind
+	// dispatch (object key locks, workflow lifecycle) lands once
+	// commit 5c wires deployment-aware routing.
+	// The chanTransport pair is held for the wire-shim path (commit 5d);
 	// the in-process Go SDK ignores it and drives the handler directly
-	// via *invocationContext. Closing it on session exit is enough.
+	// via *inprocContext. Closing it on session exit is enough.
 	engineSide, _ := NewChanTransport()
 	s := newSession(
 		i.ctx,
 		id,
 		target,
 		handler,
+		kind,
 		i.proposer,
 		i.journal,
 		i.invocationTable,

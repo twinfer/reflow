@@ -62,6 +62,7 @@ type session struct {
 	id      *enginev1.InvocationId
 	target  *enginev1.InvocationTarget
 	handler sdk.Handler
+	kind    sdk.Kind
 
 	proposer   Proposer
 	journal    *JournalReader
@@ -86,6 +87,7 @@ func newSession(
 	id *enginev1.InvocationId,
 	target *enginev1.InvocationTarget,
 	handler sdk.Handler,
+	kind sdk.Kind,
 	proposer Proposer,
 	journal *JournalReader,
 	invocation tables.InvocationTable,
@@ -98,6 +100,7 @@ func newSession(
 		id:         id,
 		target:     target,
 		handler:    handler,
+		kind:       kind,
 		proposer:   proposer,
 		journal:    journal,
 		invocation: invocation,
@@ -166,7 +169,7 @@ func (s *session) run() {
 	}
 
 	s.setState(sessBidi)
-	ictx := newInvocationContext(s, input, journalIndex, stateCache)
+	ictx := newInprocContext(s, input, journalIndex, stateCache)
 	output, handlerErr := s.runHandler(ictx)
 
 	s.publishOutcome(ictx, output, handlerErr)
@@ -297,7 +300,7 @@ var errStatePreloadOverflow = errors.New("state preload overflow")
 // runHandler invokes the registered handler on its own goroutine and
 // waits for it to return. Ctx cancellation is observed so abort()
 // doesn't have to wait for a wedged handler.
-func (s *session) runHandler(ictx *invocationContext) ([]byte, error) {
+func (s *session) runHandler(ictx *inprocContext) ([]byte, error) {
 	type result struct {
 		out []byte
 		err error
@@ -337,7 +340,7 @@ func (s *session) runHandler(ictx *invocationContext) ([]byte, error) {
 // silently — leaves the invocation Invoked with no path forward, since
 // no future event re-fires ActInvoke. Surfacing the error as a terminal
 // Completed failure favours visibility over silent stalls.
-func (s *session) publishOutcome(ictx *invocationContext, output []byte, handlerErr error) {
+func (s *session) publishOutcome(ictx *inprocContext, output []byte, handlerErr error) {
 	if s.ctx.Err() != nil || errors.Is(handlerErr, context.Canceled) {
 		return
 	}

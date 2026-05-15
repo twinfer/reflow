@@ -28,6 +28,12 @@ type TLSSpec struct {
 	CertFile    string `koanf:"cert_file"`
 	KeyFile     string `koanf:"key_file"`
 	TrustDomain string `koanf:"trust_domain"`
+	// ServerName, when set, is the SNI / DNS-SAN verification target
+	// the client TLS config sends to the server. Empty falls back to
+	// grpc-go's default (derived from the dial target). Useful when
+	// dialing by IP — the leaf's URI SAN check still runs; this only
+	// gates the standard DNS verification path.
+	ServerName string `koanf:"server_name"`
 	// ClientAuth, when true, requires and verifies client certs on the
 	// server side. Default true for reflow's mTLS surfaces (Delivery,
 	// Admin); set false only when fronting OAuth/JWT validation.
@@ -84,6 +90,7 @@ func buildTLS(s *TLSSpec, _ *slog.Logger) (*ListenerCreds, error) {
 			return get(nil)
 		},
 		RootCAs:               pool,
+		ServerName:            s.ServerName,
 		VerifyPeerCertificate: verifyURISANWellFormed(td),
 	}
 

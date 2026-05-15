@@ -23,7 +23,7 @@ import (
 	enginesnap "github.com/twinfer/reflow/internal/engine/snapshot"
 
 	"github.com/twinfer/reflow/internal/pki"
-	"github.com/twinfer/reflow/pkg/reflow"
+	"github.com/twinfer/reflow/pkg/reflow/creds"
 	"github.com/twinfer/reflow/pkg/sdk"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -265,11 +265,12 @@ func TestAdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	leader := awaitMetadataLeaderRig(t, rigs, 15*time.Second)
 
 	dir := t.TempDir()
-	files, opCert, opKey := writeAdminTLSFixtures(t, dir)
+	tlsSpec, opCert, opKey, caFile := writeAdminTLSFixtures(t, dir)
 
 	// Build a TLS-protected admin server. The auth interceptor refuses
-	// callers without verified TLS, but Require+VerifyClientCert at the
-	// TLS layer should reject them first.
+	// callers whose principal does not match the embedded policy, but
+	// Require+VerifyClientCert at the TLS layer should reject empty
+	// client certs first.
 	srv, err := admin.NewServer(admin.Config{
 		Host:   leader.Host,
 		Runner: leader.Host.MetadataRunner(),
@@ -277,26 +278,34 @@ func TestAdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tlsCfg, err := reflow.BuildAdminServerTLS(files, testTrustDomain)
+	serverCreds, err := creds.Build(creds.Spec{Driver: creds.DriverTLS, TLS: &tlsSpec}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() {
+		if serverCreds.Close != nil {
+			_ = serverCreds.Close()
+		}
+	}()
 	ln, err := net.Listen("tcp", freeLocalAddr(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	adminPolicy, err := auth.BuildMethodPolicy(
-		adminv1.File_adminv1_admin_proto.Services().ByName("Admin"))
+	unaryIc, streamIc, authCloser, err := auth.NewServerInterceptors(auth.Config{
+		Extractor: &auth.SPIFFEExtractor{TrustDomain: testTrustDomain},
+	})
 	if err != nil {
-		t.Fatalf("BuildMethodPolicy: %v", err)
+		t.Fatalf("NewServerInterceptors: %v", err)
 	}
+	defer func() {
+		if authCloser != nil {
+			_ = authCloser()
+		}
+	}()
 	gs := grpc.NewServer(
-		grpc.Creds(credentials.NewTLS(tlsCfg)),
-		grpc.ChainUnaryInterceptor(auth.UnaryInterceptor(
-			&auth.CertClaimMapper{TrustDomain: testTrustDomain},
-			auth.NewProtoPolicyAuthorizer(adminPolicy),
-			nil,
-		)),
+		grpc.Creds(serverCreds.Server),
+		grpc.ChainUnaryInterceptor(unaryIc),
+		grpc.ChainStreamInterceptor(streamIc),
 	)
 	srv.Register(gs)
 	go func() {
@@ -304,16 +313,19 @@ func TestAdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	}()
 	t.Cleanup(func() { gs.GracefulStop(); _ = ln.Close() })
 
-	// 1) BuildAdminClientTLS itself refuses empty operator cert.
-	if _, err := reflow.BuildAdminClientTLS("", "", files.CAFile, testTrustDomain); err == nil {
-		t.Fatal("expected BuildAdminClientTLS to reject empty operator cert; got nil err")
+	// 1) creds.Build refuses a TLS spec without a leaf keypair.
+	if _, err := creds.Build(creds.Spec{
+		Driver: creds.DriverTLS,
+		TLS:    &creds.TLSSpec{CAFile: caFile, TrustDomain: testTrustDomain},
+	}, nil); err == nil {
+		t.Fatal("expected creds.Build to reject empty operator cert; got nil err")
 	}
 
 	// 2) Dial gRPC with a TLS config that trusts the server CA but
 	//    presents no client cert. The gRPC call must fail because the
 	//    server's ClientAuth = RequireAndVerifyClientCert rejects the
 	//    empty client Certificate message.
-	caBytes, err := os.ReadFile(files.CAFile)
+	caBytes, err := os.ReadFile(caFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,15 +351,27 @@ func TestAdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	}
 
 	// Sanity: with the proper operator cert + node CA, dial succeeds.
-	good, err := reflow.BuildAdminClientTLS(opCert, opKey, files.CAFile, testTrustDomain)
+	operatorCreds, err := creds.Build(creds.Spec{
+		Driver: creds.DriverTLS,
+		TLS: &creds.TLSSpec{
+			CAFile:      caFile,
+			CertFile:    opCert,
+			KeyFile:     opKey,
+			TrustDomain: testTrustDomain,
+			ServerName:  "127.0.0.1",
+		},
+	}, nil)
 	if err != nil {
-		t.Fatalf("BuildAdminClientTLS: %v", err)
+		t.Fatalf("creds.Build (operator): %v", err)
 	}
-	good.ServerName = "127.0.0.1"
-	cc, err := grpc.NewClient(ln.Addr().String(),
-		grpc.WithTransportCredentials(credentials.NewTLS(good)))
+	defer func() {
+		if operatorCreds.Close != nil {
+			_ = operatorCreds.Close()
+		}
+	}()
+	cc, err := grpc.NewClient(ln.Addr().String(), operatorCreds.ClientDial...)
 	if err != nil {
-		t.Fatalf("grpc.NewClient with operator cert: %v", err)
+		t.Fatalf("grpc.NewClient with operator creds: %v", err)
 	}
 	defer cc.Close()
 	cli := adminv1.NewAdminClient(cc)
@@ -510,9 +534,12 @@ func TestAdminDeleteSnapshot(t *testing.T) {
 	}
 }
 
-// writeAdminTLSFixtures mirrors pkg/reflow's test helper but inside the
-// engine_test package so the integration tests stay self-contained.
-func writeAdminTLSFixtures(t *testing.T, dir string) (reflow.TLSFiles, string, string) {
+// writeAdminTLSFixtures builds an ephemeral single-CA PKI with a node
+// leaf (for the server) + an operator leaf (for the client), each
+// carrying its SPIFFE URI SAN. Returns a server-side TLSSpec, the
+// operator cert+key paths, and the shared CA path so callers can build
+// the client-side spec or raw tls.Config as needed.
+func writeAdminTLSFixtures(t *testing.T, dir string) (creds.TLSSpec, string, string, string) {
 	t.Helper()
 	ca, err := pki.NewCA("phase4_2-ca")
 	if err != nil {
@@ -555,11 +582,12 @@ func writeAdminTLSFixtures(t *testing.T, dir string) (reflow.TLSFiles, string, s
 	if err != nil {
 		t.Fatal(err)
 	}
-	return reflow.TLSFiles{
-		CAFile:   caCrt,
-		CertFile: nodeCrt,
-		KeyFile:  nodeKey,
-	}, opCrt, opKey
+	return creds.TLSSpec{
+		CAFile:      caCrt,
+		CertFile:    nodeCrt,
+		KeyFile:     nodeKey,
+		TrustDomain: testTrustDomain,
+	}, opCrt, opKey, caCrt
 }
 
 const testTrustDomain = "reflow.local"

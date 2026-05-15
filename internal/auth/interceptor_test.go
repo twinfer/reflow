@@ -3,195 +3,188 @@ package auth
 import (
 	"context"
 	"errors"
+	"net"
+	"sync"
 	"testing"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 )
 
-// stubMapper returns canned (claims, err) regardless of input.
-type stubMapper struct {
-	claims *Claims
-	err    error
-}
-
-func (s stubMapper) GetClaims(_ context.Context, _ AuthInfo) (*Claims, error) {
-	return s.claims, s.err
-}
-
-// stubAuthz returns a canned Result. If err is non-nil it is returned
-// instead and the Result is ignored.
-type stubAuthz struct {
-	res Result
+// stubExtractor returns canned (principal, err) regardless of input.
+type stubExtractor struct {
+	p   Principal
 	err error
 }
 
-func (s stubAuthz) Authorize(_ context.Context, _ *Claims, _ *CallTarget) (Result, error) {
-	return s.res, s.err
-}
+func (s stubExtractor) Extract(_ context.Context) (Principal, error) { return s.p, s.err }
 
-func okHandler(invoked *bool) grpc.UnaryHandler {
-	return func(_ context.Context, _ any) (any, error) {
-		*invoked = true
+// TestShim_StampsServerComputedPrincipal asserts the shim places
+// Principal.Raw into incoming metadata under x-reflow-principal so a
+// downstream interceptor sees the server-computed value.
+func TestShim_StampsServerComputedPrincipal(t *testing.T) {
+	unary, _ := newPrincipalShim(stubExtractor{p: Principal{Kind: "node", Subject: "7", Raw: "node/7"}}, nil)
+
+	var seen string
+	h := func(ctx context.Context, _ any) (any, error) {
+		md, _ := metadata.FromIncomingContext(ctx)
+		if vals := md.Get(PrincipalHeader); len(vals) > 0 {
+			seen = vals[0]
+		}
 		return "ok", nil
 	}
-}
-
-func unaryInfo(method string) *grpc.UnaryServerInfo {
-	return &grpc.UnaryServerInfo{FullMethod: method}
-}
-
-func TestUnaryInterceptor_AllowsAuthorizedCall(t *testing.T) {
-	ic := UnaryInterceptor(
-		stubMapper{claims: &Claims{Kind: "operator", Subject: "alice"}},
-		stubAuthz{res: Result{Decision: DecisionAllow}},
-		nil,
-	)
-	var called bool
-	resp, err := ic(context.Background(), "req", unaryInfo("/svc/M"), okHandler(&called))
+	_, err := unary(context.Background(), nil,
+		&grpc.UnaryServerInfo{FullMethod: "/reflow.delivery.v1.Delivery/Deliver"}, h)
 	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if !called {
-		t.Fatal("handler not invoked")
-	}
-	if resp != "ok" {
-		t.Errorf("resp = %v; want ok", resp)
-	}
-}
-
-func TestUnaryInterceptor_RejectsOnAuthzDeny(t *testing.T) {
-	ic := UnaryInterceptor(
-		stubMapper{claims: &Claims{Kind: "node"}},
-		stubAuthz{res: Result{Decision: DecisionDeny, Reason: "wrong role"}},
-		nil,
-	)
-	var called bool
-	_, err := ic(context.Background(), "req", unaryInfo("/svc/M"), okHandler(&called))
-	if status.Code(err) != codes.PermissionDenied {
-		t.Errorf("status = %v; want PermissionDenied", status.Code(err))
-	}
-	if called {
-		t.Error("handler should not run on deny")
-	}
-}
-
-func TestUnaryInterceptor_RejectsOnMapperError(t *testing.T) {
-	ic := UnaryInterceptor(
-		stubMapper{err: errors.New("bad cert")},
-		stubAuthz{}, nil,
-	)
-	var called bool
-	_, err := ic(context.Background(), "req", unaryInfo("/svc/M"), okHandler(&called))
-	if status.Code(err) != codes.Unauthenticated {
-		t.Errorf("status = %v; want Unauthenticated", status.Code(err))
-	}
-	if called {
-		t.Error("handler should not run on mapper error")
-	}
-}
-
-func TestUnaryInterceptor_RejectsOnMissingIdentity(t *testing.T) {
-	ic := UnaryInterceptor(
-		stubMapper{}, // returns (nil, nil)
-		stubAuthz{}, nil,
-	)
-	var called bool
-	_, err := ic(context.Background(), "req", unaryInfo("/svc/M"), okHandler(&called))
-	if status.Code(err) != codes.Unauthenticated {
-		t.Errorf("status = %v; want Unauthenticated", status.Code(err))
-	}
-	if called {
-		t.Error("handler should not run when no identity")
-	}
-}
-
-func TestUnaryInterceptor_PutsClaimsOnContext(t *testing.T) {
-	claims := &Claims{Kind: "operator", Subject: "alice"}
-	ic := UnaryInterceptor(
-		stubMapper{claims: claims},
-		stubAuthz{res: Result{Decision: DecisionAllow}},
-		nil,
-	)
-	var seen *Claims
-	handler := func(ctx context.Context, _ any) (any, error) {
-		seen, _ = ClaimsFromContext(ctx)
-		return "ok", nil
-	}
-	if _, err := ic(context.Background(), "req", unaryInfo("/svc/M"), handler); err != nil {
 		t.Fatal(err)
 	}
-	if seen != claims {
-		t.Errorf("handler saw claims = %+v; want %+v", seen, claims)
+	if seen != "node/7" {
+		t.Errorf("downstream saw %q; want node/7", seen)
 	}
 }
 
-func TestUnaryInterceptor_PropagatesAuthorizerError(t *testing.T) {
-	ic := UnaryInterceptor(
-		stubMapper{claims: &Claims{Kind: "operator"}},
-		stubAuthz{err: errors.New("policy backend offline")},
-		nil,
-	)
-	var called bool
-	_, err := ic(context.Background(), "req", unaryInfo("/svc/M"), okHandler(&called))
-	if status.Code(err) != codes.Internal {
-		t.Errorf("status = %v; want Internal", status.Code(err))
-	}
-	if called {
-		t.Error("handler should not run on authorizer error")
-	}
-}
+// TestShim_StripsForgedPrincipalHeader is the load-bearing forgery
+// test: a client sets x-reflow-principal=operator/admin in the outgoing
+// metadata, but the shim must overwrite it with the server-extracted
+// value (here: node/3) before any policy or handler sees it.
+func TestShim_StripsForgedPrincipalHeader(t *testing.T) {
+	unary, _ := newPrincipalShim(stubExtractor{p: Principal{Kind: "node", Subject: "3", Raw: "node/3"}}, nil)
 
-// fakeServerStream is a minimal grpc.ServerStream implementation for
-// driving StreamInterceptor in tests.
-type fakeServerStream struct {
-	ctx context.Context
-}
+	forged := metadata.Pairs(PrincipalHeader, "operator/admin")
+	ctx := metadata.NewIncomingContext(context.Background(), forged)
 
-func (f *fakeServerStream) SetHeader(_ metadata.MD) error  { return nil }
-func (f *fakeServerStream) SendHeader(_ metadata.MD) error { return nil }
-func (f *fakeServerStream) SetTrailer(_ metadata.MD)       {}
-func (f *fakeServerStream) Context() context.Context       { return f.ctx }
-func (f *fakeServerStream) SendMsg(_ any) error            { return nil }
-func (f *fakeServerStream) RecvMsg(_ any) error            { return nil }
-
-func TestStreamInterceptor_AllowsAuthorizedStream(t *testing.T) {
-	ic := StreamInterceptor(
-		stubMapper{claims: &Claims{Kind: "node", Subject: "3"}},
-		stubAuthz{res: Result{Decision: DecisionAllow}},
-		nil,
-	)
-	var seen *Claims
-	handler := func(_ any, ss grpc.ServerStream) error {
-		seen, _ = ClaimsFromContext(ss.Context())
-		return nil
+	var seen []string
+	h := func(ctx context.Context, _ any) (any, error) {
+		md, _ := metadata.FromIncomingContext(ctx)
+		seen = md.Get(PrincipalHeader)
+		return "ok", nil
 	}
-	info := &grpc.StreamServerInfo{FullMethod: "/reflow.delivery.v1.Delivery/Deliver"}
-	err := ic(nil, &fakeServerStream{ctx: context.Background()}, info, handler)
+	_, err := unary(ctx, nil,
+		&grpc.UnaryServerInfo{FullMethod: "/reflow.delivery.v1.Delivery/Deliver"}, h)
 	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
+		t.Fatal(err)
 	}
-	if seen == nil || seen.Kind != "node" {
-		t.Errorf("handler saw claims = %+v; want node claim", seen)
+	if len(seen) != 1 {
+		t.Fatalf("expected exactly one %s header; got %v", PrincipalHeader, seen)
+	}
+	if seen[0] != "node/3" {
+		t.Errorf("downstream saw %q; want node/3 (forged value must be overwritten)", seen[0])
 	}
 }
 
-func TestStreamInterceptor_RejectsOnAuthzDeny(t *testing.T) {
-	ic := StreamInterceptor(
-		stubMapper{claims: &Claims{Kind: "operator"}},
-		stubAuthz{res: Result{Decision: DecisionDeny, Reason: "delivery wants node"}},
-		nil,
-	)
+// TestShim_AnonymousLeavesHeaderUnset confirms that an anonymous
+// principal does NOT stamp a header — the authz policy correctly
+// denies based on missing identity rather than a default placeholder.
+func TestShim_AnonymousLeavesHeaderUnset(t *testing.T) {
+	unary, _ := newPrincipalShim(stubExtractor{p: Principal{}}, nil)
+
+	forged := metadata.Pairs(PrincipalHeader, "operator/admin")
+	ctx := metadata.NewIncomingContext(context.Background(), forged)
+
+	var seen []string
+	h := func(ctx context.Context, _ any) (any, error) {
+		md, _ := metadata.FromIncomingContext(ctx)
+		seen = md.Get(PrincipalHeader)
+		return nil, nil
+	}
+	_, err := unary(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/anything"}, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 0 {
+		t.Errorf("expected anonymous → no header; got %v", seen)
+	}
+}
+
+// TestShim_RejectsOnExtractorError surfaces the extractor error as
+// Unauthenticated and never invokes the handler.
+func TestShim_RejectsOnExtractorError(t *testing.T) {
+	unary, _ := newPrincipalShim(stubExtractor{err: errors.New("bad cert")}, nil)
 	var called bool
-	handler := func(_ any, _ grpc.ServerStream) error { called = true; return nil }
-	info := &grpc.StreamServerInfo{FullMethod: "/reflow.delivery.v1.Delivery/Deliver"}
-	err := ic(nil, &fakeServerStream{ctx: context.Background()}, info, handler)
-	if status.Code(err) != codes.PermissionDenied {
-		t.Errorf("status = %v; want PermissionDenied", status.Code(err))
+	h := func(_ context.Context, _ any) (any, error) { called = true; return nil, nil }
+	_, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/x"}, h)
+	if status.Code(err) != codes.Unauthenticated {
+		t.Errorf("status = %v; want Unauthenticated", status.Code(err))
 	}
 	if called {
-		t.Error("handler should not run on deny")
+		t.Error("handler should not run when extractor errors")
 	}
+}
+
+// TestNewServerInterceptors_E2E_EmbeddedPolicy stands up real gRPC
+// servers behind the chained interceptors and exercises the embedded
+// starter policy matrix end-to-end. The grpc-go authz RBAC engine
+// reads the method + peer info from the framework, so an in-process
+// gRPC server is the lowest-friction way to drive it.
+func TestNewServerInterceptors_E2E_EmbeddedPolicy(t *testing.T) {
+	cases := []struct {
+		name       string
+		principal  Principal
+		wantDenied bool
+	}{
+		{"operator-allowed", Principal{Kind: "operator", Subject: "alice", Raw: "operator/alice"}, false},
+		{"node-denied", Principal{Kind: "node", Subject: "1", Raw: "node/1"}, true},
+		{"anonymous-denied", Principal{}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			unary, stream, closer, err := NewServerInterceptors(Config{
+				Extractor: stubExtractor{p: c.principal},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if closer != nil {
+					_ = closer()
+				}
+			}()
+
+			lis, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv := grpc.NewServer(
+				grpc.ChainUnaryInterceptor(unary),
+				grpc.ChainStreamInterceptor(stream),
+			)
+			adminv1.RegisterAdminServer(srv, &fakeAdmin{})
+			go srv.Serve(lis)
+			defer func() { srv.Stop(); _ = lis.Close() }()
+
+			cc, err := grpc.NewClient(lis.Addr().String(),
+				grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cc.Close()
+			_, err = adminv1.NewAdminClient(cc).ListNodes(context.Background(), &adminv1.ListNodesRequest{})
+			if c.wantDenied {
+				if status.Code(err) != codes.PermissionDenied {
+					t.Errorf("got %v; want PermissionDenied", err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected err: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// fakeAdmin satisfies just enough of AdminServer for the e2e test
+// above. All RPCs return empty / unimplemented; the test only cares
+// about whether the call reached the handler at all.
+type fakeAdmin struct {
+	adminv1.UnimplementedAdminServer
+	mu sync.Mutex
+}
+
+func (f *fakeAdmin) ListNodes(_ context.Context, _ *adminv1.ListNodesRequest) (*adminv1.ListNodesResponse, error) {
+	return &adminv1.ListNodesResponse{}, nil
 }

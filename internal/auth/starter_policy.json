@@ -1,0 +1,30 @@
+{
+  "name": "reflow_starter",
+  "deny_rules": [],
+  "allow_rules": [
+    {
+      "name": "ingress_open",
+      "request": {
+        "paths": ["/reflow.ingress.v1.Ingress/*"]
+      }
+    },
+    {
+      "name": "delivery_node",
+      "request": {
+        "paths": ["/reflow.delivery.v1.Delivery/*"],
+        "headers": [
+          { "key": "x-reflow-principal", "values": ["node/*"] }
+        ]
+      }
+    },
+    {
+      "name": "admin_operator",
+      "request": {
+        "paths": ["/reflow.admin.v1.Admin/*"],
+        "headers": [
+          { "key": "x-reflow-principal", "values": ["operator/*"] }
+        ]
+      }
+    }
+  ]
+}

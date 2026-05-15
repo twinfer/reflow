@@ -29,10 +29,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "reflowd: %v\n", err)
 		os.Exit(2)
 	}
-	if err := requireTLSWhenMultiNode(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "reflowd: %v\n", err)
-		os.Exit(2)
-	}
 	cfg.Handlers = sdk.NewRegistry()
 	// User binaries register handlers here before reflow.Run; reflowd
 	// ships with an empty registry — useful for smoke-testing the
@@ -65,30 +61,6 @@ func loadConfig() (reflow.Config, error) {
 
 	cfg, _, err := config.Load(sources...)
 	return cfg, err
-}
-
-// requireTLSWhenMultiNode rejects a config where Cluster.Peers is
-// non-empty but any of the TLS file paths is missing. Multi-node
-// deployments require mTLS for cross-node Delivery + admin; single-node
-// deployments bypass this check.
-func requireTLSWhenMultiNode(cfg reflow.Config) error {
-	if len(cfg.Cluster.Peers) == 0 {
-		return nil
-	}
-	missing := []string{}
-	if cfg.TLS.CAFile == "" {
-		missing = append(missing, "tls.ca_file")
-	}
-	if cfg.TLS.CertFile == "" {
-		missing = append(missing, "tls.cert_file")
-	}
-	if cfg.TLS.KeyFile == "" {
-		missing = append(missing, "tls.key_file")
-	}
-	if len(missing) == 0 {
-		return nil
-	}
-	return fmt.Errorf("multi-node deployment requires TLS; missing: %v", missing)
 }
 
 // defaultValues are the baked-in defaults. Picked to make `go run

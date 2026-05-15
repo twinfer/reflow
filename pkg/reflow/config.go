@@ -12,6 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/twinfer/reflow/pkg/reflow/creds"
 	"github.com/twinfer/reflow/pkg/sdk"
 )
 
@@ -22,24 +23,30 @@ import (
 // Field-name notes: koanf tags use snake_case so the same config can be
 // expressed identically in YAML, JSON, and env vars (the env provider
 // translates REFLOW_INGRESS_GRPC_ADDR → ingress.grpc_addr).
+//
+// Transport security plugs in per-listener via creds.Spec; the zero
+// spec is insecure. Multi-node deployments are allowed on insecure
+// transport but Run emits a WARN log.
 type Config struct {
-	Node    NodeConfig    `koanf:"node"`
-	Cluster ClusterConfig `koanf:"cluster"`
-	Storage StorageConfig `koanf:"storage"`
-	Ingress IngressConfig `koanf:"ingress"`
-	Metrics MetricsConfig `koanf:"metrics"`
-	Logging LoggingConfig `koanf:"logging"`
-	// TLS is the single-CA mTLS configuration. Required when
-	// Cluster.Peers is non-empty — Delivery (between nodes) and Admin
-	// (between operators and nodes) both terminate mTLS using the same
-	// node-leaf cert. Role distinction is enforced by SPIFFE URI SANs
-	// on each leaf (see pkg/reflow/tls.go).
-	TLS TLSConfig `koanf:"tls"`
-	// Admin is the cluster admin gRPC surface.
-	Admin AdminConfig `koanf:"admin"`
-	// Snapshot configures the off-host DR snapshot archive.
+	Node     NodeConfig     `koanf:"node"`
+	Cluster  ClusterConfig  `koanf:"cluster"`
+	Storage  StorageConfig  `koanf:"storage"`
+	Ingress  IngressConfig  `koanf:"ingress"`
+	Metrics  MetricsConfig  `koanf:"metrics"`
+	Logging  LoggingConfig  `koanf:"logging"`
+	Delivery DeliveryConfig `koanf:"delivery"`
+	Admin    AdminConfig    `koanf:"admin"`
+	Auth     AuthConfig     `koanf:"auth"`
 	Snapshot SnapshotConfig `koanf:"snapshot"`
 	Handlers *sdk.Registry  `koanf:"-"`
+}
+
+// DeliveryConfig configures the cross-shard Delivery gRPC surface used
+// for node-to-node outbox dispatch. Addr is the listen address (also
+// advertised via gossip). Creds selects the transport-security driver
+// for both the server and the outbound client.
+type DeliveryConfig struct {
+	Creds creds.Spec `koanf:"creds"`
 }
 
 // AdminConfig configures the admin gRPC server.
@@ -50,6 +57,22 @@ type AdminConfig struct {
 	// Disabled forces the admin server off even when Addr is set. Used
 	// by tests + multi-process embedders that ship their own surface.
 	Disabled bool `koanf:"disabled"`
+	// Creds selects the transport-security driver for the admin
+	// listener.
+	Creds creds.Spec `koanf:"creds"`
+}
+
+// AuthConfig drives the authentication + authorization interceptor
+// stack shared by Admin and Delivery listeners.
+type AuthConfig struct {
+	// TrustDomain is the SPIFFE trust domain expected on TLS leaves
+	// (and reflected in JWT claim mapping later). Empty defaults to
+	// DefaultTrustDomain.
+	TrustDomain string `koanf:"trust_domain"`
+	// PolicyFile, when non-empty, points at a JSON authz policy that
+	// is hot-reloaded via grpc-go's authz.FileWatcher. Empty installs
+	// the embedded starter policy (see internal/auth).
+	PolicyFile string `koanf:"policy_file"`
 }
 
 // SnapshotConfig configures the per-partition DR snapshot producer,
@@ -95,46 +118,17 @@ type SnapshotConfig struct {
 	ScratchDir string `koanf:"scratch_dir"`
 }
 
-// TLSConfig groups the PEM file paths that drive reflow's mTLS plus the
-// SPIFFE trust domain stamped on every issued leaf. See pkg/reflow/tls.go
-// for the single-CA + URI-SAN contract.
-type TLSConfig struct {
-	CAFile      string `koanf:"ca_file"`
-	CertFile    string `koanf:"cert_file"`
-	KeyFile     string `koanf:"key_file"`
-	TrustDomain string `koanf:"trust_domain"`
-}
+// DefaultTrustDomain is the SPIFFE trust domain used when
+// AuthConfig.TrustDomain is empty.
+const DefaultTrustDomain = creds.DefaultTrustDomain
 
-// DefaultTrustDomain is the SPIFFE trust domain used when TLSConfig
-// leaves it empty.
-const DefaultTrustDomain = "reflow.local"
-
-// TrustDomainOrDefault returns the configured trust domain or
+// trustDomainOrDefault returns cfg.Auth.TrustDomain or
 // DefaultTrustDomain when unset.
-func (c TLSConfig) TrustDomainOrDefault() string {
+func (c AuthConfig) trustDomainOrDefault() string {
 	if c.TrustDomain == "" {
 		return DefaultTrustDomain
 	}
 	return c.TrustDomain
-}
-
-// files renders TLSConfig as the internal TLSFiles struct used by the
-// helper builders. Kept as a small projection so the public Config
-// surface doesn't depend on tls.go internals.
-func (c TLSConfig) files() TLSFiles {
-	return TLSFiles{
-		CAFile:   c.CAFile,
-		CertFile: c.CertFile,
-		KeyFile:  c.KeyFile,
-	}
-}
-
-// IsZero reports whether no TLS file paths have been configured. Used by
-// Run to gate "multi-node requires TLS" validation. TrustDomain is
-// intentionally ignored — it has a sensible default and shouldn't on
-// its own flip cluster-mode wiring.
-func (c TLSConfig) IsZero() bool {
-	return c.CAFile == "" && c.CertFile == "" && c.KeyFile == ""
 }
 
 // NodeConfig identifies this node in the cluster.

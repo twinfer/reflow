@@ -1,21 +1,19 @@
-// Package auth is reflow's authentication and authorization layer for
-// gRPC servers. Both Admin and Delivery share this stack.
+// Package auth is reflow's authentication + authorization interceptor
+// layer for gRPC servers (Admin, Delivery — and Ingress in the
+// future). The model is:
 //
-// The model is Temporal-shaped:
+//   - Extractor turns a server context (TLS peer info today; JWT
+//     metadata later) into a Principal.
+//   - The interceptor stamps Principal.Raw into a server-controlled
+//     metadata header (x-reflow-principal). Any inbound copy of that
+//     header is stripped first, so a client cannot forge identity.
+//   - grpc-go's authz package then matches the stamped header against
+//     a JSON policy. The embedded starter policy lives in
+//     starter_policy.json; operators override via Config.PolicyFile,
+//     which gets hot-reloaded by authz.FileWatcher.
 //
-//   - ClaimMapper turns raw transport material (mTLS state today, JWT
-//     tomorrow) into trusted Claims.
-//   - Authorizer takes Claims + CallTarget and returns Allow/Deny.
-//   - The unary and stream interceptors chain those two calls per RPC.
-//
-// The default ClaimMapper (CertClaimMapper) reads the SPIFFE URI SAN
-// from a verified mTLS leaf and parses the two-segment path into
-// {Kind, Subject}. The default Authorizer (ProtoPolicyAuthorizer)
-// consults a method->role map built from proto annotations
-// (proto/optionsv1/options.proto). Adding JWT/OIDC support later means
-// implementing one more ClaimMapper and chaining it ahead of the cert
-// mapper; no changes to the Authorizer or interceptors are required.
-//
-// Identity well-formedness is enforced at the TLS layer
-// (pkg/reflow/tls.go); role enforcement lives here.
+// Adding a new authentication source (JWT, OIDC) means writing one
+// more Extractor and chaining it ahead of SPIFFEExtractor. The
+// Authorizer side stays unchanged because every principal funnels
+// through the same metadata header.
 package auth

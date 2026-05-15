@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/twinfer/reflow/pkg/reflow/admin"
+	"github.com/twinfer/reflow/pkg/reflow/creds"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 )
 
@@ -48,11 +49,16 @@ func (t *tlsFlags) validate() error {
 
 func (t *tlsFlags) dial(ctx context.Context) (*admin.Client, error) {
 	return admin.Dial(ctx, admin.DialOptions{
-		Addr:             t.addr,
-		OperatorCertFile: t.clientCert,
-		OperatorKeyFile:  t.clientKey,
-		CAFile:           t.ca,
-		TrustDomain:      t.trustDomain,
+		Addr: t.addr,
+		Creds: creds.Spec{
+			Driver: creds.DriverTLS,
+			TLS: &creds.TLSSpec{
+				CAFile:      t.ca,
+				CertFile:    t.clientCert,
+				KeyFile:     t.clientKey,
+				TrustDomain: t.trustDomain,
+			},
+		},
 	})
 }
 

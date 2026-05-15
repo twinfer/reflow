@@ -10,6 +10,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
+	"github.com/twinfer/reflow/pkg/reflow/creds"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -23,8 +24,11 @@ type Host struct {
 	deliverySrv    *grpc.Server
 	deliveryLn     net.Listener
 	deliveryClient *delivery.Client
+	deliveryCreds  *creds.ListenerCreds
 	adminSrv       *grpc.Server
 	adminLn        net.Listener
+	adminCreds     *creds.ListenerCreds
+	authCloser     func() error
 	snapshotCxl    context.CancelFunc
 	snapshotRepo   *snapshot.BlobRepository
 }
@@ -79,6 +83,17 @@ func (h *Host) Close() error {
 		}
 		h.engine = nil
 	}
+	if h.authCloser != nil {
+		if err := h.authCloser(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		h.authCloser = nil
+	}
+	if err := creds.CloseAll(h.deliveryCreds, h.adminCreds); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	h.deliveryCreds = nil
+	h.adminCreds = nil
 	if h.metricsCloser != nil {
 		if err := h.metricsCloser(); err != nil && firstErr == nil {
 			firstErr = err

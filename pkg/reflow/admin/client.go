@@ -1,7 +1,7 @@
 // Package admin holds the shared admin gRPC client used by the
 // reflow-cluster CLI and by integration tests. Thin wrapper over the
-// generated adminv1.AdminClient that handles mTLS dial + connection
-// cleanup.
+// generated adminv1.AdminClient that handles credential setup +
+// connection cleanup.
 package admin
 
 import (
@@ -11,23 +11,18 @@ import (
 	"io"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 
-	"github.com/twinfer/reflow/pkg/reflow"
+	"github.com/twinfer/reflow/pkg/reflow/creds"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 )
 
-// DialOptions configures Dial. Addr must be a host:port reachable from
-// the caller. OperatorCertFile / OperatorKeyFile / CAFile drive the
-// mTLS handshake (see pkg/reflow/tls.go BuildAdminClientTLS). TrustDomain
-// is the SPIFFE trust domain the server's leaf URI must match; empty
-// falls back to reflow.DefaultTrustDomain.
+// DialOptions configures Dial. Addr is host:port of the admin endpoint.
+// Creds selects the transport-security driver (insecure zero spec for
+// local tests, tls / tls_certprovider / oauth / … for production
+// operator workflows).
 type DialOptions struct {
-	Addr             string
-	OperatorCertFile string
-	OperatorKeyFile  string
-	CAFile           string
-	TrustDomain      string
+	Addr  string
+	Creds creds.Spec
 }
 
 // Client is the typed admin gRPC client plus its underlying conn so the
@@ -36,48 +31,56 @@ type Client struct {
 	cc      *grpc.ClientConn
 	Admin   adminv1.AdminClient
 	addr    string
+	closer  func() error
 	closeFn func() error
 }
 
 var _ io.Closer = (*Client)(nil)
 
-// Dial opens an mTLS gRPC connection to opts.Addr using the supplied
-// operator cert / node CA. grpc.NewClient is non-blocking — the first
-// RPC the caller issues is what surfaces an unreachable address, gated
-// by the caller's ctx.
+// Dial opens a gRPC connection to opts.Addr using the supplied creds
+// spec. grpc.NewClient is non-blocking — the first RPC the caller
+// issues is what surfaces an unreachable address, gated by the
+// caller's ctx.
 func Dial(_ context.Context, opts DialOptions) (*Client, error) {
 	if opts.Addr == "" {
 		return nil, errors.New("admin: Addr required")
 	}
-	td := opts.TrustDomain
-	if td == "" {
-		td = reflow.DefaultTrustDomain
-	}
-	tlsCfg, err := reflow.BuildAdminClientTLS(opts.OperatorCertFile, opts.OperatorKeyFile, opts.CAFile, td)
+	lc, err := creds.Build(opts.Creds, nil)
 	if err != nil {
-		return nil, fmt.Errorf("admin: tls: %w", err)
+		return nil, fmt.Errorf("admin: creds: %w", err)
 	}
-	cc, err := grpc.NewClient("passthrough:///"+opts.Addr,
-		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
+	cc, err := grpc.NewClient("passthrough:///"+opts.Addr, lc.ClientDial...)
 	if err != nil {
+		if lc.Close != nil {
+			_ = lc.Close()
+		}
 		return nil, fmt.Errorf("admin: dial %s: %w", opts.Addr, err)
 	}
 	return &Client{
 		cc:      cc,
 		Admin:   adminv1.NewAdminClient(cc),
 		addr:    opts.Addr,
+		closer:  lc.Close,
 		closeFn: cc.Close,
 	}, nil
 }
 
 // Close releases the underlying gRPC connection.
 func (c *Client) Close() error {
-	if c.closeFn == nil {
-		return nil
+	var firstErr error
+	if c.closeFn != nil {
+		if err := c.closeFn(); err != nil {
+			firstErr = err
+		}
+		c.closeFn = nil
 	}
-	err := c.closeFn()
-	c.closeFn = nil
-	return err
+	if c.closer != nil {
+		if err := c.closer(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		c.closer = nil
+	}
+	return firstErr
 }
 
 // Addr returns the dialed server address.

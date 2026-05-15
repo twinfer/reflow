@@ -12,8 +12,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/engine"
@@ -21,7 +19,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	"github.com/twinfer/reflow/internal/observability"
-	adminv1 "github.com/twinfer/reflow/proto/adminv1"
+	"github.com/twinfer/reflow/pkg/reflow/creds"
 	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
 )
 
@@ -35,7 +33,6 @@ import (
 //	    Storage: reflow.StorageConfig{DataDir: "/var/lib/reflow"},
 //	}
 //	cfg.Handlers = sdk.NewRegistry()
-//	// cfg.Handlers.Register("Greeter", "hello", greetHandler)  // Step 9
 //	host, err := reflow.Run(ctx, cfg)
 func Run(ctx context.Context, cfg Config) (*Host, error) {
 	if err := validate(cfg); err != nil {
@@ -43,14 +40,9 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	}
 	cfg = withDefaults(cfg)
 
-	// Install the configured logger as the process default so internal
-	// components that fall back to slog.Default() inherit it.
 	logger := buildLogger(cfg.Logging)
 	slog.SetDefault(logger)
 
-	// Register Prometheus collectors against the chosen registry. Done
-	// once at startup; the metrics handler reuses whichever registry was
-	// passed.
 	var metricsRegisterer prometheus.Registerer
 	var metrics *observability.Metrics
 	if !cfg.Metrics.Disabled {
@@ -62,30 +54,19 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		metrics = observability.NewMetrics(metricsRegisterer)
 	}
 
-	// Optionally start the /metrics HTTP server.
 	var metricsCloser func() error
 	if !cfg.Metrics.Disabled && cfg.Metrics.Addr != "" {
 		metricsCloser = startMetricsServer(cfg.Metrics, logger)
 	}
 
-	// Bring up the internal engine Host.
-	//
 	// NumPartitionShards is the routing modulus — independent of peer
 	// count. Multi-node deployments may host every shard on every peer
 	// so the two happen to coincide, but the engine must not bake that
-	// assumption in. We pass len(Cluster.Shards) when the caller
-	// specified an explicit shard list, otherwise 1 (single-shard
-	// default that matches the [1] default applied to cfg.Cluster.Shards
-	// below).
+	// assumption in.
 	numShards := uint64(len(cfg.Cluster.Shards))
 	if numShards == 0 {
 		numShards = 1
 	}
-	// Allocate one buffered-1 trigger channel per partition shard
-	// upfront so the OnSnapshotPersisted hook installed on the Host
-	// has somewhere to fan signals into. The snapshot producer
-	// (started later) consumes from these channels; consumer-less
-	// signals queue up to one and drop after — bounded and benign.
 	shards := cfg.Cluster.Shards
 	if len(shards) == 0 {
 		shards = []uint64{1}
@@ -116,8 +97,6 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			select {
 			case ch <- struct{}{}:
 			default:
-				// A trigger is already pending; drop. Producer will
-				// pick it up on its next iteration.
 			}
 		},
 	}
@@ -131,178 +110,189 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 
 	multiNode := len(hcfg.Peers) > 0
 
-	var deliverySrv *grpc.Server
-	var deliveryLn net.Listener
-	var deliveryClient *delivery.Client
+	// All transport-security and authn/z material is built upfront so a
+	// configuration error halts startup before any listener opens. Each
+	// listener owns its own creds.ListenerCreds (Close threaded through
+	// Host.Close); the auth interceptors are shared.
+	var (
+		deliveryCreds *creds.ListenerCreds
+		adminCreds    *creds.ListenerCreds
+		authCloser    func() error
+	)
+	bail := func(err error) (*Host, error) {
+		if authCloser != nil {
+			_ = authCloser()
+		}
+		_ = creds.CloseAll(deliveryCreds, adminCreds)
+		_ = eh.Close()
+		if metricsCloser != nil {
+			_ = metricsCloser()
+		}
+		return nil, err
+	}
 
 	if multiNode {
-		// Build the Delivery TLS material upfront so both the outbound
-		// client and the inbound server share one node cert. When TLS
-		// files are absent, fall back to insecure for dev/test ergonomics
-		// — the reflowd CLI enforces "multi-node requires TLS" at the
-		// binary level.
-		clientDialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
-		var serverCreds credentials.TransportCredentials
-		if !cfg.TLS.IsZero() {
-			td := cfg.TLS.TrustDomainOrDefault()
-			clientTLS, tlsErr := BuildDeliveryClientTLS(cfg.TLS.files(), td)
-			if tlsErr != nil {
-				_ = eh.Close()
-				if metricsCloser != nil {
-					_ = metricsCloser()
-				}
-				return nil, fmt.Errorf("reflow: build delivery client TLS: %w", tlsErr)
-			}
-			clientDialOpts = []grpc.DialOption{grpc.WithTransportCredentials(credentials.NewTLS(clientTLS))}
-
-			serverTLS, sErr := BuildDeliveryServerTLS(cfg.TLS.files(), td)
-			if sErr != nil {
-				_ = eh.Close()
-				if metricsCloser != nil {
-					_ = metricsCloser()
-				}
-				return nil, fmt.Errorf("reflow: build delivery server TLS: %w", sErr)
-			}
-			serverCreds = credentials.NewTLS(serverTLS)
+		dc, derr := creds.Build(cfg.Delivery.Creds, logger)
+		if derr != nil {
+			return bail(fmt.Errorf("reflow: delivery creds: %w", derr))
 		}
-
-		// Build the delivery client first so partitions get a Sender on
-		// startup. Resolver is the engine.Host itself (PartitionLeaderHint
-		// + NodeEndpoint).
-		dc, dcErr := delivery.NewClient(delivery.ClientConfig{
-			Resolver:    eh,
-			Log:         logger,
-			DialOptions: clientDialOpts,
+		deliveryCreds = dc
+	}
+	if multiNode && !cfg.Admin.Disabled && cfg.Admin.Addr != "" {
+		ac, aerr := creds.Build(cfg.Admin.Creds, logger)
+		if aerr != nil {
+			return bail(fmt.Errorf("reflow: admin creds: %w", aerr))
+		}
+		adminCreds = ac
+	}
+	if multiNode {
+		uIc, sIc, closer, ierr := auth.NewServerInterceptors(auth.Config{
+			Extractor:  &auth.SPIFFEExtractor{TrustDomain: cfg.Auth.trustDomainOrDefault()},
+			PolicyFile: cfg.Auth.PolicyFile,
+			Log:        logger,
 		})
-		if dcErr != nil {
-			_ = eh.Close()
-			if metricsCloser != nil {
-				_ = metricsCloser()
-			}
-			return nil, fmt.Errorf("reflow: delivery client: %w", dcErr)
+		if ierr != nil {
+			return bail(fmt.Errorf("reflow: auth interceptors: %w", ierr))
 		}
-		deliveryClient = dc
+		authCloser = closer
+		_ = uIc // captured by buildServerOpts
+		_ = sIc
+		// stash for later — Go's flow control means we just call
+		// buildServerOpts inside the listener-startup sections below.
+		// Bundle them into a small struct to avoid free-variable noise.
+		interceptors := &serverInterceptors{unary: uIc, stream: sIc}
+
+		ds, dln, dc, derr := startDeliveryListener(eh, cfg, deliveryCreds, interceptors, logger)
+		if derr != nil {
+			return bail(derr)
+		}
+
+		// Wire the delivery host with both the inbound server and the
+		// pooled outbound client. Both share the same creds spec so the
+		// cluster forms a closed trust loop.
+		_ = ds
+		_ = dln
 		eh.SetCrossShardSender(dc)
 
-		// Start the Delivery gRPC listener on Node.DeliveryAddr — the
-		// same endpoint published via gossip NodeHostMeta. The listener
-		// is kept dedicated to ingress to maintain a clean startup
-		// ordering.
-		ln, lnErr := net.Listen("tcp", cfg.Node.DeliveryAddr)
-		if lnErr != nil {
+		host, herr := finishStartup(ctx, cfg, eh, multiNode, shards, snapshotTriggers,
+			ds, dln, dc, deliveryCreds, adminCreds, interceptors, authCloser,
+			metricsCloser, logger)
+		if herr != nil {
+			ds.Stop()
+			_ = dln.Close()
 			_ = dc.Close()
-			_ = eh.Close()
-			if metricsCloser != nil {
-				_ = metricsCloser()
-			}
-			return nil, fmt.Errorf("reflow: listen delivery %s: %w", cfg.Node.DeliveryAddr, lnErr)
+			return bail(herr)
 		}
-		deliveryPolicy, dpErr := auth.BuildMethodPolicy(
-			deliveryv1.File_deliveryv1_delivery_proto.Services().ByName("Delivery"))
-		if dpErr != nil {
-			_ = dc.Close()
-			_ = ln.Close()
-			_ = eh.Close()
-			if metricsCloser != nil {
-				_ = metricsCloser()
-			}
-			return nil, fmt.Errorf("reflow: build delivery authz policy: %w", dpErr)
-		}
-		deliveryAuthz := auth.NewProtoPolicyAuthorizer(deliveryPolicy)
-		deliveryMapper := &auth.CertClaimMapper{TrustDomain: cfg.TLS.TrustDomainOrDefault()}
-
-		gsOpts := []grpc.ServerOption{
-			grpc.ChainUnaryInterceptor(auth.UnaryInterceptor(deliveryMapper, deliveryAuthz, logger)),
-			grpc.ChainStreamInterceptor(auth.StreamInterceptor(deliveryMapper, deliveryAuthz, logger)),
-		}
-		if serverCreds != nil {
-			gsOpts = append(gsOpts, grpc.Creds(serverCreds))
-		}
-		gs := grpc.NewServer(gsOpts...)
-		deliveryv1.RegisterDeliveryServer(gs, delivery.NewServer(eh, logger))
-		deliverySrv = gs
-		deliveryLn = ln
-		go func() {
-			if err := gs.Serve(ln); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-				logger.Error("reflow: delivery gRPC Serve exited", "err", err)
-			}
-		}()
-		logger.Info("reflow: delivery listening", "addr", ln.Addr().String())
-
-		// Start shard 0 (metadata Raft group) before partition shards so
-		// the partition table is being established as partitions come up.
-		// Starting it first avoids race-prone test orderings even when
-		// every node hosts every partition and the static peer list makes
-		// the partition table redundant on the wire.
-		if _, mErr := eh.StartMetadataShard(); mErr != nil {
-			deliverySrv.Stop()
-			_ = ln.Close()
-			_ = dc.Close()
-			_ = eh.Close()
-			if metricsCloser != nil {
-				_ = metricsCloser()
-			}
-			return nil, fmt.Errorf("reflow: StartMetadataShard: %w", mErr)
-		}
-		logger.Info("reflow: metadata shard started", "shard", 0)
+		return host, nil
 	}
+
+	// Single-node path: no Delivery, no Admin, no auth interceptors.
+	for _, sh := range shards {
+		if _, err := eh.StartPartition(sh); err != nil {
+			return bail(fmt.Errorf("reflow: StartPartition(%d): %w", sh, err))
+		}
+		logger.Info("reflow: partition started", "shard", sh)
+	}
+	return &Host{
+		engine:        eh,
+		metricsCloser: metricsCloser,
+	}, nil
+}
+
+// serverInterceptors bundles the unary+stream pair so it can be passed
+// without three positional args.
+type serverInterceptors struct {
+	unary  grpc.UnaryServerInterceptor
+	stream grpc.StreamServerInterceptor
+}
+
+// startDeliveryListener builds the Delivery client (so partitions get a
+// Sender on startup) and the Delivery gRPC server. The two share one
+// creds.Spec (mTLS or insecure) so the cluster forms a closed trust loop.
+func startDeliveryListener(
+	eh *engine.Host,
+	cfg Config,
+	lc *creds.ListenerCreds,
+	ic *serverInterceptors,
+	logger *slog.Logger,
+) (*grpc.Server, net.Listener, *delivery.Client, error) {
+	dc, err := delivery.NewClient(delivery.ClientConfig{
+		Resolver:    eh,
+		Log:         logger,
+		DialOptions: lc.ClientDial,
+	})
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("reflow: delivery client: %w", err)
+	}
+
+	ln, err := net.Listen("tcp", cfg.Node.DeliveryAddr)
+	if err != nil {
+		_ = dc.Close()
+		return nil, nil, nil, fmt.Errorf("reflow: listen delivery %s: %w", cfg.Node.DeliveryAddr, err)
+	}
+
+	opts := []grpc.ServerOption{
+		grpc.Creds(lc.Server),
+		grpc.ChainUnaryInterceptor(ic.unary),
+		grpc.ChainStreamInterceptor(ic.stream),
+	}
+	gs := grpc.NewServer(opts...)
+	deliveryv1.RegisterDeliveryServer(gs, delivery.NewServer(eh, logger))
+	go func() {
+		if err := gs.Serve(ln); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			logger.Error("reflow: delivery gRPC Serve exited", "err", err)
+		}
+	}()
+	logger.Info("reflow: delivery listening", "addr", ln.Addr().String(),
+		"driver", string(lc.Driver))
+	return gs, ln, dc, nil
+}
+
+// finishStartup wires shard 0 + partition shards + optional snapshot
+// producer + admin server, then packages everything into a Host. Errors
+// here are surfaced by the caller which runs the bail cleanup.
+func finishStartup(
+	_ context.Context,
+	cfg Config,
+	eh *engine.Host,
+	multiNode bool,
+	shards []uint64,
+	snapshotTriggers map[uint64]chan struct{},
+	deliverySrv *grpc.Server,
+	deliveryLn net.Listener,
+	deliveryClient *delivery.Client,
+	deliveryCreds *creds.ListenerCreds,
+	adminCreds *creds.ListenerCreds,
+	ic *serverInterceptors,
+	authCloser func() error,
+	metricsCloser func() error,
+	logger *slog.Logger,
+) (*Host, error) {
+	// Start shard 0 before partition shards so the partition table is
+	// established as partitions come up.
+	if _, err := eh.StartMetadataShard(); err != nil {
+		return nil, fmt.Errorf("reflow: StartMetadataShard: %w", err)
+	}
+	logger.Info("reflow: metadata shard started", "shard", 0)
 
 	for _, sh := range shards {
 		if _, err := eh.StartPartition(sh); err != nil {
-			if deliverySrv != nil {
-				deliverySrv.Stop()
-				_ = deliveryLn.Close()
-			}
-			if deliveryClient != nil {
-				_ = deliveryClient.Close()
-			}
-			_ = eh.Close()
-			if metricsCloser != nil {
-				_ = metricsCloser()
-			}
 			return nil, fmt.Errorf("reflow: StartPartition(%d): %w", sh, err)
 		}
 		logger.Info("reflow: partition started", "shard", sh)
 	}
 
-	// Optional multi-node surfaces (admin server, snapshot producer).
 	var (
 		adminSrv     *grpc.Server
 		adminLn      net.Listener
 		snapshotCxl  context.CancelFunc
 		snapshotRepo *snapshot.BlobRepository
 	)
-	cleanup := func() {
-		if snapshotCxl != nil {
-			snapshotCxl()
-		}
-		if snapshotRepo != nil {
-			_ = snapshotRepo.Close()
-		}
-		if adminSrv != nil {
-			adminSrv.Stop()
-		}
-		if adminLn != nil {
-			_ = adminLn.Close()
-		}
-		if deliverySrv != nil {
-			deliverySrv.Stop()
-			_ = deliveryLn.Close()
-		}
-		if deliveryClient != nil {
-			_ = deliveryClient.Close()
-		}
-		_ = eh.Close()
-		if metricsCloser != nil {
-			_ = metricsCloser()
-		}
-	}
 
 	var snapshotRepoIface snapshot.Repository
 	if multiNode && cfg.Snapshot.URL != "" {
 		bucket, err := snapshot.OpenBucket(context.Background(), cfg.Snapshot.URL)
 		if err != nil {
-			cleanup()
 			return nil, fmt.Errorf("reflow: open snapshot bucket: %w", err)
 		}
 		snapshotRepo = &snapshot.BlobRepository{
@@ -356,21 +346,22 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	if multiNode && !cfg.Admin.Disabled && cfg.Admin.Addr != "" {
 		runner := eh.MetadataRunner()
 		if runner == nil {
-			cleanup()
+			if snapshotCxl != nil {
+				snapshotCxl()
+			}
+			if snapshotRepo != nil {
+				_ = snapshotRepo.Close()
+			}
 			return nil, errors.New("reflow: metadata runner not initialized; cannot start admin")
-		}
-		if cfg.TLS.IsZero() {
-			cleanup()
-			return nil, errors.New("reflow: admin server requires TLS configuration")
-		}
-		adminTLS, atErr := BuildAdminServerTLS(cfg.TLS.files(), cfg.TLS.TrustDomainOrDefault())
-		if atErr != nil {
-			cleanup()
-			return nil, fmt.Errorf("reflow: build admin TLS: %w", atErr)
 		}
 		ln, lErr := net.Listen("tcp", cfg.Admin.Addr)
 		if lErr != nil {
-			cleanup()
+			if snapshotCxl != nil {
+				snapshotCxl()
+			}
+			if snapshotRepo != nil {
+				_ = snapshotRepo.Close()
+			}
 			return nil, fmt.Errorf("reflow: listen admin %s: %w", cfg.Admin.Addr, lErr)
 		}
 		adminLn = ln
@@ -383,25 +374,19 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			ScratchDir: cfg.Snapshot.ScratchDir,
 		})
 		if sErr != nil {
-			cleanup()
+			if snapshotCxl != nil {
+				snapshotCxl()
+			}
+			if snapshotRepo != nil {
+				_ = snapshotRepo.Close()
+			}
+			_ = adminLn.Close()
 			return nil, fmt.Errorf("reflow: admin server: %w", sErr)
 		}
-		adminPolicy, perr := auth.BuildMethodPolicy(
-			adminv1.File_adminv1_admin_proto.Services().ByName("Admin"))
-		if perr != nil {
-			cleanup()
-			return nil, fmt.Errorf("reflow: build admin authz policy: %w", perr)
-		}
-		adminAuthz := auth.NewProtoPolicyAuthorizer(adminPolicy)
-		adminMapper := &auth.CertClaimMapper{TrustDomain: cfg.TLS.TrustDomainOrDefault()}
 		adminSrv = grpc.NewServer(
-			grpc.Creds(credentials.NewTLS(adminTLS)),
-			grpc.ChainUnaryInterceptor(
-				auth.UnaryInterceptor(adminMapper, adminAuthz, logger),
-			),
-			grpc.ChainStreamInterceptor(
-				auth.StreamInterceptor(adminMapper, adminAuthz, logger),
-			),
+			grpc.Creds(adminCreds.Server),
+			grpc.ChainUnaryInterceptor(ic.unary),
+			grpc.ChainStreamInterceptor(ic.stream),
 		)
 		srv.Register(adminSrv)
 		go func() {
@@ -409,7 +394,8 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 				logger.Error("reflow: admin gRPC Serve exited", "err", err)
 			}
 		}()
-		logger.Info("reflow: admin listening", "addr", adminLn.Addr().String())
+		logger.Info("reflow: admin listening", "addr", adminLn.Addr().String(),
+			"driver", string(adminCreds.Driver))
 	}
 
 	return &Host{
@@ -418,8 +404,11 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		deliverySrv:    deliverySrv,
 		deliveryLn:     deliveryLn,
 		deliveryClient: deliveryClient,
+		deliveryCreds:  deliveryCreds,
 		adminSrv:       adminSrv,
 		adminLn:        adminLn,
+		adminCreds:     adminCreds,
+		authCloser:     authCloser,
 		snapshotCxl:    snapshotCxl,
 		snapshotRepo:   snapshotRepo,
 	}, nil

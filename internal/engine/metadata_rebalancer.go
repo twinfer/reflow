@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/twinfer/reflow/internal/engine/cluster"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -225,7 +226,7 @@ func (r *metadataRebalancer) runStep(ctx context.Context, step *enginev1.Rebalan
 	var membershipErr error
 	switch step.GetKind() {
 	case enginev1.RebalanceStep_ADD_NON_VOTING:
-		nhID := r.host.nodeHostIDOf(step.GetAddNodeId())
+		nhID := r.resolveNodeHostID(step.GetAddNodeId())
 		if nhID == "" {
 			r.log.Warn("rebalancer: ADD_NON_VOTING for unknown peer; ignoring",
 				"node_id", step.GetAddNodeId())
@@ -234,7 +235,7 @@ func (r *metadataRebalancer) runStep(ctx context.Context, step *enginev1.Rebalan
 		membershipErr = r.host.nh.SyncRequestAddNonVoting(
 			stepCtx, step.GetShardId(), step.GetAddNodeId(), nhID, 0)
 	case enginev1.RebalanceStep_PROMOTE_TO_VOTER:
-		nhID := r.host.nodeHostIDOf(step.GetAddNodeId())
+		nhID := r.resolveNodeHostID(step.GetAddNodeId())
 		if nhID == "" {
 			r.log.Warn("rebalancer: PROMOTE_TO_VOTER for unknown peer; ignoring",
 				"node_id", step.GetAddNodeId())
@@ -280,4 +281,27 @@ func (r *metadataRebalancer) runStep(ctx context.Context, step *enginev1.Rebalan
 				"err", err)
 		}
 	}
+}
+
+// resolveNodeHostID returns the NodeHostID for nodeID, consulting the
+// static peer list first and then falling back to the on-disk
+// MembershipTable that RegisterNode populates. The fallback lets the
+// rebalancer add nodes that joined after bootstrap (the
+// `reflow-cluster add-node` workflow).
+func (r *metadataRebalancer) resolveNodeHostID(nodeID uint64) string {
+	if nhID := r.host.nodeHostIDOf(nodeID); nhID != "" {
+		return nhID
+	}
+	if r.runner == nil || r.runner.snapshotter == nil {
+		return ""
+	}
+	store := r.runner.snapshotter.Store()
+	if store == nil {
+		return ""
+	}
+	m, err := (cluster.MembershipTable{S: store}).Get(nodeID)
+	if err != nil || m == nil {
+		return ""
+	}
+	return m.GetNodeHostId()
 }

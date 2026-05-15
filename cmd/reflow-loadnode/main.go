@@ -54,6 +54,7 @@ func run() error {
 		dataDir      string
 		peersFlag    string
 		numShards    uint64
+		joinExisting bool
 	)
 	flag.Uint64Var(&nodeID, "node-id", 0, "raft node id (1..N)")
 	flag.StringVar(&raftAddr, "raft-addr", "", "raft transport address (host:port)")
@@ -63,6 +64,7 @@ func run() error {
 	flag.StringVar(&dataDir, "data-dir", "", "on-disk dataDir for Pebble + raft log")
 	flag.StringVar(&peersFlag, "peers", "", "comma-sep peers: id@raft,gossip (one entry per cluster member, including self)")
 	flag.Uint64Var(&numShards, "num-shards", 0, "number of partition shards (1..N)")
+	flag.BoolVar(&joinExisting, "join", false, "join an already-running cluster (StartOnDiskReplica with join=true); admin AddNode must have already added this NodeID")
 	flag.Parse()
 
 	if nodeID == 0 || raftAddr == "" || gossipAddr == "" || deliveryAddr == "" ||
@@ -91,6 +93,7 @@ func run() error {
 		GossipBindAddr:     gossipAddr,
 		GossipAdvAddr:      gossipAddr,
 		GrpcEndpoint:       deliveryAddr,
+		JoinExisting:       joinExisting,
 	})
 	if err != nil {
 		return fmt.Errorf("engine.NewHost: %w", err)

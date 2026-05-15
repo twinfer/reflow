@@ -242,6 +242,19 @@ type Cluster struct {
 	opts     ClusterOptions
 }
 
+// Peers returns a copy of the static peer list this cluster bootstrapped
+// with. Useful for tests that grow the cluster mid-run (the join-existing
+// path) and need to derive the joiner's gossip seed list from the
+// existing peers' addresses.
+func (c *Cluster) Peers() []engine.Peer {
+	if c == nil {
+		return nil
+	}
+	out := make([]engine.Peer, len(c.peers))
+	copy(out, c.peers)
+	return out
+}
+
 // Close tears every node down. Safe even when bring-up failed
 // partway through (NewCluster leaves nil entries for the slots it
 // didn't reach).

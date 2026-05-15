@@ -203,6 +203,15 @@ type ClusterConfig struct {
 	RaftTLSCert []byte `koanf:"raft_tls_cert"`
 	// RaftTLSKey is the matching private key. Phase 4+.
 	RaftTLSKey []byte `koanf:"raft_tls_key"`
+	// JoinExisting, when true, starts this node as a joiner of an
+	// already-running cluster: dragonboat StartOnDiskReplica is called
+	// with (nil, join=true) so the node catches up from a Raft snapshot
+	// instead of seeding the initial membership. The operator must have
+	// run `reflow-cluster add-node` (which proposes RegisterNode +
+	// PROMOTE_TO_VOTER) against an existing leader first; that workflow
+	// is what makes this ReplicaID a known member of every shard's
+	// configuration. Default false preserves the static-bootstrap path.
+	JoinExisting bool `koanf:"join_existing"`
 }
 
 // SnapshotRepository abstracts the destination for partition snapshots

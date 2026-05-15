@@ -105,6 +105,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		GossipAdvAddr:      cfg.Node.GossipAdvAddr,
 		GrpcEndpoint:       cfg.Node.DeliveryAddr,
 		Peers:              toEnginePeers(cfg.Cluster.Peers),
+		JoinExisting:       cfg.Cluster.JoinExisting,
 		NumPartitionShards: numShards,
 		Metrics:            metrics,
 		OnSnapshotPersisted: func(shardID uint64) {

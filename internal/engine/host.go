@@ -109,6 +109,17 @@ type HostConfig struct {
 	// having to fork the engine. Phase 5.
 	PebbleOptions func(shardID uint64) *pebble.Options
 
+	// JoinExisting, when true, starts every shard with
+	// StartOnDiskReplica(nil, join=true, ...) — the dragonboat semantics
+	// for a replica that is joining an already-running Raft group rather
+	// than bootstrapping it. The cluster-side `admin AddNode` workflow
+	// must have run first against an existing leader so the new
+	// ReplicaID is a known member of each shard's configuration; this
+	// node then catches up via Raft snapshot + log replication. Default
+	// false preserves the static bootstrap path: every shard seeds with
+	// the full Peers set via initialMembers().
+	JoinExisting bool
+
 	// RaftTransportFactory, when non-nil, overrides dragonboat's built-in
 	// TCP raft transport via NodeHostConfig.Expert.TransportFactory. The
 	// production path leaves this nil and uses TCP. The chaos harness
@@ -382,8 +393,8 @@ func (h *Host) StartMetadataShard() (*MetadataRunner, error) {
 	h.metadataRunners[shardID] = runner
 	h.mu.Unlock()
 
-	initial := h.initialMembers()
-	if err := h.nh.StartOnDiskReplica(initial, false, fsmCfg.Factory(), raftCfg); err != nil {
+	initial, join := h.startMembers()
+	if err := h.nh.StartOnDiskReplica(initial, join, fsmCfg.Factory(), raftCfg); err != nil {
 		h.mu.Lock()
 		delete(h.metadataRunners, shardID)
 		h.mu.Unlock()
@@ -586,8 +597,8 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 	h.partitions[shardID] = runner
 	h.mu.Unlock()
 
-	initial := h.initialMembers()
-	if err := h.nh.StartOnDiskReplica(initial, false, pc.Factory(), raftCfg); err != nil {
+	initial, join := h.startMembers()
+	if err := h.nh.StartOnDiskReplica(initial, join, pc.Factory(), raftCfg); err != nil {
 		h.mu.Lock()
 		delete(h.partitions, shardID)
 		h.mu.Unlock()
@@ -760,6 +771,18 @@ func (h *Host) initialMembers() map[uint64]dragonboat.Target {
 		out[p.NodeID] = dragonboat.Target(p.resolvedNodeHostID())
 	}
 	return out
+}
+
+// startMembers returns the (initialMembers, join) pair passed to
+// dragonboat StartOnDiskReplica. When HostConfig.JoinExisting is true the
+// node is catching up to a Raft group that already has this ReplicaID in
+// its configuration (added via the admin AddNode workflow), and dragonboat
+// requires (nil, true). Bootstrap is (full peer set, false).
+func (h *Host) startMembers() (map[uint64]dragonboat.Target, bool) {
+	if h.cfg.JoinExisting {
+		return nil, true
+	}
+	return h.initialMembers(), false
 }
 
 // PartitionLeaderHint returns the believed leader's NodeID for the given

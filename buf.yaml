@@ -8,6 +8,13 @@ lint:
     - STANDARD
   except:
     - PACKAGE_DIRECTORY_MATCH
+  ignore:
+    # Reflow service protocol — hand-authored (Restate-inspired). The
+    # message shapes follow the Restate journal-v2 vocabulary, whose
+    # enum/field naming diverges from buf STANDARD (V1/V2 enum values
+    # without prefixes, etc.). We accept that divergence for
+    # vocabulary alignment with the upstream community.
+    - proto/protocolv1
 breaking:
   use:
     - FILE

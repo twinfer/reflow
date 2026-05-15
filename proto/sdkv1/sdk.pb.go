@@ -1,11 +1,14 @@
-// Reflow SDK ↔ engine session protocol.
+// Reflow in-process SDK ↔ engine session envelope.
 //
-// Mirrors Restate service-protocol v4 message shapes (see
-// restate/service-protocol/dev/restate/service/protocol.proto), adapted for
-// reflow's lazy-state + outbox model. Phase 2 ships exactly the messages
-// needed for the in-process Go SDK and the HTTP/2 wire shim; later phases
-// add scope/limit_key/idempotency to StartInvocation, retry policies to
-// EndInvocation, and combinator notifications to Completion.
+// SCOPE: This file describes the engine-side replay envelope used by
+// today's in-process Go SDK path (engine.invoker → pkg/sdk in the same
+// reflowd binary). The wire-facing engine↔handler protocol is
+// proto/protocolv1/protocol.proto (Kind-aware,
+// supports remote handlers via gRPC and HTTP/2). When the
+// `engine-dials-handler` path lands (plan commit 5d/5e), this envelope
+// is retained only for the in-proc dispatch path; the wire role flips
+// to protocolv1.
+//
 //
 // Both directions flow over the same transport. SDKMessage is a tagged
 // envelope; the kinds enumerate the legal payloads in either direction.

@@ -1,0 +1,487 @@
+// Reflow service protocol v1 — engine ↔ handler wire format.
+//
+// Wire framing on raw HTTP/2: each message is prefixed by a 64-bit
+// big-endian header (16-bit type code | 16-bit flags | 32-bit payload
+// length), followed by the protobuf payload. Type codes are
+// namespaced: 0x0000-0x00FF are core lifecycle frames, 0x0400-0x04FF
+// are command messages (Replicated journal entries created by the SDK
+// during processing), 0x8000-0x80FF are notification messages
+// (Completion + signal results delivered from engine to SDK).
+//
+// Over gRPC, both the SessionService.Invoke and DiscoveryService.Discover
+// RPCs use protobuf message envelopes; framing is gRPC-native.
+//
+//
+// Inspired by the Restate service-protocol v7 journal-v2 model
+// (https://github.com/restatedev/service-protocol, MIT-licensed,
+// (c) 2023 Restate Software, Inc., Restate GmbH). The message shapes
+// and Command/Notification split derive from that design; field
+// numbering, package, comment prose, and message set are reflow's.
+syntax = "proto3";
+
+package reflow.protocol.v1;
+
+option go_package = "github.com/twinfer/reflow/proto/protocolv1;protocolv1";
+
+// SessionService is the wire transport for a single invocation. The
+// engine is the client; the handler-side SDK process is the server.
+// Each Invoke RPC corresponds to one invocation: the engine opens the
+// stream by sending a StartMessage frame, then the SDK and engine
+// exchange command/notification frames until the SDK sends EndMessage
+// or the stream errors.
+service SessionService {
+  rpc Invoke(stream Frame) returns (stream Frame);
+}
+
+// DiscoveryService lets the engine enumerate the handlers a deployment
+// exposes at RegisterDeployment time. Mirrored by GET /discover on the
+// HTTP/2 transport.
+service DiscoveryService {
+  rpc Discover(DiscoveryRequest) returns (DiscoveryResponse);
+}
+
+// Frame is the on-the-wire envelope. payload is a protobuf-encoded
+// message whose concrete type is determined by the header's type code.
+message Frame {
+  // 16-bit type | 16-bit flags | 32-bit length, packed big-endian.
+  uint64 header = 1;
+  bytes payload = 2;
+}
+
+// Kind classifies the handler addressing model. Stamped at deployment
+// registration; echoed on StartMessage so the SDK can validate.
+enum Kind {
+  KIND_UNSPECIFIED = 0;
+  // Stateless per-invocation handler. Address: (service_name, "").
+  KIND_SERVICE = 1;
+  // Keyed, locked-per-key, stateful object. Address: (service_name, object_key).
+  KIND_OBJECT = 2;
+  // One run per (workflow_name, workflow_key). Long-lived; supports promises.
+  KIND_WORKFLOW = 3;
+}
+
+// ----------------------------------------------------------------------
+// Core lifecycle frames (type codes 0x0000-0x00FF)
+// ----------------------------------------------------------------------
+
+// Type: 0x0000
+// Sent by the engine to open an invocation. The SDK MUST receive
+// exactly one StartMessage as the first frame on the stream.
+message StartMessage {
+  message StateEntry {
+    bytes key = 1;
+    // Empty bytes encodes an empty value, not absence.
+    bytes value = 2;
+  }
+
+  // Invocation id, 16 bytes (UUIDv4 or deterministic from idempotency_token).
+  bytes id = 1;
+
+  // Display id for logging / introspection.
+  string debug_id = 2;
+
+  // Sum of commands + notifications already journaled. Tells the SDK how
+  // far through replay it is when it sees this StartMessage.
+  uint32 known_entries = 3;
+
+  // Eager K/V snapshot delivered with the start. May be partial; if
+  // partial_state is true, missing keys must be fetched via
+  // GetLazyStateCommandMessage.
+  repeated StateEntry state_map = 4;
+  bool partial_state = 5;
+
+  // For KIND_OBJECT and KIND_WORKFLOW: the addressing key.
+  string key = 6;
+
+  // Best-effort hint for retry-backoff observability. Not durably stored.
+  uint32 retry_count_since_last_stored_entry = 7;
+  uint64 duration_since_last_stored_entry = 8;
+
+  // Seed for the SDK's deterministic RNG. Stable across restarts.
+  uint64 random_seed = 9;
+
+  // Handler classification — echoes the deployment registration.
+  Kind kind = 13;
+}
+
+// Type: 0x0001
+// Sent by the SDK to suspend the invocation. The engine treats this as
+// "park until any awaited notification arrives, then resume."
+message SuspensionMessage {
+  // Notification ids the invocation is blocked on.
+  repeated uint32 waiting_completions = 1;
+  repeated uint32 waiting_signals = 2;
+  repeated string waiting_named_signals = 3;
+}
+
+// Type: 0x0002
+// Sent by the SDK to terminate the invocation with a non-recoverable
+// failure. Distinct from a Failure value returned from a handler:
+// ErrorMessage means "the SDK itself encountered a fatal protocol or
+// runtime condition" — e.g. journal mismatch.
+message ErrorMessage {
+  // HTTP-style status code. Reserved codes:
+  //   570 = JOURNAL_MISMATCH (SDK cannot replay due to code change)
+  //   571 = PROTOCOL_VIOLATION (unexpected message variant)
+  uint32 code = 1;
+  string message = 2;
+  string stacktrace = 3;
+
+  // Optional pointer to the journal entry that triggered the failure.
+  optional uint32 related_command_index = 4;
+  optional string related_command_name = 5;
+  optional uint32 related_command_type = 6;
+
+  // SDK-supplied override for the next retry delay (milliseconds).
+  optional uint64 next_retry_delay = 8;
+}
+
+// Type: 0x0003
+// Sent by the SDK when the invocation lifecycle terminates cleanly
+// (whether successfully or with a handler-returned Failure).
+message EndMessage {}
+
+// Type: 0x0004
+// Sent by the engine to acknowledge that a command from the SDK has
+// been durably journaled.
+message CommandAckMessage {
+  uint32 command_index = 1;
+}
+
+// Type: 0x0005
+// Special control frame for ctx.run completions. The SDK proposes the
+// run result; the engine durably stores it and later delivers a
+// RunCompletionNotificationMessage.
+message ProposeRunCompletionMessage {
+  uint32 result_completion_id = 1;
+  oneof result {
+    bytes value = 14;
+    Failure failure = 15;
+  }
+}
+
+// ----------------------------------------------------------------------
+// Command messages (type codes 0x0400-0x04FF)
+// Created by the SDK during user-code execution; durably journaled.
+// ----------------------------------------------------------------------
+
+// Type: 0x0400
+// First entry on every journal. Carries the invocation's input payload.
+message InputCommandMessage {
+  repeated Header headers = 1;
+  Value value = 14;
+  string name = 12;
+}
+
+// Type: 0x0401
+// Final command. Carries the invocation's output (success or failure).
+message OutputCommandMessage {
+  oneof result {
+    Value value = 14;
+    Failure failure = 15;
+  }
+  string name = 12;
+}
+
+// Type: 0x0402
+message GetLazyStateCommandMessage {
+  bytes key = 1;
+  uint32 result_completion_id = 11;
+  string name = 12;
+}
+
+// Type: 0x8002 — notification for GetLazyStateCommandMessage.
+message GetLazyStateCompletionNotificationMessage {
+  uint32 completion_id = 1;
+  oneof result {
+    Void void = 4;
+    Value value = 5;
+  }
+}
+
+// Type: 0x0403
+message SetStateCommandMessage {
+  bytes key = 1;
+  Value value = 3;
+  string name = 12;
+}
+
+// Type: 0x0404
+message ClearStateCommandMessage {
+  bytes key = 1;
+  string name = 12;
+}
+
+// Type: 0x0405
+message ClearAllStateCommandMessage {
+  string name = 12;
+}
+
+// Type: 0x0406
+message GetLazyStateKeysCommandMessage {
+  uint32 result_completion_id = 11;
+  string name = 12;
+}
+
+// Type: 0x8006 — notification for GetLazyStateKeysCommandMessage.
+message GetLazyStateKeysCompletionNotificationMessage {
+  uint32 completion_id = 1;
+  StateKeys state_keys = 17;
+}
+
+// Type: 0x0407
+// "Eager" reads are served directly from the StartMessage state_map
+// snapshot — no completion notification is needed.
+message GetEagerStateCommandMessage {
+  bytes key = 1;
+  oneof result {
+    Void void = 13;
+    Value value = 14;
+  }
+  string name = 12;
+}
+
+// Type: 0x0408
+message GetEagerStateKeysCommandMessage {
+  StateKeys value = 14;
+  string name = 12;
+}
+
+// Type: 0x0409
+message GetPromiseCommandMessage {
+  string key = 1;
+  uint32 result_completion_id = 11;
+  string name = 12;
+}
+
+// Type: 0x8009 — notification for GetPromiseCommandMessage.
+message GetPromiseCompletionNotificationMessage {
+  uint32 completion_id = 1;
+  oneof result {
+    Value value = 5;
+    Failure failure = 6;
+  }
+}
+
+// Type: 0x040B
+// Completes a workflow-scoped named promise. Single-shot: a second
+// CompletePromise on the same key is a journal-mismatch error.
+message CompletePromiseCommandMessage {
+  string key = 1;
+  oneof completion {
+    Value completion_value = 2;
+    Failure completion_failure = 3;
+  }
+  uint32 result_completion_id = 11;
+  string name = 12;
+}
+
+// Type: 0x800B — notification for CompletePromiseCommandMessage.
+message CompletePromiseCompletionNotificationMessage {
+  uint32 completion_id = 1;
+  oneof result {
+    Void void = 4;
+    Failure failure = 6;
+  }
+}
+
+// Type: 0x040C
+message SleepCommandMessage {
+  // Wake-up time, milliseconds since UNIX epoch.
+  uint64 wake_up_time = 1;
+  uint32 result_completion_id = 11;
+  string name = 12;
+}
+
+// Type: 0x800C — notification for SleepCommandMessage.
+message SleepCompletionNotificationMessage {
+  uint32 completion_id = 1;
+  Void void = 4;
+}
+
+// Type: 0x040D
+// Synchronous call. Yields two completion notifications: first the
+// invocation_id of the callee, then the result.
+message CallCommandMessage {
+  string service_name = 1;
+  string handler_name = 2;
+  bytes parameter = 3;
+  repeated Header headers = 4;
+  // For KIND_OBJECT / KIND_WORKFLOW targets.
+  string key = 5;
+
+  // Caller-supplied idempotency token. Same token within the
+  // configured retention window deduplicates against an earlier call
+  // and returns its result. Wired to the journal-level
+  // dedup/arbitrary/<producer_id>/<seq> machinery.
+  optional string idempotency_token = 6;
+
+  uint32 invocation_id_notification_idx = 10;
+  uint32 result_completion_id = 11;
+  string name = 12;
+}
+
+// Type: 0x800E — first notification for CallCommandMessage.
+message CallInvocationIdCompletionNotificationMessage {
+  uint32 completion_id = 1;
+  string invocation_id = 16;
+}
+
+// Type: 0x800D — final notification for CallCommandMessage.
+message CallCompletionNotificationMessage {
+  uint32 completion_id = 1;
+  oneof result {
+    Value value = 5;
+    Failure failure = 6;
+  }
+}
+
+// Type: 0x040E
+// Fire-and-forget. Yields only the invocation_id notification; result
+// must be retrieved later via AttachInvocation or GetInvocationOutput.
+message OneWayCallCommandMessage {
+  string service_name = 1;
+  string handler_name = 2;
+  bytes parameter = 3;
+  // Earliest dispatch time, milliseconds since UNIX epoch. Zero/past =
+  // dispatch immediately.
+  uint64 invoke_time = 4;
+  repeated Header headers = 5;
+  string key = 6;
+  optional string idempotency_token = 7;
+  uint32 invocation_id_notification_idx = 10;
+  string name = 12;
+}
+
+// Type: 0x0411
+// Marker for a ctx.run side effect. The actual result is sent later
+// via ProposeRunCompletionMessage.
+message RunCommandMessage {
+  uint32 result_completion_id = 11;
+  string name = 12;
+}
+
+// Type: 0x8011 — notification for RunCommandMessage.
+message RunCompletionNotificationMessage {
+  uint32 completion_id = 1;
+  oneof result {
+    Value value = 5;
+    Failure failure = 6;
+  }
+}
+
+// Type: 0x0412
+// Subscribe to the result of an existing invocation.
+message AttachInvocationCommandMessage {
+  oneof target {
+    string invocation_id = 1;
+    WorkflowTarget workflow_target = 4;
+  }
+  uint32 result_completion_id = 11;
+  string name = 12;
+}
+
+// Type: 0x8012 — notification for AttachInvocationCommandMessage.
+message AttachInvocationCompletionNotificationMessage {
+  uint32 completion_id = 1;
+  oneof result {
+    Value value = 5;
+    Failure failure = 6;
+  }
+}
+
+// Type: 0x0413
+// Read the final result of a completed invocation, non-blocking.
+message GetInvocationOutputCommandMessage {
+  oneof target {
+    string invocation_id = 1;
+    WorkflowTarget workflow_target = 4;
+  }
+  uint32 result_completion_id = 11;
+  string name = 12;
+}
+
+// Type: 0x8013 — notification for GetInvocationOutputCommandMessage.
+message GetInvocationOutputCompletionNotificationMessage {
+  uint32 completion_id = 1;
+  oneof result {
+    Void void = 4;
+    Value value = 5;
+    Failure failure = 6;
+  }
+}
+
+// ----------------------------------------------------------------------
+// Signal notification (type code 0xFBFF)
+// ----------------------------------------------------------------------
+
+// Delivered to the SDK out-of-band when an awakeable resolves or (in
+// future) when a cancel signal arrives. v1 only emits the `name`
+// variant; the `idx` slot is reserved for future numbered signals.
+message SignalNotificationMessage {
+  oneof signal_id {
+    uint32 idx = 2;
+    string name = 3;
+  }
+  oneof result {
+    Void void = 4;
+    Value value = 5;
+    Failure failure = 6;
+  }
+}
+
+// ----------------------------------------------------------------------
+// Discovery
+// ----------------------------------------------------------------------
+
+message DiscoveryRequest {
+  // Engine-advertised protocol version. v1 implementations send "v1".
+  string protocol_version = 1;
+}
+
+message DiscoveryResponse {
+  // Handler-advertised protocol version. Engine refuses to register
+  // a deployment whose protocol version isn't supported.
+  string protocol_version = 1;
+  repeated DiscoveredHandler handlers = 2;
+}
+
+message DiscoveredHandler {
+  string service = 1;
+  Kind kind = 2;
+  repeated string handler_names = 3;
+}
+
+// ----------------------------------------------------------------------
+// Shared types
+// ----------------------------------------------------------------------
+
+message StateKeys {
+  repeated bytes keys = 1;
+}
+
+message Value {
+  bytes content = 1;
+}
+
+// User-visible failure. Carried on OutputCommandMessage when a handler
+// returns *Failure, on CallCompletion when a call target returned
+// *Failure, etc.
+message Failure {
+  uint32 code = 1;
+  string message = 2;
+}
+
+message Header {
+  string key = 1;
+  string value = 2;
+}
+
+// Address of a workflow run.
+message WorkflowTarget {
+  string workflow_name = 1;
+  string workflow_key = 2;
+}
+
+// Sentinel "no value" — distinguished from "value = empty bytes".
+message Void {}

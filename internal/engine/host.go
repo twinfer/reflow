@@ -410,6 +410,47 @@ func (h *Host) MetadataRunner() *MetadataRunner {
 	return h.metadataRunners[0]
 }
 
+// InprocDeploymentRecord builds the synthetic inproc deployment record
+// for cfg.Handlers, stamped at nowMs. Pure: it does NOT touch dragonboat
+// or shard 0; the metadata-leader bootstrap proposes it and the apply
+// arm persists it. The deployment_id is deterministic across restarts
+// (sdk.InprocDeploymentID hashes the sorted handler tuples). Returns
+// nil when cfg.Handlers is empty — there is no useful deployment to
+// register and ingress falls back to stamping an empty id. Phase 5.
+func (h *Host) InprocDeploymentRecord(nowMs uint64) *enginev1.DeploymentRecord {
+	reg := h.cfg.Handlers
+	if reg == nil || reg.Len() == 0 {
+		return nil
+	}
+	entries := reg.Entries()
+	rec := &enginev1.DeploymentRecord{
+		Id:             sdk.InprocDeploymentID(entries),
+		Url:            "inproc://",
+		Transport:      "inproc",
+		RegisteredAtMs: nowMs,
+	}
+	for _, e := range entries {
+		rec.Handlers = append(rec.Handlers, &enginev1.DeploymentHandler{
+			Service: e.Service,
+			Handler: e.Handler,
+			Kind:    uint32(e.Kind),
+		})
+	}
+	return rec
+}
+
+// InprocDeploymentID returns the deterministic id for the synthetic
+// inproc deployment, or "" when cfg.Handlers is empty. Used by ingress
+// to stamp invocations and by the metadata-leader bootstrap to propose
+// RegisterDeployment.
+func (h *Host) InprocDeploymentID() string {
+	reg := h.cfg.Handlers
+	if reg == nil || reg.Len() == 0 {
+		return ""
+	}
+	return sdk.InprocDeploymentID(reg.Entries())
+}
+
 // PartitionTable performs a linearizable read of the cluster's partition
 // table from shard 0. Returns nil with no error when the table has not yet
 // been written (i.e. shard 0 has not bootstrapped).

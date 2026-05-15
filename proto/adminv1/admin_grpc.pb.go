@@ -42,13 +42,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Admin_AddNode_FullMethodName        = "/reflow.admin.v1.Admin/AddNode"
-	Admin_RemoveNode_FullMethodName     = "/reflow.admin.v1.Admin/RemoveNode"
-	Admin_ListNodes_FullMethodName      = "/reflow.admin.v1.Admin/ListNodes"
-	Admin_ListPartitions_FullMethodName = "/reflow.admin.v1.Admin/ListPartitions"
-	Admin_CreateSnapshot_FullMethodName = "/reflow.admin.v1.Admin/CreateSnapshot"
-	Admin_ListSnapshots_FullMethodName  = "/reflow.admin.v1.Admin/ListSnapshots"
-	Admin_DeleteSnapshot_FullMethodName = "/reflow.admin.v1.Admin/DeleteSnapshot"
+	Admin_AddNode_FullMethodName            = "/reflow.admin.v1.Admin/AddNode"
+	Admin_RemoveNode_FullMethodName         = "/reflow.admin.v1.Admin/RemoveNode"
+	Admin_ListNodes_FullMethodName          = "/reflow.admin.v1.Admin/ListNodes"
+	Admin_ListPartitions_FullMethodName     = "/reflow.admin.v1.Admin/ListPartitions"
+	Admin_CreateSnapshot_FullMethodName     = "/reflow.admin.v1.Admin/CreateSnapshot"
+	Admin_ListSnapshots_FullMethodName      = "/reflow.admin.v1.Admin/ListSnapshots"
+	Admin_DeleteSnapshot_FullMethodName     = "/reflow.admin.v1.Admin/DeleteSnapshot"
+	Admin_RegisterDeployment_FullMethodName = "/reflow.admin.v1.Admin/RegisterDeployment"
 )
 
 // AdminClient is the client API for Admin service.
@@ -77,6 +78,17 @@ type AdminClient interface {
 	// DeleteSnapshot removes a single archived snapshot. Idempotent —
 	// returns OK when the snapshot is already absent.
 	DeleteSnapshot(ctx context.Context, in *DeleteSnapshotRequest, opts ...grpc.CallOption) (*DeleteSnapshotResponse, error)
+	// RegisterDeployment introduces a new remote handler deployment to the
+	// cluster. The engine dials <url>, calls discovery, validates the
+	// protocol version, mints a UUIDv4 deployment_id, and proposes
+	// Command_RegisterDeployment to shard 0. Returns the assigned id.
+	//
+	// Phase 5 (this commit, 5c): synthetic inproc deployments are
+	// registered internally at metadata-leader bootstrap and operators
+	// cannot currently register remote deployments — non-inproc URLs are
+	// rejected with UNIMPLEMENTED until the engine-side handlerclient
+	// lands in commit 5d.
+	RegisterDeployment(ctx context.Context, in *RegisterDeploymentRequest, opts ...grpc.CallOption) (*RegisterDeploymentResponse, error)
 }
 
 type adminClient struct {
@@ -157,6 +169,16 @@ func (c *adminClient) DeleteSnapshot(ctx context.Context, in *DeleteSnapshotRequ
 	return out, nil
 }
 
+func (c *adminClient) RegisterDeployment(ctx context.Context, in *RegisterDeploymentRequest, opts ...grpc.CallOption) (*RegisterDeploymentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RegisterDeploymentResponse)
+	err := c.cc.Invoke(ctx, Admin_RegisterDeployment_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServer is the server API for Admin service.
 // All implementations must embed UnimplementedAdminServer
 // for forward compatibility.
@@ -183,6 +205,17 @@ type AdminServer interface {
 	// DeleteSnapshot removes a single archived snapshot. Idempotent —
 	// returns OK when the snapshot is already absent.
 	DeleteSnapshot(context.Context, *DeleteSnapshotRequest) (*DeleteSnapshotResponse, error)
+	// RegisterDeployment introduces a new remote handler deployment to the
+	// cluster. The engine dials <url>, calls discovery, validates the
+	// protocol version, mints a UUIDv4 deployment_id, and proposes
+	// Command_RegisterDeployment to shard 0. Returns the assigned id.
+	//
+	// Phase 5 (this commit, 5c): synthetic inproc deployments are
+	// registered internally at metadata-leader bootstrap and operators
+	// cannot currently register remote deployments — non-inproc URLs are
+	// rejected with UNIMPLEMENTED until the engine-side handlerclient
+	// lands in commit 5d.
+	RegisterDeployment(context.Context, *RegisterDeploymentRequest) (*RegisterDeploymentResponse, error)
 	mustEmbedUnimplementedAdminServer()
 }
 
@@ -213,6 +246,9 @@ func (UnimplementedAdminServer) ListSnapshots(context.Context, *ListSnapshotsReq
 }
 func (UnimplementedAdminServer) DeleteSnapshot(context.Context, *DeleteSnapshotRequest) (*DeleteSnapshotResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteSnapshot not implemented")
+}
+func (UnimplementedAdminServer) RegisterDeployment(context.Context, *RegisterDeploymentRequest) (*RegisterDeploymentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RegisterDeployment not implemented")
 }
 func (UnimplementedAdminServer) mustEmbedUnimplementedAdminServer() {}
 func (UnimplementedAdminServer) testEmbeddedByValue()               {}
@@ -361,6 +397,24 @@ func _Admin_DeleteSnapshot_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Admin_RegisterDeployment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegisterDeploymentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServer).RegisterDeployment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Admin_RegisterDeployment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServer).RegisterDeployment(ctx, req.(*RegisterDeploymentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Admin_ServiceDesc is the grpc.ServiceDesc for Admin service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -395,6 +449,10 @@ var Admin_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteSnapshot",
 			Handler:    _Admin_DeleteSnapshot_Handler,
+		},
+		{
+			MethodName: "RegisterDeployment",
+			Handler:    _Admin_RegisterDeployment_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

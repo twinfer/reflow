@@ -316,6 +316,24 @@ func (s *Server) ListSnapshots(ctx context.Context, req *adminv1.ListSnapshotsRe
 	return &adminv1.ListSnapshotsResponse{Snapshots: out}, nil
 }
 
+// RegisterDeployment accepts a remote-handler URL, dials its discovery
+// endpoint, and proposes Command_RegisterDeployment to shard 0. Phase 5c
+// ships only the API stub — the engine-side handlerclient lands in
+// commit 5d, so any URL is rejected with UNIMPLEMENTED. The synthetic
+// inproc deployment is registered internally at metadata-leader
+// bootstrap, NOT via this RPC; operators do not see it.
+func (s *Server) RegisterDeployment(_ context.Context, req *adminv1.RegisterDeploymentRequest) (*adminv1.RegisterDeploymentResponse, error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
+	url := req.GetUrl()
+	if url == "" {
+		return nil, status.Error(codes.InvalidArgument, "admin: url required")
+	}
+	return nil, status.Errorf(codes.Unimplemented,
+		"admin: RegisterDeployment not yet implemented for url %q — remote-handler dispatch lands in commit 5d", url)
+}
+
 // replicaSetContainsID is a small predicate; cluster has the same logic
 // but its package is below ours in the import graph.
 func replicaSetContainsID(ids []uint64, nodeID uint64) bool {

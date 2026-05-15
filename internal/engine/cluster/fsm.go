@@ -189,6 +189,21 @@ func (f *FSM) applyCommand(
 			return nil, fmt.Errorf("cluster: write partition table: %w", err)
 		}
 		return applied, nil
+	case *enginev1.Command_RegisterDeployment:
+		rec := k.RegisterDeployment.GetRecord()
+		if rec == nil || rec.GetId() == "" {
+			f.cfg.Log.Warn("cluster: RegisterDeployment missing record or id; ignoring",
+				"raft_index", raftIndex)
+			return nil, nil
+		}
+		// Upsert: re-registering the same id (e.g. metadata-leader
+		// bootstrap re-runs on leader gain for an unchanged handler set)
+		// just overwrites the row. Operators registering a remote
+		// deployment with a new url should mint a fresh id, not reuse.
+		if err := (DeploymentTable{S: store}).Put(batch, rec); err != nil {
+			return nil, fmt.Errorf("cluster: write deployment: %w", err)
+		}
+		return nil, nil
 	case *enginev1.Command_EvictNode:
 		return f.applyEvictNode(batch, store, k.EvictNode, raftIndex)
 	case *enginev1.Command_BeginRebalanceStep:
@@ -460,6 +475,14 @@ type (
 
 	// LookupAppliedIndex returns uint64.
 	LookupAppliedIndex struct{}
+
+	// LookupDeployment returns *enginev1.DeploymentRecord (or nil) for
+	// the named id.
+	LookupDeployment struct{ ID string }
+
+	// LookupDeployments returns []*enginev1.DeploymentRecord sorted by
+	// id (lex byte order).
+	LookupDeployments struct{}
 )
 
 // Lookup implements statemachine.IOnDiskStateMachine.
@@ -468,7 +491,7 @@ func (f *FSM) Lookup(query any) (any, error) {
 	if store == nil {
 		return nil, errors.New("cluster: snapshotter has no current store")
 	}
-	switch query.(type) {
+	switch q := query.(type) {
 	case LookupPartitionTable:
 		return (PartitionTableTable{S: store}).Get()
 	case LookupMembership:
@@ -479,6 +502,10 @@ func (f *FSM) Lookup(query any) (any, error) {
 			return nil, err
 		}
 		return m.GetAppliedIndex(), nil
+	case LookupDeployment:
+		return (DeploymentTable{S: store}).Get(q.ID)
+	case LookupDeployments:
+		return (DeploymentTable{S: store}).List()
 	default:
 		return nil, fmt.Errorf("cluster: unknown lookup type %T", query)
 	}

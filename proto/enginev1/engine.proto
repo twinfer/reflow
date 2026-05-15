@@ -112,6 +112,12 @@ message Command {
     // shardID >= 1.
     DeliverCallResult deliver_call_result = 16;
     OutboxAck outbox_ack = 17;
+    // RegisterDeployment registers a Deployment (a (url, transport,
+    // handlers[]) bundle) into shard 0's DeploymentTable. Synthetic
+    // inproc deployments are proposed at metadata-leader bootstrap;
+    // remote deployments are proposed by the operator-facing admin
+    // RegisterDeployment RPC. Accepted only by shardID=0. Phase 5.
+    RegisterDeployment register_deployment = 18;
   }
 }
 
@@ -139,6 +145,13 @@ message InvokeCommand {
   // callee's status so the callee's Completed apply arm can journal a
   // JECallResult back on the parent. Phase 2.5.
   ParentLink parent_link = 5;
+  // deployment_id pins this invocation to the deployment that owned the
+  // (service, handler) routing at submit time. The apply arm copies it
+  // onto InvocationStatus; replays route to the same deployment even when
+  // a newer deployment for the same (service, handler) has since landed.
+  // Empty string when the host has no deployment table (single-node mode
+  // without shard 0). Phase 5.
+  string deployment_id = 6;
 }
 
 // ParentLink references the parent invocation that spawned a callee via
@@ -393,6 +406,12 @@ message InvocationStatus {
     Suspended suspended = 4;
     Completed completed = 5;
   }
+  // deployment_id pins this invocation to the deployment that owned the
+  // (service, handler) routing at the time the InvokeCommand was applied.
+  // Stamped once on the Free→Scheduled transition and preserved across
+  // every subsequent transition until terminal. Empty string when no
+  // deployment table exists (single-node hosts without shard 0). Phase 5.
+  string deployment_id = 6;
 }
 
 message Free {}
@@ -571,6 +590,49 @@ message SnapshotMeta {
 // gRPC Delivery service for cross-partition outbox dispatch. Phase 4.1.
 message NodeHostMeta {
   string grpc_endpoint = 1;
+}
+
+// DeploymentRecord is the persisted shape of a registered deployment in
+// shard 0's DeploymentTable. One row per (id) with the URL + transport
+// the operator (or the synthetic inproc bootstrap) handed in, plus the
+// handler set discovered at registration time.
+//
+// Pinning: every Invocation row carries a deployment_id stamped at
+// submit time so replays route to the same deployment even when newer
+// deployments for the same (service, handler) have since landed. We
+// never garbage-collect deployment rows on overwrite; superseded rows
+// stay readable until every invocation referencing them has terminated
+// (GC is a future feature; ref-counting against InvocationStatus). Phase 5.
+//
+// transport is the URL scheme: "inproc", "grpc", "grpcs", "http", "https".
+// Synthetic in-process deployments use transport="inproc" and url="inproc://".
+message DeploymentRecord {
+  string id = 1;
+  string url = 2;
+  string transport = 3;
+  // handlers enumerates every (service, handler, kind) tuple the
+  // deployment claimed at discovery time. Used by the engine-side
+  // routing table to map (service, handler) → deployment_id when an
+  // invocation arrives without an operator-supplied pin.
+  repeated DeploymentHandler handlers = 4;
+  fixed64 registered_at_ms = 5;
+}
+
+// DeploymentHandler is one (service, handler, kind) entry in a
+// DeploymentRecord. kind matches sdk.Kind / protocolv1.Kind:
+//   0 unspecified, 1 service, 2 object, 3 workflow.
+message DeploymentHandler {
+  string service = 1;
+  string handler = 2;
+  uint32 kind = 3;
+}
+
+// RegisterDeployment is the Command_RegisterDeployment payload. Proposed
+// by the metadata-leader bootstrap (inproc synthetic deployment) and by
+// the admin RegisterDeployment RPC (remote deployments). Apply arm
+// writes DeploymentTable[record.id] = record. Phase 5.
+message RegisterDeployment {
+  DeploymentRecord record = 1;
 }
 
 // RegisterNode is proposed against shard 0 when a reflowd process starts

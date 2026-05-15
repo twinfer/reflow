@@ -1,7 +1,10 @@
 package sdk
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -153,4 +156,69 @@ func (r *Registry) Len() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.handlers)
+}
+
+// Entry is one registered (service, handler, kind) tuple. Returned by
+// Entries in lexicographic order so callers can build deterministic
+// digests of the registry.
+type Entry struct {
+	Service string
+	Handler string
+	Kind    Kind
+}
+
+// Entries returns every registered handler as a slice sorted by
+// "service/handler" ascending. The sort is what makes deployment_id
+// hashes stable across registration-order shuffles.
+func (r *Registry) Entries() []Entry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]Entry, 0, len(r.handlers))
+	for key, reg := range r.handlers {
+		// key is exactly "service/handler" — split on the last slash so
+		// service names containing '/' (forbidden by Register) still
+		// don't surprise us here.
+		slash := -1
+		for i := len(key) - 1; i >= 0; i-- {
+			if key[i] == '/' {
+				slash = i
+				break
+			}
+		}
+		if slash < 0 {
+			continue
+		}
+		out = append(out, Entry{
+			Service: key[:slash],
+			Handler: key[slash+1:],
+			Kind:    reg.kind,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Service != out[j].Service {
+			return out[i].Service < out[j].Service
+		}
+		return out[i].Handler < out[j].Handler
+	})
+	return out
+}
+
+// InprocDeploymentID returns a deterministic id for the in-process
+// handler set: "inproc-" + hex(sha256(<service>/<handler>/<kind>\0…)).
+// Stable across restarts as long as the (service, handler, kind) set is
+// unchanged. Adding or removing a handler — or changing its kind —
+// produces a fresh id, which the engine treats as a deployment swap
+// (in-flight invocations stamped with the old id stay pinned to that
+// deployment until they terminate). See plan risk #7. Phase 5.
+func InprocDeploymentID(entries []Entry) string {
+	h := sha256.New()
+	for _, e := range entries {
+		h.Write([]byte(e.Service))
+		h.Write([]byte{'/'})
+		h.Write([]byte(e.Handler))
+		h.Write([]byte{'/'})
+		h.Write([]byte(e.Kind.String()))
+		h.Write([]byte{0})
+	}
+	return "inproc-" + hex.EncodeToString(h.Sum(nil)[:8])
 }

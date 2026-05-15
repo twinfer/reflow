@@ -52,6 +52,17 @@ service Admin {
   // DeleteSnapshot removes a single archived snapshot. Idempotent —
   // returns OK when the snapshot is already absent.
   rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
+  // RegisterDeployment introduces a new remote handler deployment to the
+  // cluster. The engine dials <url>, calls discovery, validates the
+  // protocol version, mints a UUIDv4 deployment_id, and proposes
+  // Command_RegisterDeployment to shard 0. Returns the assigned id.
+  //
+  // Phase 5 (this commit, 5c): synthetic inproc deployments are
+  // registered internally at metadata-leader bootstrap and operators
+  // cannot currently register remote deployments — non-inproc URLs are
+  // rejected with UNIMPLEMENTED until the engine-side handlerclient
+  // lands in commit 5d.
+  rpc RegisterDeployment(RegisterDeploymentRequest) returns (RegisterDeploymentResponse);
 }
 
 message AddNodeRequest {
@@ -111,4 +122,16 @@ message DeleteSnapshotRequest {
   uint64 index = 2;
 }
 message DeleteSnapshotResponse {}
+
+// RegisterDeploymentRequest names a remote handler endpoint. The engine
+// derives transport from the URL scheme (grpc/grpcs/http/https) and
+// rejects inproc:// — synthetic in-proc deployments are registered
+// internally, not via this RPC.
+message RegisterDeploymentRequest {
+  string url = 1;
+}
+
+message RegisterDeploymentResponse {
+  string deployment_id = 1;
+}
 

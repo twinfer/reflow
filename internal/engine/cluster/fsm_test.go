@@ -162,6 +162,86 @@ func TestCluster_UpdatePartitionTablePersistsAndHooks(t *testing.T) {
 	}
 }
 
+func TestCluster_RegisterDeploymentPersists(t *testing.T) {
+	f, _, st := newTestFSM(t)
+	rec := &enginev1.DeploymentRecord{
+		Id:        "inproc-abc",
+		Url:       "inproc://",
+		Transport: "inproc",
+		Handlers: []*enginev1.DeploymentHandler{
+			{Service: "Greeter", Handler: "hello", Kind: 1},
+		},
+		RegisteredAtMs: 1700000000,
+	}
+	cmd := &enginev1.Command{
+		Kind: &enginev1.Command_RegisterDeployment{
+			RegisterDeployment: &enginev1.RegisterDeployment{Record: rec},
+		},
+	}
+	if _, err := f.Update([]statemachine.Entry{{Index: 9, Cmd: envelope(t, cmd)}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (DeploymentTable{S: st}).Get("inproc-abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.GetUrl() != "inproc://" || got.GetTransport() != "inproc" {
+		t.Fatalf("deployment row mismatch: %+v", got)
+	}
+	if len(got.GetHandlers()) != 1 || got.GetHandlers()[0].GetService() != "Greeter" {
+		t.Fatalf("deployment handlers mismatch: %+v", got.GetHandlers())
+	}
+
+	// Re-applying with the same id is an upsert — overwrites, no error.
+	rec2 := proto.Clone(rec).(*enginev1.DeploymentRecord)
+	rec2.RegisteredAtMs = 1700001234
+	cmd2 := &enginev1.Command{
+		Kind: &enginev1.Command_RegisterDeployment{
+			RegisterDeployment: &enginev1.RegisterDeployment{Record: rec2},
+		},
+	}
+	if _, err := f.Update([]statemachine.Entry{{Index: 10, Cmd: envelope(t, cmd2)}}); err != nil {
+		t.Fatal(err)
+	}
+	got2, err := (DeploymentTable{S: st}).Get("inproc-abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2.GetRegisteredAtMs() != 1700001234 {
+		t.Errorf("upsert did not overwrite registered_at_ms: got %d", got2.GetRegisteredAtMs())
+	}
+
+	// Lookup variants.
+	any1, err := f.Lookup(LookupDeployment{ID: "inproc-abc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if any1.(*enginev1.DeploymentRecord).GetId() != "inproc-abc" {
+		t.Errorf("LookupDeployment returned %+v", any1)
+	}
+	any2, err := f.Lookup(LookupDeployments{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list := any2.([]*enginev1.DeploymentRecord); len(list) != 1 {
+		t.Errorf("LookupDeployments len = %d; want 1", len(list))
+	}
+}
+
+func TestCluster_RegisterDeployment_MissingRecord(t *testing.T) {
+	f, _, _ := newTestFSM(t)
+	cmd := &enginev1.Command{
+		Kind: &enginev1.Command_RegisterDeployment{
+			RegisterDeployment: &enginev1.RegisterDeployment{},
+		},
+	}
+	// Missing record is a warn-and-drop; Update must still succeed and
+	// advance applied_index.
+	if _, err := f.Update([]statemachine.Entry{{Index: 1, Cmd: envelope(t, cmd)}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCluster_LookupPartitionTable_Empty(t *testing.T) {
 	f, _, _ := newTestFSM(t)
 	got, err := f.Lookup(LookupPartitionTable{})

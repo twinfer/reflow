@@ -101,6 +101,7 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *ingressv1.SubmitInvo
 		Target:         target,
 		Input:          req.GetInput(),
 		IdempotencyKey: req.GetIdempotencyKey(),
+		DeploymentId:   s.host.InprocDeploymentID(),
 	}}}
 	producerID := "http/" + FormatInvocationID(id)
 	if err := runner.Proposer().ProposeIngress(ctx, producerID, 1, cmd); err != nil {

@@ -36,6 +36,7 @@ func transitionOnInvoke(
 					ParentLink:  cmd.GetParentLink(),
 				},
 			},
+			DeploymentId: cmd.GetDeploymentId(),
 		}
 		return next, []Action{ActInvoke{ID: id, Target: cmd.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Scheduled, *enginev1.InvocationStatus_Invoked:
@@ -85,6 +86,7 @@ func transitionOnJournalAppend(
 						ParentLink:  s.Scheduled.GetParentLink(),
 					},
 				},
+				DeploymentId: cur.GetDeploymentId(),
 			}, nil, nil
 		}
 		return cur, nil, nil
@@ -99,6 +101,7 @@ func transitionOnJournalAppend(
 					ParentLink:  s.Suspended.GetParentLink(),
 				},
 			},
+			DeploymentId: cur.GetDeploymentId(),
 		}, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	default:
 		return cur, nil, fmt.Errorf("%w: JournalAppend from %T", ErrInvalidTransition, cur.GetStatus())
@@ -147,6 +150,7 @@ func transitionOnComplete(
 				CompletedAtMs:  nowMs,
 			},
 		},
+		DeploymentId: cur.GetDeploymentId(),
 	}, nil, nil
 }
 
@@ -173,6 +177,7 @@ func transitionOnSuspend(
 					ParentLink:    s.Invoked.GetParentLink(),
 				},
 			},
+			DeploymentId: cur.GetDeploymentId(),
 		}, nil, nil
 	case *enginev1.InvocationStatus_Suspended:
 		return cur, nil, nil
@@ -214,6 +219,7 @@ func transitionOnTimerFired(
 					ParentLink:  s.Suspended.GetParentLink(),
 				},
 			},
+			DeploymentId: cur.GetDeploymentId(),
 		}, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Invoked:
 		return cur, []Action{ActInvoke{ID: id, Target: s.Invoked.GetTarget()}}, nil
@@ -262,6 +268,7 @@ func transitionOnAwakeableResolved(
 					ParentLink:  s.Suspended.GetParentLink(),
 				},
 			},
+			DeploymentId: cur.GetDeploymentId(),
 		}
 		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Invoked:
@@ -305,6 +312,7 @@ func transitionOnSignalDelivered(
 					ParentLink:  s.Suspended.GetParentLink(),
 				},
 			},
+			DeploymentId: cur.GetDeploymentId(),
 		}
 		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Invoked:
@@ -348,6 +356,7 @@ func transitionOnCallResultDelivered(
 					ParentLink:  s.Suspended.GetParentLink(),
 				},
 			},
+			DeploymentId: cur.GetDeploymentId(),
 		}
 		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Invoked:

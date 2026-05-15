@@ -8,11 +8,12 @@
 //
 // Namespaces (top-level prefixes):
 //
-//	meta                       -> PartitionMeta singleton (reuses the
-//	                              partition meta proto; only applied_index
-//	                              and latest_announced_epoch are populated)
-//	node/<8-byte BE node_id>   -> NodeMembership
-//	partition_table            -> PartitionTable singleton
+//	meta                            -> PartitionMeta singleton (reuses the
+//	                                   partition meta proto; only applied_index
+//	                                   and latest_announced_epoch are populated)
+//	node/<8-byte BE node_id>        -> NodeMembership
+//	partition_table                 -> PartitionTable singleton
+//	deployment/<deployment_id ascii> -> DeploymentRecord
 //
 // All multi-byte integers are big-endian so lexicographic byte order
 // matches numeric order — same convention as internal/storage/keys.
@@ -23,9 +24,10 @@ import (
 )
 
 const (
-	metaPrefix      = "meta"
-	nodePrefix      = "node/"
-	partitionTabKey = "partition_table"
+	metaPrefix       = "meta"
+	nodePrefix       = "node/"
+	partitionTabKey  = "partition_table"
+	deploymentPrefix = "deployment/"
 )
 
 // MetaKey returns the singleton key for the metadata shard's PartitionMeta.
@@ -45,3 +47,16 @@ func NodeKey(nodeID uint64) []byte {
 
 // PartitionTableKey returns the singleton key for the PartitionTable.
 func PartitionTableKey() []byte { return []byte(partitionTabKey) }
+
+// DeploymentPrefix returns the deployment/ namespace prefix. Used for
+// iteration via a forward range scan.
+func DeploymentPrefix() []byte { return []byte(deploymentPrefix) }
+
+// DeploymentKey returns deployment/<id>. Deployment ids are caller-shaped
+// strings (UUIDv4 for operator-registered deployments, "inproc-<16-hex>"
+// for the synthetic inproc deployment). Phase 5.
+func DeploymentKey(id string) []byte {
+	out := make([]byte, 0, len(deploymentPrefix)+len(id))
+	out = append(out, deploymentPrefix...)
+	return append(out, id...)
+}

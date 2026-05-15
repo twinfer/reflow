@@ -118,6 +118,61 @@ func (t PartitionTableTable) Put(b storage.Batch, pt *enginev1.PartitionTable) e
 	return b.Set(PartitionTableKey(), buf)
 }
 
+// DeploymentTable persists DeploymentRecord rows keyed by deployment id.
+// Lives on shard 0 alongside MembershipTable and PartitionTableTable.
+// Phase 5.
+type DeploymentTable struct{ S storage.Store }
+
+func (t DeploymentTable) Get(id string) (*enginev1.DeploymentRecord, error) {
+	val, closer, err := t.S.Get(DeploymentKey(id))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer closer.Close()
+	var rec enginev1.DeploymentRecord
+	if err := proto.Unmarshal(val, &rec); err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (t DeploymentTable) Put(b storage.Batch, rec *enginev1.DeploymentRecord) error {
+	if rec.GetId() == "" {
+		return errors.New("DeploymentTable.Put: empty id")
+	}
+	buf, err := proto.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return b.Set(DeploymentKey(rec.GetId()), buf)
+}
+
+// List returns every DeploymentRecord row in lexicographic id order.
+func (t DeploymentTable) List() ([]*enginev1.DeploymentRecord, error) {
+	prefix := DeploymentPrefix()
+	upper := prefixUpperBound(prefix)
+	iter, err := t.S.NewIter(prefix, upper)
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	var out []*enginev1.DeploymentRecord
+	for ok := iter.First(); ok; ok = iter.Next() {
+		if !bytes.HasPrefix(iter.Key(), prefix) {
+			continue
+		}
+		var rec enginev1.DeploymentRecord
+		if err := proto.Unmarshal(iter.Value(), &rec); err != nil {
+			return nil, err
+		}
+		out = append(out, &rec)
+	}
+	return out, iter.Error()
+}
+
 // prefixUpperBound is a local clone of keys.PrefixUpperBound to avoid an
 // import cycle (internal/storage/keys is for the partition codec).
 func prefixUpperBound(prefix []byte) []byte {

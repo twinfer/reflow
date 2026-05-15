@@ -112,6 +112,77 @@ func TestInvokerWiringEchoCompletes(t *testing.T) {
 	}
 }
 
+// TestInvokerWiring_StampsDeploymentID asserts the deployment_id rides
+// through the Free→Scheduled→Invoked→Completed transitions intact: the
+// InvokeCommand carries it on ingress, the apply arm copies it onto the
+// new InvocationStatus, and downstream transitions preserve it. The
+// pinning value comes from Host.InprocDeploymentID, computed from the
+// registered handler set.
+func TestInvokerWiring_StampsDeploymentID(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, "node1")
+
+	reg := sdk.NewRegistry()
+	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
+		return in, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	raftAddr := freeLocalAddr(t)
+	h, err := engine.NewHost(engine.HostConfig{
+		NodeID:             1,
+		RaftAddr:           raftAddr,
+		DataDir:            dataDir,
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+		Handlers:           reg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	depID := h.InprocDeploymentID()
+	if depID == "" {
+		t.Fatal("InprocDeploymentID is empty; want non-empty for a registry with one handler")
+	}
+
+	r, err := h.StartPartition(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := h.AwaitLeader(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	id := buildID(1, "deployment-stamp")
+	target := &enginev1.InvocationTarget{ServiceName: "Echo", HandlerName: "echo"}
+	if err := r.Proposer().ProposeIngress(ctx, "test/dep", 1, &enginev1.Command{
+		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
+			InvocationId: id,
+			Target:       target,
+			Input:        []byte("x"),
+			DeploymentId: depID,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the invocation to reach Completed, then assert the
+	// deployment_id survived every transition.
+	_ = awaitCompleted(t, h, 1, id, 5*time.Second)
+	status, err := h.LookupInvocationStatus(ctx, 1, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := status.GetDeploymentId(); got != depID {
+		t.Errorf("deployment_id = %q; want %q", got, depID)
+	}
+}
+
 // TestInvokerWiringMissingHandlerStaysScheduled verifies that an
 // Invoke whose target is NOT in the registry leaves the invocation
 // Scheduled (not Completed, not Invoked). The Invoker logs a warning and

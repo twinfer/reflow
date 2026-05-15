@@ -16,7 +16,9 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -30,6 +32,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
@@ -332,8 +335,8 @@ func (s *Server) ListSnapshots(ctx context.Context, req *adminv1.ListSnapshotsRe
 // synthetic inproc deployment is registered internally at metadata-leader
 // bootstrap, NOT via this RPC; operators do not see it.
 //
-// Today (5d.1) only gRPC schemes (grpc://, grpcs://) are wired; raw HTTP/2
-// (https://, http://) lands in 5d.2.
+// Wired schemes: grpc:// + grpcs:// (gRPC discovery) and http:// + https://
+// (HTTP/2 GET /discover). inproc:// is reserved internally and rejected.
 func (s *Server) RegisterDeployment(ctx context.Context, req *adminv1.RegisterDeploymentRequest) (*adminv1.RegisterDeploymentResponse, error) {
 	if err := s.requireLeader(); err != nil {
 		return nil, err
@@ -355,7 +358,15 @@ func (s *Server) RegisterDeployment(ctx context.Context, req *adminv1.RegisterDe
 	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
 	defer cancel()
 
-	resp, err := discoverGRPC(callCtx, u)
+	var resp *protocolv1.DiscoveryResponse
+	switch transport {
+	case "grpc":
+		resp, err = discoverGRPC(callCtx, u)
+	case "https":
+		resp, err = discoverHTTP(callCtx, raw, scheme == "http")
+	default:
+		return nil, status.Errorf(codes.Internal, "admin: no discovery driver for transport %q", transport)
+	}
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "admin: discovery: %v", err)
 	}
@@ -433,6 +444,49 @@ func discoverGRPC(ctx context.Context, u *url.URL) (*protocolv1.DiscoveryRespons
 	defer func() { _ = cc.Close() }()
 	client := protocolv1.NewDiscoveryServiceClient(cc)
 	return client.Discover(ctx, &protocolv1.DiscoveryRequest{ProtocolVersion: protocolVersion})
+}
+
+// discoverHTTP issues GET <url>/discover over HTTP/2 (h2c for http://,
+// TLS for https://). The response body is a protobuf-encoded
+// DiscoveryResponse. Mirrors the gRPC path; the HTTP transport is the
+// raw-HTTP/2 counterpart.
+func discoverHTTP(ctx context.Context, rawURL string, plaintextH2C bool) (*protocolv1.DiscoveryResponse, error) {
+	tr := &http.Transport{Protocols: new(http.Protocols)}
+	if plaintextH2C {
+		tr.Protocols.SetUnencryptedHTTP2(true)
+		tr.Protocols.SetHTTP1(false)
+	} else {
+		tr.Protocols.SetHTTP2(true)
+		tr.Protocols.SetHTTP1(false)
+		tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	hc := &http.Client{Transport: tr}
+	defer tr.CloseIdleConnections()
+
+	target := strings.TrimRight(rawURL, "/") + "/discover"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.reflow.invocation.v1+protobuf")
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("do: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+		return nil, fmt.Errorf("handler returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	var out protocolv1.DiscoveryResponse
+	if err := proto.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &out, nil
 }
 
 // replicaSetContainsID is a small predicate; cluster has the same logic

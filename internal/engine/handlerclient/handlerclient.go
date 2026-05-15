@@ -3,9 +3,10 @@
 // to one deployment URL and exposes a transport-neutral Stream that the
 // invoker drives to run a single session.
 //
-// The package contains two transports today (5d):
+// The package contains two transports:
 //   - grpcclient: dials protocolv1.SessionServiceClient over gRPC
-//   - http2client (5d.2): raw HTTP/2 POST to /invoke with framed envelope
+//   - http2client: raw HTTP/2 POST to /invoke/<service>/<handler> with
+//     framed envelope, h2c for http:// and TLS for https://
 //
 // The engine selects transport by URL scheme via Registry.For; once a
 // Client is in hand, the invoker calls Invoke to open a stream and drives
@@ -25,19 +26,29 @@ import (
 // has been called on the Client.
 var ErrClientClosed = errors.New("handlerclient: client closed")
 
+// Route is the per-session destination metadata: the (service, handler)
+// tuple the engine wants to invoke. gRPC carries this in the StartMessage
+// at the wire layer and ignores it at the transport layer; HTTP/2 uses it
+// to build the request URL path /invoke/<service>/<handler>. The Stream
+// returned by Invoke is bound to one Route for its lifetime.
+type Route struct {
+	Service string
+	Handler string
+}
+
 // Client is the connection-pool view of one deployment. A Client is bound
 // to a single deployment URL + transport + creds tuple at construction
 // and is safe for concurrent Invoke calls; the engine reuses one Client
 // across every invocation that pins to the deployment.
 type Client interface {
-	// Invoke opens a single session stream. The engine sends a
-	// StartMessage as the first frame and reads command/notification
-	// frames until the stream returns io.EOF or an error.
+	// Invoke opens a single session stream addressed to route. The engine
+	// sends a StartMessage as the first frame and reads command /
+	// notification frames until the stream returns io.EOF or an error.
 	//
 	// ctx scopes the lifetime of the stream; cancelling ctx tears it
 	// down. The returned Stream is owned by the caller and must be
 	// drained or closed.
-	Invoke(ctx context.Context) (Stream, error)
+	Invoke(ctx context.Context, route Route) (Stream, error)
 
 	// Close releases the underlying transport (e.g. a gRPC ClientConn
 	// or HTTP/2 transport pool). Idempotent. After Close, Invoke returns

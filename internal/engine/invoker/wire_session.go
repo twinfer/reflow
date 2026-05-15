@@ -15,13 +15,15 @@ import (
 
 // WireDispatcher resolves a deployment_id to an open handler stream.
 // The invoker constructs one StartMessage per session and the dispatcher
-// is the seam where transport selection (gRPC / HTTP/2) lives.
+// is the seam where transport selection (gRPC / HTTP/2) lives. target
+// carries (service, handler) — HTTP/2 uses it to build the URL path;
+// gRPC ignores it because the routing rides on StartMessage.
 //
 // The single Stream returned by Open is owned by the caller (the
 // session goroutine); it must be drained or its parent context
 // cancelled to release the underlying gRPC stream.
 type WireDispatcher interface {
-	Open(ctx context.Context, rec *enginev1.DeploymentRecord) (handlerclient.Stream, error)
+	Open(ctx context.Context, rec *enginev1.DeploymentRecord, target *enginev1.InvocationTarget) (handlerclient.Stream, error)
 }
 
 // wireSession runs one invocation by dispatching over the wire to a
@@ -95,7 +97,7 @@ func (s *wireSession) run() {
 		return
 	}
 
-	stream, err := s.dispatcher.Open(s.ctx, s.rec)
+	stream, err := s.dispatcher.Open(s.ctx, s.rec, s.target)
 	if err != nil {
 		s.log.Warn("invoker.wire: open stream failed",
 			"id", invocationIDString(s.id),

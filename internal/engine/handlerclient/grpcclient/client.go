@@ -91,7 +91,12 @@ func New(rawURL string, opts ...handlerclient.ClientOption) (*Client, error) {
 // Invoke opens a new bidi stream against SessionService.Invoke. The
 // returned Stream owns the stream lifecycle; closing the Stream's send
 // side does not close the Client.
-func (c *Client) Invoke(ctx context.Context) (handlerclient.Stream, error) {
+//
+// gRPC ignores route at the transport layer: the (service, handler)
+// addressing rides on the StartMessage frame the engine sends as the
+// first message. The Route argument exists for transport parity with
+// http2client, which uses it to build the URL path.
+func (c *Client) Invoke(ctx context.Context, _ handlerclient.Route) (handlerclient.Stream, error) {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()

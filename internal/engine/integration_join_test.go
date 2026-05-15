@@ -18,19 +18,18 @@ import (
 // TestMultiNode_JoinExistingCluster verifies the join-existing startup
 // path (HostConfig.JoinExisting=true). A 3-node cluster bootstraps
 // normally, then a 4th node is added via the admin-RPC flow
-// (RegisterNode on shard 0 + BeginRebalanceStep PROMOTE_TO_VOTER on every
-// partition shard). The 4th Host comes up with JoinExisting=true and
-// catches up via dragonboat snapshot transfer + log replication. The
-// test then proposes an invocation on a shard hosted by the joiner and
-// confirms a linearizable read from the joiner observes the Completed
-// status — proof the joining node is serving traffic.
+// (RegisterNode on shard 0 + BeginRebalanceStep PROMOTE_TO_VOTER on
+// shard 0 AND every partition shard). The 4th Host comes up with
+// JoinExisting=true and catches up via dragonboat snapshot transfer +
+// log replication. The test then proves the joiner is a real cluster
+// member on every shard:
 //
-// Scope note: the admin AddNode workflow extends membership for
-// partition shards only (1..N). Shard 0 (metadata) membership is not
-// extended through this path; the joiner does not call
-// StartMetadataShard. That gap is tracked separately — this test
-// exercises the dragonboat join semantics for partition shards which is
-// what the issue called out.
+//   - Partition shards: propose an invocation upstream, then verify a
+//     linearizable read from the joiner observes the Completed status.
+//   - Metadata shard: linearizable PartitionTable/Membership SyncRead
+//     from the joiner returns the expected rows. SyncRead on shard 0
+//     requires the local NodeHost to be a current voting member of
+//     shard 0 — proof the metadata join worked.
 func TestMultiNode_JoinExistingCluster(t *testing.T) {
 	const svc = "JoinSvc"
 	const handler = "do"
@@ -136,7 +135,10 @@ func TestMultiNode_JoinExistingCluster(t *testing.T) {
 	if err != nil || pt == nil {
 		t.Fatalf("read partition table: %v (pt=%v)", err, pt)
 	}
-	for shardID := range pt.GetShards() {
+	// Propose PROMOTE_TO_VOTER for shard 0 (metadata) AND every partition
+	// shard. Shard 0 lives on pt.MetaReplicas; partitions live on
+	// pt.Shards. The rebalance pipeline now drives both uniformly.
+	proposeStep := func(shardID uint64) {
 		step := &enginev1.RebalanceStep{
 			ShardId:   shardID,
 			Kind:      enginev1.RebalanceStep_PROMOTE_TO_VOTER,
@@ -155,6 +157,10 @@ func TestMultiNode_JoinExistingCluster(t *testing.T) {
 			t.Fatalf("BeginRebalanceStep shard=%d: %v", shardID, err)
 		}
 	}
+	proposeStep(0)
+	for shardID := range pt.GetShards() {
+		proposeStep(shardID)
+	}
 
 	// Phase 4 — wait for the rebalancer to drive every PROMOTE_TO_VOTER
 	// step to completion. Observable via PartitionTable.Shards[sh].NodeIds
@@ -165,9 +171,13 @@ func TestMultiNode_JoinExistingCluster(t *testing.T) {
 		t.Fatalf("await partition membership add: %v", err)
 	}
 
-	// Phase 5 — on the joining host, call StartPartition for each shard.
-	// HostConfig.JoinExisting routes through StartOnDiskReplica(nil, true,
-	// ...) so dragonboat catches the replica up rather than seeding it.
+	// Phase 5 — on the joining host, start the metadata shard then
+	// every partition shard. HostConfig.JoinExisting routes through
+	// StartOnDiskReplica(nil, true, ...) so dragonboat catches the
+	// replica up rather than seeding it.
+	if _, err := h4.StartMetadataShard(); err != nil {
+		t.Fatalf("StartMetadataShard on joiner: %v", err)
+	}
 	for sh := uint64(1); sh <= 3; sh++ {
 		if _, err := h4.StartPartition(sh); err != nil {
 			t.Fatalf("StartPartition(%d) on joiner: %v", sh, err)
@@ -218,6 +228,42 @@ func TestMultiNode_JoinExistingCluster(t *testing.T) {
 	if !completed {
 		t.Fatalf("joining node did not observe Completed status within deadline (shard=%d)", shard)
 	}
+
+	// Phase 7 — prove the joiner is a real shard-0 member. SyncRead on
+	// shard 0 (PartitionTable / Membership) only succeeds if the local
+	// NodeHost is a current voter, so a successful read is itself the
+	// assertion.
+	metaCtx, metaCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer metaCancel()
+	if err := awaitJoinerServesMetadata(metaCtx, h4, newID); err != nil {
+		t.Fatalf("joiner not serving shard-0 reads: %v", err)
+	}
+}
+
+// awaitJoinerServesMetadata polls until h.PartitionTable and h.Membership
+// (linearizable reads on shard 0) succeed from the joiner AND the
+// returned PartitionTable shows newID in MetaReplicas — proof both the
+// dragonboat shard-0 membership AND the apply-state MetaReplicas record
+// have caught up.
+func awaitJoinerServesMetadata(ctx context.Context, h *engine.Host, newID uint64) error {
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		readCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+		pt, ptErr := h.PartitionTable(readCtx)
+		_, memErr := h.Membership(readCtx)
+		cancel()
+		if ptErr == nil && memErr == nil && pt != nil &&
+			slices.Contains(pt.GetMetaReplicas().GetNodeIds(), newID) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("joiner shard-0 SyncRead never converged (last ptErr=%v memErr=%v): %w",
+				ptErr, memErr, ctx.Err())
+		case <-tick.C:
+		}
+	}
 }
 
 // node4Addrs allocates the three TCP endpoints node 4 will bind. Kept
@@ -251,9 +297,11 @@ func awaitPartitionTable(ctx context.Context, host *engine.Host, wantShards int)
 	}
 }
 
-// awaitPartitionMembership polls until every partition shard's NodeIds contains
-// newID. Indicates the rebalancer's PROMOTE_TO_VOTER steps have all
-// committed via CompleteRebalanceStep.
+// awaitPartitionMembership polls until newID is in every partition
+// shard's NodeIds AND in pt.MetaReplicas (shard 0). Indicates the
+// rebalancer's PROMOTE_TO_VOTER steps have all committed via
+// CompleteRebalanceStep, on both partition shards and the metadata
+// shard.
 func awaitPartitionMembership(ctx context.Context, host *engine.Host, newID uint64) error {
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
@@ -262,7 +310,7 @@ func awaitPartitionMembership(ctx context.Context, host *engine.Host, newID uint
 		pt, err := host.PartitionTable(readCtx)
 		cancel()
 		if err == nil && pt != nil {
-			allIn := true
+			allIn := slices.Contains(pt.GetMetaReplicas().GetNodeIds(), newID)
 			for _, rs := range pt.GetShards() {
 				if !slices.Contains(rs.GetNodeIds(), newID) {
 					allIn = false

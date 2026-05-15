@@ -6,8 +6,8 @@ package cluster
 // Surfaces covered:
 //
 //   - RegisterNode, EvictNode, UpdatePartitionTable
-//   - BeginRebalanceStep (idempotent on duplicate)
-//   - CompleteRebalanceStep (delete / promote / add-non-voting)
+//   - BeginRebalanceStep (idempotent on duplicate) — partition shards AND shard 0
+//   - CompleteRebalanceStep (delete / promote / add-non-voting) — partitions AND shard 0
 //   - OnPartitionTable hook fires exactly when an Update produced a fresh table
 //
 // The model is a plain-Go mirror of the FSM's state (applied_index,
@@ -16,13 +16,20 @@ package cluster
 // faithfully:
 //
 //   - EvictNode walks shards in sorted shardId order when appending
-//     DELETE_REPLICA steps; replicas of pending steps land in that
-//     deterministic order. (See applyEvictNode in fsm.go.)
+//     DELETE_REPLICA steps; the shard-0 step (if the evicted node is a
+//     metadata voter) is appended LAST so the resulting byte sequence
+//     stays deterministic across replicas. (See applyEvictNode in fsm.go.)
 //   - Re-applying EvictNode on an already-evicted node (last_seen=0) is
 //     a no-op.
 //   - BeginRebalanceStep on a duplicate (shard_id, step_id) is dropped.
 //   - CompleteRebalanceStep is idempotent: if no entry matches, no-op
 //     and no assignment_epoch bump.
+//   - shard_id=0 CompleteRebalanceStep mutates pt.MetaReplicas, NOT
+//     pt.Shards, and does NOT bump assignment_epoch (routing decisions
+//     don't depend on metadata-shard membership).
+//   - UpdatePartitionTable is a full overwrite — proposers send the
+//     desired MetaReplicas every time (the metadata-runner bootstrap
+//     reads the existing value off disk before proposing).
 //
 // The PBT does not exercise SaveSnapshot/RecoverFromSnapshot — stubSnapshotter
 // does not back the snapshot stream. Snapshot round-trip is covered
@@ -131,6 +138,13 @@ func (m *fsmMachine) UpdatePartitionTable(t *rapid.T) {
 		AssignmentEpoch: epoch,
 		Shards:          shards,
 	}
+	// Sometimes include MetaReplicas, sometimes leave nil. UpdatePartitionTable
+	// is a full overwrite — nil input means the persisted MetaReplicas
+	// goes back to nil. The model just clones the input verbatim.
+	if rapid.Bool().Draw(t, "include_meta_replicas") {
+		nMeta := rapid.IntRange(1, 3).Draw(t, "n_meta_replicas")
+		pt.MetaReplicas = &enginev1.ReplicaSet{NodeIds: uniqueSampledNodeIDs(t, nMeta)}
+	}
 	m.pt = proto.Clone(pt).(*enginev1.PartitionTable)
 	m.apply(t, &enginev1.Command{
 		Kind: &enginev1.Command_UpdatePartitionTable{
@@ -151,7 +165,11 @@ func (m *fsmMachine) BeginRebalanceStep(t *rapid.T) {
 	if m.pt == nil || len(m.pt.GetShards()) == 0 {
 		return
 	}
-	shardID := pickShardID(t, m.pt)
+	// Pool: partition shards in pt.Shards plus shard 0 (the metadata
+	// Raft group itself). Shard 0 is included regardless of whether
+	// MetaReplicas is populated — the FSM accepts the step either way
+	// and CompleteRebalanceStep applies against MetaReplicas.
+	shardID := pickShardIDIncludingZero(t, m.pt)
 	stepID := uint64(rapid.IntRange(1, 10).Draw(t, "step_id"))
 	kind := rapid.SampledFrom([]enginev1.RebalanceStep_Kind{
 		enginev1.RebalanceStep_ADD_NON_VOTING,
@@ -220,7 +238,10 @@ func (m *fsmMachine) applyEvictModel(nodeID uint64) {
 	if m.pt == nil {
 		return
 	}
-	// Walk shards in sorted shardId order to mirror fsm.go's determinism.
+	// Walk partition shards in sorted shardId order to mirror fsm.go's
+	// determinism, then append shard 0 LAST when the evicted node is a
+	// metadata voter — same canonical byte sequence applyEvictNode
+	// produces.
 	shardIDs := sortedShardIDs(m.pt.GetShards())
 	for _, sh := range shardIDs {
 		rs := m.pt.GetShards()[sh]
@@ -235,10 +256,18 @@ func (m *fsmMachine) applyEvictModel(nodeID uint64) {
 		}
 		m.pt.Pending = append(m.pt.Pending, step)
 	}
+	if slices.Contains(m.pt.GetMetaReplicas().GetNodeIds(), nodeID) {
+		m.pt.Pending = append(m.pt.Pending, &enginev1.RebalanceStep{
+			ShardId:      0,
+			Kind:         enginev1.RebalanceStep_DELETE_REPLICA,
+			RemoveNodeId: nodeID,
+			StepId:       nextStepIDModel(m.pt.GetPending(), 0),
+		})
+	}
 }
 
 func (m *fsmMachine) applyBeginStepModel(step *enginev1.RebalanceStep) {
-	if step.GetShardId() == 0 || step.GetStepId() == 0 {
+	if step.GetStepId() == 0 {
 		return
 	}
 	if m.pt == nil {
@@ -253,7 +282,7 @@ func (m *fsmMachine) applyBeginStepModel(step *enginev1.RebalanceStep) {
 }
 
 func (m *fsmMachine) applyCompleteStepModel(shardID, stepID uint64) {
-	if shardID == 0 || stepID == 0 {
+	if stepID == 0 {
 		return
 	}
 	if m.pt == nil {
@@ -273,27 +302,43 @@ func (m *fsmMachine) applyCompleteStepModel(shardID, stepID uint64) {
 	}
 	m.pt.Pending = kept
 
-	switch matched.GetKind() {
-	case enginev1.RebalanceStep_DELETE_REPLICA:
-		if rs := m.pt.GetShards()[shardID]; rs != nil {
-			rs.NodeIds = removeUint64(rs.NodeIds, matched.GetRemoveNodeId())
-		}
-	case enginev1.RebalanceStep_PROMOTE_TO_VOTER:
-		rs := m.pt.GetShards()[shardID]
-		if rs == nil {
-			rs = &enginev1.ReplicaSet{}
+	// Pick the ReplicaSet to mutate: shard 0 -> MetaReplicas, partitions
+	// -> pt.Shards[shardID]. Mirrors pickRebalanceTarget in fsm.go.
+	var targetRS *enginev1.ReplicaSet
+	var setTargetRS func(*enginev1.ReplicaSet)
+	if shardID == 0 {
+		targetRS = m.pt.GetMetaReplicas()
+		setTargetRS = func(rs *enginev1.ReplicaSet) { m.pt.MetaReplicas = rs }
+	} else {
+		targetRS = m.pt.GetShards()[shardID]
+		setTargetRS = func(rs *enginev1.ReplicaSet) {
 			if m.pt.Shards == nil {
 				m.pt.Shards = map[uint64]*enginev1.ReplicaSet{}
 			}
 			m.pt.Shards[shardID] = rs
 		}
-		if !slices.Contains(rs.NodeIds, matched.GetAddNodeId()) {
-			rs.NodeIds = append(rs.NodeIds, matched.GetAddNodeId())
+	}
+	switch matched.GetKind() {
+	case enginev1.RebalanceStep_DELETE_REPLICA:
+		if targetRS != nil {
+			targetRS.NodeIds = removeUint64(targetRS.NodeIds, matched.GetRemoveNodeId())
+		}
+	case enginev1.RebalanceStep_PROMOTE_TO_VOTER:
+		if targetRS == nil {
+			targetRS = &enginev1.ReplicaSet{}
+			setTargetRS(targetRS)
+		}
+		if !slices.Contains(targetRS.NodeIds, matched.GetAddNodeId()) {
+			targetRS.NodeIds = append(targetRS.NodeIds, matched.GetAddNodeId())
 		}
 	case enginev1.RebalanceStep_ADD_NON_VOTING:
 		// No replica-set mutation (mirrors fsm.go).
 	}
-	m.pt.AssignmentEpoch++
+	// AssignmentEpoch tracks partition-ownership generation for routing;
+	// shard-0 changes are invisible to routing and don't bump.
+	if shardID != 0 {
+		m.pt.AssignmentEpoch++
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -405,6 +450,15 @@ func uniqueSampledNodeIDs(t *rapid.T, n int) []uint64 {
 
 func pickShardID(t *rapid.T, pt *enginev1.PartitionTable) uint64 {
 	ids := sortedShardIDs(pt.GetShards())
+	return rapid.SampledFrom(ids).Draw(t, "shard_id")
+}
+
+// pickShardIDIncludingZero draws from the partition shards plus shard 0
+// (the metadata Raft group). Used by BeginRebalanceStep so the
+// generator exercises shard-0 add/remove/non-voting paths uniformly.
+func pickShardIDIncludingZero(t *rapid.T, pt *enginev1.PartitionTable) uint64 {
+	ids := sortedShardIDs(pt.GetShards())
+	ids = append([]uint64{0}, ids...)
 	return rapid.SampledFrom(ids).Draw(t, "shard_id")
 }
 

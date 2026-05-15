@@ -337,6 +337,115 @@ func TestCluster_CompleteRebalanceStep_DeleteRemovesFromReplicaSet(t *testing.T)
 	}
 }
 
+func TestCluster_BeginRebalanceStep_AcceptsShardZero(t *testing.T) {
+	// Shard 0 is the metadata Raft group itself — the rebalance pipeline
+	// now carries its membership changes uniformly.
+	f, _, st := newTestFSM(t)
+	applyPartitionTable(t, f, 1, &enginev1.PartitionTable{
+		AssignmentEpoch: 1,
+		Shards:          map[uint64]*enginev1.ReplicaSet{1: {NodeIds: []uint64{1, 2, 3}}},
+		MetaReplicas:    &enginev1.ReplicaSet{NodeIds: []uint64{1, 2, 3}},
+	})
+	step := &enginev1.RebalanceStep{
+		ShardId: 0, Kind: enginev1.RebalanceStep_PROMOTE_TO_VOTER, AddNodeId: 4, StepId: 1,
+	}
+	cmd := &enginev1.Command{Kind: &enginev1.Command_BeginRebalanceStep{
+		BeginRebalanceStep: &enginev1.BeginRebalanceStep{Step: step},
+	}}
+	if _, err := f.Update([]statemachine.Entry{{Index: 2, Cmd: envelope(t, cmd)}}); err != nil {
+		t.Fatal(err)
+	}
+	pt, _ := (PartitionTableTable{S: st}).Get()
+	if len(pt.GetPending()) != 1 || pt.GetPending()[0].GetShardId() != 0 {
+		t.Fatalf("expected one shard-0 pending step; got %+v", pt.GetPending())
+	}
+}
+
+func TestCluster_CompleteRebalanceStep_ShardZeroPromoteUpdatesMetaReplicas(t *testing.T) {
+	f, _, st := newTestFSM(t)
+	applyPartitionTable(t, f, 1, &enginev1.PartitionTable{
+		AssignmentEpoch: 1,
+		Shards:          map[uint64]*enginev1.ReplicaSet{1: {NodeIds: []uint64{1, 2, 3}}},
+		MetaReplicas:    &enginev1.ReplicaSet{NodeIds: []uint64{1, 2, 3}},
+		Pending: []*enginev1.RebalanceStep{{
+			ShardId: 0, Kind: enginev1.RebalanceStep_PROMOTE_TO_VOTER, AddNodeId: 4, StepId: 1,
+		}},
+	})
+	cmd := &enginev1.Command{Kind: &enginev1.Command_CompleteRebalanceStep{
+		CompleteRebalanceStep: &enginev1.CompleteRebalanceStep{ShardId: 0, StepId: 1},
+	}}
+	if _, err := f.Update([]statemachine.Entry{{Index: 2, Cmd: envelope(t, cmd)}}); err != nil {
+		t.Fatal(err)
+	}
+	pt, _ := (PartitionTableTable{S: st}).Get()
+	if !replicaSetContains(pt.GetMetaReplicas(), 4) {
+		t.Fatalf("node 4 not added to MetaReplicas: %+v", pt.GetMetaReplicas().GetNodeIds())
+	}
+	if len(pt.GetPending()) != 0 {
+		t.Fatalf("pending not drained: %+v", pt.GetPending())
+	}
+	// assignment_epoch must NOT bump for shard-0 changes — routing
+	// doesn't depend on metadata-shard membership.
+	if pt.GetAssignmentEpoch() != 1 {
+		t.Fatalf("assignment_epoch = %d; want 1 (shard-0 changes don't bump)", pt.GetAssignmentEpoch())
+	}
+}
+
+func TestCluster_CompleteRebalanceStep_ShardZeroDeleteRemovesFromMetaReplicas(t *testing.T) {
+	f, _, st := newTestFSM(t)
+	applyPartitionTable(t, f, 1, &enginev1.PartitionTable{
+		AssignmentEpoch: 5,
+		Shards:          map[uint64]*enginev1.ReplicaSet{1: {NodeIds: []uint64{1, 2, 3}}},
+		MetaReplicas:    &enginev1.ReplicaSet{NodeIds: []uint64{1, 2, 3, 4}},
+		Pending: []*enginev1.RebalanceStep{{
+			ShardId: 0, Kind: enginev1.RebalanceStep_DELETE_REPLICA, RemoveNodeId: 4, StepId: 1,
+		}},
+	})
+	cmd := &enginev1.Command{Kind: &enginev1.Command_CompleteRebalanceStep{
+		CompleteRebalanceStep: &enginev1.CompleteRebalanceStep{ShardId: 0, StepId: 1},
+	}}
+	if _, err := f.Update([]statemachine.Entry{{Index: 2, Cmd: envelope(t, cmd)}}); err != nil {
+		t.Fatal(err)
+	}
+	pt, _ := (PartitionTableTable{S: st}).Get()
+	if replicaSetContains(pt.GetMetaReplicas(), 4) {
+		t.Fatalf("node 4 still in MetaReplicas: %+v", pt.GetMetaReplicas().GetNodeIds())
+	}
+	if pt.GetAssignmentEpoch() != 5 {
+		t.Fatalf("assignment_epoch = %d; want 5 (shard-0 changes don't bump)", pt.GetAssignmentEpoch())
+	}
+}
+
+func TestCluster_EvictNodeEnqueuesShardZeroDeleteWhenMetaVoter(t *testing.T) {
+	f, _, st := newTestFSM(t)
+	applyRegisterNode(t, f, 1, &enginev1.NodeMembership{NodeId: 3, RaftAddr: "10.0.0.3:9091", LastSeenMs: 1700})
+	applyPartitionTable(t, f, 2, &enginev1.PartitionTable{
+		AssignmentEpoch: 1,
+		Shards: map[uint64]*enginev1.ReplicaSet{
+			1: {NodeIds: []uint64{1, 2, 3}},
+			2: {NodeIds: []uint64{1, 2}},
+			3: {NodeIds: []uint64{1, 2, 3}},
+		},
+		MetaReplicas: &enginev1.ReplicaSet{NodeIds: []uint64{1, 2, 3}},
+	})
+
+	cmd := &enginev1.Command{Kind: &enginev1.Command_EvictNode{EvictNode: &enginev1.EvictNode{NodeId: 3}}}
+	if _, err := f.Update([]statemachine.Entry{{Index: 3, Cmd: envelope(t, cmd)}}); err != nil {
+		t.Fatal(err)
+	}
+	pt, _ := (PartitionTableTable{S: st}).Get()
+	// Expect 3 pending: shard 1 + shard 3 (partition) + shard 0 (meta).
+	if len(pt.GetPending()) != 3 {
+		t.Fatalf("pending = %d; want 3 (1+3+0)", len(pt.GetPending()))
+	}
+	// shard 0 step must appear last for byte-deterministic ordering.
+	if pt.GetPending()[2].GetShardId() != 0 ||
+		pt.GetPending()[2].GetKind() != enginev1.RebalanceStep_DELETE_REPLICA ||
+		pt.GetPending()[2].GetRemoveNodeId() != 3 {
+		t.Fatalf("last pending step = %+v; want shard 0 DELETE_REPLICA node 3", pt.GetPending()[2])
+	}
+}
+
 func TestCluster_UnknownCommandIsDropped(t *testing.T) {
 	f, _, _ := newTestFSM(t)
 	cmd := &enginev1.Command{

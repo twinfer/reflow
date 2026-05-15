@@ -4221,7 +4221,16 @@ type PartitionTable struct {
 	// BeginRebalanceStep but not yet CompleteRebalanceStep'd. A new
 	// metadata-leader picks up where the previous one left off by
 	// replaying this list against dragonboat. Phase 4.2.
-	Pending       []*RebalanceStep `protobuf:"bytes,3,rep,name=pending,proto3" json:"pending,omitempty"`
+	Pending []*RebalanceStep `protobuf:"bytes,3,rep,name=pending,proto3" json:"pending,omitempty"`
+	// meta_replicas is the voting member set of shard 0 (the metadata
+	// Raft group itself). Modeled alongside `shards` so the rebalance
+	// pipeline can carry shard-0 membership changes uniformly — the
+	// admin AddNode workflow enqueues a BeginRebalanceStep{shard_id=0}
+	// for the joiner; failure-detector EvictNode appends a
+	// DELETE_REPLICA{shard_id=0} when the evicted node is a metadata
+	// voter. `assignment_epoch` is NOT bumped on shard-0 changes —
+	// routing decisions don't depend on metadata-shard membership.
+	MetaReplicas  *ReplicaSet `protobuf:"bytes,4,opt,name=meta_replicas,json=metaReplicas,proto3" json:"meta_replicas,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4273,6 +4282,13 @@ func (x *PartitionTable) GetAssignmentEpoch() uint64 {
 func (x *PartitionTable) GetPending() []*RebalanceStep {
 	if x != nil {
 		return x.Pending
+	}
+	return nil
+}
+
+func (x *PartitionTable) GetMetaReplicas() *ReplicaSet {
+	if x != nil {
+		return x.MetaReplicas
 	}
 	return nil
 }
@@ -4843,11 +4859,12 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\fnode_host_id\x18\x03 \x01(\tR\n" +
 	"nodeHostId\x12 \n" +
 	"\flast_seen_ms\x18\x04 \x01(\x03R\n" +
-	"lastSeenMs\"\x95\x02\n" +
+	"lastSeenMs\"\xd8\x02\n" +
 	"\x0ePartitionTable\x12D\n" +
 	"\x06shards\x18\x01 \x03(\v2,.reflow.engine.v1.PartitionTable.ShardsEntryR\x06shards\x12)\n" +
 	"\x10assignment_epoch\x18\x02 \x01(\x04R\x0fassignmentEpoch\x129\n" +
-	"\apending\x18\x03 \x03(\v2\x1f.reflow.engine.v1.RebalanceStepR\apending\x1aW\n" +
+	"\apending\x18\x03 \x03(\v2\x1f.reflow.engine.v1.RebalanceStepR\apending\x12A\n" +
+	"\rmeta_replicas\x18\x04 \x01(\v2\x1c.reflow.engine.v1.ReplicaSetR\fmetaReplicas\x1aW\n" +
 	"\vShardsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x04R\x03key\x122\n" +
 	"\x05value\x18\x02 \x01(\v2\x1c.reflow.engine.v1.ReplicaSetR\x05value:\x028\x01\"'\n" +
@@ -5030,14 +5047,15 @@ var file_enginev1_engine_proto_depIdxs = []int32{
 	58, // 72: reflow.engine.v1.UpdatePartitionTable.table:type_name -> reflow.engine.v1.PartitionTable
 	64, // 73: reflow.engine.v1.PartitionTable.shards:type_name -> reflow.engine.v1.PartitionTable.ShardsEntry
 	61, // 74: reflow.engine.v1.PartitionTable.pending:type_name -> reflow.engine.v1.RebalanceStep
-	1,  // 75: reflow.engine.v1.RebalanceStep.kind:type_name -> reflow.engine.v1.RebalanceStep.Kind
-	61, // 76: reflow.engine.v1.BeginRebalanceStep.step:type_name -> reflow.engine.v1.RebalanceStep
-	59, // 77: reflow.engine.v1.PartitionTable.ShardsEntry.value:type_name -> reflow.engine.v1.ReplicaSet
-	78, // [78:78] is the sub-list for method output_type
-	78, // [78:78] is the sub-list for method input_type
-	78, // [78:78] is the sub-list for extension type_name
-	78, // [78:78] is the sub-list for extension extendee
-	0,  // [0:78] is the sub-list for field type_name
+	59, // 75: reflow.engine.v1.PartitionTable.meta_replicas:type_name -> reflow.engine.v1.ReplicaSet
+	1,  // 76: reflow.engine.v1.RebalanceStep.kind:type_name -> reflow.engine.v1.RebalanceStep.Kind
+	61, // 77: reflow.engine.v1.BeginRebalanceStep.step:type_name -> reflow.engine.v1.RebalanceStep
+	59, // 78: reflow.engine.v1.PartitionTable.ShardsEntry.value:type_name -> reflow.engine.v1.ReplicaSet
+	79, // [79:79] is the sub-list for method output_type
+	79, // [79:79] is the sub-list for method input_type
+	79, // [79:79] is the sub-list for extension type_name
+	79, // [79:79] is the sub-list for extension extendee
+	0,  // [0:79] is the sub-list for field type_name
 }
 
 func init() { file_enginev1_engine_proto_init() }

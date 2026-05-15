@@ -139,9 +139,11 @@ func (s *Server) AddNode(ctx context.Context, req *adminv1.AddNodeRequest) (*adm
 	if pt == nil {
 		return nil, status.Error(codes.FailedPrecondition, "admin: partition table not yet bootstrapped")
 	}
-	for shardID, rs := range pt.GetShards() {
+	// Build the union {0} ∪ partition-shard-ids so shard 0 is proposed
+	// alongside the partition shards in one uniform loop.
+	addShard := func(shardID uint64, rs *enginev1.ReplicaSet) error {
 		if replicaSetContainsID(rs.GetNodeIds(), req.GetNodeId()) {
-			continue
+			return nil
 		}
 		step := &enginev1.RebalanceStep{
 			ShardId:   shardID,
@@ -158,8 +160,17 @@ func (s *Server) AddNode(ctx context.Context, req *adminv1.AddNodeRequest) (*adm
 			},
 		}
 		if err := s.runner.Proposer().ProposeSelf(callCtx, beginCmd); err != nil {
-			return nil, status.Errorf(codes.Internal, "admin: propose BeginRebalanceStep shard=%d: %v",
+			return status.Errorf(codes.Internal, "admin: propose BeginRebalanceStep shard=%d: %v",
 				shardID, err)
+		}
+		return nil
+	}
+	if err := addShard(0, pt.GetMetaReplicas()); err != nil {
+		return nil, err
+	}
+	for shardID, rs := range pt.GetShards() {
+		if err := addShard(shardID, rs); err != nil {
+			return nil, err
 		}
 	}
 	// Re-read the table for the response's assignment_epoch.

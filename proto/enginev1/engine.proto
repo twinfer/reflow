@@ -617,6 +617,15 @@ message PartitionTable {
   // metadata-leader picks up where the previous one left off by
   // replaying this list against dragonboat. Phase 4.2.
   repeated RebalanceStep pending = 3;
+  // meta_replicas is the voting member set of shard 0 (the metadata
+  // Raft group itself). Modeled alongside `shards` so the rebalance
+  // pipeline can carry shard-0 membership changes uniformly — the
+  // admin AddNode workflow enqueues a BeginRebalanceStep{shard_id=0}
+  // for the joiner; failure-detector EvictNode appends a
+  // DELETE_REPLICA{shard_id=0} when the evicted node is a metadata
+  // voter. `assignment_epoch` is NOT bumped on shard-0 changes —
+  // routing decisions don't depend on metadata-shard membership.
+  ReplicaSet meta_replicas = 4;
 }
 
 // ReplicaSet is the per-partition replica list. Order is not significant

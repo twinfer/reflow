@@ -180,6 +180,11 @@ func (f *FSM) applyCommand(
 			return nil, nil
 		}
 		// Clone so the in-memory hook observes an isolated value.
+		// UpdatePartitionTable is a full overwrite; proposers are
+		// responsible for sending the complete desired state, including
+		// MetaReplicas. The metadata-runner bootstrap reads existing
+		// MetaReplicas off disk before proposing so re-runs on leader
+		// gain don't wipe runtime-added members.
 		applied := proto.Clone(pt).(*enginev1.PartitionTable)
 		if err := (PartitionTableTable{S: store}).Put(batch, applied); err != nil {
 			return nil, fmt.Errorf("cluster: write partition table: %w", err)
@@ -248,7 +253,10 @@ func (f *FSM) applyEvictNode(
 	}
 	// Iterate shards in sorted order so the appended pending steps land in
 	// the same byte sequence on every replica — required for Raft Apply
-	// determinism (snapshot bytes diverge otherwise).
+	// determinism (snapshot bytes diverge otherwise). Shard 0 is appended
+	// last when the evicted node is also a metadata voter so the
+	// resulting byte sequence stays canonical (partitions first, meta
+	// second).
 	shards := pt.GetShards()
 	shardIDs := make([]uint64, 0, len(shards))
 	for shardID := range shards {
@@ -268,6 +276,14 @@ func (f *FSM) applyEvictNode(
 		}
 		pt.Pending = append(pt.Pending, step)
 	}
+	if replicaSetContains(pt.GetMetaReplicas(), nodeID) {
+		pt.Pending = append(pt.Pending, &enginev1.RebalanceStep{
+			ShardId:      0,
+			Kind:         enginev1.RebalanceStep_DELETE_REPLICA,
+			RemoveNodeId: nodeID,
+			StepId:       nextStepID(pt.GetPending(), 0),
+		})
+	}
 	if err := (PartitionTableTable{S: store}).Put(batch, pt); err != nil {
 		return nil, fmt.Errorf("cluster: write partition table: %w", err)
 	}
@@ -284,11 +300,14 @@ func (f *FSM) applyBeginRebalanceStep(
 	raftIndex uint64,
 ) (*enginev1.PartitionTable, error) {
 	step := cmd.GetStep()
-	if step == nil || step.GetShardId() == 0 || step.GetStepId() == 0 {
+	if step == nil || step.GetStepId() == 0 {
 		f.cfg.Log.Warn("cluster: BeginRebalanceStep malformed; ignoring",
 			"raft_index", raftIndex)
 		return nil, nil
 	}
+	// shard_id=0 is the metadata Raft group itself — same step kinds,
+	// applied against pt.meta_replicas instead of pt.shards[shard_id]
+	// in applyCompleteRebalanceStep.
 	pt, err := (PartitionTableTable{S: store}).Get()
 	if err != nil {
 		return nil, fmt.Errorf("cluster: load partition table: %w", err)
@@ -311,11 +330,12 @@ func (f *FSM) applyBeginRebalanceStep(
 	return proto.Clone(pt).(*enginev1.PartitionTable), nil
 }
 
-// applyCompleteRebalanceStep removes the matching pending entry, bumps
-// assignment_epoch, and (for DELETE_REPLICA / PROMOTE_TO_VOTER) updates
-// the relevant ReplicaSet. ADD_NON_VOTING does not appear in the
-// voting set so the ReplicaSet is untouched; the entry is just popped.
-// Idempotent: if no entry matches, no-op.
+// applyCompleteRebalanceStep removes the matching pending entry and
+// updates the relevant ReplicaSet (pt.shards[shard_id] for partitions,
+// pt.meta_replicas for shard 0). ADD_NON_VOTING does not appear in any
+// voting set so the entry is just popped. AssignmentEpoch bumps only on
+// partition-shard completions — routing decisions don't depend on
+// metadata-shard membership. Idempotent: if no entry matches, no-op.
 func (f *FSM) applyCompleteRebalanceStep(
 	batch storage.Batch,
 	store storage.Store,
@@ -324,7 +344,7 @@ func (f *FSM) applyCompleteRebalanceStep(
 ) (*enginev1.PartitionTable, error) {
 	shardID := cmd.GetShardId()
 	stepID := cmd.GetStepId()
-	if shardID == 0 || stepID == 0 {
+	if stepID == 0 {
 		f.cfg.Log.Warn("cluster: CompleteRebalanceStep malformed; ignoring",
 			"raft_index", raftIndex)
 		return nil, nil
@@ -351,22 +371,21 @@ func (f *FSM) applyCompleteRebalanceStep(
 	}
 	pt.Pending = kept
 
+	// Pick the voting set to mutate: shard 0 routes to MetaReplicas,
+	// partition shards route to pt.Shards[shardID].
+	targetRS, setTargetRS := pickRebalanceTarget(pt, shardID)
 	switch matched.GetKind() {
 	case enginev1.RebalanceStep_DELETE_REPLICA:
-		if rs := pt.GetShards()[shardID]; rs != nil {
-			rs.NodeIds = removeNodeID(rs.NodeIds, matched.GetRemoveNodeId())
+		if targetRS != nil {
+			targetRS.NodeIds = removeNodeID(targetRS.NodeIds, matched.GetRemoveNodeId())
 		}
 	case enginev1.RebalanceStep_PROMOTE_TO_VOTER:
-		rs := pt.GetShards()[shardID]
-		if rs == nil {
-			rs = &enginev1.ReplicaSet{}
-			if pt.Shards == nil {
-				pt.Shards = make(map[uint64]*enginev1.ReplicaSet)
-			}
-			pt.Shards[shardID] = rs
+		if targetRS == nil {
+			targetRS = &enginev1.ReplicaSet{}
+			setTargetRS(targetRS)
 		}
-		if !replicaSetContains(rs, matched.GetAddNodeId()) {
-			rs.NodeIds = append(rs.NodeIds, matched.GetAddNodeId())
+		if !replicaSetContains(targetRS, matched.GetAddNodeId()) {
+			targetRS.NodeIds = append(targetRS.NodeIds, matched.GetAddNodeId())
 		}
 	case enginev1.RebalanceStep_ADD_NON_VOTING:
 		// No ReplicaSet change — non-voting members are tracked by
@@ -376,12 +395,31 @@ func (f *FSM) applyCompleteRebalanceStep(
 		f.cfg.Log.Warn("cluster: CompleteRebalanceStep on unknown step kind",
 			"raft_index", raftIndex, "kind", matched.GetKind())
 	}
-	pt.AssignmentEpoch++
+	// AssignmentEpoch tracks partition-ownership generation for routing
+	// clients; metadata-shard membership doesn't affect routing.
+	if shardID != 0 {
+		pt.AssignmentEpoch++
+	}
 
 	if err := (PartitionTableTable{S: store}).Put(batch, pt); err != nil {
 		return nil, fmt.Errorf("cluster: write partition table: %w", err)
 	}
 	return proto.Clone(pt).(*enginev1.PartitionTable), nil
+}
+
+// pickRebalanceTarget returns the ReplicaSet to mutate for a step with
+// the given shardID, plus a setter that lazily inserts a fresh ReplicaSet
+// at that location (used when promoting into an empty set).
+func pickRebalanceTarget(pt *enginev1.PartitionTable, shardID uint64) (*enginev1.ReplicaSet, func(*enginev1.ReplicaSet)) {
+	if shardID == 0 {
+		return pt.GetMetaReplicas(), func(rs *enginev1.ReplicaSet) { pt.MetaReplicas = rs }
+	}
+	return pt.GetShards()[shardID], func(rs *enginev1.ReplicaSet) {
+		if pt.Shards == nil {
+			pt.Shards = make(map[uint64]*enginev1.ReplicaSet)
+		}
+		pt.Shards[shardID] = rs
+	}
 }
 
 // replicaSetContains reports whether nodeID is present in rs.

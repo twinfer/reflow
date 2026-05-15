@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/twinfer/reflow/internal/engine/cluster"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -149,6 +150,18 @@ func (r *MetadataRunner) bootstrap(ctx context.Context) {
 		// Defensive copy so future mutations don't alias.
 		rs := append([]uint64(nil), replicas...)
 		pt.Shards[shardID] = &enginev1.ReplicaSet{NodeIds: rs}
+	}
+	// MetaReplicas seeds the metadata Raft group's voting set. On fresh
+	// bootstrap this is the static peer set; on a leader-gain re-run the
+	// rebalance pipeline may already have added or removed members, so
+	// read the existing on-disk MetaReplicas and re-propose it verbatim
+	// (UpdatePartitionTable is a full overwrite — proposers are
+	// responsible for sending the complete desired state).
+	if existing, err := (cluster.PartitionTableTable{S: r.snapshotter.Store()}).Get(); err == nil &&
+		existing != nil && len(existing.GetMetaReplicas().GetNodeIds()) > 0 {
+		pt.MetaReplicas = existing.GetMetaReplicas()
+	} else {
+		pt.MetaReplicas = &enginev1.ReplicaSet{NodeIds: append([]uint64(nil), replicas...)}
 	}
 	cmd := &enginev1.Command{
 		Kind: &enginev1.Command_UpdatePartitionTable{

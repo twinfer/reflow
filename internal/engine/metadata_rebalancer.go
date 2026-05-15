@@ -217,9 +217,11 @@ func (r *metadataRebalancer) runStep(ctx context.Context, step *enginev1.Rebalan
 	if r.host.nh == nil {
 		return
 	}
-	if step.GetShardId() == 0 || step.GetStepId() == 0 {
+	if step.GetStepId() == 0 {
 		return
 	}
+	// shard_id=0 is the metadata Raft group itself — dragonboat accepts
+	// the same SyncRequestAdd*/Delete* calls for shard 0 as for partitions.
 	stepCtx, cancel := context.WithTimeout(ctx, r.stepTimeout)
 	defer cancel()
 

@@ -13,11 +13,12 @@ import (
 // Use NewMetrics to register against a Registry; the default Prometheus
 // registry is used unless overridden.
 type Metrics struct {
-	ApplyTotal      *prometheus.CounterVec
-	ApplyDurationMs *prometheus.HistogramVec
-	JournalAppended *prometheus.CounterVec
-	TimerFired      prometheus.Counter
-	DedupHits       prometheus.Counter
+	ApplyTotal            *prometheus.CounterVec
+	ApplyDurationMs       *prometheus.HistogramVec
+	JournalAppended       *prometheus.CounterVec
+	TimerFired            prometheus.Counter
+	DedupHits             prometheus.Counter
+	ListenerSecurityLevel *prometheus.GaugeVec
 }
 
 // NewMetrics builds reflow's collectors. Pass nil to use the default
@@ -49,5 +50,9 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name: "reflow_partition_dedup_hits_total",
 			Help: "Number of Raft commands skipped because they were duplicates.",
 		}),
+		ListenerSecurityLevel: f.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "reflow_listener_security_level",
+			Help: "Transport security level per gRPC listener. 0=NoSecurity, 1=IntegrityOnly, 2=PrivacyAndIntegrity.",
+		}, []string{"listener", "driver"}),
 	}
 }

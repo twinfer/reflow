@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 
 	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/engine"
@@ -137,6 +138,11 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			return bail(fmt.Errorf("reflow: delivery creds: %w", derr))
 		}
 		deliveryCreds = dc
+		recordListenerSecurity(metrics, "delivery", dc)
+		if dc.SecurityLevel == credentials.NoSecurity {
+			logger.Warn("reflow: multi-node delivery using insecure transport — " +
+				"node-to-node traffic is unauthenticated and unencrypted")
+		}
 	}
 	if multiNode && !cfg.Admin.Disabled && cfg.Admin.Addr != "" {
 		ac, aerr := creds.Build(cfg.Admin.Creds, logger)
@@ -144,6 +150,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			return bail(fmt.Errorf("reflow: admin creds: %w", aerr))
 		}
 		adminCreds = ac
+		recordListenerSecurity(metrics, "admin", ac)
 	}
 	if multiNode {
 		uIc, sIc, closer, ierr := auth.NewServerInterceptors(auth.Config{
@@ -456,6 +463,18 @@ func buildLogger(cfg LoggingConfig) *slog.Logger {
 		return slog.New(cfg.Handler).With("service", "reflow")
 	}
 	return observability.NewLogger(cfg.Level)
+}
+
+// recordListenerSecurity stamps the per-listener SecurityLevel gauge so
+// dashboards can flag NoSecurity (=0) listeners. Metrics may be nil when
+// the operator disabled collection — in that case this is a no-op.
+func recordListenerSecurity(m *observability.Metrics, listener string, lc *creds.ListenerCreds) {
+	if m == nil || lc == nil {
+		return
+	}
+	m.ListenerSecurityLevel.
+		WithLabelValues(listener, string(lc.Driver)).
+		Set(float64(lc.SecurityLevel))
 }
 
 func startMetricsServer(cfg MetricsConfig, log *slog.Logger) func() error {

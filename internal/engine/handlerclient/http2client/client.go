@@ -77,7 +77,7 @@ func newClient(rawURL string, optsIn []handlerclient.ClientOption, plaintextH2C 
 	if u.Host == "" {
 		return nil, fmt.Errorf("http2client: url %q missing host", rawURL)
 	}
-	cfg := applyOptions(optsIn)
+	cfg := handlerclient.ApplyOptions(optsIn)
 	tr := &http.Transport{Protocols: new(http.Protocols)}
 	if plaintextH2C {
 		// http.Protocols.SetUnencryptedHTTP2 is the supported h2c path
@@ -97,19 +97,6 @@ func newClient(rawURL string, optsIn []handlerclient.ClientOption, plaintextH2C 
 		tr:      tr,
 		codec:   cfg.Codec,
 	}, nil
-}
-
-// applyOptions mirrors handlerclient.applyOptions; duplicated here so the
-// http2client package isn't forced to expose an internal constructor on
-// handlerclient just for codec resolution.
-func applyOptions(opts []handlerclient.ClientOption) handlerclient.ClientConfig {
-	cfg := handlerclient.ClientConfig{Codec: handlerclient.DefaultCodec()}
-	for _, o := range opts {
-		if o != nil {
-			o(&cfg)
-		}
-	}
-	return cfg
 }
 
 // Client wraps one *http.Client bound to a single deployment URL. The

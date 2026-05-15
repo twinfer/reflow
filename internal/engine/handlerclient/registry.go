@@ -31,8 +31,10 @@ func WithCodec(c Codec) ClientOption {
 	return func(cfg *ClientConfig) { cfg.Codec = c }
 }
 
-// applyOptions resolves opts against the default config.
-func applyOptions(opts []ClientOption) ClientConfig {
+// ApplyOptions resolves opts against the default config. Exported so
+// transport-specific Dialer implementations (grpcclient, http2client)
+// can reuse one canonical option-merging path.
+func ApplyOptions(opts []ClientOption) ClientConfig {
 	cfg := ClientConfig{Codec: DefaultCodec()}
 	for _, o := range opts {
 		if o != nil {

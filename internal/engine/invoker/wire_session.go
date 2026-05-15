@@ -172,23 +172,38 @@ func (s *wireSession) loadStartInput() ([]byte, bool) {
 	}
 }
 
-// sendStart codec-encodes and emits the StartMessage frame.
+// sendStart codec-encodes and emits the StartMessage frame followed by
+// an InputCommandMessage carrying the invocation input. The two-frame
+// handshake matches Restate's service-protocol: handlers read Start to
+// open their context, then read Input as journal entry 0 (the durable
+// representation of "the bytes the caller passed").
 func (s *wireSession) sendStart(stream handlerclient.Stream, input []byte) error {
 	start := &protocolv1.StartMessage{
-		Id:      s.id.GetUuid(),
-		DebugId: invocationIDString(s.id),
-		Key:     s.target.GetObjectKey(),
-		Kind:    s.kindForTarget(),
+		Id:          s.id.GetUuid(),
+		DebugId:     invocationIDString(s.id),
+		Key:         s.target.GetObjectKey(),
+		Kind:        s.kindForTarget(),
+		ServiceName: s.target.GetServiceName(),
+		HandlerName: s.target.GetHandlerName(),
 		// known_entries / state_map / partial_state stay zero in the
-		// minimal wire path; state preload and InputCommandMessage
-		// replay land as the wire-session matures.
+		// minimal wire path; state preload and full journal replay land
+		// as the wire-session matures.
 	}
-	_ = input // input rides on the journal (JEInput); future commits replay it as InputCommandMessage.
-	payload, err := s.codec.Marshal(start)
+	startBytes, err := s.codec.Marshal(start)
 	if err != nil {
 		return fmt.Errorf("marshal StartMessage: %w", err)
 	}
-	return stream.Send(handlerclient.FrameFor(handlerclient.TypeStart, payload))
+	if err := stream.Send(handlerclient.FrameFor(handlerclient.TypeStart, startBytes)); err != nil {
+		return err
+	}
+	inputMsg := &protocolv1.InputCommandMessage{
+		Value: &protocolv1.Value{Content: input},
+	}
+	inputBytes, err := s.codec.Marshal(inputMsg)
+	if err != nil {
+		return fmt.Errorf("marshal InputCommandMessage: %w", err)
+	}
+	return stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdInput, inputBytes))
 }
 
 // kindForTarget picks the protocolv1.Kind that matches this

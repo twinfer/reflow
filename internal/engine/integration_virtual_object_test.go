@@ -232,7 +232,7 @@ func TestVirtualObject_DistinctKeysRunInParallel(t *testing.T) {
 		select {
 		case <-started:
 			got++
-		case <-time.After(deadline.Sub(time.Now())):
+		case <-time.After(time.Until(deadline)):
 		}
 	}
 	if got != N {

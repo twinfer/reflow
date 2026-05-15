@@ -177,6 +177,13 @@ type StartMessage struct {
 	DurationSinceLastStoredEntry   uint64 `protobuf:"varint,8,opt,name=duration_since_last_stored_entry,json=durationSinceLastStoredEntry,proto3" json:"duration_since_last_stored_entry,omitempty"`
 	// Seed for the SDK's deterministic RNG. Stable across restarts.
 	RandomSeed uint64 `protobuf:"varint,9,opt,name=random_seed,json=randomSeed,proto3" json:"random_seed,omitempty"`
+	// Service + handler the engine is invoking. Required for the gRPC
+	// transport (which exposes one global SessionService.Invoke RPC, so
+	// routing has nowhere else to ride); the HTTP/2 transport carries the
+	// same tuple on the URL path /invoke/<service>/<handler> and the
+	// handler-side server uses these fields to verify the path matches.
+	ServiceName string `protobuf:"bytes,10,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
+	HandlerName string `protobuf:"bytes,11,opt,name=handler_name,json=handlerName,proto3" json:"handler_name,omitempty"`
 	// Handler classification — echoes the deployment registration.
 	Kind          Kind `protobuf:"varint,13,opt,name=kind,proto3,enum=reflow.protocol.v1.Kind" json:"kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -274,6 +281,20 @@ func (x *StartMessage) GetRandomSeed() uint64 {
 		return x.RandomSeed
 	}
 	return 0
+}
+
+func (x *StartMessage) GetServiceName() string {
+	if x != nil {
+		return x.ServiceName
+	}
+	return ""
+}
+
+func (x *StartMessage) GetHandlerName() string {
+	if x != nil {
+		return x.HandlerName
+	}
+	return ""
 }
 
 func (x *StartMessage) GetKind() Kind {
@@ -3403,7 +3424,7 @@ const file_protocolv1_protocol_proto_rawDesc = "" +
 	"\x19protocolv1/protocol.proto\x12\x12reflow.protocol.v1\"9\n" +
 	"\x05Frame\x12\x16\n" +
 	"\x06header\x18\x01 \x01(\x04R\x06header\x12\x18\n" +
-	"\apayload\x18\x02 \x01(\fR\apayload\"\xf9\x03\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\"\xbf\x04\n" +
 	"\fStartMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\fR\x02id\x12\x19\n" +
 	"\bdebug_id\x18\x02 \x01(\tR\adebugId\x12#\n" +
@@ -3414,7 +3435,10 @@ const file_protocolv1_protocol_proto_rawDesc = "" +
 	"#retry_count_since_last_stored_entry\x18\a \x01(\rR\x1eretryCountSinceLastStoredEntry\x12F\n" +
 	" duration_since_last_stored_entry\x18\b \x01(\x04R\x1cdurationSinceLastStoredEntry\x12\x1f\n" +
 	"\vrandom_seed\x18\t \x01(\x04R\n" +
-	"randomSeed\x12,\n" +
+	"randomSeed\x12!\n" +
+	"\fservice_name\x18\n" +
+	" \x01(\tR\vserviceName\x12!\n" +
+	"\fhandler_name\x18\v \x01(\tR\vhandlerName\x12,\n" +
 	"\x04kind\x18\r \x01(\x0e2\x18.reflow.protocol.v1.KindR\x04kind\x1a4\n" +
 	"\n" +
 	"StateEntry\x12\x10\n" +

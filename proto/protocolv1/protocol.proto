@@ -100,6 +100,14 @@ message StartMessage {
   // Seed for the SDK's deterministic RNG. Stable across restarts.
   uint64 random_seed = 9;
 
+  // Service + handler the engine is invoking. Required for the gRPC
+  // transport (which exposes one global SessionService.Invoke RPC, so
+  // routing has nowhere else to ride); the HTTP/2 transport carries the
+  // same tuple on the URL path /invoke/<service>/<handler> and the
+  // handler-side server uses these fields to verify the path matches.
+  string service_name = 10;
+  string handler_name = 11;
+
   // Handler classification — echoes the deployment registration.
   Kind kind = 13;
 }

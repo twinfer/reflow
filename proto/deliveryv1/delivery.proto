@@ -14,22 +14,19 @@
 // outbox row. NotLeader carries the receiver's leader hint so the
 // sender can re-resolve via the dragonboat gossip ShardView and retry.
 //
-// Authorization: every RPC on this service requires a SPIFFE
-// "node" role (see the service-level
-// (reflow.options.v1.default_required_spiffe_role) annotation).
-// Enforcement runs in internal/auth's stream interceptor.
+// Authorization: every RPC on this service requires a "node" principal.
+// The starter grpc-go authz policy in internal/auth/starter_policy.json
+// restricts /reflow.delivery.v1.Delivery/* to principals matching
+// "node/*"; operators may override via Config.Auth.PolicyFile.
 syntax = "proto3";
 
 package reflow.delivery.v1;
 
 import "enginev1/engine.proto";
-import "optionsv1/options.proto";
 
 option go_package = "github.com/twinfer/reflow/proto/deliveryv1;deliveryv1";
 
 service Delivery {
-  option (reflow.options.v1.default_required_spiffe_role) = "node";
-
   // Deliver is a bidirectional stream so the sender can pipeline multiple
   // envelopes and observe acks / not-leader signals without head-of-line
   // blocking. Implementations issue exactly one DeliverResponse per

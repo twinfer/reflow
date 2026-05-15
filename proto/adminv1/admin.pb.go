@@ -6,12 +6,10 @@
 // (`spiffe://<trust-domain>/operator/<name>` for operators). The
 // reflow-cluster CLI is the canonical client.
 //
-// Authorization is declared in this file. Each RPC carries a required
-// SPIFFE role via (reflow.options.v1.required_spiffe_role) or inherits
-// the service-level default below. The shared auth interceptor
-// (internal/auth) rejects mismatches with PermissionDenied.
-// Multi-language clients can introspect the same annotation from
-// generated descriptors.
+// Authorization lives in the shared grpc-go authz policy (see
+// internal/auth/starter_policy.json or the operator-supplied policy
+// file). The starter policy restricts /reflow.admin.v1.Admin/* to
+// principals matching "operator/*".
 //
 // Mutating RPCs (AddNode, RemoveNode) translate to shard-0 Raft
 // proposals; the apply arms in the metadata FSM and the metadata-
@@ -33,7 +31,6 @@ package adminv1
 
 import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-	_ "github.com/twinfer/reflow/proto/optionsv1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -770,7 +767,7 @@ var File_adminv1_admin_proto protoreflect.FileDescriptor
 
 const file_adminv1_admin_proto_rawDesc = "" +
 	"\n" +
-	"\x13adminv1/admin.proto\x12\x0freflow.admin.v1\x1a\x15enginev1/engine.proto\x1a\x17optionsv1/options.proto\"\xae\x01\n" +
+	"\x13adminv1/admin.proto\x12\x0freflow.admin.v1\x1a\x15enginev1/engine.proto\"\xae\x01\n" +
 	"\x0eAddNodeRequest\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12\x1b\n" +
 	"\traft_addr\x18\x02 \x01(\tR\braftAddr\x12\x1f\n" +
@@ -811,7 +808,7 @@ const file_adminv1_admin_proto_rawDesc = "" +
 	"\x15DeleteSnapshotRequest\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x12\x14\n" +
 	"\x05index\x18\x02 \x01(\x04R\x05index\"\x18\n" +
-	"\x16DeleteSnapshotResponse2\x97\x05\n" +
+	"\x16DeleteSnapshotResponse2\x89\x05\n" +
 	"\x05Admin\x12L\n" +
 	"\aAddNode\x12\x1f.reflow.admin.v1.AddNodeRequest\x1a .reflow.admin.v1.AddNodeResponse\x12U\n" +
 	"\n" +
@@ -820,7 +817,7 @@ const file_adminv1_admin_proto_rawDesc = "" +
 	"\x0eListPartitions\x12&.reflow.admin.v1.ListPartitionsRequest\x1a'.reflow.admin.v1.ListPartitionsResponse\x12a\n" +
 	"\x0eCreateSnapshot\x12&.reflow.admin.v1.CreateSnapshotRequest\x1a'.reflow.admin.v1.CreateSnapshotResponse\x12^\n" +
 	"\rListSnapshots\x12%.reflow.admin.v1.ListSnapshotsRequest\x1a&.reflow.admin.v1.ListSnapshotsResponse\x12a\n" +
-	"\x0eDeleteSnapshot\x12&.reflow.admin.v1.DeleteSnapshotRequest\x1a'.reflow.admin.v1.DeleteSnapshotResponse\x1a\f\x92\xb5\x18\boperatorB1Z/github.com/twinfer/reflow/proto/adminv1;adminv1b\x06proto3"
+	"\x0eDeleteSnapshot\x12&.reflow.admin.v1.DeleteSnapshotRequest\x1a'.reflow.admin.v1.DeleteSnapshotResponseB1Z/github.com/twinfer/reflow/proto/adminv1;adminv1b\x06proto3"
 
 var (
 	file_adminv1_admin_proto_rawDescOnce sync.Once

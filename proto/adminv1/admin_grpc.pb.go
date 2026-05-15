@@ -6,12 +6,10 @@
 // (`spiffe://<trust-domain>/operator/<name>` for operators). The
 // reflow-cluster CLI is the canonical client.
 //
-// Authorization is declared in this file. Each RPC carries a required
-// SPIFFE role via (reflow.options.v1.required_spiffe_role) or inherits
-// the service-level default below. The shared auth interceptor
-// (internal/auth) rejects mismatches with PermissionDenied.
-// Multi-language clients can introspect the same annotation from
-// generated descriptors.
+// Authorization lives in the shared grpc-go authz policy (see
+// internal/auth/starter_policy.json or the operator-supplied policy
+// file). The starter policy restricts /reflow.admin.v1.Admin/* to
+// principals matching "operator/*".
 //
 // Mutating RPCs (AddNode, RemoveNode) translate to shard-0 Raft
 // proposals; the apply arms in the metadata FSM and the metadata-

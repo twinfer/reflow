@@ -96,12 +96,26 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *ingressv1.SubmitInvo
 		return nil, status.Errorf(codes.Internal, "mint invocation id: %v", err)
 	}
 
+	// Resolve (service, handler) → deployment_id via shard 0's index.
+	// A non-empty result pins this invocation to that deployment for its
+	// lifetime, even if a later registration overwrites the (service,
+	// handler) mapping. When no operator-registered deployment claims
+	// the handler we fall back to the synthetic in-proc id; Phase 2.5
+	// removes the fallback once inproc is gone.
+	deploymentID, err := s.host.LookupDeploymentIDByHandler(ctx, target.GetServiceName(), target.GetHandlerName())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "lookup deployment: %v", err)
+	}
+	if deploymentID == "" {
+		deploymentID = s.host.InprocDeploymentID()
+	}
+
 	cmd := &enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
 		InvocationId:   id,
 		Target:         target,
 		Input:          req.GetInput(),
 		IdempotencyKey: req.GetIdempotencyKey(),
-		DeploymentId:   s.host.InprocDeploymentID(),
+		DeploymentId:   deploymentID,
 	}}}
 	producerID := "http/" + FormatInvocationID(id)
 	if err := runner.Proposer().ProposeIngress(ctx, producerID, 1, cmd); err != nil {

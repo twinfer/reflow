@@ -172,6 +172,39 @@ func (t DeploymentTable) List() ([]*enginev1.DeploymentRecord, error) {
 	return out, iter.Error()
 }
 
+// DeploymentIndexTable maps (service, handler) → deployment_id, the
+// current deployment that should answer when an ingress request arrives
+// without a pinned deployment_id. Lives on shard 0; written from the
+// RegisterDeployment apply arm.
+type DeploymentIndexTable struct{ S storage.Store }
+
+// Get returns the deployment_id for the (service, handler) pair, or
+// "" + nil if no entry exists.
+func (t DeploymentIndexTable) Get(service, handler string) (string, error) {
+	val, closer, err := t.S.Get(DeploymentIndexKey(service, handler))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return "", nil
+		}
+		return "", err
+	}
+	defer closer.Close()
+	return string(val), nil
+}
+
+// Put writes (service, handler) → id. Overwrites prior mappings — newer
+// deployment registration wins. Pinned invocations still resolve via
+// DeploymentTable.Get(id).
+func (t DeploymentIndexTable) Put(b storage.Batch, service, handler, id string) error {
+	if service == "" || handler == "" {
+		return errors.New("DeploymentIndexTable.Put: empty service or handler")
+	}
+	if id == "" {
+		return errors.New("DeploymentIndexTable.Put: empty deployment id")
+	}
+	return b.Set(DeploymentIndexKey(service, handler), []byte(id))
+}
+
 // prefixUpperBound is a local clone of keys.PrefixUpperBound to avoid an
 // import cycle (internal/storage/keys is for the partition codec).
 func prefixUpperBound(prefix []byte) []byte {

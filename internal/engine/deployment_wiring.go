@@ -67,6 +67,41 @@ func (h *Host) matchInprocDeployment(deploymentID string) *enginev1.DeploymentRe
 	return h.InprocDeploymentRecord(uint64(time.Now().UnixMilli()))
 }
 
+// LookupDeploymentIDByHandler resolves (service, handler) → deployment_id
+// against shard 0's deployment index. Returns "" + nil when no
+// deployment claims the handler — callers decide whether that is an
+// error condition. Also returns "" + nil when shard 0 is not hosted on
+// this node (single-node deployments treat the synthetic inproc record
+// as a fallback elsewhere).
+//
+// The deployment_id this returns identifies the *current* deployment
+// for (service, handler); pinned invocations resolve their own
+// deployment via the resolveDeployment id-keyed path. New ingress
+// invocations should be stamped with the id returned here so the pin
+// holds across future deployment swaps.
+func (h *Host) LookupDeploymentIDByHandler(ctx context.Context, service, handler string) (string, error) {
+	if service == "" || handler == "" {
+		return "", errors.New("host: LookupDeploymentIDByHandler: empty service or handler")
+	}
+	if h.nh == nil {
+		return "", nil
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+	}
+	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupDeploymentByHandler{Service: service, Handler: handler})
+	if err != nil {
+		return "", nil //nolint:nilerr // shard 0 absence isn't a caller error
+	}
+	id, ok := res.(string)
+	if !ok {
+		return "", fmt.Errorf("host: LookupDeploymentIDByHandler: unexpected lookup type %T", res)
+	}
+	return id, nil
+}
+
 // openWireStream is the WireDispatcher implementation: ask the
 // handlerclient.Registry for a cached Client against the deployment URL
 // and open a fresh Stream addressed to (target.Service, target.Handler).

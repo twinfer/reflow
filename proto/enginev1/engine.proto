@@ -1,31 +1,16 @@
-// Reflow engine wire types.
+// Reflow engine wire types — the Raft + on-disk Command/Envelope/Row
+// shapes that every shard applies.
 //
-// Mirrors Restate's wal-protocol v2 and journal v2 where applicable; citations
-// to crates/... refer to Restate v1.6.2.
-//
-// Scope per phase:
-//   Phase 1: partition-shard commands + rows. AnnounceLeader is shared with
-//     the metadata shard, but Phase 1 deployments only host partition shards.
-//   Phase 2 (current): in-process Go SDK + Invoker. Adds JournalEntry
-//     variants (JERun, JEAwakeable, JEAwakeableResult, JESignal,
-//     JEClearState, JEGetEagerState) and InvokerEffect kinds (JERunProposal,
-//     AwakeableResolved, SignalDelivered). PartitionMeta gains
-//     next_outbox_seq; AwakeableEntry is the awakeable directory value.
-//   Phase 4.1: metadata-shard commands (RegisterNode,
-//     UpdatePartitionTable) land at Command tags 6-7. Remaining
-//     metadata-shard work (RemoveNode, Heartbeat, etc.)
-//     reserved for Phase 4.2 in tags 8-15. OutboxEnvelope grows
-//     destination_shard_id plus DeliverCallResult and OutboxAck
-//     variants for cross-partition Call result delivery. NodeHostMeta
-//     carries the reflow gRPC endpoint via dragonboat GossipConfig.Meta.
-//     See SAD §6.2 and proto/deliveryv1/delivery.proto.
-//   Phase 4+: SnapshotMeta (defined below) is the operator-visible sidecar
-//     written by the SnapshotRepository. See SAD §6.12.
 //
 // All commands flow through the same dragonboat IOnDiskStateMachine
-// (Partition). The only thing distinguishing a metadata shard (shardID=0)
-// from a partition shard (shardID=1..N) at the wire level is which Command
-// variants the shard accepts.
+// (Partition). The only thing distinguishing a metadata shard
+// (shardID=0) from a partition shard (shardID=1..N) at the wire level is
+// which Command variants the shard accepts — see the Command message
+// tag allocations + reservations below.
+//
+// On-disk + Raft compatibility: tag allocations in this file are part of
+// the on-disk format. Reusing a tag is an upgrade-incompat change. Add
+// new tags from the documented reservation ranges only.
 syntax = "proto3";
 
 package reflow.engine.v1;
@@ -79,14 +64,19 @@ message Header {
 // crates/wal-protocol/src/v2.rs:222-283.
 //
 // Tag assignment:
-//   1     : AnnounceLeader        (every shard)
-//   2-5   : partition-shard commands (Phase 1)
-//   6-7   : Phase 4.1 metadata-shard commands (RegisterNode,
-//           UpdatePartitionTable). Tags 8-15 reserved for Phase 4.2+
-//           metadata-shard work. Do not allocate from the reserved
-//           range without updating SAD §6.2.
-//   16+   : reserved for Phase 2-3 partition-shard additions (Run effects,
-//           awakeable completions, virtual-object queue ops).
+//   1      : AnnounceLeader (every shard)
+//   2-5    : partition-shard commands (InvokeCommand, InvokerEffect,
+//            TimerFired, PurgeInvocation)
+//   6-10   : metadata-shard commands (RegisterNode, UpdatePartitionTable,
+//            EvictNode, BeginRebalanceStep, CompleteRebalanceStep)
+//   12-15  : reserved (see `reserved` directive below)
+//   16-17  : partition-shard cross-shard delivery (DeliverCallResult,
+//            OutboxAck)
+//   18     : metadata-shard RegisterDeployment
+//
+// Do not reuse a tag — the on-disk format is part of the upgrade
+// contract. New tags should start at 19 or higher unless adding to an
+// existing numbered block.
 message Command {
   reserved 12 to 15;
 

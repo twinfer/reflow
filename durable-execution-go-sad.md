@@ -1,38 +1,39 @@
 # Solution Architecture Document
 # Durable Execution Engine in Go
 
-**Version:** 0.6 (Draft)
-**Date:** 2026-05-13
-**Status:** Single-node foundation, in-process Go SDK + Invoker, Virtual
-Objects (single-writer gate, idempotency, retry policy, eager state, attach
-RPCs), combinator futures (`Promise.all` / `Promise.race`), multi-node
-replication (mTLS admin, dynamic membership, DR snapshots), and auth
-consolidation (single-CA SPIFFE identity, proto-annotation authz, single
-Authorizer seam) implemented. Cloud snapshot drivers, retention, and non-Go
-SDKs outstanding. Open gap: OPEN-1 (joining-node startup) — see §9.
+**Version:** 0.7 (Draft)
+**Date:** 2026-05-16
+**Status:** Single-node foundation, HTTP/2 wire protocol between engine and
+Go SDK (`pkg/sdk/server`), Virtual Objects (single-writer gate, idempotency,
+retry policy, eager state, attach RPCs), combinator futures (`Promise.all` /
+`Promise.race`), multi-node replication (mTLS admin, dynamic membership, DR
+snapshots), and auth consolidation (single-CA SPIFFE identity,
+proto-annotation authz, single Authorizer seam) implemented. Cloud snapshot
+drivers, retention, and non-Go SDKs outstanding. Open gap: OPEN-1
+(joining-node startup) — see §9.
 
 ---
 
 ## 1. Overview
 
 Reflow is a durable execution engine designed for Go shops that want a single
-self-contained binary instead of a multi-component topology, and that want the
-option of running their handlers in-process alongside the runtime. It is
+self-contained engine binary instead of a multi-component topology. Handlers
+are independent Go processes that the engine reaches over HTTP/2. It is
 inspired by Restate's design and borrows Restate's wire-level concepts where
 applicable, but its operational profile is intentionally different:
 Restate-grade durability and exactly-once semantics with SQLite-style
 deployment ergonomics.
 
-**One-line pitch.** *Single-binary durable execution for Go. One process,
-one data directory, your workflows survive crashes.*
+**One-line pitch.** *Single-binary durable-execution engine for Go. One
+engine, one data directory, your workflows survive crashes.*
 
 **Positioning.** Reflow is the right choice when:
 
-- Your stack is Go-first and you want durable execution as a library or a
-  single-binary service rather than a separate platform to operate.
-- You want your handlers to run in-process with the runtime (one process, no
-  network hop between handler and journal) — or via a wire protocol when the
-  handler is in another language.
+- Your stack is Go-first and you want durable execution backed by a single
+  engine binary rather than a multi-component platform to operate.
+- You want a Go-native handler SDK with the same wire protocol as the
+  engine itself uses for cross-language handlers (no special "in-process"
+  fast path that diverges from the production path).
 - You need an Apache-2.0-from-day-one license with no single-vendor
   dependency.
 
@@ -59,14 +60,15 @@ one process with one data directory.
 
 - **Durable execution.** Handler execution survives crashes and resumes
   exactly where it stopped.
-- **Single self-contained binary.** `reflowd` is the only process the
-  operator runs. No external metadata store, no external log servers, no
-  required sidecars, no Kubernetes operator. Static peer config is enough
-  to form a multi-node cluster.
-- **In-process Go SDK as a first-class path.** A Go handler can be a
-  function in the same process as the runtime, with no network hop between
-  SDK and journal. A wire-protocol path (HTTP/2) is supported for
-  cross-language handlers but is not the primary developer experience.
+- **Single self-contained engine binary.** `reflowd` is the only engine
+  process the operator runs. No external metadata store, no external log
+  servers, no required sidecars, no Kubernetes operator. Static peer
+  config is enough to form a multi-node cluster.
+- **Go SDK as a first-class path.** A Go handler is a separate process
+  that hosts `pkg/sdk/server` (HTTP/2). The engine talks to it via the
+  same wire protocol used for any other language. There is one path, not
+  two — what works for the Go SDK works for cross-language handlers, and
+  vice versa.
 - **Virtual Objects.** Stateful entities with single-writer consistency
   and durable K/V state.
 - **Workflows.** Long-running, multi-step processes with durable timers
@@ -181,8 +183,8 @@ its internal pebble.
 ### 6.1 Ingress Layer
 
 Accepts invocations from external callers. The ingress is the
-client-facing surface; SDK handler streaming is a *separate* gRPC
-service (see §6.10.2), not part of ingress.
+client-facing surface; the engine ↔ handler wire (see §6.10) is a
+separate code path, not part of ingress.
 
 **Responsibilities:**
 - Parse invocation requests (HTTP/JSON via grpc-gateway or native gRPC).
@@ -203,9 +205,11 @@ partition_id = hash(service_name + "/" + object_key) % num_partitions
 | Surface | Port (default) | Auth | Purpose |
 |--|--|--|--|
 | Ingress (`reflow.ingress.v1`) | 8080 | None today (client identity model TBD) | External callers submit invocations, resolve awakeables |
-| SDK session (`reflow.sdk.v1.SessionService`) | 8080 (alongside ingress) | TBD (handler identity model TBD) | Out-of-process handlers — stub returns Unimplemented until routing lands |
 | Delivery (`reflow.delivery.v1`) | 8081 | mTLS, `spiffe://<td>/node/*` enforced by `auth.StreamInterceptor` | Cross-partition / cross-node command forwarding |
 | Admin (`reflow.admin.v1`) | 8082 | mTLS, `spiffe://<td>/operator/*` enforced by `auth.UnaryInterceptor` | Cluster ops: add/remove node, list partitions, snapshot mgmt |
+
+The engine ↔ handler wire (`proto/protocolv1`) is raw HTTP/2 to the
+handler-hosted endpoint, not a service hosted by reflowd. See §6.10.
 
 ---
 
@@ -755,102 +759,70 @@ heartbeats" was incorrect and is removed.
 
 ### 6.10 SDK Protocol
 
-The runtime communicates with SDK handlers over HTTP/2 using a bidirectional streaming protocol. The SDK handler is a separate process (any language with an SDK).
+Handlers run as separate Go processes that host `pkg/sdk/server`, an
+HTTP/2 server speaking the wire protocol defined in
+`proto/protocolv1/protocol.proto`. The engine dials the handler endpoint
+per invocation and POSTs a chunked, framed body to
+`/invoke/<service>/<handler>`; the response body carries the handler →
+engine frame stream. Polyglot SDKs (TS/Python/Java/Rust/...) ride the
+same wire — there is no Go-specific fast path.
 
-Reflow supports two ways for a handler to talk to the runtime. Both share
-the same `InvokerEffect` shape on the partition's apply path; the
-difference is whether the bytes between handler and partition go through a
-network socket or a Go function call.
+#### 6.10.1 Wire shape
 
-#### 6.10.1 In-process Go handlers (primary path)
+Every frame is a 64-bit big-endian header (16-bit type code | 16-bit
+flags | 32-bit payload length) followed by the protobuf payload. Type
+codes are namespaced:
 
-A Go handler registered through `reflow.RegisterService(...)` runs in the
-same process as the runtime. The Invoker drives it via a typed Go
-interface rather than HTTP/2:
+- `0x0000..0x00FF` — core lifecycle (StartMessage, SuspensionMessage,
+  EndMessage, ErrorMessage)
+- `0x0400..0x04FF` — command messages (SDK→engine: GetState, SetState,
+  Sleep, Run, Call, Awakeable, ...)
+- `0x8000..0x80FF` — notification messages (engine→SDK: completion +
+  signal results)
 
-- The handler implements `func(ctx reflow.Context, input []byte) ([]byte, error)`.
-- `reflow.Context` exposes `Sleep`, `Run`, `Call`, `Get/Set/ClearState`,
-  `Awakeable`, etc. — each one synchronously produces an `InvokerEffect`
-  proposal and blocks the handler's goroutine until the effect is applied
-  and the result is journaled.
-- On replay, the same `reflow.Context` calls read from the journal instead
-  of executing the side effect.
-- No network hop between handler and runtime. No serialisation outside of
-  what the journal needs anyway.
+The lifecycle is:
 
-This is the recommended path for Go shops. It's also what makes the
-"workflows are durable goroutines" pitch real.
+1. Engine opens a request stream and sends `StartMessage` with
+   `known_entries`, the eager-state snapshot (`state_map` /
+   `partial_state`), the deterministic `random_seed`, and the handler
+   addressing tuple `(service, handler, key, kind)`.
+2. Engine replays journaled entries as command + notification frames in
+   journal order, in lockstep with handler progress.
+3. SDK runs the handler function. Each `ctx.*` call either (a) returns
+   a cached result if the journal already records the step, or (b)
+   sends a command frame, blocks on the matching notification, and the
+   engine journals the entry through a Raft propose.
+4. Handler returns. SDK sends `OutputCommandMessage` + `EndMessage`.
+   Engine flips the invocation to Completed.
 
-#### 6.10.2 Out-of-process handlers via wire protocol (secondary path)
+Suspensions are represented as the SDK sending `SuspensionMessage` and
+closing the stream. The engine parks the invocation; when a waker fires
+(timer, awakeable resolved, signal delivered), the partition runner
+re-issues the invocation from the top of replay.
 
-For non-Go handlers, reflow exposes a proto-defined bidirectional
-streaming protocol. The wire contract lives in
-`proto/sdkv1/sdk.proto`; every frame in either direction is the
-`SDKMessage` oneof envelope (StartInvocation, ReplayEntry, EntryAck,
-Completion on the engine→SDK side; ProposeEntry, ProposeRunCompletion,
-SuspensionRequest, EndInvocation, ErrorMessage on the SDK→engine side;
-ErrorMessage either direction). Message shapes mirror restate's
-`service-protocol-v4` — same lifecycle, adapted for reflow's lazy-state
-+ outbox model.
+Inspired by Restate's service-protocol v7 / journal-v2; field
+numbering, package, and message set are reflow's. Discovery is a
+separate one-shot probe defined in `proto/discoveryv1/discovery.proto`
+— issued at RegisterDeployment time, not per invocation.
 
-Compatibility note: reflow tracks restate's wire format as a
-*best-effort* compatibility target so existing TS/Python/Java/Kotlin/Rust
-SDK semantics translate with minimal adaptation. We do not commit to
-bug-for-bug parity, nor to keeping pace with every Restate release.
-Non-Go SDKs are community-driven and ride along on whatever effort the
-community contributes.
+Compatibility: reflow tracks restate's wire format as a *best-effort*
+target so existing TS/Python/Java/Rust SDK semantics translate with
+minimal adaptation. We do not commit to bug-for-bug parity, nor to
+keeping pace with every Restate release.
 
-##### Dual transport
+#### 6.10.2 Engine-side dispatch
 
-The same `sdkv1` message envelope can ride two different transports.
-Reflow ships the first today; the second is documented but unimplemented.
+`internal/engine/handlerclient` owns the engine → handler dial: a
+keep-alive HTTP/2 client per registered deployment, one stream per
+invocation. `internal/engine/invoker/wireSession` translates between
+the HTTP/2 frame stream and the partition's `InvokerEffect` propose
+path: every command frame becomes a journal-entry propose; every
+notification frame is delivered as a completion.
 
-**Transport A — handler dials engine (gRPC bidi, primary).**
-The engine hosts `sdkv1.SessionService.Invoke` as a gRPC bidi-streaming
-RPC. Out-of-process handler SDKs open one long-lived stream per worker
-process and self-register; the engine routes pending `StartInvocation`
-frames to a connected stream. Implementation lives in
-`internal/sdkstream` (stub today, routing pool when the first non-Go
-SDK ships).
-
-- *Wire*: gRPC over HTTP/2 — inherits TLS, the
-  `auth.StreamInterceptor` seam, deadlines, status codes, and
-  metadata for free. No new dependency.
-- *Topology*: handler is the gRPC client; engine is the server.
-  Handlers can run behind NAT, no endpoint registry needed.
-- *Fit*: long-lived worker pools, stateful handlers, on-prem
-  deployments.
-
-**Transport B — engine dials handler (HTTP/2 streaming, future).**
-Mirrors Restate's deployment model: handler hosts an HTTP/2 endpoint;
-engine dials it per invocation. Same `SDKMessage` payloads, framed as
-length-prefixed records over raw HTTP/2 (no gRPC envelope). Engine
-needs an endpoint registry — discovered via an admin RPC or pushed
-through ingress at handler-register time.
-
-- *Wire*: HTTP/2 streaming with `CUSTOM_MESSAGE_MASK` framing for
-  forward-compat (see restate
-  `crates/service-protocol-v4/src/message_codec/mod.rs:33`).
-- *Topology*: handler is the HTTP server; engine is the client.
-  Handler must be reachable on a known endpoint.
-- *Fit*: serverless / FaaS handlers (Lambda, Cloudflare Workers),
-  autoscaled handler fleets, cold-start-friendly invocations.
-
-Transport B is **additive**, not a replacement for A. Adding it later
-introduces a sibling service alongside `SessionService` and a per-handler
-endpoint record in shard 0; the partition Invoker chooses which
-transport to use based on how the handler registered. No proto
-breakage — the envelope shape is shared.
-
-| | Transport A (current) | Transport B (future) |
-|--|--|--|
-| Direction | Handler → engine | Engine → handler |
-| Wire | gRPC bidi over HTTP/2 | Raw HTTP/2 length-prefix |
-| Handler discovery | None — self-registers on connect | Endpoint registry in shard 0 |
-| NAT/firewall | Friendly | Handler must be reachable |
-| Serverless fit | Awkward (long-lived stream) | Native |
-| Long-lived workers | Native | Awkward (engine reconnects per invoke) |
-| Auth seam | `internal/auth.StreamInterceptor` | TBD (likely JWT/OIDC via header) |
+There is no in-process fast path. `examples/embedded/main.go` shows
+running the engine and a Go handler in one binary for local dev — the
+engine still reaches the handler over a loopback HTTP/2 connection,
+identical to the production path.
 
 ---
 
@@ -1070,9 +1042,9 @@ under one auth model. The model is:
    `peer.AuthInfo` → `credentials.TLSInfo` → verified leaf URI and
    produces a `Claims{Kind, Subject, URI, Extensions}` value. The
    `ClaimMapper` interface (Temporal-shaped) is the seam where a future
-   `JWTClaimMapper` plugs in for non-cert callers (e.g., ingress clients,
-   serverless handlers in Transport B); `AuthInfo.AuthToken` is already
-   wired but unread today.
+   `JWTClaimMapper` plugs in for non-cert callers (e.g., ingress clients
+   or remote handler deployments authenticated by JWT instead of cert);
+   `AuthInfo.AuthToken` is already wired but unread today.
 
 3. **Authorization is declared in the proto IDL.**
    `proto/optionsv1/options.proto` defines two custom options:
@@ -1105,7 +1077,7 @@ under one auth model. The model is:
 | Admin | mTLS, well-formed SPIFFE URI | `CertClaimMapper` | `adminv1.Admin` service annotation: `operator` |
 | Delivery | mTLS, well-formed SPIFFE URI | `CertClaimMapper` | `deliveryv1.Delivery` service annotation: `node` |
 | Ingress | None today | None today | None today (identity model TBD) |
-| SDK session | Stub | Stub | Stub (out-of-process handler identity model TBD) |
+| Engine → handler (`protocolv1`) | TBD (likely mTLS) | TBD (likely cert SAN) | Out of scope here — owned by `handlerclient`, not the gRPC interceptor stack |
 
 **Multi-language clients.** Custom proto options ride on standard
 `google.protobuf.MethodOptions/ServiceOptions`, so any buf-generated
@@ -1119,7 +1091,7 @@ clients can render the policy or pre-check before calling.
   implementation deferred until a specific issuer is chosen).
 - Ingress authz model (different identity story — likely workload
   identity, not node/operator).
-- SDK-session authz (depends on which transport — A or B — ships first).
+- Handler-wire authz (engine ↔ handler; `handlerclient` will gain its own TLS + identity story, separate from the gRPC interceptor stack).
 - Sub-role taxonomy (`operator/readonly`, `operator/admin`); reflects
   via the existing `WithMatcher` hook.
 
@@ -1128,10 +1100,6 @@ clients can render the policy or pre-check before calling.
 ## 7. Key Data Flows
 
 ### 7.1 New Invocation (Happy Path)
-
-Steps 1–6 are identical for both handler-hosting paths; step 7 forks
-on whether the handler runs in-process (the primary path) or behind a
-wire-protocol transport (§6.10.2).
 
 ```
 1.  Client → ingress: POST /invoke/MyService/myMethod (or grpc Invoke).
@@ -1145,30 +1113,22 @@ wire-protocol transport (§6.10.2).
     JEInput journal row, pushes ActInvoke onto ActionCollector.
 5.  Runner consumes ActInvoke; ActionCollector flushes to the
     Invoker.
-
-Path A — in-process Go handler (primary):
-6A. Invoker looks up the registered handler in its registry
-    (registered via reflow.RegisterService at boot).
-7A. Invoker spawns a session goroutine bound to reflow.Context.
-    Each Sleep/Run/Call/State op calls Proposer.ProposeSelf to
-    append a JournalEntry; the goroutine blocks on EntryAck.
-8A. On handler return, Invoker proposes EndInvocation. The FSM
-    flips inv/<id> to Completed and runs the on-entry actions
-    (output stored, awaiters notified, outbox enqueued).
-
-Path B — out-of-process handler (Transport A, future-active):
-6B. Invoker selects a connected sdkv1.SessionService stream from
-    the routing pool (handler dialed in at startup).
-7B. Engine sends StartInvocation over the bidi stream. Handler
-    streams ProposeEntry / ProposeRunCompletion frames back;
-    engine proposes each as InvokerEffect.JournalAppended and
-    acks once Raft commits.
-8B. Handler streams EndInvocation. Same on-entry actions as 8A.
+6.  Invoker resolves the deployment URL for (service, handler) via the
+    shard-0 lookup, opens an HTTP/2 stream to the deployment, sends
+    StartMessage.
+7.  Handler streams Propose* frames back. Engine proposes each as a
+    JournalEntry; once Raft commits, the engine acks the handler.
+8.  Handler streams OutputCommandMessage / EndMessage. Engine proposes
+    EndInvocation. The FSM flips inv/<id> to Completed and runs the
+    on-entry actions (output stored, awaiters notified, outbox
+    enqueued).
 ```
 
-Path A is the typical Go-shop deployment — no network hop between
-handler and journal. Path B is the only path when the handler is in
-another language.
+There is one handler-hosting path: HTTP/2 to a deployment process, regardless
+of whether the handler is written in Go or another language. The
+`examples/embedded/` setup runs both the engine and a Go handler in one `main`
+for local development, but the engine still reaches it via HTTP/2 — no
+in-process fast path exists.
 
 ### 7.2 Crash Recovery
 
@@ -1184,16 +1144,11 @@ another language.
 5.  Invoker scans the inv/ table for rows in Invoked state and
     re-queues them. (Suspended rows wait for their wakers — timers
     rebuilt from timer/, awakeables remain pending.)
-6.  Per re-queued invocation, the Invoker:
-      Path A (in-process Go): spawns a fresh session goroutine; the
-      JournalReader replays committed entries in order, returning
-      cached results to reflow.Context calls so the handler skips
-      already-completed steps. Execution resumes at the first
-      un-journaled call.
-      Path B (out-of-process, future-active): picks a connected
-      sdkv1.SessionService stream, sends StartInvocation with
-      known_entries = current journal length, streams ReplayEntry
-      frames in order, then resumes normal flow.
+6.  Per re-queued invocation, the Invoker resolves the deployment URL,
+    opens a fresh HTTP/2 stream, and sends StartMessage with the
+    full journal as replay frames. The handler returns cached results
+    to the SDK Context calls so user code skips already-completed
+    steps; execution resumes at the first un-journaled call.
 ```
 
 ### 7.3 Virtual Object Invocation
@@ -1259,18 +1214,18 @@ Minimum production deployment: 3 nodes (Raft quorum = 2).
 |---|---|---|---|
 | 1 | Fixed vs. dynamic partition count | Resolved | Fixed at bootstrap (default 64). Split/merge is explicitly not on the roadmap. |
 | 2 | Node discovery mechanism | Resolved | Embedded metadata Raft group (`shardID=0`) is authoritative for partition ownership; dragonboat's built-in gossip (memberlist/SWIM, no extra dependency) provides endpoint resolution and a leader hint cache. Static peer bootstrap (`--bootstrap-cluster` / `--join`). No external service required. See §6.2. |
-| 3 | In-process Go SDK vs. external SDK only | Resolved | In-process Go SDK is the primary path (§6.10.1). Wire-protocol path supported for non-Go handlers (§6.10.2). |
+| 3 | In-process Go SDK vs. external SDK only | Resolved | Out-of-process only. All handlers (including Go) speak `protocolv1` over HTTP/2 to the engine — see §6.10. The Go SDK lives at `pkg/sdk` + `pkg/sdk/server`; non-Go SDKs are community-driven. |
 | 4 | Partition count default | Resolved | 64 partitions at cluster bootstrap. |
 | 5 | Raft replication factor | Resolved | Default 3, configurable per deployment via `--replication-factor`. Three is the minimum that tolerates a single failure with quorum; >3 trades write latency for durability. Decided per deployment, no SAD-level open question remains. |
 | 6 | Pebble per-partition vs. shared | Resolved | Per-partition Pebble DB; no `partition_id` prefix in keys. |
 | 7 | Exactly-once for non-idempotent external calls | Resolved | Idempotency keys propagate through `Invoke` via the `Dedup` field on `Envelope` (`enginev1/engine.proto`). The dedup table (`dedup/self` for self-proposals, `dedup/arb` for external producers like ingress) is consulted on every apply; duplicates are dropped before state mutation. See `internal/storage/tables/dedup.go` and `internal/storage/tables/idempotency.go`. |
-| 8 | SDK protocol versioning | Resolved | Wire protocol tracks restate service-protocol-v4 as a *best-effort* compat target, not bug-for-bug. In-process Go SDK is the primary path; non-Go SDKs ride along on community effort. |
+| 8 | SDK protocol versioning | Resolved | Wire protocol (`protocolv1`) tracks restate service-protocol v7 / journal-v2 as a *best-effort* compat target, not bug-for-bug. Negotiated at RegisterDeployment via `discoveryv1.DiscoveryResponse.protocol_version`. |
 | 9 | timerfd vs `time.Timer` | Resolved | `time.Timer`; revisit only with measured latency requirements. |
 | 10 | `StateStore` alternative implementations | Resolved | `internal/storage.Store` interface; `MemStore` (tests) + `PebbleStore` (production). |
 | 11 | Gossip for failure detection + soft state | Resolved | dragonboat's built-in gossip (memberlist/SWIM, vendored inside `lni/dragonboat/v4`) — zero extra dependency. Provides SWIM-based liveness, NodeHostID-stable endpoint resolution, and a `ShardView` leader hint cache. Architectural boundary unchanged: gossip is advisory, Raft (shard 0) is authoritative — eviction and partition assignment always go through a Raft proposal. Soft-state dissemination beyond the per-nodehost `Meta` blob is deferred; revisit only if observed load-hint dissemination requirements outgrow `Meta`. |
 | 12 | Object storage for snapshots | Resolved | `SnapshotRepository` interface with filesystem and cloud drivers (S3/GCS/Azure via `gocloud.dev/blob`). Always optional — default deployment is local-only. Hot state never leaves Pebble; only snapshot artifacts and their metadata go to object storage. See §6.12. |
 | 13 | Authn/authz model for internal gRPC | Resolved | Single-CA SPIFFE URI identity over mTLS; `internal/auth` package owns `ClaimMapper` + `Authorizer`; per-RPC policy declared in proto via `optionsv1` annotations. TLS layer reduced to chain + URI well-formedness; role enforcement lives entirely in `auth.UnaryInterceptor` / `auth.StreamInterceptor`. JWT/OIDC mapper is an additive future. Ingress + SDK-session authz are separate identity models, out of scope here. See §6.13. |
-| 14 | SDK transport for non-Go handlers | Resolved (additive) | Reflow ships Transport A (handler dials engine, gRPC bidi via `sdkv1.SessionService`); the wire is in place, routing pool is stubbed pending the first non-Go SDK. Transport B (engine dials handler over raw HTTP/2, Restate-style) is documented as additive — same `SDKMessage` envelope, different transport. See §6.10.2. |
+| 14 | SDK transport for non-Go handlers | Resolved | The engine dials every handler over raw HTTP/2 using `protocolv1`. Same path for Go and non-Go SDKs; no transport variants. See §6.10. |
 | OPEN-1 | Joining-node startup against a live cluster | Open | The admin `AddNode` RPC, cluster FSM, and metadata rebalancer that drive cluster-side membership changes work end-to-end (`SyncRequestAddNonVoting` → catch-up → `SyncRequestAddReplica`). The gap is on the joining node's own `reflowd` startup: `Host.StartMetadataShard` and `Host.StartPartition` both hard-code `nh.StartOnDiskReplica(initial, join=false, ...)`. A new peer joining an established Raft group needs `StartOnDiskReplica(nil, join=true, ...)`. Missing pieces are minimal — a `HostConfig.JoinExisting bool` and a `reflowd --join` flag / config key. Tracked as a GitHub issue. |
 
 ---
@@ -1312,11 +1267,15 @@ Minimum production deployment: 3 nodes (Raft quorum = 2).
 The first-class developer experience: write a Go function, register it
 with `reflowd`, have it become a durable goroutine.
 
-- **`reflow.Context`** Go API in `pkg/reflow/` and the public API
-  surface there.
-- **In-process Invoker** (`internal/engine/invoker/`) — registry,
-  session goroutines, journal reader for replay, `InvokerEffect`
-  proposals via `Proposer.ProposeSelf`.
+- **`sdk.Context`** Go API in `pkg/sdk/` (the durable-execution handle
+  exposed to handler authors) and the handler-side HTTP/2 runtime in
+  `pkg/sdk/server/` that translates between the wire and the Context
+  methods.
+- **Per-partition Invoker** (`internal/engine/invoker/`) — session
+  bookkeeping per active invocation, journal reader for replay,
+  `InvokerEffect` proposals via `Proposer.ProposeSelf`. The actual
+  handler runs in a separate process; the Invoker drives it over an
+  HTTP/2 frame stream (see §6.10).
 - **Ingress** — gRPC + grpc-gateway in `internal/ingress/`. Awakeable
   resolution rides the same surface.
 - **Journal entry types**: `JERun`, `JEGetState` / `JESetState` /
@@ -1327,9 +1286,8 @@ with `reflowd`, have it become a durable goroutine.
 - **Exactly-once side-effect replay** via the journal — verified by
   property-style integration tests under
   `internal/engine/integration_invoker_wiring_test.go`.
-- **`sdkv1.SessionService` wire** — the proto contract for Transport A.
-  Server stub (`internal/sdkstream`) returns `Unimplemented`; routing
-  pool lands when the first non-Go SDK appears.
+- **Wire protocol** — `proto/protocolv1` is the engine ↔ handler
+  contract; `internal/engine/handlerclient` is the engine-side client.
 
 ### Virtual Objects
 
@@ -1445,10 +1403,10 @@ add/remove operations.
 - Operational docs: deployment recipes, backup/restore, upgrade
   procedure (using the per-DB storage format marker from §6.2).
 - **Non-Go SDKs (community-driven).** TypeScript / Python / Java / Kotlin
-  / Rust SDKs talk to reflow via the wire-protocol path (§6.10.2). These
-  ride on whatever effort the community contributes; reflow itself
-  guarantees the wire-protocol surface, not the SDK quality across
-  languages.
+  / Rust SDKs talk to reflow via the same `protocolv1` HTTP/2 wire as the
+  Go SDK (§6.10). These ride on whatever effort the community
+  contributes; reflow itself guarantees the wire-protocol surface, not
+  the SDK quality across languages.
 
 ---
 

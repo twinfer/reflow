@@ -52,16 +52,11 @@ service Admin {
   // DeleteSnapshot removes a single archived snapshot. Idempotent —
   // returns OK when the snapshot is already absent.
   rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
-  // RegisterDeployment introduces a new remote handler deployment to the
-  // cluster. The engine dials <url>, calls discovery, validates the
-  // protocol version, mints a UUIDv4 deployment_id, and proposes
-  // Command_RegisterDeployment to shard 0. Returns the assigned id.
-  //
-  // Phase 5 (this commit, 5c): synthetic inproc deployments are
-  // registered internally at metadata-leader bootstrap and operators
-  // cannot currently register remote deployments — non-inproc URLs are
-  // rejected with UNIMPLEMENTED until the engine-side handlerclient
-  // lands in commit 5d.
+  // RegisterDeployment introduces a new handler deployment to the
+  // cluster. The engine dials <url>, issues a discovery GET to enumerate
+  // handlers, validates the protocol version, mints a UUIDv4
+  // deployment_id, and proposes Command_RegisterDeployment to shard 0.
+  // Returns the assigned id. URL must use http:// or https://.
   rpc RegisterDeployment(RegisterDeploymentRequest) returns (RegisterDeploymentResponse);
 }
 
@@ -123,10 +118,10 @@ message DeleteSnapshotRequest {
 }
 message DeleteSnapshotResponse {}
 
-// RegisterDeploymentRequest names a remote handler endpoint. The engine
-// derives transport from the URL scheme (grpc/grpcs/http/https) and
-// rejects inproc:// — synthetic in-proc deployments are registered
-// internally, not via this RPC.
+// RegisterDeploymentRequest names a handler endpoint reachable over
+// HTTP/2. URL scheme must be http:// or https://; the engine dials it
+// directly. There is no other transport — gRPC handler dispatch was
+// removed in favor of raw HTTP/2 framing (see protocolv1).
 message RegisterDeploymentRequest {
   string url = 1;
 }

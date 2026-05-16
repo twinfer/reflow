@@ -1,19 +1,13 @@
-// Reflow in-process SDK ↔ engine session envelope.
+// DEPRECATED — superseded by proto/protocolv1/protocol.proto.
 //
-// SCOPE: This file describes the engine-side replay envelope used by
-// today's in-process Go SDK path (engine.invoker → pkg/sdk in the same
-// reflowd binary). The wire-facing engine↔handler protocol is
-// proto/protocolv1/protocol.proto (Kind-aware,
-// supports remote handlers via gRPC and HTTP/2). When the
-// `engine-dials-handler` path lands (plan commit 5d/5e), this envelope
-// is retained only for the in-proc dispatch path; the wire role flips
-// to protocolv1.
+// This file is the engine ↔ SDK session envelope from the prior
+// in-process Go SDK dispatch path. That path is being removed; the
+// engine talks to every handler (including local Go ones) over HTTP/2
+// using protocolv1. The only remaining consumer is
+// internal/engine/invoker/transport.go, which is slated for deletion.
 //
-//
-// Both directions flow over the same transport. SDKMessage is a tagged
-// envelope; the kinds enumerate the legal payloads in either direction.
-// Direction conventions are documented per-message, not enforced by the
-// schema — the engine and SDK each reject out-of-direction messages.
+// Do not add new fields or messages here. New protocol work belongs in
+// protocolv1.
 syntax = "proto3";
 
 package reflow.sdk.v1;

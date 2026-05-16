@@ -763,10 +763,10 @@ func (*DeleteSnapshotResponse) Descriptor() ([]byte, []int) {
 	return file_adminv1_admin_proto_rawDescGZIP(), []int{14}
 }
 
-// RegisterDeploymentRequest names a remote handler endpoint. The engine
-// derives transport from the URL scheme (grpc/grpcs/http/https) and
-// rejects inproc:// — synthetic in-proc deployments are registered
-// internally, not via this RPC.
+// RegisterDeploymentRequest names a handler endpoint reachable over
+// HTTP/2. URL scheme must be http:// or https://; the engine dials it
+// directly. There is no other transport — gRPC handler dispatch was
+// removed in favor of raw HTTP/2 framing (see protocolv1).
 type RegisterDeploymentRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Url           string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`

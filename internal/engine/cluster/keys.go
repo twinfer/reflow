@@ -14,6 +14,7 @@
 //	node/<8-byte BE node_id>        -> NodeMembership
 //	partition_table                 -> PartitionTable singleton
 //	deployment/<deployment_id ascii> -> DeploymentRecord
+//	deployment_idx/<service>\x00<handler> -> deployment_id (ascii)
 //
 // All multi-byte integers are big-endian so lexicographic byte order
 // matches numeric order — same convention as internal/storage/keys.
@@ -24,10 +25,11 @@ import (
 )
 
 const (
-	metaPrefix       = "meta"
-	nodePrefix       = "node/"
-	partitionTabKey  = "partition_table"
-	deploymentPrefix = "deployment/"
+	metaPrefix            = "meta"
+	nodePrefix            = "node/"
+	partitionTabKey       = "partition_table"
+	deploymentPrefix      = "deployment/"
+	deploymentIndexPrefix = "deployment_idx/"
 )
 
 // MetaKey returns the singleton key for the metadata shard's PartitionMeta.
@@ -59,4 +61,16 @@ func DeploymentKey(id string) []byte {
 	out := make([]byte, 0, len(deploymentPrefix)+len(id))
 	out = append(out, deploymentPrefix...)
 	return append(out, id...)
+}
+
+// DeploymentIndexKey returns deployment_idx/<service>\x00<handler>.
+// The NUL separator can't appear in proto string fields, so the byte
+// boundary is unambiguous. Value: the deployment_id (ascii) currently
+// answering for (service, handler).
+func DeploymentIndexKey(service, handler string) []byte {
+	out := make([]byte, 0, len(deploymentIndexPrefix)+len(service)+1+len(handler))
+	out = append(out, deploymentIndexPrefix...)
+	out = append(out, service...)
+	out = append(out, 0x00)
+	return append(out, handler...)
 }

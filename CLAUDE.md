@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Reflow is a **single-binary durable-execution engine for Go**, inspired by Restate (Rust). One process, one data directory, handlers running in-process. Built on `dragonboat` (multi-group Raft) + `cockroachdb/pebble` (embedded K/V). The design doc lives at `durable-execution-go-sad.md` — read it before non-trivial work on cluster, FSM, or storage. Restate wire-protocol concepts are mirrored where applicable; comments cite the source as `crates/.../file.rs:line` (Restate v1.6.2).
+Reflow is a **single-binary durable-execution engine for Go**, inspired by Restate (Rust). One engine binary, one data directory; handlers run as separate Go processes the engine reaches over HTTP/2. Built on `dragonboat` (multi-group Raft) + `cockroachdb/pebble` (embedded K/V). The design doc lives at `durable-execution-go-sad.md` — read it before non-trivial work on cluster, FSM, or storage. Restate wire-protocol concepts are mirrored where applicable; comments cite the source as `crates/.../file.rs:line` (Restate v1.6.2).
 
 
 ## Common commands
@@ -36,7 +36,7 @@ go test -tags=loadtest -timeout=10m -run=TestLoad_SteadyState   -v ./internal/lo
 
 The dependency direction is `cmd → pkg → internal → proto`. Internal packages must not depend on `pkg/*`.
 
-- **`cmd/reflowd`** — the production binary. Loads layered koanf config (defaults → optional file from `$REFLOW_CONFIG` → `REFLOW_*` env vars; later overrides earlier), then calls `reflow.Run`. Empty handler registry — embedders register handlers before `reflow.Run` in their own `main`.
+- **`cmd/reflowd`** — the production engine binary. Loads layered koanf config (defaults → optional file from `$REFLOW_CONFIG` → `REFLOW_*` env vars; later overrides earlier), then calls `reflow.Run`. Handlers run in separate Go processes registered with the engine as HTTP/2 deployments; `examples/embedded/` shows a single-`main` dev setup that runs both.
 - **`cmd/reflow-cluster`** — operator CLI: offline PKI (`init-ca`, `issue-cert`, `issue-operator`) and mTLS-authenticated cluster ops (`add-node`, `remove-node`, `nodes list`, `partitions list`, `snapshot create/list`) against the Admin gRPC port.
 - **`cmd/reflow-loadnode`** — test-only subprocess wrapper for chaos.
 
@@ -49,7 +49,7 @@ The dependency direction is `cmd → pkg → internal → proto`. Internal packa
 - **`internal/engine/snapshot`** — DR snapshot producer/repository/reaper backed by `gocloud.dev/blob` (file/s3/gs/azblob/mem URLs).
 - **`internal/storage`** — `Store` interface (Pebble + in-memory); `keys` defines the byte-level key layout (no partition_id prefix — each partition has its own DB); `tables` is the typed view over keys.
 - **`internal/ingress`** — gRPC + grpc-gateway HTTP/JSON entrypoints (`SubmitInvocation`, `AwaitInvocation`, `AttachInvocation`, awakeables, admin reads). Routes via `Host.Partitioner` (hash of `service` + `object_key`).
-- **`internal/engine/handlerclient`** — engine-side wire client for remote (out-of-process) handler deployments. Single transport is raw HTTP/2 (`http2client/`); the handler-side server lives at `pkg/sdk/server`. Synthetic `inproc://` deployments short-circuit to the local `sdk.Registry`.
+- **`internal/engine/handlerclient`** — engine-side wire client for handler deployments. Single transport is raw HTTP/2 (`http2client/`); the handler-side server lives at `pkg/sdk/server`.
 - **`internal/auth`** — single-CA mTLS with SPIFFE URI SAN role enforcement (`spiffe://<trust-domain>/node/<id>` vs `/operator/<name>`). Multi-node config is rejected unless TLS files are supplied (`requireTLSWhenMultiNode` in `cmd/reflowd/main.go`).
 - **`internal/pki`** — offline CA + leaf issuance used by `reflow-cluster init-ca / issue-cert / issue-operator`.
 - **`internal/observability`** — `*Metrics` is a single Prometheus collector struct passed down into the partition apply path + timer service. The engine never constructs its own registry; wiring lives in `pkg/reflow`.

@@ -227,6 +227,82 @@ func TestCluster_RegisterDeploymentPersists(t *testing.T) {
 	}
 }
 
+func TestCluster_RegisterDeployment_IndexNewerWins(t *testing.T) {
+	f, _, st := newTestFSM(t)
+	// First deployment claims (Greeter, hello).
+	rec1 := &enginev1.DeploymentRecord{
+		Id:  "dep-1",
+		Url: "http://h1:9080",
+		Handlers: []*enginev1.DeploymentHandler{
+			{Service: "Greeter", Handler: "hello", Kind: 1},
+			{Service: "Greeter", Handler: "bye", Kind: 1},
+		},
+	}
+	if _, err := f.Update([]statemachine.Entry{{Index: 1, Cmd: envelope(t, &enginev1.Command{
+		Kind: &enginev1.Command_RegisterDeployment{
+			RegisterDeployment: &enginev1.RegisterDeployment{Record: rec1},
+		},
+	})}}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := (DeploymentIndexTable{S: st}).Get("Greeter", "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "dep-1" {
+		t.Fatalf("after dep-1: index[Greeter/hello] = %q; want dep-1", id)
+	}
+
+	// Second deployment overlaps on (Greeter, hello), does not claim "bye".
+	rec2 := &enginev1.DeploymentRecord{
+		Id:  "dep-2",
+		Url: "http://h2:9080",
+		Handlers: []*enginev1.DeploymentHandler{
+			{Service: "Greeter", Handler: "hello", Kind: 1},
+		},
+	}
+	if _, err := f.Update([]statemachine.Entry{{Index: 2, Cmd: envelope(t, &enginev1.Command{
+		Kind: &enginev1.Command_RegisterDeployment{
+			RegisterDeployment: &enginev1.RegisterDeployment{Record: rec2},
+		},
+	})}}); err != nil {
+		t.Fatal(err)
+	}
+	id, err = (DeploymentIndexTable{S: st}).Get("Greeter", "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "dep-2" {
+		t.Errorf("after dep-2: index[Greeter/hello] = %q; want dep-2 (newer wins)", id)
+	}
+	// bye must still point at dep-1 — dep-2 didn't claim it.
+	id, err = (DeploymentIndexTable{S: st}).Get("Greeter", "bye")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "dep-1" {
+		t.Errorf("after dep-2: index[Greeter/bye] = %q; want dep-1 (unclaimed by dep-2)", id)
+	}
+
+	// Lookup variant returns the same string.
+	any1, err := f.Lookup(LookupDeploymentByHandler{Service: "Greeter", Handler: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := any1.(string); got != "dep-2" {
+		t.Errorf("Lookup returned %q; want dep-2", got)
+	}
+
+	// Unknown (service, handler) returns "" + nil.
+	any2, err := f.Lookup(LookupDeploymentByHandler{Service: "Nope", Handler: "nope"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := any2.(string); got != "" {
+		t.Errorf("Lookup of unknown handler returned %q; want \"\"", got)
+	}
+}
+
 func TestCluster_RegisterDeployment_MissingRecord(t *testing.T) {
 	f, _, _ := newTestFSM(t)
 	cmd := &enginev1.Command{

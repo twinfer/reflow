@@ -13,12 +13,13 @@
 //
 // Cluster subcommands (mTLS-authenticated against the Admin gRPC port):
 //
-//	reflow-cluster add-node          --admin=HOST:PORT --node-id=N --raft-addr=... --gossip-addr=... --grpc-endpoint=... [--node-host-id=ID]
-//	reflow-cluster remove-node       --admin=HOST:PORT --node-id=N
-//	reflow-cluster nodes list        --admin=HOST:PORT
-//	reflow-cluster partitions list   --admin=HOST:PORT
-//	reflow-cluster snapshot create   --admin=HOST:PORT --shard=N
-//	reflow-cluster snapshot list     --admin=HOST:PORT --shard=N
+//	reflow-cluster add-node            --admin=HOST:PORT --node-id=N --raft-addr=... --gossip-addr=... --grpc-endpoint=... [--node-host-id=ID]
+//	reflow-cluster remove-node         --admin=HOST:PORT --node-id=N
+//	reflow-cluster nodes list          --admin=HOST:PORT
+//	reflow-cluster partitions list     --admin=HOST:PORT
+//	reflow-cluster snapshot create     --admin=HOST:PORT --shard=N
+//	reflow-cluster snapshot list       --admin=HOST:PORT --shard=N
+//	reflow-cluster register-deployment --admin=HOST:PORT --url=http://HANDLER:PORT
 //
 // Every cluster subcommand needs the operator's TLS flags (or matching
 // env vars):
@@ -65,6 +66,8 @@ func main() {
 		err = cmdPartitions(ctx, args)
 	case "snapshot":
 		err = cmdSnapshot(ctx, args)
+	case "register-deployment":
+		err = cmdRegisterDeployment(ctx, args)
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 		return
@@ -88,12 +91,13 @@ PKI:
   issue-operator    Issue an operator client cert.
 
 Cluster:
-  add-node          Register a new peer and start the rebalance.
-  remove-node       Mark a peer evicted.
-  nodes list        List current membership.
-  partitions list   Print the partition table.
-  snapshot create   Trigger an exported snapshot of one partition shard.
-  snapshot list     List archived snapshots.
+  add-node             Register a new peer and start the rebalance.
+  remove-node          Mark a peer evicted.
+  nodes list           List current membership.
+  partitions list      Print the partition table.
+  snapshot create      Trigger an exported snapshot of one partition shard.
+  snapshot list        List archived snapshots.
+  register-deployment  Register a handler deployment URL with the cluster.
 
 Run any subcommand with --help for its specific flags.
 `)

@@ -226,6 +226,26 @@ func cmdSnapshotList(ctx context.Context, args []string) error {
 	})
 }
 
+func cmdRegisterDeployment(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("register-deployment", flag.ContinueOnError)
+	tls := registerTLSFlags(fs)
+	rawURL := fs.String("url", "", "handler deployment URL (http:// or https://)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *rawURL == "" {
+		return errors.New("--url is required")
+	}
+	return tls.withClient(ctx, func(cli *admin.Client) error {
+		resp, err := cli.Admin.RegisterDeployment(ctx, &adminv1.RegisterDeploymentRequest{Url: *rawURL})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("RegisterDeployment ok (deployment_id=%s)\n", resp.GetDeploymentId())
+		return nil
+	})
+}
+
 func cmdSnapshotDelete(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("snapshot delete", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)

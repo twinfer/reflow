@@ -203,6 +203,19 @@ func (f *FSM) applyCommand(
 		if err := (DeploymentTable{S: store}).Put(batch, rec); err != nil {
 			return nil, fmt.Errorf("cluster: write deployment: %w", err)
 		}
+		// Maintain the (service, handler) → id index so ingress can
+		// resolve an unpinned invocation to a deployment in O(1).
+		// Newer registrations overwrite older ones; pinned invocations
+		// continue to find their deployment via DeploymentTable.Get directly.
+		idx := DeploymentIndexTable{S: store}
+		for _, h := range rec.GetHandlers() {
+			if h.GetService() == "" || h.GetHandler() == "" {
+				continue
+			}
+			if err := idx.Put(batch, h.GetService(), h.GetHandler(), rec.GetId()); err != nil {
+				return nil, fmt.Errorf("cluster: write deployment index: %w", err)
+			}
+		}
 		return nil, nil
 	case *enginev1.Command_EvictNode:
 		return f.applyEvictNode(batch, store, k.EvictNode, raftIndex)
@@ -483,6 +496,12 @@ type (
 	// LookupDeployments returns []*enginev1.DeploymentRecord sorted by
 	// id (lex byte order).
 	LookupDeployments struct{}
+
+	// LookupDeploymentByHandler returns the deployment_id (string) that
+	// (service, handler) currently routes to, or "" if no deployment
+	// claims that handler. Resolves via the (service, handler) → id
+	// index maintained by the RegisterDeployment apply arm.
+	LookupDeploymentByHandler struct{ Service, Handler string }
 )
 
 // Lookup implements statemachine.IOnDiskStateMachine.
@@ -506,6 +525,8 @@ func (f *FSM) Lookup(query any) (any, error) {
 		return (DeploymentTable{S: store}).Get(q.ID)
 	case LookupDeployments:
 		return (DeploymentTable{S: store}).List()
+	case LookupDeploymentByHandler:
+		return (DeploymentIndexTable{S: store}).Get(q.Service, q.Handler)
 	default:
 		return nil, fmt.Errorf("cluster: unknown lookup type %T", query)
 	}

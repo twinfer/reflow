@@ -78,16 +78,11 @@ type AdminClient interface {
 	// DeleteSnapshot removes a single archived snapshot. Idempotent —
 	// returns OK when the snapshot is already absent.
 	DeleteSnapshot(ctx context.Context, in *DeleteSnapshotRequest, opts ...grpc.CallOption) (*DeleteSnapshotResponse, error)
-	// RegisterDeployment introduces a new remote handler deployment to the
-	// cluster. The engine dials <url>, calls discovery, validates the
-	// protocol version, mints a UUIDv4 deployment_id, and proposes
-	// Command_RegisterDeployment to shard 0. Returns the assigned id.
-	//
-	// Phase 5 (this commit, 5c): synthetic inproc deployments are
-	// registered internally at metadata-leader bootstrap and operators
-	// cannot currently register remote deployments — non-inproc URLs are
-	// rejected with UNIMPLEMENTED until the engine-side handlerclient
-	// lands in commit 5d.
+	// RegisterDeployment introduces a new handler deployment to the
+	// cluster. The engine dials <url>, issues a discovery GET to enumerate
+	// handlers, validates the protocol version, mints a UUIDv4
+	// deployment_id, and proposes Command_RegisterDeployment to shard 0.
+	// Returns the assigned id. URL must use http:// or https://.
 	RegisterDeployment(ctx context.Context, in *RegisterDeploymentRequest, opts ...grpc.CallOption) (*RegisterDeploymentResponse, error)
 }
 
@@ -205,16 +200,11 @@ type AdminServer interface {
 	// DeleteSnapshot removes a single archived snapshot. Idempotent —
 	// returns OK when the snapshot is already absent.
 	DeleteSnapshot(context.Context, *DeleteSnapshotRequest) (*DeleteSnapshotResponse, error)
-	// RegisterDeployment introduces a new remote handler deployment to the
-	// cluster. The engine dials <url>, calls discovery, validates the
-	// protocol version, mints a UUIDv4 deployment_id, and proposes
-	// Command_RegisterDeployment to shard 0. Returns the assigned id.
-	//
-	// Phase 5 (this commit, 5c): synthetic inproc deployments are
-	// registered internally at metadata-leader bootstrap and operators
-	// cannot currently register remote deployments — non-inproc URLs are
-	// rejected with UNIMPLEMENTED until the engine-side handlerclient
-	// lands in commit 5d.
+	// RegisterDeployment introduces a new handler deployment to the
+	// cluster. The engine dials <url>, issues a discovery GET to enumerate
+	// handlers, validates the protocol version, mints a UUIDv4
+	// deployment_id, and proposes Command_RegisterDeployment to shard 0.
+	// Returns the assigned id. URL must use http:// or https://.
 	RegisterDeployment(context.Context, *RegisterDeploymentRequest) (*RegisterDeploymentResponse, error)
 	mustEmbedUnimplementedAdminServer()
 }

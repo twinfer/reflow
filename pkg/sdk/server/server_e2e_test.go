@@ -259,15 +259,17 @@ func runOneSessionExpectFailure(t *testing.T, client handlerclient.Client, route
 
 // sendStart pushes the Start + Input frame pair the engine normally
 // sends. The reflow-internal wire_session is bypassed here, so the
-// helper has to do the encoding itself.
+// helper has to do the encoding itself. known_entries=1 because the
+// only replay frame is the InputCommandMessage at slot 0.
 func sendStart(stream handlerclient.Stream, route handlerclient.Route, input []byte) error {
 	codec := handlerclient.DefaultCodec()
 	start := &protocolv1.StartMessage{
-		Id:          []byte("test-uuid-16bytes"[:16]),
-		DebugId:     "t/" + route.Service + "/" + route.Handler,
-		ServiceName: route.Service,
-		HandlerName: route.Handler,
-		Kind:        protocolv1.Kind_KIND_SERVICE,
+		Id:           []byte("test-uuid-16bytes"[:16]),
+		DebugId:      "t/" + route.Service + "/" + route.Handler,
+		ServiceName:  route.Service,
+		HandlerName:  route.Handler,
+		Kind:         protocolv1.Kind_KIND_SERVICE,
+		KnownEntries: 1,
 	}
 	startBytes, err := codec.Marshal(start)
 	if err != nil {

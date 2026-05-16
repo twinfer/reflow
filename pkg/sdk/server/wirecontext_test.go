@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/pkg/sdk"
@@ -28,12 +29,23 @@ func (f *fakeStream) Recv() (*protocolv1.Frame, error) { return nil, io.EOF }
 // newTestWireContext returns a wireContext backed by a fakeStream plus
 // the default protobuf codec. Tests inspect fakeStream.sent to assert
 // the emitted frame shapes. cache may be nil for tests that don't
-// exercise GetState.
+// exercise GetState; replay may be nil for tests that don't exercise
+// the replay-skip path.
 func newTestWireContext(t *testing.T, cache map[string][]byte) (*wireContext, *fakeStream) {
 	t.Helper()
 	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
 	stream := &fakeStream{}
-	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, handlerclient.DefaultCodec(), cache)
+	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, handlerclient.DefaultCodec(), cache, nil)
+	return wctx, stream
+}
+
+// newTestWireContextWithReplay seeds the replay buffer so tests can
+// assert replay-hit branches of Sleep, SetState, etc.
+func newTestWireContextWithReplay(t *testing.T, replay map[uint32]*replayEntry) (*wireContext, *fakeStream) {
+	t.Helper()
+	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
+	stream := &fakeStream{}
+	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, handlerclient.DefaultCodec(), nil, replay)
 	return wctx, stream
 }
 
@@ -200,33 +212,140 @@ func TestWireContext_GetState_NilCache(t *testing.T) {
 func TestWireContext_SlotAllocation(t *testing.T) {
 	wctx, _ := newTestWireContext(t, nil)
 
-	if got := wctx.allocSlot(1); got != 1 {
-		t.Errorf("first allocSlot(1) = %d; want 1", got)
+	got, ok := wctx.allocSlot(1)
+	if !ok || got != 1 {
+		t.Errorf("first allocSlot(1) = (%d, %v); want (1, true)", got, ok)
 	}
-	if got := wctx.allocSlot(2); got != 2 {
-		t.Errorf("second allocSlot(2) = %d; want 2", got)
+	got, ok = wctx.allocSlot(2)
+	if !ok || got != 2 {
+		t.Errorf("second allocSlot(2) = (%d, %v); want (2, true)", got, ok)
 	}
-	if got := wctx.allocSlot(1); got != 4 {
-		t.Errorf("third allocSlot(1) = %d; want 4", got)
+	got, ok = wctx.allocSlot(1)
+	if !ok || got != 4 {
+		t.Errorf("third allocSlot(1) = (%d, %v); want (4, true)", got, ok)
+	}
+}
+
+// TestWireContext_Sleep_FreshEmits asserts the first call to Sleep on
+// a session with empty replay emits SleepCommandMessage and suspends.
+func TestWireContext_Sleep_FreshEmits(t *testing.T) {
+	wctx, stream := newTestWireContext(t, nil)
+
+	fut := wctx.Sleep(50 * time.Millisecond)
+	_, err := fut.Result()
+	if !errors.Is(err, sdk.ErrSuspended) {
+		t.Errorf("Sleep.Result err = %v; want ErrSuspended", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("sent frames = %d; want 1 (SleepCommandMessage)", len(stream.sent))
+	}
+	tc, _, _ := handlerclient.UnpackHeader(stream.sent[0].GetHeader())
+	if tc != handlerclient.TypeCmdSleep {
+		t.Errorf("frame.type = 0x%04x; want 0x%04x", tc, handlerclient.TypeCmdSleep)
+	}
+	var msg protocolv1.SleepCommandMessage
+	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &msg); err != nil {
+		t.Fatalf("decode SleepCommandMessage: %v", err)
+	}
+	if msg.GetResultCompletionId() != 2 {
+		t.Errorf("result_completion_id = %d; want 2", msg.GetResultCompletionId())
+	}
+	if msg.GetWakeUpTime() == 0 {
+		t.Errorf("wake_up_time = 0; want non-zero absolute ms")
+	}
+
+	awaiting := wctx.snapshotAwaiting()
+	if len(awaiting) != 1 || awaiting[0] != "completion:2" {
+		t.Errorf("awaiting = %v; want [completion:2]", awaiting)
+	}
+}
+
+// TestWireContext_Sleep_ReplayHitReturnsReady asserts that when the
+// replay buffer contains the SleepCompletionNotificationMessage for
+// this slot, Sleep returns a ready future without emitting any frame.
+func TestWireContext_Sleep_ReplayHitReturnsReady(t *testing.T) {
+	codec := handlerclient.DefaultCodec()
+	cmdPayload, err := codec.Marshal(&protocolv1.SleepCommandMessage{
+		WakeUpTime:         12345,
+		ResultCompletionId: 2,
+	})
+	if err != nil {
+		t.Fatalf("marshal SleepCommandMessage: %v", err)
+	}
+	notePayload, err := codec.Marshal(&protocolv1.SleepCompletionNotificationMessage{
+		CompletionId: 2,
+		Void:         &protocolv1.Void{},
+	})
+	if err != nil {
+		t.Fatalf("marshal SleepCompletionNotificationMessage: %v", err)
+	}
+	wctx, stream := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
+		1: {typeCode: handlerclient.TypeCmdSleep, payload: cmdPayload},
+		2: {typeCode: handlerclient.TypeNoteSleepDone, payload: notePayload},
+	})
+
+	fut := wctx.Sleep(50 * time.Millisecond)
+	v, err := fut.Result()
+	if err != nil {
+		t.Errorf("Sleep.Result err = %v; want nil", err)
+	}
+	if v != nil {
+		t.Errorf("Sleep.Result value = %q; want nil", v)
+	}
+	if len(stream.sent) != 0 {
+		t.Errorf("sent %d frames; want 0 (replay hit should not re-emit)", len(stream.sent))
+	}
+}
+
+// TestWireContext_StateWrites_ReplayHitSkipsEmit confirms a SetState
+// at a slot already covered by replay is a no-op on the wire (the
+// engine already journaled it in a prior run).
+func TestWireContext_StateWrites_ReplayHitSkipsEmit(t *testing.T) {
+	wctx, stream := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
+		1: {typeCode: handlerclient.TypeCmdSetState, payload: nil},
+	})
+
+	if err := wctx.SetState("counter", []byte("42")); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	if len(stream.sent) != 0 {
+		t.Errorf("sent %d frames; want 0 (replay hit should not re-emit)", len(stream.sent))
+	}
+	// Cache update still happens so read-your-writes in the same session works.
+	v, ok, _ := wctx.GetState("counter")
+	if !ok || string(v) != "42" {
+		t.Errorf("GetState(counter) after replay-skipped SetState = (%q, %v); want (42, true)", v, ok)
+	}
+}
+
+// TestWireContext_Suspend_ShortCircuitsSubsequentCalls asserts that
+// once suspended, every ctx call returns ErrSuspended (mirrors
+// inprocContext.suspend).
+func TestWireContext_Suspend_ShortCircuitsSubsequentCalls(t *testing.T) {
+	wctx, _ := newTestWireContext(t, nil)
+
+	// First Sleep call suspends.
+	if _, err := wctx.Sleep(time.Second).Result(); !errors.Is(err, sdk.ErrSuspended) {
+		t.Fatalf("first Sleep.Result err = %v; want ErrSuspended", err)
+	}
+	// SetState after suspend short-circuits without emitting.
+	if err := wctx.SetState("k", []byte("v")); !errors.Is(err, sdk.ErrSuspended) {
+		t.Errorf("SetState after suspend err = %v; want ErrSuspended", err)
+	}
+	// Second Sleep also short-circuits.
+	if _, err := wctx.Sleep(time.Second).Result(); !errors.Is(err, sdk.ErrSuspended) {
+		t.Errorf("second Sleep.Result err = %v; want ErrSuspended", err)
 	}
 }
 
 // TestWireContext_DurablePrimitivesNotImplemented covers every durable
-// primitive still gated on the 5f.2-5f.6 wire-protocol expansion.
+// primitive still gated on the 5f.4-5f.6 wire-protocol expansion. Sleep
+// and State are no longer in this list — they landed in 5f.1-5f.3.
 func TestWireContext_DurablePrimitivesNotImplemented(t *testing.T) {
 	wctx, _ := newTestWireContext(t, nil)
 
-	for _, tc := range []struct {
-		name   string
-		future sdk.Future
-	}{
-		{"Sleep", wctx.Sleep(0)},
-		{"Call", wctx.Call(sdk.Target{}, nil)},
-	} {
-		_, err := tc.future.Result()
-		if !errors.Is(err, ErrWireNotImplemented) {
-			t.Errorf("%s.Result() err = %v; want ErrWireNotImplemented", tc.name, err)
-		}
+	if _, err := wctx.Call(sdk.Target{}, nil).Result(); !errors.Is(err, ErrWireNotImplemented) {
+		t.Errorf("Call.Result() err = %v; want ErrWireNotImplemented", err)
 	}
 
 	_, akFuture := wctx.Awakeable()

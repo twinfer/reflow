@@ -19,12 +19,13 @@ const (
 	TypeProposeRunDone uint16 = 0x0005
 
 	// Commands (0x0400-0x04FF). Only the subset wired today is listed;
-	// the rest land as the wire-session matures (sleep, call, awakeable).
+	// the rest land as the wire-session matures (call, awakeable).
 	TypeCmdInput         uint16 = 0x0400
 	TypeCmdOutput        uint16 = 0x0401
 	TypeCmdSetState      uint16 = 0x0403
 	TypeCmdClearState    uint16 = 0x0404
 	TypeCmdClearAllState uint16 = 0x0405
+	TypeCmdSleep         uint16 = 0x040C
 
 	// Notifications (0x8000-0x80FF).
 	TypeNoteSleepDone uint16 = 0x800C

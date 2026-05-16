@@ -102,7 +102,7 @@ func (s *wireSession) Done() <-chan struct{} { return s.done }
 func (s *wireSession) run() {
 	defer close(s.done)
 
-	input, ok := s.loadStartInput()
+	entries, ok := s.loadJournal()
 	if !ok {
 		return
 	}
@@ -119,24 +119,28 @@ func (s *wireSession) run() {
 	}
 	defer func() { _ = stream.CloseSend() }()
 
-	if err := s.sendStart(stream, input); err != nil {
+	if err := s.sendStartAndReplay(stream, entries); err != nil {
 		if s.ctx.Err() != nil {
 			return
 		}
-		s.log.Warn("invoker.wire: send StartMessage failed",
+		s.log.Warn("invoker.wire: send Start+replay failed",
 			"id", invocationIDString(s.id), "err", err)
 		s.failTerminal(fmt.Sprintf("wire dispatch: send start: %v", err))
 		return
 	}
 
+	// nextIdx picks up after the highest existing slot — any new
+	// command frame the handler emits gets the next sequential index.
+	s.nextIdx = highestIndex(entries) + 1
+
 	s.driveLoop(stream)
 }
 
-// loadStartInput reads the invocation status, advances Scheduled to
-// Invoked by proposing JEInput when needed, and returns the input bytes
-// for StartMessage. Returns ok=false when the session should bail (e.g.
-// already Completed, status load failed, context cancelled).
-func (s *wireSession) loadStartInput() ([]byte, bool) {
+// loadJournal reads the invocation status, advances Scheduled to
+// Invoked by proposing JEInput when needed, and returns the full journal
+// (in index order) for replay. Returns ok=false when the session should
+// bail (e.g. already Completed, status load failed, context cancelled).
+func (s *wireSession) loadJournal() ([]*enginev1.JournalEntry, bool) {
 	status, err := s.invocation.Get(s.id)
 	if err != nil {
 		s.log.Warn("invoker.wire: load status failed",
@@ -160,58 +164,71 @@ func (s *wireSession) loadStartInput() ([]byte, bool) {
 			}
 			return nil, false
 		}
-		return st.Scheduled.GetInput(), true
+		// Scheduled → just-Invoked path: the only journal entry is the
+		// JEInput we just proposed. Hand-craft it rather than reload
+		// from Pebble (the journal table read isn't read-your-writes
+		// coherent with the propose path).
+		return []*enginev1.JournalEntry{entry}, true
 	case *enginev1.InvocationStatus_Invoked, *enginev1.InvocationStatus_Suspended:
-		// Already past Scheduled: pull input from the journal's index 0.
+		// Already past Scheduled: pull the full journal for replay.
 		entries, err := s.journal.Load(s.id)
 		if err != nil {
 			s.log.Warn("invoker.wire: load journal failed",
 				"id", invocationIDString(s.id), "err", err)
 			return nil, false
 		}
-		for _, e := range entries {
-			if e.GetIndex() == 0 {
-				if ie, ok := e.GetEntry().(*enginev1.JournalEntry_Input); ok {
-					return ie.Input.GetValue(), true
-				}
-			}
-		}
-		return nil, true // journal load empty; handler may still proceed
+		return entries, true
 	default:
 		return nil, false
 	}
 }
 
-// sendStart codec-encodes and emits the StartMessage frame followed by
-// an InputCommandMessage carrying the invocation input. The two-frame
-// handshake matches Restate's service-protocol: handlers read Start to
-// open their context, then read Input as journal entry 0 (the durable
-// representation of "the bytes the caller passed").
+// highestIndex returns the largest Index across the supplied journal
+// entries, or 0 if the slice is empty. The +1 in run() turns this into
+// "next free slot."
+func highestIndex(entries []*enginev1.JournalEntry) uint32 {
+	var max uint32
+	for _, e := range entries {
+		if idx := e.GetIndex(); idx > max {
+			max = idx
+		}
+	}
+	return max
+}
+
+// sendStartAndReplay emits the StartMessage frame followed by one
+// frame per existing journal entry (translated by wire_replay.go).
+// Handlers count frames received and transition to user-code phase
+// when received == known_entries.
 //
 // StartMessage.state_map carries the eager-preloaded K/V snapshot for
 // the invocation's (service, object_key) so wireContext.GetState can
 // serve hits directly from the handler-side cache without a round-trip.
 // Mirrors inproc.go's preloadState semantics.
-func (s *wireSession) sendStart(stream handlerclient.Stream, input []byte) error {
-	start := &protocolv1.StartMessage{
-		Id:          s.id.GetUuid(),
-		DebugId:     invocationIDString(s.id),
-		Key:         s.target.GetObjectKey(),
-		Kind:        s.kindForTarget(),
-		ServiceName: s.target.GetServiceName(),
-		HandlerName: s.target.GetHandlerName(),
-		// known_entries / partial_state stay zero in the minimal wire
-		// path; full journal replay lands in 5f.3.
+func (s *wireSession) sendStartAndReplay(stream handlerclient.Stream, entries []*enginev1.JournalEntry) error {
+	frames, err := translateJournal(entries, s.codec, s.log)
+	if err != nil {
+		return fmt.Errorf("translate journal: %w", err)
 	}
-	if cache := preloadEagerState(s.stateTable, s.target, s.id, s.log); cache != nil && len(cache) > 0 {
-		entries := make([]*protocolv1.StartMessage_StateEntry, 0, len(cache))
+
+	start := &protocolv1.StartMessage{
+		Id:           s.id.GetUuid(),
+		DebugId:      invocationIDString(s.id),
+		Key:          s.target.GetObjectKey(),
+		Kind:         s.kindForTarget(),
+		ServiceName:  s.target.GetServiceName(),
+		HandlerName:  s.target.GetHandlerName(),
+		KnownEntries: uint32(len(frames)),
+	}
+	if cache := preloadEagerState(s.stateTable, s.target, s.id, s.log); len(cache) > 0 {
+		stateEntries := make([]*protocolv1.StartMessage_StateEntry, 0, len(cache))
 		for k, v := range cache {
-			entries = append(entries, &protocolv1.StartMessage_StateEntry{
+			stateEntries = append(stateEntries, &protocolv1.StartMessage_StateEntry{
 				Key:   []byte(k),
 				Value: v,
 			})
 		}
-		start.StateMap = entries
+		start.StateMap = stateEntries
 	}
 	startBytes, err := s.codec.Marshal(start)
 	if err != nil {
@@ -220,14 +237,12 @@ func (s *wireSession) sendStart(stream handlerclient.Stream, input []byte) error
 	if err := stream.Send(handlerclient.FrameFor(handlerclient.TypeStart, startBytes)); err != nil {
 		return err
 	}
-	inputMsg := &protocolv1.InputCommandMessage{
-		Value: &protocolv1.Value{Content: input},
+	for _, f := range frames {
+		if err := stream.Send(handlerclient.FrameFor(f.typeCode, f.payload)); err != nil {
+			return err
+		}
 	}
-	inputBytes, err := s.codec.Marshal(inputMsg)
-	if err != nil {
-		return fmt.Errorf("marshal InputCommandMessage: %w", err)
-	}
-	return stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdInput, inputBytes))
+	return nil
 }
 
 // kindForTarget picks the protocolv1.Kind that matches this
@@ -297,6 +312,13 @@ func (s *wireSession) driveLoop(stream handlerclient.Stream) {
 			if !s.handleClearAllState(f.GetPayload()) {
 				return
 			}
+		case handlerclient.TypeCmdSleep:
+			if !s.handleSleep(f.GetPayload()) {
+				return
+			}
+		case handlerclient.TypeSuspension:
+			s.handleSuspension(f.GetPayload())
+			return
 		default:
 			// Forward-compat: unknown type codes are logged and skipped.
 			// The handler may emit frames the engine hasn't taught itself
@@ -411,6 +433,75 @@ func (s *wireSession) handleClearAllState(payload []byte) bool {
 		},
 	}
 	return s.proposeJournalOrFail(entry, "JEClearAllState")
+}
+
+// handleSleep decodes a SleepCommandMessage and proposes JESleep at
+// the next free slot. The handler allocated 2 slots (cmd + result);
+// the engine consumes the result slot too so its nextIdx stays in
+// sync with the handler's wireContext.nextSlot. The result slot itself
+// is written later by the FSM when the timer fires (JESleepResult).
+func (s *wireSession) handleSleep(payload []byte) bool {
+	var cmd protocolv1.SleepCommandMessage
+	if err := s.codec.Unmarshal(payload, &cmd); err != nil {
+		s.log.Warn("invoker.wire: decode SleepCommandMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode sleep: %v", err))
+		return false
+	}
+	cmdIdx := s.allocIdx()
+	// Reserve the result slot so subsequent commands skip past it.
+	_ = s.allocIdx()
+	entry := &enginev1.JournalEntry{
+		Index: cmdIdx,
+		Entry: &enginev1.JournalEntry_Sleep{
+			Sleep: &enginev1.JESleep{FireAtMs: cmd.GetWakeUpTime()},
+		},
+	}
+	return s.proposeJournalOrFail(entry, "JESleep")
+}
+
+// handleSuspension translates a SuspensionMessage into
+// InvokerEffect_Suspended and terminates the session. The
+// `awaiting_on` field on InvocationSuspended is descriptive — the
+// engine's wake path (Suspended → Invoked + ActInvoke on the next
+// completion event) doesn't consult its contents. We synthesize
+// human-readable labels from the wire's uint32 completion ids for
+// observability.
+func (s *wireSession) handleSuspension(payload []byte) {
+	if s.ctx.Err() != nil {
+		return
+	}
+	var sm protocolv1.SuspensionMessage
+	if err := s.codec.Unmarshal(payload, &sm); err != nil {
+		s.log.Warn("invoker.wire: decode SuspensionMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode suspension: %v", err))
+		return
+	}
+	awaiting := make([]string, 0,
+		len(sm.GetWaitingCompletions())+
+			len(sm.GetWaitingSignals())+
+			len(sm.GetWaitingNamedSignals()))
+	for _, id := range sm.GetWaitingCompletions() {
+		awaiting = append(awaiting, fmt.Sprintf("completion:%d", id))
+	}
+	for _, id := range sm.GetWaitingSignals() {
+		awaiting = append(awaiting, fmt.Sprintf("signal:%d", id))
+	}
+	awaiting = append(awaiting, sm.GetWaitingNamedSignals()...)
+
+	eff := &enginev1.InvokerEffect{
+		InvocationId: s.id,
+		Kind: &enginev1.InvokerEffect_Suspended{
+			Suspended: &enginev1.InvocationSuspended{
+				AwaitingOn: awaiting,
+			},
+		},
+	}
+	if err := s.proposeEffect(eff); err != nil && s.ctx.Err() == nil {
+		s.log.Warn("invoker.wire: propose Suspended failed",
+			"id", invocationIDString(s.id), "err", err)
+	}
 }
 
 // allocIdx reserves the next journal index for an engine-assigned

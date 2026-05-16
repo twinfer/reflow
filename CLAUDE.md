@@ -49,7 +49,7 @@ The dependency direction is `cmd → pkg → internal → proto`. Internal packa
 - **`internal/engine/snapshot`** — DR snapshot producer/repository/reaper backed by `gocloud.dev/blob` (file/s3/gs/azblob/mem URLs).
 - **`internal/storage`** — `Store` interface (Pebble + in-memory); `keys` defines the byte-level key layout (no partition_id prefix — each partition has its own DB); `tables` is the typed view over keys.
 - **`internal/ingress`** — gRPC + grpc-gateway HTTP/JSON entrypoints (`SubmitInvocation`, `AwaitInvocation`, `AttachInvocation`, awakeables, admin reads). Routes via `Host.Partitioner` (hash of `service` + `object_key`).
-- **`internal/sdkstream`** — wire-protocol path for cross-language handlers.
+- **`internal/engine/handlerclient`** — engine-side wire client for remote (out-of-process) handler deployments. Single transport is raw HTTP/2 (`http2client/`); the handler-side server lives at `pkg/sdk/server`. Synthetic `inproc://` deployments short-circuit to the local `sdk.Registry`.
 - **`internal/auth`** — single-CA mTLS with SPIFFE URI SAN role enforcement (`spiffe://<trust-domain>/node/<id>` vs `/operator/<name>`). Multi-node config is rejected unless TLS files are supplied (`requireTLSWhenMultiNode` in `cmd/reflowd/main.go`).
 - **`internal/pki`** — offline CA + leaf issuance used by `reflow-cluster init-ca / issue-cert / issue-operator`.
 - **`internal/observability`** — `*Metrics` is a single Prometheus collector struct passed down into the partition apply path + timer service. The engine never constructs its own registry; wiring lives in `pkg/reflow`.
@@ -62,6 +62,41 @@ The dependency direction is `cmd → pkg → internal → proto`. Internal packa
 - **Engine integration tests** live in `internal/engine/integration_*_test.go` under `package engine_test`. They use the `internal/loadgen` cluster bootstrap (so `loadgen` is imported from non-loadtest builds — keep its non-`//go:build loadtest` files free of test-only dependencies the production import path can't satisfy).
 - **`internal/engine/pbt_test.go`** is property-based with `pgregory.net/rapid`.
 - **Chaos / load tests** are `//go:build loadtest` only and excluded from `make test`. The harness uses `loadgen.HelloHandler` and bufconn-backed Raft transport so per-pair links can be `Cut`/`Heal`ed in-test without real ports.
+
+## Performance baseline
+
+`TestLoad_SteadyState` (3-node in-proc cluster, 50 qps target, 16 concurrency, 20s workload) is the canonical "did we regress" smoke. The summary.md content is dumped into the test log; the most recent reference run lives in this section so future runs have something to diff against.
+
+Run:
+
+```bash
+go test -tags=loadtest -timeout=10m -count=1 -run=TestLoad_SteadyState -v ./internal/loadgen/...
+```
+
+Reference (commit `d849283`, 2026-05-16, Darwin/arm64 laptop):
+
+```
+- Issued: 440        # rate-limit + concurrency-cap interplay; not a deterministic target
+- Completed: 440
+- Failed: 1          # within the 1% cancelled-propose tolerance
+- InFlightAtEnd: 0
+- Duration: 20s
+
+Latency (end-to-end, µs)
+- p50:  108_735
+- p90:  200_831
+- p99:  308_223
+- p999: 403_199
+- max:  403_199
+
+Pebble
+- peak L0 files (any shard, any node): 1
+- mean write-amp across samples:       1.025
+
+Invariants: all passed.
+```
+
+Numbers vary by machine (IO/CPU). Order-of-magnitude shifts (10× latency, peak L0 in the dozens, write-amp > 5) are the actual regression signal; a 20% drift on percentiles is noise. Bump the reference block on any major refactor that touches the apply or invoker paths.
 
 ## Conventions worth knowing before editing
 

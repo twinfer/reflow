@@ -4,6 +4,7 @@ package loadgen_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -86,6 +87,9 @@ func TestLoad_SteadyState(t *testing.T) {
 		t.Fatalf("write results: %v", err)
 	}
 	t.Logf("summary: %s", summary)
+	if body, readErr := os.ReadFile(summary); readErr == nil {
+		t.Logf("--- summary.md ---\n%s", body)
+	}
 	t.Logf("stats: issued=%d completed=%d failed=%d in_flight_end=%d",
 		stats.Issued, stats.Completed, stats.Failed, stats.InFlightAtEnd)
 	for i, s := range stats.FailedSamples {

@@ -33,7 +33,7 @@ func TestChaos_LeaderLoss(t *testing.T) {
 	)
 
 	reg := sdk.NewRegistry()
-	if err := reg.Register(service, handler, loadgen.HelloHandler); err != nil {
+	if err := reg.RegisterService(service, handler, loadgen.HelloHandler); err != nil {
 		t.Fatalf("register handler: %v", err)
 	}
 

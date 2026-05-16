@@ -14,8 +14,11 @@ import (
 	"time"
 
 	"github.com/twinfer/reflow/internal/engine"
+	"github.com/twinfer/reflow/internal/engine/admin"
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/pkg/sdk"
+	sdkserver "github.com/twinfer/reflow/pkg/sdk/server"
+	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -35,11 +38,11 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
-// bringUpHostWithIngress starts a single-node Host on a temp dir, registers
-// the supplied handlers, awaits leadership on shard 1, and starts the
-// ingress HTTP+gRPC transports on ephemeral ports. The returned cleanup
-// stops everything in the right order (ingress before host so in-flight
-// requests don't dangle).
+// bringUpHostWithIngress starts a single-node Host with shard 0 +
+// shard 1, starts a pkg/sdk/server hosting reg, registers its URL as a
+// deployment, and starts the ingress HTTP+gRPC transports on ephemeral
+// ports. The cleanup stops everything in the right order (ingress
+// before host so in-flight requests don't dangle).
 func bringUpHostWithIngress(t *testing.T, reg *sdk.Registry) (*engine.Host, *ingress.Runtime) {
 	t.Helper()
 	dir := t.TempDir()
@@ -55,13 +58,47 @@ func bringUpHostWithIngress(t *testing.T, reg *sdk.Registry) (*engine.Host, *ing
 	}
 	t.Cleanup(func() { _ = h.Close() })
 
+	if _, err := h.StartMetadataShard(); err != nil {
+		t.Fatalf("StartMetadataShard: %v", err)
+	}
 	if _, err := h.StartPartition(1); err != nil {
 		t.Fatalf("StartPartition: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	if err := h.AwaitMetadataLeader(ctx); err != nil {
+		t.Fatalf("AwaitMetadataLeader: %v", err)
+	}
 	if err := h.AwaitLeader(ctx, 1); err != nil {
 		t.Fatalf("AwaitLeader: %v", err)
+	}
+
+	if reg != nil && reg.Len() > 0 {
+		srv, err := sdkserver.NewHTTP2(sdkserver.Config{Registry: reg})
+		if err != nil {
+			t.Fatalf("sdkserver.NewHTTP2: %v", err)
+		}
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen sdk: %v", err)
+		}
+		go func() { _ = srv.Serve(ln) }()
+		t.Cleanup(func() {
+			_ = srv.Shutdown()
+			_ = ln.Close()
+		})
+
+		asrv, err := admin.NewServer(admin.Config{Host: h, Runner: h.MetadataRunner()})
+		if err != nil {
+			t.Fatalf("admin.NewServer: %v", err)
+		}
+		regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer regCancel()
+		if _, err := asrv.RegisterDeployment(regCtx, &adminv1.RegisterDeploymentRequest{
+			Url: "http://" + ln.Addr().String(),
+		}); err != nil {
+			t.Fatalf("RegisterDeployment: %v", err)
+		}
 	}
 
 	rt, err := ingress.Start(context.Background(), h, ingress.Config{

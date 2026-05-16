@@ -47,6 +47,10 @@ func TestMultiNode_JoinExistingCluster(t *testing.T) {
 	defer closeAll(rigs)
 	p := c.Partitioner
 
+	// Register the SDK handler endpoint and propose RegisterDeployment so
+	// dispatch resolves the (service, handler) → deployment_id mapping.
+	defer loadgen.StartEmbeddedHandlers(t, c, reg)()
+
 	// Wait for metadata convergence and locate the leader.
 	awaitCtx, awaitCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer awaitCancel()
@@ -196,10 +200,16 @@ func TestMultiNode_JoinExistingCluster(t *testing.T) {
 		PartitionKey: routing.PartitionKey(svc, ""),
 		Uuid:         []byte("join-test-uuid!!"),
 	}
+	depLookupCtx, depLookupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	depID, err := leader.Host.LookupDeploymentIDByHandler(depLookupCtx, svc, handler)
+	depLookupCancel()
+	if err != nil || depID == "" {
+		t.Fatalf("LookupDeploymentIDByHandler: id=%q err=%v", depID, err)
+	}
 	propCtx, propCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	err = leader.Host.Partition(shard).Proposer().ProposeIngress(propCtx, "join-test", 1, &enginev1.Command{
 		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-			InvocationId: id, Target: target, Input: []byte("payload"),
+			InvocationId: id, Target: target, Input: []byte("payload"), DeploymentId: depID,
 		}},
 	})
 	propCancel()

@@ -171,17 +171,18 @@ func TestWireDispatch_HTTP2_Call(t *testing.T) {
 		calleeInput = "ping"
 	)
 
-	// Inproc handler B that returns a fixed "pong" response regardless
-	// of input. Simple enough to make the assertion on A's output
-	// unambiguous.
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Callee", "echo", func(_ sdk.Context, _ []byte) ([]byte, error) {
+	// Handler B is the callee — a real SDK handler returning "pong".
+	// Registered via pkg/sdk/server so its deployment is durable in
+	// shard 0 and (Callee, echo) → deployment_id resolves at outbox
+	// dispatch time.
+	calleeReg := sdk.NewRegistry()
+	if err := calleeReg.RegisterService("Callee", "echo", func(_ sdk.Context, _ []byte) ([]byte, error) {
 		return []byte("pong"), nil
 	}); err != nil {
 		t.Fatalf("RegisterService Callee: %v", err)
 	}
 
-	// Wire handler A that calls B.
+	// Handler A is a fake HTTP/2 endpoint that issues ctx.Call(B, ...).
 	caller := &fakeHandlerCaller{
 		callerService: "Caller",
 		callerHandler: "call_b",
@@ -197,6 +198,7 @@ func TestWireDispatch_HTTP2_Call(t *testing.T) {
 		N: 3,
 	})
 	defer cluster.Close()
+	defer loadgen.StartEmbeddedHandlers(t, cluster, calleeReg)()
 
 	awaitCtx, awaitCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer awaitCancel()

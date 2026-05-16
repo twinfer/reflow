@@ -398,51 +398,35 @@ func TestCombinator_All_SurvivesRestart(t *testing.T) {
 	idsCh := make(chan string, 4)
 	var emitted atomic.Bool
 
-	register := func(reg *sdk.Registry) {
-		if err := reg.RegisterService("Persist", "all", func(c sdk.Context, _ []byte) ([]byte, error) {
-			id1, f1 := c.Awakeable()
-			id2, f2 := c.Awakeable()
-			// emitted is per-process; both pre- and post-crash runs
-			// publish so the test can pick up the IDs whichever side
-			// happens to be live.
-			if emitted.CompareAndSwap(false, true) {
-				idsCh <- id1
-				idsCh <- id2
-			}
-			vs, err := c.All(f1, f2).Results()
-			if err != nil {
-				return nil, err
-			}
-			return bytes.Join(vs, []byte(":")), nil
-		}); err != nil {
-			t.Fatalf("Register: %v", err)
+	reg := sdk.NewRegistry()
+	if err := reg.RegisterService("Persist", "all", func(c sdk.Context, _ []byte) ([]byte, error) {
+		id1, f1 := c.Awakeable()
+		id2, f2 := c.Awakeable()
+		// emitted is per-process; both pre- and post-crash runs
+		// publish so the test can pick up the IDs whichever side
+		// happens to be live.
+		if emitted.CompareAndSwap(false, true) {
+			idsCh <- id1
+			idsCh <- id2
 		}
+		vs, err := c.All(f1, f2).Results()
+		if err != nil {
+			return nil, err
+		}
+		return bytes.Join(vs, []byte(":")), nil
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
 	}
+	// One SDK server spans both engine epochs; deployment registration
+	// is durable in shard 0 so hAfter sees the same deployment record.
+	handlerURL := startSDKServer(t, reg)
 
 	dir := t.TempDir()
 	raftAddr := freeLocalAddr(t)
 	dataDir := filepath.Join(dir, "node1")
 
-	regBefore := sdk.NewRegistry()
-	register(regBefore)
-	hBefore, err := engine.NewHost(engine.HostConfig{
-		NodeID:             1,
-		RaftAddr:           raftAddr,
-		DataDir:            dataDir,
-		RTTMillisecond:     50,
-		NumPartitionShards: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewHost: %v", err)
-	}
-	if _, err := hBefore.StartPartition(1); err != nil {
-		t.Fatalf("StartPartition: %v", err)
-	}
-	leaderCtx, leaderCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := hBefore.AwaitLeader(leaderCtx, 1); err != nil {
-		t.Fatalf("AwaitLeader: %v", err)
-	}
-	leaderCancel()
+	hBefore := openSingleNodeOnDir(t, dataDir, raftAddr)
+	registerDeploymentURL(t, hBefore, handlerURL)
 	rtBefore, err := ingress.Start(context.Background(), hBefore, ingress.Config{
 		HTTPAddr: "127.0.0.1:0",
 		GRPCAddr: "127.0.0.1:0",
@@ -454,10 +438,11 @@ func TestCombinator_All_SurvivesRestart(t *testing.T) {
 
 	id := buildID(1, "persist-all")
 	target := &enginev1.InvocationTarget{ServiceName: "Persist", HandlerName: "all"}
+	depID := resolveDeploymentID(t, hBefore, target.ServiceName, target.HandlerName)
 	propCtx, propCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := hBefore.Partition(1).Proposer().ProposeIngress(propCtx, "test/persist-all", 1, &enginev1.Command{
 		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-			InvocationId: id, Target: target,
+			InvocationId: id, Target: target, DeploymentId: depID,
 		}},
 	}); err != nil {
 		t.Fatalf("ProposeIngress: %v", err)
@@ -484,27 +469,7 @@ func TestCombinator_All_SurvivesRestart(t *testing.T) {
 	// per-process atomic. We re-drain idsCh so the post-crash run
 	// republishes the same IDs and the test can resolve the second.
 	emitted.Store(false)
-	regAfter := sdk.NewRegistry()
-	register(regAfter)
-	hAfter, err := engine.NewHost(engine.HostConfig{
-		NodeID:             1,
-		RaftAddr:           raftAddr,
-		DataDir:            dataDir,
-		RTTMillisecond:     50,
-		NumPartitionShards: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewHost after restart: %v", err)
-	}
-	t.Cleanup(func() { _ = hAfter.Close() })
-	if _, err := hAfter.StartPartition(1); err != nil {
-		t.Fatalf("StartPartition after restart: %v", err)
-	}
-	leader2Ctx, leader2Cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := hAfter.AwaitLeader(leader2Ctx, 1); err != nil {
-		t.Fatalf("AwaitLeader after restart: %v", err)
-	}
-	leader2Cancel()
+	hAfter := openSingleNodeOnDir(t, dataDir, raftAddr)
 	rtAfter, err := ingress.Start(context.Background(), hAfter, ingress.Config{
 		HTTPAddr: "127.0.0.1:0",
 		GRPCAddr: "127.0.0.1:0",

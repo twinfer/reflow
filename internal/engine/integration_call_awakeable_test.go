@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/pkg/sdk"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -68,40 +67,23 @@ func TestHandlerSurvivesKill(t *testing.T) {
 	if err := reg.RegisterService("Survivor", "go", handler); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
+	handlerURL := startSDKServer(t, reg)
 
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "node1")
 	raftAddr := freeLocalAddr(t)
 
-	h1, err := engine.NewHost(engine.HostConfig{
-		NodeID:             1,
-		RaftAddr:           raftAddr,
-		DataDir:            dataDir,
-		RTTMillisecond:     50,
-		NumPartitionShards: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewHost: %v", err)
-	}
-	r, err := h1.StartPartition(1)
-	if err != nil {
-		_ = h1.Close()
-		t.Fatalf("StartPartition: %v", err)
-	}
-	startCtx, startCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := h1.AwaitLeader(startCtx, 1); err != nil {
-		startCancel()
-		_ = h1.Close()
-		t.Fatalf("AwaitLeader: %v", err)
-	}
-	startCancel()
+	h1 := openSingleNodeOnDir(t, dataDir, raftAddr)
+	registerDeploymentURL(t, h1, handlerURL)
+	r := h1.Partition(1)
 
 	id := buildID(1, "survivor")
 	target := &enginev1.InvocationTarget{ServiceName: "Survivor", HandlerName: "go"}
+	depID := resolveDeploymentID(t, h1, target.ServiceName, target.HandlerName)
 	propCtx, propCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	err = r.Proposer().ProposeIngress(propCtx, "test/survivor", 1, &enginev1.Command{
+	err := r.Proposer().ProposeIngress(propCtx, "test/survivor", 1, &enginev1.Command{
 		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-			InvocationId: id, Target: target, Input: []byte("input"),
+			InvocationId: id, Target: target, Input: []byte("input"), DeploymentId: depID,
 		}},
 	})
 	propCancel()
@@ -128,33 +110,14 @@ func TestHandlerSurvivesKill(t *testing.T) {
 	// Simulate the crash. Close stops the partition runner and the
 	// NodeHost without flushing in-flight SDK work, equivalent in effect
 	// to a SIGKILL for replay purposes (the Sleep timer state is durable
-	// on disk; the in-process session is gone).
+	// on disk; the wire session is gone).
 	if err := h1.Close(); err != nil {
 		t.Fatalf("Close (crash sim): %v", err)
 	}
 
-	// Reopen on the same DataDir with the same handler binding.
-	h2, err := engine.NewHost(engine.HostConfig{
-		NodeID:             1,
-		RaftAddr:           raftAddr,
-		DataDir:            dataDir,
-		RTTMillisecond:     50,
-		NumPartitionShards: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewHost (restart): %v", err)
-	}
-	defer h2.Close()
-
-	if _, err := h2.StartPartition(1); err != nil {
-		t.Fatalf("StartPartition (restart): %v", err)
-	}
-	awaitCtx, awaitCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := h2.AwaitLeader(awaitCtx, 1); err != nil {
-		awaitCancel()
-		t.Fatalf("AwaitLeader (restart): %v", err)
-	}
-	awaitCancel()
+	// Reopen on the same DataDir. Deployment registration is durable in
+	// shard 0; the SDK server URL stayed up across the close.
+	h2 := openSingleNodeOnDir(t, dataDir, raftAddr)
 
 	// 30s deadline: under heavy CI/parallel-test load dragonboat
 	// leader election + timer-fire-then-apply can stretch past the 10s
@@ -208,40 +171,23 @@ func TestOutgoingCallSurvivesRestart(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register Caller: %v", err)
 	}
+	handlerURL := startSDKServer(t, reg)
 
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "node1")
 	raftAddr := freeLocalAddr(t)
 
-	h1, err := engine.NewHost(engine.HostConfig{
-		NodeID:             1,
-		RaftAddr:           raftAddr,
-		DataDir:            dataDir,
-		RTTMillisecond:     50,
-		NumPartitionShards: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewHost: %v", err)
-	}
-	r, err := h1.StartPartition(1)
-	if err != nil {
-		_ = h1.Close()
-		t.Fatalf("StartPartition: %v", err)
-	}
-	ctx1, cancel1 := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := h1.AwaitLeader(ctx1, 1); err != nil {
-		cancel1()
-		_ = h1.Close()
-		t.Fatalf("AwaitLeader: %v", err)
-	}
-	cancel1()
+	h1 := openSingleNodeOnDir(t, dataDir, raftAddr)
+	registerDeploymentURL(t, h1, handlerURL)
+	r := h1.Partition(1)
 
 	callerID := buildID(1, "caller")
 	target := &enginev1.InvocationTarget{ServiceName: "Caller", HandlerName: "go"}
+	depID := resolveDeploymentID(t, h1, target.ServiceName, target.HandlerName)
 	propCtx, propCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	err = r.Proposer().ProposeIngress(propCtx, "test/caller", 1, &enginev1.Command{
+	err := r.Proposer().ProposeIngress(propCtx, "test/caller", 1, &enginev1.Command{
 		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-			InvocationId: callerID, Target: target, Input: []byte("hello"),
+			InvocationId: callerID, Target: target, Input: []byte("hello"), DeploymentId: depID,
 		}},
 	})
 	propCancel()
@@ -262,26 +208,7 @@ func TestOutgoingCallSurvivesRestart(t *testing.T) {
 		t.Fatalf("Close (crash sim): %v", err)
 	}
 
-	h2, err := engine.NewHost(engine.HostConfig{
-		NodeID:             1,
-		RaftAddr:           raftAddr,
-		DataDir:            dataDir,
-		RTTMillisecond:     50,
-		NumPartitionShards: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewHost (restart): %v", err)
-	}
-	defer h2.Close()
-	if _, err := h2.StartPartition(1); err != nil {
-		t.Fatalf("StartPartition (restart): %v", err)
-	}
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := h2.AwaitLeader(ctx2, 1); err != nil {
-		cancel2()
-		t.Fatalf("AwaitLeader (restart): %v", err)
-	}
-	cancel2()
+	h2 := openSingleNodeOnDir(t, dataDir, raftAddr)
 
 	// The Callee id is deterministically derived from (caller_id, call
 	// entry index = 1) — see mintCalleeInvocationID in partition.go. We
@@ -355,7 +282,7 @@ func TestCallResultDeliveredInline(t *testing.T) {
 		t.Fatalf("Register A: %v", err)
 	}
 
-	h := bringUpSingleHost(t, reg)
+	h := singleNodeWithHandlers(t, reg)
 	r := h.Partition(1)
 	if r == nil {
 		t.Fatal("partition 1 missing")
@@ -363,10 +290,11 @@ func TestCallResultDeliveredInline(t *testing.T) {
 
 	callerID := buildID(1, "caller25")
 	target := &enginev1.InvocationTarget{ServiceName: "A", HandlerName: "go"}
+	depID := resolveDeploymentID(t, h, target.ServiceName, target.HandlerName)
 	propCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := r.Proposer().ProposeIngress(propCtx, "test/caller25", 1, &enginev1.Command{
 		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-			InvocationId: callerID, Target: target, Input: []byte("ping"),
+			InvocationId: callerID, Target: target, Input: []byte("ping"), DeploymentId: depID,
 		}},
 	}); err != nil {
 		cancel()
@@ -410,37 +338,23 @@ func TestCallResultSurvivesCallerCrash(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register A: %v", err)
 	}
+	handlerURL := startSDKServer(t, reg)
 
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "node1")
 	raftAddr := freeLocalAddr(t)
 
-	h1, err := engine.NewHost(engine.HostConfig{
-		NodeID: 1, RaftAddr: raftAddr, DataDir: dataDir,
-		RTTMillisecond: 50, NumPartitionShards: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewHost: %v", err)
-	}
-	r1, err := h1.StartPartition(1)
-	if err != nil {
-		_ = h1.Close()
-		t.Fatalf("StartPartition: %v", err)
-	}
-	ctxA, cancelA := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := h1.AwaitLeader(ctxA, 1); err != nil {
-		cancelA()
-		_ = h1.Close()
-		t.Fatalf("AwaitLeader: %v", err)
-	}
-	cancelA()
+	h1 := openSingleNodeOnDir(t, dataDir, raftAddr)
+	registerDeploymentURL(t, h1, handlerURL)
+	r1 := h1.Partition(1)
 
 	callerID := buildID(1, "caller-crash")
 	target := &enginev1.InvocationTarget{ServiceName: "A", HandlerName: "go"}
+	depID := resolveDeploymentID(t, h1, target.ServiceName, target.HandlerName)
 	propCtx, cancelP := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := r1.Proposer().ProposeIngress(propCtx, "test/caller-crash", 1, &enginev1.Command{
 		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-			InvocationId: callerID, Target: target, Input: []byte("x"),
+			InvocationId: callerID, Target: target, Input: []byte("x"), DeploymentId: depID,
 		}},
 	}); err != nil {
 		cancelP()
@@ -461,23 +375,7 @@ func TestCallResultSurvivesCallerCrash(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	h2, err := engine.NewHost(engine.HostConfig{
-		NodeID: 1, RaftAddr: raftAddr, DataDir: dataDir,
-		RTTMillisecond: 50, NumPartitionShards: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewHost (restart): %v", err)
-	}
-	defer h2.Close()
-	if _, err := h2.StartPartition(1); err != nil {
-		t.Fatalf("StartPartition (restart): %v", err)
-	}
-	ctxB, cancelB := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := h2.AwaitLeader(ctxB, 1); err != nil {
-		cancelB()
-		t.Fatalf("AwaitLeader (restart): %v", err)
-	}
-	cancelB()
+	h2 := openSingleNodeOnDir(t, dataDir, raftAddr)
 
 	callerDone := awaitCompleted(t, h2, 1, callerID, 30*time.Second)
 	if got := string(callerDone.GetOutput()); got != "a:b:x" {
@@ -520,37 +418,23 @@ func TestCallResultSurvivesCalleeCrash(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register A: %v", err)
 	}
+	handlerURL := startSDKServer(t, reg)
 
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "node1")
 	raftAddr := freeLocalAddr(t)
 
-	h1, err := engine.NewHost(engine.HostConfig{
-		NodeID: 1, RaftAddr: raftAddr, DataDir: dataDir,
-		RTTMillisecond: 50, NumPartitionShards: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewHost: %v", err)
-	}
-	r1, err := h1.StartPartition(1)
-	if err != nil {
-		_ = h1.Close()
-		t.Fatalf("StartPartition: %v", err)
-	}
-	ctxA, cancelA := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := h1.AwaitLeader(ctxA, 1); err != nil {
-		cancelA()
-		_ = h1.Close()
-		t.Fatalf("AwaitLeader: %v", err)
-	}
-	cancelA()
+	h1 := openSingleNodeOnDir(t, dataDir, raftAddr)
+	registerDeploymentURL(t, h1, handlerURL)
+	r1 := h1.Partition(1)
 
 	callerID := buildID(1, "caller-cb")
 	target := &enginev1.InvocationTarget{ServiceName: "A", HandlerName: "go"}
+	depID := resolveDeploymentID(t, h1, target.ServiceName, target.HandlerName)
 	propCtx, cancelP := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := r1.Proposer().ProposeIngress(propCtx, "test/caller-cb", 1, &enginev1.Command{
 		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-			InvocationId: callerID, Target: target, Input: []byte("y"),
+			InvocationId: callerID, Target: target, Input: []byte("y"), DeploymentId: depID,
 		}},
 	}); err != nil {
 		cancelP()
@@ -573,23 +457,7 @@ func TestCallResultSurvivesCalleeCrash(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	h2, err := engine.NewHost(engine.HostConfig{
-		NodeID: 1, RaftAddr: raftAddr, DataDir: dataDir,
-		RTTMillisecond: 50, NumPartitionShards: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewHost (restart): %v", err)
-	}
-	defer h2.Close()
-	if _, err := h2.StartPartition(1); err != nil {
-		t.Fatalf("StartPartition (restart): %v", err)
-	}
-	ctxB, cancelB := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := h2.AwaitLeader(ctxB, 1); err != nil {
-		cancelB()
-		t.Fatalf("AwaitLeader (restart): %v", err)
-	}
-	cancelB()
+	h2 := openSingleNodeOnDir(t, dataDir, raftAddr)
 
 	// Wait for Callee first — JECallResult delivery requires Callee to
 	// reach Completed. If this never happens, the timer-fired→resume
@@ -605,32 +473,6 @@ func TestCallResultSurvivesCalleeCrash(t *testing.T) {
 	if got := calleeRuns.Load(); got != 1 {
 		t.Errorf("callee executions across crash = %d; want 1", got)
 	}
-}
-
-// bringUpSingleHost is a minimal Host helper for tests that don't need
-// ingress — single node, single shard, t.Cleanup-managed teardown.
-func bringUpSingleHost(t *testing.T, reg *sdk.Registry) *engine.Host {
-	t.Helper()
-	dir := t.TempDir()
-	h, err := engine.NewHost(engine.HostConfig{
-		NodeID: 1, RaftAddr: freeLocalAddr(t),
-		DataDir:            filepath.Join(dir, "node1"),
-		RTTMillisecond:     50,
-		NumPartitionShards: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewHost: %v", err)
-	}
-	t.Cleanup(func() { _ = h.Close() })
-	if _, err := h.StartPartition(1); err != nil {
-		t.Fatalf("StartPartition: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := h.AwaitLeader(ctx, 1); err != nil {
-		t.Fatalf("AwaitLeader: %v", err)
-	}
-	return h
 }
 
 // deriveCalleeID mirrors engine.mintCalleeInvocationID: SHA-256 of the
@@ -693,10 +535,11 @@ func TestAwakeableResolvedByIngress(t *testing.T) {
 
 	id := buildID(1, "awaiter")
 	target := &enginev1.InvocationTarget{ServiceName: "Awaiter", HandlerName: "wait"}
+	depID := resolveDeploymentID(t, h, target.ServiceName, target.HandlerName)
 	propCtx, propCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	err := r.Proposer().ProposeIngress(propCtx, "test/awaiter", 1, &enginev1.Command{
 		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-			InvocationId: id, Target: target,
+			InvocationId: id, Target: target, DeploymentId: depID,
 		}},
 	})
 	propCancel()

@@ -81,6 +81,17 @@ func bringUpHostWithIngress(t *testing.T, reg *sdk.Registry) (*engine.Host, *ing
 // Assumes h.MetadataRunner() is the metadata leader.
 func registerEmbeddedHandlers(t *testing.T, h *engine.Host, reg *sdk.Registry) {
 	t.Helper()
+	url := startSDKServer(t, reg)
+	registerDeploymentURL(t, h, url)
+}
+
+// startSDKServer starts a pkg/sdk/server.NewHTTP2 endpoint hosting reg
+// on a free local port and returns the "http://addr" URL. The server's
+// lifetime is bound to t — restart tests can reuse the URL across
+// Host close/reopen cycles because the deployment registration is
+// durable in shard 0.
+func startSDKServer(t *testing.T, reg *sdk.Registry) string {
+	t.Helper()
 	srv, err := server.NewHTTP2(server.Config{Registry: reg})
 	if err != nil {
 		t.Fatalf("server.NewHTTP2: %v", err)
@@ -94,7 +105,13 @@ func registerEmbeddedHandlers(t *testing.T, h *engine.Host, reg *sdk.Registry) {
 		_ = srv.Shutdown()
 		_ = ln.Close()
 	})
+	return "http://" + ln.Addr().String()
+}
 
+// registerDeploymentURL proposes a RegisterDeployment for url against
+// h's metadata shard. Assumes h.MetadataRunner() is the metadata leader.
+func registerDeploymentURL(t *testing.T, h *engine.Host, url string) {
+	t.Helper()
 	asrv, err := admin.NewServer(admin.Config{Host: h, Runner: h.MetadataRunner()})
 	if err != nil {
 		t.Fatalf("admin.NewServer: %v", err)
@@ -102,8 +119,26 @@ func registerEmbeddedHandlers(t *testing.T, h *engine.Host, reg *sdk.Registry) {
 	regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer regCancel()
 	if _, err := asrv.RegisterDeployment(regCtx, &adminv1.RegisterDeploymentRequest{
-		Url: "http://" + ln.Addr().String(),
+		Url: url,
 	}); err != nil {
 		t.Fatalf("RegisterDeployment: %v", err)
 	}
+}
+
+// resolveDeploymentID returns the deployment_id stamped onto
+// (service, handler) in shard 0's deployment index. Tests that propose
+// InvokeCommand directly (bypassing ingress) use it to populate
+// InvokeCommand.deployment_id so the invocation dispatches.
+func resolveDeploymentID(t *testing.T, h *engine.Host, service, handler string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	depID, err := h.LookupDeploymentIDByHandler(ctx, service, handler)
+	if err != nil {
+		t.Fatalf("LookupDeploymentIDByHandler(%s, %s): %v", service, handler, err)
+	}
+	if depID == "" {
+		t.Fatalf("no deployment_id stamped for (%s, %s)", service, handler)
+	}
+	return depID
 }

@@ -2,7 +2,6 @@ package engine_test
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -43,23 +42,20 @@ func buildID(pk uint64, name string) *enginev1.InvocationId {
 }
 
 // TestInvokerWiringEchoCompletes is the smallest end-to-end test
-// that exercises the Step 12 wiring: HostConfig.Handlers → Invoker →
+// that exercises the wiring: admin.RegisterDeployment → Invoker → wire
 // session → handler → InvokerEffect.Completed → FSM. A pure echo handler
-// is registered, an Invoke command is proposed via the partition's
-// ingress proposer, and the invocation status is polled until Completed.
+// is registered via pkg/sdk/server + admin.RegisterDeployment, an Invoke
+// command is proposed via the partition's ingress proposer, and the
+// invocation status is polled until Completed.
 //
 // Failure modes this guards against:
-//   - HostConfig.Handlers being ignored (registry lookup never finds the
-//     handler, session is dropped silently).
+//   - Deployment registration failing or never landing on shard 0.
 //   - PartitionRunner.dispatchActions not routing ActInvoke to the Invoker.
 //   - Invoker not started on leader gain (StartInvocation logs a warning
 //     and returns).
-//   - session.publishOutcome failing to propose Completed (status stays
-//     Invoked forever).
+//   - wireSession.completeTerminal failing to propose Completed (status
+//     stays Invoked forever).
 func TestInvokerWiringEchoCompletes(t *testing.T) {
-	dir := t.TempDir()
-	dataDir := filepath.Join(dir, "node1")
-
 	reg := sdk.NewRegistry()
 	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, input []byte) ([]byte, error) {
 		return append([]byte("echo:"), input...), nil
@@ -67,36 +63,18 @@ func TestInvokerWiringEchoCompletes(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	raftAddr := freeLocalAddr(t)
-	h, err := engine.NewHost(engine.HostConfig{
-		NodeID:             1,
-		RaftAddr:           raftAddr,
-		DataDir:            dataDir,
-		RTTMillisecond:     50,
-		NumPartitionShards: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewHost: %v", err)
-	}
-	defer h.Close()
-
-	r, err := h.StartPartition(1)
-	if err != nil {
-		t.Fatalf("StartPartition: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := h.AwaitLeader(ctx, 1); err != nil {
-		t.Fatalf("AwaitLeader: %v", err)
-	}
+	h := singleNodeWithHandlers(t, reg)
+	r := h.Partition(1)
 
 	id := buildID(1, "echo-test-id")
 	target := &enginev1.InvocationTarget{ServiceName: "Echo", HandlerName: "echo"}
+	depID := resolveDeploymentID(t, h, target.ServiceName, target.HandlerName)
 
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	if err := r.Proposer().ProposeIngress(ctx, "test/echo", 1, &enginev1.Command{
 		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-			InvocationId: id, Target: target, Input: []byte("hello"),
+			InvocationId: id, Target: target, Input: []byte("hello"), DeploymentId: depID,
 		}},
 	}); err != nil {
 		t.Fatalf("ProposeIngress: %v", err)
@@ -114,17 +92,82 @@ func TestInvokerWiringEchoCompletes(t *testing.T) {
 // TestInvokerWiring_StampsDeploymentID asserts the deployment_id rides
 // through the Free→Scheduled→Invoked→Completed transitions intact: the
 // InvokeCommand carries it on ingress, the apply arm copies it onto the
-// new InvocationStatus, and downstream transitions preserve it. The
-// pinning value comes from Host.InprocDeploymentID, computed from the
-// registered handler set.
+// new InvocationStatus, and downstream transitions preserve it.
 func TestInvokerWiring_StampsDeploymentID(t *testing.T) {
-	t.Skip("TODO(Phase 2.5 follow-up): re-implement against admin.RegisterDeployment-stamped deployment_id")
+	reg := sdk.NewRegistry()
+	if err := reg.RegisterService("Stamper", "go", func(_ sdk.Context, _ []byte) ([]byte, error) {
+		return []byte("ok"), nil
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	h := singleNodeWithHandlers(t, reg)
+	r := h.Partition(1)
+
+	id := buildID(1, "stamp-test")
+	target := &enginev1.InvocationTarget{ServiceName: "Stamper", HandlerName: "go"}
+	depID := resolveDeploymentID(t, h, target.ServiceName, target.HandlerName)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := r.Proposer().ProposeIngress(ctx, "test/stamp", 1, &enginev1.Command{
+		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
+			InvocationId: id, Target: target, DeploymentId: depID,
+		}},
+	}); err != nil {
+		t.Fatalf("ProposeIngress: %v", err)
+	}
+
+	_ = awaitCompleted(t, h, 1, id, 5*time.Second)
+
+	// The status row must carry the stamped deployment_id even in the
+	// Completed terminal state — this is what makes pinned replays route
+	// to the same deployment even after a deployment swap.
+	statusCtx, statusCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer statusCancel()
+	status, err := h.LookupInvocationStatus(statusCtx, 1, id)
+	if err != nil {
+		t.Fatalf("LookupInvocationStatus: %v", err)
+	}
+	if got := status.GetDeploymentId(); got != depID {
+		t.Errorf("status deployment_id = %q; want %q", got, depID)
+	}
 }
 
-// TestInvokerWiringMissingHandlerStaysScheduled verifies that an
-// Invoke whose target is NOT in the registry leaves the invocation
-// Scheduled (not Completed, not Invoked). The Invoker logs a warning and
-// drops the StartInvocation rather than panicking or transitioning state.
-func TestInvokerWiringMissingHandlerStaysScheduled(t *testing.T) {
-	t.Skip("TODO(Phase 2.5 follow-up): re-implement against admin.RegisterDeployment + drop semantics")
+// TestInvokerWiringMissingHandlerFailsTerminally verifies that an
+// Invoke for a (service, handler) with no registered deployment
+// terminates with a non-empty failure_message rather than panicking,
+// hanging, or transitioning to an Invoked state without a session.
+func TestInvokerWiringMissingHandlerFailsTerminally(t *testing.T) {
+	// Register one handler so a deployment exists for the host's auto-
+	// seeding path, but the invocation targets a different (service,
+	// handler) tuple so the handler lookup misses.
+	reg := sdk.NewRegistry()
+	if err := reg.RegisterService("Real", "go", func(_ sdk.Context, _ []byte) ([]byte, error) {
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	h := singleNodeWithHandlers(t, reg)
+	r := h.Partition(1)
+
+	id := buildID(1, "missing-target")
+	target := &enginev1.InvocationTarget{ServiceName: "Ghost", HandlerName: "unknown"}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := r.Proposer().ProposeIngress(ctx, "test/missing", 1, &enginev1.Command{
+		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
+			InvocationId: id, Target: target,
+		}},
+	}); err != nil {
+		t.Fatalf("ProposeIngress: %v", err)
+	}
+
+	completed := awaitCompleted(t, h, 1, id, 5*time.Second)
+	if completed.GetFailureMessage() == "" {
+		t.Errorf("failure_message empty; want non-empty (no deployment for Ghost/unknown)")
+	}
+	if len(completed.GetOutput()) != 0 {
+		t.Errorf("output = %q; want empty on failure", completed.GetOutput())
+	}
 }

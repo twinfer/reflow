@@ -2,7 +2,6 @@ package engine_test
 
 import (
 	"context"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,33 +11,13 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// bringUpForSDKTest opens a fresh single-node Host registered with reg and
-// awaits leadership on shard 1. Cleanup closes the host on test exit.
+// bringUpForSDKTest opens a fresh single-node Host with shard 0 +
+// shard 1, starts a pkg/sdk/server hosting reg, and registers its URL
+// as a deployment so invocations dispatch to it.
 func bringUpForSDKTest(t *testing.T, reg *sdk.Registry) (*engine.Host, *engine.PartitionRunner) {
 	t.Helper()
-	dir := t.TempDir()
-	h, err := engine.NewHost(engine.HostConfig{
-		NodeID:             1,
-		RaftAddr:           freeLocalAddr(t),
-		DataDir:            filepath.Join(dir, "node1"),
-		RTTMillisecond:     50,
-		NumPartitionShards: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewHost: %v", err)
-	}
-	t.Cleanup(func() { _ = h.Close() })
-
-	r, err := h.StartPartition(1)
-	if err != nil {
-		t.Fatalf("StartPartition: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := h.AwaitLeader(ctx, 1); err != nil {
-		t.Fatalf("AwaitLeader: %v", err)
-	}
-	return h, r
+	h := singleNodeWithHandlers(t, reg)
+	return h, h.Partition(1)
 }
 
 // TestSDK_RunReturnsJournaledValue exercises ctx.Run end-to-end:
@@ -68,9 +47,10 @@ func TestSDK_RunReturnsJournaledValue(t *testing.T) {
 
 	id := buildID(1, "run-test")
 	target := &enginev1.InvocationTarget{ServiceName: "Runner", HandlerName: "go"}
+	depID := resolveDeploymentID(t, h, target.ServiceName, target.HandlerName)
 	if err := r.Proposer().ProposeIngress(ctx, "test/run", 1, &enginev1.Command{
 		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-			InvocationId: id, Target: target,
+			InvocationId: id, Target: target, DeploymentId: depID,
 		}},
 	}); err != nil {
 		t.Fatalf("ProposeIngress: %v", err)
@@ -114,9 +94,10 @@ func TestSDK_SleepResumesAfterTimerFires(t *testing.T) {
 
 	id := buildID(1, "sleep-test")
 	target := &enginev1.InvocationTarget{ServiceName: "Sleeper", HandlerName: "wait"}
+	depID := resolveDeploymentID(t, h, target.ServiceName, target.HandlerName)
 	if err := r.Proposer().ProposeIngress(ctx, "test/sleep", 1, &enginev1.Command{
 		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-			InvocationId: id, Target: target, Input: []byte("hi"),
+			InvocationId: id, Target: target, Input: []byte("hi"), DeploymentId: depID,
 		}},
 	}); err != nil {
 		t.Fatalf("ProposeIngress: %v", err)
@@ -150,9 +131,10 @@ func TestSDK_SetStateCompletesOK(t *testing.T) {
 	defer cancel()
 	id := buildID(1, "set-state")
 	target := &enginev1.InvocationTarget{ServiceName: "Stater", HandlerName: "set"}
+	depID := resolveDeploymentID(t, h, target.ServiceName, target.HandlerName)
 	if err := r.Proposer().ProposeIngress(ctx, "test/set-state", 1, &enginev1.Command{
 		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-			InvocationId: id, Target: target, Input: []byte("v"),
+			InvocationId: id, Target: target, Input: []byte("v"), DeploymentId: depID,
 		}},
 	}); err != nil {
 		t.Fatalf("ProposeIngress: %v", err)
@@ -183,9 +165,10 @@ func TestSDK_RunFailureSurfacesAsFailure(t *testing.T) {
 	defer cancel()
 	id := buildID(1, "boom")
 	target := &enginev1.InvocationTarget{ServiceName: "Boom", HandlerName: "fail"}
+	depID := resolveDeploymentID(t, h, target.ServiceName, target.HandlerName)
 	if err := r.Proposer().ProposeIngress(ctx, "test/boom", 1, &enginev1.Command{
 		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-			InvocationId: id, Target: target,
+			InvocationId: id, Target: target, DeploymentId: depID,
 		}},
 	}); err != nil {
 		t.Fatalf("ProposeIngress: %v", err)

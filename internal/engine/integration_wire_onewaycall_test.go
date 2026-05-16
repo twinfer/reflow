@@ -156,6 +156,7 @@ func TestWireDispatch_HTTP2_OneWayCall(t *testing.T) {
 		N: 3,
 	})
 	defer cluster.Close()
+	defer loadgen.StartEmbeddedHandlers(t, cluster, reg)()
 
 	awaitCtx, awaitCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer awaitCancel()

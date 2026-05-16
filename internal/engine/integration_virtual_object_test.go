@@ -14,6 +14,49 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
+// openSingleNodeOnDir opens an engine.Host on dataDir / raftAddr with
+// shard 0 + shard 1 already started and awaited. Lifetime is bound to t.
+// Use for tests that need a fixed RaftAddr + DataDir across restarts.
+//
+// Metadata (shard 0) leadership is awaited BEFORE the partition's
+// leader-await. The partition's outbox shuffler runs on leader gain and
+// may immediately re-propose pending cross-handler Invoke commands; the
+// receiving invoker resolves callee deployment_ids via SyncRead on
+// shard 0, so shard 0 must be live before partition Apply starts
+// dispatching.
+func openSingleNodeOnDir(t *testing.T, dataDir, raftAddr string) *engine.Host {
+	t.Helper()
+	h, err := engine.NewHost(engine.HostConfig{
+		NodeID:             1,
+		RaftAddr:           raftAddr,
+		DataDir:            dataDir,
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewHost(%s, %s): %v", dataDir, raftAddr, err)
+	}
+	if _, err := h.StartMetadataShard(); err != nil {
+		_ = h.Close()
+		t.Fatalf("StartMetadataShard: %v", err)
+	}
+	if _, err := h.StartPartition(1); err != nil {
+		_ = h.Close()
+		t.Fatalf("StartPartition: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := h.AwaitMetadataLeader(ctx); err != nil {
+		_ = h.Close()
+		t.Fatalf("AwaitMetadataLeader: %v", err)
+	}
+	if err := h.AwaitLeader(ctx, 1); err != nil {
+		_ = h.Close()
+		t.Fatalf("AwaitLeader(1): %v", err)
+	}
+	return h
+}
+
 // TestVirtualObject_FIFOSerializesSameKey submits five invocations
 // concurrently against the same (service, object_key); each handler
 // records its observed entry order in shared memory and then sleeps
@@ -53,39 +96,19 @@ func TestVirtualObject_FIFOSerializesSameKey(t *testing.T) {
 	}
 
 	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Counter", "incr", handler); err != nil {
+	if err := reg.RegisterObject("Counter", "incr", handler); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
-	dir := t.TempDir()
-	dataDir := filepath.Join(dir, "node1")
-	h, err := engine.NewHost(engine.HostConfig{
-		NodeID:             1,
-		RaftAddr:           freeLocalAddr(t),
-		DataDir:            dataDir,
-		RTTMillisecond:     50,
-		NumPartitionShards: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewHost: %v", err)
-	}
-	defer h.Close()
-	r, err := h.StartPartition(1)
-	if err != nil {
-		t.Fatalf("StartPartition: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := h.AwaitLeader(ctx, 1); err != nil {
-		cancel()
-		t.Fatalf("AwaitLeader: %v", err)
-	}
-	cancel()
+	h := singleNodeWithHandlers(t, reg)
+	r := h.Partition(1)
 
 	target := &enginev1.InvocationTarget{
 		ServiceName: "Counter",
 		HandlerName: "incr",
 		ObjectKey:   "user-1",
 	}
+	depID := resolveDeploymentID(t, h, target.ServiceName, target.HandlerName)
 
 	// Submit N invocations as quickly as possible. ProposeIngress is
 	// sequential on the proposer's goroutine, but they all hit onInvoke in
@@ -97,7 +120,7 @@ func TestVirtualObject_FIFOSerializesSameKey(t *testing.T) {
 		propCtx, propCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err := r.Proposer().ProposeIngress(propCtx, fmt.Sprintf("fifo/%d", i), uint64(i+1), &enginev1.Command{
 			Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-				InvocationId: id, Target: target, Input: []byte("in"),
+				InvocationId: id, Target: target, Input: []byte("in"), DeploymentId: depID,
 			}},
 		})
 		propCancel()
@@ -173,33 +196,13 @@ func TestVirtualObject_DistinctKeysRunInParallel(t *testing.T) {
 	}
 
 	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Counter", "incr", handler); err != nil {
+	if err := reg.RegisterObject("Counter", "incr", handler); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
-	dir := t.TempDir()
-	dataDir := filepath.Join(dir, "node1")
-	h, err := engine.NewHost(engine.HostConfig{
-		NodeID:             1,
-		RaftAddr:           freeLocalAddr(t),
-		DataDir:            dataDir,
-		RTTMillisecond:     50,
-		NumPartitionShards: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewHost: %v", err)
-	}
-	defer h.Close()
-	r, err := h.StartPartition(1)
-	if err != nil {
-		t.Fatalf("StartPartition: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := h.AwaitLeader(ctx, 1); err != nil {
-		cancel()
-		t.Fatalf("AwaitLeader: %v", err)
-	}
-	cancel()
+	h := singleNodeWithHandlers(t, reg)
+	r := h.Partition(1)
+	depID := resolveDeploymentID(t, h, "Counter", "incr")
 
 	ids := make([]*enginev1.InvocationId, N)
 	for i := range N {
@@ -213,7 +216,7 @@ func TestVirtualObject_DistinctKeysRunInParallel(t *testing.T) {
 		propCtx, propCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err := r.Proposer().ProposeIngress(propCtx, fmt.Sprintf("par/%d", i), uint64(i+1), &enginev1.Command{
 			Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-				InvocationId: id, Target: target, Input: []byte("in"),
+				InvocationId: id, Target: target, Input: []byte("in"), DeploymentId: depID,
 			}},
 		})
 		propCancel()
@@ -261,62 +264,56 @@ func TestVirtualObject_DistinctKeysRunInParallel(t *testing.T) {
 // against the same key: the first runs and the second queues. The host is
 // closed before either completes; on reopen, the engine resumes from the
 // persisted KeyLeaseStatus and drains the queue in order.
+//
+// The SDK handler lives in a separate process (pkg/sdk/server) whose
+// lifetime spans both engine epochs. A single closure reads the current
+// gate channel from an atomic pointer; the test swaps it between phases
+// to control when handlers complete.
 func TestVirtualObject_QueueSurvivesRestart(t *testing.T) {
-	var holder atomic.Pointer[string]
-	gate := make(chan struct{})
-	handler := func(_ sdk.Context, in []byte) ([]byte, error) {
+	var (
+		holder atomic.Pointer[string]
+		gate   atomic.Pointer[chan struct{}]
+	)
+	gate1 := make(chan struct{})
+	gate.Store(&gate1)
+	handler := func(c sdk.Context, in []byte) ([]byte, error) {
 		s := string(in)
 		holder.Store(&s)
+		g := *gate.Load()
 		select {
-		case <-gate:
+		case <-g:
+		case <-c.Context().Done():
 		case <-time.After(5 * time.Second):
 		}
 		return []byte("done:" + s), nil
 	}
 
 	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Counter", "incr", handler); err != nil {
+	if err := reg.RegisterObject("Counter", "incr", handler); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
+	handlerURL := startSDKServer(t, reg)
 
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "node1")
 	raftAddr := freeLocalAddr(t)
-	h1, err := engine.NewHost(engine.HostConfig{
-		NodeID:             1,
-		RaftAddr:           raftAddr,
-		DataDir:            dataDir,
-		RTTMillisecond:     50,
-		NumPartitionShards: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewHost: %v", err)
-	}
-	r, err := h1.StartPartition(1)
-	if err != nil {
-		_ = h1.Close()
-		t.Fatalf("StartPartition: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := h1.AwaitLeader(ctx, 1); err != nil {
-		cancel()
-		_ = h1.Close()
-		t.Fatalf("AwaitLeader: %v", err)
-	}
-	cancel()
+	h1 := openSingleNodeOnDir(t, dataDir, raftAddr)
+	registerDeploymentURL(t, h1, handlerURL)
+	r := h1.Partition(1)
 
 	target := &enginev1.InvocationTarget{
 		ServiceName: "Counter",
 		HandlerName: "incr",
 		ObjectKey:   "user-X",
 	}
+	depID := resolveDeploymentID(t, h1, target.ServiceName, target.HandlerName)
 	idA := buildID(1, "queue-A")
 	idB := buildID(1, "queue-B")
 	for i, id := range []*enginev1.InvocationId{idA, idB} {
 		propCtx, propCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err := r.Proposer().ProposeIngress(propCtx, fmt.Sprintf("queue/%d", i), uint64(i+1), &enginev1.Command{
 			Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-				InvocationId: id, Target: target, Input: []byte(string(rune('A' + i))),
+				InvocationId: id, Target: target, Input: []byte(string(rune('A' + i))), DeploymentId: depID,
 			}},
 		})
 		propCancel()
@@ -339,49 +336,22 @@ func TestVirtualObject_QueueSurvivesRestart(t *testing.T) {
 		t.Fatalf("first handler did not start: holder=%v", holder.Load())
 	}
 
-	// Close the host while A is blocked and B is queued.
+	// Close the host while A is blocked and B is queued. The handler
+	// running on the SDK server sees its stream cancelled via ctx and
+	// returns; its result is discarded (no JECompleted on h1).
 	if err := h1.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// Reopen the same dataDir with a fresh gate channel — but the same
-	// SDK handler closure is replaced via a new registry (handlers and the
-	// gate channel must come from a closure scoped to the second host so
-	// the new run isn't blocked by the now-stale gate).
+	// Swap the gate to a closed channel so post-restart handler runs
+	// (replayed A + dequeued B) complete immediately. Deployment
+	// registration is durable in shard 0; the handler URL is unchanged.
 	gate2 := make(chan struct{})
-	close(gate2) // let A and B complete immediately on resume
-	holder2 := &atomic.Pointer[string]{}
-	handler2 := func(_ sdk.Context, in []byte) ([]byte, error) {
-		s := string(in)
-		holder2.Store(&s)
-		<-gate2
-		return []byte("done:" + s), nil
-	}
-	reg2 := sdk.NewRegistry()
-	if err := reg2.RegisterService("Counter", "incr", handler2); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	h2, err := engine.NewHost(engine.HostConfig{
-		NodeID:             1,
-		RaftAddr:           raftAddr,
-		DataDir:            dataDir,
-		RTTMillisecond:     50,
-		NumPartitionShards: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewHost (resume): %v", err)
-	}
-	defer h2.Close()
-	r2, err := h2.StartPartition(1)
-	if err != nil {
-		t.Fatalf("StartPartition (resume): %v", err)
-	}
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := h2.AwaitLeader(ctx2, 1); err != nil {
-		cancel2()
-		t.Fatalf("AwaitLeader (resume): %v", err)
-	}
-	cancel2()
+	close(gate2)
+	gate.Store(&gate2)
+
+	h2 := openSingleNodeOnDir(t, dataDir, raftAddr)
+	r2 := h2.Partition(1)
 
 	// Both must complete; B must come after A.
 	completionDeadline := time.Now().Add(15 * time.Second)

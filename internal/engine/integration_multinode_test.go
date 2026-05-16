@@ -221,8 +221,12 @@ func TestMultiNode_CrossPartition_CallDelivery(t *testing.T) {
 		t.Fatalf("Register %s: %v", calleeSvc, err)
 	}
 
-	rigs, p := bringUpThreeNodeCluster(t, reg)
+	c := loadgen.NewCluster(t, loadgen.ClusterOptions{N: 3})
+	defer c.Close()
+	rigs := asInProcess(t, c.Nodes)
 	defer closeAll(rigs)
+	defer loadgen.StartEmbeddedHandlers(t, c, reg)()
+	p := c.Partitioner
 
 	shardA := p.ShardForTarget(&enginev1.InvocationTarget{ServiceName: callerSvc})
 	shardB := p.ShardForTarget(&enginev1.InvocationTarget{ServiceName: calleeSvc})
@@ -240,10 +244,16 @@ func TestMultiNode_CrossPartition_CallDelivery(t *testing.T) {
 		Uuid:         []byte("phase41-caller!!"),
 	}
 	target := &enginev1.InvocationTarget{ServiceName: callerSvc, HandlerName: "go"}
+	depCtx, depCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	depID, err := leaderA.Host.LookupDeploymentIDByHandler(depCtx, callerSvc, "go")
+	depCancel()
+	if err != nil || depID == "" {
+		t.Fatalf("LookupDeploymentIDByHandler: id=%q err=%v", depID, err)
+	}
 	propCtx, propCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	err := leaderA.Host.Partition(shardA).Proposer().ProposeIngress(propCtx, "test/p4-caller", 1, &enginev1.Command{
+	err = leaderA.Host.Partition(shardA).Proposer().ProposeIngress(propCtx, "test/p4-caller", 1, &enginev1.Command{
 		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
-			InvocationId: callerID, Target: target, Input: []byte("hello"),
+			InvocationId: callerID, Target: target, Input: []byte("hello"), DeploymentId: depID,
 		}},
 	})
 	propCancel()

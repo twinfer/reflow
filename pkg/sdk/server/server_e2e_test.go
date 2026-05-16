@@ -44,7 +44,7 @@ func TestHTTP2Server_RoundTrip(t *testing.T) {
 	defer func() { _ = srv.Shutdown() }()
 
 	url := "http://" + ln.Addr().String()
-	client, err := http2client.New(url, true)
+	client, err := http2client.New("test-dep", url, true, nil)
 	if err != nil {
 		t.Fatalf("http2client.New: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestHTTP2Server_FailureRoundTrip(t *testing.T) {
 	defer func() { _ = srv.Shutdown() }()
 
 	url := "http://" + ln.Addr().String()
-	client, err := http2client.New(url, true)
+	client, err := http2client.New("test-dep", url, true, nil)
 	if err != nil {
 		t.Fatalf("http2client.New: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestHTTP2Server_NoBodyLeak(t *testing.T) {
 	defer func() { _ = srv.Shutdown() }()
 
 	url := "http://" + ln.Addr().String()
-	client, err := http2client.New(url, true)
+	client, err := http2client.New("test-dep", url, true, nil)
 	if err != nil {
 		t.Fatalf("http2client.New: %v", err)
 	}

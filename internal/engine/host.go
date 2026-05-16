@@ -119,6 +119,12 @@ type HostConfig struct {
 	// PartitionMatrix so tests can Cut/Heal per-pair raft links mid-run
 	// without real ports or reimplementing dragonboat's TCP framing.
 	RaftTransportFactory config.TransportFactory
+
+	// HandlerSigner, when non-nil, stamps every engine→handler HTTP/2
+	// request with an Authorization: Bearer JWT minted by the engine's
+	// node-identity keypair. nil disables signing (single-node and
+	// insecure-creds deployments).
+	HandlerSigner handlerclient.Signer
 }
 
 // Peer is a static cluster member known at bootstrap. NodeHostID may be
@@ -203,7 +209,7 @@ func NewHost(cfg HostConfig) (*Host, error) {
 		log:             cfg.Log,
 		partitions:      make(map[uint64]*PartitionRunner),
 		startMu:         make(map[uint64]*sync.Mutex),
-		handlerRegistry: newHandlerRegistry(),
+		handlerRegistry: newHandlerRegistry(cfg.HandlerSigner),
 	}
 
 	nhConfig := config.NodeHostConfig{

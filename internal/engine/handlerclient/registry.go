@@ -9,8 +9,19 @@ import (
 )
 
 // Dialer constructs a Client for a deployment URL. The transport layer
-// supplies one Dialer per scheme; Registry routes by scheme.
-type Dialer func(rawURL string) (Client, error)
+// supplies one Dialer per scheme; Registry routes by scheme. The
+// deployment_id is passed alongside the URL so transports that need a
+// stable per-deployment identifier (e.g. JWT aud) can capture it at
+// Client construction rather than threading it through every Invoke.
+type Dialer func(deploymentID, rawURL string) (Client, error)
+
+// Signer mints request-level tokens stamped on engine→handler requests.
+// The concrete *creds.Signer in pkg/reflow/creds satisfies this
+// interface; the handlerclient layer depends only on the small method
+// set to honour the cmd→pkg→internal direction rule.
+type Signer interface {
+	Sign(audience string) (string, error)
+}
 
 // Registry maps deployment URL schemes to Dialer constructors and caches
 // the resulting Clients by deployment_id. A Client is built lazily on
@@ -69,7 +80,7 @@ func (r *Registry) Get(deploymentID, rawURL string) (Client, error) {
 	if !ok {
 		return nil, fmt.Errorf("handlerclient: no dialer registered for scheme %q", scheme)
 	}
-	c, err := d(rawURL)
+	c, err := d(deploymentID, rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("handlerclient: dial %s: %w", rawURL, err)
 	}

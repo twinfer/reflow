@@ -148,3 +148,28 @@ func buildCertProvider(s *CertProviderSpec, _ *slog.Logger) (*ListenerCreds, err
 		Close:         closer,
 	}, nil
 }
+
+// BuildSigner constructs a JWT Signer that pulls cert material from the
+// same certprovider builder a DriverCertProvider listener would use. The
+// Signer owns its own identity Provider (the listener's provider lives
+// inside buildCertProvider's closer) so handler-hop signing and inter-
+// node mTLS observe rotations independently against the same source.
+// Returns nil-result-no-error when spec is nil so callers can opt out
+// without branching.
+func BuildSigner(spec *CertProviderSpec, _ *slog.Logger) (*Signer, error) {
+	if spec == nil {
+		return nil, nil
+	}
+	if spec.Identity == "" {
+		return nil, errEmptyField(DriverCertProvider, "identity")
+	}
+	identityCfg, err := certprovider.ParseConfig(spec.Identity, []byte(spec.IdentityConfig))
+	if err != nil {
+		return nil, fmt.Errorf("reflow/creds: parse identity config: %w", err)
+	}
+	identity, err := identityCfg.Build(certprovider.BuildOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("reflow/creds: build identity provider: %w", err)
+	}
+	return NewSigner(identity, spec.trustDomain()), nil
+}

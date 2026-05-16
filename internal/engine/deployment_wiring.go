@@ -124,10 +124,11 @@ func (h *Host) openWireStream(ctx context.Context, rec *enginev1.DeploymentRecor
 // newHandlerRegistry builds the engine-side handlerclient registry with
 // the default transport dialers (raw HTTP/2 plain + TLS). Operators may
 // install additional dialers post-construction via
-// Host.HandlerClients().Register.
-func newHandlerRegistry() *handlerclient.Registry {
+// Host.HandlerClients().Register. signer, when non-nil, stamps every
+// dispatched request with an Authorization: Bearer JWT.
+func newHandlerRegistry(signer handlerclient.Signer) *handlerclient.Registry {
 	r := handlerclient.NewRegistry()
-	http2client.Register(r)
+	http2client.Register(r, signer)
 	return r
 }
 

@@ -42,7 +42,7 @@ type fakeDialer struct {
 	clients []*fakeClient
 }
 
-func (d *fakeDialer) dial(rawURL string) (Client, error) {
+func (d *fakeDialer) dial(_, rawURL string) (Client, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	c := &fakeClient{url: rawURL}

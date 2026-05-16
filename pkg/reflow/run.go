@@ -77,6 +77,25 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	for _, sh := range shards {
 		snapshotTriggers[sh] = make(chan struct{}, 1)
 	}
+
+	// Build the engine→handler JWT signer up front when delivery creds
+	// use the cert-provider driver, so it can be wired into the host's
+	// handler registry at construction. Single-node and non-certprovider
+	// deployments leave it nil — http2client then skips the Authorization
+	// header (existing posture).
+	multiNodeBoot := len(cfg.Cluster.Peers) > 0
+	var handlerSigner *creds.Signer
+	if multiNodeBoot && cfg.Delivery.Creds.Driver == creds.DriverCertProvider {
+		hs, sErr := creds.BuildSigner(cfg.Delivery.Creds.CertProvider, logger)
+		if sErr != nil {
+			if metricsCloser != nil {
+				_ = metricsCloser()
+			}
+			return nil, fmt.Errorf("reflow: handler signer: %w", sErr)
+		}
+		handlerSigner = hs
+	}
+
 	hcfg := engine.HostConfig{
 		NodeID:             cfg.Node.ID,
 		RaftAddr:           cfg.Node.RaftAddr,
@@ -90,6 +109,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		JoinExisting:       cfg.Cluster.JoinExisting,
 		NumPartitionShards: numShards,
 		Metrics:            metrics,
+		HandlerSigner:      handlerSigner,
 		OnSnapshotPersisted: func(shardID uint64) {
 			ch, ok := snapshotTriggers[shardID]
 			if !ok {
@@ -103,6 +123,9 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	}
 	eh, err := engine.NewHost(hcfg)
 	if err != nil {
+		if handlerSigner != nil {
+			handlerSigner.Close()
+		}
 		if metricsCloser != nil {
 			_ = metricsCloser()
 		}
@@ -125,6 +148,9 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			_ = authCloser()
 		}
 		_ = creds.CloseAll(deliveryCreds, adminCreds)
+		if handlerSigner != nil {
+			handlerSigner.Close()
+		}
 		_ = eh.Close()
 		if metricsCloser != nil {
 			_ = metricsCloser()
@@ -182,7 +208,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		eh.SetCrossShardSender(dc)
 
 		host, herr := finishStartup(ctx, cfg, eh, multiNode, shards, snapshotTriggers,
-			ds, dln, dc, deliveryCreds, adminCreds, interceptors, authCloser,
+			ds, dln, dc, deliveryCreds, adminCreds, handlerSigner, interceptors, authCloser,
 			metricsCloser, logger)
 		if herr != nil {
 			ds.Stop()
@@ -294,6 +320,7 @@ func finishStartup(
 	deliveryClient *delivery.Client,
 	deliveryCreds *creds.ListenerCreds,
 	adminCreds *creds.ListenerCreds,
+	handlerSigner *creds.Signer,
 	ic *serverInterceptors,
 	authCloser func() error,
 	metricsCloser func() error,
@@ -454,6 +481,7 @@ func finishStartup(
 		authCloser:     authCloser,
 		snapshotCxl:    snapshotCxl,
 		snapshotRepo:   snapshotRepo,
+		handlerSigner:  handlerSigner,
 	}, nil
 }
 

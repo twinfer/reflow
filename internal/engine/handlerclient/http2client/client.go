@@ -42,32 +42,32 @@ const ContentType = "application/vnd.reflow.invocation.v1"
 
 // Register installs both plain (h2c) and TLS dialers on r. Operators
 // who need a custom TLS root bundle can supply their own Dialer via
-// r.Register.
-func Register(r *handlerclient.Registry) {
-	r.Register(Scheme, dialH2C)
-	r.Register(SchemeSecure, dialTLS)
+// r.Register. signer is optional: when non-nil, every dispatched
+// request carries an Authorization: Bearer header minted by it; when
+// nil, no auth header is set (single-node and insecure-creds posture).
+func Register(r *handlerclient.Registry, signer handlerclient.Signer) {
+	r.Register(Scheme, dialerFor(true, signer))
+	r.Register(SchemeSecure, dialerFor(false, signer))
 }
 
-func dialH2C(rawURL string) (handlerclient.Client, error) {
-	return newClient(rawURL, true)
-}
-
-func dialTLS(rawURL string) (handlerclient.Client, error) {
-	return newClient(rawURL, false)
+func dialerFor(plaintextH2C bool, signer handlerclient.Signer) handlerclient.Dialer {
+	return func(deploymentID, rawURL string) (handlerclient.Client, error) {
+		return newClient(deploymentID, rawURL, plaintextH2C, signer)
+	}
 }
 
 // New is the constructor used by callers that want to bypass the
 // registry — primarily tests. plaintextH2C selects h2c when true,
-// HTTPS-over-TLS otherwise.
-func New(rawURL string, plaintextH2C bool) (*Client, error) {
-	c, err := newClient(rawURL, plaintextH2C)
+// HTTPS-over-TLS otherwise. signer may be nil for unauthenticated dials.
+func New(deploymentID, rawURL string, plaintextH2C bool, signer handlerclient.Signer) (*Client, error) {
+	c, err := newClient(deploymentID, rawURL, plaintextH2C, signer)
 	if err != nil {
 		return nil, err
 	}
 	return c.(*Client), nil
 }
 
-func newClient(rawURL string, plaintextH2C bool) (handlerclient.Client, error) {
+func newClient(deploymentID, rawURL string, plaintextH2C bool, signer handlerclient.Signer) (handlerclient.Client, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("http2client: parse url %q: %w", rawURL, err)
@@ -89,21 +89,26 @@ func newClient(rawURL string, plaintextH2C bool) (handlerclient.Client, error) {
 	}
 	hc := &http.Client{Transport: tr}
 	return &Client{
-		baseURL: strings.TrimRight(rawURL, "/"),
-		client:  hc,
-		tr:      tr,
-		codec:   handlerclient.DefaultCodec(),
+		deploymentID: deploymentID,
+		baseURL:      strings.TrimRight(rawURL, "/"),
+		client:       hc,
+		tr:           tr,
+		codec:        handlerclient.DefaultCodec(),
+		signer:       signer,
 	}, nil
 }
 
 // Client wraps one *http.Client bound to a single deployment URL. The
 // underlying http.Transport is shared across every Invoke and torn down
-// by Close.
+// by Close. deploymentID is captured at construction so the signer can
+// stamp it as the JWT aud without threading it through Invoke.
 type Client struct {
-	baseURL string
-	client  *http.Client
-	tr      *http.Transport
-	codec   handlerclient.Codec
+	deploymentID string
+	baseURL      string
+	client       *http.Client
+	tr           *http.Transport
+	codec        handlerclient.Codec
+	signer       handlerclient.Signer
 
 	mu     sync.Mutex
 	closed bool
@@ -138,6 +143,14 @@ func (c *Client) Invoke(ctx context.Context, route handlerclient.Route) (handler
 	req.ContentLength = -1
 	req.Header.Set("Content-Type", ContentType+"+"+c.codec.Name())
 	req.Header.Set("Accept", ContentType+"+"+c.codec.Name())
+	if c.signer != nil {
+		tok, serr := c.signer.Sign(c.deploymentID)
+		if serr != nil {
+			_ = pw.Close()
+			return nil, fmt.Errorf("http2client: sign: %w", serr)
+		}
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
 
 	s := &stream{
 		ctx:       ctx,

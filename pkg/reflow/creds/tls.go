@@ -185,20 +185,32 @@ func verifyURISANWellFormed(trustDomain string) func(rawCerts [][]byte, chains [
 		if len(chains) == 0 || len(chains[0]) == 0 {
 			return errors.New("reflow/creds: no verified chain")
 		}
-		leaf := chains[0][0]
-		if len(leaf.URIs) != 1 {
-			return fmt.Errorf("reflow/creds: leaf must carry exactly one URI SAN; got %d", len(leaf.URIs))
-		}
-		u := leaf.URIs[0]
-		if u.Scheme != "spiffe" {
-			return fmt.Errorf("reflow/creds: leaf URI scheme %q; want spiffe", u.Scheme)
-		}
-		if u.Host != trustDomain {
-			return fmt.Errorf("reflow/creds: leaf trust domain %q; want %q", u.Host, trustDomain)
-		}
-		if len(u.Path) <= 1 {
-			return fmt.Errorf("reflow/creds: leaf URI %q has empty path", u.String())
-		}
-		return nil
+		_, err := ExtractSPIFFEURI(chains[0][0], trustDomain)
+		return err
 	}
+}
+
+// ExtractSPIFFEURI returns the leaf's single SPIFFE URI SAN as a string,
+// after validating the same shape verifyURISANWellFormed enforces during
+// TLS handshakes (exactly one URI SAN, scheme=spiffe, host=trustDomain,
+// non-empty path). Used by the JWT signer to derive the iss claim from
+// the engine's own leaf without duplicating the validation logic.
+func ExtractSPIFFEURI(leaf *x509.Certificate, trustDomain string) (string, error) {
+	if leaf == nil {
+		return "", errors.New("reflow/creds: nil leaf certificate")
+	}
+	if len(leaf.URIs) != 1 {
+		return "", fmt.Errorf("reflow/creds: leaf must carry exactly one URI SAN; got %d", len(leaf.URIs))
+	}
+	u := leaf.URIs[0]
+	if u.Scheme != "spiffe" {
+		return "", fmt.Errorf("reflow/creds: leaf URI scheme %q; want spiffe", u.Scheme)
+	}
+	if u.Host != trustDomain {
+		return "", fmt.Errorf("reflow/creds: leaf trust domain %q; want %q", u.Host, trustDomain)
+	}
+	if len(u.Path) <= 1 {
+		return "", fmt.Errorf("reflow/creds: leaf URI %q has empty path", u.String())
+	}
+	return u.String(), nil
 }

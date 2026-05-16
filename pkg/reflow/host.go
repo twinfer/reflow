@@ -31,6 +31,7 @@ type Host struct {
 	authCloser     func() error
 	snapshotCxl    context.CancelFunc
 	snapshotRepo   *snapshot.BlobRepository
+	handlerSigner  *creds.Signer
 }
 
 // Close stops every partition and the underlying NodeHost. Idempotent.
@@ -94,6 +95,10 @@ func (h *Host) Close() error {
 	}
 	h.deliveryCreds = nil
 	h.adminCreds = nil
+	if h.handlerSigner != nil {
+		h.handlerSigner.Close()
+		h.handlerSigner = nil
+	}
 	if h.metricsCloser != nil {
 		if err := h.metricsCloser(); err != nil && firstErr == nil {
 			firstErr = err

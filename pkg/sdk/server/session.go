@@ -85,7 +85,8 @@ func runSession(
 	// and translated to an ErrorMessage so the engine doesn't hang on
 	// the stream.
 	invID := &enginev1.InvocationId{Uuid: start.GetId()}
-	wctx := newWireContext(ctx, invID, input, stream, codec)
+	stateCache := stateMapToCache(start.GetStateMap())
+	wctx := newWireContext(ctx, invID, input, stream, codec, stateCache)
 
 	output, runErr := runHandler(wctx, fn, input)
 
@@ -197,4 +198,20 @@ func sendError(stream frameStream, codec handlerclient.Codec, code uint32, messa
 		return fmt.Errorf("marshal ErrorMessage: %w", err)
 	}
 	return stream.Send(handlerclient.FrameFor(handlerclient.TypeError, body))
+}
+
+// stateMapToCache materializes StartMessage.state_map into the in-memory
+// map wireContext serves GetState from. Returns nil when entries is
+// empty so callers can distinguish "no preload" (cache=nil) from "empty
+// preload" (cache={}) — both are semantically the same to GetState but
+// keeping nil avoids an allocation for unkeyed services.
+func stateMapToCache(entries []*protocolv1.StartMessage_StateEntry) map[string][]byte {
+	if len(entries) == 0 {
+		return nil
+	}
+	cache := make(map[string][]byte, len(entries))
+	for _, e := range entries {
+		cache[string(e.GetKey())] = append([]byte(nil), e.GetValue()...)
+	}
+	return cache
 }

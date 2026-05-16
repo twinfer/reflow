@@ -284,6 +284,7 @@ func (i *Invoker) installSessionLocked(id *enginev1.InvocationId, target *engine
 			i.codec,
 			i.proposer,
 			i.invocationTable,
+			i.stateTable,
 			i.journal,
 			i.log,
 		)

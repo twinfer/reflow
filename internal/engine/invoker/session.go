@@ -254,22 +254,37 @@ func (s *session) prepare() ([]byte, map[uint32]*enginev1.JournalEntry, map[stri
 }
 
 // preloadState eagerly reads every state row scoped to this invocation's
-// (service, object_key) into an in-memory map served to GetState. Returns
-// nil when:
-//   - the target has no object_key (unkeyed services have no per-object
-//     state)
-//   - the total payload exceeds eagerStateMaxBytes (handler falls back to
-//     the lazy/not-implemented path)
-//   - the scan fails (logged warn; we'd rather skip preload than block
-//     session start)
+// (service, object_key) into an in-memory map served to GetState.
+// Thin wrapper around preloadEagerState so the wire session can share
+// the same overflow semantics without depending on *session.
 func (s *session) preloadState() map[string][]byte {
-	if s.target.GetObjectKey() == "" {
+	return preloadEagerState(s.stateTable, s.target, s.id, s.log)
+}
+
+// preloadEagerState reads every state row scoped to (service, object_key)
+// into an in-memory map. Returns nil when:
+//   - the target has no object_key (unkeyed services have no per-object
+//     state),
+//   - the total payload exceeds eagerStateMaxBytes (handler falls back
+//     to the lazy/not-implemented path),
+//   - the scan fails (logged warn; we'd rather skip preload than block
+//     session start).
+//
+// Shared by inproc *session and wireSession so both impls present the
+// same eager-state surface to handlers.
+func preloadEagerState(
+	stateTable tables.StateTable,
+	target *enginev1.InvocationTarget,
+	id *enginev1.InvocationId,
+	log *slog.Logger,
+) map[string][]byte {
+	if target.GetObjectKey() == "" {
 		return nil
 	}
 	cache := make(map[string][]byte)
 	total := 0
 	overflowed := false
-	err := s.stateTable.ScanObject(s.target, func(key string, value []byte) error {
+	err := stateTable.ScanObject(target, func(key string, value []byte) error {
 		total += len(key) + len(value)
 		if total > eagerStateMaxBytes {
 			overflowed = true
@@ -279,15 +294,15 @@ func (s *session) preloadState() map[string][]byte {
 		return nil
 	})
 	if overflowed {
-		s.log.Info("invoker.session: state preload overflow; falling back to lazy",
-			"id", invocationIDString(s.id),
+		log.Info("invoker.session: state preload overflow; falling back to lazy",
+			"id", invocationIDString(id),
 			"limit_bytes", eagerStateMaxBytes,
 		)
 		return nil
 	}
 	if err != nil {
-		s.log.Warn("invoker.session: state preload scan failed",
-			"id", invocationIDString(s.id), "err", err)
+		log.Warn("invoker.session: state preload scan failed",
+			"id", invocationIDString(id), "err", err)
 		return nil
 	}
 	return cache

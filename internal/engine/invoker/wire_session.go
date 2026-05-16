@@ -43,6 +43,7 @@ type wireSession struct {
 	codec      handlerclient.Codec
 	proposer   Proposer
 	invocation tables.InvocationTable
+	stateTable tables.StateTable
 	journal    *JournalReader
 	log        *slog.Logger
 
@@ -68,6 +69,7 @@ func newWireSession(
 	codec handlerclient.Codec,
 	proposer Proposer,
 	invocation tables.InvocationTable,
+	stateTable tables.StateTable,
 	journal *JournalReader,
 	log *slog.Logger,
 ) *wireSession {
@@ -83,6 +85,7 @@ func newWireSession(
 		codec:      codec,
 		proposer:   proposer,
 		invocation: invocation,
+		stateTable: stateTable,
 		journal:    journal,
 		log:        log,
 		ctx:        ctx,
@@ -184,6 +187,11 @@ func (s *wireSession) loadStartInput() ([]byte, bool) {
 // handshake matches Restate's service-protocol: handlers read Start to
 // open their context, then read Input as journal entry 0 (the durable
 // representation of "the bytes the caller passed").
+//
+// StartMessage.state_map carries the eager-preloaded K/V snapshot for
+// the invocation's (service, object_key) so wireContext.GetState can
+// serve hits directly from the handler-side cache without a round-trip.
+// Mirrors inproc.go's preloadState semantics.
 func (s *wireSession) sendStart(stream handlerclient.Stream, input []byte) error {
 	start := &protocolv1.StartMessage{
 		Id:          s.id.GetUuid(),
@@ -192,9 +200,18 @@ func (s *wireSession) sendStart(stream handlerclient.Stream, input []byte) error
 		Kind:        s.kindForTarget(),
 		ServiceName: s.target.GetServiceName(),
 		HandlerName: s.target.GetHandlerName(),
-		// known_entries / state_map / partial_state stay zero in the
-		// minimal wire path; state preload and full journal replay land
-		// as the wire-session matures.
+		// known_entries / partial_state stay zero in the minimal wire
+		// path; full journal replay lands in 5f.3.
+	}
+	if cache := preloadEagerState(s.stateTable, s.target, s.id, s.log); cache != nil && len(cache) > 0 {
+		entries := make([]*protocolv1.StartMessage_StateEntry, 0, len(cache))
+		for k, v := range cache {
+			entries = append(entries, &protocolv1.StartMessage_StateEntry{
+				Key:   []byte(k),
+				Value: v,
+			})
+		}
+		start.StateMap = entries
 	}
 	startBytes, err := s.codec.Marshal(start)
 	if err != nil {

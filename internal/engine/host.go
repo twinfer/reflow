@@ -552,6 +552,7 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		StateTable:      tables.StateTable{S: snap.Store()},
 		Proposer:        proposer,
 		Deployments:     invoker.DeploymentResolverFunc(h.resolveDeployment),
+		HandlerLookup:   h.LookupDeploymentIDByHandler,
 		WireDispatcher:  hostWireDispatcher{h: h},
 		Log:             h.log,
 	})

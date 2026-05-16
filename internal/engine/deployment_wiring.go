@@ -66,18 +66,34 @@ func (h *Host) LookupDeploymentIDByHandler(ctx context.Context, service, handler
 	}
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
+		ctx, cancel = context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 	}
-	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupDeploymentByHandler{Service: service, Handler: handler})
-	if err != nil {
-		return "", nil //nolint:nilerr // shard 0 absence isn't a caller error
+	// Retry on transient errors: shard 0 may still be electing a leader
+	// or replaying its log on restart. The caller (invoker dispatch) gets
+	// blocked while we wait — that is preferable to silently dropping the
+	// invocation because shard 0 wasn't ready for 100ms.
+	var lastErr error
+	for {
+		res, err := h.nh.SyncRead(ctx, 0, cluster.LookupDeploymentByHandler{Service: service, Handler: handler})
+		if err == nil {
+			id, ok := res.(string)
+			if !ok {
+				return "", fmt.Errorf("host: LookupDeploymentIDByHandler: unexpected lookup type %T", res)
+			}
+			return id, nil
+		}
+		lastErr = err
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", nil //nolint:nilerr // treat shard-0 unavailability as "no deployment"
+		}
+		select {
+		case <-ctx.Done():
+			_ = lastErr
+			return "", nil //nolint:nilerr
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
-	id, ok := res.(string)
-	if !ok {
-		return "", fmt.Errorf("host: LookupDeploymentIDByHandler: unexpected lookup type %T", res)
-	}
-	return id, nil
 }
 
 // openWireStream is the WireDispatcher implementation: ask the

@@ -8,6 +8,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/twinfer/reflow/internal/engine"
+	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/keys"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
@@ -40,6 +41,13 @@ func (s *Server) ResolveAwakeable(ctx context.Context, req *ingressv1.ResolveAwa
 	// Deadline is guaranteed by withDefaultDeadline at the gRPC server level.
 	res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupAwakeable{ID: awkID})
 	if err != nil {
+		// The handler hasn't journaled JEAwakeable yet — the
+		// AwakeableTable.Get path returns storage.ErrNotFound through
+		// SyncRead. Map to NotFound so callers can retry rather than
+		// treating it as a server fault.
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, status.Errorf(codes.NotFound, "awakeable %q not yet registered", awkID)
+		}
 		return nil, status.Errorf(codes.Internal, "lookup awakeable: %v", err)
 	}
 	entry, ok := res.(*enginev1.AwakeableEntry)

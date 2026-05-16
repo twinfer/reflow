@@ -27,12 +27,22 @@ type Config struct {
 	// deployment's URL.
 	Deployments DeploymentResolver
 
+	// HandlerLookup resolves (service, handler) → deployment_id against
+	// shard 0's deployment index. Used as a fallback when an invocation
+	// arrives without deployment_id stamped — happens today for
+	// ctx.Call-spawned callees because the JECall apply arm has no shard-0
+	// view. Returns "" + nil when no deployment claims the handler.
+	HandlerLookup HandlerLookup
+
 	// WireDispatcher opens a remote-handler Stream against a DeploymentRecord.
 	WireDispatcher WireDispatcher
 
 	// Codec governs wire payload encoding (default protobuf).
 	Codec handlerclient.Codec
 }
+
+// HandlerLookup resolves (service, handler) → deployment_id.
+type HandlerLookup func(ctx context.Context, service, handler string) (string, error)
 
 // sessionHandle is the lifecycle surface every concrete session
 // implementation exposes. Today only *wireSession implements it.
@@ -58,6 +68,7 @@ type Invoker struct {
 	stateTable      tables.StateTable
 	proposer        Proposer
 	deployments     DeploymentResolver
+	handlerLookup   HandlerLookup
 	dispatcher      WireDispatcher
 	codec           handlerclient.Codec
 	log             *slog.Logger
@@ -105,6 +116,7 @@ func New(cfg Config) *Invoker {
 		stateTable:      cfg.StateTable,
 		proposer:        cfg.Proposer,
 		deployments:     cfg.Deployments,
+		handlerLookup:   cfg.HandlerLookup,
 		dispatcher:      cfg.WireDispatcher,
 		codec:           codec,
 		log:             log,
@@ -239,33 +251,18 @@ func (i *Invoker) installSessionLocked(id *enginev1.InvocationId, target *engine
 			"id", invocationIDString(id), "err", err)
 		return nil, false
 	}
-	depID := status.GetDeploymentId()
-	if depID == "" {
-		i.log.Warn("invoker: invocation has no deployment_id; dropping",
-			"id", invocationIDString(id),
-			"service", target.GetServiceName(),
-			"handler", target.GetHandlerName())
-		return nil, false
-	}
-	rec, err := i.deployments.Resolve(i.ctx, depID)
-	if err != nil {
-		i.log.Warn("invoker: resolve deployment failed",
-			"id", invocationIDString(id),
-			"deployment_id", depID, "err", err)
-		return nil, false
-	}
-	if rec == nil {
-		i.log.Warn("invoker: deployment not found; dropping",
-			"id", invocationIDString(id),
-			"deployment_id", depID)
-		return nil, false
-	}
 
+	// The deployment_id resolution and DeploymentRecord lookup happen
+	// inside wireSession.run() (in its own goroutine) rather than here:
+	// installSessionLocked is on the apply-path dispatch loop, and a
+	// blocking SyncRead would stall apply → propose deadlock.
 	s := newWireSession(
 		i.ctx,
 		id,
 		target,
-		rec,
+		status.GetDeploymentId(),
+		i.deployments,
+		i.handlerLookup,
 		i.dispatcher,
 		i.codec,
 		i.proposer,

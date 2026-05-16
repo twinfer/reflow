@@ -32,7 +32,16 @@ type WireDispatcher interface {
 type wireSession struct {
 	id     *enginev1.InvocationId
 	target *enginev1.InvocationTarget
-	rec    *enginev1.DeploymentRecord
+
+	// depID + rec are resolved lazily in run() so the apply-path
+	// installSessionLocked never blocks on SyncRead. depID is the
+	// stamped deployment_id from the InvocationStatus (may be empty
+	// for ctx.Call-spawned callees, in which case handlerLookup runs
+	// against the (service, handler) index).
+	depID         string
+	deployments   DeploymentResolver
+	handlerLookup HandlerLookup
+	rec           *enginev1.DeploymentRecord
 
 	dispatcher WireDispatcher
 	codec      handlerclient.Codec
@@ -64,12 +73,16 @@ type wireSession struct {
 }
 
 // newWireSession constructs an inactive wire session. Call start to
-// spawn its goroutine.
+// spawn its goroutine. depID may be empty — run() falls back to
+// handlerLookup against the (service, handler) index. deployments and
+// handlerLookup may not both be nil.
 func newWireSession(
 	parent context.Context,
 	id *enginev1.InvocationId,
 	target *enginev1.InvocationTarget,
-	rec *enginev1.DeploymentRecord,
+	depID string,
+	deployments DeploymentResolver,
+	handlerLookup HandlerLookup,
 	dispatcher WireDispatcher,
 	codec handlerclient.Codec,
 	proposer Proposer,
@@ -83,20 +96,22 @@ func newWireSession(
 		codec = handlerclient.DefaultCodec()
 	}
 	return &wireSession{
-		id:         id,
-		target:     target,
-		rec:        rec,
-		dispatcher: dispatcher,
-		codec:      codec,
-		proposer:   proposer,
-		invocation: invocation,
-		stateTable: stateTable,
-		journal:    journal,
-		log:        log,
-		ctx:        ctx,
-		cancel:     cancel,
-		done:       make(chan struct{}),
-		nextIdx:    1,
+		id:            id,
+		target:        target,
+		depID:         depID,
+		deployments:   deployments,
+		handlerLookup: handlerLookup,
+		dispatcher:    dispatcher,
+		codec:         codec,
+		proposer:      proposer,
+		invocation:    invocation,
+		stateTable:    stateTable,
+		journal:       journal,
+		log:           log,
+		ctx:           ctx,
+		cancel:        cancel,
+		done:          make(chan struct{}),
+		nextIdx:       1,
 	}
 }
 
@@ -109,6 +124,10 @@ func (s *wireSession) run() {
 
 	entries, ok := s.loadJournal()
 	if !ok {
+		return
+	}
+
+	if !s.resolveDeployment() {
 		return
 	}
 
@@ -262,6 +281,72 @@ func (s *wireSession) sendStartAndReplay(stream handlerclient.Stream, entries []
 		}
 	}
 	return nil
+}
+
+// resolveDeployment populates s.rec by resolving s.depID against the
+// DeploymentResolver. When s.depID is empty (ctx.Call-spawned callees
+// arrive without a stamped deployment_id), the (service, handler)
+// index is consulted via s.handlerLookup. Returns false and fails the
+// session terminally when no deployment can be found.
+func (s *wireSession) resolveDeployment() bool {
+	if s.rec != nil {
+		return true
+	}
+	depID := s.depID
+	if depID == "" {
+		if s.handlerLookup == nil {
+			s.log.Warn("invoker.wire: missing deployment_id with no handler lookup; dropping",
+				"id", invocationIDString(s.id),
+				"service", s.target.GetServiceName(),
+				"handler", s.target.GetHandlerName())
+			s.failTerminal(fmt.Sprintf(
+				"wire dispatch: no deployment registered for %s/%s",
+				s.target.GetServiceName(), s.target.GetHandlerName()))
+			return false
+		}
+		resolved, err := s.handlerLookup(s.ctx, s.target.GetServiceName(), s.target.GetHandlerName())
+		if err != nil {
+			if errors.Is(err, context.Canceled) || s.ctx.Err() != nil {
+				return false
+			}
+			s.log.Warn("invoker.wire: handler lookup failed",
+				"id", invocationIDString(s.id), "err", err)
+			s.failTerminal(fmt.Sprintf("wire dispatch: handler lookup: %v", err))
+			return false
+		}
+		if resolved == "" {
+			s.log.Warn("invoker.wire: no deployment registered for handler; dropping",
+				"id", invocationIDString(s.id),
+				"service", s.target.GetServiceName(),
+				"handler", s.target.GetHandlerName())
+			s.failTerminal(fmt.Sprintf(
+				"wire dispatch: no deployment registered for %s/%s",
+				s.target.GetServiceName(), s.target.GetHandlerName()))
+			return false
+		}
+		depID = resolved
+	}
+	rec, err := s.deployments.Resolve(s.ctx, depID)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || s.ctx.Err() != nil {
+			return false
+		}
+		s.log.Warn("invoker.wire: resolve deployment failed",
+			"id", invocationIDString(s.id),
+			"deployment_id", depID, "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: resolve deployment: %v", err))
+		return false
+	}
+	if rec == nil {
+		s.log.Warn("invoker.wire: deployment not found; dropping",
+			"id", invocationIDString(s.id),
+			"deployment_id", depID)
+		s.failTerminal(fmt.Sprintf("wire dispatch: deployment %q not found", depID))
+		return false
+	}
+	s.depID = depID
+	s.rec = rec
+	return true
 }
 
 // resolveKind looks up the protocolv1.Kind the deployment advertises

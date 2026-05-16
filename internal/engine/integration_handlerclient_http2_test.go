@@ -18,7 +18,6 @@ import (
 	"github.com/twinfer/reflow/internal/engine/admin"
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/sdk"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -232,8 +231,7 @@ func TestWireDispatch_HTTP2_RoundTrip(t *testing.T) {
 	defer teardown()
 
 	cluster := loadgen.NewCluster(t, loadgen.ClusterOptions{
-		N:        3,
-		Handlers: sdk.NewRegistry(),
+		N: 3,
 	})
 	defer cluster.Close()
 
@@ -324,8 +322,7 @@ func TestWireDispatch_HTTP2_DeploymentSwap(t *testing.T) {
 	defer d2Teardown()
 
 	cluster := loadgen.NewCluster(t, loadgen.ClusterOptions{
-		N:        3,
-		Handlers: sdk.NewRegistry(),
+		N: 3,
 	})
 	defer cluster.Close()
 

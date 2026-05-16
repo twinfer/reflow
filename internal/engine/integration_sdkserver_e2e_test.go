@@ -46,8 +46,7 @@ func TestSDKServer_E2E_HTTP2(t *testing.T) {
 	handlerAddr := ln.Addr().String()
 
 	cluster := loadgen.NewCluster(t, loadgen.ClusterOptions{
-		N:        3,
-		Handlers: sdk.NewRegistry(),
+		N: 3,
 	})
 	defer cluster.Close()
 

@@ -1,8 +1,6 @@
 package sdk
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"sort"
 	"sync"
@@ -194,24 +192,4 @@ func (r *Registry) Entries() []Entry {
 		return out[i].Handler < out[j].Handler
 	})
 	return out
-}
-
-// InprocDeploymentID returns a deterministic id for the in-process
-// handler set: "inproc-" + hex(sha256(<service>/<handler>/<kind>\0…)).
-// Stable across restarts as long as the (service, handler, kind) set is
-// unchanged. Adding or removing a handler — or changing its kind —
-// produces a fresh id, which the engine treats as a deployment swap
-// (in-flight invocations stamped with the old id stay pinned to that
-// deployment until they terminate).
-func InprocDeploymentID(entries []Entry) string {
-	h := sha256.New()
-	for _, e := range entries {
-		h.Write([]byte(e.Service))
-		h.Write([]byte{'/'})
-		h.Write([]byte(e.Handler))
-		h.Write([]byte{'/'})
-		h.Write([]byte(e.Kind.String()))
-		h.Write([]byte{0})
-	}
-	return "inproc-" + hex.EncodeToString(h.Sum(nil)[:8])
 }

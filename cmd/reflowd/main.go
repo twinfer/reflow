@@ -1,7 +1,8 @@
-// Command reflowd starts a reflow node using layered configuration from
-// environment variables and optional config files. For custom deployments
-// that link the engine in their own binary, call reflow.Run(ctx, cfg)
-// directly with a programmatically constructed Config.
+// Command reflowd starts a reflow engine node using layered configuration
+// from environment variables and optional config files. Handlers run as
+// separate Go processes that the engine reaches over HTTP/2; declare
+// their URLs in the handlers.endpoints config block or register them at
+// runtime via the reflow-cluster admin CLI.
 //
 // Configuration sources (later overrides earlier):
 //
@@ -20,7 +21,6 @@ import (
 
 	"github.com/twinfer/reflow/pkg/reflow"
 	"github.com/twinfer/reflow/pkg/reflow/config"
-	"github.com/twinfer/reflow/pkg/sdk"
 )
 
 func main() {
@@ -29,10 +29,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "reflowd: %v\n", err)
 		os.Exit(2)
 	}
-	cfg.Handlers.Registry = sdk.NewRegistry()
-	// User binaries register handlers here before reflow.Run; reflowd
-	// ships with an empty registry — useful for smoke-testing the
-	// ingress + admin endpoints without a real workload.
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

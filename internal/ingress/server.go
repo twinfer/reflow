@@ -99,15 +99,16 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *ingressv1.SubmitInvo
 	// Resolve (service, handler) → deployment_id via shard 0's index.
 	// A non-empty result pins this invocation to that deployment for its
 	// lifetime, even if a later registration overwrites the (service,
-	// handler) mapping. When no operator-registered deployment claims
-	// the handler we fall back to the synthetic in-proc id; Phase 2.5
-	// removes the fallback once inproc is gone.
+	// handler) mapping. Empty result means no deployment has been
+	// registered for this handler — return FailedPrecondition so the
+	// caller knows they need to RegisterDeployment first.
 	deploymentID, err := s.host.LookupDeploymentIDByHandler(ctx, target.GetServiceName(), target.GetHandlerName())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "lookup deployment: %v", err)
 	}
 	if deploymentID == "" {
-		deploymentID = s.host.InprocDeploymentID()
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"no deployment registered for %s/%s", target.GetServiceName(), target.GetHandlerName())
 	}
 
 	cmd := &enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{

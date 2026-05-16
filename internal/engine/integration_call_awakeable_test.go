@@ -16,7 +16,6 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/routing"
-	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/pkg/sdk"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -80,7 +79,6 @@ func TestHandlerSurvivesKill(t *testing.T) {
 		DataDir:            dataDir,
 		RTTMillisecond:     50,
 		NumPartitionShards: 1,
-		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -142,7 +140,6 @@ func TestHandlerSurvivesKill(t *testing.T) {
 		DataDir:            dataDir,
 		RTTMillisecond:     50,
 		NumPartitionShards: 1,
-		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost (restart): %v", err)
@@ -222,7 +219,6 @@ func TestOutgoingCallSurvivesRestart(t *testing.T) {
 		DataDir:            dataDir,
 		RTTMillisecond:     50,
 		NumPartitionShards: 1,
-		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -272,7 +268,6 @@ func TestOutgoingCallSurvivesRestart(t *testing.T) {
 		DataDir:            dataDir,
 		RTTMillisecond:     50,
 		NumPartitionShards: 1,
-		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost (restart): %v", err)
@@ -422,7 +417,7 @@ func TestCallResultSurvivesCallerCrash(t *testing.T) {
 
 	h1, err := engine.NewHost(engine.HostConfig{
 		NodeID: 1, RaftAddr: raftAddr, DataDir: dataDir,
-		RTTMillisecond: 50, NumPartitionShards: 1, Handlers: reg,
+		RTTMillisecond: 50, NumPartitionShards: 1,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -468,7 +463,7 @@ func TestCallResultSurvivesCallerCrash(t *testing.T) {
 
 	h2, err := engine.NewHost(engine.HostConfig{
 		NodeID: 1, RaftAddr: raftAddr, DataDir: dataDir,
-		RTTMillisecond: 50, NumPartitionShards: 1, Handlers: reg,
+		RTTMillisecond: 50, NumPartitionShards: 1,
 	})
 	if err != nil {
 		t.Fatalf("NewHost (restart): %v", err)
@@ -532,7 +527,7 @@ func TestCallResultSurvivesCalleeCrash(t *testing.T) {
 
 	h1, err := engine.NewHost(engine.HostConfig{
 		NodeID: 1, RaftAddr: raftAddr, DataDir: dataDir,
-		RTTMillisecond: 50, NumPartitionShards: 1, Handlers: reg,
+		RTTMillisecond: 50, NumPartitionShards: 1,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -580,7 +575,7 @@ func TestCallResultSurvivesCalleeCrash(t *testing.T) {
 
 	h2, err := engine.NewHost(engine.HostConfig{
 		NodeID: 1, RaftAddr: raftAddr, DataDir: dataDir,
-		RTTMillisecond: 50, NumPartitionShards: 1, Handlers: reg,
+		RTTMillisecond: 50, NumPartitionShards: 1,
 	})
 	if err != nil {
 		t.Fatalf("NewHost (restart): %v", err)
@@ -622,7 +617,6 @@ func bringUpSingleHost(t *testing.T, reg *sdk.Registry) *engine.Host {
 		DataDir:            filepath.Join(dir, "node1"),
 		RTTMillisecond:     50,
 		NumPartitionShards: 1,
-		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -765,44 +759,4 @@ func TestAwakeableResolvedByIngress(t *testing.T) {
 	if completed.GetFailureMessage() != "" {
 		t.Errorf("failure_message = %q; want empty", completed.GetFailureMessage())
 	}
-}
-
-// bringUpHostWithIngress is the engine_test copy of the ingress test
-// helper: a single-node Host on a temp dir, ingress on ephemeral HTTP
-// + gRPC ports, both torn down by t.Cleanup. Kept local so this file
-// doesn't depend on ingress_test internals.
-func bringUpHostWithIngress(t *testing.T, reg *sdk.Registry) (*engine.Host, *ingress.Runtime) {
-	t.Helper()
-	dir := t.TempDir()
-	h, err := engine.NewHost(engine.HostConfig{
-		NodeID:             1,
-		RaftAddr:           freeLocalAddr(t),
-		DataDir:            filepath.Join(dir, "node1"),
-		RTTMillisecond:     50,
-		NumPartitionShards: 1,
-		Handlers:           reg,
-	})
-	if err != nil {
-		t.Fatalf("NewHost: %v", err)
-	}
-	t.Cleanup(func() { _ = h.Close() })
-
-	if _, err := h.StartPartition(1); err != nil {
-		t.Fatalf("StartPartition: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := h.AwaitLeader(ctx, 1); err != nil {
-		t.Fatalf("AwaitLeader: %v", err)
-	}
-
-	rt, err := ingress.Start(context.Background(), h, ingress.Config{
-		HTTPAddr: "127.0.0.1:0",
-		GRPCAddr: "127.0.0.1:0",
-	})
-	if err != nil {
-		t.Fatalf("ingress.Start: %v", err)
-	}
-	t.Cleanup(func() { _ = rt.Close() })
-	return h, rt
 }

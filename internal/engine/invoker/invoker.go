@@ -12,12 +12,10 @@ import (
 )
 
 // Config carries the dependencies the Invoker needs at construction
-// time. All fields except Log are required. DeploymentResolver and
-// WireDispatcher are optional — when nil, every invocation falls back to
-// the in-process registry path. The codec governs wire-payload
-// marshalling and defaults to protobuf.
+// time. Deployments + WireDispatcher are required for any invocation to
+// run; with either nil, every StartInvocation drops the row with a warn.
+// Codec governs wire-payload marshalling and defaults to protobuf.
 type Config struct {
-	Registry        *Registry
 	JournalTable    tables.JournalTable
 	InvocationTable tables.InvocationTable
 	StateTable      tables.StateTable
@@ -25,33 +23,29 @@ type Config struct {
 	Log             *slog.Logger
 
 	// Deployments resolves a stamped deployment_id to a DeploymentRecord
-	// so installSessionLocked can branch between in-proc dispatch (no
-	// record or url scheme == "inproc") and wire dispatch (url scheme ==
-	// "http" | "https").
+	// so installSessionLocked can open a wire session against the
+	// deployment's URL.
 	Deployments DeploymentResolver
 
 	// WireDispatcher opens a remote-handler Stream against a DeploymentRecord.
-	// Required when a non-inproc deployment is registered; nil when the
-	// host only serves in-process handlers.
 	WireDispatcher WireDispatcher
 
 	// Codec governs wire payload encoding (default protobuf).
 	Codec handlerclient.Codec
 }
 
-// sessionHandle is the union view of *session (inproc) and *wireSession
-// (wire) that Invoker tracks per-id. Both types provide the same
-// lifecycle methods so the sessions map can hold either.
+// sessionHandle is the lifecycle surface every concrete session
+// implementation exposes. Today only *wireSession implements it.
 type sessionHandle interface {
 	start()
 	abort()
 	Done() <-chan struct{}
 }
 
-// Invoker owns the in-process invocation sessions for one partition.
-// Constructed at host startup, activated on leader-gain via Start, and
-// torn down on leader-loss via Stop. The PartitionRunner forwards
-// Actions to the per-action methods below.
+// Invoker owns the per-partition invocation sessions. Constructed at
+// host startup, activated on leader-gain via Start, and torn down on
+// leader-loss via Stop. The PartitionRunner forwards Actions to the
+// per-action methods below.
 //
 // Thread-safety: Start/Stop are called by the runner's leadership
 // callbacks (single-threaded with respect to each other). The per-action
@@ -59,7 +53,6 @@ type sessionHandle interface {
 // single-threaded. The internal mutex protects against concurrent
 // abort/lookup operations.
 type Invoker struct {
-	registry        *Registry
 	journal         *JournalReader
 	invocationTable tables.InvocationTable
 	stateTable      tables.StateTable
@@ -107,7 +100,6 @@ func New(cfg Config) *Invoker {
 		codec = handlerclient.DefaultCodec()
 	}
 	return &Invoker{
-		registry:        cfg.Registry,
 		journal:         NewJournalReader(cfg.JournalTable),
 		invocationTable: cfg.InvocationTable,
 		stateTable:      cfg.StateTable,
@@ -223,102 +215,63 @@ func (i *Invoker) StartInvocation(id *enginev1.InvocationId, target *enginev1.In
 	go i.watchSession(id, key, s)
 }
 
-// installSessionLocked constructs the session and installs it in the
-// sessions map. MUST be called with i.mu held; returns the session and
-// true on success, or (nil, false) when no dispatch path is available
-// (no handler AND no wire deployment) or the invoker is no longer
-// started. Does NOT call s.start() — the caller drops the lock before
-// doing so.
-//
-// Dispatch selection:
-//   - Read the persisted InvocationStatus to retrieve the stamped
-//     deployment_id.
-//   - If deployments resolver yields a record whose transport is not
-//     "inproc", install a wireSession (requires WireDispatcher).
-//   - Otherwise look up the handler in the in-process registry and
-//     install the inproc session. A missing handler + missing wire
-//     deployment is the only path that drops with a warn — preserving
-//     the existing "stays Scheduled" behaviour observed by
-//     TestInvokerWiringMissingHandlerStaysScheduled.
+// installSessionLocked constructs the wire session and installs it in
+// the sessions map. MUST be called with i.mu held; returns the session
+// and true on success, or (nil, false) when no deployment is registered
+// for the invocation's (service, handler), the deployment lookup fails,
+// or the invoker is no longer started. Does NOT call s.start() — the
+// caller drops the lock before doing so.
 func (i *Invoker) installSessionLocked(id *enginev1.InvocationId, target *enginev1.InvocationTarget, key string) (sessionHandle, bool) {
 	if !i.started {
 		return nil, false
 	}
-
-	var rec *enginev1.DeploymentRecord
-	if i.deployments != nil {
-		status, err := i.invocationTable.Get(id)
-		if err != nil {
-			i.log.Warn("invoker: load status for dispatch failed",
-				"id", invocationIDString(id), "err", err)
-			return nil, false
-		}
-		if depID := status.GetDeploymentId(); depID != "" {
-			rec, err = i.deployments.Resolve(i.ctx, depID)
-			if err != nil {
-				i.log.Warn("invoker: resolve deployment failed",
-					"id", invocationIDString(id),
-					"deployment_id", depID,
-					"err", err)
-				// Fall through to in-proc lookup — the deployment may be
-				// the synthetic inproc record that the resolver doesn't
-				// know about on this node.
-			}
-		}
-	}
-
-	if rec != nil && !isInprocDeployment(rec) {
-		if i.dispatcher == nil {
-			i.log.Warn("invoker: wire deployment requires WireDispatcher; dropping",
-				"id", invocationIDString(id),
-				"deployment_id", rec.GetId(),
-				"url", rec.GetUrl())
-			return nil, false
-		}
-		s := newWireSession(
-			i.ctx,
-			id,
-			target,
-			rec,
-			i.dispatcher,
-			i.codec,
-			i.proposer,
-			i.invocationTable,
-			i.stateTable,
-			i.journal,
-			i.log,
-		)
-		i.sessions[key] = s
-		return s, true
-	}
-
-	handler, kind, ok := i.registry.Lookup(target)
-	if !ok {
-		i.log.Warn("invoker: no handler registered; dropping",
+	if i.deployments == nil || i.dispatcher == nil {
+		i.log.Warn("invoker: dispatch dependencies missing; dropping",
 			"id", invocationIDString(id),
-			"service", target.GetServiceName(),
-			"handler", target.GetHandlerName(),
-		)
+			"has_deployments", i.deployments != nil,
+			"has_dispatcher", i.dispatcher != nil)
 		return nil, false
 	}
-	// kind rides on the session today purely as metadata; per-kind
-	// dispatch (object key locks, workflow lifecycle) lands as kind-
-	// aware routing matures.
-	// The chanTransport pair is held for legacy in-process plumbing;
-	// the in-process Go SDK ignores it and drives the handler directly
-	// via *inprocContext. Closing it on session exit is enough.
-	engineSide, _ := NewChanTransport()
-	s := newSession(
+
+	status, err := i.invocationTable.Get(id)
+	if err != nil {
+		i.log.Warn("invoker: load status for dispatch failed",
+			"id", invocationIDString(id), "err", err)
+		return nil, false
+	}
+	depID := status.GetDeploymentId()
+	if depID == "" {
+		i.log.Warn("invoker: invocation has no deployment_id; dropping",
+			"id", invocationIDString(id),
+			"service", target.GetServiceName(),
+			"handler", target.GetHandlerName())
+		return nil, false
+	}
+	rec, err := i.deployments.Resolve(i.ctx, depID)
+	if err != nil {
+		i.log.Warn("invoker: resolve deployment failed",
+			"id", invocationIDString(id),
+			"deployment_id", depID, "err", err)
+		return nil, false
+	}
+	if rec == nil {
+		i.log.Warn("invoker: deployment not found; dropping",
+			"id", invocationIDString(id),
+			"deployment_id", depID)
+		return nil, false
+	}
+
+	s := newWireSession(
 		i.ctx,
 		id,
 		target,
-		handler,
-		kind,
+		rec,
+		i.dispatcher,
+		i.codec,
 		i.proposer,
-		i.journal,
 		i.invocationTable,
 		i.stateTable,
-		engineSide,
+		i.journal,
 		i.log,
 	)
 	i.sessions[key] = s
@@ -417,31 +370,6 @@ func (i *Invoker) AbortInvocation(id *enginev1.InvocationId) {
 		s.abort()
 		<-s.Done()
 	}
-}
-
-// isInprocDeployment returns true when rec is the synthetic in-process
-// deployment (url scheme == "inproc"). The synthetic record short-circuits
-// to the in-process sdk.Registry path; anything else goes through the
-// handlerclient wire path.
-func isInprocDeployment(rec *enginev1.DeploymentRecord) bool {
-	if rec == nil {
-		return false
-	}
-	u := rec.GetUrl()
-	const prefix = "inproc://"
-	if len(u) < len(prefix) {
-		return false
-	}
-	for i := range len(prefix) {
-		c := u[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		if c != prefix[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // activeSessions returns a snapshot of currently-active session keys.

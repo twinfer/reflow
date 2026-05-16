@@ -2,15 +2,11 @@ package invoker
 
 import (
 	"context"
-	"io"
-	"log/slog"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/tables"
-	"github.com/twinfer/reflow/pkg/sdk"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -88,69 +84,6 @@ func (f *fakeProposer) effects() []*enginev1.InvokerEffect {
 	return out
 }
 
-func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-}
-
-func newTestInvoker(t *testing.T, reg *sdk.Registry) (*Invoker, *fakeProposer, storage.Store) {
-	t.Helper()
-	s := storage.NewMemStore()
-	t.Cleanup(func() { s.Close() })
-	fp := &fakeProposer{store: s}
-	inv := New(Config{
-		Registry:        NewRegistry(reg),
-		JournalTable:    tables.JournalTable{S: s},
-		InvocationTable: tables.InvocationTable{S: s},
-		StateTable:      tables.StateTable{S: s},
-		Proposer:        fp,
-		Log:             discardLogger(),
-	})
-	return inv, fp, s
-}
-
-// blockingHandler stays alive until the invocation context is cancelled.
-// Sessions running blockingHandler exit only via abort, which keeps tests
-// that assert on activeSessions deterministic.
-func blockingHandler(c sdk.Context, _ []byte) ([]byte, error) {
-	<-c.Context().Done()
-	return nil, c.Context().Err()
-}
-
-// seedInvoked writes an Invoked InvocationStatus for id so prepare()
-// skips the JEInput propose path. Use when the test's interest is the
-// session-lifecycle plumbing, not the FSM transition.
-func seedInvoked(t *testing.T, s storage.Store, id *enginev1.InvocationId, target *enginev1.InvocationTarget) {
-	t.Helper()
-	b := s.NewBatch()
-	defer b.Close()
-	status := &enginev1.InvocationStatus{
-		Status: &enginev1.InvocationStatus_Invoked{
-			Invoked: &enginev1.Invoked{Target: target},
-		},
-	}
-	if err := (tables.InvocationTable{S: s}).Put(b, id, status); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.Commit(true); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// waitForSessionCount busy-polls activeSessions until len matches want or
-// the deadline elapses. Helper for tests where the session-cleanup
-// goroutine and the assertion race.
-func waitForSessionCount(t *testing.T, inv *Invoker, want int) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if got := inv.activeSessions(); len(got) == want {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatalf("session count never reached %d; last=%v", want, inv.activeSessions())
-}
-
 func newID(pk uint64, uuid string) *enginev1.InvocationId {
 	b := []byte(uuid)
 	if len(b) > 16 {
@@ -162,47 +95,6 @@ func newID(pk uint64, uuid string) *enginev1.InvocationId {
 		b = pad
 	}
 	return &enginev1.InvocationId{PartitionKey: pk, Uuid: b}
-}
-
-func TestRegistry_LookupViaTarget(t *testing.T) {
-	r := sdk.NewRegistry()
-	called := 0
-	if err := r.RegisterService("Greeter", "hello", func(_ sdk.Context, _ []byte) ([]byte, error) {
-		called++
-		return nil, nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	w := NewRegistry(r)
-
-	target := &enginev1.InvocationTarget{ServiceName: "Greeter", HandlerName: "hello", ObjectKey: "ignored"}
-	h, kind, ok := w.Lookup(target)
-	if !ok || h == nil {
-		t.Fatal("Lookup miss")
-	}
-	if kind != sdk.KindService {
-		t.Errorf("kind = %v; want service", kind)
-	}
-	if _, err := h(nil, nil); err != nil {
-		t.Fatalf("h: %v", err)
-	}
-	if called != 1 {
-		t.Errorf("called = %d; want 1", called)
-	}
-
-	if _, _, ok := w.Lookup(&enginev1.InvocationTarget{ServiceName: "Nope", HandlerName: "x"}); ok {
-		t.Error("expected miss")
-	}
-}
-
-func TestRegistry_NilInner(t *testing.T) {
-	w := NewRegistry(nil)
-	if _, _, ok := w.Lookup(&enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"}); ok {
-		t.Error("nil inner: expected miss")
-	}
-	if _, _, ok := w.Lookup(nil); ok {
-		t.Error("nil target: expected miss")
-	}
 }
 
 func TestJournalReader_Empty(t *testing.T) {
@@ -251,36 +143,6 @@ func TestJournalReader_InOrder(t *testing.T) {
 	}
 }
 
-func TestChanTransport_RoundTrip(t *testing.T) {
-	eng, sdkSide := NewChanTransport()
-	defer eng.Close()
-	defer sdkSide.Close()
-
-	msg := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("16-bytes-padding")}
-	_ = msg // just to ensure proto compiles in tests
-
-	// Engine sends; SDK receives.
-	go func() {
-		_ = eng.Send(nil)
-	}()
-	select {
-	case <-time.After(time.Second):
-		t.Fatal("recv timeout")
-	default:
-	}
-	if _, err := sdkSide.Recv(); err != nil {
-		t.Fatalf("recv: %v", err)
-	}
-
-	// Closing one side closes both.
-	if err := eng.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sdkSide.Recv(); err != ErrTransportClosed {
-		t.Errorf("recv after close: got %v; want ErrTransportClosed", err)
-	}
-}
-
 func TestSessionKey_Stable(t *testing.T) {
 	id1 := newID(42, "abc")
 	id2 := newID(42, "abc")
@@ -294,108 +156,4 @@ func TestSessionKey_Stable(t *testing.T) {
 	if sessionKey(nil) != "" {
 		t.Error("nil id should produce empty key")
 	}
-}
-
-func TestInvoker_StartInvocationBeforeStart(t *testing.T) {
-	r := sdk.NewRegistry()
-	_ = r.RegisterService("S", "h", blockingHandler)
-	inv, _, s := newTestInvoker(t, r)
-
-	target := &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"}
-	id := newID(1, "x")
-	seedInvoked(t, s, id, target)
-
-	// StartInvocation before Start: must be buffered, not dropped. No
-	// session spawns yet (started=false), but the request is queued.
-	inv.StartInvocation(id, target)
-	if got := inv.activeSessions(); len(got) != 0 {
-		t.Errorf("active before Start = %v; want none", got)
-	}
-
-	// Start drains the buffer and the deferred session spawns.
-	inv.Start(context.Background())
-	defer inv.Stop()
-	waitForSessionCount(t, inv, 1)
-}
-
-func TestInvoker_StartInvocationMissingHandler(t *testing.T) {
-	inv, _, _ := newTestInvoker(t, sdk.NewRegistry())
-	inv.Start(context.Background())
-	defer inv.Stop()
-
-	inv.StartInvocation(newID(1, "x"), &enginev1.InvocationTarget{ServiceName: "Nope", HandlerName: "x"})
-	if got := inv.activeSessions(); len(got) != 0 {
-		t.Errorf("active = %v; want none (handler missing)", got)
-	}
-}
-
-func TestInvoker_StartInvocationSpawnsSession(t *testing.T) {
-	r := sdk.NewRegistry()
-	_ = r.RegisterService("S", "h", blockingHandler)
-	inv, _, s := newTestInvoker(t, r)
-	inv.Start(context.Background())
-	defer inv.Stop()
-
-	target := &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"}
-	id := newID(1, "abc")
-	seedInvoked(t, s, id, target)
-	inv.StartInvocation(id, target)
-	waitForSessionCount(t, inv, 1)
-
-	// Re-calling StartInvocation for the same id is idempotent while the
-	// existing session is still running.
-	inv.StartInvocation(id, target)
-	if got := inv.activeSessions(); len(got) != 1 {
-		t.Errorf("active after re-start = %v; want still 1", got)
-	}
-}
-
-func TestInvoker_AbortInvocation(t *testing.T) {
-	r := sdk.NewRegistry()
-	_ = r.RegisterService("S", "h", blockingHandler)
-	inv, _, s := newTestInvoker(t, r)
-	inv.Start(context.Background())
-
-	target := &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"}
-	id := newID(1, "abc")
-	seedInvoked(t, s, id, target)
-	inv.StartInvocation(id, target)
-	waitForSessionCount(t, inv, 1)
-
-	inv.AbortInvocation(id)
-	if got := inv.activeSessions(); len(got) != 0 {
-		t.Errorf("active after abort = %v; want none", got)
-	}
-
-	// Aborting an unknown id is a no-op.
-	inv.AbortInvocation(newID(99, "missing"))
-}
-
-func TestInvoker_Stop(t *testing.T) {
-	r := sdk.NewRegistry()
-	_ = r.RegisterService("S", "h", blockingHandler)
-	inv, _, s := newTestInvoker(t, r)
-	inv.Start(context.Background())
-
-	target := &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"}
-	for _, u := range []string{"a", "b", "c"} {
-		id := newID(1, u)
-		seedInvoked(t, s, id, target)
-		inv.StartInvocation(id, target)
-	}
-	waitForSessionCount(t, inv, 3)
-
-	done := make(chan struct{})
-	go func() { inv.Stop(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Stop did not return within 2s")
-	}
-	if got := inv.activeSessions(); len(got) != 0 {
-		t.Errorf("active after Stop = %v; want none", got)
-	}
-
-	// Stop is idempotent.
-	inv.Stop()
 }

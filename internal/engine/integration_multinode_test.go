@@ -26,7 +26,7 @@ type nodeRig = loadgen.InProcessNode
 // change their pattern.
 func bringUpThreeNodeCluster(t *testing.T, handlers *sdk.Registry) ([]*nodeRig, routing.Partitioner) {
 	t.Helper()
-	c := loadgen.NewCluster(t, loadgen.ClusterOptions{N: 3, Handlers: handlers})
+	c := loadgen.NewCluster(t, loadgen.ClusterOptions{N: 3})
 	return asInProcess(t, c.Nodes), c.Partitioner
 }
 

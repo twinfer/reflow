@@ -42,8 +42,9 @@ func TestChaos_KillRestartIdle(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
-	cluster := loadgen.NewCluster(t, loadgen.ClusterOptions{N: 3, Handlers: reg})
+	cluster := loadgen.NewCluster(t, loadgen.ClusterOptions{N: 3})
 	defer cluster.Close()
+	defer loadgen.StartEmbeddedHandlers(t, cluster, reg)()
 
 	// Step 1 — kill the metadata leader and verify the surviving
 	// 2-node majority can still elect leaders on every shard.

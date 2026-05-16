@@ -23,7 +23,6 @@ func bringUpForSDKTest(t *testing.T, reg *sdk.Registry) (*engine.Host, *engine.P
 		DataDir:            filepath.Join(dir, "node1"),
 		RTTMillisecond:     50,
 		NumPartitionShards: 1,
-		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)

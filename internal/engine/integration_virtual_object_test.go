@@ -65,7 +65,6 @@ func TestVirtualObject_FIFOSerializesSameKey(t *testing.T) {
 		DataDir:            dataDir,
 		RTTMillisecond:     50,
 		NumPartitionShards: 1,
-		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -186,7 +185,6 @@ func TestVirtualObject_DistinctKeysRunInParallel(t *testing.T) {
 		DataDir:            dataDir,
 		RTTMillisecond:     50,
 		NumPartitionShards: 1,
-		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -290,7 +288,6 @@ func TestVirtualObject_QueueSurvivesRestart(t *testing.T) {
 		DataDir:            dataDir,
 		RTTMillisecond:     50,
 		NumPartitionShards: 1,
-		Handlers:           reg,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -370,7 +367,6 @@ func TestVirtualObject_QueueSurvivesRestart(t *testing.T) {
 		DataDir:            dataDir,
 		RTTMillisecond:     50,
 		NumPartitionShards: 1,
-		Handlers:           reg2,
 	})
 	if err != nil {
 		t.Fatalf("NewHost (resume): %v", err)

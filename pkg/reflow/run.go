@@ -83,7 +83,6 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		DataDir:            cfg.Storage.DataDir,
 		Log:                logger,
 		EnableMetrics:      !cfg.Metrics.Disabled,
-		Handlers:           cfg.Handlers.Registry,
 		GossipBindAddr:     cfg.Node.GossipBindAddr,
 		GossipAdvAddr:      cfg.Node.GossipAdvAddr,
 		GrpcEndpoint:       cfg.Node.DeliveryAddr,
@@ -194,13 +193,37 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		return host, nil
 	}
 
-	// Single-node path: no Delivery, no Admin, no auth interceptors.
+	// Single-node path: no Delivery listener, no Admin listener, no auth
+	// interceptors. Shard 0 still runs (1-replica Raft group) so the
+	// deployment registry is available; an in-memory admin.Server is
+	// constructed only when Handlers.Endpoints is non-empty so
+	// autoSeedEndpoints can register deployments without an external
+	// admin listener.
+	runner, err := eh.StartMetadataShard()
+	if err != nil {
+		return bail(fmt.Errorf("reflow: StartMetadataShard: %w", err))
+	}
+	logger.Info("reflow: metadata shard started", "shard", 0)
+
 	for _, sh := range shards {
 		if _, err := eh.StartPartition(sh); err != nil {
 			return bail(fmt.Errorf("reflow: StartPartition(%d): %w", sh, err))
 		}
 		logger.Info("reflow: partition started", "shard", sh)
 	}
+
+	if len(cfg.Handlers.Endpoints) > 0 {
+		srv, sErr := admin.NewServer(admin.Config{
+			Host:   eh,
+			Runner: runner,
+			Log:    logger,
+		})
+		if sErr != nil {
+			return bail(fmt.Errorf("reflow: admin.NewServer: %w", sErr))
+		}
+		go autoSeedEndpoints(ctx, srv, runner, cfg.Handlers.Endpoints, logger)
+	}
+
 	return &Host{
 		engine:        eh,
 		metricsCloser: metricsCloser,

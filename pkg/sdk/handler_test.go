@@ -144,50 +144,6 @@ func TestAsFailure(t *testing.T) {
 	}
 }
 
-func TestInprocDeploymentID_Stability(t *testing.T) {
-	h := func(_ Context, _ []byte) ([]byte, error) { return nil, nil }
-
-	// Two registries with the same handler set in different registration
-	// orders must produce the same id — Entries() sorts before hashing.
-	r1 := NewRegistry()
-	_ = r1.RegisterService("Greeter", "hello", h)
-	_ = r1.RegisterObject("Counter", "incr", h)
-	_ = r1.RegisterWorkflow("Saga", "run", h)
-
-	r2 := NewRegistry()
-	_ = r2.RegisterWorkflow("Saga", "run", h)
-	_ = r2.RegisterService("Greeter", "hello", h)
-	_ = r2.RegisterObject("Counter", "incr", h)
-
-	id1 := InprocDeploymentID(r1.Entries())
-	id2 := InprocDeploymentID(r2.Entries())
-	if id1 != id2 {
-		t.Errorf("ids differ across registration order: %s vs %s", id1, id2)
-	}
-	if !strings.HasPrefix(id1, "inproc-") {
-		t.Errorf("id = %q; want inproc- prefix", id1)
-	}
-
-	// Changing the kind of an existing handler MUST flip the id —
-	// otherwise a code edit silently keeps the old deployment_id and
-	// in-flight invocations replay against a stale signature.
-	r3 := NewRegistry()
-	_ = r3.RegisterObject("Greeter", "hello", h) // was service in r1
-	_ = r3.RegisterObject("Counter", "incr", h)
-	_ = r3.RegisterWorkflow("Saga", "run", h)
-	if InprocDeploymentID(r3.Entries()) == id1 {
-		t.Error("kind change did not change the id")
-	}
-
-	// Removing a handler MUST flip the id.
-	r4 := NewRegistry()
-	_ = r4.RegisterService("Greeter", "hello", h)
-	_ = r4.RegisterObject("Counter", "incr", h)
-	if InprocDeploymentID(r4.Entries()) == id1 {
-		t.Error("removed handler did not change the id")
-	}
-}
-
 func TestRegistry_EntriesSorted(t *testing.T) {
 	r := NewRegistry()
 	h := func(_ Context, _ []byte) ([]byte, error) { return nil, nil }

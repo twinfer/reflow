@@ -35,8 +35,9 @@ func TestChaos_RollingRestart(t *testing.T) {
 		t.Fatalf("register handler: %v", err)
 	}
 
-	cluster := loadgen.NewCluster(t, loadgen.ClusterOptions{N: 3, Handlers: reg})
+	cluster := loadgen.NewCluster(t, loadgen.ClusterOptions{N: 3})
 	defer cluster.Close()
+	defer loadgen.StartEmbeddedHandlers(t, cluster, reg)()
 
 	sampler := loadgen.NewSampler()
 	ctx, cancel := context.WithTimeout(context.Background(), duration+180*time.Second)

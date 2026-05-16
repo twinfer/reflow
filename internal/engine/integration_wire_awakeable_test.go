@@ -19,7 +19,6 @@ import (
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/loadgen"
 	"github.com/twinfer/reflow/internal/storage/tables"
-	"github.com/twinfer/reflow/pkg/sdk"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
@@ -202,8 +201,7 @@ func TestWireDispatch_HTTP2_Awakeable(t *testing.T) {
 	defer teardown()
 
 	cluster := loadgen.NewCluster(t, loadgen.ClusterOptions{
-		N:        3,
-		Handlers: sdk.NewRegistry(),
+		N: 3,
 	})
 	defer cluster.Close()
 

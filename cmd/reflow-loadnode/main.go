@@ -31,8 +31,6 @@ import (
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/ingress"
-	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/sdk"
 	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
@@ -77,18 +75,12 @@ func run() error {
 		return fmt.Errorf("parse peers: %w", err)
 	}
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("loadgen.Hello", "echo", loadgen.HelloHandler); err != nil {
-		return fmt.Errorf("register handler: %w", err)
-	}
-
 	host, err := engine.NewHost(engine.HostConfig{
 		NodeID:             nodeID,
 		RaftAddr:           raftAddr,
 		DataDir:            dataDir,
 		RTTMillisecond:     50,
 		NumPartitionShards: numShards,
-		Handlers:           reg,
 		Peers:              peers,
 		GossipBindAddr:     gossipAddr,
 		GossipAdvAddr:      gossipAddr,

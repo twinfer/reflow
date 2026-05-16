@@ -1,9 +1,9 @@
 // Package reflow is the public entrypoint for embedding the reflow durable
 // execution engine in a Go binary. Construct a Config (programmatically or
-// via pkg/reflow/config loaders), register in-process handlers on
-// Config.Handlers.Registry (and / or remote handlers via
-// Config.Handlers.Endpoints), then call Run. Internal types in
-// /internal/engine are not part of the stable API.
+// via pkg/reflow/config loaders), declare handler deployments via
+// Config.Handlers.Endpoints (each entry is a URL the engine dials over
+// HTTP/2), then call Run. Internal types in /internal/engine are not
+// part of the stable API.
 package reflow
 
 import (
@@ -14,7 +14,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/twinfer/reflow/pkg/reflow/creds"
-	"github.com/twinfer/reflow/pkg/sdk"
 )
 
 // Config is the typed configuration for a reflow node. All fields are
@@ -42,27 +41,16 @@ type Config struct {
 	Handlers HandlersConfig `koanf:"handlers"`
 }
 
-// HandlersConfig groups the handler-related knobs. Registry holds the
-// in-process handlers reflow.Run installs on the embedded engine; the
-// koanf:"-" tag keeps it out of the config loader because closures
-// cannot round-trip through YAML / JSON.
-//
-// Endpoints lists remote-handler URLs reflow.Run auto-registers as
-// deployments at metadata-leader bootstrap. Each URL goes through the
-// same admin.RegisterDeployment path operators would call by hand, so
-// the engine discovers handlers, persists a DeploymentRecord on shard
-// 0, and surfaces the deployment_id for inbound invocations to pin to.
-// Single-node deployments have no shard 0; in that mode Endpoints is
-// logged-and-skipped.
+// HandlersConfig groups the handler-related knobs. Endpoints lists
+// handler-deployment URLs reflow.Run auto-registers at metadata-leader
+// bootstrap. Each URL goes through the same admin.RegisterDeployment
+// path operators would call by hand, so the engine discovers handlers,
+// persists a DeploymentRecord on shard 0, and surfaces the
+// deployment_id for inbound invocations to pin to.
 type HandlersConfig struct {
-	// Registry holds in-process handlers. nil means "no in-process
-	// handlers" — the engine still runs but every routed invocation
-	// without a deployment_id is dropped with a warn.
-	Registry *sdk.Registry `koanf:"-"`
-
-	// Endpoints lists remote-handler URLs to auto-register at bootstrap.
-	// Each URL is dialed for protocol discovery (GET /discover over
-	// HTTP/2) and the resulting handlers are persisted via
+	// Endpoints lists handler URLs to auto-register at bootstrap. Each
+	// URL is dialed for protocol discovery (GET /discover over HTTP/2)
+	// and the resulting handlers are persisted via
 	// Command_RegisterDeployment.
 	Endpoints []HandlerEndpoint `koanf:"endpoints"`
 }

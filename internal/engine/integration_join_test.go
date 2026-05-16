@@ -41,7 +41,7 @@ func TestMultiNode_JoinExistingCluster(t *testing.T) {
 	}
 
 	// Step 1 — bring up the 3-node cluster.
-	c := loadgen.NewCluster(t, loadgen.ClusterOptions{N: 3, Handlers: reg})
+	c := loadgen.NewCluster(t, loadgen.ClusterOptions{N: 3})
 	defer c.Close()
 	rigs := asInProcess(t, c.Nodes)
 	defer closeAll(rigs)
@@ -92,7 +92,6 @@ func TestMultiNode_JoinExistingCluster(t *testing.T) {
 		RaftAddr:           addrs.raft,
 		DataDir:            dataDir4,
 		RTTMillisecond:     50,
-		Handlers:           reg,
 		GossipBindAddr:     addrs.gossip,
 		GossipAdvAddr:      addrs.gossip,
 		GrpcEndpoint:       addrs.delivery,

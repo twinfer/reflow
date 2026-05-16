@@ -431,7 +431,6 @@ func TestCombinator_All_SurvivesRestart(t *testing.T) {
 		DataDir:            dataDir,
 		RTTMillisecond:     50,
 		NumPartitionShards: 1,
-		Handlers:           regBefore,
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -493,7 +492,6 @@ func TestCombinator_All_SurvivesRestart(t *testing.T) {
 		DataDir:            dataDir,
 		RTTMillisecond:     50,
 		NumPartitionShards: 1,
-		Handlers:           regAfter,
 	})
 	if err != nil {
 		t.Fatalf("NewHost after restart: %v", err)

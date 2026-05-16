@@ -28,7 +28,6 @@ import (
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/engine/routing"
-	"github.com/twinfer/reflow/pkg/sdk"
 	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -179,13 +178,10 @@ func (n *InProcessNode) Close() {
 // subprocess impls bypass graceful shutdown; in-process can't.
 func (n *InProcessNode) Kill() { n.Close() }
 
-// ClusterOptions configures NewCluster. N defaults to 3; Handlers is
-// required (pass sdk.NewRegistry() for clusters that don't need any
-// user handlers). PebbleOptions and OnSnapshotPersisted are forwarded
-// verbatim to engine.HostConfig.
+// ClusterOptions configures NewCluster. N defaults to 3. PebbleOptions
+// and OnSnapshotPersisted are forwarded verbatim to engine.HostConfig.
 type ClusterOptions struct {
 	N                   int
-	Handlers            *sdk.Registry
 	PebbleOptions       func(shardID uint64) *pebble.Options
 	OnSnapshotPersisted func(shardID uint64)
 
@@ -278,9 +274,6 @@ func NewCluster(t testing.TB, opts ClusterOptions) *Cluster {
 	t.Helper()
 	if opts.N <= 0 {
 		opts.N = 3
-	}
-	if opts.Handlers == nil {
-		t.Fatal("loadgen: ClusterOptions.Handlers is required (pass sdk.NewRegistry() for no handlers)")
 	}
 	n := opts.N
 
@@ -499,7 +492,6 @@ func (c *Cluster) bringUpNode(t testing.TB, idx int) error {
 		DataDir:              c.dataDirs[idx],
 		RTTMillisecond:       50,
 		NumPartitionShards:   uint64(len(c.Nodes)),
-		Handlers:             c.opts.Handlers,
 		Peers:                c.peers,
 		GossipBindAddr:       addrs.gossip,
 		GossipAdvAddr:        addrs.gossip,

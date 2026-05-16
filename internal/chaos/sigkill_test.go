@@ -56,12 +56,12 @@ func TestChaos_LeaderSIGKILL(t *testing.T) {
 
 	cluster := loadgen.NewCluster(t, loadgen.ClusterOptions{
 		N:                      3,
-		Handlers:               reg,
 		SubprocessNodes:        true,
 		LoadnodeBinaryPath:     bin,
 		SubprocessIngressAddrs: ingressAddrs,
 	})
 	defer cluster.Close()
+	defer loadgen.StartEmbeddedHandlers(t, cluster, reg)()
 
 	sampler := loadgen.NewSampler()
 	ctx, cancel := context.WithTimeout(context.Background(), duration+awaitTerminal+90*time.Second)

@@ -12,11 +12,9 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// resolveDeployment lookups the persisted DeploymentRecord for the
-// given id. The synthetic inproc record short-circuits via the
-// in-memory id; everything else goes through dragonboat shard 0
-// SyncRead. Returns (nil, nil) for a deployment the cluster has never
-// seen — the caller treats that as "fall back to in-process registry".
+// resolveDeployment looks up the persisted DeploymentRecord on shard 0
+// by id. Returns (nil, nil) for a deployment the cluster has never
+// seen — the invoker treats that as "drop the invocation".
 //
 // ctx scopes the SyncRead; the invoker passes its own context so
 // shutdown cancels in-flight lookups rather than spinning until a
@@ -29,15 +27,9 @@ func (h *Host) resolveDeployment(ctx context.Context, deploymentID string) (*eng
 	if deploymentID == "" {
 		return nil, nil
 	}
-	if rec := h.matchInprocDeployment(deploymentID); rec != nil {
-		return rec, nil
-	}
 	if h.nh == nil {
 		return nil, nil
 	}
-	// Shard 0 may not be hosted on this node (single-node deployments
-	// have no metadata shard). SyncRead would return ErrShardNotFound;
-	// treat that as "not in cluster" and fall back.
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
@@ -45,26 +37,13 @@ func (h *Host) resolveDeployment(ctx context.Context, deploymentID string) (*eng
 	}
 	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupDeployment{ID: deploymentID})
 	if err != nil {
-		// Probe-style: any error short-circuits to nil. The invoker
-		// falls back to in-process registry, which is correct for the
-		// synthetic inproc deployment running on a single-node host.
-		return nil, nil //nolint:nilerr // intentional: shard 0 absence is not a caller error
+		return nil, fmt.Errorf("host: SyncRead deployment %s: %w", deploymentID, err)
 	}
 	rec, ok := res.(*enginev1.DeploymentRecord)
 	if !ok {
 		return nil, fmt.Errorf("host: resolveDeployment: unexpected lookup type %T", res)
 	}
 	return rec, nil
-}
-
-// matchInprocDeployment returns the synthetic in-proc record when
-// deploymentID matches sdk.InprocDeploymentID(handlers), nil otherwise.
-// Pure in-memory; no dragonboat.
-func (h *Host) matchInprocDeployment(deploymentID string) *enginev1.DeploymentRecord {
-	if h.InprocDeploymentID() != deploymentID {
-		return nil
-	}
-	return h.InprocDeploymentRecord(uint64(time.Now().UnixMilli()))
 }
 
 // LookupDeploymentIDByHandler resolves (service, handler) → deployment_id

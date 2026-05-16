@@ -194,8 +194,7 @@ func TestWireDispatch_HTTP2_Call(t *testing.T) {
 	defer callerTeardown()
 
 	cluster := loadgen.NewCluster(t, loadgen.ClusterOptions{
-		N:        3,
-		Handlers: reg,
+		N: 3,
 	})
 	defer cluster.Close()
 

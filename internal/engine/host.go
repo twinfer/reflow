@@ -26,7 +26,6 @@ import (
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/tables"
-	"github.com/twinfer/reflow/pkg/sdk"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -49,11 +48,6 @@ type HostConfig struct {
 	EnableMetrics bool
 	// RTTMillisecond is the dragonboat logical-clock tick. Defaults to 200ms.
 	RTTMillisecond uint64
-	// Handlers is the public SDK registry the leader-side Invoker resolves
-	// against on ActInvoke dispatch. Nil is acceptable — the partition
-	// builds an empty registry and any ActInvoke falls through with a
-	// "no handler" warning.
-	Handlers *sdk.Registry
 
 	// Peers is the static cluster membership known at bootstrap. When
 	// non-empty, the Host runs multi-node: dragonboat gossip is enabled,
@@ -325,13 +319,11 @@ func (h *Host) SetCrossShardSender(s CrossShardSender) {
 
 // StartMetadataShard opens the metadata-shard store, registers the cluster
 // FSM with dragonboat, and wires the metadata runner. Callers pass
-// shardID=0. Only valid when HostConfig.Peers is non-empty; single-node
-// deployments have no need for the metadata group.
+// shardID=0. Single-node deployments run a 1-replica metadata Raft group
+// just like a 1-of-1 multi-node cluster; the deployment registry lives
+// on shard 0 regardless of replica count.
 func (h *Host) StartMetadataShard() (*MetadataRunner, error) {
 	const shardID uint64 = 0
-	if len(h.cfg.Peers) == 0 {
-		return nil, errors.New("host: StartMetadataShard requires Peers to be populated")
-	}
 	h.mu.Lock()
 	if _, ok := h.metadataRunners[shardID]; ok {
 		h.mu.Unlock()
@@ -415,46 +407,6 @@ func (h *Host) MetadataRunner() *MetadataRunner {
 		return nil
 	}
 	return h.metadataRunners[0]
-}
-
-// InprocDeploymentRecord builds the synthetic inproc deployment record
-// for cfg.Handlers, stamped at nowMs. Pure: it does NOT touch dragonboat
-// or shard 0; the metadata-leader bootstrap proposes it and the apply
-// arm persists it. The deployment_id is deterministic across restarts
-// (sdk.InprocDeploymentID hashes the sorted handler tuples). Returns
-// nil when cfg.Handlers is empty — there is no useful deployment to
-// register and ingress falls back to stamping an empty id.
-func (h *Host) InprocDeploymentRecord(nowMs uint64) *enginev1.DeploymentRecord {
-	reg := h.cfg.Handlers
-	if reg == nil || reg.Len() == 0 {
-		return nil
-	}
-	entries := reg.Entries()
-	rec := &enginev1.DeploymentRecord{
-		Id:             sdk.InprocDeploymentID(entries),
-		Url:            "inproc://",
-		RegisteredAtMs: nowMs,
-	}
-	for _, e := range entries {
-		rec.Handlers = append(rec.Handlers, &enginev1.DeploymentHandler{
-			Service: e.Service,
-			Handler: e.Handler,
-			Kind:    uint32(e.Kind),
-		})
-	}
-	return rec
-}
-
-// InprocDeploymentID returns the deterministic id for the synthetic
-// inproc deployment, or "" when cfg.Handlers is empty. Used by ingress
-// to stamp invocations and by the metadata-leader bootstrap to propose
-// RegisterDeployment.
-func (h *Host) InprocDeploymentID() string {
-	reg := h.cfg.Handlers
-	if reg == nil || reg.Len() == 0 {
-		return ""
-	}
-	return sdk.InprocDeploymentID(reg.Entries())
 }
 
 // PartitionTable performs a linearizable read of the cluster's partition
@@ -579,11 +531,6 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		InitialEpoch: initialEpoch,
 	})
 
-	registry := h.cfg.Handlers
-	if registry == nil {
-		registry = sdk.NewRegistry()
-	}
-
 	runner := &PartitionRunner{
 		ShardID:     shardID,
 		snapshotter: snap,
@@ -600,7 +547,6 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 	// onBecomeLeader — their `done` channels are single-use so reusing
 	// the same instance across promotions would panic.
 	runner.invoker = invoker.New(invoker.Config{
-		Registry:        invoker.NewRegistry(registry),
 		JournalTable:    tables.JournalTable{S: snap.Store()},
 		InvocationTable: tables.InvocationTable{S: snap.Store()},
 		StateTable:      tables.StateTable{S: snap.Store()},

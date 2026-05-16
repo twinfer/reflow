@@ -42,10 +42,10 @@ func TestLoad_SteadyState(t *testing.T) {
 	}
 
 	cluster := loadgen.NewCluster(t, loadgen.ClusterOptions{
-		N:        3,
-		Handlers: reg,
+		N: 3,
 	})
 	defer cluster.Close()
+	defer loadgen.StartEmbeddedHandlers(t, cluster, reg)()
 
 	sampler := loadgen.NewSampler()
 

@@ -148,25 +148,6 @@ func (r *MetadataRunner) bootstrap(ctx context.Context) {
 		return
 	}
 
-	// Propose the synthetic inproc deployment for this node's handler
-	// set. Re-running on leader gain is safe: DeploymentTable.Put is an
-	// upsert, the id is deterministic, and every node computes the same
-	// record from the same handler set.
-	if r.host != nil {
-		if rec := r.host.InprocDeploymentRecord(uint64(time.Now().UnixMilli())); rec != nil {
-			depCmd := &enginev1.Command{
-				Kind: &enginev1.Command_RegisterDeployment{
-					RegisterDeployment: &enginev1.RegisterDeployment{Record: rec},
-				},
-			}
-			if err := r.proposer.ProposeSelf(ctx, depCmd); err != nil {
-				if !errors.Is(err, context.Canceled) && !errors.Is(err, ErrShardClosed) {
-					r.log.Warn("metadata: RegisterDeployment(inproc) propose failed", "err", err)
-				}
-			}
-		}
-	}
-
 	r.log.Info("metadata: bootstrap proposals committed",
 		"shard", r.ShardID, "partition_count", len(pt.Shards))
 }

@@ -98,6 +98,12 @@ message StartMessage {
 
   // Handler classification — echoes the deployment registration.
   Kind kind = 13;
+
+  // Owner invocation's partition_key. Reflow-specific routing hint —
+  // wireContext.Awakeable mints awakeable ids whose first 8 bytes
+  // encode this value so ingress.ResolveAwakeable can route to the
+  // owning shard with a single read.
+  fixed64 partition_key = 14;
 }
 
 // Type: 0x0001
@@ -411,6 +417,29 @@ message GetInvocationOutputCompletionNotificationMessage {
     Value value = 5;
     Failure failure = 6;
   }
+}
+
+// Type: 0x0414
+// SDK→engine: mint an awakeable bound to the current invocation. The
+// SDK generates the id deterministically (binding the owner's
+// partition_key in the first 8 bytes); the engine writes JEAwakeable
+// at the supplied slot and rows the id into the awakeable directory so
+// ingress.ResolveAwakeable can find it. The resolution arrives later
+// as SignalNotificationMessage{name=awakeable_id}.
+message AwakeableCommandMessage {
+  uint32 result_completion_id = 1;
+  string awakeable_id = 2;
+}
+
+// Type: 0x0415
+// SDK→engine: deliver a named signal to another invocation. The
+// receiver-side onSignalDelivered apply arm routes the signal to the
+// target's session (typically resolving an awakeable named with the
+// matching string).
+message SendSignalCommandMessage {
+  string target_invocation_id = 1;
+  string signal_name = 2;
+  bytes payload = 3;
 }
 
 // ----------------------------------------------------------------------

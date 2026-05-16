@@ -86,9 +86,12 @@ func runSession(
 	// Build the wire context and run the handler. A panic is recovered
 	// and translated to an ErrorMessage so the engine doesn't hang on
 	// the stream.
-	invID := &enginev1.InvocationId{Uuid: start.GetId()}
+	invID := &enginev1.InvocationId{
+		Uuid:         start.GetId(),
+		PartitionKey: start.GetPartitionKey(),
+	}
 	stateCache := stateMapToCache(start.GetStateMap())
-	wctx := newWireContext(ctx, invID, input, stream, codec, stateCache, replay)
+	wctx := newWireContext(ctx, invID, input, stream, codec, stateCache, replay, start.GetPartitionKey())
 
 	output, runErr := runHandler(wctx, fn, input)
 
@@ -259,6 +262,44 @@ func readReplay(stream frameStream, codec handlerclient.Codec, count uint32) ([]
 		case handlerclient.TypeCmdSetState, handlerclient.TypeCmdClearState, handlerclient.TypeCmdClearAllState:
 			replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
 			nextSlot++
+		case handlerclient.TypeCmdAwakeable:
+			// Awakeable allocates 2 slots: cmd at nextSlot, result at nextSlot+1.
+			replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
+			nextSlot += 2
+		case handlerclient.TypeNoteSignal:
+			// SignalNotificationMessage is keyed by the name (awakeable
+			// id) — find the matching AwakeableCommandMessage entry in
+			// replay and store the notification one slot past it.
+			var note protocolv1.SignalNotificationMessage
+			if err := codec.Unmarshal(f.GetPayload(), &note); err != nil {
+				return nil, nil, fmt.Errorf("decode replay SignalNotificationMessage: %w", err)
+			}
+			name := ""
+			if n, ok := note.GetSignalId().(*protocolv1.SignalNotificationMessage_Name); ok {
+				name = n.Name
+			}
+			matched := false
+			for slot, e := range replay {
+				if e.typeCode != handlerclient.TypeCmdAwakeable {
+					continue
+				}
+				var cmd protocolv1.AwakeableCommandMessage
+				if err := codec.Unmarshal(e.payload, &cmd); err != nil {
+					continue
+				}
+				if cmd.GetAwakeableId() == name {
+					replay[slot+1] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				// Forward-compat: store at the next free slot in case the
+				// engine ever ships a signal that doesn't correspond to a
+				// replayed Awakeable (out-of-band cancel etc.).
+				replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
+				nextSlot++
+			}
 		default:
 			// Forward-compat: stash the frame at a per-count synthetic
 			// slot to keep the cursor advancing in lockstep with the

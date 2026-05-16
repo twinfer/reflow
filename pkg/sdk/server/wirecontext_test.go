@@ -1,6 +1,8 @@
 package server
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"io"
 	"testing"
@@ -11,6 +13,11 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
+
+// decodeBase64URL decodes the base64url body of a minted awakeable id.
+func decodeBase64URL(s string) ([]byte, error) {
+	return base64.RawURLEncoding.DecodeString(s)
+}
 
 // fakeStream captures frames sent by the wireContext under test. Recv
 // returns io.EOF — wireContext never reads from the stream, so this is
@@ -35,7 +42,7 @@ func newTestWireContext(t *testing.T, cache map[string][]byte) (*wireContext, *f
 	t.Helper()
 	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
 	stream := &fakeStream{}
-	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, handlerclient.DefaultCodec(), cache, nil)
+	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, handlerclient.DefaultCodec(), cache, nil, 7)
 	return wctx, stream
 }
 
@@ -45,7 +52,7 @@ func newTestWireContextWithReplay(t *testing.T, replay map[uint32]*replayEntry) 
 	t.Helper()
 	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
 	stream := &fakeStream{}
-	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, handlerclient.DefaultCodec(), nil, replay)
+	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, handlerclient.DefaultCodec(), nil, replay, 7)
 	return wctx, stream
 }
 
@@ -576,6 +583,139 @@ func TestWireContext_Run_ReplayHitReturnsCachedValue(t *testing.T) {
 	}
 }
 
+// TestWireContext_Awakeable_FreshMintsAndSuspends asserts the first
+// Awakeable call mints a partition_key-encoded id, emits
+// AwakeableCommandMessage, and returns a suspended future.
+func TestWireContext_Awakeable_FreshMintsAndSuspends(t *testing.T) {
+	wctx, stream := newTestWireContext(t, nil)
+
+	id, fut := wctx.Awakeable()
+	if id == "" {
+		t.Fatal("Awakeable returned empty id")
+	}
+	if got := id[:4]; got != "awk_" {
+		t.Errorf("id prefix = %q; want awk_", got)
+	}
+	if len(id) != 26 {
+		t.Errorf("id len = %d; want 26 (awk_ + 22 base64url)", len(id))
+	}
+	if _, err := fut.Result(); !errors.Is(err, sdk.ErrSuspended) {
+		t.Errorf("Awakeable future.Result err = %v; want ErrSuspended", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("sent frames = %d; want 1 (AwakeableCommandMessage)", len(stream.sent))
+	}
+	tc, _, _ := handlerclient.UnpackHeader(stream.sent[0].GetHeader())
+	if tc != handlerclient.TypeCmdAwakeable {
+		t.Errorf("frame.type = 0x%04x; want 0x%04x", tc, handlerclient.TypeCmdAwakeable)
+	}
+	var msg protocolv1.AwakeableCommandMessage
+	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &msg); err != nil {
+		t.Fatalf("decode AwakeableCommandMessage: %v", err)
+	}
+	if msg.GetAwakeableId() != id {
+		t.Errorf("AwakeableCommandMessage.id = %q; want %q", msg.GetAwakeableId(), id)
+	}
+	if msg.GetResultCompletionId() != 2 {
+		t.Errorf("result_completion_id = %d; want 2", msg.GetResultCompletionId())
+	}
+}
+
+// TestWireContext_Awakeable_ReplayHitWithSignal asserts a replayed
+// AwakeableCommandMessage + SignalNotificationMessage pair surfaces
+// the cached id + resolved value without re-minting or re-emitting.
+func TestWireContext_Awakeable_ReplayHitWithSignal(t *testing.T) {
+	codec := handlerclient.DefaultCodec()
+	cmdPayload, err := codec.Marshal(&protocolv1.AwakeableCommandMessage{
+		ResultCompletionId: 2,
+		AwakeableId:        "awk_replayid12345678901234567",
+	})
+	if err != nil {
+		t.Fatalf("marshal AwakeableCommandMessage: %v", err)
+	}
+	signalPayload, err := codec.Marshal(&protocolv1.SignalNotificationMessage{
+		SignalId: &protocolv1.SignalNotificationMessage_Name{
+			Name: "awk_replayid12345678901234567",
+		},
+		Result: &protocolv1.SignalNotificationMessage_Value{
+			Value: &protocolv1.Value{Content: []byte("resolved")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal SignalNotificationMessage: %v", err)
+	}
+	wctx, stream := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
+		1: {typeCode: handlerclient.TypeCmdAwakeable, payload: cmdPayload},
+		2: {typeCode: handlerclient.TypeNoteSignal, payload: signalPayload},
+	})
+
+	id, fut := wctx.Awakeable()
+	if id != "awk_replayid12345678901234567" {
+		t.Errorf("Awakeable id = %q; want %q", id, "awk_replayid12345678901234567")
+	}
+	v, err := fut.Result()
+	if err != nil {
+		t.Errorf("future.Result err = %v; want nil", err)
+	}
+	if string(v) != "resolved" {
+		t.Errorf("future.Result value = %q; want %q", v, "resolved")
+	}
+	if len(stream.sent) != 0 {
+		t.Errorf("sent %d frames; want 0 on full replay-hit", len(stream.sent))
+	}
+}
+
+// TestWireContext_Awakeable_ReplayHitCmdOnlyStillSuspends asserts an
+// Awakeable that has its command journaled but no resolution yet
+// returns the cached id + suspendedFuture.
+func TestWireContext_Awakeable_ReplayHitCmdOnlyStillSuspends(t *testing.T) {
+	codec := handlerclient.DefaultCodec()
+	cmdPayload, err := codec.Marshal(&protocolv1.AwakeableCommandMessage{
+		ResultCompletionId: 2,
+		AwakeableId:        "awk_pending1234567890123456789",
+	})
+	if err != nil {
+		t.Fatalf("marshal AwakeableCommandMessage: %v", err)
+	}
+	wctx, stream := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
+		1: {typeCode: handlerclient.TypeCmdAwakeable, payload: cmdPayload},
+	})
+
+	id, fut := wctx.Awakeable()
+	if id != "awk_pending1234567890123456789" {
+		t.Errorf("Awakeable id = %q; want cached id", id)
+	}
+	if _, err := fut.Result(); !errors.Is(err, sdk.ErrSuspended) {
+		t.Errorf("future.Result err = %v; want ErrSuspended (cmd-only replay)", err)
+	}
+	if len(stream.sent) != 0 {
+		t.Errorf("sent %d frames; want 0 (cmd already journaled)", len(stream.sent))
+	}
+}
+
+// TestWireContext_Awakeable_IDEmbedsPartitionKey asserts the minted id
+// encodes partitionKey in its first 8 bytes — the contract
+// ingress.ResolveAwakeable depends on for routing.
+func TestWireContext_Awakeable_IDEmbedsPartitionKey(t *testing.T) {
+	wctx, _ := newTestWireContext(t, nil)
+	id, _ := wctx.Awakeable()
+	const prefix = "awk_"
+	if got := id[:len(prefix)]; got != prefix {
+		t.Fatalf("id prefix = %q; want %q", got, prefix)
+	}
+	decoded, err := decodeBase64URL(id[len(prefix):])
+	if err != nil {
+		t.Fatalf("decode id body: %v", err)
+	}
+	if len(decoded) != 16 {
+		t.Fatalf("decoded len = %d; want 16", len(decoded))
+	}
+	got := binary.BigEndian.Uint64(decoded[:8])
+	if got != 7 {
+		t.Errorf("decoded partition_key = %d; want 7 (the fixture's)", got)
+	}
+}
+
 // TestWireContext_Suspend_ShortCircuitsSubsequentCalls asserts that
 // once suspended, every ctx call returns ErrSuspended (mirrors
 // inprocContext.suspend).
@@ -596,17 +736,13 @@ func TestWireContext_Suspend_ShortCircuitsSubsequentCalls(t *testing.T) {
 	}
 }
 
-// TestWireContext_DurablePrimitivesNotImplemented covers every durable
-// primitive still gated on the 5f.6 wire-protocol expansion. Sleep,
-// State, Call, OneWayCall, Run are no longer in this list — they
-// landed in 5f.1-5f.5.
-func TestWireContext_DurablePrimitivesNotImplemented(t *testing.T) {
+// TestWireContext_StillGated covers the durable primitives that remain
+// not-implemented after the 5f.1-5f.6 sequence. SendSignal needs a
+// Target → InvocationId resolver (matching inproc.go's state). The
+// All / Any combinators delegate to children that may still return
+// ErrWireNotImplemented when fed a notImplementedFuture.
+func TestWireContext_StillGated(t *testing.T) {
 	wctx, _ := newTestWireContext(t, nil)
-
-	_, akFuture := wctx.Awakeable()
-	if _, err := akFuture.Result(); !errors.Is(err, ErrWireNotImplemented) {
-		t.Errorf("Awakeable.Result() err = %v; want ErrWireNotImplemented", err)
-	}
 
 	if err := wctx.SendSignal(sdk.Target{}, "s", nil); !errors.Is(err, ErrWireNotImplemented) {
 		t.Errorf("SendSignal err = %v; want ErrWireNotImplemented", err)

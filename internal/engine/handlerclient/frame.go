@@ -29,13 +29,19 @@ const (
 	TypeCmdCall          uint16 = 0x040D
 	TypeCmdOneWayCall    uint16 = 0x040E
 
-	TypeCmdRun uint16 = 0x0411
+	TypeCmdRun        uint16 = 0x0411
+	TypeCmdAwakeable  uint16 = 0x0414
+	TypeCmdSendSignal uint16 = 0x0415
 
 	// Notifications (0x8000-0x80FF).
 	TypeNoteSleepDone        uint16 = 0x800C
 	TypeNoteCallDone         uint16 = 0x800D
 	TypeNoteCallInvocationId uint16 = 0x800E
 	TypeNoteRunDone          uint16 = 0x8011
+
+	// Out-of-band signal delivery (0xFBFF). The same code carries
+	// awakeable resolutions and any future numbered signals.
+	TypeNoteSignal uint16 = 0xFBFF
 )
 
 // PackHeader encodes (type, flags, payload length) into the 64-bit

@@ -173,6 +173,38 @@ func translateEntry(e *enginev1.JournalEntry, codec handlerclient.Codec, log *sl
 			{typeCode: handlerclient.TypeNoteRunDone, payload: notePayload},
 		}, nil
 
+	case *enginev1.JournalEntry_Awakeable:
+		// Awakeable allocates 2 slots: cmd at e.Index, result at e.Index+1.
+		// The cmd frame carries the minted awakeable id so the SDK can
+		// return it from the replayed Awakeable call without re-minting.
+		msg := &protocolv1.AwakeableCommandMessage{
+			ResultCompletionId: e.GetIndex() + 1,
+			AwakeableId:        entry.Awakeable.GetAwakeableId(),
+		}
+		return marshalFrame(codec, handlerclient.TypeCmdAwakeable, msg)
+
+	case *enginev1.JournalEntry_AwakeableResult:
+		// Translate to a SignalNotificationMessage with the name variant
+		// matching the awakeable id. Result slot = e.Index (the second
+		// of the 2-slot Awakeable pair).
+		msg := &protocolv1.SignalNotificationMessage{
+			SignalId: &protocolv1.SignalNotificationMessage_Name{
+				Name: entry.AwakeableResult.GetAwakeableId(),
+			},
+		}
+		if fm := entry.AwakeableResult.GetFailureMessage(); fm != "" {
+			msg.Result = &protocolv1.SignalNotificationMessage_Failure{
+				Failure: &protocolv1.Failure{Message: fm},
+			}
+		} else if v := entry.AwakeableResult.GetValue(); v != nil {
+			msg.Result = &protocolv1.SignalNotificationMessage_Value{
+				Value: &protocolv1.Value{Content: v},
+			}
+		} else {
+			msg.Result = &protocolv1.SignalNotificationMessage_Void{Void: &protocolv1.Void{}}
+		}
+		return marshalFrame(codec, handlerclient.TypeNoteSignal, msg)
+
 	default:
 		log.Debug("invoker.wire: skipping JE variant in replay (not yet wired)",
 			"index", e.GetIndex(),

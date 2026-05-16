@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"sync"
 	"time"
@@ -43,6 +46,7 @@ type wireContext struct {
 	ctx          context.Context
 	input        []byte
 	invocationID *enginev1.InvocationId
+	partitionKey uint64
 
 	stream frameStream
 	codec  handlerclient.Codec
@@ -92,6 +96,7 @@ func newWireContext(
 	codec handlerclient.Codec,
 	stateCache map[string][]byte,
 	replay map[uint32]*replayEntry,
+	partitionKey uint64,
 ) *wireContext {
 	if replay == nil {
 		replay = make(map[uint32]*replayEntry)
@@ -100,6 +105,7 @@ func newWireContext(
 		ctx:          ctx,
 		input:        input,
 		invocationID: id,
+		partitionKey: partitionKey,
 		stream:       stream,
 		codec:        codec,
 		stateCache:   stateCache,
@@ -485,7 +491,97 @@ func (c *wireContext) OneWayCall(target sdk.Target, input []byte) error {
 	return c.stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdOneWayCall, payload))
 }
 
-func (c *wireContext) Awakeable() (string, sdk.Future) { return "", notImplementedFuture{} }
+// Awakeable mints a fresh awakeable id bound to this invocation's
+// partition_key and returns a Future that resolves when external
+// callers invoke ingress.ResolveAwakeable with the matching id.
+//
+// Replay branches mirror inproc.go and the wire Sleep/Call patterns:
+//   - Result slot in replay → return the resolved value/failure inline.
+//   - Cmd slot in replay (no result yet) → return the cached id +
+//     suspendedFuture.
+//   - No replay → mint a fresh id, emit AwakeableCommandMessage,
+//     return id + suspendedFuture.
+func (c *wireContext) Awakeable() (string, sdk.Future) {
+	cmdSlot, ok := c.allocSlot(2)
+	if !ok {
+		return "", suspendedFuture{}
+	}
+	resultSlot := cmdSlot + 1
+
+	if entry := c.lookupReplay(resultSlot); entry != nil && entry.typeCode == handlerclient.TypeNoteSignal {
+		// Resolved — decode the cached signal.
+		var note protocolv1.SignalNotificationMessage
+		if err := c.codec.Unmarshal(entry.payload, &note); err != nil {
+			return "", errFuture{err: fmt.Errorf("decode replayed SignalNotificationMessage: %w", err)}
+		}
+		// id is in the AwakeableCommandMessage at cmdSlot.
+		id := c.replayAwakeableID(cmdSlot)
+		switch r := note.GetResult().(type) {
+		case *protocolv1.SignalNotificationMessage_Value:
+			return id, readyFuture{value: r.Value.GetContent()}
+		case *protocolv1.SignalNotificationMessage_Failure:
+			return id, errFuture{err: sdk.NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())}
+		default:
+			return id, readyFuture{value: nil}
+		}
+	}
+	if entry := c.lookupReplay(cmdSlot); entry != nil && entry.typeCode == handlerclient.TypeCmdAwakeable {
+		// Already journaled; cmd carries the id and the result hasn't landed.
+		id := c.replayAwakeableID(cmdSlot)
+		c.suspend(fmt.Sprintf("completion:%d", resultSlot))
+		return id, suspendedFuture{}
+	}
+
+	// Fresh awakeable. Mint id locally using the embedded partition_key
+	// so ingress.ResolveAwakeable can route to the owning shard.
+	id, err := mintAwakeableID(c.partitionKey)
+	if err != nil {
+		return "", errFuture{err: err}
+	}
+	msg := &protocolv1.AwakeableCommandMessage{
+		ResultCompletionId: resultSlot,
+		AwakeableId:        id,
+	}
+	payload, err := c.codec.Marshal(msg)
+	if err != nil {
+		return "", errFuture{err: fmt.Errorf("marshal AwakeableCommandMessage: %w", err)}
+	}
+	if err := c.stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdAwakeable, payload)); err != nil {
+		return "", errFuture{err: err}
+	}
+	c.suspend(fmt.Sprintf("completion:%d", resultSlot))
+	return id, suspendedFuture{}
+}
+
+// replayAwakeableID decodes the AwakeableCommandMessage at slot and
+// returns the id, or "" if decoding fails. Used to surface the id on
+// replay-hits where the SDK called Awakeable in a prior run.
+func (c *wireContext) replayAwakeableID(slot uint32) string {
+	entry := c.lookupReplay(slot)
+	if entry == nil || entry.typeCode != handlerclient.TypeCmdAwakeable {
+		return ""
+	}
+	var cmd protocolv1.AwakeableCommandMessage
+	if err := c.codec.Unmarshal(entry.payload, &cmd); err != nil {
+		return ""
+	}
+	return cmd.GetAwakeableId()
+}
+
+// mintAwakeableID generates a fresh "awk_<22 base64url>" identifier
+// whose first 8 bytes encode ownerPartitionKey big-endian and the
+// remaining 8 are random. Mirrors invoker.newAwakeableID so the wire
+// and inproc paths share the same id shape; ingress.ResolveAwakeable
+// uses the embedded partition_key to route resolution to the owning
+// shard with a single read.
+func mintAwakeableID(ownerPartitionKey uint64) (string, error) {
+	var buf [16]byte
+	binary.BigEndian.PutUint64(buf[:8], ownerPartitionKey)
+	if _, err := rand.Read(buf[8:]); err != nil {
+		return "", fmt.Errorf("reflow: awakeable id rng: %w", err)
+	}
+	return "awk_" + base64.RawURLEncoding.EncodeToString(buf[:]), nil
+}
 
 func (c *wireContext) All(futures ...sdk.Future) sdk.AllResult {
 	return notImplementedAllResult{n: len(futures)}

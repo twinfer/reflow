@@ -219,6 +219,7 @@ func (s *wireSession) sendStartAndReplay(stream handlerclient.Stream, entries []
 		ServiceName:  s.target.GetServiceName(),
 		HandlerName:  s.target.GetHandlerName(),
 		KnownEntries: uint32(len(frames)),
+		PartitionKey: s.id.GetPartitionKey(),
 	}
 	if cache := preloadEagerState(s.stateTable, s.target, s.id, s.log); len(cache) > 0 {
 		stateEntries := make([]*protocolv1.StartMessage_StateEntry, 0, len(cache))
@@ -332,6 +333,10 @@ func (s *wireSession) driveLoop(stream handlerclient.Stream) {
 			_ = s.allocIdx()
 		case handlerclient.TypeProposeRunDone:
 			if !s.handleProposeRunCompletion(f.GetPayload()) {
+				return
+			}
+		case handlerclient.TypeCmdAwakeable:
+			if !s.handleAwakeable(f.GetPayload()) {
 				return
 			}
 		case handlerclient.TypeSuspension:
@@ -534,6 +539,28 @@ func (s *wireSession) handleOneWayCall(payload []byte) bool {
 		},
 	}
 	return s.proposeJournalOrFail(entry, "JEOneWayCall")
+}
+
+// handleAwakeable decodes an AwakeableCommandMessage and proposes
+// JEAwakeable carrying the SDK-minted id. Allocates 2 slots (cmd +
+// result) to mirror inproc.go's Awakeable accounting.
+func (s *wireSession) handleAwakeable(payload []byte) bool {
+	var cmd protocolv1.AwakeableCommandMessage
+	if err := s.codec.Unmarshal(payload, &cmd); err != nil {
+		s.log.Warn("invoker.wire: decode AwakeableCommandMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode awakeable: %v", err))
+		return false
+	}
+	cmdIdx := s.allocIdx()
+	_ = s.allocIdx() // reserve result slot
+	entry := &enginev1.JournalEntry{
+		Index: cmdIdx,
+		Entry: &enginev1.JournalEntry_Awakeable{
+			Awakeable: &enginev1.JEAwakeable{AwakeableId: cmd.GetAwakeableId()},
+		},
+	}
+	return s.proposeJournalOrFail(entry, "JEAwakeable")
 }
 
 // handleProposeRunCompletion decodes a ProposeRunCompletionMessage and

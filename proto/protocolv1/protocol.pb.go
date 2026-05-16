@@ -190,7 +190,12 @@ type StartMessage struct {
 	ServiceName string `protobuf:"bytes,10,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
 	HandlerName string `protobuf:"bytes,11,opt,name=handler_name,json=handlerName,proto3" json:"handler_name,omitempty"`
 	// Handler classification — echoes the deployment registration.
-	Kind          Kind `protobuf:"varint,13,opt,name=kind,proto3,enum=reflow.protocol.v1.Kind" json:"kind,omitempty"`
+	Kind Kind `protobuf:"varint,13,opt,name=kind,proto3,enum=reflow.protocol.v1.Kind" json:"kind,omitempty"`
+	// Owner invocation's partition_key. Reflow-specific routing hint —
+	// wireContext.Awakeable mints awakeable ids whose first 8 bytes
+	// encode this value so ingress.ResolveAwakeable can route to the
+	// owning shard with a single read.
+	PartitionKey  uint64 `protobuf:"fixed64,14,opt,name=partition_key,json=partitionKey,proto3" json:"partition_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -307,6 +312,13 @@ func (x *StartMessage) GetKind() Kind {
 		return x.Kind
 	}
 	return Kind_KIND_UNSPECIFIED
+}
+
+func (x *StartMessage) GetPartitionKey() uint64 {
+	if x != nil {
+		return x.PartitionKey
+	}
+	return 0
 }
 
 // Type: 0x0001
@@ -2791,6 +2803,130 @@ func (*GetInvocationOutputCompletionNotificationMessage_Value) isGetInvocationOu
 func (*GetInvocationOutputCompletionNotificationMessage_Failure) isGetInvocationOutputCompletionNotificationMessage_Result() {
 }
 
+// Type: 0x0414
+// SDK→engine: mint an awakeable bound to the current invocation. The
+// SDK generates the id deterministically (binding the owner's
+// partition_key in the first 8 bytes); the engine writes JEAwakeable
+// at the supplied slot and rows the id into the awakeable directory so
+// ingress.ResolveAwakeable can find it. The resolution arrives later
+// as SignalNotificationMessage{name=awakeable_id}.
+type AwakeableCommandMessage struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	ResultCompletionId uint32                 `protobuf:"varint,1,opt,name=result_completion_id,json=resultCompletionId,proto3" json:"result_completion_id,omitempty"`
+	AwakeableId        string                 `protobuf:"bytes,2,opt,name=awakeable_id,json=awakeableId,proto3" json:"awakeable_id,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *AwakeableCommandMessage) Reset() {
+	*x = AwakeableCommandMessage{}
+	mi := &file_protocolv1_protocol_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AwakeableCommandMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AwakeableCommandMessage) ProtoMessage() {}
+
+func (x *AwakeableCommandMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_protocolv1_protocol_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AwakeableCommandMessage.ProtoReflect.Descriptor instead.
+func (*AwakeableCommandMessage) Descriptor() ([]byte, []int) {
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *AwakeableCommandMessage) GetResultCompletionId() uint32 {
+	if x != nil {
+		return x.ResultCompletionId
+	}
+	return 0
+}
+
+func (x *AwakeableCommandMessage) GetAwakeableId() string {
+	if x != nil {
+		return x.AwakeableId
+	}
+	return ""
+}
+
+// Type: 0x0415
+// SDK→engine: deliver a named signal to another invocation. The
+// receiver-side onSignalDelivered apply arm routes the signal to the
+// target's session (typically resolving an awakeable named with the
+// matching string).
+type SendSignalCommandMessage struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	TargetInvocationId string                 `protobuf:"bytes,1,opt,name=target_invocation_id,json=targetInvocationId,proto3" json:"target_invocation_id,omitempty"`
+	SignalName         string                 `protobuf:"bytes,2,opt,name=signal_name,json=signalName,proto3" json:"signal_name,omitempty"`
+	Payload            []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *SendSignalCommandMessage) Reset() {
+	*x = SendSignalCommandMessage{}
+	mi := &file_protocolv1_protocol_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SendSignalCommandMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SendSignalCommandMessage) ProtoMessage() {}
+
+func (x *SendSignalCommandMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_protocolv1_protocol_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SendSignalCommandMessage.ProtoReflect.Descriptor instead.
+func (*SendSignalCommandMessage) Descriptor() ([]byte, []int) {
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *SendSignalCommandMessage) GetTargetInvocationId() string {
+	if x != nil {
+		return x.TargetInvocationId
+	}
+	return ""
+}
+
+func (x *SendSignalCommandMessage) GetSignalName() string {
+	if x != nil {
+		return x.SignalName
+	}
+	return ""
+}
+
+func (x *SendSignalCommandMessage) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
 // Delivered to the SDK out-of-band when an awakeable resolves or (in
 // future) when a cancel signal arrives. v1 only emits the `name`
 // variant; the `idx` slot is reserved for future numbered signals.
@@ -2813,7 +2949,7 @@ type SignalNotificationMessage struct {
 
 func (x *SignalNotificationMessage) Reset() {
 	*x = SignalNotificationMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[34]
+	mi := &file_protocolv1_protocol_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2825,7 +2961,7 @@ func (x *SignalNotificationMessage) String() string {
 func (*SignalNotificationMessage) ProtoMessage() {}
 
 func (x *SignalNotificationMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[34]
+	mi := &file_protocolv1_protocol_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2838,7 +2974,7 @@ func (x *SignalNotificationMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalNotificationMessage.ProtoReflect.Descriptor instead.
 func (*SignalNotificationMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{34}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *SignalNotificationMessage) GetSignalId() isSignalNotificationMessage_SignalId {
@@ -2947,7 +3083,7 @@ type StateKeys struct {
 
 func (x *StateKeys) Reset() {
 	*x = StateKeys{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[35]
+	mi := &file_protocolv1_protocol_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2959,7 +3095,7 @@ func (x *StateKeys) String() string {
 func (*StateKeys) ProtoMessage() {}
 
 func (x *StateKeys) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[35]
+	mi := &file_protocolv1_protocol_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2972,7 +3108,7 @@ func (x *StateKeys) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StateKeys.ProtoReflect.Descriptor instead.
 func (*StateKeys) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{35}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *StateKeys) GetKeys() [][]byte {
@@ -2991,7 +3127,7 @@ type Value struct {
 
 func (x *Value) Reset() {
 	*x = Value{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[36]
+	mi := &file_protocolv1_protocol_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3003,7 +3139,7 @@ func (x *Value) String() string {
 func (*Value) ProtoMessage() {}
 
 func (x *Value) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[36]
+	mi := &file_protocolv1_protocol_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3016,7 +3152,7 @@ func (x *Value) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Value.ProtoReflect.Descriptor instead.
 func (*Value) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{36}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *Value) GetContent() []byte {
@@ -3039,7 +3175,7 @@ type Failure struct {
 
 func (x *Failure) Reset() {
 	*x = Failure{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[37]
+	mi := &file_protocolv1_protocol_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3051,7 +3187,7 @@ func (x *Failure) String() string {
 func (*Failure) ProtoMessage() {}
 
 func (x *Failure) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[37]
+	mi := &file_protocolv1_protocol_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3064,7 +3200,7 @@ func (x *Failure) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Failure.ProtoReflect.Descriptor instead.
 func (*Failure) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{37}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *Failure) GetCode() uint32 {
@@ -3091,7 +3227,7 @@ type Header struct {
 
 func (x *Header) Reset() {
 	*x = Header{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[38]
+	mi := &file_protocolv1_protocol_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3103,7 +3239,7 @@ func (x *Header) String() string {
 func (*Header) ProtoMessage() {}
 
 func (x *Header) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[38]
+	mi := &file_protocolv1_protocol_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3116,7 +3252,7 @@ func (x *Header) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Header.ProtoReflect.Descriptor instead.
 func (*Header) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{38}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *Header) GetKey() string {
@@ -3144,7 +3280,7 @@ type WorkflowTarget struct {
 
 func (x *WorkflowTarget) Reset() {
 	*x = WorkflowTarget{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[39]
+	mi := &file_protocolv1_protocol_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3156,7 +3292,7 @@ func (x *WorkflowTarget) String() string {
 func (*WorkflowTarget) ProtoMessage() {}
 
 func (x *WorkflowTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[39]
+	mi := &file_protocolv1_protocol_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3169,7 +3305,7 @@ func (x *WorkflowTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowTarget.ProtoReflect.Descriptor instead.
 func (*WorkflowTarget) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{39}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *WorkflowTarget) GetWorkflowName() string {
@@ -3195,7 +3331,7 @@ type Void struct {
 
 func (x *Void) Reset() {
 	*x = Void{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[40]
+	mi := &file_protocolv1_protocol_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3207,7 +3343,7 @@ func (x *Void) String() string {
 func (*Void) ProtoMessage() {}
 
 func (x *Void) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[40]
+	mi := &file_protocolv1_protocol_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3220,7 +3356,7 @@ func (x *Void) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Void.ProtoReflect.Descriptor instead.
 func (*Void) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{40}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{42}
 }
 
 type StartMessage_StateEntry struct {
@@ -3234,7 +3370,7 @@ type StartMessage_StateEntry struct {
 
 func (x *StartMessage_StateEntry) Reset() {
 	*x = StartMessage_StateEntry{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[41]
+	mi := &file_protocolv1_protocol_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3246,7 +3382,7 @@ func (x *StartMessage_StateEntry) String() string {
 func (*StartMessage_StateEntry) ProtoMessage() {}
 
 func (x *StartMessage_StateEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[41]
+	mi := &file_protocolv1_protocol_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3283,7 +3419,7 @@ const file_protocolv1_protocol_proto_rawDesc = "" +
 	"\x19protocolv1/protocol.proto\x12\x12reflow.protocol.v1\"9\n" +
 	"\x05Frame\x12\x16\n" +
 	"\x06header\x18\x01 \x01(\x04R\x06header\x12\x18\n" +
-	"\apayload\x18\x02 \x01(\fR\apayload\"\xbf\x04\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\"\xe4\x04\n" +
 	"\fStartMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\fR\x02id\x12\x19\n" +
 	"\bdebug_id\x18\x02 \x01(\tR\adebugId\x12#\n" +
@@ -3298,7 +3434,8 @@ const file_protocolv1_protocol_proto_rawDesc = "" +
 	"\fservice_name\x18\n" +
 	" \x01(\tR\vserviceName\x12!\n" +
 	"\fhandler_name\x18\v \x01(\tR\vhandlerName\x12,\n" +
-	"\x04kind\x18\r \x01(\x0e2\x18.reflow.protocol.v1.KindR\x04kind\x1a4\n" +
+	"\x04kind\x18\r \x01(\x0e2\x18.reflow.protocol.v1.KindR\x04kind\x12#\n" +
+	"\rpartition_key\x18\x0e \x01(\x06R\fpartitionKey\x1a4\n" +
 	"\n" +
 	"StateEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +
@@ -3467,7 +3604,15 @@ const file_protocolv1_protocol_proto_rawDesc = "" +
 	"\x04void\x18\x04 \x01(\v2\x18.reflow.protocol.v1.VoidH\x00R\x04void\x121\n" +
 	"\x05value\x18\x05 \x01(\v2\x19.reflow.protocol.v1.ValueH\x00R\x05value\x127\n" +
 	"\afailure\x18\x06 \x01(\v2\x1b.reflow.protocol.v1.FailureH\x00R\afailureB\b\n" +
-	"\x06result\"\xf8\x01\n" +
+	"\x06result\"n\n" +
+	"\x17AwakeableCommandMessage\x120\n" +
+	"\x14result_completion_id\x18\x01 \x01(\rR\x12resultCompletionId\x12!\n" +
+	"\fawakeable_id\x18\x02 \x01(\tR\vawakeableId\"\x87\x01\n" +
+	"\x18SendSignalCommandMessage\x120\n" +
+	"\x14target_invocation_id\x18\x01 \x01(\tR\x12targetInvocationId\x12\x1f\n" +
+	"\vsignal_name\x18\x02 \x01(\tR\n" +
+	"signalName\x12\x18\n" +
+	"\apayload\x18\x03 \x01(\fR\apayload\"\xf8\x01\n" +
 	"\x19SignalNotificationMessage\x12\x12\n" +
 	"\x03idx\x18\x02 \x01(\rH\x00R\x03idx\x12\x14\n" +
 	"\x04name\x18\x03 \x01(\tH\x00R\x04name\x12.\n" +
@@ -3509,7 +3654,7 @@ func file_protocolv1_protocol_proto_rawDescGZIP() []byte {
 }
 
 var file_protocolv1_protocol_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_protocolv1_protocol_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
+var file_protocolv1_protocol_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
 var file_protocolv1_protocol_proto_goTypes = []any{
 	(Kind)(0),                                                // 0: reflow.protocol.v1.Kind
 	(*Frame)(nil),                                            // 1: reflow.protocol.v1.Frame
@@ -3546,53 +3691,55 @@ var file_protocolv1_protocol_proto_goTypes = []any{
 	(*AttachInvocationCompletionNotificationMessage)(nil),    // 32: reflow.protocol.v1.AttachInvocationCompletionNotificationMessage
 	(*GetInvocationOutputCommandMessage)(nil),                // 33: reflow.protocol.v1.GetInvocationOutputCommandMessage
 	(*GetInvocationOutputCompletionNotificationMessage)(nil), // 34: reflow.protocol.v1.GetInvocationOutputCompletionNotificationMessage
-	(*SignalNotificationMessage)(nil),                        // 35: reflow.protocol.v1.SignalNotificationMessage
-	(*StateKeys)(nil),                                        // 36: reflow.protocol.v1.StateKeys
-	(*Value)(nil),                                            // 37: reflow.protocol.v1.Value
-	(*Failure)(nil),                                          // 38: reflow.protocol.v1.Failure
-	(*Header)(nil),                                           // 39: reflow.protocol.v1.Header
-	(*WorkflowTarget)(nil),                                   // 40: reflow.protocol.v1.WorkflowTarget
-	(*Void)(nil),                                             // 41: reflow.protocol.v1.Void
-	(*StartMessage_StateEntry)(nil),                          // 42: reflow.protocol.v1.StartMessage.StateEntry
+	(*AwakeableCommandMessage)(nil),                          // 35: reflow.protocol.v1.AwakeableCommandMessage
+	(*SendSignalCommandMessage)(nil),                         // 36: reflow.protocol.v1.SendSignalCommandMessage
+	(*SignalNotificationMessage)(nil),                        // 37: reflow.protocol.v1.SignalNotificationMessage
+	(*StateKeys)(nil),                                        // 38: reflow.protocol.v1.StateKeys
+	(*Value)(nil),                                            // 39: reflow.protocol.v1.Value
+	(*Failure)(nil),                                          // 40: reflow.protocol.v1.Failure
+	(*Header)(nil),                                           // 41: reflow.protocol.v1.Header
+	(*WorkflowTarget)(nil),                                   // 42: reflow.protocol.v1.WorkflowTarget
+	(*Void)(nil),                                             // 43: reflow.protocol.v1.Void
+	(*StartMessage_StateEntry)(nil),                          // 44: reflow.protocol.v1.StartMessage.StateEntry
 }
 var file_protocolv1_protocol_proto_depIdxs = []int32{
-	42, // 0: reflow.protocol.v1.StartMessage.state_map:type_name -> reflow.protocol.v1.StartMessage.StateEntry
+	44, // 0: reflow.protocol.v1.StartMessage.state_map:type_name -> reflow.protocol.v1.StartMessage.StateEntry
 	0,  // 1: reflow.protocol.v1.StartMessage.kind:type_name -> reflow.protocol.v1.Kind
-	38, // 2: reflow.protocol.v1.ProposeRunCompletionMessage.failure:type_name -> reflow.protocol.v1.Failure
-	39, // 3: reflow.protocol.v1.InputCommandMessage.headers:type_name -> reflow.protocol.v1.Header
-	37, // 4: reflow.protocol.v1.InputCommandMessage.value:type_name -> reflow.protocol.v1.Value
-	37, // 5: reflow.protocol.v1.OutputCommandMessage.value:type_name -> reflow.protocol.v1.Value
-	38, // 6: reflow.protocol.v1.OutputCommandMessage.failure:type_name -> reflow.protocol.v1.Failure
-	41, // 7: reflow.protocol.v1.GetLazyStateCompletionNotificationMessage.void:type_name -> reflow.protocol.v1.Void
-	37, // 8: reflow.protocol.v1.GetLazyStateCompletionNotificationMessage.value:type_name -> reflow.protocol.v1.Value
-	37, // 9: reflow.protocol.v1.SetStateCommandMessage.value:type_name -> reflow.protocol.v1.Value
-	36, // 10: reflow.protocol.v1.GetLazyStateKeysCompletionNotificationMessage.state_keys:type_name -> reflow.protocol.v1.StateKeys
-	41, // 11: reflow.protocol.v1.GetEagerStateCommandMessage.void:type_name -> reflow.protocol.v1.Void
-	37, // 12: reflow.protocol.v1.GetEagerStateCommandMessage.value:type_name -> reflow.protocol.v1.Value
-	36, // 13: reflow.protocol.v1.GetEagerStateKeysCommandMessage.value:type_name -> reflow.protocol.v1.StateKeys
-	37, // 14: reflow.protocol.v1.GetPromiseCompletionNotificationMessage.value:type_name -> reflow.protocol.v1.Value
-	38, // 15: reflow.protocol.v1.GetPromiseCompletionNotificationMessage.failure:type_name -> reflow.protocol.v1.Failure
-	37, // 16: reflow.protocol.v1.CompletePromiseCommandMessage.completion_value:type_name -> reflow.protocol.v1.Value
-	38, // 17: reflow.protocol.v1.CompletePromiseCommandMessage.completion_failure:type_name -> reflow.protocol.v1.Failure
-	41, // 18: reflow.protocol.v1.CompletePromiseCompletionNotificationMessage.void:type_name -> reflow.protocol.v1.Void
-	38, // 19: reflow.protocol.v1.CompletePromiseCompletionNotificationMessage.failure:type_name -> reflow.protocol.v1.Failure
-	41, // 20: reflow.protocol.v1.SleepCompletionNotificationMessage.void:type_name -> reflow.protocol.v1.Void
-	39, // 21: reflow.protocol.v1.CallCommandMessage.headers:type_name -> reflow.protocol.v1.Header
-	37, // 22: reflow.protocol.v1.CallCompletionNotificationMessage.value:type_name -> reflow.protocol.v1.Value
-	38, // 23: reflow.protocol.v1.CallCompletionNotificationMessage.failure:type_name -> reflow.protocol.v1.Failure
-	39, // 24: reflow.protocol.v1.OneWayCallCommandMessage.headers:type_name -> reflow.protocol.v1.Header
-	37, // 25: reflow.protocol.v1.RunCompletionNotificationMessage.value:type_name -> reflow.protocol.v1.Value
-	38, // 26: reflow.protocol.v1.RunCompletionNotificationMessage.failure:type_name -> reflow.protocol.v1.Failure
-	40, // 27: reflow.protocol.v1.AttachInvocationCommandMessage.workflow_target:type_name -> reflow.protocol.v1.WorkflowTarget
-	37, // 28: reflow.protocol.v1.AttachInvocationCompletionNotificationMessage.value:type_name -> reflow.protocol.v1.Value
-	38, // 29: reflow.protocol.v1.AttachInvocationCompletionNotificationMessage.failure:type_name -> reflow.protocol.v1.Failure
-	40, // 30: reflow.protocol.v1.GetInvocationOutputCommandMessage.workflow_target:type_name -> reflow.protocol.v1.WorkflowTarget
-	41, // 31: reflow.protocol.v1.GetInvocationOutputCompletionNotificationMessage.void:type_name -> reflow.protocol.v1.Void
-	37, // 32: reflow.protocol.v1.GetInvocationOutputCompletionNotificationMessage.value:type_name -> reflow.protocol.v1.Value
-	38, // 33: reflow.protocol.v1.GetInvocationOutputCompletionNotificationMessage.failure:type_name -> reflow.protocol.v1.Failure
-	41, // 34: reflow.protocol.v1.SignalNotificationMessage.void:type_name -> reflow.protocol.v1.Void
-	37, // 35: reflow.protocol.v1.SignalNotificationMessage.value:type_name -> reflow.protocol.v1.Value
-	38, // 36: reflow.protocol.v1.SignalNotificationMessage.failure:type_name -> reflow.protocol.v1.Failure
+	40, // 2: reflow.protocol.v1.ProposeRunCompletionMessage.failure:type_name -> reflow.protocol.v1.Failure
+	41, // 3: reflow.protocol.v1.InputCommandMessage.headers:type_name -> reflow.protocol.v1.Header
+	39, // 4: reflow.protocol.v1.InputCommandMessage.value:type_name -> reflow.protocol.v1.Value
+	39, // 5: reflow.protocol.v1.OutputCommandMessage.value:type_name -> reflow.protocol.v1.Value
+	40, // 6: reflow.protocol.v1.OutputCommandMessage.failure:type_name -> reflow.protocol.v1.Failure
+	43, // 7: reflow.protocol.v1.GetLazyStateCompletionNotificationMessage.void:type_name -> reflow.protocol.v1.Void
+	39, // 8: reflow.protocol.v1.GetLazyStateCompletionNotificationMessage.value:type_name -> reflow.protocol.v1.Value
+	39, // 9: reflow.protocol.v1.SetStateCommandMessage.value:type_name -> reflow.protocol.v1.Value
+	38, // 10: reflow.protocol.v1.GetLazyStateKeysCompletionNotificationMessage.state_keys:type_name -> reflow.protocol.v1.StateKeys
+	43, // 11: reflow.protocol.v1.GetEagerStateCommandMessage.void:type_name -> reflow.protocol.v1.Void
+	39, // 12: reflow.protocol.v1.GetEagerStateCommandMessage.value:type_name -> reflow.protocol.v1.Value
+	38, // 13: reflow.protocol.v1.GetEagerStateKeysCommandMessage.value:type_name -> reflow.protocol.v1.StateKeys
+	39, // 14: reflow.protocol.v1.GetPromiseCompletionNotificationMessage.value:type_name -> reflow.protocol.v1.Value
+	40, // 15: reflow.protocol.v1.GetPromiseCompletionNotificationMessage.failure:type_name -> reflow.protocol.v1.Failure
+	39, // 16: reflow.protocol.v1.CompletePromiseCommandMessage.completion_value:type_name -> reflow.protocol.v1.Value
+	40, // 17: reflow.protocol.v1.CompletePromiseCommandMessage.completion_failure:type_name -> reflow.protocol.v1.Failure
+	43, // 18: reflow.protocol.v1.CompletePromiseCompletionNotificationMessage.void:type_name -> reflow.protocol.v1.Void
+	40, // 19: reflow.protocol.v1.CompletePromiseCompletionNotificationMessage.failure:type_name -> reflow.protocol.v1.Failure
+	43, // 20: reflow.protocol.v1.SleepCompletionNotificationMessage.void:type_name -> reflow.protocol.v1.Void
+	41, // 21: reflow.protocol.v1.CallCommandMessage.headers:type_name -> reflow.protocol.v1.Header
+	39, // 22: reflow.protocol.v1.CallCompletionNotificationMessage.value:type_name -> reflow.protocol.v1.Value
+	40, // 23: reflow.protocol.v1.CallCompletionNotificationMessage.failure:type_name -> reflow.protocol.v1.Failure
+	41, // 24: reflow.protocol.v1.OneWayCallCommandMessage.headers:type_name -> reflow.protocol.v1.Header
+	39, // 25: reflow.protocol.v1.RunCompletionNotificationMessage.value:type_name -> reflow.protocol.v1.Value
+	40, // 26: reflow.protocol.v1.RunCompletionNotificationMessage.failure:type_name -> reflow.protocol.v1.Failure
+	42, // 27: reflow.protocol.v1.AttachInvocationCommandMessage.workflow_target:type_name -> reflow.protocol.v1.WorkflowTarget
+	39, // 28: reflow.protocol.v1.AttachInvocationCompletionNotificationMessage.value:type_name -> reflow.protocol.v1.Value
+	40, // 29: reflow.protocol.v1.AttachInvocationCompletionNotificationMessage.failure:type_name -> reflow.protocol.v1.Failure
+	42, // 30: reflow.protocol.v1.GetInvocationOutputCommandMessage.workflow_target:type_name -> reflow.protocol.v1.WorkflowTarget
+	43, // 31: reflow.protocol.v1.GetInvocationOutputCompletionNotificationMessage.void:type_name -> reflow.protocol.v1.Void
+	39, // 32: reflow.protocol.v1.GetInvocationOutputCompletionNotificationMessage.value:type_name -> reflow.protocol.v1.Value
+	40, // 33: reflow.protocol.v1.GetInvocationOutputCompletionNotificationMessage.failure:type_name -> reflow.protocol.v1.Failure
+	43, // 34: reflow.protocol.v1.SignalNotificationMessage.void:type_name -> reflow.protocol.v1.Void
+	39, // 35: reflow.protocol.v1.SignalNotificationMessage.value:type_name -> reflow.protocol.v1.Value
+	40, // 36: reflow.protocol.v1.SignalNotificationMessage.failure:type_name -> reflow.protocol.v1.Failure
 	37, // [37:37] is the sub-list for method output_type
 	37, // [37:37] is the sub-list for method input_type
 	37, // [37:37] is the sub-list for extension type_name
@@ -3661,7 +3808,7 @@ func file_protocolv1_protocol_proto_init() {
 		(*GetInvocationOutputCompletionNotificationMessage_Value)(nil),
 		(*GetInvocationOutputCompletionNotificationMessage_Failure)(nil),
 	}
-	file_protocolv1_protocol_proto_msgTypes[34].OneofWrappers = []any{
+	file_protocolv1_protocol_proto_msgTypes[36].OneofWrappers = []any{
 		(*SignalNotificationMessage_Idx)(nil),
 		(*SignalNotificationMessage_Name)(nil),
 		(*SignalNotificationMessage_Void)(nil),
@@ -3674,7 +3821,7 @@ func file_protocolv1_protocol_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_protocolv1_protocol_proto_rawDesc), len(file_protocolv1_protocol_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   42,
+			NumMessages:   44,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

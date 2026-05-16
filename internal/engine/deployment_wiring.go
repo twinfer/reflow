@@ -50,8 +50,7 @@ func (h *Host) resolveDeployment(ctx context.Context, deploymentID string) (*eng
 // against shard 0's deployment index. Returns "" + nil when no
 // deployment claims the handler — callers decide whether that is an
 // error condition. Also returns "" + nil when shard 0 is not hosted on
-// this node (single-node deployments treat the synthetic inproc record
-// as a fallback elsewhere).
+// this node.
 //
 // The deployment_id this returns identifies the *current* deployment
 // for (service, handler); pinned invocations resolve their own

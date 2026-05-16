@@ -151,14 +151,14 @@ func (f *fakeHandlerCaller) serveInvoke(t *testing.T, w http.ResponseWriter, r *
 	_, _ = io.Copy(io.Discard, r.Body)
 }
 
-// TestWireDispatch_HTTP2_Call drives an end-to-end Call between a wire
-// handler and an inproc handler:
+// TestWireDispatch_HTTP2_Call drives an end-to-end Call between two
+// HTTP/2-registered handlers:
 //
-//  1. Wire handler A (registered via http://) does ctx.Call(B, "ping")
-//     → emits CallCommandMessage + SuspensionMessage.
+//  1. Handler A does ctx.Call(B, "ping") → emits CallCommandMessage +
+//     SuspensionMessage.
 //  2. Engine proposes JECall on A and Invoke envelope into outbox
 //     toward B; A's status moves to Suspended.
-//  3. Inproc handler B receives the invoke, returns "pong".
+//  3. Handler B receives the invoke, returns "pong".
 //  4. B's Completed apply notices parent_link and journals JECallResult
 //     on A's journal; A transitions Suspended → Invoked.
 //  5. A's session respawns with known_entries=3 (Input + Call +

@@ -94,8 +94,7 @@ func translateEntry(e *enginev1.JournalEntry, codec handlerclient.Codec, log *sl
 
 	case *enginev1.JournalEntry_Call:
 		// Call allocates 2 slots: cmd at e.Index, result at e.Index+1.
-		// Mirrors inproc.go's Call slot accounting; the wire ships
-		// result_completion_id pointing at the matching
+		// The wire ships result_completion_id pointing at the matching
 		// CallCompletionNotificationMessage.
 		t := entry.Call.GetTarget()
 		msg := &protocolv1.CallCommandMessage{
@@ -147,9 +146,8 @@ func translateEntry(e *enginev1.JournalEntry, codec handlerclient.Codec, log *sl
 		// RunCompletionNotificationMessage carries the cached outcome
 		// so wireContext.Run returns it without re-invoking fn. When
 		// retryable=true the notification is omitted: the SDK sees the
-		// marker (slot consumed) but no result and re-invokes fn with
-		// the next attempt — mirrors inproc.Run's behaviour on
-		// JERun{retryable=true}.
+		// marker (slot consumed) but no result and re-invokes fn on
+		// the next attempt.
 		cmd := &protocolv1.RunCommandMessage{ResultCompletionId: e.GetIndex()}
 		cmdPayload, err := codec.Marshal(cmd)
 		if err != nil {

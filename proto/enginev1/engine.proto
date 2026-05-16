@@ -102,11 +102,11 @@ message Command {
     // shardID >= 1.
     DeliverCallResult deliver_call_result = 16;
     OutboxAck outbox_ack = 17;
-    // RegisterDeployment registers a Deployment (a (url, transport,
-    // handlers[]) bundle) into shard 0's DeploymentTable. Synthetic
-    // inproc deployments are proposed at metadata-leader bootstrap;
-    // remote deployments are proposed by the operator-facing admin
-    // RegisterDeployment RPC. Accepted only by shardID=0.
+    // RegisterDeployment registers a Deployment (a (url, handlers[])
+    // bundle) into shard 0's DeploymentTable. Proposed by the
+    // operator-facing admin RegisterDeployment RPC; replays route to
+    // the same record so deployment_id pinning survives restarts.
+    // Accepted only by shardID=0.
     RegisterDeployment register_deployment = 18;
   }
 }
@@ -599,8 +599,7 @@ message NodeHostMeta {
 
 // DeploymentRecord is the persisted shape of a registered deployment in
 // shard 0's DeploymentTable. One row per (id) with the URL the operator
-// (or the synthetic inproc bootstrap) handed in, plus the handler set
-// discovered at registration time.
+// handed in, plus the handler set discovered at registration time.
 //
 // Pinning: every Invocation row carries a deployment_id stamped at
 // submit time so replays route to the same deployment even when newer
@@ -609,9 +608,8 @@ message NodeHostMeta {
 // stay readable until every invocation referencing them has terminated
 // (GC is a future feature; ref-counting against InvocationStatus).
 //
-// The URL scheme determines dispatch: "inproc://" short-circuits to the
-// in-process sdk.Registry; "http://" and "https://" route through the
-// engine-side handlerclient over raw HTTP/2.
+// Only "http://" and "https://" URLs are accepted; the engine-side
+// handlerclient dispatches over raw HTTP/2.
 message DeploymentRecord {
   string id = 1;
   string url = 2;
@@ -635,9 +633,9 @@ message DeploymentHandler {
 }
 
 // RegisterDeployment is the Command_RegisterDeployment payload. Proposed
-// by the metadata-leader bootstrap (inproc synthetic deployment) and by
-// the admin RegisterDeployment RPC (remote deployments). Apply arm
-// writes DeploymentTable[record.id] = record.
+// by the admin RegisterDeployment RPC after a successful discovery probe
+// against the handler URL. Apply arm writes
+// DeploymentTable[record.id] = record.
 message RegisterDeployment {
   DeploymentRecord record = 1;
 }

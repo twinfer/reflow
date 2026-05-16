@@ -13,27 +13,22 @@ import (
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
-// WireDispatcher resolves a deployment_id to an open handler stream.
-// The invoker constructs one StartMessage per session and the dispatcher
-// is the seam where transport selection (gRPC / HTTP/2) lives. target
-// carries (service, handler) — HTTP/2 uses it to build the URL path;
-// gRPC ignores it because the routing rides on StartMessage.
+// WireDispatcher resolves a deployment_id to an open handler stream
+// over HTTP/2. The invoker constructs one StartMessage per session and
+// the dispatcher is the seam where transport configuration lives.
+// target carries (service, handler) used to build the URL path.
 //
 // The single Stream returned by Open is owned by the caller (the
 // session goroutine); it must be drained or its parent context
-// cancelled to release the underlying gRPC stream.
+// cancelled to release the underlying HTTP/2 stream.
 type WireDispatcher interface {
 	Open(ctx context.Context, rec *enginev1.DeploymentRecord, target *enginev1.InvocationTarget) (handlerclient.Stream, error)
 }
 
-// wireSession runs one invocation by dispatching over the wire to a
-// remote handler. It mirrors *session's lifecycle (start/abort/Done)
-// but the run loop drives protocolv1 frames instead of an in-process
-// handler goroutine.
-//
-// 5d.1 implements the minimum protocol: send StartMessage, await a
-// single OutputCommandMessage + EndMessage from the handler, propose
-// Completed. State/sleep/call/awakeable land as the wire-session matures.
+// wireSession runs one invocation by dispatching protocolv1 frames
+// over HTTP/2 to a remote handler deployment. start/abort/Done shape
+// the lifecycle; the run loop pumps frames and translates them into
+// FSM proposals.
 type wireSession struct {
 	id     *enginev1.InvocationId
 	target *enginev1.InvocationTarget
@@ -223,7 +218,6 @@ func highestIndex(entries []*enginev1.JournalEntry) uint32 {
 // StartMessage.state_map carries the eager-preloaded K/V snapshot for
 // the invocation's (service, object_key) so wireContext.GetState can
 // serve hits directly from the handler-side cache without a round-trip.
-// Mirrors inproc.go's preloadState semantics.
 func (s *wireSession) sendStartAndReplay(stream handlerclient.Stream, entries []*enginev1.JournalEntry) error {
 	frames, err := translateJournal(entries, s.codec, s.log)
 	if err != nil {
@@ -283,9 +277,9 @@ func (s *wireSession) resolveKind() (protocolv1.Kind, bool) {
 	return protocolv1.Kind_KIND_UNSPECIFIED, false
 }
 
-// driveLoop is the inbound-frame pump. 5d.1 handles only the minimum:
-// OutputCommandMessage + EndMessage → propose Completed. ErrorMessage
-// also terminates the session with a failure.
+// driveLoop is the inbound-frame pump. Translates each protocolv1 frame
+// into the matching journal append or terminal effect, exiting when the
+// handler signals End / Error / Suspension or the stream breaks.
 func (s *wireSession) driveLoop(stream handlerclient.Stream) {
 	for {
 		if s.ctx.Err() != nil {
@@ -570,7 +564,7 @@ func (s *wireSession) handleOneWayCall(payload []byte) bool {
 
 // handleAwakeable decodes an AwakeableCommandMessage and proposes
 // JEAwakeable carrying the SDK-minted id. Allocates 2 slots (cmd +
-// result) to mirror inproc.go's Awakeable accounting.
+// result) so nextIdx stays in sync with the handler's wireContext.
 func (s *wireSession) handleAwakeable(payload []byte) bool {
 	var cmd protocolv1.AwakeableCommandMessage
 	if err := s.codec.Unmarshal(payload, &cmd); err != nil {
@@ -727,9 +721,7 @@ func (s *wireSession) proposeJournalOrFail(entry *enginev1.JournalEntry, kind st
 	return true
 }
 
-// completeTerminal proposes Completed for this invocation. Same shape
-// as the inproc session's terminal propose so the FSM treats both
-// dispatch paths uniformly.
+// completeTerminal proposes Completed for this invocation.
 func (s *wireSession) completeTerminal(output []byte, failureMsg string) {
 	if s.ctx.Err() != nil {
 		return

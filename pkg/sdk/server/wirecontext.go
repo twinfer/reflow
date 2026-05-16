@@ -70,8 +70,7 @@ type wireContext struct {
 
 	mu sync.Mutex
 	// nextSlot is the index of the next journal slot the handler will
-	// claim. Mirrors inproc.go's allocSlot contract: slot 0 is JEInput,
-	// user-allocated slots start at 1.
+	// claim. Slot 0 is JEInput, user-allocated slots start at 1.
 	nextSlot uint32
 	// suspended flips to true the first time a durable primitive returns
 	// a not-yet-resolved future. All subsequent ctx calls short-circuit
@@ -120,10 +119,9 @@ func (c *wireContext) Input() []byte                        { return c.input }
 func (c *wireContext) InvocationID() *enginev1.InvocationId { return c.invocationID }
 
 // allocSlot reserves span consecutive journal indices and returns the
-// first. Mirrors inproc.go's allocSlot contract so replay-by-slot lines
-// up across the two impls. Returns ok=false when the context is
-// already suspended — callers should propagate sdk.ErrSuspended up the
-// handler stack so the session loop emits SuspensionMessage.
+// first. Returns ok=false when the context is already suspended —
+// callers should propagate sdk.ErrSuspended up the handler stack so the
+// session loop emits SuspensionMessage.
 func (c *wireContext) allocSlot(span uint32) (start uint32, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -137,7 +135,7 @@ func (c *wireContext) allocSlot(span uint32) (start uint32, ok bool) {
 
 // suspend flips the suspended bit and accumulates a waker token. All
 // subsequent ctx calls short-circuit so the handler unwinds to the
-// session loop promptly. Mirrors inprocContext.suspend.
+// session loop promptly.
 func (c *wireContext) suspend(tokens ...string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -169,7 +167,7 @@ func (c *wireContext) lookupReplay(slot uint32) *replayEntry {
 // so handlers don't double-bounce through the wire to observe their
 // own writes.
 //
-// Three result shapes mirroring inproc.go's GetState contract:
+// Three result shapes:
 //   - (val, true, nil)   — key present in the eager snapshot.
 //   - (nil, false, nil)  — preload was complete and key is absent.
 //   - (nil, false, err)  — partialState: preload was incomplete (overflow);
@@ -317,8 +315,7 @@ func (c *wireContext) Sleep(d time.Duration) sdk.Future {
 }
 
 // Run executes fn at most once and journals the outcome via the
-// RunCommandMessage / ProposeRunCompletionMessage frame pair. Mirrors
-// inproc.go's Run semantics:
+// RunCommandMessage / ProposeRunCompletionMessage frame pair.
 //
 //   - Replay hit with non-retryable JERun: return cached value/failure
 //     without re-invoking fn.
@@ -529,10 +526,9 @@ func (c *wireContext) replayAwakeableID(slot uint32) string {
 
 // mintAwakeableID generates a fresh "awk_<22 base64url>" identifier
 // whose first 8 bytes encode ownerPartitionKey big-endian and the
-// remaining 8 are random. Mirrors invoker.newAwakeableID so the wire
-// and inproc paths share the same id shape; ingress.ResolveAwakeable
-// uses the embedded partition_key to route resolution to the owning
-// shard with a single read.
+// remaining 8 are random. ingress.ResolveAwakeable uses the embedded
+// partition_key to route resolution to the owning shard with a single
+// read.
 func mintAwakeableID(ownerPartitionKey uint64) (string, error) {
 	var buf [16]byte
 	binary.BigEndian.PutUint64(buf[:8], ownerPartitionKey)

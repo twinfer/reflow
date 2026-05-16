@@ -54,9 +54,8 @@ func PartitionTableKey() []byte { return []byte(partitionTabKey) }
 // iteration via a forward range scan.
 func DeploymentPrefix() []byte { return []byte(deploymentPrefix) }
 
-// DeploymentKey returns deployment/<id>. Deployment ids are caller-shaped
-// strings (UUIDv4 for operator-registered deployments, "inproc-<16-hex>"
-// for the synthetic inproc deployment).
+// DeploymentKey returns deployment/<id>. Deployment ids are UUIDv4
+// strings minted by the admin RegisterDeployment RPC.
 func DeploymentKey(id string) []byte {
 	out := make([]byte, 0, len(deploymentPrefix)+len(id))
 	out = append(out, deploymentPrefix...)

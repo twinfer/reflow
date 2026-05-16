@@ -7,16 +7,16 @@ import (
 )
 
 // DeploymentResolver returns the DeploymentRecord for a stamped
-// deployment_id. Implementations may consult an in-memory cache (single
-// node, synthetic inproc) or a remote shard-0 read (multi-node). The
-// invoker calls Resolve from the apply goroutine before installing a
-// session; ctx scopes the lookup (typically the invoker's context), so a
-// resolver doing a SyncRead cancels on engine shutdown rather than
-// running on its own wall clock.
+// deployment_id. Implementations read it from shard 0 (locally on the
+// metadata leader, via SyncRead elsewhere). The invoker calls Resolve
+// from the apply goroutine before installing a session; ctx scopes the
+// lookup (typically the invoker's context), so a resolver doing a
+// SyncRead cancels on engine shutdown rather than running on its own
+// wall clock.
 //
 // A nil return with nil error means "deployment not found"; the invoker
-// falls back to in-process registry lookup (legacy / synthetic inproc
-// path). A non-nil error short-circuits session install with a warn.
+// drops the session install with a warn. A non-nil error short-circuits
+// session install with a warn.
 type DeploymentResolver interface {
 	Resolve(ctx context.Context, deploymentID string) (*enginev1.DeploymentRecord, error)
 }

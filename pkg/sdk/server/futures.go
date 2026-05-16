@@ -145,8 +145,8 @@ func (f awakeableFuture) Result() ([]byte, error) {
 
 // --- All ---
 
-// allResult is the composite returned by wireContext.All. Mirrors the
-// inproc allResult — pure SDK composition, no journal slot.
+// allResult is the composite returned by wireContext.All. Pure SDK
+// composition, no journal slot.
 type allResult struct {
 	ctx      *wireContext
 	children []sdk.Future

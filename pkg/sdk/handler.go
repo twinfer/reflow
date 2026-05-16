@@ -30,7 +30,7 @@ type Handler func(ctx Context, input []byte) ([]byte, error)
 //
 // Per-kind lifecycle differences (object locking, workflow replay
 // scoping) are still being wired; today every kind dispatches the same
-// in-proc path. Kind is surfaced now so deployment registration and the
+// wire path. Kind is surfaced now so deployment registration and the
 // wire StartMessage stay stable.
 type Kind int
 

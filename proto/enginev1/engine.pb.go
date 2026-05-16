@@ -1,8 +1,6 @@
 // Reflow engine wire types — the Raft + on-disk Command/Envelope/Row
 // shapes that every shard applies.
 //
-// Mirrors Restate's wal-protocol v2 and journal v2 where applicable;
-// citations to crates/... refer to Restate v1.6.2.
 //
 // All commands flow through the same dragonboat IOnDiskStateMachine
 // (Partition). The only thing distinguishing a metadata shard
@@ -798,11 +796,11 @@ type Command_OutboxAck struct {
 }
 
 type Command_RegisterDeployment struct {
-	// RegisterDeployment registers a Deployment (a (url, transport,
-	// handlers[]) bundle) into shard 0's DeploymentTable. Synthetic
-	// inproc deployments are proposed at metadata-leader bootstrap;
-	// remote deployments are proposed by the operator-facing admin
-	// RegisterDeployment RPC. Accepted only by shardID=0.
+	// RegisterDeployment registers a Deployment (a (url, handlers[])
+	// bundle) into shard 0's DeploymentTable. Proposed by the
+	// operator-facing admin RegisterDeployment RPC; replays route to
+	// the same record so deployment_id pinning survives restarts.
+	// Accepted only by shardID=0.
 	RegisterDeployment *RegisterDeployment `protobuf:"bytes,18,opt,name=register_deployment,json=registerDeployment,proto3,oneof"`
 }
 
@@ -4162,8 +4160,7 @@ func (x *NodeHostMeta) GetGrpcEndpoint() string {
 
 // DeploymentRecord is the persisted shape of a registered deployment in
 // shard 0's DeploymentTable. One row per (id) with the URL the operator
-// (or the synthetic inproc bootstrap) handed in, plus the handler set
-// discovered at registration time.
+// handed in, plus the handler set discovered at registration time.
 //
 // Pinning: every Invocation row carries a deployment_id stamped at
 // submit time so replays route to the same deployment even when newer
@@ -4172,9 +4169,8 @@ func (x *NodeHostMeta) GetGrpcEndpoint() string {
 // stay readable until every invocation referencing them has terminated
 // (GC is a future feature; ref-counting against InvocationStatus).
 //
-// The URL scheme determines dispatch: "inproc://" short-circuits to the
-// in-process sdk.Registry; "http://" and "https://" route through the
-// engine-side handlerclient over raw HTTP/2.
+// Only "http://" and "https://" URLs are accepted; the engine-side
+// handlerclient dispatches over raw HTTP/2.
 type DeploymentRecord struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -4312,9 +4308,9 @@ func (x *DeploymentHandler) GetKind() uint32 {
 }
 
 // RegisterDeployment is the Command_RegisterDeployment payload. Proposed
-// by the metadata-leader bootstrap (inproc synthetic deployment) and by
-// the admin RegisterDeployment RPC (remote deployments). Apply arm
-// writes DeploymentTable[record.id] = record.
+// by the admin RegisterDeployment RPC after a successful discovery probe
+// against the handler URL. Apply arm writes
+// DeploymentTable[record.id] = record.
 type RegisterDeployment struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Record        *DeploymentRecord      `protobuf:"bytes,1,opt,name=record,proto3" json:"record,omitempty"`

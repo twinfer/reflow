@@ -15,13 +15,17 @@ import (
 // resolveDeployment lookups the persisted DeploymentRecord for the
 // given id. The synthetic inproc record short-circuits via the
 // in-memory id; everything else goes through dragonboat shard 0
-// SyncRead with a bounded timeout. Returns (nil, nil) for a deployment
-// the cluster has never seen — the caller treats that as "fall back to
-// in-process registry".
+// SyncRead. Returns (nil, nil) for a deployment the cluster has never
+// seen — the caller treats that as "fall back to in-process registry".
+//
+// ctx scopes the SyncRead; the invoker passes its own context so
+// shutdown cancels in-flight lookups rather than spinning until a
+// wall-clock timeout. A bounded fallback deadline (2s) covers callers
+// that pass a never-cancelled context.
 //
 // Implements invoker.DeploymentResolver. Bound at partition construction
 // via invoker.Config.Deployments.
-func (h *Host) resolveDeployment(deploymentID string) (*enginev1.DeploymentRecord, error) {
+func (h *Host) resolveDeployment(ctx context.Context, deploymentID string) (*enginev1.DeploymentRecord, error) {
 	if deploymentID == "" {
 		return nil, nil
 	}
@@ -34,8 +38,11 @@ func (h *Host) resolveDeployment(deploymentID string) (*enginev1.DeploymentRecor
 	// Shard 0 may not be hosted on this node (single-node deployments
 	// have no metadata shard). SyncRead would return ErrShardNotFound;
 	// treat that as "not in cluster" and fall back.
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+	}
 	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupDeployment{ID: deploymentID})
 	if err != nil {
 		// Probe-style: any error short-circuits to nil. The invoker

@@ -12,10 +12,6 @@ import (
 // controls only the inner message encoding (StartMessage,
 // OutputCommandMessage, etc.).
 //
-// The signature matches google.golang.org/grpc/encoding.Codec so a
-// customer-supplied codec (JSON, MessagePack, …) can be reused across
-// the reflow handlerclient and other gRPC-shaped stacks.
-//
 // Both sides of a session must agree on the codec. The engine and the
 // handler-side server are configured separately; the HTTP Content-Type
 // carries the codec name (application/vnd.reflow.invocation.v1+<codec>)

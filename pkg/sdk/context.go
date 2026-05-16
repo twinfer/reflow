@@ -209,7 +209,3 @@ type Poller interface {
 type AllResult interface {
 	Results() (values [][]byte, err error)
 }
-
-// AwakeableFuture is retained as an alias of Future so existing callers
-// continue to compile; Awakeable returns a Future-shaped handle.
-type AwakeableFuture = Future

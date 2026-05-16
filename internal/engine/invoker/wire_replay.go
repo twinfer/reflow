@@ -26,8 +26,8 @@ type replayFrame struct {
 // in turn between StartMessage and the handler's user-code phase.
 //
 // JE variants the wire path doesn't yet model are logged and skipped
-// rather than failing — additive extension across 5f.4-5f.6 turns
-// each one into a real translation.
+// rather than failing — additive extension turns each one into a real
+// translation as the protocol grows.
 func translateJournal(entries []*enginev1.JournalEntry, codec handlerclient.Codec, log *slog.Logger) ([]replayFrame, error) {
 	if len(entries) == 0 {
 		return nil, nil
@@ -45,9 +45,9 @@ func translateJournal(entries []*enginev1.JournalEntry, codec handlerclient.Code
 
 // translateEntry produces zero, one, or two replay frames for a single
 // JournalEntry. JECall is the only entry that fans out today (one for
-// the call command, then both the invocation-id and result
-// notifications — fully wired in 5f.4). 5f.3 emits Input, Sleep +
-// SleepResult, SetState, ClearState, ClearAllState.
+// the call command, then the result notification). Run fans out into
+// a marker + a completion notification when terminal; retryable runs
+// emit only the marker so the SDK re-invokes fn on respawn.
 func translateEntry(e *enginev1.JournalEntry, codec handlerclient.Codec, log *slog.Logger) ([]replayFrame, error) {
 	switch entry := e.GetEntry().(type) {
 	case *enginev1.JournalEntry_Input:
@@ -142,15 +142,23 @@ func translateEntry(e *enginev1.JournalEntry, codec handlerclient.Codec, log *sl
 		return marshalFrame(codec, handlerclient.TypeCmdOneWayCall, msg)
 
 	case *enginev1.JournalEntry_Run:
-		// JERun translates to a RunCommandMessage (marker) plus a
-		// RunCompletionNotificationMessage (the outcome). The marker
-		// advances the handler's replay cursor by one slot; the
-		// notification carries the cached value/failure that
-		// wireContext.Run returns on replay-hit.
+		// JERun translates to a RunCommandMessage marker. When the run
+		// is terminal (retryable=false), a follow-up
+		// RunCompletionNotificationMessage carries the cached outcome
+		// so wireContext.Run returns it without re-invoking fn. When
+		// retryable=true the notification is omitted: the SDK sees the
+		// marker (slot consumed) but no result and re-invokes fn with
+		// the next attempt — mirrors inproc.Run's behaviour on
+		// JERun{retryable=true}.
 		cmd := &protocolv1.RunCommandMessage{ResultCompletionId: e.GetIndex()}
 		cmdPayload, err := codec.Marshal(cmd)
 		if err != nil {
 			return nil, fmt.Errorf("marshal RunCommandMessage: %w", err)
+		}
+		if entry.Run.GetRetryable() {
+			return []replayFrame{
+				{typeCode: handlerclient.TypeCmdRun, payload: cmdPayload},
+			}, nil
 		}
 		note := &protocolv1.RunCompletionNotificationMessage{
 			CompletionId: e.GetIndex(),

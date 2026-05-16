@@ -810,7 +810,7 @@ type Command_RegisterDeployment struct {
 	// handlers[]) bundle) into shard 0's DeploymentTable. Synthetic
 	// inproc deployments are proposed at metadata-leader bootstrap;
 	// remote deployments are proposed by the operator-facing admin
-	// RegisterDeployment RPC. Accepted only by shardID=0. Phase 5.
+	// RegisterDeployment RPC. Accepted only by shardID=0.
 	RegisterDeployment *RegisterDeployment `protobuf:"bytes,18,opt,name=register_deployment,json=registerDeployment,proto3,oneof"`
 }
 
@@ -931,7 +931,7 @@ type InvokeCommand struct {
 	// onto InvocationStatus; replays route to the same deployment even when
 	// a newer deployment for the same (service, handler) has since landed.
 	// Empty string when the host has no deployment table (single-node mode
-	// without shard 0). Phase 5.
+	// without shard 0).
 	DeploymentId  string `protobuf:"bytes,6,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1875,14 +1875,13 @@ type JournalEntry_GetEagerState struct {
 }
 
 type JournalEntry_ClearAllState struct {
-	// Phase 3 additions.
 	ClearAllState *JEClearAllState `protobuf:"bytes,16,opt,name=clear_all_state,json=clearAllState,proto3,oneof"`
 }
 
 type JournalEntry_OneWayCall struct {
-	// 5f.4 — fire-and-forget call. Single-slot (no result variant);
-	// the apply path enqueues an OutboxEnvelope to the receiver
-	// partition exactly like JECall but never waits for a JECallResult.
+	// Fire-and-forget call. Single-slot (no result variant); the apply
+	// path enqueues an OutboxEnvelope to the receiver partition exactly
+	// like JECall but never waits for a JECallResult.
 	OneWayCall *JEOneWayCall `protobuf:"bytes,17,opt,name=one_way_call,json=oneWayCall,proto3,oneof"`
 }
 
@@ -2117,7 +2116,7 @@ func (x *JECall) GetIdempotencyKey() string {
 // JEOneWayCall records a fire-and-forget invocation. Single-slot —
 // unlike JECall there is no companion JECallResult; the apply path
 // enqueues an outbox envelope toward the receiver but never plumbs the
-// response back to this invocation's journal. 5f.4.
+// response back to this invocation's journal.
 type JEOneWayCall struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Target *InvocationTarget      `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
@@ -2972,7 +2971,6 @@ func (x *PurgeInvocation) GetInvocationId() *InvocationId {
 }
 
 // InvocationStatus discriminated union.
-// Mirrors restate storage-api/src/invocation_status_table/mod.rs:141-155.
 type InvocationStatus struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Status:
@@ -2987,7 +2985,7 @@ type InvocationStatus struct {
 	// (service, handler) routing at the time the InvokeCommand was applied.
 	// Stamped once on the Free→Scheduled transition and preserved across
 	// every subsequent transition until terminal. Empty string when no
-	// deployment table exists (single-node hosts without shard 0). Phase 5.
+	// deployment table exists (single-node hosts without shard 0).
 	DeploymentId  string `protobuf:"bytes,6,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4324,7 +4322,7 @@ func (x *DeploymentHandler) GetKind() uint32 {
 // RegisterDeployment is the Command_RegisterDeployment payload. Proposed
 // by the metadata-leader bootstrap (inproc synthetic deployment) and by
 // the admin RegisterDeployment RPC (remote deployments). Apply arm
-// writes DeploymentTable[record.id] = record. Phase 5.
+// writes DeploymentTable[record.id] = record.
 type RegisterDeployment struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Record        *DeploymentRecord      `protobuf:"bytes,1,opt,name=record,proto3" json:"record,omitempty"`
@@ -4370,10 +4368,9 @@ func (x *RegisterDeployment) GetRecord() *DeploymentRecord {
 }
 
 // RegisterNode is proposed against shard 0 when a reflowd process starts
-// and wants to publish or refresh its membership record. In Phase 4.1
+// and wants to publish or refresh its membership record.
 // the static peer list is identical on every node so the proposal is
-// idempotent; the apply arm updates last_seen_ms. Phase 4.2 reuses this
-// for online add-node. Phase 4.1.
+// idempotent; the apply arm updates last_seen_ms.
 type RegisterNode struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Member        *NodeMembership        `protobuf:"bytes,1,opt,name=member,proto3" json:"member,omitempty"`
@@ -4419,7 +4416,7 @@ func (x *RegisterNode) GetMember() *NodeMembership {
 }
 
 // UpdatePartitionTable replaces shard 0's partition table atomically.
-// In Phase 4.1 the new leader of shard 0 proposes this once at bootstrap
+// the new leader of shard 0 proposes this once at bootstrap
 // with the static RF=3 assignment. assignment_epoch is incremented on
 // every successful apply; consumers fence stale local caches against
 // it. Phase 4.1.
@@ -4471,8 +4468,7 @@ func (x *UpdatePartitionTable) GetTable() *PartitionTable {
 // raft_addr is dragonboat's inter-node transport address. node_host_id
 // is the stable identifier published over gossip; routing translates
 // node_id → node_host_id → gRPC endpoint via the gossip Meta payload.
-// last_seen_ms is updated by RegisterNode applies; Phase 4.2 will turn
-// it into a liveness signal. Phase 4.1.
+// last_seen_ms is updated by RegisterNode applies.
 type NodeMembership struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeId        uint64                 `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -4542,10 +4538,9 @@ func (x *NodeMembership) GetLastSeenMs() int64 {
 }
 
 // PartitionTable is shard 0's authoritative map of partition shards to
-// replica node sets. Persisted via UpdatePartitionTable. Phase 4.1
+// replica node sets. Persisted via UpdatePartitionTable.
 // always populates every partition_shard_id 1..N with the full peer
-// set (RF=3, N=3 → every node hosts every partition); Phase 4.2
-// introduces sparse placement once N > RF. Phase 4.1; extended 4.2.
+// set (RF=3, N=3 → every node hosts every partition).
 type PartitionTable struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Shards          map[uint64]*ReplicaSet `protobuf:"bytes,1,rep,name=shards,proto3" json:"shards,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
@@ -4553,7 +4548,7 @@ type PartitionTable struct {
 	// pending holds in-flight rebalance steps committed by
 	// BeginRebalanceStep but not yet CompleteRebalanceStep'd. A new
 	// metadata-leader picks up where the previous one left off by
-	// replaying this list against dragonboat. Phase 4.2.
+	// replaying this list against dragonboat.
 	Pending []*RebalanceStep `protobuf:"bytes,3,rep,name=pending,proto3" json:"pending,omitempty"`
 	// meta_replicas is the voting member set of shard 0 (the metadata
 	// Raft group itself). Modeled alongside `shards` so the rebalance
@@ -4676,7 +4671,7 @@ func (x *ReplicaSet) GetNodeIds() []uint64 {
 // zeroes the matching NodeMembership.last_seen_ms and enqueues
 // BeginRebalanceStep entries for every partition the evicted node
 // previously hosted. Idempotent: re-applying for an already-evicted
-// node is a no-op. Phase 4.2.
+// node is a no-op.
 type EvictNode struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeId        uint64                 `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -4726,7 +4721,7 @@ func (x *EvictNode) GetNodeId() uint64 {
 // PartitionTable.pending so a leader failover can resume mid-flight.
 // step_id is monotonic per shard_id and acts as the idempotency token
 // — the rebalancer matches dragonboat results back to the originating
-// step regardless of retries. Phase 4.2.
+// step regardless of retries.
 type RebalanceStep struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	ShardId uint64                 `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
@@ -4858,7 +4853,7 @@ func (x *BeginRebalanceStep) GetStep() *RebalanceStep {
 // PartitionTable.pending, bumps assignment_epoch, and (for
 // DELETE_REPLICA) updates ReplicaSet.node_ids. Proposed by the
 // rebalancer after dragonboat acknowledges the corresponding
-// SyncRequest*. Phase 4.2.
+// SyncRequest*.
 type CompleteRebalanceStep struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ShardId       uint64                 `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`

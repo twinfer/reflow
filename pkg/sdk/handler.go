@@ -30,10 +30,10 @@ type Handler func(ctx Context, input []byte) ([]byte, error)
 //     per (name, key), long-lived. Per-key state + named
 //     promises.
 //
-// Phase-3 lifecycle differences (locking, replay scoping) are still being
-// wired; today every kind dispatches the same in-proc path. Kind is
-// surfaced now so deployment registration and the wire StartMessage stay
-// stable across the 5c–5e rollout.
+// Per-kind lifecycle differences (object locking, workflow replay
+// scoping) are still being wired; today every kind dispatches the same
+// in-proc path. Kind is surfaced now so deployment registration and the
+// wire StartMessage stay stable.
 type Kind int
 
 const (
@@ -202,7 +202,7 @@ func (r *Registry) Entries() []Entry {
 // unchanged. Adding or removing a handler — or changing its kind —
 // produces a fresh id, which the engine treats as a deployment swap
 // (in-flight invocations stamped with the old id stay pinned to that
-// deployment until they terminate). See plan risk #7. Phase 5.
+// deployment until they terminate).
 func InprocDeploymentID(entries []Entry) string {
 	h := sha256.New()
 	for _, e := range entries {

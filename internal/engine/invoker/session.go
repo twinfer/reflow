@@ -255,20 +255,20 @@ func (s *session) prepare() ([]byte, map[uint32]*enginev1.JournalEntry, map[stri
 
 // preloadState eagerly reads every state row scoped to this invocation's
 // (service, object_key) into an in-memory map served to GetState.
-// Thin wrapper around preloadEagerState so the wire session can share
-// the same overflow semantics without depending on *session.
+// Thin wrapper around preloadEagerState; inproc cares only about the
+// cache (overflow → nil → GetState returns errNotImplemented).
 func (s *session) preloadState() map[string][]byte {
-	return preloadEagerState(s.stateTable, s.target, s.id, s.log)
+	cache, _ := preloadEagerState(s.stateTable, s.target, s.id, s.log)
+	return cache
 }
 
 // preloadEagerState reads every state row scoped to (service, object_key)
-// into an in-memory map. Returns nil when:
-//   - the target has no object_key (unkeyed services have no per-object
-//     state),
-//   - the total payload exceeds eagerStateMaxBytes (handler falls back
-//     to the lazy/not-implemented path),
-//   - the scan fails (logged warn; we'd rather skip preload than block
-//     session start).
+// into an in-memory map. Returns (nil, false) when the scan completed
+// for an unkeyed service or failed mid-scan; (nil, true) when the total
+// payload exceeded eagerStateMaxBytes — wire callers set
+// StartMessage.PartialState in that case so the handler errors on a
+// cache miss rather than treating the (incomplete) snapshot as
+// authoritative.
 //
 // Shared by inproc *session and wireSession so both impls present the
 // same eager-state surface to handlers.
@@ -277,13 +277,12 @@ func preloadEagerState(
 	target *enginev1.InvocationTarget,
 	id *enginev1.InvocationId,
 	log *slog.Logger,
-) map[string][]byte {
+) (cache map[string][]byte, overflowed bool) {
 	if target.GetObjectKey() == "" {
-		return nil
+		return nil, false
 	}
-	cache := make(map[string][]byte)
+	cache = make(map[string][]byte)
 	total := 0
-	overflowed := false
 	err := stateTable.ScanObject(target, func(key string, value []byte) error {
 		total += len(key) + len(value)
 		if total > eagerStateMaxBytes {
@@ -298,14 +297,14 @@ func preloadEagerState(
 			"id", invocationIDString(id),
 			"limit_bytes", eagerStateMaxBytes,
 		)
-		return nil
+		return nil, true
 	}
 	if err != nil {
 		log.Warn("invoker.session: state preload scan failed",
 			"id", invocationIDString(id), "err", err)
-		return nil
+		return nil, false
 	}
-	return cache
+	return cache, false
 }
 
 // errStatePreloadOverflow is the sentinel returned from ScanObject's

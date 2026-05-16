@@ -423,7 +423,7 @@ func (h *Host) MetadataRunner() *MetadataRunner {
 // arm persists it. The deployment_id is deterministic across restarts
 // (sdk.InprocDeploymentID hashes the sorted handler tuples). Returns
 // nil when cfg.Handlers is empty — there is no useful deployment to
-// register and ingress falls back to stamping an empty id. Phase 5.
+// register and ingress falls back to stamping an empty id.
 func (h *Host) InprocDeploymentRecord(nowMs uint64) *enginev1.DeploymentRecord {
 	reg := h.cfg.Handlers
 	if reg == nil || reg.Len() == 0 {

@@ -6,20 +6,20 @@ import (
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
-// Type codes per proto/protocolv1/protocol.proto. Comments cite the
-// type-code namespacing convention. Keep in sync with the proto file —
-// the codes are part of the wire contract.
+// Type codes per proto/protocolv1/protocol.proto. The codes are part
+// of the wire contract; keep this list in sync with the proto file.
+// Codes for messages not yet emitted by either side (CommandAck,
+// SendSignal, CallInvocationId) are intentionally omitted — add them
+// here when their handler lands rather than carrying dead constants.
 const (
 	// Core lifecycle (0x0000-0x00FF).
 	TypeStart          uint16 = 0x0000
 	TypeSuspension     uint16 = 0x0001
 	TypeError          uint16 = 0x0002
 	TypeEnd            uint16 = 0x0003
-	TypeCommandAck     uint16 = 0x0004
 	TypeProposeRunDone uint16 = 0x0005
 
-	// Commands (0x0400-0x04FF). Only the subset wired today is listed;
-	// the rest land as the wire-session matures (awakeable).
+	// Commands (0x0400-0x04FF).
 	TypeCmdInput         uint16 = 0x0400
 	TypeCmdOutput        uint16 = 0x0401
 	TypeCmdSetState      uint16 = 0x0403
@@ -28,16 +28,13 @@ const (
 	TypeCmdSleep         uint16 = 0x040C
 	TypeCmdCall          uint16 = 0x040D
 	TypeCmdOneWayCall    uint16 = 0x040E
-
-	TypeCmdRun        uint16 = 0x0411
-	TypeCmdAwakeable  uint16 = 0x0414
-	TypeCmdSendSignal uint16 = 0x0415
+	TypeCmdRun           uint16 = 0x0411
+	TypeCmdAwakeable     uint16 = 0x0414
 
 	// Notifications (0x8000-0x80FF).
-	TypeNoteSleepDone        uint16 = 0x800C
-	TypeNoteCallDone         uint16 = 0x800D
-	TypeNoteCallInvocationId uint16 = 0x800E
-	TypeNoteRunDone          uint16 = 0x8011
+	TypeNoteSleepDone uint16 = 0x800C
+	TypeNoteCallDone  uint16 = 0x800D
+	TypeNoteRunDone   uint16 = 0x8011
 
 	// Out-of-band signal delivery (0xFBFF). The same code carries
 	// awakeable resolutions and any future numbered signals.

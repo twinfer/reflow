@@ -21,9 +21,9 @@ import (
 // the journal already records the operation.
 //
 // For result-bearing notifications (SleepCompletionNotificationMessage,
-// CallCompletionNotificationMessage in 5f.4, …) the payload field
-// carries the marshaled notification — the primitive's wireContext
-// method decodes it lazily into the return value.
+// CallCompletionNotificationMessage, …) the payload field carries the
+// marshaled notification — the primitive's wireContext method decodes
+// it lazily into the return value.
 //
 // For write-only commands (SetState, ClearState, ClearAllState) the
 // presence of the entry is itself the signal: replay-hit means "engine
@@ -34,14 +34,10 @@ type replayEntry struct {
 }
 
 // wireContext implements sdk.Context for handlers running on the
-// protocolv1 wire. Serves Context() / Input() / InvocationID(), the
-// state-write primitives (SetState / ClearState / ClearAllState), and
-// GetState backed by the eager-preloaded state_map shipped in
-// StartMessage.
-//
-// Sleep / Run / Call / OneWayCall / Awakeable / SendSignal still return
-// ErrWireNotImplemented; the replay-and-suspend infrastructure that
-// backs them lands in 5f.3-5f.6.
+// protocolv1 wire. Sleep / Run / Call / OneWayCall / Awakeable /
+// SetState / ClearState / ClearAllState / GetState / All / Any are all
+// wired; SendSignal still returns ErrWireNotImplemented pending the
+// receiver-side Target→InvocationId routing.
 type wireContext struct {
 	ctx          context.Context
 	input        []byte
@@ -57,6 +53,11 @@ type wireContext struct {
 	// (SetState, ClearState, ClearAllState) update it inline to keep
 	// reads in the same session coherent with their preceding writes.
 	stateCache map[string][]byte
+	// partialState mirrors StartMessage.partial_state: when true, the
+	// preload was incomplete (e.g. state exceeded the cap) and a cache
+	// miss must surface as an error rather than "key absent" — lazy
+	// fetch isn't wired yet.
+	partialState bool
 
 	// replay holds the protocolv1 frames the handler received between
 	// StartMessage and the user-code phase, keyed by journal slot. On
@@ -163,25 +164,34 @@ func (c *wireContext) lookupReplay(slot uint32) *replayEntry {
 	return c.replay[slot]
 }
 
-// GetState serves the eager-preloaded value for key. Returns
-// (nil, false, nil) when the key isn't present in the snapshot.
-// Reads after SetState / ClearState within the same session see the
-// updated cache so handlers don't double-bounce through the wire to
-// observe their own writes.
+// GetState serves the eager-preloaded value for key. Reads after
+// SetState / ClearState within the same session see the updated cache
+// so handlers don't double-bounce through the wire to observe their
+// own writes.
+//
+// Three result shapes mirroring inproc.go's GetState contract:
+//   - (val, true, nil)   — key present in the eager snapshot.
+//   - (nil, false, nil)  — preload was complete and key is absent.
+//   - (nil, false, err)  — partialState: preload was incomplete (overflow);
+//     lazy state fetch isn't wired so a miss is unavailable, not absent.
 func (c *wireContext) GetState(key string) ([]byte, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.stateCache == nil {
+	if c.stateCache == nil && !c.partialState {
 		return nil, false, nil
 	}
-	v, ok := c.stateCache[key]
-	if !ok {
-		return nil, false, nil
+	if c.stateCache != nil {
+		if v, ok := c.stateCache[key]; ok {
+			// Copy out so handler mutations don't poison the cache.
+			out := make([]byte, len(v))
+			copy(out, v)
+			return out, true, nil
+		}
 	}
-	// Copy out so handler mutations don't poison the cache.
-	out := make([]byte, len(v))
-	copy(out, v)
-	return out, true, nil
+	if c.partialState {
+		return nil, false, ErrLazyStateUnavailable
+	}
+	return nil, false, nil
 }
 
 // SetState journals a state write by emitting SetStateCommandMessage.
@@ -269,19 +279,13 @@ func (c *wireContext) ClearAllState() error {
 	return nil
 }
 
-// Sleep schedules a durable wake-up d into the future. The returned
-// Future blocks (via suspend-and-respawn) until the wake-up fires —
-// the payload is always nil, the resolution itself is the signal.
+// Sleep schedules a durable wake-up d into the future. Returns a Future
+// whose Result blocks (via suspend-and-respawn) until the wake-up fires
+// — the payload is always nil, the resolution itself is the signal.
 //
-// Three branches:
-//
-//   - Replay hit at the result slot: JESleepResult is in the replay
-//     buffer, so the sleep already fired. Return a ready future.
-//   - Replay hit at the cmd slot only: JESleep was journaled but the
-//     timer hasn't fired yet. Suspend; the engine will respawn the
-//     session once JESleepResult lands.
-//   - No replay hit: this is a fresh Sleep. Emit SleepCommandMessage
-//     (engine appends JESleep + schedules the timer) and suspend.
+// Suspension is deferred to Future.Result so composition under
+// All/Any works: each call only allocates a slot + emits a frame, and
+// the combinator decides when (if at all) to suspend.
 func (c *wireContext) Sleep(d time.Duration) sdk.Future {
 	cmdSlot, ok := c.allocSlot(2)
 	if !ok {
@@ -289,11 +293,10 @@ func (c *wireContext) Sleep(d time.Duration) sdk.Future {
 	}
 	resultSlot := cmdSlot + 1
 
-	if entry := c.lookupReplay(resultSlot); entry != nil {
-		// Sleep already completed in a prior run.
+	if c.lookupReplay(resultSlot) != nil {
 		return readyFuture{value: nil}
 	}
-	if entry := c.lookupReplay(cmdSlot); entry == nil {
+	if c.lookupReplay(cmdSlot) == nil {
 		// Fresh sleep — emit the command. wake_up_time is absolute ms
 		// since the UNIX epoch; the engine apply path stores it on
 		// JESleep.FireAtMs and schedules a timer for that instant.
@@ -310,8 +313,7 @@ func (c *wireContext) Sleep(d time.Duration) sdk.Future {
 			return errFuture{err: err}
 		}
 	}
-	c.suspend(fmt.Sprintf("completion:%d", resultSlot))
-	return suspendedFuture{}
+	return sleepFuture{ctx: c, resultSlot: resultSlot}
 }
 
 // Run executes fn at most once and journals the outcome via the
@@ -412,13 +414,8 @@ func (c *wireContext) Run(name string, fn func() ([]byte, error)) ([]byte, error
 }
 
 // Call invokes target with input and returns a Future resolving to the
-// callee's response. Three branches:
-//
-//   - Replay hit at the result slot: JECallResult is in the replay
-//     buffer; decode and return a ready or errored future.
-//   - Replay hit at the cmd slot only: JECall was journaled but the
-//     callee hasn't completed yet. Suspend on completion:<resultSlot>.
-//   - No replay: fresh call. Emit CallCommandMessage and suspend.
+// callee's response. Suspension is deferred to Future.Result so calls
+// compose under All/Any.
 func (c *wireContext) Call(target sdk.Target, input []byte, opts ...sdk.CallOption) sdk.Future {
 	resolved := sdk.ApplyCallOptions(opts)
 	cmdSlot, ok := c.allocSlot(2)
@@ -427,22 +424,7 @@ func (c *wireContext) Call(target sdk.Target, input []byte, opts ...sdk.CallOpti
 	}
 	resultSlot := cmdSlot + 1
 
-	if entry := c.lookupReplay(resultSlot); entry != nil {
-		// Decode the cached completion and surface it.
-		var note protocolv1.CallCompletionNotificationMessage
-		if err := c.codec.Unmarshal(entry.payload, &note); err != nil {
-			return errFuture{err: fmt.Errorf("decode replayed CallCompletionNotificationMessage: %w", err)}
-		}
-		switch r := note.GetResult().(type) {
-		case *protocolv1.CallCompletionNotificationMessage_Value:
-			return readyFuture{value: r.Value.GetContent()}
-		case *protocolv1.CallCompletionNotificationMessage_Failure:
-			return errFuture{err: sdk.NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())}
-		default:
-			return errFuture{err: fmt.Errorf("CallCompletionNotificationMessage at slot %d carries no result", resultSlot)}
-		}
-	}
-	if entry := c.lookupReplay(cmdSlot); entry == nil {
+	if c.lookupReplay(cmdSlot) == nil && c.lookupReplay(resultSlot) == nil {
 		// Fresh call — emit the command.
 		msg := &protocolv1.CallCommandMessage{
 			ServiceName:        target.Service,
@@ -463,8 +445,7 @@ func (c *wireContext) Call(target sdk.Target, input []byte, opts ...sdk.CallOpti
 			return errFuture{err: err}
 		}
 	}
-	c.suspend(fmt.Sprintf("completion:%d", resultSlot))
-	return suspendedFuture{}
+	return callFuture{ctx: c, resultSlot: resultSlot}
 }
 
 // OneWayCall invokes target with input fire-and-forget. Single-slot;
@@ -495,12 +476,8 @@ func (c *wireContext) OneWayCall(target sdk.Target, input []byte) error {
 // partition_key and returns a Future that resolves when external
 // callers invoke ingress.ResolveAwakeable with the matching id.
 //
-// Replay branches mirror inproc.go and the wire Sleep/Call patterns:
-//   - Result slot in replay → return the resolved value/failure inline.
-//   - Cmd slot in replay (no result yet) → return the cached id +
-//     suspendedFuture.
-//   - No replay → mint a fresh id, emit AwakeableCommandMessage,
-//     return id + suspendedFuture.
+// Suspension is deferred to Future.Result so Awakeable composes under
+// All/Any.
 func (c *wireContext) Awakeable() (string, sdk.Future) {
 	cmdSlot, ok := c.allocSlot(2)
 	if !ok {
@@ -508,28 +485,11 @@ func (c *wireContext) Awakeable() (string, sdk.Future) {
 	}
 	resultSlot := cmdSlot + 1
 
-	if entry := c.lookupReplay(resultSlot); entry != nil && entry.typeCode == handlerclient.TypeNoteSignal {
-		// Resolved — decode the cached signal.
-		var note protocolv1.SignalNotificationMessage
-		if err := c.codec.Unmarshal(entry.payload, &note); err != nil {
-			return "", errFuture{err: fmt.Errorf("decode replayed SignalNotificationMessage: %w", err)}
-		}
-		// id is in the AwakeableCommandMessage at cmdSlot.
-		id := c.replayAwakeableID(cmdSlot)
-		switch r := note.GetResult().(type) {
-		case *protocolv1.SignalNotificationMessage_Value:
-			return id, readyFuture{value: r.Value.GetContent()}
-		case *protocolv1.SignalNotificationMessage_Failure:
-			return id, errFuture{err: sdk.NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())}
-		default:
-			return id, readyFuture{value: nil}
-		}
-	}
-	if entry := c.lookupReplay(cmdSlot); entry != nil && entry.typeCode == handlerclient.TypeCmdAwakeable {
-		// Already journaled; cmd carries the id and the result hasn't landed.
-		id := c.replayAwakeableID(cmdSlot)
-		c.suspend(fmt.Sprintf("completion:%d", resultSlot))
-		return id, suspendedFuture{}
+	if id := c.replayAwakeableID(cmdSlot); id != "" {
+		// Already journaled — surface the same id and bind the future
+		// to the result slot. awakeableFuture.Result decides whether
+		// the result is in (readyFuture-equivalent) or suspends.
+		return id, awakeableFuture{ctx: c, resultSlot: resultSlot, id: id}
 	}
 
 	// Fresh awakeable. Mint id locally using the embedded partition_key
@@ -549,8 +509,7 @@ func (c *wireContext) Awakeable() (string, sdk.Future) {
 	if err := c.stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdAwakeable, payload)); err != nil {
 		return "", errFuture{err: err}
 	}
-	c.suspend(fmt.Sprintf("completion:%d", resultSlot))
-	return id, suspendedFuture{}
+	return id, awakeableFuture{ctx: c, resultSlot: resultSlot, id: id}
 }
 
 // replayAwakeableID decodes the AwakeableCommandMessage at slot and
@@ -583,57 +542,22 @@ func mintAwakeableID(ownerPartitionKey uint64) (string, error) {
 	return "awk_" + base64.RawURLEncoding.EncodeToString(buf[:]), nil
 }
 
+// All composes child futures: Results blocks until every child has
+// resolved (or any child surfaces a *Failure). Pure SDK composition —
+// no journal slot is allocated. Children must emit their command
+// frames before this is called; the combinator only orchestrates
+// suspension and result collection.
 func (c *wireContext) All(futures ...sdk.Future) sdk.AllResult {
-	return notImplementedAllResult{n: len(futures)}
+	return &allResult{ctx: c, children: append([]sdk.Future(nil), futures...)}
 }
 
-func (c *wireContext) Any(...sdk.Future) sdk.Future {
-	return notImplementedFuture{}
+// Any composes child futures: Result resolves to the lowest-indexed
+// child whose Poll reports resolved at suspend-time. "First" is by
+// argument order, not wall clock, so replay is deterministic.
+func (c *wireContext) Any(futures ...sdk.Future) sdk.Future {
+	return &anyFuture{ctx: c, children: append([]sdk.Future(nil), futures...)}
 }
 
 func (c *wireContext) SendSignal(sdk.Target, string, []byte) error {
 	return ErrWireNotImplemented
 }
-
-// notImplementedFuture is the placeholder Future every wire-only
-// durable primitive returns. Result short-circuits with
-// ErrWireNotImplemented so handlers see a clean error instead of
-// blocking on a never-resolving channel.
-type notImplementedFuture struct{}
-
-func (notImplementedFuture) Result() ([]byte, error) { return nil, ErrWireNotImplemented }
-func (notImplementedFuture) Poll() (bool, []string)  { return true, nil }
-
-type notImplementedAllResult struct{ n int }
-
-func (r notImplementedAllResult) Results() ([][]byte, error) {
-	return make([][]byte, r.n), ErrWireNotImplemented
-}
-
-// readyFuture is returned by Sleep / Call (5f.4) when the replay buffer
-// already carries the completion notification. Result returns the
-// cached value immediately.
-type readyFuture struct {
-	value []byte
-}
-
-func (f readyFuture) Result() ([]byte, error) { return f.value, nil }
-func (f readyFuture) Poll() (bool, []string)  { return true, nil }
-
-// suspendedFuture is returned when the awaiting completion has not yet
-// landed in the journal. Result returns sdk.ErrSuspended so the
-// handler unwinds; the session loop catches it, emits
-// SuspensionMessage, and the engine respawns the session once the
-// awaited event fires.
-type suspendedFuture struct{}
-
-func (suspendedFuture) Result() ([]byte, error) { return nil, sdk.ErrSuspended }
-func (suspendedFuture) Poll() (bool, []string)  { return false, nil }
-
-// errFuture surfaces an immediate failure (e.g. a marshal/send error
-// from within a ctx primitive). Result returns the captured error;
-// callers should propagate it up.
-type errFuture struct{ err error }
-
-func (f errFuture) Result() ([]byte, error) { return nil, f.err }
-func (f errFuture) Poll() (bool, []string)  { return true, nil }

@@ -120,7 +120,6 @@ func (t PartitionTableTable) Put(b storage.Batch, pt *enginev1.PartitionTable) e
 
 // DeploymentTable persists DeploymentRecord rows keyed by deployment id.
 // Lives on shard 0 alongside MembershipTable and PartitionTableTable.
-// Phase 5.
 type DeploymentTable struct{ S storage.Store }
 
 func (t DeploymentTable) Get(id string) (*enginev1.DeploymentRecord, error) {

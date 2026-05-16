@@ -48,26 +48,26 @@ func Register(r *handlerclient.Registry) {
 	r.Register(SchemeSecure, dialTLS)
 }
 
-func dialH2C(rawURL string, opts ...handlerclient.ClientOption) (handlerclient.Client, error) {
-	return newClient(rawURL, opts, true)
+func dialH2C(rawURL string) (handlerclient.Client, error) {
+	return newClient(rawURL, true)
 }
 
-func dialTLS(rawURL string, opts ...handlerclient.ClientOption) (handlerclient.Client, error) {
-	return newClient(rawURL, opts, false)
+func dialTLS(rawURL string) (handlerclient.Client, error) {
+	return newClient(rawURL, false)
 }
 
 // New is the constructor used by callers that want to bypass the
 // registry — primarily tests. plaintextH2C selects h2c when true,
 // HTTPS-over-TLS otherwise.
-func New(rawURL string, plaintextH2C bool, opts ...handlerclient.ClientOption) (*Client, error) {
-	c, err := newClient(rawURL, opts, plaintextH2C)
+func New(rawURL string, plaintextH2C bool) (*Client, error) {
+	c, err := newClient(rawURL, plaintextH2C)
 	if err != nil {
 		return nil, err
 	}
 	return c.(*Client), nil
 }
 
-func newClient(rawURL string, optsIn []handlerclient.ClientOption, plaintextH2C bool) (handlerclient.Client, error) {
+func newClient(rawURL string, plaintextH2C bool) (handlerclient.Client, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("http2client: parse url %q: %w", rawURL, err)
@@ -75,7 +75,6 @@ func newClient(rawURL string, optsIn []handlerclient.ClientOption, plaintextH2C 
 	if u.Host == "" {
 		return nil, fmt.Errorf("http2client: url %q missing host", rawURL)
 	}
-	cfg := handlerclient.ApplyOptions(optsIn)
 	tr := &http.Transport{Protocols: new(http.Protocols)}
 	if plaintextH2C {
 		// http.Protocols.SetUnencryptedHTTP2 is the supported h2c path
@@ -93,7 +92,7 @@ func newClient(rawURL string, optsIn []handlerclient.ClientOption, plaintextH2C 
 		baseURL: strings.TrimRight(rawURL, "/"),
 		client:  hc,
 		tr:      tr,
-		codec:   cfg.Codec,
+		codec:   handlerclient.DefaultCodec(),
 	}, nil
 }
 
@@ -188,6 +187,8 @@ type stream struct {
 
 	sendMu     sync.Mutex
 	sendClosed bool
+
+	bodyClosed bool // resp.Body.Close idempotency guard (protected by recvMu)
 }
 
 // Send serializes f as [8-byte BE header][payload] and writes it to the
@@ -218,7 +219,9 @@ func (s *stream) Send(f *protocolv1.Frame) error {
 // Recv blocks until the next frame is available on the response body.
 // The first Recv call additionally waits for the response headers to
 // arrive (so server-side errors surface here as a non-2xx status).
-// Returns io.EOF when the handler closes the response body cleanly.
+// Returns io.EOF when the handler closes the response body cleanly;
+// also closes resp.Body on EOF/error so the underlying HTTP/2 stream
+// slot is reaped immediately rather than at GC time.
 func (s *stream) Recv() (*protocolv1.Frame, error) {
 	if err := s.awaitResponse(); err != nil {
 		return nil, err
@@ -233,8 +236,11 @@ func (s *stream) Recv() (*protocolv1.Frame, error) {
 	if _, err := io.ReadFull(body, hdr[:]); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			s.recvClosed = true
+			s.closeBodyLocked()
 			return nil, io.EOF
 		}
+		s.recvClosed = true
+		s.closeBodyLocked()
 		return nil, fmt.Errorf("http2client: read header: %w", err)
 	}
 	h := binary.BigEndian.Uint64(hdr[:])
@@ -242,25 +248,50 @@ func (s *stream) Recv() (*protocolv1.Frame, error) {
 	payload := make([]byte, length)
 	if length > 0 {
 		if _, err := io.ReadFull(body, payload); err != nil {
+			s.recvClosed = true
+			s.closeBodyLocked()
 			return nil, fmt.Errorf("http2client: read payload (%d bytes): %w", length, err)
 		}
 	}
 	return &protocolv1.Frame{Header: h, Payload: payload}, nil
 }
 
-// CloseSend closes the request pipe writer, signaling end-of-upload to
-// the handler. The response side is unaffected; Recv continues until
-// the handler closes the response body.
+// CloseSend closes the request pipe writer (engine→handler) and the
+// response body (handler→engine). The combined teardown matches the
+// caller pattern of a single `defer stream.CloseSend()` in the invoker;
+// any in-flight Send/Recv unblock and the underlying HTTP/2 stream is
+// reaped without waiting for net/http's GC.
 func (s *stream) CloseSend() error {
 	s.sendMu.Lock()
-	if s.sendClosed {
+	if !s.sendClosed {
+		s.sendClosed = true
+		pw := s.pw
 		s.sendMu.Unlock()
-		return nil
+		_ = pw.Close()
+	} else {
+		s.sendMu.Unlock()
 	}
-	s.sendClosed = true
-	pw := s.pw
-	s.sendMu.Unlock()
-	return pw.Close()
+	s.recvMu.Lock()
+	s.recvClosed = true
+	s.closeBodyLocked()
+	s.recvMu.Unlock()
+	return nil
+}
+
+// closeBodyLocked closes resp.Body once. Must be called with recvMu
+// held. Safe to call before awaitResponse returns (no-ops when resp is
+// nil); awaitResponse closes the body itself on a non-2xx status.
+func (s *stream) closeBodyLocked() {
+	if s.bodyClosed {
+		return
+	}
+	s.bodyClosed = true
+	s.respMu.Lock()
+	resp := s.resp
+	s.respMu.Unlock()
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 }
 
 // awaitResponse blocks until http.Client.Do returns or ctx is cancelled.
@@ -282,6 +313,9 @@ func (s *stream) awaitResponse() error {
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+		s.recvMu.Lock()
+		s.bodyClosed = true
+		s.recvMu.Unlock()
 		_ = resp.Body.Close()
 		return fmt.Errorf("http2client: handler returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}

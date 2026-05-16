@@ -51,11 +51,21 @@ type wireSession struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 
+	// kind is resolved from rec.Handlers in run() so the
+	// StartMessage carries the addressing model the deployment
+	// actually advertises for this (service, handler).
+	kind protocolv1.Kind
+
 	// nextIdx is the next journal index the engine will assign to an
 	// inbound command frame. Slot 0 is reserved for JEInput (written by
 	// loadStartInput); state writes start at 1 and increment per
 	// frame. Mirrors wireContext.nextSlot on the handler side.
 	nextIdx uint32
+
+	// lastRunSlot is the slot id of the most recent RunCommandMessage.
+	// handleProposeRunCompletion validates that the following propose
+	// targets the same slot; mismatch fails the session.
+	lastRunSlot uint32
 }
 
 // newWireSession constructs an inactive wire session. Call start to
@@ -106,6 +116,15 @@ func (s *wireSession) run() {
 	if !ok {
 		return
 	}
+
+	kind, kindOk := s.resolveKind()
+	if !kindOk {
+		s.failTerminal(fmt.Sprintf(
+			"wire dispatch: deployment %q does not advertise (service=%q, handler=%q)",
+			s.rec.GetId(), s.target.GetServiceName(), s.target.GetHandlerName()))
+		return
+	}
+	s.kind = kind
 
 	stream, err := s.dispatcher.Open(s.ctx, s.rec, s.target)
 	if err != nil {
@@ -215,13 +234,14 @@ func (s *wireSession) sendStartAndReplay(stream handlerclient.Stream, entries []
 		Id:           s.id.GetUuid(),
 		DebugId:      invocationIDString(s.id),
 		Key:          s.target.GetObjectKey(),
-		Kind:         s.kindForTarget(),
 		ServiceName:  s.target.GetServiceName(),
 		HandlerName:  s.target.GetHandlerName(),
 		KnownEntries: uint32(len(frames)),
 		PartitionKey: s.id.GetPartitionKey(),
 	}
-	if cache := preloadEagerState(s.stateTable, s.target, s.id, s.log); len(cache) > 0 {
+	start.Kind = s.kind
+	cache, overflowed := preloadEagerState(s.stateTable, s.target, s.id, s.log)
+	if len(cache) > 0 {
 		stateEntries := make([]*protocolv1.StartMessage_StateEntry, 0, len(cache))
 		for k, v := range cache {
 			stateEntries = append(stateEntries, &protocolv1.StartMessage_StateEntry{
@@ -231,6 +251,10 @@ func (s *wireSession) sendStartAndReplay(stream handlerclient.Stream, entries []
 		}
 		start.StateMap = stateEntries
 	}
+	// PartialState=true means the snapshot is incomplete; handler
+	// errors on cache miss instead of treating the missing key as
+	// absent. Set when preload overflowed eagerStateMaxBytes.
+	start.PartialState = overflowed
 	startBytes, err := s.codec.Marshal(start)
 	if err != nil {
 		return fmt.Errorf("marshal StartMessage: %w", err)
@@ -246,18 +270,17 @@ func (s *wireSession) sendStartAndReplay(stream handlerclient.Stream, entries []
 	return nil
 }
 
-// kindForTarget picks the protocolv1.Kind that matches this
-// invocation's (service, handler) tuple from the deployment record.
-// Defaults to KIND_SERVICE when the record has no exact match — the
-// handler will reject if the addressing model disagrees, which beats
-// silently dispatching with an arbitrary kind.
-func (s *wireSession) kindForTarget() protocolv1.Kind {
+// resolveKind looks up the protocolv1.Kind the deployment advertises
+// for this invocation's (service, handler) tuple. Returns ok=false when
+// no exact match exists — the caller fails the invocation terminally
+// rather than silently dispatching with a guessed addressing model.
+func (s *wireSession) resolveKind() (protocolv1.Kind, bool) {
 	for _, h := range s.rec.GetHandlers() {
 		if h.GetService() == s.target.GetServiceName() && h.GetHandler() == s.target.GetHandlerName() {
-			return protocolv1.Kind(h.GetKind())
+			return protocolv1.Kind(h.GetKind()), true
 		}
 	}
-	return protocolv1.Kind_KIND_SERVICE
+	return protocolv1.Kind_KIND_UNSPECIFIED, false
 }
 
 // driveLoop is the inbound-frame pump. 5d.1 handles only the minimum:
@@ -326,11 +349,15 @@ func (s *wireSession) driveLoop(stream handlerclient.Stream) {
 				return
 			}
 		case handlerclient.TypeCmdRun:
-			// Marker frame: advance slot counter so the next
-			// engine-assigned index lines up with handler's wireContext.
-			// The actual JERun proposal arrives via
-			// ProposeRunCompletionMessage below.
-			_ = s.allocIdx()
+			// Marker frame: record the SDK-stated slot. The actual
+			// JERun proposal arrives via ProposeRunCompletionMessage.
+			// We pin nextIdx to result_completion_id+1 so retry
+			// markers (which re-use the same slot as the first
+			// attempt) don't cause our cursor to drift past the
+			// handler's wireContext.nextSlot.
+			if !s.handleRunMarker(f.GetPayload()) {
+				return
+			}
 		case handlerclient.TypeProposeRunDone:
 			if !s.handleProposeRunCompletion(f.GetPayload()) {
 				return
@@ -563,16 +590,47 @@ func (s *wireSession) handleAwakeable(payload []byte) bool {
 	return s.proposeJournalOrFail(entry, "JEAwakeable")
 }
 
+// handleRunMarker decodes a RunCommandMessage and pins nextIdx to
+// result_completion_id+1. Unlike Sleep/Call/Awakeable which use
+// allocIdx, Run reuses the same slot across retry attempts — the
+// handler emits another marker at the same slot on each respawn that
+// re-runs fn, so we trust the SDK's slot id rather than blindly
+// advancing.
+func (s *wireSession) handleRunMarker(payload []byte) bool {
+	var cmd protocolv1.RunCommandMessage
+	if err := s.codec.Unmarshal(payload, &cmd); err != nil {
+		s.log.Warn("invoker.wire: decode RunCommandMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode run: %v", err))
+		return false
+	}
+	s.lastRunSlot = cmd.GetResultCompletionId()
+	if next := s.lastRunSlot + 1; next > s.nextIdx {
+		s.nextIdx = next
+	}
+	return true
+}
+
 // handleProposeRunCompletion decodes a ProposeRunCompletionMessage and
 // proposes the matching InvokerEffect_RunProposal. The FSM apply path
 // writes JERun with entry_index=result_completion_id carrying the
 // (value | failure_message, retryable) outcome.
+//
+// Validates that result_completion_id matches the slot of the
+// preceding RunCommandMessage; the pair travels together and a
+// mismatch indicates a buggy SDK.
 func (s *wireSession) handleProposeRunCompletion(payload []byte) bool {
 	var prop protocolv1.ProposeRunCompletionMessage
 	if err := s.codec.Unmarshal(payload, &prop); err != nil {
 		s.log.Warn("invoker.wire: decode ProposeRunCompletionMessage failed",
 			"id", invocationIDString(s.id), "err", err)
 		s.failTerminal(fmt.Sprintf("wire dispatch: decode propose_run: %v", err))
+		return false
+	}
+	if prop.GetResultCompletionId() != s.lastRunSlot {
+		s.failTerminal(fmt.Sprintf(
+			"wire dispatch: ProposeRunCompletion result_completion_id=%d does not match preceding RunCommand slot=%d",
+			prop.GetResultCompletionId(), s.lastRunSlot))
 		return false
 	}
 	rp := &enginev1.JERunProposal{

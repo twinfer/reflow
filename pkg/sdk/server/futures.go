@@ -1,0 +1,230 @@
+package server
+
+import (
+	"fmt"
+
+	"github.com/twinfer/reflow/internal/engine/handlerclient"
+	"github.com/twinfer/reflow/pkg/sdk"
+	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+)
+
+// futures.go holds sdk.Future implementations bound to the wire path.
+// The pattern mirrors internal/engine/invoker/futures.go: Poll consults
+// the session's replay buffer for the result slot; Result either
+// returns the resolved value or suspends with a waker token. Because
+// suspension is deferred to Result, primitives can be composed via
+// All/Any without each call short-circuiting the next.
+
+// readyFuture wraps a resolved value (replay-hit on result slot).
+type readyFuture struct {
+	value []byte
+}
+
+func (f readyFuture) Result() ([]byte, error) { return f.value, nil }
+func (f readyFuture) Poll() (bool, []string)  { return true, nil }
+
+// errFuture surfaces a setup-time error (marshal, send, divergence)
+// from a primitive that couldn't even allocate its slot. Result
+// returns the captured error; Poll reports resolved so combinators
+// don't trap on an unrecoverable child.
+type errFuture struct{ err error }
+
+func (f errFuture) Result() ([]byte, error) { return nil, f.err }
+func (f errFuture) Poll() (bool, []string)  { return true, nil }
+
+// suspendedFuture is returned by Sleep / Call / Awakeable when the
+// context was already suspended at the time of the call (allocSlot
+// returned ok=false). Every operation short-circuits to ErrSuspended.
+type suspendedFuture struct{}
+
+func (suspendedFuture) Result() ([]byte, error) { return nil, sdk.ErrSuspended }
+func (suspendedFuture) Poll() (bool, []string)  { return false, nil }
+
+// --- Sleep ---
+
+// sleepFuture is the deferred handle returned by wireContext.Sleep.
+// resultSlot is the slot the JESleepResult (translated as
+// TypeNoteSleepDone) will arrive at on the next respawn.
+type sleepFuture struct {
+	ctx        *wireContext
+	resultSlot uint32
+}
+
+func (f sleepFuture) Poll() (bool, []string) {
+	if f.ctx.lookupReplay(f.resultSlot) != nil {
+		return true, nil
+	}
+	return false, []string{fmt.Sprintf("completion:%d", f.resultSlot)}
+}
+
+func (f sleepFuture) Result() ([]byte, error) {
+	if f.ctx.lookupReplay(f.resultSlot) != nil {
+		return nil, nil
+	}
+	f.ctx.suspend(fmt.Sprintf("completion:%d", f.resultSlot))
+	return nil, sdk.ErrSuspended
+}
+
+// --- Call ---
+
+// callFuture is the deferred handle returned by wireContext.Call.
+// resultSlot is the slot the JECallResult (translated as
+// TypeNoteCallDone) will arrive at on the next respawn.
+type callFuture struct {
+	ctx        *wireContext
+	resultSlot uint32
+}
+
+func (f callFuture) Poll() (bool, []string) {
+	if f.ctx.lookupReplay(f.resultSlot) != nil {
+		return true, nil
+	}
+	return false, []string{fmt.Sprintf("completion:%d", f.resultSlot)}
+}
+
+func (f callFuture) Result() ([]byte, error) {
+	entry := f.ctx.lookupReplay(f.resultSlot)
+	if entry == nil {
+		f.ctx.suspend(fmt.Sprintf("completion:%d", f.resultSlot))
+		return nil, sdk.ErrSuspended
+	}
+	var note protocolv1.CallCompletionNotificationMessage
+	if err := f.ctx.codec.Unmarshal(entry.payload, &note); err != nil {
+		return nil, fmt.Errorf("decode replayed CallCompletionNotificationMessage: %w", err)
+	}
+	switch r := note.GetResult().(type) {
+	case *protocolv1.CallCompletionNotificationMessage_Value:
+		return r.Value.GetContent(), nil
+	case *protocolv1.CallCompletionNotificationMessage_Failure:
+		return nil, sdk.NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())
+	default:
+		return nil, fmt.Errorf("CallCompletionNotificationMessage at slot %d carries no result", f.resultSlot)
+	}
+}
+
+// --- Awakeable ---
+
+// awakeableFuture is the deferred handle returned by wireContext.Awakeable.
+// id is the externally-resolvable identifier the SDK minted; resultSlot
+// is the slot the SignalNotificationMessage will arrive at.
+type awakeableFuture struct {
+	ctx        *wireContext
+	resultSlot uint32
+	id         string
+}
+
+func (f awakeableFuture) Poll() (bool, []string) {
+	if f.ctx.lookupReplay(f.resultSlot) != nil {
+		return true, nil
+	}
+	return false, []string{"awakeable:" + f.id}
+}
+
+func (f awakeableFuture) Result() ([]byte, error) {
+	entry := f.ctx.lookupReplay(f.resultSlot)
+	if entry == nil {
+		f.ctx.suspend("awakeable:" + f.id)
+		return nil, sdk.ErrSuspended
+	}
+	if entry.typeCode != handlerclient.TypeNoteSignal {
+		return nil, fmt.Errorf("awakeable slot %d carries unexpected frame type 0x%04x", f.resultSlot, entry.typeCode)
+	}
+	var note protocolv1.SignalNotificationMessage
+	if err := f.ctx.codec.Unmarshal(entry.payload, &note); err != nil {
+		return nil, fmt.Errorf("decode replayed SignalNotificationMessage: %w", err)
+	}
+	switch r := note.GetResult().(type) {
+	case *protocolv1.SignalNotificationMessage_Value:
+		return r.Value.GetContent(), nil
+	case *protocolv1.SignalNotificationMessage_Failure:
+		return nil, sdk.NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())
+	default:
+		return nil, nil
+	}
+}
+
+// --- All ---
+
+// allResult is the composite returned by wireContext.All. Mirrors the
+// inproc allResult — pure SDK composition, no journal slot.
+type allResult struct {
+	ctx      *wireContext
+	children []sdk.Future
+}
+
+func (a *allResult) Poll() (bool, []string) {
+	var pending []string
+	for _, c := range a.children {
+		p, ok := c.(sdk.Poller)
+		if !ok {
+			continue
+		}
+		if done, tokens := p.Poll(); !done {
+			pending = append(pending, tokens...)
+		}
+	}
+	return len(pending) == 0, pending
+}
+
+func (a *allResult) Results() ([][]byte, error) {
+	if done, tokens := a.Poll(); !done {
+		a.ctx.suspend(tokens...)
+		return nil, sdk.ErrSuspended
+	}
+	out := make([][]byte, len(a.children))
+	for i, c := range a.children {
+		v, err := c.Result()
+		if err != nil {
+			return nil, err
+		}
+		out[i] = v
+	}
+	return out, nil
+}
+
+// --- Any ---
+
+// anyFuture resolves to the lowest-indexed resolved child. Deterministic
+// across replays — argument order is the tiebreaker, not wall clock.
+type anyFuture struct {
+	ctx      *wireContext
+	children []sdk.Future
+}
+
+func (f *anyFuture) Poll() (bool, []string) {
+	var pending []string
+	anyResolved := false
+	for _, c := range f.children {
+		p, ok := c.(sdk.Poller)
+		if !ok {
+			continue
+		}
+		done, tokens := p.Poll()
+		if done {
+			anyResolved = true
+			continue
+		}
+		pending = append(pending, tokens...)
+	}
+	if anyResolved {
+		return true, nil
+	}
+	return false, pending
+}
+
+func (f *anyFuture) Result() ([]byte, error) {
+	if done, tokens := f.Poll(); !done {
+		f.ctx.suspend(tokens...)
+		return nil, sdk.ErrSuspended
+	}
+	for _, c := range f.children {
+		p, ok := c.(sdk.Poller)
+		if !ok {
+			continue
+		}
+		if resolved, _ := p.Poll(); resolved {
+			return c.Result()
+		}
+	}
+	return nil, sdk.ErrSuspended
+}

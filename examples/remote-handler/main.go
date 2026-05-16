@@ -21,7 +21,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/twinfer/reflow/pkg/sdk"
 	"github.com/twinfer/reflow/pkg/sdk/server"
@@ -65,9 +64,6 @@ func main() {
 	go func() {
 		<-ctx.Done()
 		log.Info("remote-handler shutting down")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = shutdownCtx // honoured by the server's internal Shutdown timeout
 		_ = srv.Shutdown()
 	}()
 

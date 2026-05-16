@@ -200,8 +200,7 @@ func TestWireContext_GetState_CacheCoherentWithWrites(t *testing.T) {
 }
 
 // TestWireContext_GetState_NilCache returns (nil, false, nil) when no
-// state_map was preloaded (unkeyed services, or the eager preload
-// overflowed and got dropped engine-side).
+// state_map was preloaded (unkeyed services).
 func TestWireContext_GetState_NilCache(t *testing.T) {
 	wctx, _ := newTestWireContext(t, nil)
 	v, ok, err := wctx.GetState("anything")
@@ -210,6 +209,39 @@ func TestWireContext_GetState_NilCache(t *testing.T) {
 	}
 	if ok || v != nil {
 		t.Errorf("GetState = (%q, %v); want (nil, false)", v, ok)
+	}
+}
+
+// TestWireContext_GetState_PartialMiss returns
+// ErrLazyStateUnavailable on a miss when StartMessage.partial_state was
+// true. Lazy fetch isn't wired, so the handler must distinguish "key
+// absent" from "snapshot incomplete."
+func TestWireContext_GetState_PartialMiss(t *testing.T) {
+	wctx, _ := newTestWireContext(t, map[string][]byte{"present": []byte("v")})
+	wctx.partialState = true
+
+	if v, ok, err := wctx.GetState("present"); err != nil || !ok || string(v) != "v" {
+		t.Errorf("present-key GetState = (%q, %v, %v); want (v, true, nil)", v, ok, err)
+	}
+	v, ok, err := wctx.GetState("missing")
+	if !errors.Is(err, ErrLazyStateUnavailable) {
+		t.Errorf("partial-miss GetState err = %v; want ErrLazyStateUnavailable", err)
+	}
+	if ok || v != nil {
+		t.Errorf("partial-miss GetState = (%q, %v); want (nil, false)", v, ok)
+	}
+}
+
+// TestWireContext_GetState_PartialNoCache surfaces
+// ErrLazyStateUnavailable when partialState is true and there is no
+// cache map at all (engine declined to send any state_map entries).
+func TestWireContext_GetState_PartialNoCache(t *testing.T) {
+	wctx, _ := newTestWireContext(t, nil)
+	wctx.partialState = true
+
+	_, _, err := wctx.GetState("anything")
+	if !errors.Is(err, ErrLazyStateUnavailable) {
+		t.Errorf("GetState err = %v; want ErrLazyStateUnavailable", err)
 	}
 }
 
@@ -736,25 +768,76 @@ func TestWireContext_Suspend_ShortCircuitsSubsequentCalls(t *testing.T) {
 	}
 }
 
-// TestWireContext_StillGated covers the durable primitives that remain
-// not-implemented after the 5f.1-5f.6 sequence. SendSignal needs a
-// Target → InvocationId resolver (matching inproc.go's state). The
-// All / Any combinators delegate to children that may still return
-// ErrWireNotImplemented when fed a notImplementedFuture.
-func TestWireContext_StillGated(t *testing.T) {
+// TestWireContext_SendSignalStillGated covers the one durable primitive
+// that remains not-implemented: SendSignal needs a Target → InvocationId
+// resolver (matching inproc.go's state).
+func TestWireContext_SendSignalStillGated(t *testing.T) {
 	wctx, _ := newTestWireContext(t, nil)
 
 	if err := wctx.SendSignal(sdk.Target{}, "s", nil); !errors.Is(err, ErrWireNotImplemented) {
 		t.Errorf("SendSignal err = %v; want ErrWireNotImplemented", err)
 	}
+}
 
-	all := wctx.All(notImplementedFuture{})
-	if _, err := all.Results(); !errors.Is(err, ErrWireNotImplemented) {
-		t.Errorf("All.Results err = %v; want ErrWireNotImplemented", err)
+// TestWireContext_AllAllChildrenReady returns the children's resolved
+// values in argument order when every child is ready at suspend time.
+func TestWireContext_AllAllChildrenReady(t *testing.T) {
+	wctx, _ := newTestWireContext(t, nil)
+	r := wctx.All(readyFuture{value: []byte("a")}, readyFuture{value: []byte("b")})
+	out, err := r.Results()
+	if err != nil {
+		t.Fatalf("All.Results: %v", err)
 	}
-	any := wctx.Any(notImplementedFuture{})
-	if _, err := any.Result(); !errors.Is(err, ErrWireNotImplemented) {
-		t.Errorf("Any.Result err = %v; want ErrWireNotImplemented", err)
+	if len(out) != 2 || string(out[0]) != "a" || string(out[1]) != "b" {
+		t.Errorf("All.Results = %q; want [a b]", out)
+	}
+}
+
+// TestWireContext_AllPendingSuspends: one ready, one suspended → All
+// returns ErrSuspended without consulting the resolved child.
+func TestWireContext_AllPendingSuspends(t *testing.T) {
+	wctx, _ := newTestWireContext(t, nil)
+	pending := sleepFuture{ctx: wctx, resultSlot: 99} // no replay at slot 99
+	r := wctx.All(readyFuture{value: []byte("ok")}, pending)
+	_, err := r.Results()
+	if !errors.Is(err, sdk.ErrSuspended) {
+		t.Errorf("All.Results err = %v; want sdk.ErrSuspended", err)
+	}
+	awaiting := wctx.snapshotAwaiting()
+	if len(awaiting) != 1 || awaiting[0] != "completion:99" {
+		t.Errorf("awaiting = %v; want [completion:99]", awaiting)
+	}
+}
+
+// TestWireContext_AnyReadyShortCircuits: Any resolves to the first
+// ready child even when others are pending.
+func TestWireContext_AnyReadyShortCircuits(t *testing.T) {
+	wctx, _ := newTestWireContext(t, nil)
+	pending := sleepFuture{ctx: wctx, resultSlot: 99}
+	r := wctx.Any(pending, readyFuture{value: []byte("winner")})
+	out, err := r.Result()
+	if err != nil {
+		t.Fatalf("Any.Result: %v", err)
+	}
+	if string(out) != "winner" {
+		t.Errorf("Any.Result = %q; want %q", out, "winner")
+	}
+}
+
+// TestWireContext_AnyAllPendingSuspends: every child pending → Any
+// returns ErrSuspended with the union of waker tokens.
+func TestWireContext_AnyAllPendingSuspends(t *testing.T) {
+	wctx, _ := newTestWireContext(t, nil)
+	p1 := sleepFuture{ctx: wctx, resultSlot: 10}
+	p2 := sleepFuture{ctx: wctx, resultSlot: 20}
+	r := wctx.Any(p1, p2)
+	_, err := r.Result()
+	if !errors.Is(err, sdk.ErrSuspended) {
+		t.Errorf("Any.Result err = %v; want sdk.ErrSuspended", err)
+	}
+	awaiting := wctx.snapshotAwaiting()
+	if len(awaiting) != 2 {
+		t.Errorf("awaiting = %v; want 2 tokens", awaiting)
 	}
 }
 

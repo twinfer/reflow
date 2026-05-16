@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/pkg/sdk"
@@ -92,6 +94,7 @@ func runSession(
 	}
 	stateCache := stateMapToCache(start.GetStateMap())
 	wctx := newWireContext(ctx, invID, input, stream, codec, stateCache, replay, start.GetPartitionKey())
+	wctx.partialState = start.GetPartialState()
 
 	output, runErr := runHandler(wctx, fn, input)
 
@@ -188,10 +191,10 @@ func readStart(stream frameStream, codec handlerclient.Codec) (*protocolv1.Start
 //   - SetState / ClearState / ClearAllState at index N → slot N
 //     (write-only; replay-hit means "skip re-emit").
 //
-// 5f.3 supports the frame types translateEntry knows about. Unknown
-// types are added to the buffer at a synthetic slot (count-based) so
-// future SDK versions can ignore them safely; if a real translation
-// lands the engine + handler stay in sync via the JE → frame table.
+// Unknown types are added to the buffer at a synthetic slot
+// (count-based) so future SDK versions can ignore them safely; when a
+// real translation lands the engine + handler stay in sync via the JE
+// → frame table.
 func readReplay(stream frameStream, codec handlerclient.Codec, count uint32) ([]byte, map[uint32]*replayEntry, error) {
 	replay := make(map[uint32]*replayEntry, count)
 	if count == 0 {
@@ -326,19 +329,14 @@ func sendSuspension(stream frameStream, codec handlerclient.Codec, awaitingToken
 	// stuffs them straight into awaiting_on for observability) so this
 	// translation is lossless even if a token doesn't match any prefix.
 	for _, t := range awaitingTokens {
-		var (
-			id  uint32
-			tag string
-		)
-		if _, err := fmt.Sscanf(t, "completion:%d", &id); err == nil {
+		if id, ok := parseTokenSuffix(t, "completion:"); ok {
 			sm.WaitingCompletions = append(sm.WaitingCompletions, id)
 			continue
 		}
-		if _, err := fmt.Sscanf(t, "signal:%d", &id); err == nil {
+		if id, ok := parseTokenSuffix(t, "signal:"); ok {
 			sm.WaitingSignals = append(sm.WaitingSignals, id)
 			continue
 		}
-		_ = tag
 		sm.WaitingNamedSignals = append(sm.WaitingNamedSignals, t)
 	}
 	body, err := codec.Marshal(sm)
@@ -374,4 +372,19 @@ func stateMapToCache(entries []*protocolv1.StartMessage_StateEntry) map[string][
 		cache[string(e.GetKey())] = append([]byte(nil), e.GetValue()...)
 	}
 	return cache
+}
+
+// parseTokenSuffix returns the uint32 trailing prefix in t, or (0,
+// false) when t doesn't start with prefix or the suffix isn't a
+// well-formed unsigned integer. Stricter than fmt.Sscanf, which would
+// accept "completion:5xxx" and yield 5.
+func parseTokenSuffix(t, prefix string) (uint32, bool) {
+	if !strings.HasPrefix(t, prefix) {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(t[len(prefix):], 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(n), true
 }

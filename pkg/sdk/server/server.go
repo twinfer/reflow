@@ -49,12 +49,18 @@ type Config struct {
 	Codec handlerclient.Codec
 }
 
-// ErrWireNotImplemented is returned by every wireContext method that
-// represents a durable-execution primitive (Sleep, Run, Call, State,
-// Awakeable, signals). The engine-side wire session does not yet handle
-// the corresponding command/notification frames; handlers running on the
-// wire path must stick to input/output for now.
+// ErrWireNotImplemented is returned by wireContext methods whose
+// engine-side wiring is not yet complete (SendSignal). The state-write
+// and combinator primitives are fully wired; only the explicit
+// cross-invocation signal path remains.
 var ErrWireNotImplemented = errors.New("sdk/server: durable primitive not yet supported on wire path")
+
+// ErrLazyStateUnavailable is returned by wireContext.GetState when the
+// engine signaled partial_state (eager preload exceeded the cap) and
+// the requested key was not in the snapshot. Lazy state fetch via
+// GetLazyStateCommandMessage isn't wired yet — handlers see this in
+// place of the eventual completion future.
+var ErrLazyStateUnavailable = errors.New("sdk/server: state preload incomplete; lazy fetch not implemented")
 
 // validateConfig fills defaults and rejects obviously broken inputs.
 // Shared by both transports so the same diagnostic surfaces regardless

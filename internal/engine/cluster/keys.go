@@ -54,7 +54,7 @@ func DeploymentPrefix() []byte { return []byte(deploymentPrefix) }
 
 // DeploymentKey returns deployment/<id>. Deployment ids are caller-shaped
 // strings (UUIDv4 for operator-registered deployments, "inproc-<16-hex>"
-// for the synthetic inproc deployment). Phase 5.
+// for the synthetic inproc deployment).
 func DeploymentKey(id string) []byte {
 	out := make([]byte, 0, len(deploymentPrefix)+len(id))
 	out = append(out, deploymentPrefix...)

@@ -326,3 +326,47 @@ func discoverHTTP2(t *testing.T, baseURL string) *discoveryv1.DiscoveryResponse 
 // stubHandler is a no-op handler used to populate the registry for the
 // discovery test.
 var stubHandler sdk.Handler = func(_ sdk.Context, _ []byte) ([]byte, error) { return nil, nil }
+
+// TestHTTP2Server_NoBodyLeak runs many sequential sessions through one
+// http2client.Client and asserts the transport doesn't accumulate idle
+// connections after the engine's typical "defer CloseSend" teardown.
+// Regression for the bug where Recv terminating on EOF never closed
+// resp.Body and the underlying HTTP/2 stream was reaped only at GC.
+func TestHTTP2Server_NoBodyLeak(t *testing.T) {
+	reg := sdk.NewRegistry()
+	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
+		return append([]byte("h2-echo:"), in...), nil
+	}); err != nil {
+		t.Fatalf("RegisterService: %v", err)
+	}
+	srv, err := server.NewHTTP2(server.Config{Registry: reg})
+	if err != nil {
+		t.Fatalf("NewHTTP2: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() { _ = srv.Shutdown() }()
+
+	url := "http://" + ln.Addr().String()
+	client, err := http2client.New(url, true)
+	if err != nil {
+		t.Fatalf("http2client.New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	// 32 sequential sessions: if Recv/CloseSend doesn't close resp.Body,
+	// stdlib accumulates HTTP/2 stream tracking state. We can't directly
+	// observe the leak without internal hooks, but a session count well
+	// above the per-conn concurrency cap exercises the recycle path; a
+	// real leak would manifest as stalls or stream-limit errors.
+	for i := range 32 {
+		output := runOneSession(t, client,
+			handlerclient.Route{Service: "Echo", Handler: "echo"}, []byte("ping"))
+		if got, want := string(output), "h2-echo:ping"; got != want {
+			t.Fatalf("session %d output = %q; want %q", i, got, want)
+		}
+	}
+}

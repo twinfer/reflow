@@ -232,7 +232,7 @@ func (i *Invoker) StartInvocation(id *enginev1.InvocationId, target *enginev1.In
 //
 // Dispatch selection:
 //   - Read the persisted InvocationStatus to retrieve the stamped
-//     deployment_id (Phase 5c).
+//     deployment_id.
 //   - If deployments resolver yields a record whose transport is not
 //     "inproc", install a wireSession (requires WireDispatcher).
 //   - Otherwise look up the handler in the in-process registry and
@@ -254,7 +254,7 @@ func (i *Invoker) installSessionLocked(id *enginev1.InvocationId, target *engine
 			return nil, false
 		}
 		if depID := status.GetDeploymentId(); depID != "" {
-			rec, err = i.deployments.Resolve(depID)
+			rec, err = i.deployments.Resolve(i.ctx, depID)
 			if err != nil {
 				i.log.Warn("invoker: resolve deployment failed",
 					"id", invocationIDString(id),

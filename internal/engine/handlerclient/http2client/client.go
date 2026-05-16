@@ -7,11 +7,9 @@
 // application/vnd.reflow.invocation.v1+<codec> so the handler-side knows
 // which Codec to decode payloads with.
 //
-// Unlike grpcclient, this transport does NOT depend on gRPC's generated
-// SessionService client; it uses net/http's built-in HTTP/2 support via
-// http.Transport.Protocols (h2c selected via SetUnencryptedHTTP2; TLS
-// via SetHTTP2). The bidi shape is built on io.Pipe (engine→handler) +
-// resp.Body (handler→engine).
+// Built on net/http's HTTP/2 support via http.Transport.Protocols (h2c
+// selected via SetUnencryptedHTTP2; TLS via SetHTTP2). The bidi shape
+// is built on io.Pipe (engine→handler) + resp.Body (handler→engine).
 package http2client
 
 import (

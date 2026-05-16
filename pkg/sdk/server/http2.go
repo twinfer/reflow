@@ -22,7 +22,7 @@ import (
 // HTTP2Server hosts a reflow handler over raw HTTP/2. Wire framing:
 //   - POST /invoke/<service>/<handler> with chunked
 //     [8-byte BE header][payload] frames matching protocolv1.Frame.
-//   - GET  /discover returns a protobuf-encoded DiscoveryResponse.
+//   - GET  /discover returns a protobuf-encoded discoveryv1.DiscoveryResponse.
 //
 // Uses stdlib net/http's HTTP/2 (http.Server.Protocols) so deployments
 // on Go 1.24+ pick up h2c without an x/net dependency.
@@ -93,8 +93,8 @@ func (s *HTTP2Server) Shutdown() error {
 	return s.srv.Shutdown(ctx)
 }
 
-// handleDiscover writes a protobuf-encoded DiscoveryResponse listing
-// every handler in the registry.
+// handleDiscover writes a protobuf-encoded discoveryv1.DiscoveryResponse
+// listing every handler in the registry.
 func (s *HTTP2Server) handleDiscover(w http.ResponseWriter, _ *http.Request) {
 	resp := buildDiscoveryResponse(s.cfg.Registry)
 	body, err := proto.Marshal(resp)

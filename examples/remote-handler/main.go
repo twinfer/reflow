@@ -4,14 +4,12 @@
 //
 // Build it, point a reflow.Config at the resulting URL via
 // Config.Handlers.Endpoints, and the engine will discover its handlers
-// and route invocations to them over gRPC (or HTTP/2 — pass -http to
-// switch transports).
+// over GET /discover and route invocations to them over raw HTTP/2.
 //
 // Usage:
 //
-//	go run ./examples/remote-handler                 # gRPC on :50051
-//	go run ./examples/remote-handler -addr :50052    # gRPC on :50052
-//	go run ./examples/remote-handler -http           # raw HTTP/2 on :50051
+//	go run ./examples/remote-handler                 # h2c on :50051
+//	go run ./examples/remote-handler -addr :50052    # h2c on :50052
 package main
 
 import (
@@ -31,7 +29,6 @@ import (
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:50051", "host:port to listen on")
-	useHTTP := flag.Bool("http", false, "serve via raw HTTP/2 (h2c) instead of gRPC")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -52,28 +49,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	var srv server.Server
-	if *useHTTP {
-		s, err := server.NewHTTP2(server.Config{Registry: reg})
-		if err != nil {
-			log.Error("NewHTTP2", "err", err)
-			os.Exit(1)
-		}
-		srv = s
-		log.Info("remote-handler listening (HTTP/2 h2c)",
-			"addr", ln.Addr().String(),
-			"register_url", "http://"+ln.Addr().String())
-	} else {
-		s, err := server.NewGRPC(server.Config{Registry: reg})
-		if err != nil {
-			log.Error("NewGRPC", "err", err)
-			os.Exit(1)
-		}
-		srv = s
-		log.Info("remote-handler listening (gRPC)",
-			"addr", ln.Addr().String(),
-			"register_url", "grpc://"+ln.Addr().String())
+	srv, err := server.NewHTTP2(server.Config{Registry: reg})
+	if err != nil {
+		log.Error("NewHTTP2", "err", err)
+		os.Exit(1)
 	}
+	log.Info("remote-handler listening (HTTP/2 h2c)",
+		"addr", ln.Addr().String(),
+		"register_url", "http://"+ln.Addr().String())
 
 	// Trap SIGINT / SIGTERM and Shutdown gracefully so in-flight
 	// invocations get a chance to finish.

@@ -1125,9 +1125,7 @@ const file_sdkv1_sdk_proto_rawDesc = "" +
 	"\x04Void\"7\n" +
 	"\rStateMapEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value2T\n" +
-	"\x0eSessionService\x12B\n" +
-	"\x06Invoke\x12\x19.reflow.sdk.v1.SDKMessage\x1a\x19.reflow.sdk.v1.SDKMessage(\x010\x01B-Z+github.com/twinfer/reflow/proto/sdkv1;sdkv1b\x06proto3"
+	"\x05value\x18\x02 \x01(\fR\x05valueB-Z+github.com/twinfer/reflow/proto/sdkv1;sdkv1b\x06proto3"
 
 var (
 	file_sdkv1_sdk_proto_rawDescOnce sync.Once
@@ -1183,10 +1181,8 @@ var file_sdkv1_sdk_proto_depIdxs = []int32{
 	10, // 17: reflow.sdk.v1.EndInvocation.failure:type_name -> reflow.sdk.v1.Failure
 	17, // 18: reflow.sdk.v1.ProposeEntry.entry:type_name -> reflow.engine.v1.JournalEntry
 	10, // 19: reflow.sdk.v1.ProposeRunCompletion.failure:type_name -> reflow.sdk.v1.Failure
-	0,  // 20: reflow.sdk.v1.SessionService.Invoke:input_type -> reflow.sdk.v1.SDKMessage
-	0,  // 21: reflow.sdk.v1.SessionService.Invoke:output_type -> reflow.sdk.v1.SDKMessage
-	21, // [21:22] is the sub-list for method output_type
-	20, // [20:21] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for method output_type
+	20, // [20:20] is the sub-list for method input_type
 	20, // [20:20] is the sub-list for extension type_name
 	20, // [20:20] is the sub-list for extension extendee
 	0,  // [0:20] is the sub-list for field type_name
@@ -1221,7 +1217,7 @@ func file_sdkv1_sdk_proto_init() {
 			NumEnums:      0,
 			NumMessages:   14,
 			NumExtensions: 0,
-			NumServices:   1,
+			NumServices:   0,
 		},
 		GoTypes:           file_sdkv1_sdk_proto_goTypes,
 		DependencyIndexes: file_sdkv1_sdk_proto_depIdxs,

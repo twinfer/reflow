@@ -433,7 +433,6 @@ func (h *Host) InprocDeploymentRecord(nowMs uint64) *enginev1.DeploymentRecord {
 	rec := &enginev1.DeploymentRecord{
 		Id:             sdk.InprocDeploymentID(entries),
 		Url:            "inproc://",
-		Transport:      "inproc",
 		RegisteredAtMs: nowMs,
 	}
 	for _, e := range entries {

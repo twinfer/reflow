@@ -8,7 +8,6 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine/cluster"
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
-	"github.com/twinfer/reflow/internal/engine/handlerclient/grpcclient"
 	"github.com/twinfer/reflow/internal/engine/handlerclient/http2client"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -64,8 +63,8 @@ func (h *Host) matchInprocDeployment(deploymentID string) *enginev1.DeploymentRe
 // openWireStream is the WireDispatcher implementation: ask the
 // handlerclient.Registry for a cached Client against the deployment URL
 // and open a fresh Stream addressed to (target.Service, target.Handler).
-// The route arguments matter for HTTP/2 (URL path); gRPC ignores them
-// because the (service, handler) tuple rides on the StartMessage frame.
+// The route is used by the HTTP/2 transport to build the URL path; the
+// StartMessage frame echoes the same tuple as a sanity check.
 func (h *Host) openWireStream(ctx context.Context, rec *enginev1.DeploymentRecord, target *enginev1.InvocationTarget) (handlerclient.Stream, error) {
 	if rec == nil {
 		return nil, errors.New("host: openWireStream: nil deployment record")
@@ -87,12 +86,11 @@ func (h *Host) openWireStream(ctx context.Context, rec *enginev1.DeploymentRecor
 }
 
 // newHandlerRegistry builds the engine-side handlerclient registry with
-// the default transport dialers (gRPC plain + TLS and raw HTTP/2 plain
-// + TLS). Operators may install additional dialers post-construction
-// via Host.HandlerClients().Register.
+// the default transport dialers (raw HTTP/2 plain + TLS). Operators may
+// install additional dialers post-construction via
+// Host.HandlerClients().Register.
 func newHandlerRegistry() *handlerclient.Registry {
 	r := handlerclient.NewRegistry()
-	grpcclient.Register(r)
 	http2client.Register(r)
 	return r
 }

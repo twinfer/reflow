@@ -12,9 +12,10 @@ import (
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
-// frameStream is the transport-neutral view of one session. gRPC and
-// HTTP/2 each adapt their native stream onto this contract; the session
-// driver below is shared.
+// frameStream is the transport-neutral view of one session. The HTTP/2
+// server adapts its request body / response writer onto this contract;
+// the session driver below is shared so future transports can plug in
+// with the same shape.
 type frameStream interface {
 	Send(*protocolv1.Frame) error
 	Recv() (*protocolv1.Frame, error)
@@ -24,16 +25,14 @@ type frameStream interface {
 // InputCommandMessage, look up the handler, run it, then emit
 // OutputCommandMessage + EndMessage (or ErrorMessage on protocol /
 // framing failure). route is the transport-supplied (service, handler)
-// hint — HTTP/2 fills it from the URL path; gRPC leaves it empty and
-// relies on StartMessage.service_name/handler_name as the authoritative
-// routing source. When both are populated they MUST agree, or the
-// session fails with a protocol-violation ErrorMessage.
+// hint — HTTP/2 fills it from the URL path /invoke/<service>/<handler>;
+// StartMessage echoes the same tuple. When both are populated they MUST
+// agree, or the session fails with a protocol-violation ErrorMessage.
 //
 // The returned error is logged by the transport; it is NOT mirrored as
 // an ErrorMessage on the wire (that frame is reserved for protocol-level
 // failures the engine should treat as terminal). Transport-level cleanup
-// (closing the response body, ending the gRPC stream) is the caller's
-// responsibility.
+// (closing the response body) is the caller's responsibility.
 func runSession(
 	ctx context.Context,
 	stream frameStream,

@@ -29,16 +29,14 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
+	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
 // protocolVersion is the wire-protocol version this engine speaks; the
@@ -335,8 +333,8 @@ func (s *Server) ListSnapshots(ctx context.Context, req *adminv1.ListSnapshotsRe
 // synthetic inproc deployment is registered internally at metadata-leader
 // bootstrap, NOT via this RPC; operators do not see it.
 //
-// Wired schemes: grpc:// + grpcs:// (gRPC discovery) and http:// + https://
-// (HTTP/2 GET /discover). inproc:// is reserved internally and rejected.
+// Wired schemes: http:// (h2c) and https:// (HTTP/2 + TLS). inproc:// is
+// reserved internally and rejected.
 func (s *Server) RegisterDeployment(ctx context.Context, req *adminv1.RegisterDeploymentRequest) (*adminv1.RegisterDeploymentResponse, error) {
 	if err := s.requireLeader(); err != nil {
 		return nil, err
@@ -350,23 +348,14 @@ func (s *Server) RegisterDeployment(ctx context.Context, req *adminv1.RegisterDe
 		return nil, status.Errorf(codes.InvalidArgument, "admin: parse url: %v", err)
 	}
 	scheme := strings.ToLower(u.Scheme)
-	transport, err := transportForScheme(scheme)
-	if err != nil {
+	if err := validateDeploymentScheme(scheme); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "admin: %v", err)
 	}
 
 	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
 	defer cancel()
 
-	var resp *protocolv1.DiscoveryResponse
-	switch transport {
-	case "grpc":
-		resp, err = discoverGRPC(callCtx, u)
-	case "https":
-		resp, err = discoverHTTP(callCtx, raw, scheme == "http")
-	default:
-		return nil, status.Errorf(codes.Internal, "admin: no discovery driver for transport %q", transport)
-	}
+	resp, err := discoverHTTP(callCtx, raw, scheme == "http")
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "admin: discovery: %v", err)
 	}
@@ -379,7 +368,6 @@ func (s *Server) RegisterDeployment(ctx context.Context, req *adminv1.RegisterDe
 	rec := &enginev1.DeploymentRecord{
 		Id:             deploymentID,
 		Url:            raw,
-		Transport:      transport,
 		RegisteredAtMs: uint64(time.Now().UnixMilli()),
 	}
 	for _, h := range resp.GetHandlers() {
@@ -403,54 +391,27 @@ func (s *Server) RegisterDeployment(ctx context.Context, req *adminv1.RegisterDe
 	return &adminv1.RegisterDeploymentResponse{DeploymentId: deploymentID}, nil
 }
 
-// transportForScheme maps URL schemes to the persisted transport tag.
-// inproc is internally reserved and rejected here so operators can't
-// shadow the synthetic in-proc deployment.
-func transportForScheme(scheme string) (string, error) {
+// validateDeploymentScheme rejects schemes the engine cannot dial. The
+// only supported wire transport is HTTP/2 (h2c for http://, TLS for
+// https://). inproc:// is reserved internally so operators can't shadow
+// the synthetic in-proc deployment via this RPC.
+func validateDeploymentScheme(scheme string) error {
 	switch scheme {
-	case "grpc", "grpcs":
-		return "grpc", nil
 	case "http", "https":
-		return "https", nil
+		return nil
 	case "inproc":
-		return "", errors.New("inproc:// is internal; cannot be registered via RegisterDeployment")
+		return errors.New("inproc:// is internal; cannot be registered via RegisterDeployment")
 	case "":
-		return "", errors.New("url missing scheme")
+		return errors.New("url missing scheme")
 	default:
-		return "", fmt.Errorf("unsupported scheme %q", scheme)
+		return fmt.Errorf("unsupported scheme %q; only http:// and https:// are supported", scheme)
 	}
-}
-
-// discoverGRPC opens a one-shot gRPC dial to u.Host and calls
-// DiscoveryService.Discover. Plain gRPC for "grpc://", TLS for
-// "grpcs://"; raw HTTP/2 discovery (5d.2) is a separate code path.
-func discoverGRPC(ctx context.Context, u *url.URL) (*protocolv1.DiscoveryResponse, error) {
-	if u.Host == "" {
-		return nil, errors.New("url missing host:port")
-	}
-	var opts []grpc.DialOption
-	switch strings.ToLower(u.Scheme) {
-	case "grpc":
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	case "grpcs":
-		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})))
-	default:
-		return nil, fmt.Errorf("scheme %q is not a gRPC URL", u.Scheme)
-	}
-	cc, err := grpc.NewClient(u.Host, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("dial: %w", err)
-	}
-	defer func() { _ = cc.Close() }()
-	client := protocolv1.NewDiscoveryServiceClient(cc)
-	return client.Discover(ctx, &protocolv1.DiscoveryRequest{ProtocolVersion: protocolVersion})
 }
 
 // discoverHTTP issues GET <url>/discover over HTTP/2 (h2c for http://,
 // TLS for https://). The response body is a protobuf-encoded
-// DiscoveryResponse. Mirrors the gRPC path; the HTTP transport is the
-// raw-HTTP/2 counterpart.
-func discoverHTTP(ctx context.Context, rawURL string, plaintextH2C bool) (*protocolv1.DiscoveryResponse, error) {
+// DiscoveryResponse.
+func discoverHTTP(ctx context.Context, rawURL string, plaintextH2C bool) (*discoveryv1.DiscoveryResponse, error) {
 	tr := &http.Transport{Protocols: new(http.Protocols)}
 	if plaintextH2C {
 		tr.Protocols.SetUnencryptedHTTP2(true)
@@ -482,7 +443,7 @@ func discoverHTTP(ctx context.Context, rawURL string, plaintextH2C bool) (*proto
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
-	var out protocolv1.DiscoveryResponse
+	var out discoveryv1.DiscoveryResponse
 	if err := proto.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}

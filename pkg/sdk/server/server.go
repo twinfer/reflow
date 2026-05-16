@@ -1,8 +1,9 @@
 // Package server hosts a reflow handler-side endpoint over the
 // protocolv1 wire. Operators register handlers in an *sdk.Registry,
-// wrap it in NewGRPC or NewHTTP2, and Serve on a listener. The reflow
-// engine discovers the deployment, opens a session, and drives the
-// handler through StartMessage / InputCommandMessage frames.
+// wrap it in NewHTTP2, and Serve on a listener. The reflow engine
+// discovers the deployment over GET /discover, opens a session via
+// POST /invoke/<service>/<handler>, and drives the handler through
+// StartMessage / InputCommandMessage frames.
 //
 // The current implementation supports the minimum-viable session shape
 // engine-side wire_session understands: StartMessage + InputCommandMessage
@@ -21,10 +22,9 @@ import (
 	"github.com/twinfer/reflow/pkg/sdk"
 )
 
-// Server is the transport-neutral handler-side endpoint. NewGRPC and
-// NewHTTP2 return concrete servers backed by the same Registry +
-// wireContext path; pick one based on which transport the engine will
-// dial (deployment URL scheme).
+// Server is the handler-side endpoint. NewHTTP2 is the one constructor;
+// the engine dials the listener over raw HTTP/2 (h2c plaintext or HTTPS
+// + TLS, depending on the registered deployment URL scheme).
 type Server interface {
 	// Serve blocks accepting sessions on ln until ln is closed or
 	// Shutdown is called. Returns the listener error on close.
@@ -39,8 +39,8 @@ type Server interface {
 // is required; the others have sensible defaults.
 type Config struct {
 	// Registry holds the handlers this server is willing to serve. The
-	// same registry instance can back multiple Servers (e.g. gRPC + HTTP/2
-	// on different ports) — the lookup is concurrency-safe.
+	// lookup is concurrency-safe; the same registry instance can back
+	// multiple Servers (e.g. h2c and HTTPS on different ports).
 	Registry *sdk.Registry
 
 	// Codec governs inner-payload encoding for protocolv1 messages.

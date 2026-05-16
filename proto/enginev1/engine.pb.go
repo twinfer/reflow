@@ -4085,24 +4085,24 @@ func (x *NodeHostMeta) GetGrpcEndpoint() string {
 }
 
 // DeploymentRecord is the persisted shape of a registered deployment in
-// shard 0's DeploymentTable. One row per (id) with the URL + transport
-// the operator (or the synthetic inproc bootstrap) handed in, plus the
-// handler set discovered at registration time.
+// shard 0's DeploymentTable. One row per (id) with the URL the operator
+// (or the synthetic inproc bootstrap) handed in, plus the handler set
+// discovered at registration time.
 //
 // Pinning: every Invocation row carries a deployment_id stamped at
 // submit time so replays route to the same deployment even when newer
 // deployments for the same (service, handler) have since landed. We
 // never garbage-collect deployment rows on overwrite; superseded rows
 // stay readable until every invocation referencing them has terminated
-// (GC is a future feature; ref-counting against InvocationStatus). Phase 5.
+// (GC is a future feature; ref-counting against InvocationStatus).
 //
-// transport is the URL scheme: "inproc", "grpc", "grpcs", "http", "https".
-// Synthetic in-process deployments use transport="inproc" and url="inproc://".
+// The URL scheme determines dispatch: "inproc://" short-circuits to the
+// in-process sdk.Registry; "http://" and "https://" route through the
+// engine-side handlerclient over raw HTTP/2.
 type DeploymentRecord struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	Id        string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Url       string                 `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
-	Transport string                 `protobuf:"bytes,3,opt,name=transport,proto3" json:"transport,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Url   string                 `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
 	// handlers enumerates every (service, handler, kind) tuple the
 	// deployment claimed at discovery time. Used by the engine-side
 	// routing table to map (service, handler) → deployment_id when an
@@ -4153,13 +4153,6 @@ func (x *DeploymentRecord) GetId() string {
 func (x *DeploymentRecord) GetUrl() string {
 	if x != nil {
 		return x.Url
-	}
-	return ""
-}
-
-func (x *DeploymentRecord) GetTransport() string {
-	if x != nil {
-		return x.Transport
 	}
 	return ""
 }
@@ -5105,13 +5098,12 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x0fchecksum_sha256\x18\x05 \x01(\tR\x0echecksumSha256\x12\"\n" +
 	"\rcreated_at_ms\x18\x06 \x01(\x06R\vcreatedAtMs\"3\n" +
 	"\fNodeHostMeta\x12#\n" +
-	"\rgrpc_endpoint\x18\x01 \x01(\tR\fgrpcEndpoint\"\xbd\x01\n" +
+	"\rgrpc_endpoint\x18\x01 \x01(\tR\fgrpcEndpoint\"\xb0\x01\n" +
 	"\x10DeploymentRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
-	"\x03url\x18\x02 \x01(\tR\x03url\x12\x1c\n" +
-	"\ttransport\x18\x03 \x01(\tR\ttransport\x12?\n" +
+	"\x03url\x18\x02 \x01(\tR\x03url\x12?\n" +
 	"\bhandlers\x18\x04 \x03(\v2#.reflow.engine.v1.DeploymentHandlerR\bhandlers\x12(\n" +
-	"\x10registered_at_ms\x18\x05 \x01(\x06R\x0eregisteredAtMs\"[\n" +
+	"\x10registered_at_ms\x18\x05 \x01(\x06R\x0eregisteredAtMsJ\x04\b\x03\x10\x04R\ttransport\"[\n" +
 	"\x11DeploymentHandler\x12\x18\n" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12\x18\n" +
 	"\ahandler\x18\x02 \x01(\tR\ahandler\x12\x12\n" +

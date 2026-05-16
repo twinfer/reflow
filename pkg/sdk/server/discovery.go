@@ -1,33 +1,16 @@
 package server
 
 import (
-	"context"
-
 	"github.com/twinfer/reflow/pkg/sdk"
+	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
-
-// discoveryServer implements protocolv1.DiscoveryServiceServer by
-// enumerating the registry's handlers. The gRPC and HTTP/2 transports
-// share this logic via buildDiscoveryResponse.
-type discoveryServer struct {
-	protocolv1.UnimplementedDiscoveryServiceServer
-	registry *sdk.Registry
-}
-
-// Discover returns the registry's handlers grouped by (service, kind).
-// The engine consumes the result at RegisterDeployment time to persist a
-// DeploymentRecord; the protocol_version round-trip lets the engine
-// reject deployments that speak a wire version it doesn't understand.
-func (d *discoveryServer) Discover(_ context.Context, _ *protocolv1.DiscoveryRequest) (*protocolv1.DiscoveryResponse, error) {
-	return buildDiscoveryResponse(d.registry), nil
-}
 
 // buildDiscoveryResponse groups Entries by (service, kind) and collects
 // every handler name under that group. Sorted-by-service-then-handler
 // ordering falls out of Registry.Entries; we preserve it so the
 // response is deterministic across registration-order shuffles.
-func buildDiscoveryResponse(reg *sdk.Registry) *protocolv1.DiscoveryResponse {
+func buildDiscoveryResponse(reg *sdk.Registry) *discoveryv1.DiscoveryResponse {
 	entries := reg.Entries()
 	// Group by (service, kind) preserving sort order.
 	type key struct {
@@ -35,7 +18,7 @@ func buildDiscoveryResponse(reg *sdk.Registry) *protocolv1.DiscoveryResponse {
 		kind    sdk.Kind
 	}
 	idx := make(map[key]int)
-	out := make([]*protocolv1.DiscoveredHandler, 0)
+	out := make([]*discoveryv1.DiscoveredHandler, 0)
 	for _, e := range entries {
 		k := key{service: e.Service, kind: e.Kind}
 		if i, ok := idx[k]; ok {
@@ -43,13 +26,13 @@ func buildDiscoveryResponse(reg *sdk.Registry) *protocolv1.DiscoveryResponse {
 			continue
 		}
 		idx[k] = len(out)
-		out = append(out, &protocolv1.DiscoveredHandler{
+		out = append(out, &discoveryv1.DiscoveredHandler{
 			Service:      e.Service,
 			Kind:         kindToProto(e.Kind),
 			HandlerNames: []string{e.Handler},
 		})
 	}
-	return &protocolv1.DiscoveryResponse{
+	return &discoveryv1.DiscoveryResponse{
 		ProtocolVersion: protocolVersion,
 		Handlers:        out,
 	}
@@ -60,7 +43,8 @@ func buildDiscoveryResponse(reg *sdk.Registry) *protocolv1.DiscoveryResponse {
 // when the wire contract changes.
 const protocolVersion = "v1"
 
-// kindToProto maps sdk.Kind to its protocolv1 wire enum.
+// kindToProto maps sdk.Kind to its protocolv1 wire enum. Kind is owned
+// by the session protocol; discovery just echoes it.
 func kindToProto(k sdk.Kind) protocolv1.Kind {
 	switch k {
 	case sdk.KindService:

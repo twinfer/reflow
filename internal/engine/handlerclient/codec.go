@@ -12,16 +12,14 @@ import (
 // controls only the inner message encoding (StartMessage,
 // OutputCommandMessage, etc.).
 //
-// Signature matches google.golang.org/grpc/encoding.Codec so a customer
-// can reuse a single Codec across the reflow handlerclient and standard
-// gRPC stacks. Customer-supplied codecs (JSON, MessagePack, etc.)
-// replace the default protobuf encoding without touching transport code.
+// The signature matches google.golang.org/grpc/encoding.Codec so a
+// customer-supplied codec (JSON, MessagePack, …) can be reused across
+// the reflow handlerclient and other gRPC-shaped stacks.
 //
-// Both sides of a session must agree on the codec. For 5d the engine and
-// the handler-side server are configured separately; pkg/sdk/server (5e)
-// will take the matching option, and the HTTP Content-Type carries the
-// codec name (application/vnd.reflow.invocation.v1+<codec>) for raw
-// HTTP/2 negotiation.
+// Both sides of a session must agree on the codec. The engine and the
+// handler-side server are configured separately; the HTTP Content-Type
+// carries the codec name (application/vnd.reflow.invocation.v1+<codec>)
+// so the handler can verify negotiation succeeded.
 type Codec interface {
 	Marshal(v any) ([]byte, error)
 	Unmarshal(data []byte, v any) error

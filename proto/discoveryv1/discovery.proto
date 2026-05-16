@@ -1,0 +1,47 @@
+// Reflow handler discovery v1 — engine-to-handler capability probe.
+//
+// At RegisterDeployment time the engine issues GET <url>/discover and
+// expects a protobuf-encoded DiscoveryResponse describing the handlers
+// the deployment can serve. The result is persisted into the
+// DeploymentRecord on shard 0 so future invocations can route by id.
+//
+// This file is intentionally separated from the session wire protocol
+// (proto/protocolv1) because discovery is a one-shot request/response
+// shape with its own evolution axis (deployment metadata, capability
+// advertisement). Kind is imported from protocolv1 — handler addressing
+// vocabulary is owned by the session protocol.
+syntax = "proto3";
+
+package reflow.discovery.v1;
+
+import "protocolv1/protocol.proto";
+
+option go_package = "github.com/twinfer/reflow/proto/discoveryv1;discoveryv1";
+
+// DiscoveryRequest is sent by the engine when registering a deployment.
+// Carries the engine-advertised protocol version so the handler can
+// refuse engines that speak an incompatible wire.
+message DiscoveryRequest {
+  // Engine-advertised protocol version. v1 implementations send "v1".
+  string protocol_version = 1;
+}
+
+// DiscoveryResponse advertises every handler the deployment exposes.
+// The engine refuses to register a deployment whose protocol_version it
+// doesn't understand.
+message DiscoveryResponse {
+  // Handler-advertised protocol version. Engine refuses to register
+  // a deployment whose protocol version isn't supported.
+  string protocol_version = 1;
+  repeated DiscoveredHandler handlers = 2;
+}
+
+// DiscoveredHandler is one (service, kind, [handler_names]) group as
+// advertised by the deployment. Kind is the protocolv1 enum — it
+// determines how the engine addresses sessions to this handler at
+// invocation time.
+message DiscoveredHandler {
+  string service = 1;
+  reflow.protocol.v1.Kind kind = 2;
+  repeated string handler_names = 3;
+}

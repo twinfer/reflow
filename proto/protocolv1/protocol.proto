@@ -1,16 +1,22 @@
 // Reflow service protocol v1 — engine ↔ handler wire format.
 //
-// Wire framing on raw HTTP/2: each message is prefixed by a 64-bit
-// big-endian header (16-bit type code | 16-bit flags | 32-bit payload
-// length), followed by the protobuf payload. Type codes are
-// namespaced: 0x0000-0x00FF are core lifecycle frames, 0x0400-0x04FF
-// are command messages (Replicated journal entries created by the SDK
-// during processing), 0x8000-0x80FF are notification messages
-// (Completion + signal results delivered from engine to SDK).
+// The transport is raw HTTP/2. The engine dials the handler endpoint
+// and POSTs a chunked, framed request body to /invoke/<service>/<handler>;
+// the response body carries the handler→engine frame stream. Capability
+// discovery is a separate one-shot probe defined in
+// proto/discoveryv1/discovery.proto (GET /discover).
 //
-// Over gRPC, both the SessionService.Invoke and DiscoveryService.Discover
-// RPCs use protobuf message envelopes; framing is gRPC-native.
+// Wire framing: each message is prefixed by a 64-bit big-endian header
+// (16-bit type code | 16-bit flags | 32-bit payload length), followed
+// by the protobuf payload. Type codes are namespaced: 0x0000-0x00FF
+// are core lifecycle frames, 0x0400-0x04FF are command messages
+// (replicated journal entries created by the SDK during processing),
+// 0x8000-0x80FF are notification messages (completion + signal results
+// delivered from engine to SDK).
 //
+// This file defines only the message shapes used as payloads inside the
+// frame envelope. There are no gRPC services here — the handler-side
+// SDK is an HTTP/2 server, the engine an HTTP/2 client.
 //
 // Inspired by the Restate service-protocol v7 journal-v2 model
 // (https://github.com/restatedev/service-protocol, MIT-licensed,
@@ -22,23 +28,6 @@ syntax = "proto3";
 package reflow.protocol.v1;
 
 option go_package = "github.com/twinfer/reflow/proto/protocolv1;protocolv1";
-
-// SessionService is the wire transport for a single invocation. The
-// engine is the client; the handler-side SDK process is the server.
-// Each Invoke RPC corresponds to one invocation: the engine opens the
-// stream by sending a StartMessage frame, then the SDK and engine
-// exchange command/notification frames until the SDK sends EndMessage
-// or the stream errors.
-service SessionService {
-  rpc Invoke(stream Frame) returns (stream Frame);
-}
-
-// DiscoveryService lets the engine enumerate the handlers a deployment
-// exposes at RegisterDeployment time. Mirrored by GET /discover on the
-// HTTP/2 transport.
-service DiscoveryService {
-  rpc Discover(DiscoveryRequest) returns (DiscoveryResponse);
-}
 
 // Frame is the on-the-wire envelope. payload is a protobuf-encoded
 // message whose concrete type is determined by the header's type code.
@@ -100,11 +89,10 @@ message StartMessage {
   // Seed for the SDK's deterministic RNG. Stable across restarts.
   uint64 random_seed = 9;
 
-  // Service + handler the engine is invoking. Required for the gRPC
-  // transport (which exposes one global SessionService.Invoke RPC, so
-  // routing has nowhere else to ride); the HTTP/2 transport carries the
-  // same tuple on the URL path /invoke/<service>/<handler> and the
-  // handler-side server uses these fields to verify the path matches.
+  // Service + handler the engine is invoking. Echoed from the URL path
+  // /invoke/<service>/<handler> as a defense-in-depth cross-check; the
+  // handler-side server rejects the session if the URL and StartMessage
+  // disagree.
   string service_name = 10;
   string handler_name = 11;
 
@@ -436,28 +424,6 @@ message SignalNotificationMessage {
     Value value = 5;
     Failure failure = 6;
   }
-}
-
-// ----------------------------------------------------------------------
-// Discovery
-// ----------------------------------------------------------------------
-
-message DiscoveryRequest {
-  // Engine-advertised protocol version. v1 implementations send "v1".
-  string protocol_version = 1;
-}
-
-message DiscoveryResponse {
-  // Handler-advertised protocol version. Engine refuses to register
-  // a deployment whose protocol version isn't supported.
-  string protocol_version = 1;
-  repeated DiscoveredHandler handlers = 2;
-}
-
-message DiscoveredHandler {
-  string service = 1;
-  Kind kind = 2;
-  repeated string handler_names = 3;
 }
 
 // ----------------------------------------------------------------------

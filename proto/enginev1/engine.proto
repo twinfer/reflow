@@ -593,23 +593,25 @@ message NodeHostMeta {
 }
 
 // DeploymentRecord is the persisted shape of a registered deployment in
-// shard 0's DeploymentTable. One row per (id) with the URL + transport
-// the operator (or the synthetic inproc bootstrap) handed in, plus the
-// handler set discovered at registration time.
+// shard 0's DeploymentTable. One row per (id) with the URL the operator
+// (or the synthetic inproc bootstrap) handed in, plus the handler set
+// discovered at registration time.
 //
 // Pinning: every Invocation row carries a deployment_id stamped at
 // submit time so replays route to the same deployment even when newer
 // deployments for the same (service, handler) have since landed. We
 // never garbage-collect deployment rows on overwrite; superseded rows
 // stay readable until every invocation referencing them has terminated
-// (GC is a future feature; ref-counting against InvocationStatus). Phase 5.
+// (GC is a future feature; ref-counting against InvocationStatus).
 //
-// transport is the URL scheme: "inproc", "grpc", "grpcs", "http", "https".
-// Synthetic in-process deployments use transport="inproc" and url="inproc://".
+// The URL scheme determines dispatch: "inproc://" short-circuits to the
+// in-process sdk.Registry; "http://" and "https://" route through the
+// engine-side handlerclient over raw HTTP/2.
 message DeploymentRecord {
   string id = 1;
   string url = 2;
-  string transport = 3;
+  reserved 3; // formerly `transport` — inferred from url scheme.
+  reserved "transport";
   // handlers enumerates every (service, handler, kind) tuple the
   // deployment claimed at discovery time. Used by the engine-side
   // routing table to map (service, handler) → deployment_id when an

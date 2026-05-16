@@ -26,8 +26,8 @@ type Config struct {
 
 	// Deployments resolves a stamped deployment_id to a DeploymentRecord
 	// so installSessionLocked can branch between in-proc dispatch (no
-	// record or transport == "inproc") and wire dispatch (transport ==
-	// "grpc" | "grpcs" | "http" | "https").
+	// record or url scheme == "inproc") and wire dispatch (url scheme ==
+	// "http" | "https").
 	Deployments DeploymentResolver
 
 	// WireDispatcher opens a remote-handler Stream against a DeploymentRecord.
@@ -267,12 +267,12 @@ func (i *Invoker) installSessionLocked(id *enginev1.InvocationId, target *engine
 		}
 	}
 
-	if rec != nil && rec.GetTransport() != "inproc" {
+	if rec != nil && !isInprocDeployment(rec) {
 		if i.dispatcher == nil {
 			i.log.Warn("invoker: wire deployment requires WireDispatcher; dropping",
 				"id", invocationIDString(id),
 				"deployment_id", rec.GetId(),
-				"transport", rec.GetTransport())
+				"url", rec.GetUrl())
 			return nil, false
 		}
 		s := newWireSession(
@@ -416,6 +416,31 @@ func (i *Invoker) AbortInvocation(id *enginev1.InvocationId) {
 		s.abort()
 		<-s.Done()
 	}
+}
+
+// isInprocDeployment returns true when rec is the synthetic in-process
+// deployment (url scheme == "inproc"). The synthetic record short-circuits
+// to the in-process sdk.Registry path; anything else goes through the
+// handlerclient wire path.
+func isInprocDeployment(rec *enginev1.DeploymentRecord) bool {
+	if rec == nil {
+		return false
+	}
+	u := rec.GetUrl()
+	const prefix = "inproc://"
+	if len(u) < len(prefix) {
+		return false
+	}
+	for i := range len(prefix) {
+		c := u[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != prefix[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // activeSessions returns a snapshot of currently-active session keys.

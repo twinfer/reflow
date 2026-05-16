@@ -61,16 +61,15 @@ type HandlersConfig struct {
 	Registry *sdk.Registry `koanf:"-"`
 
 	// Endpoints lists remote-handler URLs to auto-register at bootstrap.
-	// Each URL is dialed for protocol discovery (GET /discover for
-	// http/https, gRPC Discovery.Discover for grpc/grpcs) and the
-	// resulting handlers are persisted via Command_RegisterDeployment.
+	// Each URL is dialed for protocol discovery (GET /discover over
+	// HTTP/2) and the resulting handlers are persisted via
+	// Command_RegisterDeployment.
 	Endpoints []HandlerEndpoint `koanf:"endpoints"`
 }
 
 // HandlerEndpoint is one remote-handler URL the operator wants Run to
-// register at startup. URL must be parseable and use one of the supported
-// schemes (grpc://, grpcs://, http://, https://). The transport tag the
-// engine persists is derived from the scheme.
+// register at startup. URL must be parseable and use http:// (h2c) or
+// https:// (HTTP/2 + TLS).
 type HandlerEndpoint struct {
 	URL string `koanf:"url"`
 }
@@ -253,8 +252,7 @@ type StorageConfig struct {
 	SnapshotRepo SnapshotRepository `koanf:"-"`
 }
 
-// IngressConfig configures the client-facing gRPC + HTTP/JSON gateway
-// (which also hosts the SessionService stub for out-of-process SDKs).
+// IngressConfig configures the client-facing gRPC + HTTP/JSON gateway.
 type IngressConfig struct {
 	GRPCAddr string      `koanf:"grpc_addr"`
 	HTTPAddr string      `koanf:"http_addr"`

@@ -165,9 +165,8 @@ func TestCluster_UpdatePartitionTablePersistsAndHooks(t *testing.T) {
 func TestCluster_RegisterDeploymentPersists(t *testing.T) {
 	f, _, st := newTestFSM(t)
 	rec := &enginev1.DeploymentRecord{
-		Id:        "inproc-abc",
-		Url:       "inproc://",
-		Transport: "inproc",
+		Id:  "inproc-abc",
+		Url: "inproc://",
 		Handlers: []*enginev1.DeploymentHandler{
 			{Service: "Greeter", Handler: "hello", Kind: 1},
 		},
@@ -185,7 +184,7 @@ func TestCluster_RegisterDeploymentPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got == nil || got.GetUrl() != "inproc://" || got.GetTransport() != "inproc" {
+	if got == nil || got.GetUrl() != "inproc://" {
 		t.Fatalf("deployment row mismatch: %+v", got)
 	}
 	if len(got.GetHandlers()) != 1 || got.GetHandlers()[0].GetService() != "Greeter" {

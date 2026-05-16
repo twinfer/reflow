@@ -12,50 +12,18 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
-	"github.com/twinfer/reflow/internal/engine/handlerclient/grpcclient"
 	"github.com/twinfer/reflow/internal/engine/handlerclient/http2client"
 	"github.com/twinfer/reflow/pkg/sdk"
 	"github.com/twinfer/reflow/pkg/sdk/server"
+	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
-// TestGRPCServer_RoundTrip drives a registered handler end-to-end via
-// pkg/sdk/server.NewGRPC + internal/engine/handlerclient/grpcclient. The
-// engine's wire_session is bypassed — this test asserts the handler-side
-// half of 5e on its own: input arrives, handler runs, output flows back.
-func TestGRPCServer_RoundTrip(t *testing.T) {
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Echo", "echo", func(ctx sdk.Context, in []byte) ([]byte, error) {
-		return append([]byte("echo:"), in...), nil
-	}); err != nil {
-		t.Fatalf("RegisterService: %v", err)
-	}
-
-	srv, err := server.NewGRPC(server.Config{Registry: reg})
-	if err != nil {
-		t.Fatalf("NewGRPC: %v", err)
-	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	go func() { _ = srv.Serve(ln) }()
-	defer func() { _ = srv.Shutdown() }()
-
-	url := "grpc://" + ln.Addr().String()
-	client, err := grpcclient.New(url)
-	if err != nil {
-		t.Fatalf("grpcclient.New: %v", err)
-	}
-	defer func() { _ = client.Close() }()
-
-	output := runOneSession(t, client, handlerclient.Route{Service: "Echo", Handler: "echo"}, []byte("hi"))
-	if got, want := string(output), "echo:hi"; got != want {
-		t.Errorf("output = %q; want %q", got, want)
-	}
-}
-
-// TestHTTP2Server_RoundTrip mirrors the gRPC test over raw HTTP/2 (h2c).
+// TestHTTP2Server_RoundTrip drives a registered handler end-to-end via
+// pkg/sdk/server.NewHTTP2 + internal/engine/handlerclient/http2client.
+// The engine's wire_session is bypassed — this test asserts the
+// handler-side half on its own: input arrives, handler runs, output
+// flows back over raw HTTP/2 (h2c).
 func TestHTTP2Server_RoundTrip(t *testing.T) {
 	reg := sdk.NewRegistry()
 	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
@@ -88,9 +56,9 @@ func TestHTTP2Server_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestGRPCServer_FailureRoundTrip verifies a handler returning *Failure
+// TestHTTP2Server_FailureRoundTrip verifies a handler returning *Failure
 // surfaces as OutputCommandMessage.failure on the wire.
-func TestGRPCServer_FailureRoundTrip(t *testing.T) {
+func TestHTTP2Server_FailureRoundTrip(t *testing.T) {
 	reg := sdk.NewRegistry()
 	if err := reg.RegisterService("Echo", "boom", func(_ sdk.Context, _ []byte) ([]byte, error) {
 		return nil, sdk.NewFailure(42, "boom")
@@ -98,9 +66,9 @@ func TestGRPCServer_FailureRoundTrip(t *testing.T) {
 		t.Fatalf("RegisterService: %v", err)
 	}
 
-	srv, err := server.NewGRPC(server.Config{Registry: reg})
+	srv, err := server.NewHTTP2(server.Config{Registry: reg})
 	if err != nil {
-		t.Fatalf("NewGRPC: %v", err)
+		t.Fatalf("NewHTTP2: %v", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -109,10 +77,10 @@ func TestGRPCServer_FailureRoundTrip(t *testing.T) {
 	go func() { _ = srv.Serve(ln) }()
 	defer func() { _ = srv.Shutdown() }()
 
-	url := "grpc://" + ln.Addr().String()
-	client, err := grpcclient.New(url)
+	url := "http://" + ln.Addr().String()
+	client, err := http2client.New(url, true)
 	if err != nil {
-		t.Fatalf("grpcclient.New: %v", err)
+		t.Fatalf("http2client.New: %v", err)
 	}
 	defer func() { _ = client.Close() }()
 
@@ -170,7 +138,7 @@ func TestHTTP2Server_Discover(t *testing.T) {
 		t.Fatalf("len(handlers) = %d; want %d (Cart object handlers should fold into one group)", got, want)
 	}
 	// Assert Cart appears once with both handlers.
-	var cart *protocolv1.DiscoveredHandler
+	var cart *discoveryv1.DiscoveredHandler
 	for _, h := range resp.GetHandlers() {
 		if h.GetService() == "Cart" {
 			cart = h
@@ -320,7 +288,7 @@ func sendStart(stream handlerclient.Stream, route handlerclient.Route, input []b
 // The engine's admin path uses the same shape (see
 // internal/engine/admin/server.go.discoverHTTP); here we hit the
 // endpoint directly so the test stays self-contained.
-func discoverHTTP2(t *testing.T, baseURL string) *protocolv1.DiscoveryResponse {
+func discoverHTTP2(t *testing.T, baseURL string) *discoveryv1.DiscoveryResponse {
 	t.Helper()
 	tr := &http.Transport{Protocols: new(http.Protocols)}
 	tr.Protocols.SetUnencryptedHTTP2(true)
@@ -346,7 +314,7 @@ func discoverHTTP2(t *testing.T, baseURL string) *protocolv1.DiscoveryResponse {
 	if err != nil {
 		t.Fatalf("read /discover body: %v", err)
 	}
-	var dr protocolv1.DiscoveryResponse
+	var dr discoveryv1.DiscoveryResponse
 	if err := proto.Unmarshal(body, &dr); err != nil {
 		t.Fatalf("unmarshal DiscoveryResponse: %v", err)
 	}

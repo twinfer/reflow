@@ -11,20 +11,45 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine/admin"
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/loadgen"
 	"github.com/twinfer/reflow/pkg/sdk"
+	adminv1 "github.com/twinfer/reflow/proto/adminv1"
+	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
+// callRegisterDeployment invokes admin.Server.RegisterDeployment via
+// gRPC loopback so the request rides the same auth + dispatch path
+// production uses. Avoids reaching into the unexported method.
+func callRegisterDeployment(ctx context.Context, srv *admin.Server, url string) (*adminv1.RegisterDeploymentResponse, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	gs := grpc.NewServer()
+	srv.Register(gs)
+	go func() { _ = gs.Serve(ln) }()
+	defer func() { gs.GracefulStop(); _ = ln.Close() }()
+
+	cc, err := grpc.NewClient(ln.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = cc.Close() }()
+	return adminv1.NewAdminClient(cc).RegisterDeployment(ctx, &adminv1.RegisterDeploymentRequest{Url: url})
+}
+
 // fakeHandlerHTTP2 is the handler-side h2c server used by the HTTP/2
 // round-trip + deployment-swap tests. Two endpoints:
 //
-//   - GET /discover    → DiscoveryResponse protobuf body
+//   - GET /discover    → discoveryv1.DiscoveryResponse protobuf body
 //   - POST /invoke/.../...
 //     reads the engine's StartMessage frame, writes OutputCommandMessage
 //     and EndMessage frames back, then drains the request body until EOF.
@@ -39,9 +64,9 @@ type fakeHandlerHTTP2 struct {
 
 func (f *fakeHandlerHTTP2) discoveryBody(t *testing.T) []byte {
 	t.Helper()
-	resp := &protocolv1.DiscoveryResponse{
+	resp := &discoveryv1.DiscoveryResponse{
 		ProtocolVersion: "v1",
-		Handlers: []*protocolv1.DiscoveredHandler{
+		Handlers: []*discoveryv1.DiscoveredHandler{
 			{Service: "Echo", Kind: protocolv1.Kind_KIND_SERVICE, HandlerNames: []string{"echo"}},
 		},
 	}

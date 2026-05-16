@@ -180,20 +180,3 @@ message StateMapEntry {
   bytes value = 2;
 }
 
-// SessionService is the gRPC bidi-streaming entrypoint for out-of-process
-// SDKs (TypeScript, Python, etc.). A handler-side SDK dials Invoke and the
-// engine routes pending StartInvocation messages to it; the SDK responds
-// with ProposeEntry / Completion / EndInvocation frames over the same
-// stream.
-//
-// We deliberately use gRPC bidi-streaming here rather than Restate's
-// raw-HTTP/2 length-prefix framing: it costs us nothing (gRPC is already
-// in the dep tree for ingress), generated client stubs land for free in
-// every language buf supports, and the wire format is well-tested.
-//
-// Phase 2 ships the proto definition and registers an Unimplemented
-// server stub so clients can discover the service; routing to a connected
-// SDK lands once a non-Go SDK actually exists. See SAD §11.
-service SessionService {
-  rpc Invoke(stream SDKMessage) returns (stream SDKMessage);
-}

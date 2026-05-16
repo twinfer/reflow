@@ -3,12 +3,11 @@
 // to one deployment URL and exposes a transport-neutral Stream that the
 // invoker drives to run a single session.
 //
-// The package contains two transports:
-//   - grpcclient: dials protocolv1.SessionServiceClient over gRPC
-//   - http2client: raw HTTP/2 POST to /invoke/<service>/<handler> with
-//     framed envelope, h2c for http:// and TLS for https://
+// The only transport is http2client: raw HTTP/2 POST to
+// /invoke/<service>/<handler> with the protocolv1 framed envelope; h2c
+// for http:// and TLS for https://.
 //
-// The engine selects transport by URL scheme via Registry.For; once a
+// The engine selects the dialer by URL scheme via Registry.For; once a
 // Client is in hand, the invoker calls Invoke to open a stream and drives
 // protocolv1 frames through it. Translation between protocolv1 commands /
 // notifications and enginev1.JournalEntry lives in the invoker's
@@ -27,10 +26,9 @@ import (
 var ErrClientClosed = errors.New("handlerclient: client closed")
 
 // Route is the per-session destination metadata: the (service, handler)
-// tuple the engine wants to invoke. gRPC carries this in the StartMessage
-// at the wire layer and ignores it at the transport layer; HTTP/2 uses it
-// to build the request URL path /invoke/<service>/<handler>. The Stream
-// returned by Invoke is bound to one Route for its lifetime.
+// tuple the engine wants to invoke. HTTP/2 uses it to build the request
+// URL path /invoke/<service>/<handler>; the StartMessage frame echoes
+// the same tuple as a defense-in-depth cross-check.
 type Route struct {
 	Service string
 	Handler string
@@ -50,9 +48,8 @@ type Client interface {
 	// drained or closed.
 	Invoke(ctx context.Context, route Route) (Stream, error)
 
-	// Close releases the underlying transport (e.g. a gRPC ClientConn
-	// or HTTP/2 transport pool). Idempotent. After Close, Invoke returns
-	// ErrClientClosed.
+	// Close releases the underlying HTTP/2 transport pool. Idempotent.
+	// After Close, Invoke returns ErrClientClosed.
 	Close() error
 }
 

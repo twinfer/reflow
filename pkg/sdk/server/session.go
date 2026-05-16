@@ -85,7 +85,7 @@ func runSession(
 	// and translated to an ErrorMessage so the engine doesn't hang on
 	// the stream.
 	invID := &enginev1.InvocationId{Uuid: start.GetId()}
-	wctx := newWireContext(ctx, invID, input)
+	wctx := newWireContext(ctx, invID, input, stream, codec)
 
 	output, runErr := runHandler(wctx, fn, input)
 

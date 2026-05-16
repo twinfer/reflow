@@ -49,6 +49,12 @@ type wireSession struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// nextIdx is the next journal index the engine will assign to an
+	// inbound command frame. Slot 0 is reserved for JEInput (written by
+	// loadStartInput); state writes start at 1 and increment per
+	// frame. Mirrors wireContext.nextSlot on the handler side.
+	nextIdx uint32
 }
 
 // newWireSession constructs an inactive wire session. Call start to
@@ -82,6 +88,7 @@ func newWireSession(
 		ctx:        ctx,
 		cancel:     cancel,
 		done:       make(chan struct{}),
+		nextIdx:    1,
 	}
 }
 
@@ -261,6 +268,18 @@ func (s *wireSession) driveLoop(stream handlerclient.Stream) {
 		case handlerclient.TypeError:
 			s.handleError(f.GetPayload())
 			return
+		case handlerclient.TypeCmdSetState:
+			if !s.handleSetState(f.GetPayload()) {
+				return
+			}
+		case handlerclient.TypeCmdClearState:
+			if !s.handleClearState(f.GetPayload()) {
+				return
+			}
+		case handlerclient.TypeCmdClearAllState:
+			if !s.handleClearAllState(f.GetPayload()) {
+				return
+			}
 		default:
 			// Forward-compat: unknown type codes are logged and skipped.
 			// The handler may emit frames the engine hasn't taught itself
@@ -314,6 +333,91 @@ func (s *wireSession) handleError(payload []byte) {
 		msg = fmt.Sprintf("[%d] %s", em.GetCode(), msg)
 	}
 	s.failTerminal(msg)
+}
+
+// handleSetState decodes a SetStateCommandMessage and proposes the
+// matching JESetState journal entry. Returns false to bail the driveLoop
+// on a decode or propose failure.
+func (s *wireSession) handleSetState(payload []byte) bool {
+	var cmd protocolv1.SetStateCommandMessage
+	if err := s.codec.Unmarshal(payload, &cmd); err != nil {
+		s.log.Warn("invoker.wire: decode SetStateCommandMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode set_state: %v", err))
+		return false
+	}
+	entry := &enginev1.JournalEntry{
+		Index: s.allocIdx(),
+		Entry: &enginev1.JournalEntry_SetState{
+			SetState: &enginev1.JESetState{
+				Key:   string(cmd.GetKey()),
+				Value: cmd.GetValue().GetContent(),
+			},
+		},
+	}
+	return s.proposeJournalOrFail(entry, "JESetState")
+}
+
+// handleClearState decodes a ClearStateCommandMessage and proposes the
+// matching JEClearState entry.
+func (s *wireSession) handleClearState(payload []byte) bool {
+	var cmd protocolv1.ClearStateCommandMessage
+	if err := s.codec.Unmarshal(payload, &cmd); err != nil {
+		s.log.Warn("invoker.wire: decode ClearStateCommandMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode clear_state: %v", err))
+		return false
+	}
+	entry := &enginev1.JournalEntry{
+		Index: s.allocIdx(),
+		Entry: &enginev1.JournalEntry_ClearState{
+			ClearState: &enginev1.JEClearState{Key: string(cmd.GetKey())},
+		},
+	}
+	return s.proposeJournalOrFail(entry, "JEClearState")
+}
+
+// handleClearAllState decodes a ClearAllStateCommandMessage and
+// proposes JEClearAllState.
+func (s *wireSession) handleClearAllState(payload []byte) bool {
+	var cmd protocolv1.ClearAllStateCommandMessage
+	if err := s.codec.Unmarshal(payload, &cmd); err != nil {
+		s.log.Warn("invoker.wire: decode ClearAllStateCommandMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode clear_all_state: %v", err))
+		return false
+	}
+	entry := &enginev1.JournalEntry{
+		Index: s.allocIdx(),
+		Entry: &enginev1.JournalEntry_ClearAllState{
+			ClearAllState: &enginev1.JEClearAllState{},
+		},
+	}
+	return s.proposeJournalOrFail(entry, "JEClearAllState")
+}
+
+// allocIdx reserves the next journal index for an engine-assigned
+// command. Single-threaded by virtue of driveLoop's serial frame pump.
+func (s *wireSession) allocIdx() uint32 {
+	idx := s.nextIdx
+	s.nextIdx++
+	return idx
+}
+
+// proposeJournalOrFail wraps proposeJournal with the failTerminal
+// pattern used across the inbound frame handlers. kind is the
+// human-readable JE name for log diagnostics.
+func (s *wireSession) proposeJournalOrFail(entry *enginev1.JournalEntry, kind string) bool {
+	if err := s.proposeJournal(entry); err != nil {
+		if errors.Is(err, context.Canceled) || s.ctx.Err() != nil {
+			return false
+		}
+		s.log.Warn("invoker.wire: propose "+kind+" failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: propose %s: %v", kind, err))
+		return false
+	}
+	return true
 }
 
 // completeTerminal proposes Completed for this invocation. Same shape

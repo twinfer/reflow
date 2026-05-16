@@ -318,6 +318,134 @@ func TestWireContext_StateWrites_ReplayHitSkipsEmit(t *testing.T) {
 	}
 }
 
+// TestWireContext_Call_FreshEmits asserts the first call to Call on a
+// session with empty replay emits CallCommandMessage and suspends with
+// the matching completion token.
+func TestWireContext_Call_FreshEmits(t *testing.T) {
+	wctx, stream := newTestWireContext(t, nil)
+
+	fut := wctx.Call(sdk.Target{Service: "Echo", Handler: "echo", Key: "k1"}, []byte("hi"))
+	_, err := fut.Result()
+	if !errors.Is(err, sdk.ErrSuspended) {
+		t.Errorf("Call.Result err = %v; want ErrSuspended", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("sent frames = %d; want 1 (CallCommandMessage)", len(stream.sent))
+	}
+	tc, _, _ := handlerclient.UnpackHeader(stream.sent[0].GetHeader())
+	if tc != handlerclient.TypeCmdCall {
+		t.Errorf("frame.type = 0x%04x; want 0x%04x", tc, handlerclient.TypeCmdCall)
+	}
+	var msg protocolv1.CallCommandMessage
+	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &msg); err != nil {
+		t.Fatalf("decode CallCommandMessage: %v", err)
+	}
+	if msg.GetServiceName() != "Echo" || msg.GetHandlerName() != "echo" || msg.GetKey() != "k1" {
+		t.Errorf("decoded target = %s/%s[%s]; want Echo/echo[k1]",
+			msg.GetServiceName(), msg.GetHandlerName(), msg.GetKey())
+	}
+	if string(msg.GetParameter()) != "hi" {
+		t.Errorf("parameter = %q; want %q", msg.GetParameter(), "hi")
+	}
+	if msg.GetResultCompletionId() != 2 {
+		t.Errorf("result_completion_id = %d; want 2", msg.GetResultCompletionId())
+	}
+}
+
+// TestWireContext_Call_ReplayHitReturnsValue asserts a CallCompletion
+// notification in the replay buffer surfaces as a ready future
+// carrying the value, with no fresh frame on the wire.
+func TestWireContext_Call_ReplayHitReturnsValue(t *testing.T) {
+	codec := handlerclient.DefaultCodec()
+	notePayload, err := codec.Marshal(&protocolv1.CallCompletionNotificationMessage{
+		CompletionId: 2,
+		Result: &protocolv1.CallCompletionNotificationMessage_Value{
+			Value: &protocolv1.Value{Content: []byte("answer")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal note: %v", err)
+	}
+	wctx, stream := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
+		1: {typeCode: handlerclient.TypeCmdCall},
+		2: {typeCode: handlerclient.TypeNoteCallDone, payload: notePayload},
+	})
+
+	v, err := wctx.Call(sdk.Target{Service: "X", Handler: "y"}, nil).Result()
+	if err != nil {
+		t.Errorf("Call.Result err = %v; want nil", err)
+	}
+	if string(v) != "answer" {
+		t.Errorf("Call.Result value = %q; want %q", v, "answer")
+	}
+	if len(stream.sent) != 0 {
+		t.Errorf("sent %d frames; want 0 (replay hit should not re-emit)", len(stream.sent))
+	}
+}
+
+// TestWireContext_Call_ReplayHitSurfacesFailure asserts a CallCompletion
+// with a Failure result becomes a terminal failure via the returned
+// future's error.
+func TestWireContext_Call_ReplayHitSurfacesFailure(t *testing.T) {
+	codec := handlerclient.DefaultCodec()
+	notePayload, err := codec.Marshal(&protocolv1.CallCompletionNotificationMessage{
+		CompletionId: 2,
+		Result: &protocolv1.CallCompletionNotificationMessage_Failure{
+			Failure: &protocolv1.Failure{Code: 42, Message: "callee failed"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal note: %v", err)
+	}
+	wctx, _ := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
+		1: {typeCode: handlerclient.TypeCmdCall},
+		2: {typeCode: handlerclient.TypeNoteCallDone, payload: notePayload},
+	})
+
+	_, err = wctx.Call(sdk.Target{Service: "X", Handler: "y"}, nil).Result()
+	if err == nil {
+		t.Fatal("Call.Result err = nil; want non-nil failure")
+	}
+	f, ok := sdk.AsFailure(err)
+	if !ok {
+		t.Fatalf("Call.Result err = %v; want *sdk.Failure", err)
+	}
+	if f.Code != 42 || f.Message != "callee failed" {
+		t.Errorf("failure = (code=%d, msg=%q); want (42, callee failed)", f.Code, f.Message)
+	}
+}
+
+// TestWireContext_OneWayCall_FreshEmits asserts OneWayCall emits an
+// OneWayCallCommandMessage and returns nil — no suspension because
+// there's no result to await.
+func TestWireContext_OneWayCall_FreshEmits(t *testing.T) {
+	wctx, stream := newTestWireContext(t, nil)
+	if err := wctx.OneWayCall(sdk.Target{Service: "X", Handler: "y", Key: "k1"}, []byte("p")); err != nil {
+		t.Fatalf("OneWayCall: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("sent frames = %d; want 1", len(stream.sent))
+	}
+	tc, _, _ := handlerclient.UnpackHeader(stream.sent[0].GetHeader())
+	if tc != handlerclient.TypeCmdOneWayCall {
+		t.Errorf("frame.type = 0x%04x; want 0x%04x", tc, handlerclient.TypeCmdOneWayCall)
+	}
+}
+
+// TestWireContext_OneWayCall_ReplayHitSkipsEmit asserts a replay-hit
+// OneWayCall is a no-op (engine already journaled it).
+func TestWireContext_OneWayCall_ReplayHitSkipsEmit(t *testing.T) {
+	wctx, stream := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
+		1: {typeCode: handlerclient.TypeCmdOneWayCall},
+	})
+	if err := wctx.OneWayCall(sdk.Target{Service: "X", Handler: "y"}, nil); err != nil {
+		t.Errorf("OneWayCall: %v", err)
+	}
+	if len(stream.sent) != 0 {
+		t.Errorf("sent %d frames; want 0 (replay hit should not re-emit)", len(stream.sent))
+	}
+}
+
 // TestWireContext_Suspend_ShortCircuitsSubsequentCalls asserts that
 // once suspended, every ctx call returns ErrSuspended (mirrors
 // inprocContext.suspend).
@@ -339,14 +467,11 @@ func TestWireContext_Suspend_ShortCircuitsSubsequentCalls(t *testing.T) {
 }
 
 // TestWireContext_DurablePrimitivesNotImplemented covers every durable
-// primitive still gated on the 5f.4-5f.6 wire-protocol expansion. Sleep
-// and State are no longer in this list — they landed in 5f.1-5f.3.
+// primitive still gated on the 5f.5-5f.6 wire-protocol expansion. Sleep,
+// State, Call, OneWayCall are no longer in this list — they landed in
+// 5f.1-5f.4.
 func TestWireContext_DurablePrimitivesNotImplemented(t *testing.T) {
 	wctx, _ := newTestWireContext(t, nil)
-
-	if _, err := wctx.Call(sdk.Target{}, nil).Result(); !errors.Is(err, ErrWireNotImplemented) {
-		t.Errorf("Call.Result() err = %v; want ErrWireNotImplemented", err)
-	}
 
 	_, akFuture := wctx.Awakeable()
 	if _, err := akFuture.Result(); !errors.Is(err, ErrWireNotImplemented) {
@@ -355,9 +480,6 @@ func TestWireContext_DurablePrimitivesNotImplemented(t *testing.T) {
 
 	if _, err := wctx.Run("x", func() ([]byte, error) { return nil, nil }); !errors.Is(err, ErrWireNotImplemented) {
 		t.Errorf("Run err = %v; want ErrWireNotImplemented", err)
-	}
-	if err := wctx.OneWayCall(sdk.Target{}, nil); !errors.Is(err, ErrWireNotImplemented) {
-		t.Errorf("OneWayCall err = %v; want ErrWireNotImplemented", err)
 	}
 	if err := wctx.SendSignal(sdk.Target{}, "s", nil); !errors.Is(err, ErrWireNotImplemented) {
 		t.Errorf("SendSignal err = %v; want ErrWireNotImplemented", err)

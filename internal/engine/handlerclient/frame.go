@@ -19,16 +19,20 @@ const (
 	TypeProposeRunDone uint16 = 0x0005
 
 	// Commands (0x0400-0x04FF). Only the subset wired today is listed;
-	// the rest land as the wire-session matures (call, awakeable).
+	// the rest land as the wire-session matures (awakeable).
 	TypeCmdInput         uint16 = 0x0400
 	TypeCmdOutput        uint16 = 0x0401
 	TypeCmdSetState      uint16 = 0x0403
 	TypeCmdClearState    uint16 = 0x0404
 	TypeCmdClearAllState uint16 = 0x0405
 	TypeCmdSleep         uint16 = 0x040C
+	TypeCmdCall          uint16 = 0x040D
+	TypeCmdOneWayCall    uint16 = 0x040E
 
 	// Notifications (0x8000-0x80FF).
-	TypeNoteSleepDone uint16 = 0x800C
+	TypeNoteSleepDone        uint16 = 0x800C
+	TypeNoteCallDone         uint16 = 0x800D
+	TypeNoteCallInvocationId uint16 = 0x800E
 )
 
 // PackHeader encodes (type, flags, payload length) into the 64-bit

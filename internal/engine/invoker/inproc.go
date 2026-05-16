@@ -292,11 +292,32 @@ func (c *inprocContext) Call(target sdk.Target, input []byte, opts ...sdk.CallOp
 	return &callFuture{ctx: c, start: start}
 }
 
-// OneWayCall is the fire-and-forget variant. The proto does not yet
-// model JEOneWayCall — the one-way wire-up follows once the proto and
-// outbox shuffler grow a JEOneWayCall slot.
-func (c *inprocContext) OneWayCall(_ sdk.Target, _ []byte) error {
-	return errNotImplemented
+// OneWayCall is the fire-and-forget variant of Call. Journals JEOneWayCall
+// at a single slot; the apply path enqueues an outbox envelope toward
+// the receiver but without parent_link, so the callee's Completed
+// status never routes a JECallResult back into this invocation. Same
+// shape as SetState et al. — write-only, no companion result.
+func (c *inprocContext) OneWayCall(target sdk.Target, input []byte) error {
+	start, ok := c.allocSlot(1)
+	if !ok {
+		return sdk.ErrSuspended
+	}
+	if existing := c.lookupEntry(start); existing != nil {
+		if _, isOneWay := existing.GetEntry().(*enginev1.JournalEntry_OneWayCall); !isOneWay {
+			return divergenceErr(start, "JEOneWayCall", existing)
+		}
+		return nil
+	}
+	entry := &enginev1.JournalEntry{
+		Index: start,
+		Entry: &enginev1.JournalEntry_OneWayCall{
+			OneWayCall: &enginev1.JEOneWayCall{
+				Target: targetToProto(target),
+				Input:  input,
+			},
+		},
+	}
+	return c.s.proposeJournal(entry)
 }
 
 // GetState is served from the eager-preloaded stateCache populated at

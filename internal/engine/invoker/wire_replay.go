@@ -92,6 +92,55 @@ func translateEntry(e *enginev1.JournalEntry, codec handlerclient.Codec, log *sl
 		msg := &protocolv1.ClearAllStateCommandMessage{}
 		return marshalFrame(codec, handlerclient.TypeCmdClearAllState, msg)
 
+	case *enginev1.JournalEntry_Call:
+		// Call allocates 2 slots: cmd at e.Index, result at e.Index+1.
+		// Mirrors inproc.go's Call slot accounting; the wire ships
+		// result_completion_id pointing at the matching
+		// CallCompletionNotificationMessage.
+		t := entry.Call.GetTarget()
+		msg := &protocolv1.CallCommandMessage{
+			ServiceName:        t.GetServiceName(),
+			HandlerName:        t.GetHandlerName(),
+			Parameter:          entry.Call.GetInput(),
+			Key:                t.GetObjectKey(),
+			ResultCompletionId: e.GetIndex() + 1,
+		}
+		if tok := entry.Call.GetIdempotencyKey(); tok != "" {
+			msg.IdempotencyToken = &tok
+		}
+		return marshalFrame(codec, handlerclient.TypeCmdCall, msg)
+
+	case *enginev1.JournalEntry_CallResult:
+		// Translate to a CallCompletionNotificationMessage. completion_id
+		// matches the original CallCommandMessage's
+		// result_completion_id, which is this entry's own index.
+		msg := &protocolv1.CallCompletionNotificationMessage{
+			CompletionId: e.GetIndex(),
+		}
+		if fm := entry.CallResult.GetFailureMessage(); fm != "" {
+			msg.Result = &protocolv1.CallCompletionNotificationMessage_Failure{
+				Failure: &protocolv1.Failure{Message: fm},
+			}
+		} else {
+			msg.Result = &protocolv1.CallCompletionNotificationMessage_Value{
+				Value: &protocolv1.Value{Content: entry.CallResult.GetResult()},
+			}
+		}
+		return marshalFrame(codec, handlerclient.TypeNoteCallDone, msg)
+
+	case *enginev1.JournalEntry_OneWayCall:
+		t := entry.OneWayCall.GetTarget()
+		msg := &protocolv1.OneWayCallCommandMessage{
+			ServiceName: t.GetServiceName(),
+			HandlerName: t.GetHandlerName(),
+			Parameter:   entry.OneWayCall.GetInput(),
+			Key:         t.GetObjectKey(),
+		}
+		if tok := entry.OneWayCall.GetIdempotencyKey(); tok != "" {
+			msg.IdempotencyToken = &tok
+		}
+		return marshalFrame(codec, handlerclient.TypeCmdOneWayCall, msg)
+
 	default:
 		log.Debug("invoker.wire: skipping JE variant in replay (not yet wired)",
 			"index", e.GetIndex(),

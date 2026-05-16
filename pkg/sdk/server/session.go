@@ -225,14 +225,23 @@ func readReplay(stream frameStream, codec handlerclient.Codec, count uint32) ([]
 			replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
 			nextSlot += 2 // Sleep allocates 2 slots: cmd + result
 		case handlerclient.TypeNoteSleepDone:
-			// Result slot = previously-allocated nextSlot - 1 (the
-			// SleepCommandMessage advanced by 2; the result lands at
-			// cmd+1).
 			var note protocolv1.SleepCompletionNotificationMessage
 			if err := codec.Unmarshal(f.GetPayload(), &note); err != nil {
 				return nil, nil, fmt.Errorf("decode replay SleepCompletionNotificationMessage: %w", err)
 			}
 			replay[note.GetCompletionId()] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
+		case handlerclient.TypeCmdCall:
+			replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
+			nextSlot += 2 // Call allocates 2 slots: cmd + result
+		case handlerclient.TypeNoteCallDone:
+			var note protocolv1.CallCompletionNotificationMessage
+			if err := codec.Unmarshal(f.GetPayload(), &note); err != nil {
+				return nil, nil, fmt.Errorf("decode replay CallCompletionNotificationMessage: %w", err)
+			}
+			replay[note.GetCompletionId()] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
+		case handlerclient.TypeCmdOneWayCall:
+			replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
+			nextSlot++
 		case handlerclient.TypeCmdSetState, handlerclient.TypeCmdClearState, handlerclient.TypeCmdClearAllState:
 			replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
 			nextSlot++

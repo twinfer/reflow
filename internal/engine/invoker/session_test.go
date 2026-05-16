@@ -761,11 +761,30 @@ func TestContext_SuspendIsSticky(t *testing.T) {
 	}
 }
 
-func TestContext_OneWayCallStub(t *testing.T) {
+func TestContext_OneWayCallJournalsJEOneWayCall(t *testing.T) {
 	cf := newCtxFixture(t)
-	err := cf.ictx.OneWayCall(sdk.Target{Service: "T", Handler: "h"}, nil)
-	if !errors.Is(err, errNotImplemented) {
-		t.Errorf("OneWayCall err = %v; want errNotImplemented", err)
+	target := sdk.Target{Service: "T", Handler: "h"}
+	if err := cf.ictx.OneWayCall(target, []byte("payload")); err != nil {
+		t.Fatalf("OneWayCall: %v", err)
+	}
+	// One propose effect should have landed carrying JEOneWayCall.
+	effs := cf.fp.effects()
+	if len(effs) != 1 {
+		t.Fatalf("propose count = %d; want 1", len(effs))
+	}
+	app := effs[0].GetJournalAppended()
+	if app == nil {
+		t.Fatalf("effect.JournalAppended = nil; got %T", effs[0].GetKind())
+	}
+	owc, ok := app.GetEntry().GetEntry().(*enginev1.JournalEntry_OneWayCall)
+	if !ok {
+		t.Fatalf("entry type = %T; want JournalEntry_OneWayCall", app.GetEntry().GetEntry())
+	}
+	if owc.OneWayCall.GetTarget().GetServiceName() != "T" {
+		t.Errorf("entry.target.service = %q; want T", owc.OneWayCall.GetTarget().GetServiceName())
+	}
+	if string(owc.OneWayCall.GetInput()) != "payload" {
+		t.Errorf("entry.input = %q; want payload", owc.OneWayCall.GetInput())
 	}
 }
 

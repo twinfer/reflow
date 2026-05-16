@@ -316,6 +316,14 @@ func (s *wireSession) driveLoop(stream handlerclient.Stream) {
 			if !s.handleSleep(f.GetPayload()) {
 				return
 			}
+		case handlerclient.TypeCmdCall:
+			if !s.handleCall(f.GetPayload()) {
+				return
+			}
+		case handlerclient.TypeCmdOneWayCall:
+			if !s.handleOneWayCall(f.GetPayload()) {
+				return
+			}
 		case handlerclient.TypeSuspension:
 			s.handleSuspension(f.GetPayload())
 			return
@@ -458,6 +466,64 @@ func (s *wireSession) handleSleep(payload []byte) bool {
 		},
 	}
 	return s.proposeJournalOrFail(entry, "JESleep")
+}
+
+// handleCall decodes a CallCommandMessage and proposes the matching
+// JECall journal entry. Allocates 2 slots (cmd + result) to keep its
+// nextIdx in sync with the handler's wireContext, which reserves the
+// same pair.
+func (s *wireSession) handleCall(payload []byte) bool {
+	var cmd protocolv1.CallCommandMessage
+	if err := s.codec.Unmarshal(payload, &cmd); err != nil {
+		s.log.Warn("invoker.wire: decode CallCommandMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode call: %v", err))
+		return false
+	}
+	cmdIdx := s.allocIdx()
+	_ = s.allocIdx() // reserve result slot
+	entry := &enginev1.JournalEntry{
+		Index: cmdIdx,
+		Entry: &enginev1.JournalEntry_Call{
+			Call: &enginev1.JECall{
+				Target: &enginev1.InvocationTarget{
+					ServiceName: cmd.GetServiceName(),
+					HandlerName: cmd.GetHandlerName(),
+					ObjectKey:   cmd.GetKey(),
+				},
+				Input:          cmd.GetParameter(),
+				IdempotencyKey: cmd.GetIdempotencyToken(),
+			},
+		},
+	}
+	return s.proposeJournalOrFail(entry, "JECall")
+}
+
+// handleOneWayCall decodes an OneWayCallCommandMessage and proposes
+// JEOneWayCall. Single-slot — fire-and-forget, no result-pair.
+func (s *wireSession) handleOneWayCall(payload []byte) bool {
+	var cmd protocolv1.OneWayCallCommandMessage
+	if err := s.codec.Unmarshal(payload, &cmd); err != nil {
+		s.log.Warn("invoker.wire: decode OneWayCallCommandMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode one_way_call: %v", err))
+		return false
+	}
+	entry := &enginev1.JournalEntry{
+		Index: s.allocIdx(),
+		Entry: &enginev1.JournalEntry_OneWayCall{
+			OneWayCall: &enginev1.JEOneWayCall{
+				Target: &enginev1.InvocationTarget{
+					ServiceName: cmd.GetServiceName(),
+					HandlerName: cmd.GetHandlerName(),
+					ObjectKey:   cmd.GetKey(),
+				},
+				Input:          cmd.GetParameter(),
+				IdempotencyKey: cmd.GetIdempotencyToken(),
+			},
+		},
+	}
+	return s.proposeJournalOrFail(entry, "JEOneWayCall")
 }
 
 // handleSuspension translates a SuspensionMessage into

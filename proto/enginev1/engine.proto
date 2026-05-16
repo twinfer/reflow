@@ -268,6 +268,10 @@ message JournalEntry {
     JEGetEagerState get_eager_state = 15;
     // Phase 3 additions.
     JEClearAllState clear_all_state = 16;
+    // 5f.4 — fire-and-forget call. Single-slot (no result variant);
+    // the apply path enqueues an OutboxEnvelope to the receiver
+    // partition exactly like JECall but never waits for a JECallResult.
+    JEOneWayCall one_way_call = 17;
   }
 }
 
@@ -290,6 +294,19 @@ message JECall {
   // outgoing OutboxEnvelope.Invoke.InvokeCommand.idempotency_key so the
   // callee's receiving onInvoke runs Phase 3 idempotency dedup against the
   // (service, handler, object_key, idempotency_key) tuple. Phase 3.
+  string idempotency_key = 3;
+}
+
+// JEOneWayCall records a fire-and-forget invocation. Single-slot —
+// unlike JECall there is no companion JECallResult; the apply path
+// enqueues an outbox envelope toward the receiver but never plumbs the
+// response back to this invocation's journal. 5f.4.
+message JEOneWayCall {
+  InvocationTarget target = 1;
+  bytes input = 2;
+  // Same dedup semantics as JECall.idempotency_key — when non-empty,
+  // stamped onto the outgoing InvokeCommand so the receiver dedups
+  // against the (service, handler, object_key, idempotency_key) tuple.
   string idempotency_key = 3;
 }
 

@@ -609,6 +609,23 @@ func (p *Partition) onInvokerEffect(
 			if _, err := p.enqueueOutbox(batch, store, meta, env, isLeader); err != nil {
 				return fmt.Errorf("onInvokerEffect: outbox append (call): %w", err)
 			}
+		case *enginev1.JournalEntry_OneWayCall:
+			// Fire-and-forget. Identical to JECall but no parent_link, so the
+			// callee's Completed apply arm has no JECallResult to journal
+			// back on this invocation.
+			calleeID := mintCalleeInvocationID(id, entry.GetIndex(), e.OneWayCall.GetTarget())
+			env := &enginev1.OutboxEnvelope{
+				DestinationShardId: p.cfg.Partitioner.ShardForInvocation(calleeID),
+				Kind: &enginev1.OutboxEnvelope_Invoke{Invoke: &enginev1.InvokeCommand{
+					InvocationId:   calleeID,
+					Target:         e.OneWayCall.GetTarget(),
+					Input:          e.OneWayCall.GetInput(),
+					IdempotencyKey: e.OneWayCall.GetIdempotencyKey(),
+				}},
+			}
+			if _, err := p.enqueueOutbox(batch, store, meta, env, isLeader); err != nil {
+				return fmt.Errorf("onInvokerEffect: outbox append (one-way call): %w", err)
+			}
 		case *enginev1.JournalEntry_SetState:
 			// Persist state rows so eager preload on the next session start
 			// can serve GetState without a journal scan.

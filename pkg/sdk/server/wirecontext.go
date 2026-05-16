@@ -312,12 +312,84 @@ func (c *wireContext) Run(string, func() ([]byte, error)) ([]byte, error) {
 	return nil, ErrWireNotImplemented
 }
 
-func (c *wireContext) Call(sdk.Target, []byte, ...sdk.CallOption) sdk.Future {
-	return notImplementedFuture{}
+// Call invokes target with input and returns a Future resolving to the
+// callee's response. Three branches:
+//
+//   - Replay hit at the result slot: JECallResult is in the replay
+//     buffer; decode and return a ready or errored future.
+//   - Replay hit at the cmd slot only: JECall was journaled but the
+//     callee hasn't completed yet. Suspend on completion:<resultSlot>.
+//   - No replay: fresh call. Emit CallCommandMessage and suspend.
+func (c *wireContext) Call(target sdk.Target, input []byte, opts ...sdk.CallOption) sdk.Future {
+	resolved := sdk.ApplyCallOptions(opts)
+	cmdSlot, ok := c.allocSlot(2)
+	if !ok {
+		return suspendedFuture{}
+	}
+	resultSlot := cmdSlot + 1
+
+	if entry := c.lookupReplay(resultSlot); entry != nil {
+		// Decode the cached completion and surface it.
+		var note protocolv1.CallCompletionNotificationMessage
+		if err := c.codec.Unmarshal(entry.payload, &note); err != nil {
+			return errFuture{err: fmt.Errorf("decode replayed CallCompletionNotificationMessage: %w", err)}
+		}
+		switch r := note.GetResult().(type) {
+		case *protocolv1.CallCompletionNotificationMessage_Value:
+			return readyFuture{value: r.Value.GetContent()}
+		case *protocolv1.CallCompletionNotificationMessage_Failure:
+			return errFuture{err: sdk.NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())}
+		default:
+			return errFuture{err: fmt.Errorf("CallCompletionNotificationMessage at slot %d carries no result", resultSlot)}
+		}
+	}
+	if entry := c.lookupReplay(cmdSlot); entry == nil {
+		// Fresh call — emit the command.
+		msg := &protocolv1.CallCommandMessage{
+			ServiceName:        target.Service,
+			HandlerName:        target.Handler,
+			Parameter:          input,
+			Key:                target.Key,
+			ResultCompletionId: resultSlot,
+		}
+		if resolved.IdempotencyKey != "" {
+			tok := resolved.IdempotencyKey
+			msg.IdempotencyToken = &tok
+		}
+		payload, err := c.codec.Marshal(msg)
+		if err != nil {
+			return errFuture{err: fmt.Errorf("marshal CallCommandMessage: %w", err)}
+		}
+		if err := c.stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdCall, payload)); err != nil {
+			return errFuture{err: err}
+		}
+	}
+	c.suspend(fmt.Sprintf("completion:%d", resultSlot))
+	return suspendedFuture{}
 }
 
-func (c *wireContext) OneWayCall(sdk.Target, []byte) error {
-	return ErrWireNotImplemented
+// OneWayCall invokes target with input fire-and-forget. Single-slot;
+// no future returned because the wire never plumbs a response back to
+// this invocation.
+func (c *wireContext) OneWayCall(target sdk.Target, input []byte) error {
+	slot, ok := c.allocSlot(1)
+	if !ok {
+		return sdk.ErrSuspended
+	}
+	if c.lookupReplay(slot) != nil {
+		return nil // already journaled in a prior run
+	}
+	msg := &protocolv1.OneWayCallCommandMessage{
+		ServiceName: target.Service,
+		HandlerName: target.Handler,
+		Parameter:   input,
+		Key:         target.Key,
+	}
+	payload, err := c.codec.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal OneWayCallCommandMessage: %w", err)
+	}
+	return c.stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdOneWayCall, payload))
 }
 
 func (c *wireContext) Awakeable() (string, sdk.Future) { return "", notImplementedFuture{} }

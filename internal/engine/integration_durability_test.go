@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"fmt"
+	"net"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/loadgen"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
 // freeLocalAddr is a thin shim into loadgen.FreeLocalAddr so the
@@ -44,6 +46,79 @@ func bringUpSingleNode(t *testing.T, dir, raftAddr string) (*engine.Host, *engin
 	if err := h.AwaitLeader(ctx, 1); err != nil {
 		_ = h.Close()
 		t.Fatalf("AwaitLeader: %v", err)
+	}
+	return h, r, raftAddr
+}
+
+// bringUpSingleNodeWithDeployment is bringUpSingleNode plus the metadata
+// shard plus a registered deployment for (service, handler) at url. Used
+// by tests that drive the FSM through Invoke: ActInvoke spawns an invoker
+// session, and without a resolvable deployment that session calls
+// failTerminal — which propagates as InvokerEffect_Completed and the
+// Invoked → Completed apply arm reaps every pending Sleep timer for the
+// invocation (partition.go onInvokerEffect Completed case). Registering a
+// resolvable record keeps the session past the resolve gate; the caller
+// supplies a url whose listener doesn't drive the session to terminate
+// (typically a black-hole TCP listener), so the session parks in driveLoop
+// until h.Close cancels its ctx.
+//
+// Shard 0 is started + awaited before the partition shard so post-restart
+// ResumeNonTerminal's wire sessions can SyncRead shard 0 without racing
+// the metadata election. The deployment record is idempotent-upserted;
+// callers re-invoke with the same id + url across restarts.
+func bringUpSingleNodeWithDeployment(
+	t *testing.T,
+	dir, raftAddr, depID, url string,
+	handlers []*enginev1.DeploymentHandler,
+) (*engine.Host, *engine.PartitionRunner, string) {
+	t.Helper()
+	if raftAddr == "" {
+		raftAddr = freeLocalAddr(t)
+	}
+	h, err := engine.NewHost(engine.HostConfig{
+		NodeID:             1,
+		RaftAddr:           raftAddr,
+		DataDir:            dir,
+		RTTMillisecond:     50,
+		NumPartitionShards: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	if _, err := h.StartMetadataShard(); err != nil {
+		_ = h.Close()
+		t.Fatalf("StartMetadataShard: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := h.AwaitMetadataLeader(ctx); err != nil {
+		_ = h.Close()
+		t.Fatalf("AwaitMetadataLeader: %v", err)
+	}
+	r, err := h.StartPartition(1)
+	if err != nil {
+		_ = h.Close()
+		t.Fatalf("StartPartition: %v", err)
+	}
+	if err := h.AwaitLeader(ctx, 1); err != nil {
+		_ = h.Close()
+		t.Fatalf("AwaitLeader: %v", err)
+	}
+	regCmd := &enginev1.Command{
+		Kind: &enginev1.Command_RegisterDeployment{
+			RegisterDeployment: &enginev1.RegisterDeployment{
+				Record: &enginev1.DeploymentRecord{
+					Id:             depID,
+					Url:            url,
+					Handlers:       handlers,
+					RegisteredAtMs: uint64(time.Now().UnixMilli()),
+				},
+			},
+		},
+	}
+	if err := h.MetadataRunner().Proposer().ProposeSelf(ctx, regCmd); err != nil {
+		_ = h.Close()
+		t.Fatalf("ProposeSelf RegisterDeployment: %v", err)
 	}
 	return h, r, raftAddr
 }
@@ -199,13 +274,46 @@ func TestTimerSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "node1")
 
-	h, r, raftAddr := bringUpSingleNode(t, dataDir, "")
-	_ = raftAddr
+	// Black-hole listener: accepts TCP but never speaks HTTP/2. The
+	// invoker's wire session parks here (sendStartAndReplay / driveLoop
+	// awaitResponse) until h.Close cancels its ctx, at which point
+	// failTerminal is a no-op (it checks ctx.Err before proposing
+	// Completed). Without this, the session would fail-terminate the
+	// invocation and the Invoked → Completed apply arm would reap the
+	// pending Sleep timer we're trying to exercise across restart.
+	blackhole, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen blackhole: %v", err)
+	}
+	defer blackhole.Close()
+
+	const depID = "test-dep-timer"
+	handlers := []*enginev1.DeploymentHandler{
+		{Service: "S", Handler: "h", Kind: uint32(protocolv1.Kind_KIND_SERVICE)},
+	}
+	url := "http://" + blackhole.Addr().String()
+
+	h, r, raftAddr := bringUpSingleNodeWithDeployment(t, dataDir, "", depID, url, handlers)
 
 	id := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("0123456789abcdef")}
-	target := &enginev1.InvocationTarget{ServiceName: "S"}
+	target := &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"}
 
-	proposeInvoke(t, r, id, target, "ingress-1", 1)
+	// proposeInvoke stamps no deployment_id; inline the propose so we
+	// can pin the invocation to depID and skip the (service, handler)
+	// → deployment_id index lookup in resolveDeployment.
+	ictx, icancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer icancel()
+	if err := r.Proposer().ProposeIngress(ictx, "ingress-1", 1, &enginev1.Command{
+		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
+			InvocationId: id,
+			Target:       target,
+			Input:        []byte("input"),
+			DeploymentId: depID,
+		}},
+	}); err != nil {
+		t.Fatalf("ProposeIngress: %v", err)
+	}
+
 	proposeInvokerEffect(t, r, &enginev1.InvokerEffect{
 		InvocationId: id,
 		Kind: &enginev1.InvokerEffect_JournalAppended{
@@ -235,7 +343,7 @@ func TestTimerSurvivesRestart(t *testing.T) {
 	if err := h.Close(); err != nil {
 		t.Fatal(err)
 	}
-	h2, _, _ := bringUpSingleNode(t, dataDir, raftAddr)
+	h2, _, _ := bringUpSingleNodeWithDeployment(t, dataDir, raftAddr, depID, url, handlers)
 	defer h2.Close()
 
 	// The timer rebuild on leader gain should re-arm the timer; SleepResult

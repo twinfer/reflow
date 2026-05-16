@@ -709,14 +709,20 @@ func (h *Host) Close() error {
 	hr := h.handlerRegistry
 	h.partitions = nil
 	h.metadataRunners = nil
-	h.handlerRegistry = nil
 	h.mu.Unlock()
+	// Drain partitions before nilling handlerRegistry. onStepDown waits
+	// for in-flight invoker sessions to exit, and those sessions read
+	// h.handlerRegistry via openWireStream — clearing the field first
+	// would race with the read.
 	for _, p := range partitions {
 		p.onStepDown()
 	}
 	for _, r := range metadataRunners {
 		r.onStepDown()
 	}
+	h.mu.Lock()
+	h.handlerRegistry = nil
+	h.mu.Unlock()
 	if hr != nil {
 		_ = hr.Close()
 	}

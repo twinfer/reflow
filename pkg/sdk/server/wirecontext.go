@@ -308,8 +308,101 @@ func (c *wireContext) Sleep(d time.Duration) sdk.Future {
 	return suspendedFuture{}
 }
 
-func (c *wireContext) Run(string, func() ([]byte, error)) ([]byte, error) {
-	return nil, ErrWireNotImplemented
+// Run executes fn at most once and journals the outcome via the
+// RunCommandMessage / ProposeRunCompletionMessage frame pair. Mirrors
+// inproc.go's Run semantics:
+//
+//   - Replay hit with non-retryable JERun: return cached value/failure
+//     without re-invoking fn.
+//   - Replay hit with retryable JERun: re-invoke fn (the engine
+//     scheduled a backoff timer that fired; this respawn is the retry).
+//   - No replay: invoke fn locally, emit RunCommandMessage +
+//     ProposeRunCompletionMessage with the outcome. On retryable error,
+//     suspend pending the engine's backoff timer.
+func (c *wireContext) Run(name string, fn func() ([]byte, error)) ([]byte, error) {
+	if fn == nil {
+		return nil, fmt.Errorf("reflow: ctx.Run fn must not be nil")
+	}
+	slot, ok := c.allocSlot(1)
+	if !ok {
+		return nil, sdk.ErrSuspended
+	}
+
+	if entry := c.lookupReplay(slot); entry != nil && entry.typeCode == handlerclient.TypeNoteRunDone {
+		// Replay hit with the cached outcome. Decode and surface it.
+		var note protocolv1.RunCompletionNotificationMessage
+		if err := c.codec.Unmarshal(entry.payload, &note); err != nil {
+			return nil, fmt.Errorf("decode replayed RunCompletionNotificationMessage: %w", err)
+		}
+		switch r := note.GetResult().(type) {
+		case *protocolv1.RunCompletionNotificationMessage_Value:
+			out := make([]byte, len(r.Value.GetContent()))
+			copy(out, r.Value.GetContent())
+			return out, nil
+		case *protocolv1.RunCompletionNotificationMessage_Failure:
+			return nil, sdk.NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())
+		}
+		// Empty result: treat as nil value.
+		return nil, nil
+	}
+
+	// Fresh execution (first attempt or a retryable retry — both run fn).
+	value, fnErr := fn()
+	var (
+		failureMessage string
+		retryable      bool
+	)
+	if fnErr != nil {
+		if f, ok := sdk.AsFailure(fnErr); ok {
+			failureMessage = f.Message
+		} else {
+			failureMessage = fnErr.Error()
+			retryable = true
+		}
+		value = nil
+	}
+
+	// Emit RunCommandMessage (marker — engine advances its slot counter)
+	// followed by ProposeRunCompletionMessage carrying the outcome.
+	runCmd := &protocolv1.RunCommandMessage{ResultCompletionId: slot, Name: name}
+	cmdPayload, err := c.codec.Marshal(runCmd)
+	if err != nil {
+		return nil, fmt.Errorf("marshal RunCommandMessage: %w", err)
+	}
+	if err := c.stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdRun, cmdPayload)); err != nil {
+		return nil, err
+	}
+	prop := &protocolv1.ProposeRunCompletionMessage{
+		ResultCompletionId: slot,
+		Retryable:          retryable,
+	}
+	if failureMessage != "" {
+		prop.Result = &protocolv1.ProposeRunCompletionMessage_Failure{
+			Failure: &protocolv1.Failure{Message: failureMessage},
+		}
+	} else {
+		prop.Result = &protocolv1.ProposeRunCompletionMessage_Value{Value: value}
+	}
+	propPayload, err := c.codec.Marshal(prop)
+	if err != nil {
+		return nil, fmt.Errorf("marshal ProposeRunCompletionMessage: %w", err)
+	}
+	if err := c.stream.Send(handlerclient.FrameFor(handlerclient.TypeProposeRunDone, propPayload)); err != nil {
+		return nil, err
+	}
+
+	if retryable {
+		// Engine writes JERun{retryable=true}, schedules backoff. SDK
+		// suspends; on respawn the replay sees JERun + retryable=true
+		// (via the failure variant) and re-invokes fn with the next
+		// attempt.
+		c.suspend(fmt.Sprintf("run-retry:%d", slot))
+		return nil, sdk.ErrSuspended
+	}
+	if failureMessage != "" {
+		return nil, sdk.NewFailure(0, failureMessage)
+	}
+	return value, nil
 }
 
 // Call invokes target with input and returns a Future resolving to the

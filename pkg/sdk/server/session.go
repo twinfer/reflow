@@ -242,6 +242,20 @@ func readReplay(stream frameStream, codec handlerclient.Codec, count uint32) ([]
 		case handlerclient.TypeCmdOneWayCall:
 			replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
 			nextSlot++
+		case handlerclient.TypeCmdRun:
+			// Run is single-slot — the marker frame claims the slot; the
+			// matching RunCompletionNotificationMessage that follows in
+			// the replay sequence shares the same slot.
+			replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
+			nextSlot++
+		case handlerclient.TypeNoteRunDone:
+			var note protocolv1.RunCompletionNotificationMessage
+			if err := codec.Unmarshal(f.GetPayload(), &note); err != nil {
+				return nil, nil, fmt.Errorf("decode replay RunCompletionNotificationMessage: %w", err)
+			}
+			// Overwrite the marker entry — the notification carries the
+			// useful payload for replay-hit decoding.
+			replay[note.GetCompletionId()] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
 		case handlerclient.TypeCmdSetState, handlerclient.TypeCmdClearState, handlerclient.TypeCmdClearAllState:
 			replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
 			nextSlot++

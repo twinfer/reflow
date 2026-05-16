@@ -29,10 +29,13 @@ const (
 	TypeCmdCall          uint16 = 0x040D
 	TypeCmdOneWayCall    uint16 = 0x040E
 
+	TypeCmdRun uint16 = 0x0411
+
 	// Notifications (0x8000-0x80FF).
 	TypeNoteSleepDone        uint16 = 0x800C
 	TypeNoteCallDone         uint16 = 0x800D
 	TypeNoteCallInvocationId uint16 = 0x800E
+	TypeNoteRunDone          uint16 = 0x8011
 )
 
 // PackHeader encodes (type, flags, payload length) into the 64-bit

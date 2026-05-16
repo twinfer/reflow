@@ -150,6 +150,12 @@ message CommandAckMessage {
 // RunCompletionNotificationMessage.
 message ProposeRunCompletionMessage {
   uint32 result_completion_id = 1;
+  // Reflow extension to Restate's service-protocol: when the SDK
+  // classified fn's error as transient (any non-*Failure error), the
+  // engine should journal JERun with retryable=true and schedule a
+  // backoff timer rather than recording a terminal failure. The next
+  // session re-invocation re-executes fn with attempt+1.
+  bool retryable = 2;
   oneof result {
     bytes value = 14;
     Failure failure = 15;

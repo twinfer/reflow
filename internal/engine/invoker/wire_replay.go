@@ -141,6 +141,38 @@ func translateEntry(e *enginev1.JournalEntry, codec handlerclient.Codec, log *sl
 		}
 		return marshalFrame(codec, handlerclient.TypeCmdOneWayCall, msg)
 
+	case *enginev1.JournalEntry_Run:
+		// JERun translates to a RunCommandMessage (marker) plus a
+		// RunCompletionNotificationMessage (the outcome). The marker
+		// advances the handler's replay cursor by one slot; the
+		// notification carries the cached value/failure that
+		// wireContext.Run returns on replay-hit.
+		cmd := &protocolv1.RunCommandMessage{ResultCompletionId: e.GetIndex()}
+		cmdPayload, err := codec.Marshal(cmd)
+		if err != nil {
+			return nil, fmt.Errorf("marshal RunCommandMessage: %w", err)
+		}
+		note := &protocolv1.RunCompletionNotificationMessage{
+			CompletionId: e.GetIndex(),
+		}
+		if fm := entry.Run.GetFailureMessage(); fm != "" {
+			note.Result = &protocolv1.RunCompletionNotificationMessage_Failure{
+				Failure: &protocolv1.Failure{Message: fm},
+			}
+		} else {
+			note.Result = &protocolv1.RunCompletionNotificationMessage_Value{
+				Value: &protocolv1.Value{Content: entry.Run.GetValue()},
+			}
+		}
+		notePayload, err := codec.Marshal(note)
+		if err != nil {
+			return nil, fmt.Errorf("marshal RunCompletionNotificationMessage: %w", err)
+		}
+		return []replayFrame{
+			{typeCode: handlerclient.TypeCmdRun, payload: cmdPayload},
+			{typeCode: handlerclient.TypeNoteRunDone, payload: notePayload},
+		}, nil
+
 	default:
 		log.Debug("invoker.wire: skipping JE variant in replay (not yet wired)",
 			"index", e.GetIndex(),

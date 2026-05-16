@@ -569,6 +569,12 @@ func (x *CommandAckMessage) GetCommandIndex() uint32 {
 type ProposeRunCompletionMessage struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	ResultCompletionId uint32                 `protobuf:"varint,1,opt,name=result_completion_id,json=resultCompletionId,proto3" json:"result_completion_id,omitempty"`
+	// Reflow extension to Restate's service-protocol: when the SDK
+	// classified fn's error as transient (any non-*Failure error), the
+	// engine should journal JERun with retryable=true and schedule a
+	// backoff timer rather than recording a terminal failure. The next
+	// session re-invocation re-executes fn with attempt+1.
+	Retryable bool `protobuf:"varint,2,opt,name=retryable,proto3" json:"retryable,omitempty"`
 	// Types that are valid to be assigned to Result:
 	//
 	//	*ProposeRunCompletionMessage_Value
@@ -613,6 +619,13 @@ func (x *ProposeRunCompletionMessage) GetResultCompletionId() uint32 {
 		return x.ResultCompletionId
 	}
 	return 0
+}
+
+func (x *ProposeRunCompletionMessage) GetRetryable() bool {
+	if x != nil {
+		return x.Retryable
+	}
+	return false
 }
 
 func (x *ProposeRunCompletionMessage) GetResult() isProposeRunCompletionMessage_Result {
@@ -3311,9 +3324,10 @@ const file_protocolv1_protocol_proto_rawDesc = "" +
 	"\n" +
 	"EndMessage\"8\n" +
 	"\x11CommandAckMessage\x12#\n" +
-	"\rcommand_index\x18\x01 \x01(\rR\fcommandIndex\"\xaa\x01\n" +
+	"\rcommand_index\x18\x01 \x01(\rR\fcommandIndex\"\xc8\x01\n" +
 	"\x1bProposeRunCompletionMessage\x120\n" +
-	"\x14result_completion_id\x18\x01 \x01(\rR\x12resultCompletionId\x12\x16\n" +
+	"\x14result_completion_id\x18\x01 \x01(\rR\x12resultCompletionId\x12\x1c\n" +
+	"\tretryable\x18\x02 \x01(\bR\tretryable\x12\x16\n" +
 	"\x05value\x18\x0e \x01(\fH\x00R\x05value\x127\n" +
 	"\afailure\x18\x0f \x01(\v2\x1b.reflow.protocol.v1.FailureH\x00R\afailureB\b\n" +
 	"\x06result\"\x90\x01\n" +

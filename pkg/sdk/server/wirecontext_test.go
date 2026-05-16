@@ -446,6 +446,136 @@ func TestWireContext_OneWayCall_ReplayHitSkipsEmit(t *testing.T) {
 	}
 }
 
+// TestWireContext_Run_FreshExecutesAndEmitsBothFrames asserts the
+// happy path: fn() runs locally, RunCommandMessage +
+// ProposeRunCompletionMessage are emitted in order, and the inline
+// return path surfaces fn's value.
+func TestWireContext_Run_FreshExecutesAndEmitsBothFrames(t *testing.T) {
+	wctx, stream := newTestWireContext(t, nil)
+
+	ranCount := 0
+	v, err := wctx.Run("compute", func() ([]byte, error) {
+		ranCount++
+		return []byte("answer"), nil
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if string(v) != "answer" {
+		t.Errorf("Run value = %q; want %q", v, "answer")
+	}
+	if ranCount != 1 {
+		t.Errorf("fn ran %d times; want 1", ranCount)
+	}
+	if len(stream.sent) != 2 {
+		t.Fatalf("sent frames = %d; want 2 (Run + ProposeRun)", len(stream.sent))
+	}
+	tc, _, _ := handlerclient.UnpackHeader(stream.sent[0].GetHeader())
+	if tc != handlerclient.TypeCmdRun {
+		t.Errorf("frame[0].type = 0x%04x; want 0x%04x (TypeCmdRun)", tc, handlerclient.TypeCmdRun)
+	}
+	tc, _, _ = handlerclient.UnpackHeader(stream.sent[1].GetHeader())
+	if tc != handlerclient.TypeProposeRunDone {
+		t.Errorf("frame[1].type = 0x%04x; want 0x%04x (TypeProposeRunDone)", tc, handlerclient.TypeProposeRunDone)
+	}
+	var prop protocolv1.ProposeRunCompletionMessage
+	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[1].GetPayload(), &prop); err != nil {
+		t.Fatalf("decode ProposeRunCompletionMessage: %v", err)
+	}
+	if prop.GetRetryable() {
+		t.Error("prop.retryable = true; want false on success")
+	}
+	val, ok := prop.GetResult().(*protocolv1.ProposeRunCompletionMessage_Value)
+	if !ok {
+		t.Fatalf("prop.result = %T; want Value", prop.GetResult())
+	}
+	if string(val.Value) != "answer" {
+		t.Errorf("prop.value = %q; want %q", val.Value, "answer")
+	}
+}
+
+// TestWireContext_Run_TransientErrorMarksRetryable asserts a non-Failure
+// fn error sets retryable=true and the SDK suspends pending the
+// engine's backoff timer.
+func TestWireContext_Run_TransientErrorMarksRetryable(t *testing.T) {
+	wctx, stream := newTestWireContext(t, nil)
+
+	_, err := wctx.Run("fetch", func() ([]byte, error) {
+		return nil, errors.New("network blip")
+	})
+	if !errors.Is(err, sdk.ErrSuspended) {
+		t.Errorf("Run err = %v; want ErrSuspended (retryable)", err)
+	}
+	var prop protocolv1.ProposeRunCompletionMessage
+	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[1].GetPayload(), &prop); err != nil {
+		t.Fatalf("decode ProposeRunCompletionMessage: %v", err)
+	}
+	if !prop.GetRetryable() {
+		t.Error("prop.retryable = false; want true for transient error")
+	}
+}
+
+// TestWireContext_Run_FailureIsTerminal asserts a returned *sdk.Failure
+// is recorded as terminal (retryable=false) and surfaced from Run.
+func TestWireContext_Run_FailureIsTerminal(t *testing.T) {
+	wctx, stream := newTestWireContext(t, nil)
+
+	_, err := wctx.Run("validate", func() ([]byte, error) {
+		return nil, sdk.NewFailure(0, "bad input")
+	})
+	f, ok := sdk.AsFailure(err)
+	if !ok {
+		t.Fatalf("Run err = %v; want *sdk.Failure", err)
+	}
+	if f.Message != "bad input" {
+		t.Errorf("failure.message = %q; want %q", f.Message, "bad input")
+	}
+	var prop protocolv1.ProposeRunCompletionMessage
+	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[1].GetPayload(), &prop); err != nil {
+		t.Fatalf("decode ProposeRunCompletionMessage: %v", err)
+	}
+	if prop.GetRetryable() {
+		t.Error("prop.retryable = true; want false for terminal failure")
+	}
+}
+
+// TestWireContext_Run_ReplayHitReturnsCachedValue asserts a replayed
+// RunCompletionNotificationMessage surfaces directly without
+// re-executing fn.
+func TestWireContext_Run_ReplayHitReturnsCachedValue(t *testing.T) {
+	codec := handlerclient.DefaultCodec()
+	notePayload, err := codec.Marshal(&protocolv1.RunCompletionNotificationMessage{
+		CompletionId: 1,
+		Result: &protocolv1.RunCompletionNotificationMessage_Value{
+			Value: &protocolv1.Value{Content: []byte("cached")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal note: %v", err)
+	}
+	wctx, stream := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
+		1: {typeCode: handlerclient.TypeNoteRunDone, payload: notePayload},
+	})
+
+	ranCount := 0
+	v, err := wctx.Run("compute", func() ([]byte, error) {
+		ranCount++
+		return []byte("fresh"), nil
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if string(v) != "cached" {
+		t.Errorf("Run value = %q; want %q", v, "cached")
+	}
+	if ranCount != 0 {
+		t.Errorf("fn ran %d times on replay-hit; want 0", ranCount)
+	}
+	if len(stream.sent) != 0 {
+		t.Errorf("sent %d frames; want 0 on replay-hit", len(stream.sent))
+	}
+}
+
 // TestWireContext_Suspend_ShortCircuitsSubsequentCalls asserts that
 // once suspended, every ctx call returns ErrSuspended (mirrors
 // inprocContext.suspend).
@@ -467,9 +597,9 @@ func TestWireContext_Suspend_ShortCircuitsSubsequentCalls(t *testing.T) {
 }
 
 // TestWireContext_DurablePrimitivesNotImplemented covers every durable
-// primitive still gated on the 5f.5-5f.6 wire-protocol expansion. Sleep,
-// State, Call, OneWayCall are no longer in this list — they landed in
-// 5f.1-5f.4.
+// primitive still gated on the 5f.6 wire-protocol expansion. Sleep,
+// State, Call, OneWayCall, Run are no longer in this list — they
+// landed in 5f.1-5f.5.
 func TestWireContext_DurablePrimitivesNotImplemented(t *testing.T) {
 	wctx, _ := newTestWireContext(t, nil)
 
@@ -478,9 +608,6 @@ func TestWireContext_DurablePrimitivesNotImplemented(t *testing.T) {
 		t.Errorf("Awakeable.Result() err = %v; want ErrWireNotImplemented", err)
 	}
 
-	if _, err := wctx.Run("x", func() ([]byte, error) { return nil, nil }); !errors.Is(err, ErrWireNotImplemented) {
-		t.Errorf("Run err = %v; want ErrWireNotImplemented", err)
-	}
 	if err := wctx.SendSignal(sdk.Target{}, "s", nil); !errors.Is(err, ErrWireNotImplemented) {
 		t.Errorf("SendSignal err = %v; want ErrWireNotImplemented", err)
 	}

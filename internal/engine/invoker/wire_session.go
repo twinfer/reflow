@@ -324,6 +324,16 @@ func (s *wireSession) driveLoop(stream handlerclient.Stream) {
 			if !s.handleOneWayCall(f.GetPayload()) {
 				return
 			}
+		case handlerclient.TypeCmdRun:
+			// Marker frame: advance slot counter so the next
+			// engine-assigned index lines up with handler's wireContext.
+			// The actual JERun proposal arrives via
+			// ProposeRunCompletionMessage below.
+			_ = s.allocIdx()
+		case handlerclient.TypeProposeRunDone:
+			if !s.handleProposeRunCompletion(f.GetPayload()) {
+				return
+			}
 		case handlerclient.TypeSuspension:
 			s.handleSuspension(f.GetPayload())
 			return
@@ -524,6 +534,44 @@ func (s *wireSession) handleOneWayCall(payload []byte) bool {
 		},
 	}
 	return s.proposeJournalOrFail(entry, "JEOneWayCall")
+}
+
+// handleProposeRunCompletion decodes a ProposeRunCompletionMessage and
+// proposes the matching InvokerEffect_RunProposal. The FSM apply path
+// writes JERun with entry_index=result_completion_id carrying the
+// (value | failure_message, retryable) outcome.
+func (s *wireSession) handleProposeRunCompletion(payload []byte) bool {
+	var prop protocolv1.ProposeRunCompletionMessage
+	if err := s.codec.Unmarshal(payload, &prop); err != nil {
+		s.log.Warn("invoker.wire: decode ProposeRunCompletionMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode propose_run: %v", err))
+		return false
+	}
+	rp := &enginev1.JERunProposal{
+		EntryIndex: prop.GetResultCompletionId(),
+		Retryable:  prop.GetRetryable(),
+	}
+	switch r := prop.GetResult().(type) {
+	case *protocolv1.ProposeRunCompletionMessage_Value:
+		rp.Value = r.Value
+	case *protocolv1.ProposeRunCompletionMessage_Failure:
+		rp.FailureMessage = r.Failure.GetMessage()
+	}
+	eff := &enginev1.InvokerEffect{
+		InvocationId: s.id,
+		Kind:         &enginev1.InvokerEffect_RunProposal{RunProposal: rp},
+	}
+	if err := s.proposeEffect(eff); err != nil {
+		if errors.Is(err, context.Canceled) || s.ctx.Err() != nil {
+			return false
+		}
+		s.log.Warn("invoker.wire: propose RunProposal failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: propose run: %v", err))
+		return false
+	}
+	return true
 }
 
 // handleSuspension translates a SuspensionMessage into

@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
+	"github.com/twinfer/reflow/pkg/reflow/creds"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
@@ -27,24 +28,39 @@ import (
 // Uses stdlib net/http's HTTP/2 (http.Server.Protocols) so deployments
 // on Go 1.24+ pick up h2c without an x/net dependency.
 type HTTP2Server struct {
-	cfg     Config
-	srv     *http.Server
-	mux     *http.ServeMux
-	mu      sync.Mutex
-	started bool
-	closed  bool
+	cfg      Config
+	srv      *http.Server
+	mux      *http.ServeMux
+	verifier *creds.Verifier
+	mu       sync.Mutex
+	started  bool
+	closed   bool
 }
 
 // NewHTTP2 constructs an HTTP/2 handler-side server. The default mux
 // serves /discover and /invoke/{service}/{handler}; callers that need
 // additional endpoints can mount them via Mux().
+//
+// When cfg.RootCAs is non-nil, every /invoke and /discover request must
+// carry an Authorization: Bearer <jwt> header whose x5c chain anchors
+// at one of the configured roots and whose leaf SPIFFE URI appears in
+// cfg.AllowedSPIFFE; verification failures reject with 401. Extra
+// routes mounted via Mux() are NOT gated, by design (health probes,
+// metrics scrapers).
 func NewHTTP2(cfg Config) (*HTTP2Server, error) {
-	if err := validateConfig(&cfg); err != nil {
+	verifier, err := validateConfig(&cfg)
+	if err != nil {
 		return nil, err
 	}
-	s := &HTTP2Server{cfg: cfg, mux: http.NewServeMux()}
-	s.mux.HandleFunc("/discover", s.handleDiscover)
-	s.mux.HandleFunc("/invoke/", s.handleInvoke)
+	s := &HTTP2Server{cfg: cfg, mux: http.NewServeMux(), verifier: verifier}
+	invokeHandler := http.Handler(http.HandlerFunc(s.handleInvoke))
+	discoverHandler := http.Handler(http.HandlerFunc(s.handleDiscover))
+	if verifier != nil {
+		invokeHandler = withAuth(verifier, nil, invokeHandler)
+		discoverHandler = withAuth(verifier, nil, discoverHandler)
+	}
+	s.mux.Handle("/discover", discoverHandler)
+	s.mux.Handle("/invoke/", invokeHandler)
 	s.srv = &http.Server{Handler: s.mux, Protocols: new(http.Protocols)}
 	// Accept both HTTP/1.1 (for probes / health-check style tools) and
 	// h2c (the engine's wire path). HTTPS adds plain HTTP/2 on top.

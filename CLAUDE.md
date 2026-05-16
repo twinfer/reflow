@@ -50,7 +50,7 @@ The dependency direction is `cmd → pkg → internal → proto`. Internal packa
 - **`internal/storage`** — `Store` interface (Pebble + in-memory); `keys` defines the byte-level key layout (no partition_id prefix — each partition has its own DB); `tables` is the typed view over keys.
 - **`internal/ingress`** — gRPC + grpc-gateway HTTP/JSON entrypoints (`SubmitInvocation`, `AwaitInvocation`, `AttachInvocation`, awakeables, admin reads). Routes via `Host.Partitioner` (hash of `service` + `object_key`).
 - **`internal/engine/handlerclient`** — engine-side wire client for handler deployments. Single transport is raw HTTP/2 (`http2client/`); the handler-side server lives at `pkg/sdk/server`.
-- **`internal/auth`** — single-CA mTLS with SPIFFE URI SAN role enforcement (`spiffe://<trust-domain>/node/<id>` vs `/operator/<name>`). Multi-node config is rejected unless TLS files are supplied (`requireTLSWhenMultiNode` in `cmd/reflowd/main.go`).
+- **`internal/auth`** — single-CA mTLS with SPIFFE URI SAN role enforcement (`spiffe://<trust-domain>/node/<id>` vs `/operator/<name>`). Per-listener transport security is driven by `cfg.Delivery.Creds` / `cfg.Admin.Creds` via `pkg/reflow/creds`; multi-node insecure delivery emits a startup warning in `pkg/reflow/run.go`.
 - **`internal/pki`** — offline CA + leaf issuance used by `reflow-cluster init-ca / issue-cert / issue-operator`.
 - **`internal/observability`** — `*Metrics` is a single Prometheus collector struct passed down into the partition apply path + timer service. The engine never constructs its own registry; wiring lives in `pkg/reflow`.
 

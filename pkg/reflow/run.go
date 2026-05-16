@@ -423,14 +423,22 @@ func finishStartup(
 			return nil, fmt.Errorf("reflow: listen admin %s: %w", cfg.Admin.Addr, lErr)
 		}
 		adminLn = ln
-		srv, sErr := admin.NewServer(admin.Config{
+		adminCfg := admin.Config{
 			Host:       eh,
 			Runner:     runner,
 			Repo:       snapshotRepoIface,
 			Source:     &engine.HostSnapshotSource{Host: eh},
 			Log:        logger,
 			ScratchDir: cfg.Snapshot.ScratchDir,
-		})
+		}
+		// Avoid the typed-nil interface trap: only assign the Signer
+		// field when the underlying *creds.Signer is non-nil, so a
+		// nil-driver setup leaves admin's signer field as a true nil
+		// interface (handlerclient skips the Authorization header).
+		if handlerSigner != nil {
+			adminCfg.Signer = handlerSigner
+		}
+		srv, sErr := admin.NewServer(adminCfg)
 		if sErr != nil {
 			if snapshotCxl != nil {
 				snapshotCxl()

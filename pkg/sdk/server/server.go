@@ -19,6 +19,7 @@ import (
 	"net"
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
+	"github.com/twinfer/reflow/pkg/reflow/creds"
 	"github.com/twinfer/reflow/pkg/sdk"
 )
 
@@ -47,6 +48,28 @@ type Config struct {
 	// Defaults to protobuf. Both sides of the session must agree; the
 	// engine's handlerclient.Codec is the matching half.
 	Codec handlerclient.Codec
+
+	// RootCAs, when non-nil, enables JWT verification of every /invoke
+	// and /discover request via Authorization: Bearer <jwt>. The bundle
+	// is the PEM-encoded set of CAs trusted to sign the caller's leaf;
+	// the engine signs with a leaf rooted at one of these.
+	RootCAs []byte
+
+	// AllowedSPIFFE is the exact-match allowlist of caller SPIFFE URIs
+	// (e.g. "spiffe://reflow.local/node/1"). Required when RootCAs is
+	// set; leave empty when RootCAs is nil.
+	AllowedSPIFFE []string
+
+	// TrustDomain governs SPIFFE URI extraction from the caller's leaf.
+	// Empty falls back to creds.DefaultTrustDomain ("reflow.local").
+	// Only consulted when RootCAs is set.
+	TrustDomain string
+
+	// ExpectedAudience, when non-empty, requires the JWT aud claim to
+	// match. Empty skips the aud check (chain + SPIFFE + exp/iat still
+	// run). The SDK handler typically doesn't know its own deployment_id
+	// (engine-assigned), so this is opt-in.
+	ExpectedAudience string
 }
 
 // ErrWireNotImplemented is returned by wireContext methods whose
@@ -62,15 +85,28 @@ var ErrWireNotImplemented = errors.New("sdk/server: durable primitive not yet su
 // place of the eventual completion future.
 var ErrLazyStateUnavailable = errors.New("sdk/server: state preload incomplete; lazy fetch not implemented")
 
-// validateConfig fills defaults and rejects obviously broken inputs.
-// Shared by both transports so the same diagnostic surfaces regardless
-// of how the server was constructed.
-func validateConfig(cfg *Config) error {
+// validateConfig fills defaults, rejects obviously broken inputs, and
+// builds the verifier when RootCAs is set. Returns the verifier (nil
+// when auth is disabled). Shared by every transport so the same
+// diagnostic surfaces regardless of how the server was constructed.
+func validateConfig(cfg *Config) (*creds.Verifier, error) {
 	if cfg.Registry == nil {
-		return fmt.Errorf("sdk/server: Config.Registry is required")
+		return nil, fmt.Errorf("sdk/server: Config.Registry is required")
 	}
 	if cfg.Codec == nil {
 		cfg.Codec = handlerclient.DefaultCodec()
 	}
-	return nil
+	if cfg.RootCAs == nil {
+		// Catch operator typos: auth fields set without the on/off
+		// switch are almost certainly a misconfiguration.
+		if len(cfg.AllowedSPIFFE) > 0 || cfg.TrustDomain != "" || cfg.ExpectedAudience != "" {
+			return nil, errors.New("sdk/server: auth fields set without RootCAs; either set RootCAs to enable verification or remove the other auth fields")
+		}
+		return nil, nil
+	}
+	v, err := creds.NewVerifier(cfg.RootCAs, cfg.AllowedSPIFFE, cfg.TrustDomain, cfg.ExpectedAudience)
+	if err != nil {
+		return nil, fmt.Errorf("sdk/server: build verifier: %w", err)
+	}
+	return v, nil
 }

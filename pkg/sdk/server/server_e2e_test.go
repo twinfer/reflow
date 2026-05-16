@@ -2,17 +2,28 @@ package server_test
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"google.golang.org/grpc/credentials/tls/certprovider"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/engine/handlerclient/http2client"
+	"github.com/twinfer/reflow/pkg/reflow/creds"
 	"github.com/twinfer/reflow/pkg/sdk"
 	"github.com/twinfer/reflow/pkg/sdk/server"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
@@ -326,6 +337,151 @@ func discoverHTTP2(t *testing.T, baseURL string) *discoveryv1.DiscoveryResponse 
 // stubHandler is a no-op handler used to populate the registry for the
 // discovery test.
 var stubHandler sdk.Handler = func(_ sdk.Context, _ []byte) ([]byte, error) { return nil, nil }
+
+// TestHTTP2Server_RoundTrip_WithAuth wires a real signer + verifier
+// built from the same CA and asserts an /invoke round-trip succeeds
+// when the engine-side dispatch signs the request. Mirrors
+// TestHTTP2Server_RoundTrip but with auth enabled on both ends.
+func TestHTTP2Server_RoundTrip_WithAuth(t *testing.T) {
+	caPEM, signer, spiffe := buildCAAndSigner(t, "/node/1")
+
+	reg := sdk.NewRegistry()
+	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
+		return append([]byte("auth-echo:"), in...), nil
+	}); err != nil {
+		t.Fatalf("RegisterService: %v", err)
+	}
+	srv, err := server.NewHTTP2(server.Config{
+		Registry:      reg,
+		RootCAs:       caPEM,
+		AllowedSPIFFE: []string{spiffe},
+		TrustDomain:   "reflow.local",
+	})
+	if err != nil {
+		t.Fatalf("NewHTTP2: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() { _ = srv.Shutdown() }()
+
+	url := "http://" + ln.Addr().String()
+	client, err := http2client.New("dep-auth", url, true, signer)
+	if err != nil {
+		t.Fatalf("http2client.New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	output := runOneSession(t, client,
+		handlerclient.Route{Service: "Echo", Handler: "echo"}, []byte("hi"))
+	if got, want := string(output), "auth-echo:hi"; got != want {
+		t.Errorf("output = %q; want %q", got, want)
+	}
+}
+
+// TestHTTP2Server_AuthRejectsForeignCA: a client whose leaf is signed
+// by a CA the server doesn't trust gets rejected at the HTTP layer.
+// We bypass http2client (which would surface the 401 as a transport
+// error somewhere inside Recv) and hit /invoke directly.
+func TestHTTP2Server_AuthRejectsForeignCA(t *testing.T) {
+	caPEM, _, spiffe := buildCAAndSigner(t, "/node/1")
+	// Foreign signer: rooted at a different CA — verifier won't accept.
+	_, foreignSigner, _ := buildCAAndSigner(t, "/node/1")
+
+	reg := sdk.NewRegistry()
+	_ = reg.RegisterService("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) { return in, nil })
+	srv, err := server.NewHTTP2(server.Config{
+		Registry:      reg,
+		RootCAs:       caPEM,
+		AllowedSPIFFE: []string{spiffe},
+		TrustDomain:   "reflow.local",
+	})
+	if err != nil {
+		t.Fatalf("NewHTTP2: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() { _ = srv.Shutdown() }()
+
+	tok, err := foreignSigner.Sign("dep-test")
+	if err != nil {
+		t.Fatalf("foreign Sign: %v", err)
+	}
+	tr := &http.Transport{Protocols: new(http.Protocols)}
+	tr.Protocols.SetUnencryptedHTTP2(true)
+	tr.Protocols.SetHTTP1(false)
+	hc := &http.Client{Transport: tr, Timeout: 3 * time.Second}
+	defer tr.CloseIdleConnections()
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+ln.Addr().String()+"/invoke/Echo/echo", strings.NewReader(""))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := hc.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d; want 401", resp.StatusCode)
+	}
+	if resp.Header.Get("WWW-Authenticate") == "" {
+		t.Error("WWW-Authenticate header missing on 401")
+	}
+}
+
+// buildCAAndSigner builds a self-signed CA + a leaf signed by it,
+// wraps the leaf in a *creds.Signer, and returns the CA PEM bundle.
+// The leaf's SPIFFE URI is "spiffe://reflow.local"+spiffePath.
+func buildCAAndSigner(t *testing.T, spiffePath string) (caPEM []byte, signer *creds.Signer, spiffe string) {
+	t.Helper()
+	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	caTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test-ca"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("CA cert: %v", err)
+	}
+	caCert, _ := x509.ParseCertificate(caDER)
+	caPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
+
+	leafKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	uri, _ := url.Parse("spiffe://reflow.local" + spiffePath)
+	leafTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "test-leaf"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		URIs:         []*url.URL{uri},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, caCert, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("leaf cert: %v", err)
+	}
+	leaf, _ := x509.ParseCertificate(leafDER)
+	cert := tls.Certificate{Certificate: [][]byte{leafDER}, PrivateKey: leafKey, Leaf: leaf}
+	signer = creds.NewSigner(&e2eFakeProvider{cert: cert}, "reflow.local")
+	return caPEM, signer, "spiffe://reflow.local" + spiffePath
+}
+
+type e2eFakeProvider struct{ cert tls.Certificate }
+
+func (p *e2eFakeProvider) KeyMaterial(_ context.Context) (*certprovider.KeyMaterial, error) {
+	return &certprovider.KeyMaterial{Certs: []tls.Certificate{p.cert}}, nil
+}
+func (p *e2eFakeProvider) Close() {}
 
 // TestHTTP2Server_NoBodyLeak runs many sequential sessions through one
 // http2client.Client and asserts the transport doesn't accumulate idle

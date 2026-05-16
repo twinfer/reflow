@@ -33,6 +33,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine"
+	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
@@ -52,6 +53,10 @@ type Server struct {
 	repo   snapshot.Repository
 	src    snapshot.Source
 	log    *slog.Logger
+	// signer, when non-nil, stamps Authorization: Bearer on outgoing
+	// GET /discover requests so the handler's verifier accepts them.
+	// Nil disables the header (single-node and insecure-creds posture).
+	signer handlerclient.Signer
 
 	// scratchDir holds export directories created for CreateSnapshot.
 	// Each call writes into a fresh sub-directory.
@@ -69,6 +74,10 @@ type Config struct {
 	Source     snapshot.Source
 	Log        *slog.Logger
 	ScratchDir string
+	// Signer, when non-nil, is used to mint a JWT on outgoing
+	// GET /discover requests during RegisterDeployment. Same Signer
+	// the handlerclient http2client uses.
+	Signer handlerclient.Signer
 }
 
 // NewServer constructs the Admin server. Repo and Source are required
@@ -93,6 +102,7 @@ func NewServer(cfg Config) (*Server, error) {
 		repo:             cfg.Repo,
 		src:              cfg.Source,
 		log:              cfg.Log,
+		signer:           cfg.Signer,
 		scratchDir:       cfg.ScratchDir,
 		adminCallTimeout: 30 * time.Second,
 	}, nil
@@ -355,7 +365,7 @@ func (s *Server) RegisterDeployment(ctx context.Context, req *adminv1.RegisterDe
 	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
 	defer cancel()
 
-	resp, err := discoverHTTP(callCtx, raw, scheme == "http")
+	resp, err := discoverHTTP(callCtx, raw, scheme == "http", s.signer)
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "admin: discovery: %v", err)
 	}
@@ -410,8 +420,10 @@ func validateDeploymentScheme(scheme string) error {
 
 // discoverHTTP issues GET <url>/discover over HTTP/2 (h2c for http://,
 // TLS for https://). The response body is a protobuf-encoded
-// DiscoveryResponse.
-func discoverHTTP(ctx context.Context, rawURL string, plaintextH2C bool) (*discoveryv1.DiscoveryResponse, error) {
+// DiscoveryResponse. When signer is non-nil the request carries
+// Authorization: Bearer <jwt> with the deployment URL as audience so
+// the handler's verifier (if configured) accepts it.
+func discoverHTTP(ctx context.Context, rawURL string, plaintextH2C bool, signer handlerclient.Signer) (*discoveryv1.DiscoveryResponse, error) {
 	tr := &http.Transport{Protocols: new(http.Protocols)}
 	if plaintextH2C {
 		tr.Protocols.SetUnencryptedHTTP2(true)
@@ -430,6 +442,13 @@ func discoverHTTP(ctx context.Context, rawURL string, plaintextH2C bool) (*disco
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.reflow.invocation.v1+protobuf")
+	if signer != nil {
+		tok, serr := signer.Sign(rawURL)
+		if serr != nil {
+			return nil, fmt.Errorf("sign discover: %w", serr)
+		}
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
 	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("do: %w", err)

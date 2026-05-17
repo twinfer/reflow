@@ -49,8 +49,11 @@ func (h *Host) resolveDeployment(ctx context.Context, deploymentID string) (*eng
 // LookupDeploymentIDByHandler resolves (service, handler) → deployment_id
 // against shard 0's deployment index. Returns "" + nil when no
 // deployment claims the handler — callers decide whether that is an
-// error condition. Also returns "" + nil when shard 0 is not hosted on
-// this node.
+// error condition. Returns "" + nil when shard 0 is not hosted on this
+// node. Returns "" + a non-nil error when shard 0 is unreachable (e.g.
+// election in progress, ctx expired) so the caller can distinguish
+// "not registered" from "ask again later" and surface the right status
+// code to the user.
 //
 // The deployment_id this returns identifies the *current* deployment
 // for (service, handler); pinned invocations resolve their own
@@ -70,9 +73,10 @@ func (h *Host) LookupDeploymentIDByHandler(ctx context.Context, service, handler
 		defer cancel()
 	}
 	// Retry on transient errors: shard 0 may still be electing a leader
-	// or replaying its log on restart. The caller (invoker dispatch) gets
-	// blocked while we wait — that is preferable to silently dropping the
-	// invocation because shard 0 wasn't ready for 100ms.
+	// or replaying its log on restart. The caller (ingress / invoker
+	// dispatch) gets blocked while we wait — that is preferable to
+	// silently dropping the invocation because shard 0 wasn't ready for
+	// 100ms.
 	var lastErr error
 	for {
 		res, err := h.nh.SyncRead(ctx, 0, cluster.LookupDeploymentByHandler{Service: service, Handler: handler})
@@ -84,13 +88,17 @@ func (h *Host) LookupDeploymentIDByHandler(ctx context.Context, service, handler
 			return id, nil
 		}
 		lastErr = err
+		// ctx-derived terminal conditions: surface the cause so callers
+		// can map it to a transient gRPC status (Unavailable /
+		// DeadlineExceeded) rather than the misleading "no deployment
+		// registered" FailedPrecondition that an empty string produces
+		// in ingress.SubmitInvocation.
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return "", nil //nolint:nilerr // treat shard-0 unavailability as "no deployment"
+			return "", fmt.Errorf("host: LookupDeploymentIDByHandler: shard 0 unavailable: %w", err)
 		}
 		select {
 		case <-ctx.Done():
-			_ = lastErr
-			return "", nil //nolint:nilerr
+			return "", fmt.Errorf("host: LookupDeploymentIDByHandler: shard 0 unavailable: %w", lastErr)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}

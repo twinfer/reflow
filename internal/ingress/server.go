@@ -102,9 +102,20 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *ingressv1.SubmitInvo
 	// handler) mapping. Empty result means no deployment has been
 	// registered for this handler — return FailedPrecondition so the
 	// caller knows they need to RegisterDeployment first.
+	//
+	// A non-nil error from LookupDeploymentIDByHandler means shard 0 was
+	// transiently unreachable (election in progress, ctx expired); map
+	// to Unavailable / DeadlineExceeded so the client retries rather
+	// than treating the dispatch as a permanent configuration error.
 	deploymentID, err := s.host.LookupDeploymentIDByHandler(ctx, target.GetServiceName(), target.GetHandlerName())
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "lookup deployment: %v", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, status.Errorf(codes.DeadlineExceeded, "lookup deployment: %v", err)
+		}
+		if errors.Is(err, context.Canceled) {
+			return nil, status.Errorf(codes.Canceled, "lookup deployment: %v", err)
+		}
+		return nil, status.Errorf(codes.Unavailable, "lookup deployment: %v", err)
 	}
 	if deploymentID == "" {
 		return nil, status.Errorf(codes.FailedPrecondition,

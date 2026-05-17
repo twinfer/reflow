@@ -3,6 +3,7 @@ module github.com/twinfer/reflow
 go 1.26.2
 
 require (
+	connectrpc.com/connect v1.19.2
 	github.com/HdrHistogram/hdrhistogram-go v1.2.0
 	github.com/cockroachdb/pebble/v2 v2.1.5
 	github.com/golang-jwt/jwt/v5 v5.3.0

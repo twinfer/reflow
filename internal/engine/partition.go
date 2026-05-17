@@ -1124,12 +1124,22 @@ func (p *Partition) onTimerFired(
 	next, actions, err := transitionOnTimerFired(id, cur, cmd, nowMs)
 	if err != nil {
 		p.cfg.Log.Warn("partition: invalid TimerFired transition", "err", err)
-		// Still need to clear the timer row so we don't re-fire forever.
 	}
 
-	// Delete the timer row regardless of FSM outcome.
+	// Delete the timer row regardless of FSM outcome — even an invalid
+	// transition must clear the row so we don't re-fire forever.
 	if delErr := timers.Delete(batch, cmd.GetFireAtMs(), id); delErr != nil {
 		return fmt.Errorf("onTimerFired: delete timer: %w", delErr)
+	}
+
+	// On invalid transition: stop here. Appending a SleepResult to a
+	// journal whose status doesn't expect one (e.g. Free/Scheduled)
+	// pollutes the entry stream — the SDK never reaches the wake site
+	// because the invocation is terminal/unstarted, but the journal
+	// tail still shows a wake that didn't happen. The timer is
+	// cleared, no action queued, status unchanged.
+	if err != nil {
+		return nil
 	}
 
 	// Distinguish a Sleep timer from a Run-retry timer. Sleep timers

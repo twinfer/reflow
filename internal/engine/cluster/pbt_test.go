@@ -36,6 +36,7 @@ package cluster
 // elsewhere; this PBT focuses on apply-path invariants.
 
 import (
+	"fmt"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -222,6 +223,120 @@ func (m *fsmMachine) AnnounceLeader(t *rapid.T) {
 			AnnounceLeader: &enginev1.AnnounceLeader{NodeId: 1, LeaderEpoch: 1},
 		},
 	})
+}
+
+// BatchedApply submits 2..4 commands drawn from {Register, Evict,
+// Begin, Complete} as a single Update call. This exercises the in-
+// batch read-your-writes coherence the rebalance pipeline relies on:
+// each apply arm binds its table reads to the in-flight Batch
+// (pebble.IndexedBatch), so a later entry observes the
+// PartitionTable / membership writes pushed by earlier entries in the
+// same Update. The model mutates in lockstep within the batch, so
+// Check still sees model == SUT after commit. UpdatePartitionTable is
+// excluded — being a full overwrite, it would erase in-batch
+// mutations and dilute the cross-entry composition coverage.
+func (m *fsmMachine) BatchedApply(t *rapid.T) {
+	n := rapid.IntRange(2, 4).Draw(t, "batch_n")
+	var entries []statemachine.Entry
+	for i := range n {
+		cmd := m.drawBatchCommand(t, i)
+		if cmd == nil {
+			continue
+		}
+		m.raftIx++
+		entries = append(entries, statemachine.Entry{Index: m.raftIx, Cmd: envelope(m.t, cmd)})
+	}
+	if len(entries) == 0 {
+		return
+	}
+	if _, err := m.fsm.Update(entries); err != nil {
+		t.Fatalf("Update batch (n=%d): %v", len(entries), err)
+	}
+	m.appliedIdx = m.raftIx
+}
+
+// drawBatchCommand picks one of {register, evict, begin, complete},
+// draws its parameters, applies them to the model, and returns the
+// command. Returns nil when the chosen kind is degenerate against the
+// current model state (e.g. Begin/Complete before a PartitionTable is
+// seeded); the caller skips nil entries without consuming raftIx.
+//
+// Labels include the slot index so rapid's shrinker output disambiguates
+// the K draws within one BatchedApply.
+func (m *fsmMachine) drawBatchCommand(t *rapid.T, slot int) *enginev1.Command {
+	kind := rapid.SampledFrom([]string{"register", "evict", "begin", "complete"}).
+		Draw(t, fmt.Sprintf("kind_%d", slot))
+	switch kind {
+	case "register":
+		nodeID := uint64(rapid.IntRange(1, pbtMaxNode).Draw(t, fmt.Sprintf("rn_node_%d", slot)))
+		lastSeen := rapid.Int64Range(1, 1_000_000).Draw(t, fmt.Sprintf("rn_seen_%d", slot))
+		raftAddr := rapid.SampledFrom([]string{"a:1", "b:2", "c:3"}).
+			Draw(t, fmt.Sprintf("rn_addr_%d", slot))
+		nodeHostID := rapid.SampledFrom([]string{"nh-a", "nh-b", "nh-c"}).
+			Draw(t, fmt.Sprintf("rn_nh_%d", slot))
+		mem := &enginev1.NodeMembership{
+			NodeId:     nodeID,
+			RaftAddr:   raftAddr,
+			NodeHostId: nodeHostID,
+			LastSeenMs: lastSeen,
+		}
+		m.members[nodeID] = mem
+		return &enginev1.Command{Kind: &enginev1.Command_RegisterNode{
+			RegisterNode: &enginev1.RegisterNode{Member: mem},
+		}}
+
+	case "evict":
+		nodeID := uint64(rapid.IntRange(1, pbtMaxNode).Draw(t, fmt.Sprintf("ev_node_%d", slot)))
+		m.applyEvictModel(nodeID)
+		return &enginev1.Command{Kind: &enginev1.Command_EvictNode{
+			EvictNode: &enginev1.EvictNode{NodeId: nodeID},
+		}}
+
+	case "begin":
+		if m.pt == nil || len(m.pt.GetShards()) == 0 {
+			return nil
+		}
+		shardID := pickShardIDIncludingZero(t, m.pt)
+		stepID := uint64(rapid.IntRange(1, 10).Draw(t, fmt.Sprintf("be_step_%d", slot)))
+		stepKind := rapid.SampledFrom([]enginev1.RebalanceStep_Kind{
+			enginev1.RebalanceStep_ADD_NON_VOTING,
+			enginev1.RebalanceStep_PROMOTE_TO_VOTER,
+			enginev1.RebalanceStep_DELETE_REPLICA,
+		}).Draw(t, fmt.Sprintf("be_kind_%d", slot))
+		step := &enginev1.RebalanceStep{
+			ShardId: shardID,
+			StepId:  stepID,
+			Kind:    stepKind,
+		}
+		if stepKind == enginev1.RebalanceStep_DELETE_REPLICA {
+			step.RemoveNodeId = uint64(rapid.IntRange(1, pbtMaxNode).
+				Draw(t, fmt.Sprintf("be_rm_%d", slot)))
+		} else {
+			step.AddNodeId = uint64(rapid.IntRange(1, pbtMaxNode).
+				Draw(t, fmt.Sprintf("be_add_%d", slot)))
+		}
+		m.applyBeginStepModel(step)
+		return &enginev1.Command{Kind: &enginev1.Command_BeginRebalanceStep{
+			BeginRebalanceStep: &enginev1.BeginRebalanceStep{Step: step},
+		}}
+
+	case "complete":
+		if m.pt == nil || len(m.pt.GetPending()) == 0 {
+			return nil
+		}
+		idx := rapid.IntRange(0, len(m.pt.GetPending())-1).
+			Draw(t, fmt.Sprintf("co_idx_%d", slot))
+		step := m.pt.GetPending()[idx]
+		shardID, stepID := step.GetShardId(), step.GetStepId()
+		m.applyCompleteStepModel(shardID, stepID)
+		return &enginev1.Command{Kind: &enginev1.Command_CompleteRebalanceStep{
+			CompleteRebalanceStep: &enginev1.CompleteRebalanceStep{
+				ShardId: shardID,
+				StepId:  stepID,
+			},
+		}}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -446,11 +561,6 @@ func uniqueSampledNodeIDs(t *rapid.T, n int) []uint64 {
 		out = append(out, id)
 	}
 	return out
-}
-
-func pickShardID(t *rapid.T, pt *enginev1.PartitionTable) uint64 {
-	ids := sortedShardIDs(pt.GetShards())
-	return rapid.SampledFrom(ids).Draw(t, "shard_id")
 }
 
 // pickShardIDIncludingZero draws from the partition shards plus shard 0

@@ -122,7 +122,7 @@ func (f *FSM) Update(entries []statemachine.Entry) ([]statemachine.Entry, error)
 		// there is no cross-shard ingress on shard 0 currently; admin CLI
 		// proposals would require arbitrary-source dedup if introduced.
 
-		applied, err := f.applyCommand(batch, &env, ent.Index, store)
+		applied, err := f.applyCommand(batch, &env, ent.Index)
 		if err != nil {
 			return nil, err
 		}
@@ -149,11 +149,21 @@ func (f *FSM) Update(entries []statemachine.Entry) ([]statemachine.Entry, error)
 // PartitionTable when the variant was UpdatePartitionTable, nil otherwise.
 // This lets Update notify the OnPartitionTable hook AFTER the batch
 // commits (so observers can read durable state).
+//
+// All table views are bound to the in-flight batch (which satisfies
+// storage.Reader via pebble.IndexedBatch). This gives read-your-writes
+// coherence across multi-entry apply batches — required because shard 0
+// can apply (EvictNode → BeginRebalanceStep) or
+// (BeginRebalanceStep → CompleteRebalanceStep) for the same shard in one
+// batch under bootstrap / rebalance churn. Reading from the underlying
+// store would miss the earlier entry's pending-step append and the
+// Complete arm would log "no matching pending step" without progressing.
+// Same bug class as the partition-heal stranding documented in
+// partition.go:124-133.
 func (f *FSM) applyCommand(
 	batch storage.Batch,
 	env *enginev1.Envelope,
 	raftIndex uint64,
-	store storage.Store,
 ) (*enginev1.PartitionTable, error) {
 	cmd := env.GetCommand()
 	switch k := cmd.GetKind().(type) {
@@ -167,7 +177,7 @@ func (f *FSM) applyCommand(
 				"raft_index", raftIndex)
 			return nil, nil
 		}
-		if err := (MembershipTable{S: store}).Put(batch, m); err != nil {
+		if err := (MembershipTable{S: batch}).Put(batch, m); err != nil {
 			return nil, fmt.Errorf("cluster: write membership: %w", err)
 		}
 		return nil, nil
@@ -185,7 +195,7 @@ func (f *FSM) applyCommand(
 		// MetaReplicas off disk before proposing so re-runs on leader
 		// gain don't wipe runtime-added members.
 		applied := proto.Clone(pt).(*enginev1.PartitionTable)
-		if err := (PartitionTableTable{S: store}).Put(batch, applied); err != nil {
+		if err := (PartitionTableTable{S: batch}).Put(batch, applied); err != nil {
 			return nil, fmt.Errorf("cluster: write partition table: %w", err)
 		}
 		return applied, nil
@@ -200,14 +210,14 @@ func (f *FSM) applyCommand(
 		// bootstrap re-runs on leader gain for an unchanged handler set)
 		// just overwrites the row. Operators registering a remote
 		// deployment with a new url should mint a fresh id, not reuse.
-		if err := (DeploymentTable{S: store}).Put(batch, rec); err != nil {
+		if err := (DeploymentTable{S: batch}).Put(batch, rec); err != nil {
 			return nil, fmt.Errorf("cluster: write deployment: %w", err)
 		}
 		// Maintain the (service, handler) → id index so ingress can
 		// resolve an unpinned invocation to a deployment in O(1).
 		// Newer registrations overwrite older ones; pinned invocations
 		// continue to find their deployment via DeploymentTable.Get directly.
-		idx := DeploymentIndexTable{S: store}
+		idx := DeploymentIndexTable{S: batch}
 		for _, h := range rec.GetHandlers() {
 			if h.GetService() == "" || h.GetHandler() == "" {
 				continue
@@ -218,11 +228,11 @@ func (f *FSM) applyCommand(
 		}
 		return nil, nil
 	case *enginev1.Command_EvictNode:
-		return f.applyEvictNode(batch, store, k.EvictNode, raftIndex)
+		return f.applyEvictNode(batch, k.EvictNode, raftIndex)
 	case *enginev1.Command_BeginRebalanceStep:
-		return f.applyBeginRebalanceStep(batch, store, k.BeginRebalanceStep, raftIndex)
+		return f.applyBeginRebalanceStep(batch, k.BeginRebalanceStep, raftIndex)
 	case *enginev1.Command_CompleteRebalanceStep:
-		return f.applyCompleteRebalanceStep(batch, store, k.CompleteRebalanceStep, raftIndex)
+		return f.applyCompleteRebalanceStep(batch, k.CompleteRebalanceStep, raftIndex)
 	case nil:
 		f.cfg.Log.Warn("cluster: envelope has no command kind", "raft_index", raftIndex)
 		return nil, nil
@@ -242,7 +252,6 @@ func (f *FSM) applyCommand(
 // check below short-circuits).
 func (f *FSM) applyEvictNode(
 	batch storage.Batch,
-	store storage.Store,
 	cmd *enginev1.EvictNode,
 	raftIndex uint64,
 ) (*enginev1.PartitionTable, error) {
@@ -252,7 +261,7 @@ func (f *FSM) applyEvictNode(
 			"raft_index", raftIndex)
 		return nil, nil
 	}
-	m, err := (MembershipTable{S: store}).Get(nodeID)
+	m, err := (MembershipTable{S: batch}).Get(nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("cluster: load membership: %w", err)
 	}
@@ -266,11 +275,11 @@ func (f *FSM) applyEvictNode(
 		return nil, nil
 	}
 	m.LastSeenMs = 0
-	if err := (MembershipTable{S: store}).Put(batch, m); err != nil {
+	if err := (MembershipTable{S: batch}).Put(batch, m); err != nil {
 		return nil, fmt.Errorf("cluster: write membership: %w", err)
 	}
 
-	pt, err := (PartitionTableTable{S: store}).Get()
+	pt, err := (PartitionTableTable{S: batch}).Get()
 	if err != nil {
 		return nil, fmt.Errorf("cluster: load partition table: %w", err)
 	}
@@ -311,7 +320,7 @@ func (f *FSM) applyEvictNode(
 			StepId:       nextStepID(pt.GetPending(), 0),
 		})
 	}
-	if err := (PartitionTableTable{S: store}).Put(batch, pt); err != nil {
+	if err := (PartitionTableTable{S: batch}).Put(batch, pt); err != nil {
 		return nil, fmt.Errorf("cluster: write partition table: %w", err)
 	}
 	return proto.Clone(pt).(*enginev1.PartitionTable), nil
@@ -322,7 +331,6 @@ func (f *FSM) applyEvictNode(
 // step_id) already exists (idempotency on retry).
 func (f *FSM) applyBeginRebalanceStep(
 	batch storage.Batch,
-	store storage.Store,
 	cmd *enginev1.BeginRebalanceStep,
 	raftIndex uint64,
 ) (*enginev1.PartitionTable, error) {
@@ -335,7 +343,7 @@ func (f *FSM) applyBeginRebalanceStep(
 	// shard_id=0 is the metadata Raft group itself — same step kinds,
 	// applied against pt.meta_replicas instead of pt.shards[shard_id]
 	// in applyCompleteRebalanceStep.
-	pt, err := (PartitionTableTable{S: store}).Get()
+	pt, err := (PartitionTableTable{S: batch}).Get()
 	if err != nil {
 		return nil, fmt.Errorf("cluster: load partition table: %w", err)
 	}
@@ -351,7 +359,7 @@ func (f *FSM) applyBeginRebalanceStep(
 		}
 	}
 	pt.Pending = append(pt.Pending, proto.Clone(step).(*enginev1.RebalanceStep))
-	if err := (PartitionTableTable{S: store}).Put(batch, pt); err != nil {
+	if err := (PartitionTableTable{S: batch}).Put(batch, pt); err != nil {
 		return nil, fmt.Errorf("cluster: write partition table: %w", err)
 	}
 	return proto.Clone(pt).(*enginev1.PartitionTable), nil
@@ -365,7 +373,6 @@ func (f *FSM) applyBeginRebalanceStep(
 // metadata-shard membership. Idempotent: if no entry matches, no-op.
 func (f *FSM) applyCompleteRebalanceStep(
 	batch storage.Batch,
-	store storage.Store,
 	cmd *enginev1.CompleteRebalanceStep,
 	raftIndex uint64,
 ) (*enginev1.PartitionTable, error) {
@@ -376,7 +383,7 @@ func (f *FSM) applyCompleteRebalanceStep(
 			"raft_index", raftIndex)
 		return nil, nil
 	}
-	pt, err := (PartitionTableTable{S: store}).Get()
+	pt, err := (PartitionTableTable{S: batch}).Get()
 	if err != nil {
 		return nil, fmt.Errorf("cluster: load partition table: %w", err)
 	}
@@ -428,7 +435,7 @@ func (f *FSM) applyCompleteRebalanceStep(
 		pt.AssignmentEpoch++
 	}
 
-	if err := (PartitionTableTable{S: store}).Put(batch, pt); err != nil {
+	if err := (PartitionTableTable{S: batch}).Put(batch, pt); err != nil {
 		return nil, fmt.Errorf("cluster: write partition table: %w", err)
 	}
 	return proto.Clone(pt).(*enginev1.PartitionTable), nil

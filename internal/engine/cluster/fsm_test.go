@@ -614,3 +614,216 @@ func TestCluster_UnknownCommandIsDropped(t *testing.T) {
 		t.Fatalf("Update should not error on unknown command kind; got %v", err)
 	}
 }
+
+// Multi-entry batch tests — regression guards for the shard-0 in-batch
+// read-your-writes coherence. Each apply arm binds its table reads to
+// the in-flight Batch (which satisfies storage.Reader via
+// pebble.IndexedBatch), so a later entry in the same Update call sees
+// the PartitionTable / membership writes that earlier entries pushed.
+// The buggy version bound reads to snapshotter.Store() and missed
+// in-batch writes; symptoms were silently dropped pending steps or
+// duplicated pending entries under rebalance churn.
+
+// TestCluster_MultiEntry_BeginThenComplete_SameBatch is the most direct
+// regression: BeginRebalanceStep appends a pending step in entry K;
+// CompleteRebalanceStep in entry K+1 of the same batch must observe
+// that pending step and consume it.
+func TestCluster_MultiEntry_BeginThenComplete_SameBatch(t *testing.T) {
+	f, _, st := newTestFSM(t)
+	applyPartitionTable(t, f, 1, &enginev1.PartitionTable{
+		AssignmentEpoch: 1,
+		Shards: map[uint64]*enginev1.ReplicaSet{
+			1: {NodeIds: []uint64{1, 2, 3}},
+		},
+	})
+
+	begin := &enginev1.Command{Kind: &enginev1.Command_BeginRebalanceStep{
+		BeginRebalanceStep: &enginev1.BeginRebalanceStep{
+			Step: &enginev1.RebalanceStep{
+				ShardId: 1, Kind: enginev1.RebalanceStep_DELETE_REPLICA,
+				RemoveNodeId: 3, StepId: 1,
+			},
+		},
+	}}
+	complete := &enginev1.Command{Kind: &enginev1.Command_CompleteRebalanceStep{
+		CompleteRebalanceStep: &enginev1.CompleteRebalanceStep{ShardId: 1, StepId: 1},
+	}}
+	if _, err := f.Update([]statemachine.Entry{
+		{Index: 2, Cmd: envelope(t, begin)},
+		{Index: 3, Cmd: envelope(t, complete)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	pt, _ := (PartitionTableTable{S: st}).Get()
+	if len(pt.GetPending()) != 0 {
+		t.Fatalf("complete in same batch did not consume begin's step: pending=%d %+v",
+			len(pt.GetPending()), pt.GetPending())
+	}
+	if replicaSetContains(pt.GetShards()[1], 3) {
+		t.Fatalf("node 3 still in shard 1 after DELETE_REPLICA complete: %+v",
+			pt.GetShards()[1].GetNodeIds())
+	}
+	if pt.GetAssignmentEpoch() != 2 {
+		t.Fatalf("assignment_epoch = %d; want 2", pt.GetAssignmentEpoch())
+	}
+}
+
+// TestCluster_MultiEntry_EvictThenBeginCollides_SameBatch exercises the
+// path the rebalancer hits under churn: EvictNode appends DELETE_REPLICA
+// pending steps inline; a BeginRebalanceStep with a colliding
+// (shard_id, step_id) in the same batch must observe Evict's append and
+// dedup. Pre-fix, Begin read from the store, saw zero pending, and
+// appended a second copy.
+func TestCluster_MultiEntry_EvictThenBeginCollides_SameBatch(t *testing.T) {
+	f, _, st := newTestFSM(t)
+	applyRegisterNode(t, f, 1, &enginev1.NodeMembership{
+		NodeId: 3, RaftAddr: "10.0.0.3:9091", LastSeenMs: 1700,
+	})
+	applyPartitionTable(t, f, 2, &enginev1.PartitionTable{
+		AssignmentEpoch: 1,
+		Shards: map[uint64]*enginev1.ReplicaSet{
+			1: {NodeIds: []uint64{1, 2, 3}},
+		},
+	})
+	// EvictNode(3) appends step_id = nextStepID(empty, shard=1) = 1.
+	evict := &enginev1.Command{Kind: &enginev1.Command_EvictNode{
+		EvictNode: &enginev1.EvictNode{NodeId: 3},
+	}}
+	// Begin with the same (shard=1, step=1) must dedup.
+	duplicateBegin := &enginev1.Command{Kind: &enginev1.Command_BeginRebalanceStep{
+		BeginRebalanceStep: &enginev1.BeginRebalanceStep{
+			Step: &enginev1.RebalanceStep{
+				ShardId: 1, Kind: enginev1.RebalanceStep_DELETE_REPLICA,
+				RemoveNodeId: 3, StepId: 1,
+			},
+		},
+	}}
+	if _, err := f.Update([]statemachine.Entry{
+		{Index: 3, Cmd: envelope(t, evict)},
+		{Index: 4, Cmd: envelope(t, duplicateBegin)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pt, _ := (PartitionTableTable{S: st}).Get()
+	if len(pt.GetPending()) != 1 {
+		t.Fatalf("expected 1 pending (begin dedup'd against evict's append); got %d: %+v",
+			len(pt.GetPending()), pt.GetPending())
+	}
+}
+
+// TestCluster_MultiEntry_EvictThenComplete_SameBatch covers the third
+// composition: EvictNode appends a DELETE_REPLICA pending step; the
+// next entry in the same batch is its CompleteRebalanceStep. Complete
+// must see Evict's append and consume it, mutating the ReplicaSet.
+func TestCluster_MultiEntry_EvictThenComplete_SameBatch(t *testing.T) {
+	f, _, st := newTestFSM(t)
+	applyRegisterNode(t, f, 1, &enginev1.NodeMembership{
+		NodeId: 3, RaftAddr: "10.0.0.3:9091", LastSeenMs: 1700,
+	})
+	applyPartitionTable(t, f, 2, &enginev1.PartitionTable{
+		AssignmentEpoch: 1,
+		Shards: map[uint64]*enginev1.ReplicaSet{
+			1: {NodeIds: []uint64{1, 2, 3}},
+		},
+	})
+	evict := &enginev1.Command{Kind: &enginev1.Command_EvictNode{
+		EvictNode: &enginev1.EvictNode{NodeId: 3},
+	}}
+	complete := &enginev1.Command{Kind: &enginev1.Command_CompleteRebalanceStep{
+		CompleteRebalanceStep: &enginev1.CompleteRebalanceStep{ShardId: 1, StepId: 1},
+	}}
+	if _, err := f.Update([]statemachine.Entry{
+		{Index: 3, Cmd: envelope(t, evict)},
+		{Index: 4, Cmd: envelope(t, complete)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pt, _ := (PartitionTableTable{S: st}).Get()
+	if len(pt.GetPending()) != 0 {
+		t.Fatalf("complete in same batch did not consume evict's step: pending=%d %+v",
+			len(pt.GetPending()), pt.GetPending())
+	}
+	if replicaSetContains(pt.GetShards()[1], 3) {
+		t.Fatalf("node 3 still in shard 1: %+v", pt.GetShards()[1].GetNodeIds())
+	}
+	if pt.GetAssignmentEpoch() != 2 {
+		t.Fatalf("assignment_epoch = %d; want 2", pt.GetAssignmentEpoch())
+	}
+}
+
+// TestCluster_MultiEntry_RegisterThenEvict_SameBatch checks the
+// membership/PartitionTable path: RegisterNode in entry K writes a row;
+// EvictNode in entry K+1 reads MembershipTable from the same batch,
+// finds the row, zeroes last_seen, and appends DELETE_REPLICA pending
+// steps if the node is in any ReplicaSet.
+func TestCluster_MultiEntry_RegisterThenEvict_SameBatch(t *testing.T) {
+	f, _, st := newTestFSM(t)
+	applyPartitionTable(t, f, 1, &enginev1.PartitionTable{
+		AssignmentEpoch: 1,
+		Shards: map[uint64]*enginev1.ReplicaSet{
+			1: {NodeIds: []uint64{1, 2, 4}},
+		},
+	})
+	register := &enginev1.Command{Kind: &enginev1.Command_RegisterNode{
+		RegisterNode: &enginev1.RegisterNode{Member: &enginev1.NodeMembership{
+			NodeId: 4, RaftAddr: "10.0.0.4:9091", LastSeenMs: 1700,
+		}},
+	}}
+	evict := &enginev1.Command{Kind: &enginev1.Command_EvictNode{
+		EvictNode: &enginev1.EvictNode{NodeId: 4},
+	}}
+	if _, err := f.Update([]statemachine.Entry{
+		{Index: 2, Cmd: envelope(t, register)},
+		{Index: 3, Cmd: envelope(t, evict)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := (MembershipTable{S: st}).Get(4)
+	if got == nil || got.GetLastSeenMs() != 0 {
+		t.Fatalf("evict in same batch did not see in-batch register: %+v", got)
+	}
+	pt, _ := (PartitionTableTable{S: st}).Get()
+	if len(pt.GetPending()) != 1 {
+		t.Fatalf("expected 1 pending DELETE step for shard 1; got %d: %+v",
+			len(pt.GetPending()), pt.GetPending())
+	}
+	if p := pt.GetPending()[0]; p.GetShardId() != 1 ||
+		p.GetKind() != enginev1.RebalanceStep_DELETE_REPLICA ||
+		p.GetRemoveNodeId() != 4 {
+		t.Fatalf("unexpected pending step: %+v", p)
+	}
+}
+
+// TestCluster_MultiEntry_AppliedIndexIsBatchTail confirms applied_index
+// bookkeeping commits the LAST entry's index for a multi-entry batch.
+// Each entry bumps the in-memory meta in the apply loop; MetaTable.Put
+// at the end of Update writes the tail value alongside every other
+// side effect. Restart after a crash mid-batch would never observe a
+// half-applied batch (dragonboat persists the batch atomically).
+func TestCluster_MultiEntry_AppliedIndexIsBatchTail(t *testing.T) {
+	f, _, st := newTestFSM(t)
+	mkRegister := func(id uint64, addr string) *enginev1.Command {
+		return &enginev1.Command{Kind: &enginev1.Command_RegisterNode{
+			RegisterNode: &enginev1.RegisterNode{Member: &enginev1.NodeMembership{
+				NodeId: id, RaftAddr: addr, LastSeenMs: int64(id),
+			}},
+		}}
+	}
+	if _, err := f.Update([]statemachine.Entry{
+		{Index: 7, Cmd: envelope(t, mkRegister(1, "a:1"))},
+		{Index: 8, Cmd: envelope(t, mkRegister(2, "b:2"))},
+		{Index: 9, Cmd: envelope(t, mkRegister(3, "c:3"))},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := (MetaTable{S: st}).Get()
+	if m.GetAppliedIndex() != 9 {
+		t.Fatalf("applied_index = %d; want 9 (tail of batch)", m.GetAppliedIndex())
+	}
+	for _, id := range []uint64{1, 2, 3} {
+		if g, _ := (MembershipTable{S: st}).Get(id); g == nil {
+			t.Errorf("node %d not persisted after batch commit", id)
+		}
+	}
+}

@@ -14,7 +14,12 @@ import (
 // Reuses the PartitionMeta proto so callers can share the
 // internal/engine/leadership.go epoch wiring. next_outbox_seq is unused on
 // shard 0 (no outbox).
-type MetaTable struct{ S storage.Store }
+//
+// S is the read-only handle; both storage.Store (commit-state view) and
+// storage.Batch (in-flight view with read-your-writes coherence) satisfy
+// it. Apply-path callers bind to the batch so multi-entry batches see
+// each other's writes — same pattern as partition.go.
+type MetaTable struct{ S storage.Reader }
 
 func (t MetaTable) Get() (*enginev1.PartitionMeta, error) {
 	val, closer, err := t.S.Get(MetaKey())
@@ -41,7 +46,7 @@ func (t MetaTable) Put(b storage.Batch, m *enginev1.PartitionMeta) error {
 }
 
 // MembershipTable holds NodeMembership rows keyed by node_id.
-type MembershipTable struct{ S storage.Store }
+type MembershipTable struct{ S storage.Reader }
 
 func (t MembershipTable) Get(nodeID uint64) (*enginev1.NodeMembership, error) {
 	val, closer, err := t.S.Get(NodeKey(nodeID))
@@ -92,7 +97,7 @@ func (t MembershipTable) List() ([]*enginev1.NodeMembership, error) {
 
 // PartitionTableTable persists the cluster's PartitionTable singleton.
 // (The name is verbose to keep grep-ability with other *Table accessors.)
-type PartitionTableTable struct{ S storage.Store }
+type PartitionTableTable struct{ S storage.Reader }
 
 func (t PartitionTableTable) Get() (*enginev1.PartitionTable, error) {
 	val, closer, err := t.S.Get(PartitionTableKey())
@@ -120,7 +125,7 @@ func (t PartitionTableTable) Put(b storage.Batch, pt *enginev1.PartitionTable) e
 
 // DeploymentTable persists DeploymentRecord rows keyed by deployment id.
 // Lives on shard 0 alongside MembershipTable and PartitionTableTable.
-type DeploymentTable struct{ S storage.Store }
+type DeploymentTable struct{ S storage.Reader }
 
 func (t DeploymentTable) Get(id string) (*enginev1.DeploymentRecord, error) {
 	val, closer, err := t.S.Get(DeploymentKey(id))
@@ -176,7 +181,7 @@ func (t DeploymentTable) List() ([]*enginev1.DeploymentRecord, error) {
 // current deployment that should answer when an ingress request arrives
 // without a pinned deployment_id. Lives on shard 0; written from the
 // RegisterDeployment apply arm.
-type DeploymentIndexTable struct{ S storage.Store }
+type DeploymentIndexTable struct{ S storage.Reader }
 
 // Get returns the deployment_id for the (service, handler) pair, or
 // "" + nil if no entry exists.

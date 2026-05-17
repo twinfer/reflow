@@ -540,13 +540,13 @@ func removeUint64(ids []uint64, x uint64) []uint64 {
 }
 
 func nextStepIDModel(pending []*enginev1.RebalanceStep, shardID uint64) uint64 {
-	var max uint64
+	var highest uint64
 	for _, p := range pending {
-		if p.GetShardId() == shardID && p.GetStepId() > max {
-			max = p.GetStepId()
+		if p.GetShardId() == shardID && p.GetStepId() > highest {
+			highest = p.GetStepId()
 		}
 	}
-	return max + 1
+	return highest + 1
 }
 
 func uniqueSampledNodeIDs(t *rapid.T, n int) []uint64 {

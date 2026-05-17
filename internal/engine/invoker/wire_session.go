@@ -220,13 +220,13 @@ func (s *wireSession) loadJournal() ([]*enginev1.JournalEntry, bool) {
 // entries, or 0 if the slice is empty. The +1 in run() turns this into
 // "next free slot."
 func highestIndex(entries []*enginev1.JournalEntry) uint32 {
-	var max uint32
+	var highest uint32
 	for _, e := range entries {
-		if idx := e.GetIndex(); idx > max {
-			max = idx
+		if idx := e.GetIndex(); idx > highest {
+			highest = idx
 		}
 	}
-	return max
+	return highest
 }
 
 // sendStartAndReplay emits the StartMessage frame followed by one

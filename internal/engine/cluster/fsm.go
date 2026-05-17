@@ -475,13 +475,13 @@ func removeNodeID(ids []uint64, nodeID uint64) []uint64 {
 // pending list for the requested shard. The pending list is bounded by
 // active rebalances so the scan is cheap.
 func nextStepID(pending []*enginev1.RebalanceStep, shardID uint64) uint64 {
-	var max uint64
+	var highest uint64
 	for _, p := range pending {
-		if p.GetShardId() == shardID && p.GetStepId() > max {
-			max = p.GetStepId()
+		if p.GetShardId() == shardID && p.GetStepId() > highest {
+			highest = p.GetStepId()
 		}
 	}
-	return max + 1
+	return highest + 1
 }
 
 // Lookup query types. Each query returns a typed result.

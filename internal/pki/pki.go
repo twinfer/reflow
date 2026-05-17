@@ -254,8 +254,8 @@ func WriteMaterial(dir, name string, m Material) (certPath, keyPath string, err 
 }
 
 func randomSerial() (*big.Int, error) {
-	max := new(big.Int).Lsh(big.NewInt(1), 128)
-	n, err := rand.Int(rand.Reader, max)
+	upper := new(big.Int).Lsh(big.NewInt(1), 128)
+	n, err := rand.Int(rand.Reader, upper)
 	if err != nil {
 		return nil, fmt.Errorf("pki: serial: %w", err)
 	}

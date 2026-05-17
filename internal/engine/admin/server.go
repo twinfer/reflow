@@ -537,11 +537,11 @@ func replicaSetContainsID(ids []uint64, nodeID uint64) bool {
 
 // nextStepIDForShard returns max(pending[shard].step_id)+1 or 1.
 func nextStepIDForShard(pending []*enginev1.RebalanceStep, shardID uint64) uint64 {
-	var max uint64
+	var highest uint64
 	for _, p := range pending {
-		if p.GetShardId() == shardID && p.GetStepId() > max {
-			max = p.GetStepId()
+		if p.GetShardId() == shardID && p.GetStepId() > highest {
+			highest = p.GetStepId()
 		}
 	}
-	return max + 1
+	return highest + 1
 }

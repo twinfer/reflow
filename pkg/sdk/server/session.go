@@ -14,13 +14,27 @@ import (
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
-// frameStream is the transport-neutral view of one session. The HTTP/2
-// server adapts its request body / response writer onto this contract;
-// the session driver below is shared so future transports can plug in
-// with the same shape.
-type frameStream interface {
-	Send(*protocolv1.Frame) error
+// frameSource yields the StartMessage and replay frames the session
+// driver consumes before invoking the handler. The streaming-bidi
+// transport pulls these from the request body; the (future) Connect
+// request/response transport will wrap a pre-loaded journal slice.
+type frameSource interface {
 	Recv() (*protocolv1.Frame, error)
+}
+
+// frameSink consumes the frames the handler produces: new command
+// messages emitted by wireContext methods, and the terminal
+// Output/Suspension/Error frame the driver writes at session end.
+type frameSink interface {
+	Send(*protocolv1.Frame) error
+}
+
+// frameStream is a duplex source+sink. The HTTP/2 transport satisfies
+// it with one object (request body + response writer), so bidi callers
+// pass the same value as both source and sink to runSession.
+type frameStream interface {
+	frameSource
+	frameSink
 }
 
 // runSession drives one handler invocation: read StartMessage, replay
@@ -37,12 +51,13 @@ type frameStream interface {
 // cleanup (closing the response body) is the caller's responsibility.
 func runSession(
 	ctx context.Context,
-	stream frameStream,
+	src frameSource,
+	sink frameSink,
 	registry *sdk.Registry,
 	codec handlerclient.Codec,
 	route handlerclient.Route,
 ) error {
-	start, err := readStart(stream, codec)
+	start, err := readStart(src, codec)
 	if err != nil {
 		return fmt.Errorf("read StartMessage: %w", err)
 	}
@@ -58,29 +73,29 @@ func runSession(
 		handler = route.Handler
 	}
 	if route.Service != "" && service != route.Service {
-		return sendError(stream, codec, 571,
+		return sendError(sink, codec, 571,
 			fmt.Sprintf("StartMessage.service_name=%q disagrees with URL path service=%q",
 				start.GetServiceName(), route.Service))
 	}
 	if route.Handler != "" && handler != route.Handler {
-		return sendError(stream, codec, 571,
+		return sendError(sink, codec, 571,
 			fmt.Sprintf("StartMessage.handler_name=%q disagrees with URL path handler=%q",
 				start.GetHandlerName(), route.Handler))
 	}
 	if service == "" || handler == "" {
-		return sendError(stream, codec, 571,
+		return sendError(sink, codec, 571,
 			"session missing (service, handler) routing: provide either "+
 				"StartMessage.service_name/handler_name or an HTTP/2 URL path")
 	}
 	fn, _, ok := registry.Lookup(&sdk.Target{Service: service, Handler: handler})
 	if !ok {
-		return sendError(stream, codec, 404,
+		return sendError(sink, codec, 404,
 			fmt.Sprintf("no handler registered for %s/%s", service, handler))
 	}
 
 	// Consume the replay phase: read known_entries frames, build the
 	// replay buffer + capture the JEInput payload as the handler input.
-	input, replay, err := readReplay(stream, codec, start.GetKnownEntries())
+	input, replay, err := readReplay(src, codec, start.GetKnownEntries())
 	if err != nil {
 		return fmt.Errorf("read replay: %w", err)
 	}
@@ -93,7 +108,7 @@ func runSession(
 		PartitionKey: start.GetPartitionKey(),
 	}
 	stateCache := stateMapToCache(start.GetStateMap())
-	wctx := newWireContext(ctx, invID, input, stream, codec, stateCache, replay, start.GetPartitionKey())
+	wctx := newWireContext(ctx, invID, input, sink, codec, stateCache, replay, start.GetPartitionKey())
 	wctx.partialState = start.GetPartialState()
 
 	output, runErr := runHandler(wctx, fn, input)
@@ -103,7 +118,7 @@ func runSession(
 	// proposes InvokerEffect_Suspended and respawns the session once
 	// the awaited completion lands in the journal.
 	if errors.Is(runErr, sdk.ErrSuspended) {
-		return sendSuspension(stream, codec, wctx.snapshotAwaiting())
+		return sendSuspension(sink, codec, wctx.snapshotAwaiting())
 	}
 
 	out := &protocolv1.OutputCommandMessage{}
@@ -132,14 +147,14 @@ func runSession(
 	if err != nil {
 		return fmt.Errorf("marshal OutputCommandMessage: %w", err)
 	}
-	if err := stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdOutput, outBytes)); err != nil {
+	if err := sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdOutput, outBytes)); err != nil {
 		return fmt.Errorf("send OutputCommandMessage: %w", err)
 	}
 	endBytes, err := codec.Marshal(&protocolv1.EndMessage{})
 	if err != nil {
 		return fmt.Errorf("marshal EndMessage: %w", err)
 	}
-	if err := stream.Send(handlerclient.FrameFor(handlerclient.TypeEnd, endBytes)); err != nil {
+	if err := sink.Send(handlerclient.FrameFor(handlerclient.TypeEnd, endBytes)); err != nil {
 		return fmt.Errorf("send EndMessage: %w", err)
 	}
 	return nil
@@ -158,8 +173,8 @@ func runHandler(wctx *wireContext, h sdk.Handler, input []byte) (out []byte, err
 
 // readStart consumes the StartMessage frame. Errors if the first frame
 // is not TypeStart or fails to decode.
-func readStart(stream frameStream, codec handlerclient.Codec) (*protocolv1.StartMessage, error) {
-	f, err := stream.Recv()
+func readStart(src frameSource, codec handlerclient.Codec) (*protocolv1.StartMessage, error) {
+	f, err := src.Recv()
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +210,7 @@ func readStart(stream frameStream, codec handlerclient.Codec) (*protocolv1.Start
 // (count-based) so future SDK versions can ignore them safely; when a
 // real translation lands the engine + handler stay in sync via the JE
 // → frame table.
-func readReplay(stream frameStream, codec handlerclient.Codec, count uint32) ([]byte, map[uint32]*replayEntry, error) {
+func readReplay(src frameSource, codec handlerclient.Codec, count uint32) ([]byte, map[uint32]*replayEntry, error) {
 	replay := make(map[uint32]*replayEntry, count)
 	if count == 0 {
 		return nil, replay, nil
@@ -205,7 +220,7 @@ func readReplay(stream frameStream, codec handlerclient.Codec, count uint32) ([]
 		nextSlot uint32 // running cursor for slot assignment
 	)
 	for i := range count {
-		f, err := stream.Recv()
+		f, err := src.Recv()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return nil, nil, fmt.Errorf("replay truncated at frame %d/%d", i, count)
@@ -320,7 +335,7 @@ func readReplay(stream frameStream, codec handlerclient.Codec, count uint32) ([]
 // InvocationSuspended.awaiting_on for observability; the wake path
 // itself is respawn-driven by Suspended→Invoked transitions on the
 // next completion event.
-func sendSuspension(stream frameStream, codec handlerclient.Codec, awaitingTokens []string) error {
+func sendSuspension(sink frameSink, codec handlerclient.Codec, awaitingTokens []string) error {
 	sm := &protocolv1.SuspensionMessage{}
 	// Translate token strings back to typed waiting_* fields. Tokens
 	// shaped "completion:<N>" land in waiting_completions; "signal:<N>"
@@ -343,19 +358,19 @@ func sendSuspension(stream frameStream, codec handlerclient.Codec, awaitingToken
 	if err != nil {
 		return fmt.Errorf("marshal SuspensionMessage: %w", err)
 	}
-	return stream.Send(handlerclient.FrameFor(handlerclient.TypeSuspension, body))
+	return sink.Send(handlerclient.FrameFor(handlerclient.TypeSuspension, body))
 }
 
 // sendError emits an ErrorMessage frame, terminating the session. The
 // engine treats ErrorMessage as a terminal failure with the supplied
 // code + message round-tripped into InvocationStatus.Completed.
-func sendError(stream frameStream, codec handlerclient.Codec, code uint32, message string) error {
+func sendError(sink frameSink, codec handlerclient.Codec, code uint32, message string) error {
 	em := &protocolv1.ErrorMessage{Code: code, Message: message}
 	body, err := codec.Marshal(em)
 	if err != nil {
 		return fmt.Errorf("marshal ErrorMessage: %w", err)
 	}
-	return stream.Send(handlerclient.FrameFor(handlerclient.TypeError, body))
+	return sink.Send(handlerclient.FrameFor(handlerclient.TypeError, body))
 }
 
 // stateMapToCache materializes StartMessage.state_map into the in-memory

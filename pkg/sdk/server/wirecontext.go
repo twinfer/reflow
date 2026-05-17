@@ -44,8 +44,8 @@ type wireContext struct {
 	invocationID *enginev1.InvocationId
 	partitionKey uint64
 
-	stream frameStream
-	codec  handlerclient.Codec
+	sink  frameSink
+	codec handlerclient.Codec
 
 	// stateCache is the eager-preloaded K/V snapshot for this
 	// invocation's (service, object_key), populated from
@@ -83,16 +83,16 @@ type wireContext struct {
 
 var _ sdk.Context = (*wireContext)(nil)
 
-// newWireContext constructs a wireContext for one session. stream is the
-// transport-neutral frame view (HTTP/2 server adapter on the handler
-// side); codec must match the engine's. nextSlot starts at 1 because
-// slot 0 is reserved for JEInput (the engine writes it before the
-// handler runs).
+// newWireContext constructs a wireContext for one session. sink is the
+// write-only frame channel back to the engine (HTTP/2 response writer
+// today, Connect ServerStream tomorrow); codec must match the engine's.
+// nextSlot starts at 1 because slot 0 is reserved for JEInput (the
+// engine writes it before the handler runs).
 func newWireContext(
 	ctx context.Context,
 	id *enginev1.InvocationId,
 	input []byte,
-	stream frameStream,
+	sink frameSink,
 	codec handlerclient.Codec,
 	stateCache map[string][]byte,
 	replay map[uint32]*replayEntry,
@@ -106,7 +106,7 @@ func newWireContext(
 		input:        input,
 		invocationID: id,
 		partitionKey: partitionKey,
-		stream:       stream,
+		sink:         sink,
 		codec:        codec,
 		stateCache:   stateCache,
 		replay:       replay,
@@ -214,7 +214,7 @@ func (c *wireContext) SetState(key string, value []byte) error {
 		if err != nil {
 			return fmt.Errorf("marshal SetStateCommandMessage: %w", err)
 		}
-		if err := c.stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdSetState, payload)); err != nil {
+		if err := c.sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdSetState, payload)); err != nil {
 			return err
 		}
 	}
@@ -241,7 +241,7 @@ func (c *wireContext) ClearState(key string) error {
 		if err != nil {
 			return fmt.Errorf("marshal ClearStateCommandMessage: %w", err)
 		}
-		if err := c.stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdClearState, payload)); err != nil {
+		if err := c.sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdClearState, payload)); err != nil {
 			return err
 		}
 	}
@@ -265,7 +265,7 @@ func (c *wireContext) ClearAllState() error {
 		if err != nil {
 			return fmt.Errorf("marshal ClearAllStateCommandMessage: %w", err)
 		}
-		if err := c.stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdClearAllState, payload)); err != nil {
+		if err := c.sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdClearAllState, payload)); err != nil {
 			return err
 		}
 	}
@@ -307,7 +307,7 @@ func (c *wireContext) Sleep(d time.Duration) sdk.Future {
 		if err != nil {
 			return errFuture{err: fmt.Errorf("marshal SleepCommandMessage: %w", err)}
 		}
-		if err := c.stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdSleep, payload)); err != nil {
+		if err := c.sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdSleep, payload)); err != nil {
 			return errFuture{err: err}
 		}
 	}
@@ -374,7 +374,7 @@ func (c *wireContext) Run(name string, fn func() ([]byte, error)) ([]byte, error
 	if err != nil {
 		return nil, fmt.Errorf("marshal RunCommandMessage: %w", err)
 	}
-	if err := c.stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdRun, cmdPayload)); err != nil {
+	if err := c.sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdRun, cmdPayload)); err != nil {
 		return nil, err
 	}
 	prop := &protocolv1.ProposeRunCompletionMessage{
@@ -392,7 +392,7 @@ func (c *wireContext) Run(name string, fn func() ([]byte, error)) ([]byte, error
 	if err != nil {
 		return nil, fmt.Errorf("marshal ProposeRunCompletionMessage: %w", err)
 	}
-	if err := c.stream.Send(handlerclient.FrameFor(handlerclient.TypeProposeRunDone, propPayload)); err != nil {
+	if err := c.sink.Send(handlerclient.FrameFor(handlerclient.TypeProposeRunDone, propPayload)); err != nil {
 		return nil, err
 	}
 
@@ -438,7 +438,7 @@ func (c *wireContext) Call(target sdk.Target, input []byte, opts ...sdk.CallOpti
 		if err != nil {
 			return errFuture{err: fmt.Errorf("marshal CallCommandMessage: %w", err)}
 		}
-		if err := c.stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdCall, payload)); err != nil {
+		if err := c.sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdCall, payload)); err != nil {
 			return errFuture{err: err}
 		}
 	}
@@ -466,7 +466,7 @@ func (c *wireContext) OneWayCall(target sdk.Target, input []byte) error {
 	if err != nil {
 		return fmt.Errorf("marshal OneWayCallCommandMessage: %w", err)
 	}
-	return c.stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdOneWayCall, payload))
+	return c.sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdOneWayCall, payload))
 }
 
 // Awakeable mints a fresh awakeable id bound to this invocation's
@@ -503,7 +503,7 @@ func (c *wireContext) Awakeable() (string, sdk.Future) {
 	if err != nil {
 		return "", errFuture{err: fmt.Errorf("marshal AwakeableCommandMessage: %w", err)}
 	}
-	if err := c.stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdAwakeable, payload)); err != nil {
+	if err := c.sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdAwakeable, payload)); err != nil {
 		return "", errFuture{err: err}
 	}
 	return id, awakeableFuture{ctx: c, resultSlot: resultSlot, id: id}

@@ -157,7 +157,9 @@ func (s *HTTP2Server) handleInvoke(w http.ResponseWriter, r *http.Request) {
 		writer:  w,
 		flusher: flusher,
 	}
-	if err := runSession(r.Context(), stream, s.cfg.Registry, s.cfg.Codec, handlerclient.Route{
+	// HTTP/2 is duplex — the same stream object is both source (request
+	// body) and sink (response writer).
+	if err := runSession(r.Context(), stream, stream, s.cfg.Registry, s.cfg.Codec, handlerclient.Route{
 		Service: service,
 		Handler: handler,
 	}); err != nil {

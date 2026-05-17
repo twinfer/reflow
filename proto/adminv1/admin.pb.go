@@ -764,14 +764,17 @@ func (*DeleteSnapshotResponse) Descriptor() ([]byte, []int) {
 }
 
 // RegisterDeploymentRequest names a handler endpoint reachable over
-// HTTP/2. URL scheme must be http:// or https://; the engine dials it
-// directly. There is no other transport — gRPC handler dispatch was
-// removed in favor of raw HTTP/2 framing (see protocolv1).
+// HTTP/2. URL scheme must be http:// or https://; the engine dials
+// the handler via Connect RPC.
 type RegisterDeploymentRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Url           string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Url   string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	// Optional per-invocation cap on journal entries for this
+	// deployment. 0 = engine default (10_000). The engine clamps to a
+	// hard ceiling (100_000).
+	MaxJournalEntries uint32 `protobuf:"varint,2,opt,name=max_journal_entries,json=maxJournalEntries,proto3" json:"max_journal_entries,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *RegisterDeploymentRequest) Reset() {
@@ -809,6 +812,13 @@ func (x *RegisterDeploymentRequest) GetUrl() string {
 		return x.Url
 	}
 	return ""
+}
+
+func (x *RegisterDeploymentRequest) GetMaxJournalEntries() uint32 {
+	if x != nil {
+		return x.MaxJournalEntries
+	}
+	return 0
 }
 
 type RegisterDeploymentResponse struct {
@@ -956,9 +966,10 @@ const file_adminv1_admin_proto_rawDesc = "" +
 	"\x15DeleteSnapshotRequest\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x12\x14\n" +
 	"\x05index\x18\x02 \x01(\x04R\x05index\"\x18\n" +
-	"\x16DeleteSnapshotResponse\"-\n" +
+	"\x16DeleteSnapshotResponse\"]\n" +
 	"\x19RegisterDeploymentRequest\x12\x10\n" +
-	"\x03url\x18\x01 \x01(\tR\x03url\"A\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\x12.\n" +
+	"\x13max_journal_entries\x18\x02 \x01(\rR\x11maxJournalEntries\"A\n" +
 	"\x1aRegisterDeploymentResponse\x12#\n" +
 	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\"L\n" +
 	"\n" +

@@ -105,6 +105,13 @@ message StartMessage {
   // encode this value so ingress.ResolveAwakeable can route to the
   // owning shard with a single read.
   fixed64 partition_key = 14;
+
+  // Per-invocation cap on journal entries (steps). Echoed from the
+  // resolved DeploymentRecord (engine default 10_000 when the
+  // deployment didn't set one). SDK pre-flights allocSlot against
+  // this so handlers see a clean *Failure rather than a torn-down
+  // session when the budget is exhausted.
+  uint32 max_journal_entries = 15;
 }
 
 // Type: 0x0001

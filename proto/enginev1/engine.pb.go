@@ -4201,8 +4201,13 @@ type DeploymentRecord struct {
 	// invocation arrives without an operator-supplied pin.
 	Handlers       []*DeploymentHandler `protobuf:"bytes,4,rep,name=handlers,proto3" json:"handlers,omitempty"`
 	RegisteredAtMs uint64               `protobuf:"fixed64,5,opt,name=registered_at_ms,json=registeredAtMs,proto3" json:"registered_at_ms,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Per-invocation cap on journal entries (steps). 0 = engine default
+	// (10_000). The engine clamps to a hard ceiling (100_000) so an
+	// operator misconfig can't request unbounded — runaway handlers on
+	// keyed virtual objects would poison the VO queue indefinitely.
+	MaxJournalEntries uint32 `protobuf:"varint,6,opt,name=max_journal_entries,json=maxJournalEntries,proto3" json:"max_journal_entries,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *DeploymentRecord) Reset() {
@@ -4259,6 +4264,13 @@ func (x *DeploymentRecord) GetHandlers() []*DeploymentHandler {
 func (x *DeploymentRecord) GetRegisteredAtMs() uint64 {
 	if x != nil {
 		return x.RegisteredAtMs
+	}
+	return 0
+}
+
+func (x *DeploymentRecord) GetMaxJournalEntries() uint32 {
+	if x != nil {
+		return x.MaxJournalEntries
 	}
 	return 0
 }
@@ -5196,12 +5208,13 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\rcreated_at_ms\x18\x06 \x01(\x06R\vcreatedAtMs\"Z\n" +
 	"\fNodeHostMeta\x12#\n" +
 	"\rgrpc_endpoint\x18\x01 \x01(\tR\fgrpcEndpoint\x12%\n" +
-	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint\"\xb0\x01\n" +
+	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint\"\xe0\x01\n" +
 	"\x10DeploymentRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12?\n" +
 	"\bhandlers\x18\x04 \x03(\v2#.reflow.engine.v1.DeploymentHandlerR\bhandlers\x12(\n" +
-	"\x10registered_at_ms\x18\x05 \x01(\x06R\x0eregisteredAtMsJ\x04\b\x03\x10\x04R\ttransport\"[\n" +
+	"\x10registered_at_ms\x18\x05 \x01(\x06R\x0eregisteredAtMs\x12.\n" +
+	"\x13max_journal_entries\x18\x06 \x01(\rR\x11maxJournalEntriesJ\x04\b\x03\x10\x04R\ttransport\"[\n" +
 	"\x11DeploymentHandler\x12\x18\n" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12\x18\n" +
 	"\ahandler\x18\x02 \x01(\tR\ahandler\x12\x12\n" +

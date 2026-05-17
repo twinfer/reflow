@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -142,6 +143,54 @@ func TestSDK_SetStateCompletesOK(t *testing.T) {
 	c := awaitCompleted(t, h, 1, id, 5*time.Second)
 	if string(c.GetOutput()) != "ok" {
 		t.Errorf("output = %q; want ok", c.GetOutput())
+	}
+}
+
+// TestSDK_StepBudgetExhausts asserts a handler that runs past its
+// per-invocation journal-entry cap completes with a StepBudgetExhausted
+// failure rather than running unbounded. Budget=3 (JEInput + 2 SetState
+// fit; the 3rd SetState would push to index 4 and is rejected); the
+// handler emits a *Failure that propagates out as the invocation's
+// terminal failure_message.
+func TestSDK_StepBudgetExhausts(t *testing.T) {
+	reg := sdk.NewRegistry()
+	if err := reg.RegisterService("Greedy", "loop", func(c sdk.Context, _ []byte) ([]byte, error) {
+		for range 10 {
+			if err := c.SetState("k", []byte("v")); err != nil {
+				return nil, err
+			}
+		}
+		return []byte("never"), nil
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Custom bringup: register the deployment with a tight budget. Reuses
+	// singleNodeWithHandlers's plumbing minus the default-budget register.
+	h := singleNodeWithoutHandlers(t)
+	url := startSDKServer(t, reg)
+	registerDeploymentURLWithBudget(t, h, url, 3)
+	r := h.Partition(1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	id := buildID(1, "step-budget")
+	target := &enginev1.InvocationTarget{ServiceName: "Greedy", HandlerName: "loop"}
+	depID := resolveDeploymentID(t, h, target.ServiceName, target.HandlerName)
+	if err := r.Proposer().ProposeIngress(ctx, "test/step-budget", 1, &enginev1.Command{
+		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
+			InvocationId: id, Target: target, DeploymentId: depID,
+		}},
+	}); err != nil {
+		t.Fatalf("ProposeIngress: %v", err)
+	}
+
+	c := awaitCompleted(t, h, 1, id, 10*time.Second)
+	if msg := c.GetFailureMessage(); !strings.Contains(msg, "step budget") {
+		t.Errorf("failure_message = %q; want 'step budget' substring", msg)
+	}
+	if got := string(c.GetOutput()); got != "" {
+		t.Errorf("output = %q; want empty on step-budget failure", got)
 	}
 }
 

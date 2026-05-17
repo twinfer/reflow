@@ -58,6 +58,15 @@ func singleNodeWithHandlers(t *testing.T, reg *sdk.Registry) *engine.Host {
 	return h
 }
 
+// singleNodeWithoutHandlers brings up a single-node Host without
+// registering any deployments. Tests that need to control the
+// deployment registration themselves (e.g. to stamp a custom step
+// budget) construct + register manually after this returns.
+func singleNodeWithoutHandlers(t *testing.T) *engine.Host {
+	t.Helper()
+	return singleNodeWithHandlers(t, sdk.NewRegistry())
+}
+
 // bringUpHostWithIngress is singleNodeWithHandlers + an ingress runtime
 // on ephemeral HTTP+gRPC ports. Convenience wrapper for tests that
 // exercise the full ingress → engine → handler path.
@@ -112,6 +121,14 @@ func startSDKServer(t *testing.T, reg *sdk.Registry) string {
 // h's metadata shard. Assumes h.MetadataRunner() is the metadata leader.
 func registerDeploymentURL(t *testing.T, h *engine.Host, url string) {
 	t.Helper()
+	registerDeploymentURLWithBudget(t, h, url, 0)
+}
+
+// registerDeploymentURLWithBudget mirrors registerDeploymentURL but
+// stamps a per-invocation step-budget override onto the deployment.
+// budget=0 → engine default.
+func registerDeploymentURLWithBudget(t *testing.T, h *engine.Host, url string, budget uint32) {
+	t.Helper()
 	asrv, err := admin.NewServer(admin.Config{Host: h, Runner: h.MetadataRunner()})
 	if err != nil {
 		t.Fatalf("admin.NewServer: %v", err)
@@ -119,7 +136,8 @@ func registerDeploymentURL(t *testing.T, h *engine.Host, url string) {
 	regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer regCancel()
 	if _, err := asrv.RegisterDeployment(regCtx, &adminv1.RegisterDeploymentRequest{
-		Url: url,
+		Url:               url,
+		MaxJournalEntries: budget,
 	}); err != nil {
 		t.Fatalf("RegisterDeployment: %v", err)
 	}

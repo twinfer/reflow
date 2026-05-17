@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,7 +43,7 @@ func newTestWireContext(t *testing.T, cache map[string][]byte) (*wireContext, *f
 	t.Helper()
 	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
 	stream := &fakeStream{}
-	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, handlerclient.DefaultCodec(), cache, nil, 7)
+	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, handlerclient.DefaultCodec(), cache, nil, 7, 0)
 	return wctx, stream
 }
 
@@ -52,7 +53,18 @@ func newTestWireContextWithReplay(t *testing.T, replay map[uint32]*replayEntry) 
 	t.Helper()
 	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
 	stream := &fakeStream{}
-	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, handlerclient.DefaultCodec(), nil, replay, 7)
+	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, handlerclient.DefaultCodec(), nil, replay, 7, 0)
+	return wctx, stream
+}
+
+// newTestWireContextWithBudget builds a wireContext with an explicit
+// per-invocation step budget so step-budget tests can exhaust it
+// without running thousands of operations.
+func newTestWireContextWithBudget(t *testing.T, budget uint32) (*wireContext, *fakeStream) {
+	t.Helper()
+	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
+	stream := &fakeStream{}
+	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, handlerclient.DefaultCodec(), nil, nil, 7, budget)
 	return wctx, stream
 }
 
@@ -251,17 +263,17 @@ func TestWireContext_GetState_PartialNoCache(t *testing.T) {
 func TestWireContext_SlotAllocation(t *testing.T) {
 	wctx, _ := newTestWireContext(t, nil)
 
-	got, ok := wctx.allocSlot(1)
-	if !ok || got != 1 {
-		t.Errorf("first allocSlot(1) = (%d, %v); want (1, true)", got, ok)
+	got, err := wctx.allocSlot(1)
+	if err != nil || got != 1 {
+		t.Errorf("first allocSlot(1) = (%d, %v); want (1, nil)", got, err)
 	}
-	got, ok = wctx.allocSlot(2)
-	if !ok || got != 2 {
-		t.Errorf("second allocSlot(2) = (%d, %v); want (2, true)", got, ok)
+	got, err = wctx.allocSlot(2)
+	if err != nil || got != 2 {
+		t.Errorf("second allocSlot(2) = (%d, %v); want (2, nil)", got, err)
 	}
-	got, ok = wctx.allocSlot(1)
-	if !ok || got != 4 {
-		t.Errorf("third allocSlot(1) = (%d, %v); want (4, true)", got, ok)
+	got, err = wctx.allocSlot(1)
+	if err != nil || got != 4 {
+		t.Errorf("third allocSlot(1) = (%d, %v); want (4, nil)", got, err)
 	}
 }
 
@@ -612,6 +624,75 @@ func TestWireContext_Run_ReplayHitReturnsCachedValue(t *testing.T) {
 	}
 	if len(stream.sent) != 0 {
 		t.Errorf("sent %d frames; want 0 on replay-hit", len(stream.sent))
+	}
+}
+
+// TestWireContext_StepBudget_Exhausts asserts ctx.SetState (and any
+// primitive that calls allocSlot) surfaces a *Failure with
+// StepBudgetExhaustedCode once the per-invocation cap is reached. The
+// session loop catches the *Failure and completes the invocation
+// terminally.
+func TestWireContext_StepBudget_Exhausts(t *testing.T) {
+	// budget=3 means slots 1 and 2 are free; the third primitive call
+	// (which would allocate slot 3 == budget) must fail.
+	wctx, _ := newTestWireContextWithBudget(t, 3)
+
+	if err := wctx.SetState("a", []byte("1")); err != nil {
+		t.Fatalf("first SetState err = %v; want nil (within budget)", err)
+	}
+	if err := wctx.SetState("b", []byte("2")); err != nil {
+		t.Fatalf("second SetState err = %v; want nil (within budget)", err)
+	}
+
+	err := wctx.SetState("c", []byte("3"))
+	f, ok := sdk.AsFailure(err)
+	if !ok {
+		t.Fatalf("third SetState err = %v; want *sdk.Failure", err)
+	}
+	if f.Code != sdk.StepBudgetExhaustedCode {
+		t.Errorf("failure.code = %d; want %d (StepBudgetExhaustedCode)",
+			f.Code, sdk.StepBudgetExhaustedCode)
+	}
+	if !strings.Contains(f.Message, "step budget") {
+		t.Errorf("failure.message = %q; want 'step budget' substring", f.Message)
+	}
+}
+
+// TestWireContext_StepBudget_MultiSlotAllocs asserts a multi-slot
+// primitive (Call, Awakeable, Sleep — all 2-slot) is rejected when
+// the remaining budget can't fit both slots, even if 1 slot remains.
+func TestWireContext_StepBudget_MultiSlotAllocs(t *testing.T) {
+	// budget=3 — slots 1, 2 free. A 2-slot allocation now (would use
+	// 1, 2) succeeds; a follow-up 2-slot allocation needs slots 3, 4
+	// which both lie at/beyond the cap → exhausted.
+	wctx, _ := newTestWireContextWithBudget(t, 3)
+
+	if err := wctx.SetState("a", []byte("1")); err != nil {
+		t.Fatalf("first SetState err = %v; want nil", err)
+	}
+	// Now nextSlot=2, budget=3. allocSlot(2) wants slots 2, 3 →
+	// 2+2 > 3 → exhausted.
+	fut := wctx.Sleep(time.Millisecond)
+	_, err := fut.Result()
+	f, ok := sdk.AsFailure(err)
+	if !ok {
+		t.Fatalf("Sleep result err = %v; want *sdk.Failure", err)
+	}
+	if f.Code != sdk.StepBudgetExhaustedCode {
+		t.Errorf("failure.code = %d; want %d", f.Code, sdk.StepBudgetExhaustedCode)
+	}
+}
+
+// TestWireContext_StepBudget_ZeroBudgetSkipsCheck asserts budget=0
+// disables the SDK pre-flight entirely (the wire-session backstop
+// still enforces). This is the path tests and the embedded harness
+// take when no DeploymentRecord was resolved.
+func TestWireContext_StepBudget_ZeroBudgetSkipsCheck(t *testing.T) {
+	wctx, _ := newTestWireContextWithBudget(t, 0)
+	for i := range 50 {
+		if err := wctx.SetState("k", []byte("v")); err != nil {
+			t.Fatalf("SetState #%d err = %v; want nil (budget=0 disables check)", i, err)
+		}
 	}
 }
 

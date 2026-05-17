@@ -196,9 +196,15 @@ type StartMessage struct {
 	// wireContext.Awakeable mints awakeable ids whose first 8 bytes
 	// encode this value so ingress.ResolveAwakeable can route to the
 	// owning shard with a single read.
-	PartitionKey  uint64 `protobuf:"fixed64,14,opt,name=partition_key,json=partitionKey,proto3" json:"partition_key,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	PartitionKey uint64 `protobuf:"fixed64,14,opt,name=partition_key,json=partitionKey,proto3" json:"partition_key,omitempty"`
+	// Per-invocation cap on journal entries (steps). Echoed from the
+	// resolved DeploymentRecord (engine default 10_000 when the
+	// deployment didn't set one). SDK pre-flights allocSlot against
+	// this so handlers see a clean *Failure rather than a torn-down
+	// session when the budget is exhausted.
+	MaxJournalEntries uint32 `protobuf:"varint,15,opt,name=max_journal_entries,json=maxJournalEntries,proto3" json:"max_journal_entries,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *StartMessage) Reset() {
@@ -318,6 +324,13 @@ func (x *StartMessage) GetKind() Kind {
 func (x *StartMessage) GetPartitionKey() uint64 {
 	if x != nil {
 		return x.PartitionKey
+	}
+	return 0
+}
+
+func (x *StartMessage) GetMaxJournalEntries() uint32 {
+	if x != nil {
+		return x.MaxJournalEntries
 	}
 	return 0
 }
@@ -3533,7 +3546,7 @@ const file_protocolv1_protocol_proto_rawDesc = "" +
 	"\x19protocolv1/protocol.proto\x12\x12reflow.protocol.v1\"9\n" +
 	"\x05Frame\x12\x16\n" +
 	"\x06header\x18\x01 \x01(\x04R\x06header\x12\x18\n" +
-	"\apayload\x18\x02 \x01(\fR\apayload\"\xe4\x04\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\"\x94\x05\n" +
 	"\fStartMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\fR\x02id\x12\x19\n" +
 	"\bdebug_id\x18\x02 \x01(\tR\adebugId\x12#\n" +
@@ -3549,7 +3562,8 @@ const file_protocolv1_protocol_proto_rawDesc = "" +
 	" \x01(\tR\vserviceName\x12!\n" +
 	"\fhandler_name\x18\v \x01(\tR\vhandlerName\x12,\n" +
 	"\x04kind\x18\r \x01(\x0e2\x18.reflow.protocol.v1.KindR\x04kind\x12#\n" +
-	"\rpartition_key\x18\x0e \x01(\x06R\fpartitionKey\x1a4\n" +
+	"\rpartition_key\x18\x0e \x01(\x06R\fpartitionKey\x12.\n" +
+	"\x13max_journal_entries\x18\x0f \x01(\rR\x11maxJournalEntries\x1a4\n" +
 	"\n" +
 	"StateEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +

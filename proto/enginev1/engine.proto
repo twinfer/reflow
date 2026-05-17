@@ -627,6 +627,11 @@ message DeploymentRecord {
   // invocation arrives without an operator-supplied pin.
   repeated DeploymentHandler handlers = 4;
   fixed64 registered_at_ms = 5;
+  // Per-invocation cap on journal entries (steps). 0 = engine default
+  // (10_000). The engine clamps to a hard ceiling (100_000) so an
+  // operator misconfig can't request unbounded — runaway handlers on
+  // keyed virtual objects would poison the VO queue indefinitely.
+  uint32 max_journal_entries = 6;
 }
 
 // DeploymentHandler is one (service, handler, kind) entry in a

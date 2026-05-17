@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
@@ -34,11 +35,22 @@ func (f errFuture) Poll() (bool, []string)  { return true, nil }
 
 // suspendedFuture is returned by Sleep / Call / Awakeable when the
 // context was already suspended at the time of the call (allocSlot
-// returned ok=false). Every operation short-circuits to ErrSuspended.
+// returned ErrSuspended). Every operation short-circuits to ErrSuspended.
 type suspendedFuture struct{}
 
 func (suspendedFuture) Result() ([]byte, error) { return nil, sdk.ErrSuspended }
 func (suspendedFuture) Poll() (bool, []string)  { return false, nil }
+
+// futureFromAllocErr packages an allocSlot error into a Future.
+// ErrSuspended → suspendedFuture (preserves suspend semantics); any
+// other error (a terminal *Failure such as StepBudgetExhausted) →
+// errFuture so Future.Result surfaces it immediately.
+func futureFromAllocErr(err error) sdk.Future {
+	if errors.Is(err, sdk.ErrSuspended) {
+		return suspendedFuture{}
+	}
+	return errFuture{err: err}
+}
 
 // --- Sleep ---
 

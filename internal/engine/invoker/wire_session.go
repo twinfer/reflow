@@ -8,6 +8,7 @@ import (
 	"log/slog"
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
+	"github.com/twinfer/reflow/internal/engine/limits"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
@@ -244,13 +245,14 @@ func (s *wireSession) sendStartAndReplay(stream handlerclient.Stream, entries []
 	}
 
 	start := &protocolv1.StartMessage{
-		Id:           s.id.GetUuid(),
-		DebugId:      invocationIDString(s.id),
-		Key:          s.target.GetObjectKey(),
-		ServiceName:  s.target.GetServiceName(),
-		HandlerName:  s.target.GetHandlerName(),
-		KnownEntries: uint32(len(frames)),
-		PartitionKey: s.id.GetPartitionKey(),
+		Id:                s.id.GetUuid(),
+		DebugId:           invocationIDString(s.id),
+		Key:               s.target.GetObjectKey(),
+		ServiceName:       s.target.GetServiceName(),
+		HandlerName:       s.target.GetHandlerName(),
+		KnownEntries:      uint32(len(frames)),
+		PartitionKey:      s.id.GetPartitionKey(),
+		MaxJournalEntries: limits.EffectiveMaxJournalEntries(s.rec),
 	}
 	start.Kind = s.kind
 	cache, overflowed := preloadEagerState(s.stateTable, s.target, s.id, s.log)
@@ -851,6 +853,16 @@ func (s *wireSession) failTerminal(msg string) {
 }
 
 func (s *wireSession) proposeJournal(entry *enginev1.JournalEntry) error {
+	// Defensive step-budget enforcement: if a buggy or adversarial SDK
+	// tries to push entries beyond the configured cap, terminate the
+	// invocation rather than letting the journal grow unbounded. The
+	// SDK already pre-flights on its side from StartMessage.max_journal_entries;
+	// this is the wire-level backstop.
+	budget := limits.EffectiveMaxJournalEntries(s.rec)
+	if entry.GetIndex() >= budget {
+		return fmt.Errorf("step budget exhausted: index %d >= max %d",
+			entry.GetIndex(), budget)
+	}
 	eff := &enginev1.InvokerEffect{
 		InvocationId: s.id,
 		Kind: &enginev1.InvokerEffect_JournalAppended{

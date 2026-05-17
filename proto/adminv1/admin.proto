@@ -127,11 +127,14 @@ message DeleteSnapshotRequest {
 message DeleteSnapshotResponse {}
 
 // RegisterDeploymentRequest names a handler endpoint reachable over
-// HTTP/2. URL scheme must be http:// or https://; the engine dials it
-// directly. There is no other transport — gRPC handler dispatch was
-// removed in favor of raw HTTP/2 framing (see protocolv1).
+// HTTP/2. URL scheme must be http:// or https://; the engine dials
+// the handler via Connect RPC.
 message RegisterDeploymentRequest {
   string url = 1;
+  // Optional per-invocation cap on journal entries for this
+  // deployment. 0 = engine default (10_000). The engine clamps to a
+  // hard ceiling (100_000).
+  uint32 max_journal_entries = 2;
 }
 
 message RegisterDeploymentResponse {

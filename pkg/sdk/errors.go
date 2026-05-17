@@ -43,6 +43,23 @@ func NewFailure(code uint32, message string) *Failure {
 	return &Failure{Code: code, Message: message}
 }
 
+// StepBudgetExhaustedCode is the reserved Failure.Code reflow assigns
+// when a handler exceeds its per-invocation journal-entry cap. Callers
+// can errors.As / *Failure-type-assert and compare the code to
+// distinguish step-budget exhaustion from user-defined failures.
+const StepBudgetExhaustedCode uint32 = 9001
+
+// NewStepBudgetExhaustedFailure builds the terminal Failure surfaced
+// when a ctx primitive would push the invocation past its journal
+// budget. used is the slot the SDK was about to allocate; max is the
+// configured cap.
+func NewStepBudgetExhaustedFailure(used, max uint32) *Failure {
+	return &Failure{
+		Code:    StepBudgetExhaustedCode,
+		Message: fmt.Sprintf("reflow: step budget exhausted (%d/%d entries)", used, max),
+	}
+}
+
 // AsFailure reports whether err (or anything errors.As-unwrappable from
 // it) is a *Failure, returning the failure if so.
 func AsFailure(err error) (*Failure, bool) {

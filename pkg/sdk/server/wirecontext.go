@@ -70,6 +70,12 @@ type wireContext struct {
 	// suspends pending the next respawn cycle.
 	replay map[uint32]*replayEntry
 
+	// maxJournalEntries is the per-invocation step budget (engine
+	// default + DeploymentRecord override, both clamped at the
+	// engine's hard ceiling). 0 disables the SDK pre-flight check —
+	// the wire-session backstop still applies.
+	maxJournalEntries uint32
+
 	mu sync.Mutex
 	// nextSlot is the index of the next journal slot the handler will
 	// claim. Slot 0 is JEInput, user-allocated slots start at 1.
@@ -99,20 +105,22 @@ func newWireContext(
 	stateCache map[string][]byte,
 	replay map[uint32]*replayEntry,
 	partitionKey uint64,
+	maxJournalEntries uint32,
 ) *wireContext {
 	if replay == nil {
 		replay = make(map[uint32]*replayEntry)
 	}
 	return &wireContext{
-		ctx:          ctx,
-		input:        input,
-		invocationID: id,
-		partitionKey: partitionKey,
-		sink:         sink,
-		codec:        codec,
-		stateCache:   stateCache,
-		replay:       replay,
-		nextSlot:     1,
+		ctx:               ctx,
+		input:             input,
+		invocationID:      id,
+		partitionKey:      partitionKey,
+		sink:              sink,
+		codec:             codec,
+		stateCache:        stateCache,
+		replay:            replay,
+		nextSlot:          1,
+		maxJournalEntries: maxJournalEntries,
 	}
 }
 
@@ -121,18 +129,27 @@ func (c *wireContext) Input() []byte                        { return c.input }
 func (c *wireContext) InvocationID() *enginev1.InvocationId { return c.invocationID }
 
 // allocSlot reserves span consecutive journal indices and returns the
-// first. Returns ok=false when the context is already suspended —
-// callers should propagate sdk.ErrSuspended up the handler stack so the
-// session loop emits SuspensionMessage.
-func (c *wireContext) allocSlot(span uint32) (start uint32, ok bool) {
+// first. err is non-nil in two cases:
+//
+//   - sdk.ErrSuspended — the context is already suspended; caller
+//     should propagate it up the handler stack so the session loop
+//     emits SuspensionMessage.
+//   - *sdk.Failure (StepBudgetExhaustedCode) — the per-invocation
+//     journal-entry cap would be exceeded; caller propagates the
+//     failure so the handler terminates cleanly. The same check runs
+//     defensively on the engine side as a backstop.
+func (c *wireContext) allocSlot(span uint32) (start uint32, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.suspended {
-		return 0, false
+		return 0, sdk.ErrSuspended
+	}
+	if c.maxJournalEntries > 0 && c.nextSlot+span > c.maxJournalEntries {
+		return 0, sdk.NewStepBudgetExhaustedFailure(c.nextSlot, c.maxJournalEntries)
 	}
 	start = c.nextSlot
 	c.nextSlot += span
-	return start, true
+	return start, nil
 }
 
 // suspend flips the suspended bit and accumulates a waker token. All
@@ -203,9 +220,9 @@ func (c *wireContext) GetState(key string) ([]byte, bool, error) {
 // emit is skipped — the replay buffer at this slot proves the entry
 // is durable already.
 func (c *wireContext) SetState(key string, value []byte) error {
-	slot, ok := c.allocSlot(1)
-	if !ok {
-		return sdk.ErrSuspended
+	slot, err := c.allocSlot(1)
+	if err != nil {
+		return err
 	}
 	if c.lookupReplay(slot) == nil {
 		msg := &protocolv1.SetStateCommandMessage{
@@ -233,9 +250,9 @@ func (c *wireContext) SetState(key string, value []byte) error {
 // Eager cache is updated inline so subsequent GetState in this session
 // returns (nil, false, nil).
 func (c *wireContext) ClearState(key string) error {
-	slot, ok := c.allocSlot(1)
-	if !ok {
-		return sdk.ErrSuspended
+	slot, err := c.allocSlot(1)
+	if err != nil {
+		return err
 	}
 	if c.lookupReplay(slot) == nil {
 		msg := &protocolv1.ClearStateCommandMessage{Key: []byte(key)}
@@ -257,9 +274,9 @@ func (c *wireContext) ClearState(key string) error {
 // (service, object_key). Journaled as a single JEClearAllState entry;
 // the eager cache is reset inline.
 func (c *wireContext) ClearAllState() error {
-	slot, ok := c.allocSlot(1)
-	if !ok {
-		return sdk.ErrSuspended
+	slot, err := c.allocSlot(1)
+	if err != nil {
+		return err
 	}
 	if c.lookupReplay(slot) == nil {
 		msg := &protocolv1.ClearAllStateCommandMessage{}
@@ -287,9 +304,9 @@ func (c *wireContext) ClearAllState() error {
 // All/Any works: each call only allocates a slot + emits a frame, and
 // the combinator decides when (if at all) to suspend.
 func (c *wireContext) Sleep(d time.Duration) sdk.Future {
-	cmdSlot, ok := c.allocSlot(2)
-	if !ok {
-		return suspendedFuture{}
+	cmdSlot, allocErr := c.allocSlot(2)
+	if allocErr != nil {
+		return futureFromAllocErr(allocErr)
 	}
 	resultSlot := cmdSlot + 1
 
@@ -333,9 +350,9 @@ func (c *wireContext) Run(name string, fn sdk.RunFunc, opts ...sdk.RunOption) ([
 		return nil, fmt.Errorf("reflow: ctx.Run fn must not be nil")
 	}
 	resolved := sdk.ApplyRunOptions(opts)
-	slot, ok := c.allocSlot(1)
-	if !ok {
-		return nil, sdk.ErrSuspended
+	slot, allocErr := c.allocSlot(1)
+	if allocErr != nil {
+		return nil, allocErr
 	}
 
 	// Determine the current attempt + idempotency key:
@@ -476,9 +493,9 @@ func deriveIdempotencyKey(invID *enginev1.InvocationId, slot, attempt uint32) st
 // compose under All/Any.
 func (c *wireContext) Call(target sdk.Target, input []byte, opts ...sdk.CallOption) sdk.Future {
 	resolved := sdk.ApplyCallOptions(opts)
-	cmdSlot, ok := c.allocSlot(2)
-	if !ok {
-		return suspendedFuture{}
+	cmdSlot, allocErr := c.allocSlot(2)
+	if allocErr != nil {
+		return futureFromAllocErr(allocErr)
 	}
 	resultSlot := cmdSlot + 1
 
@@ -510,9 +527,9 @@ func (c *wireContext) Call(target sdk.Target, input []byte, opts ...sdk.CallOpti
 // no future returned because the wire never plumbs a response back to
 // this invocation.
 func (c *wireContext) OneWayCall(target sdk.Target, input []byte) error {
-	slot, ok := c.allocSlot(1)
-	if !ok {
-		return sdk.ErrSuspended
+	slot, err := c.allocSlot(1)
+	if err != nil {
+		return err
 	}
 	if c.lookupReplay(slot) != nil {
 		return nil // already journaled in a prior run
@@ -537,9 +554,9 @@ func (c *wireContext) OneWayCall(target sdk.Target, input []byte) error {
 // Suspension is deferred to Future.Result so Awakeable composes under
 // All/Any.
 func (c *wireContext) Awakeable() (string, sdk.Future) {
-	cmdSlot, ok := c.allocSlot(2)
-	if !ok {
-		return "", suspendedFuture{}
+	cmdSlot, allocErr := c.allocSlot(2)
+	if allocErr != nil {
+		return "", futureFromAllocErr(allocErr)
 	}
 	resultSlot := cmdSlot + 1
 

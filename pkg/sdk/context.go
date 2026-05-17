@@ -53,15 +53,23 @@ type Context interface {
 	// Run executes fn at most once and journals the outcome. On every
 	// replay the journaled bytes are returned without re-invoking fn.
 	//
+	// fn receives a *RunContext carrying the 1-based attempt counter
+	// and a stable idempotency key derived from (invocation_id, slot,
+	// attempt). Forward the key to any downstream API that supports
+	// dedup; the engine guarantees the same key on the same attempt
+	// across replays.
+	//
 	// name is a debug label; durability uses the journal entry index,
 	// not the name. The same handler may call Run with the same name
 	// multiple times — each call is a fresh entry.
 	//
-	// If fn returns a *Failure, the failure is recorded as terminal and
-	// future replays return the same Failure. Any other error is
-	// treated as transient and retried according to the configured
-	// backoff policy.
-	Run(name string, fn func() ([]byte, error)) ([]byte, error)
+	// If fn returns a *Failure, the failure is recorded as terminal
+	// and future replays return the same Failure. Any other error is
+	// classified as transient; opts controls how many attempts are
+	// allowed before the transient error is promoted to terminal
+	// (default 1 — no retry). Retries are scheduled by the engine via
+	// a durable backoff timer; the SDK does not loop in-process.
+	Run(name string, fn RunFunc, opts ...RunOption) ([]byte, error)
 
 	// Call invokes target with input. The returned Future resolves to
 	// the callee's response (use Result to block until it lands). The

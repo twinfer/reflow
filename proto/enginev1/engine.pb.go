@@ -2387,17 +2387,21 @@ func (x *JEOutput) GetValue() []byte {
 
 // JERun records the outcome of a deterministic side-effect block. The SDK
 // runs the body once, journals (value or failure_message), and replays
-// store-only on subsequent retries. attempt is bookkeeping for retry
-// policies. retryable distinguishes a terminal error (handler fails) from a
-// transient one (engine schedules a backoff and re-invokes fn).
+// store-only on subsequent retries. attempt is the 1-based count of fn
+// invocations completed for this slot (including the one whose outcome
+// this entry carries). retryable distinguishes a terminal error (handler
+// fails) from a transient one (engine schedules a backoff and re-invokes
+// fn). attempt_failures records each retryable failure in order so the
+// journal explains why an invocation took N attempts.
 type JERun struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Value          []byte                 `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
-	FailureMessage string                 `protobuf:"bytes,2,opt,name=failure_message,json=failureMessage,proto3" json:"failure_message,omitempty"`
-	Attempt        uint32                 `protobuf:"varint,3,opt,name=attempt,proto3" json:"attempt,omitempty"`
-	Retryable      bool                   `protobuf:"varint,4,opt,name=retryable,proto3" json:"retryable,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Value           []byte                 `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
+	FailureMessage  string                 `protobuf:"bytes,2,opt,name=failure_message,json=failureMessage,proto3" json:"failure_message,omitempty"`
+	Attempt         uint32                 `protobuf:"varint,3,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Retryable       bool                   `protobuf:"varint,4,opt,name=retryable,proto3" json:"retryable,omitempty"`
+	AttemptFailures []string               `protobuf:"bytes,5,rep,name=attempt_failures,json=attemptFailures,proto3" json:"attempt_failures,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *JERun) Reset() {
@@ -2456,6 +2460,13 @@ func (x *JERun) GetRetryable() bool {
 		return x.Retryable
 	}
 	return false
+}
+
+func (x *JERun) GetAttemptFailures() []string {
+	if x != nil {
+		return x.AttemptFailures
+	}
+	return nil
 }
 
 // RunRetryPolicy controls exponential backoff for retryable JERun failures.
@@ -5059,12 +5070,13 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\" \n" +
 	"\bJEOutput\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\fR\x05value\"~\n" +
+	"\x05value\x18\x01 \x01(\fR\x05value\"\xa9\x01\n" +
 	"\x05JERun\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\fR\x05value\x12'\n" +
 	"\x0ffailure_message\x18\x02 \x01(\tR\x0efailureMessage\x12\x18\n" +
 	"\aattempt\x18\x03 \x01(\rR\aattempt\x12\x1c\n" +
-	"\tretryable\x18\x04 \x01(\bR\tretryable\"\xa3\x01\n" +
+	"\tretryable\x18\x04 \x01(\bR\tretryable\x12)\n" +
+	"\x10attempt_failures\x18\x05 \x03(\tR\x0fattemptFailures\"\xa3\x01\n" +
 	"\x0eRunRetryPolicy\x12.\n" +
 	"\x13initial_interval_ms\x18\x01 \x01(\x04R\x11initialIntervalMs\x12\x16\n" +
 	"\x06factor\x18\x02 \x01(\x01R\x06factor\x12&\n" +

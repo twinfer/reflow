@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -319,40 +321,63 @@ func (c *wireContext) Sleep(d time.Duration) sdk.Future {
 //
 //   - Replay hit with non-retryable JERun: return cached value/failure
 //     without re-invoking fn.
-//   - Replay hit with retryable JERun: re-invoke fn (the engine
-//     scheduled a backoff timer that fired; this respawn is the retry).
-//   - No replay: invoke fn locally, emit RunCommandMessage +
-//     ProposeRunCompletionMessage with the outcome. On retryable error,
-//     suspend pending the engine's backoff timer.
-func (c *wireContext) Run(name string, fn func() ([]byte, error)) ([]byte, error) {
+//   - Replay hit with retryable JERun: re-invoke fn with attempt+1 and
+//     a fresh idempotency key (the engine scheduled a backoff timer
+//     that fired; this respawn is the retry).
+//   - No replay: invoke fn locally with attempt=1, emit
+//     RunCommandMessage + ProposeRunCompletionMessage with the
+//     outcome. On retryable error, suspend pending the engine's
+//     backoff timer.
+func (c *wireContext) Run(name string, fn sdk.RunFunc, opts ...sdk.RunOption) ([]byte, error) {
 	if fn == nil {
 		return nil, fmt.Errorf("reflow: ctx.Run fn must not be nil")
 	}
+	resolved := sdk.ApplyRunOptions(opts)
 	slot, ok := c.allocSlot(1)
 	if !ok {
 		return nil, sdk.ErrSuspended
 	}
 
-	if entry := c.lookupReplay(slot); entry != nil && entry.typeCode == handlerclient.TypeNoteRunDone {
-		// Replay hit with the cached outcome. Decode and surface it.
-		var note protocolv1.RunCompletionNotificationMessage
-		if err := c.codec.Unmarshal(entry.payload, &note); err != nil {
-			return nil, fmt.Errorf("decode replayed RunCompletionNotificationMessage: %w", err)
+	// Determine the current attempt + idempotency key:
+	//   - Replay carries a TypeNoteRunDone → terminal outcome cached.
+	//   - Replay carries a TypeCmdRun marker → engine stamped the
+	//     next-attempt counter + idempotency key onto it; prefer those
+	//     wire-stamped values so the engine stays authoritative.
+	//   - No replay → this is the first call, attempt=1, key derived
+	//     locally (the engine will recompute the same value on replay).
+	attempt := uint32(1)
+	idempotencyKey := ""
+	if entry := c.lookupReplay(slot); entry != nil {
+		switch entry.typeCode {
+		case handlerclient.TypeNoteRunDone:
+			var note protocolv1.RunCompletionNotificationMessage
+			if err := c.codec.Unmarshal(entry.payload, &note); err != nil {
+				return nil, fmt.Errorf("decode replayed RunCompletionNotificationMessage: %w", err)
+			}
+			switch r := note.GetResult().(type) {
+			case *protocolv1.RunCompletionNotificationMessage_Value:
+				out := make([]byte, len(r.Value.GetContent()))
+				copy(out, r.Value.GetContent())
+				return out, nil
+			case *protocolv1.RunCompletionNotificationMessage_Failure:
+				return nil, sdk.NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())
+			}
+			return nil, nil
+		case handlerclient.TypeCmdRun:
+			var marker protocolv1.RunCommandMessage
+			if err := c.codec.Unmarshal(entry.payload, &marker); err == nil {
+				if a := marker.GetAttempt(); a != 0 {
+					attempt = a
+				}
+				idempotencyKey = marker.GetIdempotencyKey()
+			}
 		}
-		switch r := note.GetResult().(type) {
-		case *protocolv1.RunCompletionNotificationMessage_Value:
-			out := make([]byte, len(r.Value.GetContent()))
-			copy(out, r.Value.GetContent())
-			return out, nil
-		case *protocolv1.RunCompletionNotificationMessage_Failure:
-			return nil, sdk.NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())
-		}
-		// Empty result: treat as nil value.
-		return nil, nil
 	}
-
-	// Fresh execution (first attempt or a retryable retry — both run fn).
-	value, fnErr := fn()
+	if idempotencyKey == "" {
+		idempotencyKey = deriveIdempotencyKey(c.invocationID, slot, attempt)
+	}
+	rctx := sdk.NewRunContext(c.ctx, attempt, idempotencyKey)
+	value, fnErr := fn(rctx)
 	var (
 		failureMessage string
 		retryable      bool
@@ -367,9 +392,12 @@ func (c *wireContext) Run(name string, fn func() ([]byte, error)) ([]byte, error
 		value = nil
 	}
 
-	// Emit RunCommandMessage (marker — engine advances its slot counter)
-	// followed by ProposeRunCompletionMessage carrying the outcome.
-	runCmd := &protocolv1.RunCommandMessage{ResultCompletionId: slot, Name: name}
+	runCmd := &protocolv1.RunCommandMessage{
+		ResultCompletionId: slot,
+		Name:               name,
+		Attempt:            attempt,
+		IdempotencyKey:     idempotencyKey,
+	}
 	cmdPayload, err := c.codec.Marshal(runCmd)
 	if err != nil {
 		return nil, fmt.Errorf("marshal RunCommandMessage: %w", err)
@@ -380,6 +408,7 @@ func (c *wireContext) Run(name string, fn func() ([]byte, error)) ([]byte, error
 	prop := &protocolv1.ProposeRunCompletionMessage{
 		ResultCompletionId: slot,
 		Retryable:          retryable,
+		RetryPolicy:        runOptionsToWirePolicy(resolved),
 	}
 	if failureMessage != "" {
 		prop.Result = &protocolv1.ProposeRunCompletionMessage_Failure{
@@ -397,10 +426,11 @@ func (c *wireContext) Run(name string, fn func() ([]byte, error)) ([]byte, error
 	}
 
 	if retryable {
-		// Engine writes JERun{retryable=true}, schedules backoff. SDK
-		// suspends; on respawn the replay sees JERun + retryable=true
-		// (via the failure variant) and re-invokes fn with the next
-		// attempt.
+		// Engine reads the embedded retry_policy on the proposal; if
+		// the attempt budget permits, it journals JERun{retryable=true}
+		// and schedules a backoff timer. The respawn carries an
+		// updated marker with attempt+1 so fn sees a fresh
+		// RunContext.Attempt() / IdempotencyKey().
 		c.suspend(fmt.Sprintf("run-retry:%d", slot))
 		return nil, sdk.ErrSuspended
 	}
@@ -408,6 +438,37 @@ func (c *wireContext) Run(name string, fn func() ([]byte, error)) ([]byte, error
 		return nil, sdk.NewFailure(0, failureMessage)
 	}
 	return value, nil
+}
+
+// runOptionsToWirePolicy lifts the user-facing RunOptions into the
+// protocolv1 RunRetryPolicy carried on every ProposeRunCompletion.
+// Returns nil when every field is zero so the engine uses defaults.
+func runOptionsToWirePolicy(o sdk.RunOptions) *protocolv1.RunRetryPolicy {
+	if o.MaxAttempts == 0 && o.InitialInterval == 0 && o.Factor == 0 && o.MaxInterval == 0 {
+		return nil
+	}
+	return &protocolv1.RunRetryPolicy{
+		InitialIntervalMs: uint64(o.InitialInterval / time.Millisecond),
+		Factor:            o.Factor,
+		MaxIntervalMs:     uint64(o.MaxInterval / time.Millisecond),
+		MaxAttempts:       o.MaxAttempts,
+	}
+}
+
+// deriveIdempotencyKey mirrors invoker.DeriveIdempotencyKey so the SDK
+// can stamp the first-attempt frame with the same value the engine
+// would derive on a replay-driven retry.
+func deriveIdempotencyKey(invID *enginev1.InvocationId, slot, attempt uint32) string {
+	var buf [16 + 8 + 4 + 4]byte
+	uuid := invID.GetUuid()
+	if len(uuid) >= 16 {
+		copy(buf[:16], uuid[:16])
+	}
+	binary.BigEndian.PutUint64(buf[16:24], invID.GetPartitionKey())
+	binary.BigEndian.PutUint32(buf[24:28], slot)
+	binary.BigEndian.PutUint32(buf[28:32], attempt)
+	h := sha256.Sum256(buf[:])
+	return hex.EncodeToString(h[:8])
 }
 
 // Call invokes target with input and returns a Future resolving to the

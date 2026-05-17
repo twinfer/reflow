@@ -1,6 +1,9 @@
 package invoker
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	hexenc "encoding/hex"
 	"fmt"
 	"log/slog"
 
@@ -28,13 +31,13 @@ type replayFrame struct {
 // JE variants the wire path doesn't yet model are logged and skipped
 // rather than failing — additive extension turns each one into a real
 // translation as the protocol grows.
-func translateJournal(entries []*enginev1.JournalEntry, codec handlerclient.Codec, log *slog.Logger) ([]replayFrame, error) {
+func translateJournal(invID *enginev1.InvocationId, entries []*enginev1.JournalEntry, codec handlerclient.Codec, log *slog.Logger) ([]replayFrame, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
 	out := make([]replayFrame, 0, len(entries))
 	for _, e := range entries {
-		frames, err := translateEntry(e, codec, log)
+		frames, err := translateEntry(invID, e, codec, log)
 		if err != nil {
 			return nil, err
 		}
@@ -43,12 +46,30 @@ func translateJournal(entries []*enginev1.JournalEntry, codec handlerclient.Code
 	return out, nil
 }
 
+// DeriveIdempotencyKey returns a stable token for (invocation_id, slot,
+// attempt) as the first 16 hex chars of sha256. The engine stamps it on
+// replayed RunCommandMessage frames; the SDK derives the same value
+// independently when running fn on the first attempt so both sides
+// agree on the per-attempt key without an extra round trip.
+func DeriveIdempotencyKey(invID *enginev1.InvocationId, slot, attempt uint32) string {
+	var buf [16 + 8 + 4 + 4]byte
+	uuid := invID.GetUuid()
+	if len(uuid) >= 16 {
+		copy(buf[:16], uuid[:16])
+	}
+	binary.BigEndian.PutUint64(buf[16:24], invID.GetPartitionKey())
+	binary.BigEndian.PutUint32(buf[24:28], slot)
+	binary.BigEndian.PutUint32(buf[28:32], attempt)
+	h := sha256.Sum256(buf[:])
+	return hexenc.EncodeToString(h[:8])
+}
+
 // translateEntry produces zero, one, or two replay frames for a single
 // JournalEntry. JECall is the only entry that fans out today (one for
 // the call command, then the result notification). Run fans out into
 // a marker + a completion notification when terminal; retryable runs
 // emit only the marker so the SDK re-invokes fn on respawn.
-func translateEntry(e *enginev1.JournalEntry, codec handlerclient.Codec, log *slog.Logger) ([]replayFrame, error) {
+func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, codec handlerclient.Codec, log *slog.Logger) ([]replayFrame, error) {
 	switch entry := e.GetEntry().(type) {
 	case *enginev1.JournalEntry_Input:
 		msg := &protocolv1.InputCommandMessage{
@@ -147,8 +168,21 @@ func translateEntry(e *enginev1.JournalEntry, codec handlerclient.Codec, log *sl
 		// so wireContext.Run returns it without re-invoking fn. When
 		// retryable=true the notification is omitted: the SDK sees the
 		// marker (slot consumed) but no result and re-invokes fn on
-		// the next attempt.
-		cmd := &protocolv1.RunCommandMessage{ResultCompletionId: e.GetIndex()}
+		// the next attempt. The marker carries the next-attempt count
+		// and a derived idempotency key so the SDK can surface them to
+		// fn via RunContext on the retry call.
+		nextAttempt := entry.Run.GetAttempt() + 1
+		if !entry.Run.GetRetryable() {
+			// Replay-hit (terminal): the marker exposes the attempt
+			// that produced the final outcome so the SDK can observe
+			// it for debugging even though fn won't re-run.
+			nextAttempt = entry.Run.GetAttempt()
+		}
+		cmd := &protocolv1.RunCommandMessage{
+			ResultCompletionId: e.GetIndex(),
+			Attempt:            nextAttempt,
+			IdempotencyKey:     DeriveIdempotencyKey(invID, e.GetIndex(), nextAttempt),
+		}
 		cmdPayload, err := codec.Marshal(cmd)
 		if err != nil {
 			return nil, fmt.Errorf("marshal RunCommandMessage: %w", err)

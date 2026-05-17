@@ -7,27 +7,39 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-func TestNextRetryDelay_NilPolicyUsesDefaults(t *testing.T) {
+func TestNextRetryDelay_NilPolicyExhaustsImmediately(t *testing.T) {
+	// Default max_attempts is 1 — first failure exhausts the policy.
+	// Retry is opt-in per call via RunRetryPolicy.max_attempts > 1.
+	if d, ok := NextRetryDelay(nil, 1); ok {
+		t.Errorf("attempt=1 with default policy: got %v ok=true; want exhausted", d)
+	}
+	if d, ok := NextRetryDelay(nil, 2); ok {
+		t.Errorf("attempt=2: got %v ok=true; want exhausted", d)
+	}
+}
+
+func TestNextRetryDelay_BackoffSchedule(t *testing.T) {
+	// With an explicit larger cap, verify the exponential schedule.
+	p := &enginev1.RunRetryPolicy{MaxAttempts: 1 << 10}
 	cases := []struct {
 		attempt uint32
 		want    time.Duration
 	}{
-		{0, 50 * time.Millisecond},
-		{1, 100 * time.Millisecond},
-		{2, 200 * time.Millisecond},
-		{3, 400 * time.Millisecond},
-		{4, 800 * time.Millisecond},
-		{5, 1600 * time.Millisecond},
-		{6, 3200 * time.Millisecond},
-		{7, 6400 * time.Millisecond},
-		{8, 10 * time.Second}, // hits cap (12800ms > 10s)
+		{1, 50 * time.Millisecond},
+		{2, 100 * time.Millisecond},
+		{3, 200 * time.Millisecond},
+		{4, 400 * time.Millisecond},
+		{5, 800 * time.Millisecond},
+		{6, 1600 * time.Millisecond},
+		{7, 3200 * time.Millisecond},
+		{8, 6400 * time.Millisecond},
+		{9, 10 * time.Second}, // hits cap (12800ms > 10s)
 		{20, 10 * time.Second},
-		{63, 10 * time.Second}, // still within the default max_attempts (64)
 	}
 	for _, c := range cases {
-		got, ok := NextRetryDelay(nil, c.attempt)
+		got, ok := NextRetryDelay(p, c.attempt)
 		if !ok {
-			t.Errorf("attempt=%d: exhausted; want ok within default max_attempts", c.attempt)
+			t.Errorf("attempt=%d: exhausted; want ok within cap", c.attempt)
 		}
 		if got != c.want {
 			t.Errorf("attempt=%d: got %v want %v", c.attempt, got, c.want)
@@ -35,38 +47,23 @@ func TestNextRetryDelay_NilPolicyUsesDefaults(t *testing.T) {
 	}
 }
 
-// TestNextRetryDelay_NilPolicyExhaustsAtDefaultMax verifies the default
-// cap fires at defaultRetryMaxAttempts. The exact value matters here:
-// a stuck handler must eventually surface as terminal so a queued VO
-// key isn't poisoned indefinitely.
-func TestNextRetryDelay_NilPolicyExhaustsAtDefaultMax(t *testing.T) {
-	if _, ok := NextRetryDelay(nil, defaultRetryMaxAttempts-1); !ok {
-		t.Errorf("attempt=%d (one before cap): exhausted; want ok", defaultRetryMaxAttempts-1)
-	}
-	if d, ok := NextRetryDelay(nil, defaultRetryMaxAttempts); ok {
-		t.Errorf("attempt=%d (at cap): got %v ok=true; want exhausted", defaultRetryMaxAttempts, d)
-	}
-	if d, ok := NextRetryDelay(nil, 1_000_000); ok {
-		t.Errorf("attempt=1_000_000: got %v ok=true; want exhausted", d)
-	}
-}
-
 func TestNextRetryDelay_CustomFactor(t *testing.T) {
 	p := &enginev1.RunRetryPolicy{
 		InitialIntervalMs: 100,
 		Factor:            3.0,
-		MaxIntervalMs:     0, // default 10s
+		MaxIntervalMs:     0,    // default 10s
+		MaxAttempts:       1024, // generous so we exercise the schedule
 	}
 	cases := []struct {
 		attempt uint32
 		want    time.Duration
 	}{
-		{0, 100 * time.Millisecond},
-		{1, 300 * time.Millisecond},
-		{2, 900 * time.Millisecond},
-		{3, 2700 * time.Millisecond},
-		{4, 8100 * time.Millisecond},
-		{5, 10 * time.Second}, // 24300ms > 10s cap
+		{1, 100 * time.Millisecond},
+		{2, 300 * time.Millisecond},
+		{3, 900 * time.Millisecond},
+		{4, 2700 * time.Millisecond},
+		{5, 8100 * time.Millisecond},
+		{6, 10 * time.Second}, // 24300ms > 10s cap
 	}
 	for _, c := range cases {
 		got, ok := NextRetryDelay(p, c.attempt)
@@ -80,10 +77,12 @@ func TestNextRetryDelay_CustomFactor(t *testing.T) {
 }
 
 func TestNextRetryDelay_MaxAttemptsExhausts(t *testing.T) {
+	// MaxAttempts=3 means 3 total fn invocations: initial + 2 retries.
+	// After the 3rd attempt fails the policy is exhausted.
 	p := &enginev1.RunRetryPolicy{MaxAttempts: 3}
-	for _, attempt := range []uint32{0, 1, 2} {
+	for _, attempt := range []uint32{1, 2} {
 		if _, ok := NextRetryDelay(p, attempt); !ok {
-			t.Errorf("attempt=%d: exhausted; want ok (only 3 attempts allowed)", attempt)
+			t.Errorf("attempt=%d: exhausted; want ok (max_attempts=3 permits 2 retries)", attempt)
 		}
 	}
 	if d, ok := NextRetryDelay(p, 3); ok {
@@ -94,21 +93,24 @@ func TestNextRetryDelay_MaxAttemptsExhausts(t *testing.T) {
 	}
 }
 
+func TestNextRetryDelay_MaxAttemptsOneNoRetry(t *testing.T) {
+	// MaxAttempts=1 means no retry — first failure is terminal.
+	p := &enginev1.RunRetryPolicy{MaxAttempts: 1}
+	if d, ok := NextRetryDelay(p, 1); ok {
+		t.Errorf("max_attempts=1 first failure: got %v ok=true; want exhausted", d)
+	}
+}
+
 func TestNextRetryDelay_MaxAttemptsZeroUsesDefault(t *testing.T) {
 	// max_attempts=0 on a caller-supplied policy means "use the default",
 	// not "unlimited". Same exhaustion behavior as a nil policy.
 	p := &enginev1.RunRetryPolicy{MaxAttempts: 0}
-	if _, ok := NextRetryDelay(p, defaultRetryMaxAttempts-1); !ok {
-		t.Errorf("max_attempts=0 should match default cap; got exhausted one before cap")
-	}
-	if _, ok := NextRetryDelay(p, defaultRetryMaxAttempts); ok {
-		t.Errorf("max_attempts=0 at default cap should exhaust; got ok=true")
+	if _, ok := NextRetryDelay(p, 1); ok {
+		t.Errorf("max_attempts=0 should match default (1) and exhaust at attempt=1")
 	}
 }
 
 func TestNextRetryDelay_ExplicitlyLargeMaxAttemptsAllowsUnbounded(t *testing.T) {
-	// Callers wanting "effectively unlimited" must set max_attempts
-	// explicitly. math.MaxUint32 attempts is many lifetimes of retries.
 	p := &enginev1.RunRetryPolicy{MaxAttempts: 1 << 30}
 	if _, ok := NextRetryDelay(p, 1_000_000); !ok {
 		t.Errorf("explicit large max_attempts should permit attempt=1_000_000")
@@ -119,11 +121,9 @@ func TestNextRetryDelay_OverflowProtection(t *testing.T) {
 	p := &enginev1.RunRetryPolicy{
 		InitialIntervalMs: 1000,
 		Factor:            10.0,
-		MaxIntervalMs:     60_000,  // 60s cap
-		MaxAttempts:       1 << 30, // effectively unlimited so we exercise the math cap
+		MaxIntervalMs:     60_000,
+		MaxAttempts:       1 << 30,
 	}
-	// At very high attempt counts the float64 math overflows. Result must
-	// still saturate at max_interval, never wrap negative or NaN out.
 	for _, attempt := range []uint32{50, 200, 1_000_000} {
 		got, ok := NextRetryDelay(p, attempt)
 		if !ok {
@@ -140,8 +140,9 @@ func TestNextRetryDelay_InitialAboveMaxClampsImmediately(t *testing.T) {
 		InitialIntervalMs: 30_000,
 		Factor:            2.0,
 		MaxIntervalMs:     5_000,
+		MaxAttempts:       1024,
 	}
-	got, ok := NextRetryDelay(p, 0)
+	got, ok := NextRetryDelay(p, 1)
 	if !ok {
 		t.Fatal("exhausted unexpectedly")
 	}

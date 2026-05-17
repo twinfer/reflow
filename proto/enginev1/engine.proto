@@ -321,14 +321,18 @@ message JEOutput {
 
 // JERun records the outcome of a deterministic side-effect block. The SDK
 // runs the body once, journals (value or failure_message), and replays
-// store-only on subsequent retries. attempt is bookkeeping for retry
-// policies. retryable distinguishes a terminal error (handler fails) from a
-// transient one (engine schedules a backoff and re-invokes fn).
+// store-only on subsequent retries. attempt is the 1-based count of fn
+// invocations completed for this slot (including the one whose outcome
+// this entry carries). retryable distinguishes a terminal error (handler
+// fails) from a transient one (engine schedules a backoff and re-invokes
+// fn). attempt_failures records each retryable failure in order so the
+// journal explains why an invocation took N attempts.
 message JERun {
   bytes value = 1;
   string failure_message = 2;
   uint32 attempt = 3;
   bool retryable = 4;
+  repeated string attempt_failures = 5;
 }
 
 // RunRetryPolicy controls exponential backoff for retryable JERun failures.

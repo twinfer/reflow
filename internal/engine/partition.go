@@ -687,14 +687,41 @@ func (p *Partition) onInvokerEffect(
 		// handler.
 		rp := k.RunProposal
 		idx := rp.GetEntryIndex()
+
+		// Engine-authoritative attempt counting: the SDK ships only the
+		// outcome of the current fn invocation; we determine which attempt
+		// that was by reading the prior JERun (if any). attempt is the
+		// 1-based count of fn invocations completed for this slot.
+		priorAttempt := uint32(0)
+		priorFailures := []string(nil)
+		if prior, rerr := journal.Read(id, idx); rerr == nil {
+			if pr := prior.GetRun(); pr != nil {
+				priorAttempt = pr.GetAttempt()
+				priorFailures = pr.GetAttemptFailures()
+			}
+		} else if !errors.Is(rerr, storage.ErrNotFound) {
+			return fmt.Errorf("onInvokerEffect: journal read (prior run): %w", rerr)
+		}
+		attempt := priorAttempt + 1
+
+		// Append the latest retryable failure to the running history so the
+		// journal explains a multi-attempt invocation. Terminal failures
+		// also append (the final message is preserved alongside the prior
+		// retries); successes leave the history as-is.
+		failures := priorFailures
+		if rp.GetRetryable() || rp.GetFailureMessage() != "" {
+			failures = append(append([]string(nil), priorFailures...), rp.GetFailureMessage())
+		}
+
 		writeRun := func(retryable bool) error {
 			return journal.Append(batch, id, &enginev1.JournalEntry{
 				Index: idx,
 				Entry: &enginev1.JournalEntry_Run{Run: &enginev1.JERun{
-					Value:          rp.GetValue(),
-					FailureMessage: rp.GetFailureMessage(),
-					Attempt:        rp.GetAttempt(),
-					Retryable:      retryable,
+					Value:           rp.GetValue(),
+					FailureMessage:  rp.GetFailureMessage(),
+					Attempt:         attempt,
+					Retryable:       retryable,
+					AttemptFailures: failures,
 				}},
 			})
 		}
@@ -708,11 +735,27 @@ func (p *Partition) onInvokerEffect(
 		}
 
 		// retryable=true — try to schedule a retry.
-		delay, okPolicy := NextRetryDelay(rp.GetRetryPolicy(), rp.GetAttempt())
+		delay, okPolicy := NextRetryDelay(rp.GetRetryPolicy(), attempt)
 		if !okPolicy {
-			// Policy exhausted — demote to terminal.
+			// Policy exhausted — demote to terminal AND schedule an
+			// immediate wake so the SDK observes the terminal JERun
+			// on its next session. Without the wake the invocation
+			// stays Suspended (the SDK emitted SuspensionMessage right
+			// after the retryable proposal expecting a retry timer to
+			// fire).
 			if err := writeRun(false); err != nil {
 				return fmt.Errorf("onInvokerEffect: journal append (run exhausted): %w", err)
+			}
+			fireAtMs := nowMs + 1
+			if err := timersT.Insert(batch, fireAtMs, id, idx); err != nil {
+				return fmt.Errorf("onInvokerEffect: timer insert (run exhausted): %w", err)
+			}
+			if isLeader {
+				p.cfg.Collector.Push(ActRegisterTimer{
+					FireAtMs: fireAtMs,
+					ID:       id,
+					SleepIdx: idx,
+				})
 			}
 			next, actions = cur, nil
 			break

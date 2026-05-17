@@ -493,7 +493,7 @@ func TestWireContext_Run_FreshExecutesAndEmitsBothFrames(t *testing.T) {
 	wctx, stream := newTestWireContext(t, nil)
 
 	ranCount := 0
-	v, err := wctx.Run("compute", func() ([]byte, error) {
+	v, err := wctx.Run("compute", func(*sdk.RunContext) ([]byte, error) {
 		ranCount++
 		return []byte("answer"), nil
 	})
@@ -539,7 +539,7 @@ func TestWireContext_Run_FreshExecutesAndEmitsBothFrames(t *testing.T) {
 func TestWireContext_Run_TransientErrorMarksRetryable(t *testing.T) {
 	wctx, stream := newTestWireContext(t, nil)
 
-	_, err := wctx.Run("fetch", func() ([]byte, error) {
+	_, err := wctx.Run("fetch", func(*sdk.RunContext) ([]byte, error) {
 		return nil, errors.New("network blip")
 	})
 	if !errors.Is(err, sdk.ErrSuspended) {
@@ -559,7 +559,7 @@ func TestWireContext_Run_TransientErrorMarksRetryable(t *testing.T) {
 func TestWireContext_Run_FailureIsTerminal(t *testing.T) {
 	wctx, stream := newTestWireContext(t, nil)
 
-	_, err := wctx.Run("validate", func() ([]byte, error) {
+	_, err := wctx.Run("validate", func(*sdk.RunContext) ([]byte, error) {
 		return nil, sdk.NewFailure(0, "bad input")
 	})
 	f, ok := sdk.AsFailure(err)
@@ -597,7 +597,7 @@ func TestWireContext_Run_ReplayHitReturnsCachedValue(t *testing.T) {
 	})
 
 	ranCount := 0
-	v, err := wctx.Run("compute", func() ([]byte, error) {
+	v, err := wctx.Run("compute", func(*sdk.RunContext) ([]byte, error) {
 		ranCount++
 		return []byte("fresh"), nil
 	})
@@ -612,6 +612,126 @@ func TestWireContext_Run_ReplayHitReturnsCachedValue(t *testing.T) {
 	}
 	if len(stream.sent) != 0 {
 		t.Errorf("sent %d frames; want 0 on replay-hit", len(stream.sent))
+	}
+}
+
+// TestWireContext_Run_RunContextExposed asserts the first attempt
+// receives a RunContext with attempt=1 and a stable idempotency key
+// stamped onto both the marker frame and the user-visible context.
+func TestWireContext_Run_RunContextExposed(t *testing.T) {
+	wctx, stream := newTestWireContext(t, nil)
+
+	var seenAttempt uint32
+	var seenKey string
+	if _, err := wctx.Run("compute", func(rc *sdk.RunContext) ([]byte, error) {
+		seenAttempt = rc.Attempt()
+		seenKey = rc.IdempotencyKey()
+		return []byte("ok"), nil
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if seenAttempt != 1 {
+		t.Errorf("RunContext.Attempt() = %d; want 1 on first call", seenAttempt)
+	}
+	if seenKey == "" {
+		t.Fatal("RunContext.IdempotencyKey() empty; want stamped value")
+	}
+
+	var marker protocolv1.RunCommandMessage
+	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &marker); err != nil {
+		t.Fatalf("decode RunCommandMessage: %v", err)
+	}
+	if marker.GetAttempt() != 1 {
+		t.Errorf("marker.attempt = %d; want 1", marker.GetAttempt())
+	}
+	if marker.GetIdempotencyKey() != seenKey {
+		t.Errorf("marker.idempotency_key = %q; want %q (same as RunContext)",
+			marker.GetIdempotencyKey(), seenKey)
+	}
+}
+
+// TestWireContext_Run_RetryReplayBumpsAttempt asserts that when the
+// engine respawns after a retryable failure, the replayed marker's
+// attempt counter is surfaced to fn — so the user sees a fresh
+// attempt + idempotency key on the second invocation of fn.
+func TestWireContext_Run_RetryReplayBumpsAttempt(t *testing.T) {
+	codec := handlerclient.DefaultCodec()
+	markerPayload, err := codec.Marshal(&protocolv1.RunCommandMessage{
+		ResultCompletionId: 1,
+		Attempt:            2,
+		IdempotencyKey:     "engine-stamped-key",
+	})
+	if err != nil {
+		t.Fatalf("marshal marker: %v", err)
+	}
+	wctx, _ := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
+		1: {typeCode: handlerclient.TypeCmdRun, payload: markerPayload},
+	})
+
+	var seenAttempt uint32
+	var seenKey string
+	_, err = wctx.Run("compute", func(rc *sdk.RunContext) ([]byte, error) {
+		seenAttempt = rc.Attempt()
+		seenKey = rc.IdempotencyKey()
+		return []byte("retry-ok"), nil
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if seenAttempt != 2 {
+		t.Errorf("RunContext.Attempt() = %d; want 2 on respawn", seenAttempt)
+	}
+	if seenKey != "engine-stamped-key" {
+		t.Errorf("RunContext.IdempotencyKey() = %q; want engine-stamped value", seenKey)
+	}
+}
+
+// TestWireContext_Run_OptionsThreadPolicyOntoWire asserts MaxAttempts
+// + Backoff flow onto the ProposeRunCompletionMessage so the engine
+// can honour per-call retry budgets.
+func TestWireContext_Run_OptionsThreadPolicyOntoWire(t *testing.T) {
+	wctx, stream := newTestWireContext(t, nil)
+
+	_, _ = wctx.Run("fetch",
+		func(*sdk.RunContext) ([]byte, error) { return nil, errors.New("blip") },
+		sdk.MaxAttempts(5),
+		sdk.Backoff(200*time.Millisecond, 3.0, 20*time.Second),
+	)
+
+	var prop protocolv1.ProposeRunCompletionMessage
+	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[1].GetPayload(), &prop); err != nil {
+		t.Fatalf("decode prop: %v", err)
+	}
+	p := prop.GetRetryPolicy()
+	if p == nil {
+		t.Fatal("retry_policy nil; want populated from RunOptions")
+	}
+	if p.GetMaxAttempts() != 5 {
+		t.Errorf("policy.max_attempts = %d; want 5", p.GetMaxAttempts())
+	}
+	if p.GetInitialIntervalMs() != 200 {
+		t.Errorf("policy.initial_interval_ms = %d; want 200", p.GetInitialIntervalMs())
+	}
+	if p.GetFactor() != 3.0 {
+		t.Errorf("policy.factor = %v; want 3.0", p.GetFactor())
+	}
+	if p.GetMaxIntervalMs() != 20_000 {
+		t.Errorf("policy.max_interval_ms = %d; want 20000", p.GetMaxIntervalMs())
+	}
+}
+
+// TestWireContext_Run_IdempotencyKeyDifferentPerAttempt asserts the
+// derived key changes between attempts (so downstream dedup can
+// distinguish a retry from a duplicate).
+func TestWireContext_Run_IdempotencyKeyDifferentPerAttempt(t *testing.T) {
+	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
+	k1 := deriveIdempotencyKey(id, 1, 1)
+	k2 := deriveIdempotencyKey(id, 1, 2)
+	if k1 == k2 {
+		t.Errorf("idempotency key collapsed across attempts: %q", k1)
+	}
+	if len(k1) != 16 {
+		t.Errorf("key len = %d; want 16 hex chars", len(k1))
 	}
 }
 

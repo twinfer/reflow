@@ -7,12 +7,10 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// Default RunRetryPolicy values. The cap on attempts matters more than
-// it might look: an uncapped stuck handler on a keyed object would
-// poison the VO gate indefinitely — every subsequent invocation queued
-// behind it would never run. 64 attempts covers genuine transient bursts
-// (~9.3 min of wall-clock once the per-attempt delay saturates at
-// max_interval) while guaranteeing eventual terminal-failure surfacing.
+// Default RunRetryPolicy values. max_attempts defaults to 1 — no retry
+// unless the caller explicitly opts in via ctx.Run(..., MaxAttempts(N)).
+// Retry is a contract the user code must be aware of (side effects need
+// idempotency keys); silent retries hide that contract.
 //
 // A zero/absent max_attempts on a caller-supplied policy means "use
 // this default", not "unlimited". Callers that genuinely want unbounded
@@ -21,13 +19,15 @@ const (
 	defaultRetryInitialInterval = 50 * time.Millisecond
 	defaultRetryFactor          = 2.0
 	defaultRetryMaxInterval     = 10 * time.Second
-	defaultRetryMaxAttempts     = 64
+	defaultRetryMaxAttempts     = 1
 )
 
-// NextRetryDelay returns the wall-clock backoff for the (attempt+1)th
-// retry given a policy. attempt is the zero-based count of attempts
-// already executed and failed retryably; attempt=0 is "first failure
-// just happened, wait this long before re-running fn".
+// NextRetryDelay returns the wall-clock backoff for the next retry
+// given the count of fn invocations completed so far. attempt is the
+// 1-based count of attempts that have run (including the one whose
+// retryable failure prompts this call): attempt=1 means the first
+// invocation just failed retryably and we are about to schedule the
+// first retry.
 //
 // Returns (0, false) when the policy is exhausted (attempt >= max).
 // A nil policy or any zero/absent field is treated as the corresponding
@@ -63,7 +63,7 @@ func NextRetryDelay(p *enginev1.RunRetryPolicy, attempt uint32) (time.Duration, 
 		return maxInterval, true
 	}
 
-	raw := float64(initial) * math.Pow(factor, float64(attempt))
+	raw := float64(initial) * math.Pow(factor, float64(attempt-1))
 	if math.IsNaN(raw) || math.IsInf(raw, 0) || raw < 0 || raw > float64(maxInterval) {
 		return maxInterval, true
 	}

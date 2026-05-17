@@ -238,7 +238,7 @@ func highestIndex(entries []*enginev1.JournalEntry) uint32 {
 // the invocation's (service, object_key) so wireContext.GetState can
 // serve hits directly from the handler-side cache without a round-trip.
 func (s *wireSession) sendStartAndReplay(stream handlerclient.Stream, entries []*enginev1.JournalEntry) error {
-	frames, err := translateJournal(entries, s.codec, s.log)
+	frames, err := translateJournal(s.id, entries, s.codec, s.log)
 	if err != nil {
 		return fmt.Errorf("translate journal: %w", err)
 	}
@@ -713,8 +713,9 @@ func (s *wireSession) handleProposeRunCompletion(payload []byte) bool {
 		return false
 	}
 	rp := &enginev1.JERunProposal{
-		EntryIndex: prop.GetResultCompletionId(),
-		Retryable:  prop.GetRetryable(),
+		EntryIndex:  prop.GetResultCompletionId(),
+		Retryable:   prop.GetRetryable(),
+		RetryPolicy: wireRetryPolicy(prop.GetRetryPolicy()),
 	}
 	switch r := prop.GetResult().(type) {
 	case *protocolv1.ProposeRunCompletionMessage_Value:
@@ -736,6 +737,25 @@ func (s *wireSession) handleProposeRunCompletion(payload []byte) bool {
 		return false
 	}
 	return true
+}
+
+// wireRetryPolicy translates the protocolv1 retry policy onto its
+// enginev1 twin. Returns nil for a nil/zero input so the apply path
+// uses its defaults.
+func wireRetryPolicy(p *protocolv1.RunRetryPolicy) *enginev1.RunRetryPolicy {
+	if p == nil {
+		return nil
+	}
+	if p.GetInitialIntervalMs() == 0 && p.GetFactor() == 0 &&
+		p.GetMaxIntervalMs() == 0 && p.GetMaxAttempts() == 0 {
+		return nil
+	}
+	return &enginev1.RunRetryPolicy{
+		InitialIntervalMs: p.GetInitialIntervalMs(),
+		Factor:            p.GetFactor(),
+		MaxIntervalMs:     p.GetMaxIntervalMs(),
+		MaxAttempts:       p.GetMaxAttempts(),
+	}
 }
 
 // handleSuspension translates a SuspensionMessage into

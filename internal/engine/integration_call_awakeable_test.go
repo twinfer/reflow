@@ -53,7 +53,7 @@ func TestHandlerSurvivesKill(t *testing.T) {
 		if _, err := c.Sleep(1500 * time.Millisecond).Result(); err != nil {
 			return nil, err
 		}
-		v, err := c.Run("compute", func() ([]byte, error) {
+		v, err := c.Run("compute", func(*sdk.RunContext) ([]byte, error) {
 			runCount.Add(1)
 			return []byte("computed"), nil
 		})

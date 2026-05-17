@@ -163,10 +163,29 @@ message ProposeRunCompletionMessage {
   // backoff timer rather than recording a terminal failure. The next
   // session re-invocation re-executes fn with attempt+1.
   bool retryable = 2;
+  // Caller-supplied retry policy for this ctx.Run site. Zero/absent
+  // max_attempts means "use deployment default" (currently 1 — no retry).
+  // Engine reads this on every JERunProposal so per-call policies can
+  // vary across Run invocations within the same handler. Zero/absent
+  // backoff fields fall back to engine defaults (50ms/x2/10s cap).
+  RunRetryPolicy retry_policy = 3;
   oneof result {
     bytes value = 14;
     Failure failure = 15;
   }
+}
+
+// RunRetryPolicy is the wire-side mirror of enginev1.RunRetryPolicy.
+// Kept in protocolv1 so pkg/sdk/server doesn't import enginev1 — the
+// invoker translates between the two at the wire boundary.
+message RunRetryPolicy {
+  uint64 initial_interval_ms = 1;
+  double factor = 2;
+  uint64 max_interval_ms = 3;
+  // Max total attempts (initial run + retries combined). 0 = use
+  // deployment default. 1 = no retry. To request unbounded retries set
+  // an explicit large value (e.g. math.MaxUint32).
+  uint32 max_attempts = 4;
 }
 
 // ----------------------------------------------------------------------
@@ -364,10 +383,22 @@ message OneWayCallCommandMessage {
 
 // Type: 0x0411
 // Marker for a ctx.run side effect. The actual result is sent later
-// via ProposeRunCompletionMessage.
+// via ProposeRunCompletionMessage. On the engine→SDK replay path
+// after a retryable failure, attempt + idempotency_key are stamped so
+// the SDK exposes them to fn via RunContext.
 message RunCommandMessage {
   uint32 result_completion_id = 11;
   string name = 12;
+  // 1-based attempt counter. Engine fills it in on replay; SDK-sent
+  // RunCommandMessage frames after a fresh execution may also carry
+  // it for debugging — the engine ignores it (apply path is
+  // authoritative on attempt count).
+  uint32 attempt = 13;
+  // Stable token for this (invocation, slot, attempt). Engine derives
+  // it as hex(sha256(invocation_id||slot||attempt))[:16] on replay.
+  // The SDK threads it through external API calls so retries dedupe
+  // downstream.
+  string idempotency_key = 14;
 }
 
 // Type: 0x8011 — notification for RunCommandMessage.

@@ -29,7 +29,7 @@ func TestSDK_RunReturnsJournaledValue(t *testing.T) {
 
 	reg := sdk.NewRegistry()
 	if err := reg.RegisterService("Runner", "go", func(c sdk.Context, _ []byte) ([]byte, error) {
-		v, err := c.Run("compute", func() ([]byte, error) {
+		v, err := c.Run("compute", func(*sdk.RunContext) ([]byte, error) {
 			runCount.Add(1)
 			return []byte("computed"), nil
 		})
@@ -152,7 +152,7 @@ func TestSDK_SetStateCompletesOK(t *testing.T) {
 func TestSDK_RunFailureSurfacesAsFailure(t *testing.T) {
 	reg := sdk.NewRegistry()
 	if err := reg.RegisterService("Boom", "fail", func(c sdk.Context, _ []byte) ([]byte, error) {
-		_, err := c.Run("nope", func() ([]byte, error) {
+		_, err := c.Run("nope", func(*sdk.RunContext) ([]byte, error) {
 			return nil, sdk.NewFailure(7, "kaboom")
 		})
 		return nil, err

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/lni/dragonboat/v4"
+	"github.com/lni/dragonboat/v4/client"
 	"google.golang.org/protobuf/proto"
 
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -84,15 +85,11 @@ func (p *RaftProposer) propose(ctx context.Context, env *enginev1.Envelope) erro
 
 	for {
 		// SyncPropose requires a context with a deadline. If the caller
-		// didn't set one, attach a default so the call returns within a
-		// reasonable bound.
-		callCtx := ctx
-		if _, ok := ctx.Deadline(); !ok {
-			var cancel context.CancelFunc
-			callCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
-		}
-		_, err := p.nh.SyncPropose(callCtx, sess, buf)
+		// didn't set one, attach a default per iteration. The cancel is
+		// scoped to this attempt — deferring it across the retry loop
+		// would accumulate one cancel goroutine per transient-error
+		// retry until propose returns.
+		err := p.syncProposeOnce(ctx, sess, buf)
 		if err == nil {
 			return nil
 		}
@@ -110,6 +107,20 @@ func (p *RaftProposer) propose(ctx context.Context, env *enginev1.Envelope) erro
 		case <-time.After(retryBackoff()):
 		}
 	}
+}
+
+// syncProposeOnce wraps a single SyncPropose call with a per-attempt
+// 5-second deadline when the caller's ctx is unbounded. The cancel runs
+// on return so retries don't stack timer goroutines.
+func (p *RaftProposer) syncProposeOnce(ctx context.Context, sess *client.Session, buf []byte) error {
+	callCtx := ctx
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+	}
+	_, err := p.nh.SyncPropose(callCtx, sess, buf)
+	return err
 }
 
 // nowMs samples the leader-side wall clock used by buildSelfProposalEnvelope

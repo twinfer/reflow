@@ -67,6 +67,30 @@ func (t DedupTable) Record(b storage.Batch, d *enginev1.Dedup) error {
 	return putProto(b, key, entry)
 }
 
+// GCSelfBelowEpoch deletes every SelfProposal dedup row with
+// leader_epoch < gcUntilEpoch. Used on leader gain to reclaim rows
+// from stale-leader churn: once we are leader at epoch E, no replica
+// will ever accept another envelope at epoch < E, so rows below E-1
+// can never be referenced by a legitimate retry. Caller passes
+// gcUntilEpoch = E-1 so one prior epoch's rows survive as a safety
+// margin against in-flight envelopes that committed during the
+// transition.
+//
+// Keys are dedup/self/<8 BE leader_epoch>/<8 BE seq>, so a DeleteRange
+// over [DedupSelfKey(0,0), DedupSelfKey(gcUntilEpoch, 0)) covers every
+// row whose epoch is strictly less than gcUntilEpoch. Arbitrary
+// (producer-id) dedup rows are NOT touched — they have no epoch and
+// callers may legitimately retry across long timescales; bounding
+// them needs a separate timestamp-based GC.
+func (t DedupTable) GCSelfBelowEpoch(b storage.Batch, gcUntilEpoch uint64) error {
+	if gcUntilEpoch == 0 {
+		return nil
+	}
+	lower := keys.DedupSelfKey(0, 0)
+	upper := keys.DedupSelfKey(gcUntilEpoch, 0)
+	return b.DeleteRange(lower, upper)
+}
+
 // dedupKey returns the storage key for a Dedup, carrying both the producer
 // namespace and the sequence number so each propose has its own slot. The
 // boolean is false for an empty Dedup (kind unset).

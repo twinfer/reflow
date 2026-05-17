@@ -374,6 +374,63 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 	})
 
+	t.Run(name+"/Dedup_GCSelfBelowEpoch", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		dt := tables.DedupTable{S: s}
+		// Record self-dedup rows at epochs 1, 2, 3 (with seq=1 each) plus
+		// an arbitrary row that GC must NOT touch.
+		rec := func(d *enginev1.Dedup) {
+			b := s.NewBatch()
+			if err := dt.Record(b, d); err != nil {
+				t.Fatal(err)
+			}
+			commit(t, b)
+		}
+		mk := func(epoch uint64) *enginev1.Dedup {
+			return &enginev1.Dedup{Kind: &enginev1.Dedup_SelfProposal{
+				SelfProposal: &enginev1.SelfProposalDedup{LeaderEpoch: epoch, Seq: 1},
+			}}
+		}
+		rec(mk(1))
+		rec(mk(2))
+		rec(mk(3))
+		arb := &enginev1.Dedup{Kind: &enginev1.Dedup_Arbitrary{
+			Arbitrary: &enginev1.ArbitraryDedup{ProducerId: "ingress-1", Seq: 7},
+		}}
+		rec(arb)
+
+		// GC strictly below epoch=3: epoch 1 and 2 vanish; epoch 3 survives.
+		b := s.NewBatch()
+		if err := dt.GCSelfBelowEpoch(b, 3); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b)
+
+		if dup, _ := dt.IsDuplicate(mk(1)); dup {
+			t.Error("epoch=1 should be GC'd")
+		}
+		if dup, _ := dt.IsDuplicate(mk(2)); dup {
+			t.Error("epoch=2 should be GC'd")
+		}
+		if dup, _ := dt.IsDuplicate(mk(3)); !dup {
+			t.Error("epoch=3 must survive GC below=3")
+		}
+		if dup, _ := dt.IsDuplicate(arb); !dup {
+			t.Error("Arbitrary dedup must not be touched by Self GC")
+		}
+
+		// GCSelfBelowEpoch(0) is a no-op.
+		b = s.NewBatch()
+		if err := dt.GCSelfBelowEpoch(b, 0); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b)
+		if dup, _ := dt.IsDuplicate(mk(3)); !dup {
+			t.Error("GC(0) must not delete anything")
+		}
+	})
+
 	t.Run(name+"/Dedup_NilOrEmpty", func(t *testing.T) {
 		s := open(t)
 		defer s.Close()

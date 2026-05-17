@@ -156,6 +156,20 @@ func (r *PartitionRunner) onBecomeLeader() {
 	r.timers = timers
 	r.outbox = outbox
 
+	// Reclaim SelfProposal dedup rows from epochs we have moved past.
+	// Bounded by stale-leader churn — runs at most once per leader gain.
+	// Preserves one prior epoch as a safety margin (envelopes that
+	// committed during the transition still match a dedup row).
+	if epoch := r.leadership.LeaderEpoch(); epoch > 1 {
+		gcBatch := store.NewBatch()
+		if err := (tables.DedupTable{S: store}).GCSelfBelowEpoch(gcBatch, epoch-1); err != nil {
+			r.log.Warn("partition: dedup GC range failed", "shard", r.ShardID, "err", err)
+			_ = gcBatch.Close()
+		} else if err := gcBatch.Commit(true); err != nil {
+			r.log.Warn("partition: dedup GC commit failed", "shard", r.ShardID, "err", err)
+		}
+	}
+
 	leaderCtx, cancel := context.WithCancel(context.Background())
 	timerDone := make(chan struct{})
 	outboxDone := make(chan struct{})

@@ -238,9 +238,9 @@ func TestVerifier_Expired(t *testing.T) {
 	ca := makeCA(t)
 	leafKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	cert := makeSignedLeaf(t, ca, leafKey, &leafKey.PublicKey, "reflow.local", "/node/1")
-	// hand-build a Signer-equivalent with a negative TTL so exp is in
-	// the past.
-	s := &Signer{provider: &fakeProvider{cert: cert}, trustDomain: "reflow.local", ttl: -time.Minute}
+	// Set a negative TTL so the minted token's exp is in the past.
+	s := NewSigner(&fakeProvider{cert: cert}, "reflow.local")
+	s.ttl = -time.Minute
 	v, _ := NewVerifier(ca.caPEM, []string{"spiffe://reflow.local/node/1"}, "reflow.local", "")
 	tok, err := s.Sign("dep")
 	if err != nil {

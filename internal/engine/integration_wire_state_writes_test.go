@@ -2,13 +2,12 @@ package engine_test
 
 import (
 	"context"
-	"io"
 	"net"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
+	connect "connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine/admin"
@@ -36,66 +35,36 @@ type stateCommand struct {
 	payload  []byte
 }
 
-func (f *fakeHandlerStateWrites) discoveryBody(t *testing.T) []byte {
-	t.Helper()
-	resp := &discoveryv1.DiscoveryResponse{
+func (f *fakeHandlerStateWrites) discovery() *discoveryv1.DiscoveryResponse {
+	return &discoveryv1.DiscoveryResponse{
 		ProtocolVersion: "v1",
 		Handlers: []*discoveryv1.DiscoveredHandler{
 			{Service: "Counter", Kind: protocolv1.Kind_KIND_OBJECT, HandlerNames: []string{"tick"}},
 		},
 	}
-	body, err := proto.Marshal(resp)
-	if err != nil {
-		t.Fatalf("marshal DiscoveryResponse: %v", err)
-	}
-	return body
 }
 
 func (f *fakeHandlerStateWrites) handler(t *testing.T) http.Handler {
 	t.Helper()
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/discover":
-			w.Header().Set("Content-Type", "application/vnd.reflow.invocation.v1+protobuf")
-			_, _ = w.Write(f.discoveryBody(t))
-			return
-		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/invoke/"):
-			f.serveInvoke(t, w, r)
-			return
-		default:
-			http.NotFound(w, r)
-		}
-	})
+	return mountFakeHandler(t, f.discovery(), f.serveInvoke)
 }
 
-func (f *fakeHandlerStateWrites) serveInvoke(t *testing.T, w http.ResponseWriter, r *http.Request) {
+func (f *fakeHandlerStateWrites) serveInvoke(t *testing.T, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
 	t.Helper()
 	// Read StartMessage + InputCommandMessage (engine writes both before
 	// the handler emits anything).
 	for range 2 {
-		if _, err := readFrame(r.Body); err != nil {
-			http.Error(w, "read engine frame: "+err.Error(), http.StatusBadRequest)
-			return
+		if _, err := stream.Receive(); err != nil {
+			return err
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/vnd.reflow.invocation.v1+protobuf")
-	w.WriteHeader(http.StatusOK)
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "server: ResponseWriter is not a Flusher", http.StatusInternalServerError)
-		return
-	}
-
-	// Emit state-write commands.
 	for _, c := range f.commands {
-		if err := writeFrame(w, c.typeCode, c.payload); err != nil {
-			return
+		if err := stream.Send(frameFor(c.typeCode, c.payload)); err != nil {
+			return err
 		}
-		flusher.Flush()
 	}
 
-	// Emit terminal output + end.
 	out := &protocolv1.OutputCommandMessage{
 		Result: &protocolv1.OutputCommandMessage_Value{
 			Value: &protocolv1.Value{Content: f.output},
@@ -103,21 +72,19 @@ func (f *fakeHandlerStateWrites) serveInvoke(t *testing.T, w http.ResponseWriter
 	}
 	payload, err := proto.Marshal(out)
 	if err != nil {
-		return
+		return err
 	}
-	if err := writeFrame(w, handlerclient.TypeCmdOutput, payload); err != nil {
-		return
+	if err := stream.Send(frameFor(handlerclient.TypeCmdOutput, payload)); err != nil {
+		return err
 	}
-	flusher.Flush()
 	endPayload, err := proto.Marshal(&protocolv1.EndMessage{})
 	if err != nil {
-		return
+		return err
 	}
-	if err := writeFrame(w, handlerclient.TypeEnd, endPayload); err != nil {
-		return
+	if err := stream.Send(frameFor(handlerclient.TypeEnd, endPayload)); err != nil {
+		return err
 	}
-	flusher.Flush()
-	_, _ = io.Copy(io.Discard, r.Body)
+	return drainStream(stream)
 }
 
 // TestWireDispatch_HTTP2_StateWrites runs an end-to-end invocation

@@ -15,7 +15,7 @@ import (
 
 // TestSDKServer_E2E_HTTP2 drives the real handler-side stack
 // (pkg/sdk/server.NewHTTP2) end-to-end through the engine wire path:
-// admin.RegisterDeployment → http2client → POST /invoke → server.runSession
+// admin.RegisterDeployment → connectclient → InvokeStream → server.runSession
 // → user handler → OutputCommandMessage → engine InvokerEffect.Completed.
 //
 // Asserts both the input round-trip (handler sees the engine's input

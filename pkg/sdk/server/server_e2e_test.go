@@ -22,7 +22,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
-	"github.com/twinfer/reflow/internal/engine/handlerclient/http2client"
+	"github.com/twinfer/reflow/internal/engine/handlerclient/connectclient"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	"github.com/twinfer/reflow/pkg/sdk"
 	"github.com/twinfer/reflow/pkg/sdk/server"
@@ -31,10 +31,10 @@ import (
 )
 
 // TestHTTP2Server_RoundTrip drives a registered handler end-to-end via
-// pkg/sdk/server.NewHTTP2 + internal/engine/handlerclient/http2client.
+// pkg/sdk/server.NewHTTP2 + internal/engine/handlerclient/connectclient.
 // The engine's wire_session is bypassed — this test asserts the
 // handler-side half on its own: input arrives, handler runs, output
-// flows back over raw HTTP/2 (h2c).
+// flows back over Connect bidi streaming (h2c).
 func TestHTTP2Server_RoundTrip(t *testing.T) {
 	reg := sdk.NewRegistry()
 	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
@@ -55,9 +55,9 @@ func TestHTTP2Server_RoundTrip(t *testing.T) {
 	defer func() { _ = srv.Shutdown() }()
 
 	url := "http://" + ln.Addr().String()
-	client, err := http2client.New("test-dep", url, true, nil)
+	client, err := connectclient.New("test-dep", url, true, nil)
 	if err != nil {
-		t.Fatalf("http2client.New: %v", err)
+		t.Fatalf("connectclient.New: %v", err)
 	}
 	defer func() { _ = client.Close() }()
 
@@ -89,9 +89,9 @@ func TestHTTP2Server_FailureRoundTrip(t *testing.T) {
 	defer func() { _ = srv.Shutdown() }()
 
 	url := "http://" + ln.Addr().String()
-	client, err := http2client.New("test-dep", url, true, nil)
+	client, err := connectclient.New("test-dep", url, true, nil)
 	if err != nil {
-		t.Fatalf("http2client.New: %v", err)
+		t.Fatalf("connectclient.New: %v", err)
 	}
 	defer func() { _ = client.Close() }()
 
@@ -368,9 +368,9 @@ func TestHTTP2Server_RoundTrip_WithAuth(t *testing.T) {
 	defer func() { _ = srv.Shutdown() }()
 
 	url := "http://" + ln.Addr().String()
-	client, err := http2client.New("dep-auth", url, true, signer)
+	client, err := connectclient.New("dep-auth", url, true, signer)
 	if err != nil {
-		t.Fatalf("http2client.New: %v", err)
+		t.Fatalf("connectclient.New: %v", err)
 	}
 	defer func() { _ = client.Close() }()
 
@@ -383,8 +383,10 @@ func TestHTTP2Server_RoundTrip_WithAuth(t *testing.T) {
 
 // TestHTTP2Server_AuthRejectsForeignCA: a client whose leaf is signed
 // by a CA the server doesn't trust gets rejected at the HTTP layer.
-// We bypass http2client (which would surface the 401 as a transport
-// error somewhere inside Recv) and hit /invoke directly.
+// We bypass connectclient (which would surface the 401 as a transport
+// error inside Receive) and hit the Connect InvokeStream URL directly
+// — withAuth runs before Connect's stream handler, so an empty POST
+// is enough to exercise the 401 path.
 func TestHTTP2Server_AuthRejectsForeignCA(t *testing.T) {
 	caPEM, _, spiffe := buildCAAndSigner(t, "/node/1")
 	// Foreign signer: rooted at a different CA — verifier won't accept.
@@ -419,7 +421,8 @@ func TestHTTP2Server_AuthRejectsForeignCA(t *testing.T) {
 	defer tr.CloseIdleConnections()
 
 	req, _ := http.NewRequest(http.MethodPost,
-		"http://"+ln.Addr().String()+"/invoke/Echo/echo", strings.NewReader(""))
+		"http://"+ln.Addr().String()+"/reflow.handler.v1.HandlerService/InvokeStream",
+		strings.NewReader(""))
 	req.Header.Set("Authorization", "Bearer "+tok)
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -484,10 +487,10 @@ func (p *e2eFakeProvider) KeyMaterial(_ context.Context) (*certprovider.KeyMater
 func (p *e2eFakeProvider) Close() {}
 
 // TestHTTP2Server_NoBodyLeak runs many sequential sessions through one
-// http2client.Client and asserts the transport doesn't accumulate idle
-// connections after the engine's typical "defer CloseSend" teardown.
-// Regression for the bug where Recv terminating on EOF never closed
-// resp.Body and the underlying HTTP/2 stream was reaped only at GC.
+// connectclient.Client and asserts the transport doesn't accumulate
+// idle connections after the engine's typical "defer CloseSend"
+// teardown. Regression for the bug where Recv terminating on EOF never
+// closed the underlying HTTP/2 stream slot before GC.
 func TestHTTP2Server_NoBodyLeak(t *testing.T) {
 	reg := sdk.NewRegistry()
 	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
@@ -507,9 +510,9 @@ func TestHTTP2Server_NoBodyLeak(t *testing.T) {
 	defer func() { _ = srv.Shutdown() }()
 
 	url := "http://" + ln.Addr().String()
-	client, err := http2client.New("test-dep", url, true, nil)
+	client, err := connectclient.New("test-dep", url, true, nil)
 	if err != nil {
-		t.Fatalf("http2client.New: %v", err)
+		t.Fatalf("connectclient.New: %v", err)
 	}
 	defer func() { _ = client.Close() }()
 

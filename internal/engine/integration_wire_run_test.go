@@ -2,12 +2,11 @@ package engine_test
 
 import (
 	"context"
-	"io"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
+	connect "connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine/admin"
@@ -33,67 +32,42 @@ type fakeHandlerRun struct {
 	outputWrap []byte
 }
 
-func (f *fakeHandlerRun) discoveryBody(t *testing.T) []byte {
-	t.Helper()
-	resp := &discoveryv1.DiscoveryResponse{
+func (f *fakeHandlerRun) discovery() *discoveryv1.DiscoveryResponse {
+	return &discoveryv1.DiscoveryResponse{
 		ProtocolVersion: "v1",
 		Handlers: []*discoveryv1.DiscoveredHandler{
 			{Service: "Compute", Kind: protocolv1.Kind_KIND_SERVICE, HandlerNames: []string{"run"}},
 		},
 	}
-	body, err := proto.Marshal(resp)
-	if err != nil {
-		t.Fatalf("marshal DiscoveryResponse: %v", err)
-	}
-	return body
 }
 
 func (f *fakeHandlerRun) handler(t *testing.T) http.Handler {
 	t.Helper()
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/discover":
-			w.Header().Set("Content-Type", "application/vnd.reflow.invocation.v1+protobuf")
-			_, _ = w.Write(f.discoveryBody(t))
-			return
-		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/invoke/"):
-			f.serveInvoke(t, w, r)
-			return
-		default:
-			http.NotFound(w, r)
-		}
-	})
+	return mountFakeHandler(t, f.discovery(), f.serveInvoke)
 }
 
-func (f *fakeHandlerRun) serveInvoke(t *testing.T, w http.ResponseWriter, r *http.Request) {
+func (f *fakeHandlerRun) serveInvoke(t *testing.T, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
 	t.Helper()
 
-	startFrame, err := readFrame(r.Body)
+	startFrame, err := stream.Receive()
 	if err != nil {
-		http.Error(w, "read start: "+err.Error(), http.StatusBadRequest)
-		return
+		return err
 	}
 	var sm protocolv1.StartMessage
 	if err := proto.Unmarshal(startFrame.GetPayload(), &sm); err != nil {
-		http.Error(w, "decode StartMessage: "+err.Error(), http.StatusBadRequest)
-		return
+		return err
 	}
 	for range sm.GetKnownEntries() {
-		if _, err := readFrame(r.Body); err != nil {
-			http.Error(w, "read replay frame: "+err.Error(), http.StatusBadRequest)
-			return
+		if _, err := stream.Receive(); err != nil {
+			return err
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/vnd.reflow.invocation.v1+protobuf")
-	w.WriteHeader(http.StatusOK)
-	flusher, _ := w.(http.Flusher)
-
-	// Emit RunCommandMessage at slot 1 (claims the slot) + ProposeRun with the value.
 	runCmd := &protocolv1.RunCommandMessage{ResultCompletionId: 1, Name: "compute"}
 	runPayload, _ := proto.Marshal(runCmd)
-	_ = writeFrame(w, handlerclient.TypeCmdRun, runPayload)
-	flusher.Flush()
+	if err := stream.Send(frameFor(handlerclient.TypeCmdRun, runPayload)); err != nil {
+		return err
+	}
 
 	prop := &protocolv1.ProposeRunCompletionMessage{
 		ResultCompletionId: 1,
@@ -102,10 +76,10 @@ func (f *fakeHandlerRun) serveInvoke(t *testing.T, w http.ResponseWriter, r *htt
 		},
 	}
 	propPayload, _ := proto.Marshal(prop)
-	_ = writeFrame(w, handlerclient.TypeProposeRunDone, propPayload)
-	flusher.Flush()
+	if err := stream.Send(frameFor(handlerclient.TypeProposeRunDone, propPayload)); err != nil {
+		return err
+	}
 
-	// Wrap the run value into the final output.
 	final := append([]byte{}, f.outputWrap...)
 	final = append(final, f.runValue...)
 	outMsg := &protocolv1.OutputCommandMessage{
@@ -114,12 +88,14 @@ func (f *fakeHandlerRun) serveInvoke(t *testing.T, w http.ResponseWriter, r *htt
 		},
 	}
 	outPayload, _ := proto.Marshal(outMsg)
-	_ = writeFrame(w, handlerclient.TypeCmdOutput, outPayload)
-	flusher.Flush()
+	if err := stream.Send(frameFor(handlerclient.TypeCmdOutput, outPayload)); err != nil {
+		return err
+	}
 	endPayload, _ := proto.Marshal(&protocolv1.EndMessage{})
-	_ = writeFrame(w, handlerclient.TypeEnd, endPayload)
-	flusher.Flush()
-	_, _ = io.Copy(io.Discard, r.Body)
+	if err := stream.Send(frameFor(handlerclient.TypeEnd, endPayload)); err != nil {
+		return err
+	}
+	return drainStream(stream)
 }
 
 // TestWireDispatch_HTTP2_Run drives a wire handler doing ctx.Run end-to-end:

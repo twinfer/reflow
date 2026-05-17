@@ -2,12 +2,11 @@ package engine_test
 
 import (
 	"context"
-	"io"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
+	connect "connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine/admin"
@@ -35,103 +34,65 @@ type fakeHandlerSleep struct {
 	output  []byte
 }
 
-func (f *fakeHandlerSleep) discoveryBody(t *testing.T) []byte {
-	t.Helper()
-	resp := &discoveryv1.DiscoveryResponse{
+func (f *fakeHandlerSleep) discovery() *discoveryv1.DiscoveryResponse {
+	return &discoveryv1.DiscoveryResponse{
 		ProtocolVersion: "v1",
 		Handlers: []*discoveryv1.DiscoveredHandler{
 			{Service: "Sleeper", Kind: protocolv1.Kind_KIND_SERVICE, HandlerNames: []string{"nap"}},
 		},
 	}
-	body, err := proto.Marshal(resp)
-	if err != nil {
-		t.Fatalf("marshal DiscoveryResponse: %v", err)
-	}
-	return body
 }
 
 func (f *fakeHandlerSleep) handler(t *testing.T) http.Handler {
 	t.Helper()
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/discover":
-			w.Header().Set("Content-Type", "application/vnd.reflow.invocation.v1+protobuf")
-			_, _ = w.Write(f.discoveryBody(t))
-			return
-		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/invoke/"):
-			f.serveInvoke(t, w, r)
-			return
-		default:
-			http.NotFound(w, r)
-		}
-	})
+	return mountFakeHandler(t, f.discovery(), f.serveInvoke)
 }
 
-func (f *fakeHandlerSleep) serveInvoke(t *testing.T, w http.ResponseWriter, r *http.Request) {
+func (f *fakeHandlerSleep) serveInvoke(t *testing.T, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
 	t.Helper()
 
-	startFrame, err := readFrame(r.Body)
+	startFrame, err := stream.Receive()
 	if err != nil {
-		http.Error(w, "read start: "+err.Error(), http.StatusBadRequest)
-		return
+		return err
 	}
 	var sm protocolv1.StartMessage
 	if err := proto.Unmarshal(startFrame.GetPayload(), &sm); err != nil {
-		http.Error(w, "decode StartMessage: "+err.Error(), http.StatusBadRequest)
-		return
+		return err
 	}
 
 	known := sm.GetKnownEntries()
-	// Drain the replay frames so the engine side proceeds to read our
-	// response without buffering against a stalled body.
 	for range known {
-		if _, err := readFrame(r.Body); err != nil {
-			http.Error(w, "read replay frame: "+err.Error(), http.StatusBadRequest)
-			return
+		if _, err := stream.Receive(); err != nil {
+			return err
 		}
-	}
-
-	w.Header().Set("Content-Type", "application/vnd.reflow.invocation.v1+protobuf")
-	w.WriteHeader(http.StatusOK)
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "ResponseWriter is not a Flusher", http.StatusInternalServerError)
-		return
 	}
 
 	// known_entries == 1 means only JEInput was journaled → fresh invocation.
 	// Anything larger means the engine already wrote JESleep + JESleepResult
 	// in a prior session; resume by emitting Output + End.
 	if known <= 1 {
-		// Emit SleepCommandMessage for slot 1 (result lands at slot 2).
 		sleepCmd := &protocolv1.SleepCommandMessage{
 			WakeUpTime:         uint64(time.Now().UnixMilli()) + f.sleepMs,
 			ResultCompletionId: 2,
 		}
 		payload, err := proto.Marshal(sleepCmd)
 		if err != nil {
-			return
+			return err
 		}
-		if err := writeFrame(w, handlerclient.TypeCmdSleep, payload); err != nil {
-			return
+		if err := stream.Send(frameFor(handlerclient.TypeCmdSleep, payload)); err != nil {
+			return err
 		}
-		flusher.Flush()
-
-		// Emit SuspensionMessage waiting on completion 2.
-		sus := &protocolv1.SuspensionMessage{
-			WaitingCompletions: []uint32{2},
-		}
+		sus := &protocolv1.SuspensionMessage{WaitingCompletions: []uint32{2}}
 		susPayload, err := proto.Marshal(sus)
 		if err != nil {
-			return
+			return err
 		}
-		_ = writeFrame(w, handlerclient.TypeSuspension, susPayload)
-		flusher.Flush()
-		_, _ = io.Copy(io.Discard, r.Body)
-		return
+		if err := stream.Send(frameFor(handlerclient.TypeSuspension, susPayload)); err != nil {
+			return err
+		}
+		return drainStream(stream)
 	}
 
-	// Resume path: replay carried the sleep result, so finish the invocation.
 	outMsg := &protocolv1.OutputCommandMessage{
 		Result: &protocolv1.OutputCommandMessage_Value{
 			Value: &protocolv1.Value{Content: f.output},
@@ -139,16 +100,16 @@ func (f *fakeHandlerSleep) serveInvoke(t *testing.T, w http.ResponseWriter, r *h
 	}
 	outPayload, err := proto.Marshal(outMsg)
 	if err != nil {
-		return
+		return err
 	}
-	if err := writeFrame(w, handlerclient.TypeCmdOutput, outPayload); err != nil {
-		return
+	if err := stream.Send(frameFor(handlerclient.TypeCmdOutput, outPayload)); err != nil {
+		return err
 	}
-	flusher.Flush()
 	endPayload, _ := proto.Marshal(&protocolv1.EndMessage{})
-	_ = writeFrame(w, handlerclient.TypeEnd, endPayload)
-	flusher.Flush()
-	_, _ = io.Copy(io.Discard, r.Body)
+	if err := stream.Send(frameFor(handlerclient.TypeEnd, endPayload)); err != nil {
+		return err
+	}
+	return drainStream(stream)
 }
 
 // TestWireDispatch_HTTP2_Sleep runs an invocation whose handler suspends

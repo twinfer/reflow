@@ -3,9 +3,9 @@
 // to one deployment URL and exposes a transport-neutral Stream that the
 // invoker drives to run a single session.
 //
-// The only transport is http2client: raw HTTP/2 POST to
-// /invoke/<service>/<handler> with the protocolv1 framed envelope; h2c
-// for http:// and TLS for https://.
+// The only transport is connectclient: a Connect RPC client opening
+// HandlerService.InvokeStream against /reflow.handler.v1.HandlerService/
+// for both h2c (http://) and TLS (https://) deployments.
 //
 // The engine selects the dialer by URL scheme via Registry.For; once a
 // Client is in hand, the invoker calls Invoke to open a stream and drives
@@ -26,9 +26,9 @@ import (
 var ErrClientClosed = errors.New("handlerclient: client closed")
 
 // Route is the per-session destination metadata: the (service, handler)
-// tuple the engine wants to invoke. HTTP/2 uses it to build the request
-// URL path /invoke/<service>/<handler>; the StartMessage frame echoes
-// the same tuple as a defense-in-depth cross-check.
+// tuple the engine wants to invoke. Connect RPC has no per-handler URL
+// addressing, so this tuple flows inside the StartMessage frame the
+// engine writes first.
 type Route struct {
 	Service string
 	Handler string

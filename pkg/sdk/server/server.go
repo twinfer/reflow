@@ -2,8 +2,8 @@
 // protocolv1 wire. Operators register handlers in an *sdk.Registry,
 // wrap it in NewHTTP2, and Serve on a listener. The reflow engine
 // discovers the deployment over GET /discover, opens a session via
-// POST /invoke/<service>/<handler>, and drives the handler through
-// StartMessage / InputCommandMessage frames.
+// HandlerService.InvokeStream (Connect RPC), and drives the handler
+// through StartMessage / InputCommandMessage frames.
 //
 // The current implementation supports the minimum-viable session shape
 // engine-side wire_session understands: StartMessage + InputCommandMessage
@@ -24,8 +24,9 @@ import (
 )
 
 // Server is the handler-side endpoint. NewHTTP2 is the one constructor;
-// the engine dials the listener over raw HTTP/2 (h2c plaintext or HTTPS
-// + TLS, depending on the registered deployment URL scheme).
+// the engine dials the listener via Connect RPC over HTTP/2 (h2c
+// plaintext or HTTPS + TLS, depending on the registered deployment URL
+// scheme).
 type Server interface {
 	// Serve blocks accepting sessions on ln until ln is closed or
 	// Shutdown is called. Returns the listener error on close.
@@ -49,10 +50,10 @@ type Config struct {
 	// engine's handlerclient.Codec is the matching half.
 	Codec handlerclient.Codec
 
-	// RootCAs, when non-nil, enables JWT verification of every /invoke
-	// and /discover request via Authorization: Bearer <jwt>. The bundle
-	// is the PEM-encoded set of CAs trusted to sign the caller's leaf;
-	// the engine signs with a leaf rooted at one of these.
+	// RootCAs, when non-nil, enables JWT verification of every
+	// InvokeStream and /discover request via Authorization: Bearer <jwt>.
+	// The bundle is the PEM-encoded set of CAs trusted to sign the
+	// caller's leaf; the engine signs with a leaf rooted at one of these.
 	RootCAs []byte
 
 	// AllowedSPIFFE is the exact-match allowlist of caller SPIFFE URIs

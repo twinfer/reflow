@@ -41,9 +41,10 @@ type frameStream interface {
 // any prior journal entries the engine ships, look up the handler, run
 // it, then emit OutputCommandMessage + EndMessage (or
 // SuspensionMessage / ErrorMessage). route is the transport-supplied
-// (service, handler) hint — HTTP/2 fills it from the URL path
-// /invoke/<service>/<handler>; StartMessage echoes the same tuple. When
-// both are populated they MUST agree.
+// (service, handler) hint — Connect RPC supplies an empty Route because
+// the procedure URL carries no per-handler addressing, leaving
+// StartMessage as the authoritative routing source. When both are
+// populated they MUST agree.
 //
 // The returned error is logged by the transport; it is NOT mirrored as
 // an ErrorMessage on the wire (that frame is reserved for protocol-level

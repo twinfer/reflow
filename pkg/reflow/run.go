@@ -85,8 +85,8 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	// Build the engine→handler JWT signer up front when delivery creds
 	// use the cert-provider driver, so it can be wired into the host's
 	// handler registry at construction. Single-node and non-certprovider
-	// deployments leave it nil — http2client then skips the Authorization
-	// header (existing posture).
+	// deployments leave it nil — connectclient then skips the
+	// Authorization header (existing posture).
 	multiNodeBoot := len(cfg.Cluster.Peers) > 0
 	var handlerSigner *creds.Signer
 	if multiNodeBoot && cfg.Delivery.Creds.Driver == creds.DriverCertProvider {

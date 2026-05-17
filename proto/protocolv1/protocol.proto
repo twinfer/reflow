@@ -1,8 +1,9 @@
 // Reflow service protocol v1 — engine ↔ handler wire format.
 //
-// The transport is raw HTTP/2. The engine dials the handler endpoint
-// and POSTs a chunked, framed request body to /invoke/<service>/<handler>;
-// the response body carries the handler→engine frame stream. Capability
+// The transport is Connect RPC over HTTP/2 (h2c plaintext or HTTPS).
+// The engine opens HandlerService.InvokeStream — a bidi stream of
+// protocolv1.Frame envelopes — for each invocation. Routing
+// (service_name, handler_name) flows inside StartMessage. Capability
 // discovery is a separate one-shot probe defined in
 // proto/discoveryv1/discovery.proto (GET /discover).
 //
@@ -89,10 +90,10 @@ message StartMessage {
   // Seed for the SDK's deterministic RNG. Stable across restarts.
   uint64 random_seed = 9;
 
-  // Service + handler the engine is invoking. Echoed from the URL path
-  // /invoke/<service>/<handler> as a defense-in-depth cross-check; the
-  // handler-side server rejects the session if the URL and StartMessage
-  // disagree.
+  // Service + handler the engine is invoking. Connect RPC carries no
+  // per-handler addressing on the URL, so these fields are the
+  // authoritative routing source — the handler-side server resolves
+  // (service_name, handler_name) directly from StartMessage.
   string service_name = 10;
   string handler_name = 11;
 

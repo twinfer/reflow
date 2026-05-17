@@ -6,12 +6,12 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	connect "connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine"
@@ -40,50 +40,30 @@ type fakeHandlerAwakeable struct {
 	objectKey string
 }
 
-func (f *fakeHandlerAwakeable) discoveryBody(t *testing.T) []byte {
-	t.Helper()
-	resp := &discoveryv1.DiscoveryResponse{
+func (f *fakeHandlerAwakeable) discovery() *discoveryv1.DiscoveryResponse {
+	return &discoveryv1.DiscoveryResponse{
 		ProtocolVersion: "v1",
 		Handlers: []*discoveryv1.DiscoveredHandler{
 			{Service: "Waiter", Kind: protocolv1.Kind_KIND_OBJECT, HandlerNames: []string{"await"}},
 		},
 	}
-	body, err := proto.Marshal(resp)
-	if err != nil {
-		t.Fatalf("marshal DiscoveryResponse: %v", err)
-	}
-	return body
 }
 
 func (f *fakeHandlerAwakeable) handler(t *testing.T) http.Handler {
 	t.Helper()
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/discover":
-			w.Header().Set("Content-Type", "application/vnd.reflow.invocation.v1+protobuf")
-			_, _ = w.Write(f.discoveryBody(t))
-			return
-		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/invoke/"):
-			f.serveInvoke(t, w, r)
-			return
-		default:
-			http.NotFound(w, r)
-		}
-	})
+	return mountFakeHandler(t, f.discovery(), f.serveInvoke)
 }
 
-func (f *fakeHandlerAwakeable) serveInvoke(t *testing.T, w http.ResponseWriter, r *http.Request) {
+func (f *fakeHandlerAwakeable) serveInvoke(t *testing.T, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
 	t.Helper()
 
-	startFrame, err := readFrame(r.Body)
+	startFrame, err := stream.Receive()
 	if err != nil {
-		http.Error(w, "read start: "+err.Error(), http.StatusBadRequest)
-		return
+		return err
 	}
 	var sm protocolv1.StartMessage
 	if err := proto.Unmarshal(startFrame.GetPayload(), &sm); err != nil {
-		http.Error(w, "decode StartMessage: "+err.Error(), http.StatusBadRequest)
-		return
+		return err
 	}
 
 	// Scan replay frames for the awakeable id (in the AwakeableCommandMessage)
@@ -94,21 +74,20 @@ func (f *fakeHandlerAwakeable) serveInvoke(t *testing.T, w http.ResponseWriter, 
 		resolved      bool
 	)
 	for range sm.GetKnownEntries() {
-		f, err := readFrame(r.Body)
+		frame, err := stream.Receive()
 		if err != nil {
-			http.Error(w, "read replay frame: "+err.Error(), http.StatusBadRequest)
-			return
+			return err
 		}
-		tc, _, _ := handlerclient.UnpackHeader(f.GetHeader())
+		tc, _, _ := handlerclient.UnpackHeader(frame.GetHeader())
 		switch tc {
 		case handlerclient.TypeCmdAwakeable:
 			var ac protocolv1.AwakeableCommandMessage
-			if err := proto.Unmarshal(f.GetPayload(), &ac); err == nil {
+			if err := proto.Unmarshal(frame.GetPayload(), &ac); err == nil {
 				resolvedID = ac.GetAwakeableId()
 			}
 		case handlerclient.TypeNoteSignal:
 			var sn protocolv1.SignalNotificationMessage
-			if err := proto.Unmarshal(f.GetPayload(), &sn); err == nil {
+			if err := proto.Unmarshal(frame.GetPayload(), &sn); err == nil {
 				if v, ok := sn.GetResult().(*protocolv1.SignalNotificationMessage_Value); ok {
 					resolvedValue = v.Value.GetContent()
 					resolved = true
@@ -117,40 +96,37 @@ func (f *fakeHandlerAwakeable) serveInvoke(t *testing.T, w http.ResponseWriter, 
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/vnd.reflow.invocation.v1+protobuf")
-	w.WriteHeader(http.StatusOK)
-	flusher, _ := w.(http.Flusher)
-
 	if !resolved {
 		// First invocation. Mint the awakeable id, journal it, surface
 		// via SetState, then suspend.
 		id, err := mintAwakeable(sm.GetPartitionKey())
 		if err != nil {
-			http.Error(w, "mint id: "+err.Error(), http.StatusInternalServerError)
-			return
+			return err
 		}
 		akCmd := &protocolv1.AwakeableCommandMessage{
 			ResultCompletionId: 2,
 			AwakeableId:        id,
 		}
 		akPayload, _ := proto.Marshal(akCmd)
-		_ = writeFrame(w, handlerclient.TypeCmdAwakeable, akPayload)
-		flusher.Flush()
+		if err := stream.Send(frameFor(handlerclient.TypeCmdAwakeable, akPayload)); err != nil {
+			return err
+		}
 
 		setCmd := &protocolv1.SetStateCommandMessage{
 			Key:   []byte("awk_id"),
 			Value: &protocolv1.Value{Content: []byte(id)},
 		}
 		setPayload, _ := proto.Marshal(setCmd)
-		_ = writeFrame(w, handlerclient.TypeCmdSetState, setPayload)
-		flusher.Flush()
+		if err := stream.Send(frameFor(handlerclient.TypeCmdSetState, setPayload)); err != nil {
+			return err
+		}
 
 		sus := &protocolv1.SuspensionMessage{WaitingCompletions: []uint32{2}}
 		susPayload, _ := proto.Marshal(sus)
-		_ = writeFrame(w, handlerclient.TypeSuspension, susPayload)
-		flusher.Flush()
-		_, _ = io.Copy(io.Discard, r.Body)
-		return
+		if err := stream.Send(frameFor(handlerclient.TypeSuspension, susPayload)); err != nil {
+			return err
+		}
+		return drainStream(stream)
 	}
 
 	_ = resolvedID
@@ -160,12 +136,14 @@ func (f *fakeHandlerAwakeable) serveInvoke(t *testing.T, w http.ResponseWriter, 
 		},
 	}
 	outPayload, _ := proto.Marshal(out)
-	_ = writeFrame(w, handlerclient.TypeCmdOutput, outPayload)
-	flusher.Flush()
+	if err := stream.Send(frameFor(handlerclient.TypeCmdOutput, outPayload)); err != nil {
+		return err
+	}
 	endPayload, _ := proto.Marshal(&protocolv1.EndMessage{})
-	_ = writeFrame(w, handlerclient.TypeEnd, endPayload)
-	flusher.Flush()
-	_, _ = io.Copy(io.Discard, r.Body)
+	if err := stream.Send(frameFor(handlerclient.TypeEnd, endPayload)); err != nil {
+		return err
+	}
+	return drainStream(stream)
 }
 
 // mintAwakeable mirrors pkg/sdk/server.mintAwakeableID for the test

@@ -1,0 +1,38 @@
+// Reflow handler service v1 — engine ↔ handler RPC surface.
+//
+// The transport is Connect RPC. Engine and handler both support the
+// Connect / gRPC / gRPC-Web protocols on the same endpoint; the engine
+// dials whichever the handler advertises. Capability discovery lives in
+// proto/discoveryv1.
+//
+// Two RPC shapes are defined here. v1 implements only InvokeStream; the
+// request/response shape lands when the engine grows server-driven
+// suspension on top of the existing journal.
+//
+//   - InvokeStream is a bidi stream of protocolv1.Frame envelopes. The
+//     engine sends StartMessage + replay frames + completion
+//     notifications; the handler sends new command frames + the
+//     terminal Output/Suspension/Error frame. Used by long-lived
+//     handler deployments (containers, sidecars) that can keep an
+//     HTTP/2 connection open across the lifetime of the invocation.
+//
+// Wire framing of protocolv1.Frame is unchanged: the 8-byte header +
+// payload bytes live inside Frame.header and Frame.payload. Connect
+// handles the stream-framing layer on top.
+syntax = "proto3";
+
+package reflow.handler.v1;
+
+import "protocolv1/protocol.proto";
+
+option go_package = "github.com/twinfer/reflow/proto/handlerv1;handlerv1";
+
+service HandlerService {
+  // InvokeStream opens a bidi stream that carries one full invocation
+  // session. The first engine-sent Frame is a StartMessage; the
+  // terminal handler-sent Frame is EndMessage (or SuspensionMessage /
+  // ErrorMessage for non-clean termination). Route info (service +
+  // handler) is carried inside StartMessage — no URL/header metadata
+  // is consulted on the server side.
+  rpc InvokeStream(stream reflow.protocol.v1.Frame) returns (stream reflow.protocol.v1.Frame);
+}

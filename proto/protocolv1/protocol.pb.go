@@ -1,8 +1,9 @@
 // Reflow service protocol v1 — engine ↔ handler wire format.
 //
-// The transport is raw HTTP/2. The engine dials the handler endpoint
-// and POSTs a chunked, framed request body to /invoke/<service>/<handler>;
-// the response body carries the handler→engine frame stream. Capability
+// The transport is Connect RPC over HTTP/2 (h2c plaintext or HTTPS).
+// The engine opens HandlerService.InvokeStream — a bidi stream of
+// protocolv1.Frame envelopes — for each invocation. Routing
+// (service_name, handler_name) flows inside StartMessage. Capability
 // discovery is a separate one-shot probe defined in
 // proto/discoveryv1/discovery.proto (GET /discover).
 //
@@ -183,10 +184,10 @@ type StartMessage struct {
 	DurationSinceLastStoredEntry   uint64 `protobuf:"varint,8,opt,name=duration_since_last_stored_entry,json=durationSinceLastStoredEntry,proto3" json:"duration_since_last_stored_entry,omitempty"`
 	// Seed for the SDK's deterministic RNG. Stable across restarts.
 	RandomSeed uint64 `protobuf:"varint,9,opt,name=random_seed,json=randomSeed,proto3" json:"random_seed,omitempty"`
-	// Service + handler the engine is invoking. Echoed from the URL path
-	// /invoke/<service>/<handler> as a defense-in-depth cross-check; the
-	// handler-side server rejects the session if the URL and StartMessage
-	// disagree.
+	// Service + handler the engine is invoking. Connect RPC carries no
+	// per-handler addressing on the URL, so these fields are the
+	// authoritative routing source — the handler-side server resolves
+	// (service_name, handler_name) directly from StartMessage.
 	ServiceName string `protobuf:"bytes,10,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
 	HandlerName string `protobuf:"bytes,11,opt,name=handler_name,json=handlerName,proto3" json:"handler_name,omitempty"`
 	// Handler classification — echoes the deployment registration.

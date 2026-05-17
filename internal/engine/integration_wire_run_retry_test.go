@@ -2,13 +2,12 @@ package engine_test
 
 import (
 	"context"
-	"io"
 	"net/http"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	connect "connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine/admin"
@@ -33,95 +32,68 @@ type fakeHandlerRunRetry struct {
 	retryFail string
 }
 
-func (f *fakeHandlerRunRetry) discoveryBody(t *testing.T) []byte {
-	t.Helper()
-	resp := &discoveryv1.DiscoveryResponse{
+func (f *fakeHandlerRunRetry) discovery() *discoveryv1.DiscoveryResponse {
+	return &discoveryv1.DiscoveryResponse{
 		ProtocolVersion: "v1",
 		Handlers: []*discoveryv1.DiscoveredHandler{
 			{Service: "Compute", Kind: protocolv1.Kind_KIND_SERVICE, HandlerNames: []string{"runRetry"}},
 		},
 	}
-	body, err := proto.Marshal(resp)
-	if err != nil {
-		t.Fatalf("marshal DiscoveryResponse: %v", err)
-	}
-	return body
 }
 
 func (f *fakeHandlerRunRetry) handler(t *testing.T) http.Handler {
 	t.Helper()
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/discover":
-			w.Header().Set("Content-Type", "application/vnd.reflow.invocation.v1+protobuf")
-			_, _ = w.Write(f.discoveryBody(t))
-			return
-		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/invoke/"):
-			f.serveInvoke(t, w, r)
-			return
-		default:
-			http.NotFound(w, r)
-		}
-	})
+	return mountFakeHandler(t, f.discovery(), f.serveInvoke)
 }
 
-func (f *fakeHandlerRunRetry) serveInvoke(t *testing.T, w http.ResponseWriter, r *http.Request) {
+func (f *fakeHandlerRunRetry) serveInvoke(t *testing.T, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
 	t.Helper()
 
-	startFrame, err := readFrame(r.Body)
+	startFrame, err := stream.Receive()
 	if err != nil {
-		http.Error(w, "read start: "+err.Error(), http.StatusBadRequest)
-		return
+		return err
 	}
 	var sm protocolv1.StartMessage
 	if err := proto.Unmarshal(startFrame.GetPayload(), &sm); err != nil {
-		http.Error(w, "decode StartMessage: "+err.Error(), http.StatusBadRequest)
-		return
+		return err
 	}
 	for range sm.GetKnownEntries() {
-		if _, err := readFrame(r.Body); err != nil {
-			http.Error(w, "read replay frame: "+err.Error(), http.StatusBadRequest)
-			return
+		if _, err := stream.Receive(); err != nil {
+			return err
 		}
 	}
-
-	w.Header().Set("Content-Type", "application/vnd.reflow.invocation.v1+protobuf")
-	w.WriteHeader(http.StatusOK)
-	flusher, _ := w.(http.Flusher)
 
 	attempt := f.attempt.Add(1)
 
 	runCmd := &protocolv1.RunCommandMessage{ResultCompletionId: 1, Name: "compute"}
 	runPayload, _ := proto.Marshal(runCmd)
-	_ = writeFrame(w, handlerclient.TypeCmdRun, runPayload)
-	flusher.Flush()
+	if err := stream.Send(frameFor(handlerclient.TypeCmdRun, runPayload)); err != nil {
+		return err
+	}
 
 	prop := &protocolv1.ProposeRunCompletionMessage{ResultCompletionId: 1}
 	if attempt == 1 {
-		// First attempt: retryable failure (no Failure code = engine
-		// treats as transient and schedules a backoff timer).
 		prop.Retryable = true
 		prop.Result = &protocolv1.ProposeRunCompletionMessage_Failure{
 			Failure: &protocolv1.Failure{Message: f.retryFail},
 		}
 		propPayload, _ := proto.Marshal(prop)
-		_ = writeFrame(w, handlerclient.TypeProposeRunDone, propPayload)
-		flusher.Flush()
-		// SDK suspends after a retryable failure — emit SuspensionMessage
-		// so the engine proposes Suspended cleanly.
+		if err := stream.Send(frameFor(handlerclient.TypeProposeRunDone, propPayload)); err != nil {
+			return err
+		}
 		susp := &protocolv1.SuspensionMessage{WaitingCompletions: []uint32{1}}
 		suspPayload, _ := proto.Marshal(susp)
-		_ = writeFrame(w, handlerclient.TypeSuspension, suspPayload)
-		flusher.Flush()
-		_, _ = io.Copy(io.Discard, r.Body)
-		return
+		if err := stream.Send(frameFor(handlerclient.TypeSuspension, suspPayload)); err != nil {
+			return err
+		}
+		return drainStream(stream)
 	}
 
-	// Second attempt (after backoff timer fires + respawn): fn succeeds.
 	prop.Result = &protocolv1.ProposeRunCompletionMessage_Value{Value: f.finalOut}
 	propPayload, _ := proto.Marshal(prop)
-	_ = writeFrame(w, handlerclient.TypeProposeRunDone, propPayload)
-	flusher.Flush()
+	if err := stream.Send(frameFor(handlerclient.TypeProposeRunDone, propPayload)); err != nil {
+		return err
+	}
 
 	outMsg := &protocolv1.OutputCommandMessage{
 		Result: &protocolv1.OutputCommandMessage_Value{
@@ -129,12 +101,14 @@ func (f *fakeHandlerRunRetry) serveInvoke(t *testing.T, w http.ResponseWriter, r
 		},
 	}
 	outPayload, _ := proto.Marshal(outMsg)
-	_ = writeFrame(w, handlerclient.TypeCmdOutput, outPayload)
-	flusher.Flush()
+	if err := stream.Send(frameFor(handlerclient.TypeCmdOutput, outPayload)); err != nil {
+		return err
+	}
 	endPayload, _ := proto.Marshal(&protocolv1.EndMessage{})
-	_ = writeFrame(w, handlerclient.TypeEnd, endPayload)
-	flusher.Flush()
-	_, _ = io.Copy(io.Discard, r.Body)
+	if err := stream.Send(frameFor(handlerclient.TypeEnd, endPayload)); err != nil {
+		return err
+	}
+	return drainStream(stream)
 }
 
 // TestWireDispatch_HTTP2_RunRetryable exercises the retryable ctx.Run

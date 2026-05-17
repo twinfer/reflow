@@ -2,15 +2,14 @@ package engine_test
 
 import (
 	"context"
-	"encoding/binary"
-	"fmt"
+	"errors"
 	"io"
 	"net"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
+	connect "connectrpc.com/connect"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
@@ -48,10 +47,10 @@ func callRegisterDeployment(ctx context.Context, srv *admin.Server, url string) 
 // fakeHandlerHTTP2 is the handler-side h2c server used by the HTTP/2
 // round-trip + deployment-swap tests. Two endpoints:
 //
-//   - GET /discover    → discoveryv1.DiscoveryResponse protobuf body
-//   - POST /invoke/.../...
+//   - GET /discover                                    → DiscoveryResponse
+//   - POST /reflow.handler.v1.HandlerService/InvokeStream → Connect bidi
 //     reads the engine's StartMessage frame, writes OutputCommandMessage
-//     and EndMessage frames back, then drains the request body until EOF.
+//     and EndMessage frames back, then drains the request stream.
 //
 // onStart, if non-nil, is invoked synchronously after the StartMessage is
 // decoded. Tests use it to gate completion (e.g. the deployment-swap test
@@ -61,71 +60,39 @@ type fakeHandlerHTTP2 struct {
 	onStart func(start *protocolv1.StartMessage) error
 }
 
-func (f *fakeHandlerHTTP2) discoveryBody(t *testing.T) []byte {
-	t.Helper()
-	resp := &discoveryv1.DiscoveryResponse{
+func (f *fakeHandlerHTTP2) discovery() *discoveryv1.DiscoveryResponse {
+	return &discoveryv1.DiscoveryResponse{
 		ProtocolVersion: "v1",
 		Handlers: []*discoveryv1.DiscoveredHandler{
 			{Service: "Echo", Kind: protocolv1.Kind_KIND_SERVICE, HandlerNames: []string{"echo"}},
 		},
 	}
-	body, err := proto.Marshal(resp)
-	if err != nil {
-		t.Fatalf("marshal DiscoveryResponse: %v", err)
-	}
-	return body
 }
 
 func (f *fakeHandlerHTTP2) handler(t *testing.T) http.Handler {
 	t.Helper()
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/discover":
-			w.Header().Set("Content-Type", "application/vnd.reflow.invocation.v1+protobuf")
-			_, _ = w.Write(f.discoveryBody(t))
-			return
-		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/invoke/"):
-			f.serveInvoke(t, w, r)
-			return
-		default:
-			http.NotFound(w, r)
-		}
-	})
+	return mountFakeHandler(t, f.discovery(), f.serveInvoke)
 }
 
-func (f *fakeHandlerHTTP2) serveInvoke(t *testing.T, w http.ResponseWriter, r *http.Request) {
+func (f *fakeHandlerHTTP2) serveInvoke(t *testing.T, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
 	t.Helper()
 	// Read the engine's first frame; it must be a StartMessage.
-	start, err := readFrame(r.Body)
+	start, err := stream.Receive()
 	if err != nil {
-		http.Error(w, "read start: "+err.Error(), http.StatusBadRequest)
-		return
+		return err
 	}
 	typeCode, _, _ := handlerclient.UnpackHeader(start.GetHeader())
 	if typeCode != handlerclient.TypeStart {
-		http.Error(w, "first frame not StartMessage", http.StatusBadRequest)
-		return
+		return errors.New("first frame not StartMessage")
 	}
 	var sm protocolv1.StartMessage
 	if err := proto.Unmarshal(start.GetPayload(), &sm); err != nil {
-		http.Error(w, "decode StartMessage: "+err.Error(), http.StatusBadRequest)
-		return
+		return err
 	}
 	if f.onStart != nil {
 		if err := f.onStart(&sm); err != nil {
-			http.Error(w, "onStart: "+err.Error(), http.StatusInternalServerError)
-			return
+			return err
 		}
-	}
-
-	w.Header().Set("Content-Type", "application/vnd.reflow.invocation.v1+protobuf")
-	w.WriteHeader(http.StatusOK)
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		// h2c always supplies a Flusher; reaching here means the test
-		// harness regressed onto HTTP/1.1.
-		http.Error(w, "server: ResponseWriter is not a Flusher", http.StatusInternalServerError)
-		return
 	}
 
 	out := &protocolv1.OutputCommandMessage{
@@ -135,56 +102,30 @@ func (f *fakeHandlerHTTP2) serveInvoke(t *testing.T, w http.ResponseWriter, r *h
 	}
 	payload, err := proto.Marshal(out)
 	if err != nil {
-		return
-	}
-	if err := writeFrame(w, handlerclient.TypeCmdOutput, payload); err != nil {
-		return
-	}
-	flusher.Flush()
-	endPayload, err := proto.Marshal(&protocolv1.EndMessage{})
-	if err != nil {
-		return
-	}
-	if err := writeFrame(w, handlerclient.TypeEnd, endPayload); err != nil {
-		return
-	}
-	flusher.Flush()
-
-	// Wait for the engine to CloseSend; returning early would close the
-	// response body before the engine has read EndMessage on slow CI runs.
-	_, _ = io.Copy(io.Discard, r.Body)
-}
-
-// readFrame decodes one [8-byte BE header][payload] frame from r.
-func readFrame(r io.Reader) (*protocolv1.Frame, error) {
-	var hdr [8]byte
-	if _, err := io.ReadFull(r, hdr[:]); err != nil {
-		return nil, err
-	}
-	h := binary.BigEndian.Uint64(hdr[:])
-	_, _, length := handlerclient.UnpackHeader(h)
-	payload := make([]byte, length)
-	if length > 0 {
-		if _, err := io.ReadFull(r, payload); err != nil {
-			return nil, fmt.Errorf("read payload (%d bytes): %w", length, err)
-		}
-	}
-	return &protocolv1.Frame{Header: h, Payload: payload}, nil
-}
-
-// writeFrame writes a [8-byte BE header][payload] frame to w.
-func writeFrame(w io.Writer, typeCode uint16, payload []byte) error {
-	var hdr [8]byte
-	binary.BigEndian.PutUint64(hdr[:], handlerclient.PackHeader(typeCode, 0, uint32(len(payload))))
-	if _, err := w.Write(hdr[:]); err != nil {
 		return err
 	}
-	if len(payload) > 0 {
-		if _, err := w.Write(payload); err != nil {
-			return err
+	if err := stream.Send(frameFor(handlerclient.TypeCmdOutput, payload)); err != nil {
+		return err
+	}
+	endPayload, err := proto.Marshal(&protocolv1.EndMessage{})
+	if err != nil {
+		return err
+	}
+	if err := stream.Send(frameFor(handlerclient.TypeEnd, endPayload)); err != nil {
+		return err
+	}
+
+	// Drain remaining client-sent frames so the HTTP/2 stream closes
+	// cleanly; returning while the engine still has frames to write
+	// would race with CloseSend.
+	for {
+		if _, err := stream.Receive(); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return nil
 		}
 	}
-	return nil
 }
 
 // startFakeHandlerHTTP2 binds an h2c server hosting f.handler on a free
@@ -218,11 +159,10 @@ func startFakeHandlerHTTP2(t *testing.T, f *fakeHandlerHTTP2) (string, func()) {
 }
 
 // TestWireDispatch_HTTP2_RoundTrip exercises the full engine ↔ handler
-// wire path over raw HTTP/2: admin.RegisterDeployment discovers the
+// wire path over Connect RPC: admin.RegisterDeployment discovers the
 // fake h2c handler via GET /discover, the partition's invoker resolves
-// the deployment and opens an HTTP/2 POST to /invoke/Echo/echo, and the
-// fake handler completes the session with a fixed output. Mirrors
-// TestWireDispatch_GRPC_RoundTrip but over HTTP/2.
+// the deployment and opens HandlerService.InvokeStream, and the fake
+// handler completes the session with a fixed output.
 func TestWireDispatch_HTTP2_RoundTrip(t *testing.T) {
 	const wantOutput = "wired-http2:hello"
 

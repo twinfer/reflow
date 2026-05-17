@@ -78,7 +78,7 @@ type Config struct {
 	ScratchDir string
 	// Signer, when non-nil, is used to mint a JWT on outgoing
 	// GET /discover requests during RegisterDeployment. Same Signer
-	// the handlerclient http2client uses.
+	// the handlerclient connectclient uses.
 	Signer handlerclient.Signer
 }
 

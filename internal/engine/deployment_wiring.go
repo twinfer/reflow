@@ -8,7 +8,7 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine/cluster"
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
-	"github.com/twinfer/reflow/internal/engine/handlerclient/http2client"
+	"github.com/twinfer/reflow/internal/engine/handlerclient/connectclient"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -129,14 +129,14 @@ func (h *Host) openWireStream(ctx context.Context, rec *enginev1.DeploymentRecor
 	})
 }
 
-// newHandlerRegistry builds the engine-side handlerclient registry with
-// the default transport dialers (raw HTTP/2 plain + TLS). Operators may
-// install additional dialers post-construction via
+// newHandlerRegistry builds the engine-side handlerclient registry
+// with the default Connect transport dialers (plaintext h2c + TLS).
+// Operators may install additional dialers post-construction via
 // Host.HandlerClients().Register. signer, when non-nil, stamps every
 // dispatched request with an Authorization: Bearer JWT.
 func newHandlerRegistry(signer handlerclient.Signer) *handlerclient.Registry {
 	r := handlerclient.NewRegistry()
-	http2client.Register(r, signer)
+	connectclient.Register(r, signer)
 	return r
 }
 

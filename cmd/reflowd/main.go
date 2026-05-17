@@ -65,22 +65,18 @@ func loadConfig() (reflow.Config, error) {
 // left empty by default — single-node bootstrap when they are unset.
 func defaultValues() map[string]any {
 	return map[string]any{
-		"node.id":           uint64(1),
-		"node.raft_addr":    "127.0.0.1:9091",
-		"storage.data_dir":  "./data",
-		"cluster.shards":    []uint64{1},
-		"ingress.grpc_addr": ":8081",
-		"ingress.http_addr": ":8080",
-		"metrics.addr":      ":9090",
-		"logging.level":     "INFO",
+		"node.id":          uint64(1),
+		"node.raft_addr":   "127.0.0.1:9091",
+		"storage.data_dir": "./data",
+		"cluster.shards":   []uint64{1},
+		"metrics.addr":     ":9090",
+		"logging.level":    "INFO",
 		// Admin + snapshot defaults. The admin server is only started when
 		// Cluster.Peers is non-empty AND TLS is configured, so leaving Addr
 		// populated is safe for single-node out of the box. The snapshot
 		// producer is disabled by default (Interval=0); operators opt in via
 		// REFLOW_SNAPSHOT_INTERVAL once they have a sustained DR plan.
 		"admin.addr":           ":8082",
-		"snapshot.driver":      "fs",
-		"snapshot.fs_root":     "./data/snapshots",
 		"snapshot.retain":      24,
 		"snapshot.interval":    "0s",
 		"snapshot.scratch_dir": "",

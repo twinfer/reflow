@@ -188,7 +188,7 @@ type Future interface {
 // Poller's Poll reports whether the future is resolved. When not yet
 // resolved, the second return is the set of suspend tokens the engine
 // must observe before progress is possible — the combinators union
-// these across children and pass them to inprocContext.suspend.
+// these across children so the runtime can wait on the merged set.
 //
 // Poller is exported so the engine invoker package can implement it,
 // but it is part of the implementation contract — user code should not

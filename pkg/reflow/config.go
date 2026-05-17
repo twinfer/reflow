@@ -173,18 +173,6 @@ type NodeConfig struct {
 	DeliveryAddr string `koanf:"delivery_addr"`
 }
 
-// BootstrapMode determines how the node joins the cluster.
-type BootstrapMode int
-
-const (
-	// BootstrapSingleNode runs the node alone with no peers.
-	BootstrapSingleNode BootstrapMode = iota
-	// BootstrapStaticPeers reads peers from ClusterConfig.Peers.
-	BootstrapStaticPeers
-	// BootstrapDiscovery uses gossip/discovery to find peers (not yet implemented).
-	BootstrapDiscovery
-)
-
 // Peer is one entry in a static cluster topology. GossipAddr is required
 // when Cluster.Peers is non-empty (every peer entry, including self);
 // NodeHostID is optional and defaults to a stable derivation from NodeID.
@@ -202,25 +190,13 @@ type Peer struct {
 }
 
 // ClusterConfig describes the multi-node cluster. Single-node deployments
-// leave Peers empty and BootstrapMode at the default BootstrapSingleNode.
-//
-// Secrets-as-config: RaftTLSCert is the actual cert material loaded by a
-// koanf provider (Vault, AWS SM, GCP SM, file, env). No inline ${secret:}
-// template — the chosen koanf provider populates the field directly.
+// leave Peers empty.
 type ClusterConfig struct {
 	// Shards lists the partition shard IDs this node should host. Defaults
 	// to []uint64{1} when empty.
 	Shards []uint64 `koanf:"shards"`
-	// Peers is the static topology for BootstrapStaticPeers.
+	// Peers is the static topology — non-empty for multi-node bootstrap.
 	Peers []Peer `koanf:"peers"`
-	// BootstrapMode selects how the cluster forms.
-	BootstrapMode BootstrapMode `koanf:"bootstrap_mode"`
-	// RaftTLSCert is the PEM-encoded TLS cert for inter-node Raft
-	// transport, typically populated from a secret-store provider
-	// (Vault, AWS SM).
-	RaftTLSCert []byte `koanf:"raft_tls_cert"`
-	// RaftTLSKey is the matching private key.
-	RaftTLSKey []byte `koanf:"raft_tls_key"`
 	// JoinExisting, when true, starts this node as a joiner of an
 	// already-running cluster: dragonboat StartOnDiskReplica is called
 	// with (nil, join=true) so the node catches up from a Raft snapshot
@@ -232,18 +208,11 @@ type ClusterConfig struct {
 	JoinExisting bool `koanf:"join_existing"`
 }
 
-// SnapshotRepository abstracts the destination for partition snapshots
-// (SAD §6.12). nil means "local only" (no remote archival).
-type SnapshotRepository any
-
 // StorageConfig configures the on-disk state.
 type StorageConfig struct {
 	// DataDir holds per-partition state and dragonboat's Raft log.
 	// Layout: <DataDir>/raft/, <DataDir>/p{shardID}/state/.
 	DataDir string `koanf:"data_dir"`
-	// SnapshotRepo is the optional remote snapshot destination. nil means
-	// local snapshots only. Not loaded from config — set programmatically.
-	SnapshotRepo SnapshotRepository `koanf:"-"`
 }
 
 // IngressConfig configures the client-facing gRPC + HTTP/JSON gateway.

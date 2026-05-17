@@ -749,8 +749,7 @@ func TestWireContext_Awakeable_IDEmbedsPartitionKey(t *testing.T) {
 }
 
 // TestWireContext_Suspend_ShortCircuitsSubsequentCalls asserts that
-// once suspended, every ctx call returns ErrSuspended (mirrors
-// inprocContext.suspend).
+// once suspended, every ctx call returns ErrSuspended.
 func TestWireContext_Suspend_ShortCircuitsSubsequentCalls(t *testing.T) {
 	wctx, _ := newTestWireContext(t, nil)
 

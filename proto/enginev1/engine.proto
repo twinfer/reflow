@@ -30,8 +30,8 @@ message InvocationTarget {
   string object_key = 3; // empty for unkeyed services
 }
 
-// Deduplication strategy.
-// Phase 1 only emits SelfProposal (leader) and Arbitrary (ingress).
+// Deduplication strategy. SelfProposal is stamped on leader-originated
+// proposals; Arbitrary on ingress and cross-shard outbox traffic.
 message Dedup {
   oneof kind {
     SelfProposalDedup self_proposal = 1;
@@ -86,18 +86,18 @@ message Command {
     InvokerEffect invoker_effect = 3;
     TimerFired timer_fired = 4;
     PurgeInvocation purge = 5;
-    // Phase 4.1 metadata-shard commands. Accepted only by shardID=0.
+    // Metadata-shard membership commands. Accepted only by shardID=0.
     RegisterNode register_node = 6;
     UpdatePartitionTable update_partition_table = 7;
-    // Phase 4.2 metadata-shard commands. Accepted only by shardID=0.
+    // Metadata-shard rebalance commands. Accepted only by shardID=0.
     // EvictNode marks a node dead; the metadata-leader rebalancer
     // observes and drives RebalanceStep sequences against dragonboat.
     EvictNode evict_node = 8;
     BeginRebalanceStep begin_rebalance_step = 9;
     CompleteRebalanceStep complete_rebalance_step = 10;
-    // Phase 4.1 partition-shard cross-shard delivery commands. The
-    // outbox shuffler ferries DeliverCallResult to the parent's shard
-    // and OutboxAck back to the producer's shard; both ride the same
+    // Partition-shard cross-shard delivery commands. The outbox
+    // shuffler ferries DeliverCallResult to the parent's shard and
+    // OutboxAck back to the producer's shard; both ride the same
     // Delivery gRPC + Raft pipeline as Invoke. Accepted only by
     // shardID >= 1.
     DeliverCallResult deliver_call_result = 16;
@@ -133,7 +133,7 @@ message InvokeCommand {
   // ParentLink is set when this invocation is the callee of a ctx.Call from
   // another invocation. The receiving partition's FSM propagates it onto the
   // callee's status so the callee's Completed apply arm can journal a
-  // JECallResult back on the parent. Phase 2.5.
+  // JECallResult back on the parent.
   ParentLink parent_link = 5;
   // deployment_id pins this invocation to the deployment that owned the
   // (service, handler) routing at submit time. The apply arm copies it
@@ -147,7 +147,7 @@ message InvokeCommand {
 // ParentLink references the parent invocation that spawned a callee via
 // ctx.Call. parent_id is the parent's InvocationId; call_index is the
 // journal index of the parent's JECall entry. The callee's JECallResult
-// lands at call_index + 1. Phase 2.5.
+// lands at call_index + 1.
 message ParentLink {
   InvocationId parent_id = 1;
   uint32 call_index = 2;
@@ -159,7 +159,6 @@ message InvokerEffect {
     JournalEntryAppended journal_appended = 2;
     InvocationCompleted completed = 3;
     InvocationSuspended suspended = 4;
-    // Phase 2 additions.
     JERunProposal run_proposal = 5;
     AwakeableResolved awakeable_resolved = 6;
     SignalDelivered signal_delivered = 7;
@@ -168,9 +167,9 @@ message InvokerEffect {
 
 // JERunProposal carries the outcome of a deterministic side-effect block
 // (ctx.Run) from the SDK back to the engine. The FSM applies it by writing
-// a JERun journal entry at entry_index and acking the SDK. Phase 2.
+// a JERun journal entry at entry_index and acking the SDK.
 //
-// Phase 3 additions:
+// Retry fields:
 //   retryable    — set when the SDK classified fn's error as non-terminal
 //                  (anything other than *sdk.Failure). When true the engine
 //                  may compute a backoff via internal/engine/retry.go and
@@ -199,7 +198,7 @@ message JERunProposal {
 // AwakeableResolved is proposed by the partition that owns the resolving
 // invocation when an external caller resolves an awakeable. The FSM appends
 // a JEAwakeableResult to the owner's journal and wakes the suspended
-// invocation if needed. Phase 2.
+// invocation if needed.
 message AwakeableResolved {
   string awakeable_id = 1;
   bytes value = 2;
@@ -208,7 +207,7 @@ message AwakeableResolved {
 
 // SignalDelivered is the receiver-side effect when a JESignal lands on its
 // target invocation. signal_name + payload are the routed bits; the target
-// InvocationId lives on the surrounding InvokerEffect.invocation_id. Phase 2.
+// InvocationId lives on the surrounding InvokerEffect.invocation_id.
 message SignalDelivered {
   string signal_name = 1;
   bytes payload = 2;
@@ -232,12 +231,11 @@ message InvocationSuspended {
 // at types/src/journal_v2/mod.rs:60-150.
 //
 // Tag assignment:
-//   2-9   : Phase 1 baseline (Input, Sleep+Result, Call+Result, Get/SetState,
-//           Output).
-//   10-15 : Phase 2 (Run, Awakeable, AwakeableResult, Signal, ClearState,
-//           GetEagerState).
-//   16+   : reserved for Phase 3 (Promise combinators, AttachInvocation,
-//           ClearAllState, idempotency-keyed Call, virtual-object queue ops).
+//   2-9   : baseline (Input, Sleep+Result, Call+Result, Get/SetState, Output).
+//   10-15 : Run, Awakeable+Result, Signal, ClearState, GetEagerState.
+//   16-17 : ClearAllState, OneWayCall.
+//   18+   : reserved for future entries (Promise combinators,
+//           AttachInvocation, virtual-object queue ops).
 message JournalEntry {
   uint32 index = 1;
   oneof entry {
@@ -249,7 +247,6 @@ message JournalEntry {
     JEGetState get_state = 7;
     JESetState set_state = 8;
     JEOutput output = 9;
-    // Phase 2 additions.
     JERun run = 10;
     JEAwakeable awakeable = 11;
     JEAwakeableResult awakeable_result = 12;
@@ -281,8 +278,8 @@ message JECall {
   bytes input = 2;
   // Optional idempotency key — when set, the apply arm stamps it onto the
   // outgoing OutboxEnvelope.Invoke.InvokeCommand.idempotency_key so the
-  // callee's receiving onInvoke runs Phase 3 idempotency dedup against the
-  // (service, handler, object_key, idempotency_key) tuple. Phase 3.
+  // callee's receiving onInvoke dedups against the
+  // (service, handler, object_key, idempotency_key) tuple.
   string idempotency_key = 3;
 }
 
@@ -303,7 +300,7 @@ message JECallResult {
   uint32 call_index = 1;
   bytes result = 2;
   // failure_message is populated when the callee terminated with a failure
-  // instead of a result. Mirrors the JEAwakeableResult / JERun shape. Phase 2.5.
+  // instead of a result. Mirrors the JEAwakeableResult / JERun shape.
   string failure_message = 3;
 }
 
@@ -326,7 +323,7 @@ message JEOutput {
 // runs the body once, journals (value or failure_message), and replays
 // store-only on subsequent retries. attempt is bookkeeping for retry
 // policies. retryable distinguishes a terminal error (handler fails) from a
-// transient one (engine schedules a backoff and re-invokes fn). Phase 3.
+// transient one (engine schedules a backoff and re-invokes fn).
 message JERun {
   bytes value = 1;
   string failure_message = 2;
@@ -338,10 +335,10 @@ message JERun {
 // Carried on StartInvocation so the SDK can echo it through to the engine
 // apply arm without per-Run wire traffic. Zero/absent fields fall back to
 // defaults: initial=50ms, factor=2.0, max_interval=10s, max_attempts=64.
-// max_attempts=0 means "use the default", NOT unlimited — Phase 3 has no
-// cancel/kill, so unbounded retries would poison the VO queue. Callers
-// wanting truly unbounded retries must set max_attempts explicitly (e.g.
-// math.MaxUint32). Phase 3.
+// max_attempts=0 means "use the default", NOT unlimited — the engine has
+// no cancel/kill primitive today, so unbounded retries would poison the
+// VO queue. Callers wanting truly unbounded retries must set max_attempts
+// explicitly (e.g. math.MaxUint32).
 message RunRetryPolicy {
   uint64 initial_interval_ms = 1;
   double factor = 2;
@@ -351,18 +348,18 @@ message RunRetryPolicy {
 
 // JEClearAllState wipes every state row scoped to the invocation's
 // (service, object_key). Empty body: the target is implied by the
-// surrounding invocation. Apply arm uses StateTable.RangeDelete. Phase 3.
+// surrounding invocation. Apply arm uses StateTable.RangeDelete.
 message JEClearAllState {}
 
 // JEAwakeable is journaled when a handler mints an awakeable. The actual
 // resolution arrives later as JEAwakeableResult after an external caller
-// hits the ingress resolution endpoint. Phase 2.
+// hits the ingress resolution endpoint.
 message JEAwakeable {
   string awakeable_id = 1;
 }
 
 // JEAwakeableResult resolves a previously-minted awakeable. Written by
-// the FSM in response to InvokerEffect.AwakeableResolved. Phase 2.
+// the FSM in response to InvokerEffect.AwakeableResolved.
 message JEAwakeableResult {
   string awakeable_id = 1;
   bytes value = 2;
@@ -371,21 +368,21 @@ message JEAwakeableResult {
 
 // JESignal is sender-side: the journal entry an invocation writes when it
 // sends a signal to another invocation. The receiver-side effect is
-// InvokerEffect.SignalDelivered. Phase 2.
+// InvokerEffect.SignalDelivered.
 message JESignal {
   InvocationId target_invocation_id = 1;
   string signal_name = 2;
   bytes payload = 3;
 }
 
-// JEClearState records a state deletion. Phase 2.
+// JEClearState records a state deletion.
 message JEClearState {
   string key = 1;
 }
 
 // JEGetEagerState is the eager-preload form of GetState: the value is
 // resolved from the state map at StartInvocation time rather than via a
-// follow-up notification. Defined for Phase 3; never emitted in Phase 2.
+// follow-up notification.
 message JEGetEagerState {
   string key = 1;
   bytes value = 2;
@@ -427,7 +424,7 @@ message Scheduled {
   fixed64 created_at_ms = 3;
   // ParentLink is set when this invocation is a callee. Propagated through
   // every status transition until Completed, where the apply arm consumes
-  // it to journal JECallResult on the parent. Phase 2.5.
+  // it to journal JECallResult on the parent.
   ParentLink parent_link = 4;
 }
 
@@ -456,7 +453,7 @@ message Completed {
 // Virtual Object single-writer invariant. Persisted in KeyLeaseTable; the
 // apply path fires the per-key FSM (internal/engine/object_fsm.go) which
 // reads and writes this message in the same Pebble batch as the invocation
-// status transition. Phase 3.
+// status transition.
 //
 // state==IDLE   : no invocation holds the lease; current_invocation unset;
 //                 queue empty.
@@ -480,21 +477,21 @@ message DedupEntry {
 
 // PartitionMeta is the per-shard singleton holding the shard's applied Raft
 // index and leader-epoch view. Stored under the `meta` key in each shard's
-// own Pebble DB. NOT the cluster-wide metadata — that lives in the metadata
-// shard's own state (defined when Phase 4 lands; SAD §6.2).
+// own Pebble DB. NOT the cluster-wide metadata — that lives in shard 0's
+// own state (PartitionTable + NodeMembership rows below; SAD §6.2).
 message PartitionMeta {
   uint64 applied_index = 1;
   uint64 leader_epoch = 2;
   uint64 latest_announced_epoch = 3;
   // next_outbox_seq is the next sequence number the leader will allocate
   // when appending to OutboxTable. Survives restarts so re-injected
-  // commands keep monotonic ordering. Phase 2.
+  // commands keep monotonic ordering.
   uint64 next_outbox_seq = 4;
 }
 
 // AwakeableEntry is the directory row keyed by awakeable_id, pointing back
 // at the owning invocation and the journal index that minted it. Lets
-// ingress find the right partition to propose AwakeableResolved on. Phase 2.
+// ingress find the right partition to propose AwakeableResolved on.
 message AwakeableEntry {
   InvocationId owner = 1;
   uint32 entry_index = 2;
@@ -504,11 +501,11 @@ message AwakeableEntry {
 // leader-side shuffler scans these and dispatches each one to the
 // destination shard: same-shard rows are re-injected locally via
 // IngressProposer.ProposeIngress; cross-shard rows are sent over the
-// gRPC Delivery service to the destination shard's leader (Phase 4.1).
+// gRPC Delivery service to the destination shard's leader.
 //
 // destination_shard_id is the target Raft shard. A value of 0 means
-// "same shard as the producer" (the Phase 1-3 default; preserves wire
-// compatibility for rows written before 4.1). Phase 4.1+.
+// "same shard as the producer" — the dispatcher short-circuits to the
+// local re-inject path.
 //
 // Variant semantics:
 //   invoke              — schedule a new invocation on the destination
@@ -521,11 +518,10 @@ message AwakeableEntry {
 //                         callee partition emits this to the parent's
 //                         partition so the parent's apply arm can append
 //                         JECallResult and wake the suspended parent.
-//                         Phase 4.1.
 //   outbox_ack          — cross-shard acknowledgement that an inbound
 //                         delivery has been durably applied on the
 //                         receiver. The producer shard pops the
-//                         corresponding outbox row on apply. Phase 4.1.
+//                         corresponding outbox row on apply.
 message OutboxEnvelope {
   uint64 destination_shard_id = 3;
   oneof kind {
@@ -542,7 +538,7 @@ message OutboxEnvelope {
 // (partition.go): on apply the receiver loads the parent's
 // InvocationStatus, appends a JECallResult journal entry at
 // call_index + 1, runs transitionOnCallResultDelivered, and persists in
-// the same Pebble batch. Phase 4.1.
+// the same Pebble batch.
 message DeliverCallResult {
   InvocationId parent_id = 1;
   uint32 call_index = 2;
@@ -556,7 +552,7 @@ message DeliverCallResult {
 // delivery's apply effects. On apply at the producer's shard the row is
 // dedup'd (the receiver stamped it with its own outbox/<recvShard> seq)
 // and the indicated (producer_shard_id, producer_seq) row is popped from
-// OutboxTable. Phase 4.1.
+// OutboxTable.
 message OutboxAck {
   uint64 producer_shard_id = 1;
   uint64 producer_seq = 2;
@@ -578,7 +574,7 @@ message SignalSend {
 //   {prefix}/p{shard_id:08d}/snapshot-{raft_index:020d}.tar
 //   {prefix}/p{shard_id:08d}/snapshot-{raft_index:020d}.meta.json
 //
-// Phase 4+. See SAD §6.12.
+// See SAD §6.12.
 message SnapshotMeta {
   uint64 shard_id = 1;
   uint64 raft_index = 2;
@@ -592,9 +588,15 @@ message SnapshotMeta {
 // NodeHostMeta is the payload packed into dragonboat's GossipConfig.Meta
 // blob. Every NodeHost advertises it via gossip; peers retrieve it via
 // INodeHostRegistry.GetMeta(nodeHostID) and use it to dial the reflow
-// gRPC Delivery service for cross-partition outbox dispatch. Phase 4.1.
+// gRPC Delivery service for cross-partition outbox dispatch and the
+// reflow Admin service for SelfJoin / LeaderHint redirects.
 message NodeHostMeta {
   string grpc_endpoint = 1;
+  // Admin gRPC endpoint advertised so peers (joiners running SelfJoin
+  // and the reflow-cluster CLI following LeaderHint redirects) can
+  // discover the metadata leader's admin port via gossip rather than
+  // requiring it preconfigured.
+  string admin_endpoint = 2;
 }
 
 // DeploymentRecord is the persisted shape of a registered deployment in
@@ -649,10 +651,10 @@ message RegisterNode {
 }
 
 // UpdatePartitionTable replaces shard 0's partition table atomically.
-// the new leader of shard 0 proposes this once at bootstrap
-// with the static RF=3 assignment. assignment_epoch is incremented on
-// every successful apply; consumers fence stale local caches against
-// it. Phase 4.1.
+// The new leader of shard 0 proposes this once at bootstrap with the
+// initial replica assignment derived from the peer set.
+// assignment_epoch is incremented on every successful apply; consumers
+// fence stale local caches against it.
 message UpdatePartitionTable {
   PartitionTable table = 1;
 }
@@ -670,9 +672,10 @@ message NodeMembership {
 }
 
 // PartitionTable is shard 0's authoritative map of partition shards to
-// replica node sets. Persisted via UpdatePartitionTable. 
-// always populates every partition_shard_id 1..N with the full peer
-// set (RF=3, N=3 → every node hosts every partition).
+// replica node sets. Persisted via UpdatePartitionTable. The number of
+// partition shards (the routing modulus) is independent of peer count;
+// the bootstrap path populates every partition_shard_id 1..N with the
+// configured replica set.
 message PartitionTable {
   map<uint64, ReplicaSet> shards = 1;
   uint64 assignment_epoch = 2;
@@ -693,7 +696,7 @@ message PartitionTable {
 }
 
 // ReplicaSet is the per-partition replica list. Order is not significant
-// for correctness; dragonboat treats the membership as a set. Phase 4.1.
+// for correctness; dragonboat treats the membership as a set.
 message ReplicaSet {
   repeated uint64 node_ids = 1;
 }
@@ -733,7 +736,7 @@ message RebalanceStep {
 // BeginRebalanceStep appends a RebalanceStep to PartitionTable.pending
 // if no entry with the same (shard_id, step_id) already exists.
 // Proposed by the admin handler (after AddNode / EvictNode applies)
-// and re-proposed on retry; the apply path absorbs duplicates. Phase 4.2.
+// and re-proposed on retry; the apply path absorbs duplicates.
 message BeginRebalanceStep {
   RebalanceStep step = 1;
 }

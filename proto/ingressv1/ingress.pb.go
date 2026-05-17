@@ -95,8 +95,9 @@ type SubmitInvocationRequest struct {
 	// through). For HTTP/JSON callers this comes in as base64 — grpc-gateway
 	// handles the bytes encoding.
 	Input []byte `protobuf:"bytes,4,opt,name=input,proto3" json:"input,omitempty"`
-	// Optional idempotency key. Phase 3 honors this for dedup; Phase 2
-	// ignores it (treated as a hint only).
+	// Optional idempotency key. When set, the engine dedups submissions
+	// against the (service, handler, object_key, idempotency_key) tuple so
+	// a retried Submit returns the same invocation_id.
 	IdempotencyKey string `protobuf:"bytes,5,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -171,7 +172,7 @@ type SubmitInvocationResponse struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
 	InvocationId *enginev1.InvocationId `protobuf:"bytes,1,opt,name=invocation_id,json=invocationId,proto3" json:"invocation_id,omitempty"`
 	// String form of the invocation ID, for users that pass it back via URL.
-	// Format: "inv_<partition_key:base16>_<uuid:base32>". Stable across phases.
+	// Format: "inv_<partition_key:base16>_<uuid:base32>".
 	InvocationIdStr string `protobuf:"bytes,2,opt,name=invocation_id_str,json=invocationIdStr,proto3" json:"invocation_id_str,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache

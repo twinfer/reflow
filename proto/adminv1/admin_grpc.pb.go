@@ -43,6 +43,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	Admin_AddNode_FullMethodName            = "/reflow.admin.v1.Admin/AddNode"
+	Admin_SelfJoin_FullMethodName           = "/reflow.admin.v1.Admin/SelfJoin"
 	Admin_RemoveNode_FullMethodName         = "/reflow.admin.v1.Admin/RemoveNode"
 	Admin_ListNodes_FullMethodName          = "/reflow.admin.v1.Admin/ListNodes"
 	Admin_ListPartitions_FullMethodName     = "/reflow.admin.v1.Admin/ListPartitions"
@@ -61,6 +62,14 @@ type AdminClient interface {
 	// existing partition shard. The non-voting replica is promoted to a
 	// voter after dragonboat reports catch-up.
 	AddNode(ctx context.Context, in *AddNodeRequest, opts ...grpc.CallOption) (*AddNodeResponse, error)
+	// SelfJoin is AddNode initiated by the joiner itself. Authorized when
+	// the caller's SPIFFE identity is spiffe://<td>/node/<req.node_id>;
+	// any other principal is rejected. Same payload and FSM effect as
+	// AddNode — the two methods exist as distinct authorization paths
+	// so the gRPC authz policy can gate them by role (operator/* vs
+	// node/<id>). Idempotent: the underlying RegisterNode +
+	// BeginRebalanceStep apply arms upsert/dedup.
+	SelfJoin(ctx context.Context, in *AddNodeRequest, opts ...grpc.CallOption) (*AddNodeResponse, error)
 	// RemoveNode marks a peer as evicted in shard 0. The rebalancer
 	// observes and walks the dragonboat membership-change sequence
 	// (DELETE_REPLICA for every shard the node hosted).
@@ -98,6 +107,16 @@ func (c *adminClient) AddNode(ctx context.Context, in *AddNodeRequest, opts ...g
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(AddNodeResponse)
 	err := c.cc.Invoke(ctx, Admin_AddNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminClient) SelfJoin(ctx context.Context, in *AddNodeRequest, opts ...grpc.CallOption) (*AddNodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddNodeResponse)
+	err := c.cc.Invoke(ctx, Admin_SelfJoin_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -183,6 +202,14 @@ type AdminServer interface {
 	// existing partition shard. The non-voting replica is promoted to a
 	// voter after dragonboat reports catch-up.
 	AddNode(context.Context, *AddNodeRequest) (*AddNodeResponse, error)
+	// SelfJoin is AddNode initiated by the joiner itself. Authorized when
+	// the caller's SPIFFE identity is spiffe://<td>/node/<req.node_id>;
+	// any other principal is rejected. Same payload and FSM effect as
+	// AddNode — the two methods exist as distinct authorization paths
+	// so the gRPC authz policy can gate them by role (operator/* vs
+	// node/<id>). Idempotent: the underlying RegisterNode +
+	// BeginRebalanceStep apply arms upsert/dedup.
+	SelfJoin(context.Context, *AddNodeRequest) (*AddNodeResponse, error)
 	// RemoveNode marks a peer as evicted in shard 0. The rebalancer
 	// observes and walks the dragonboat membership-change sequence
 	// (DELETE_REPLICA for every shard the node hosted).
@@ -218,6 +245,9 @@ type UnimplementedAdminServer struct{}
 
 func (UnimplementedAdminServer) AddNode(context.Context, *AddNodeRequest) (*AddNodeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddNode not implemented")
+}
+func (UnimplementedAdminServer) SelfJoin(context.Context, *AddNodeRequest) (*AddNodeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SelfJoin not implemented")
 }
 func (UnimplementedAdminServer) RemoveNode(context.Context, *RemoveNodeRequest) (*RemoveNodeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveNode not implemented")
@@ -275,6 +305,24 @@ func _Admin_AddNode_Handler(srv interface{}, ctx context.Context, dec func(inter
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(AdminServer).AddNode(ctx, req.(*AddNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Admin_SelfJoin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServer).SelfJoin(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Admin_SelfJoin_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServer).SelfJoin(ctx, req.(*AddNodeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -415,6 +463,10 @@ var Admin_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AddNode",
 			Handler:    _Admin_AddNode_Handler,
+		},
+		{
+			MethodName: "SelfJoin",
+			Handler:    _Admin_SelfJoin_Handler,
 		},
 		{
 			MethodName: "RemoveNode",

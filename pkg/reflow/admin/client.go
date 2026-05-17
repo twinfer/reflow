@@ -11,6 +11,8 @@ import (
 	"io"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
@@ -85,3 +87,62 @@ func (c *Client) Close() error {
 
 // Addr returns the dialed server address.
 func (c *Client) Addr() string { return c.addr }
+
+// CallWithLeaderRedirect invokes fn against the configured opts.Addr;
+// on codes.Unavailable carrying a LeaderHint detail, it re-dials the
+// hinted admin endpoint (reusing opts.Creds) and retries. Bounded at
+// maxHops to break loops in degraded clusters where the hint cycles
+// between non-leaders. Returns the last RPC error when hops are
+// exhausted or when the error is non-Unavailable / lacks a hint.
+//
+// Used by:
+//   - the joiner's callSelfJoin path in pkg/reflow/run.go (initial dial
+//     comes from gossip-resolved leader admin endpoint; redirect is the
+//     safety net for one-heartbeat-stale gossip);
+//   - the reflow-cluster CLI, whose --admin flag now means "any cluster
+//     node" — every mutating command wraps its RPC in this helper.
+func CallWithLeaderRedirect(
+	ctx context.Context,
+	opts DialOptions,
+	maxHops int,
+	fn func(context.Context, adminv1.AdminClient) error,
+) error {
+	if maxHops < 1 {
+		maxHops = 1
+	}
+	var lastErr error
+	for hop := 0; hop < maxHops; hop++ {
+		cli, err := Dial(ctx, opts)
+		if err != nil {
+			return err
+		}
+		err = fn(ctx, cli.Admin)
+		_ = cli.Close()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		st, ok := status.FromError(err)
+		if !ok || st.Code() != codes.Unavailable {
+			return err
+		}
+		var hint *adminv1.LeaderHint
+		for _, d := range st.Details() {
+			if h, ok := d.(*adminv1.LeaderHint); ok && h.GetAdminEndpoint() != "" {
+				hint = h
+				break
+			}
+		}
+		if hint == nil {
+			return err
+		}
+		if hint.GetAdminEndpoint() == opts.Addr {
+			// The server is hinting at itself or at the address we just
+			// failed against — further redirects would loop. Surface the
+			// original error.
+			return err
+		}
+		opts.Addr = hint.GetAdminEndpoint()
+	}
+	return fmt.Errorf("admin: leader redirect exhausted after %d hops: %w", maxHops, lastErr)
+}

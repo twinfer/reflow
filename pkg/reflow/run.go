@@ -12,7 +12,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 
 	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/engine"
@@ -20,6 +22,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	"github.com/twinfer/reflow/internal/observability"
+	adminclient "github.com/twinfer/reflow/pkg/reflow/admin"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
@@ -105,6 +108,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		GossipBindAddr:     cfg.Node.GossipBindAddr,
 		GossipAdvAddr:      cfg.Node.GossipAdvAddr,
 		GrpcEndpoint:       cfg.Node.DeliveryAddr,
+		AdminEndpoint:      cfg.Admin.Addr,
 		Peers:              toEnginePeers(cfg.Cluster.Peers),
 		JoinExisting:       cfg.Cluster.JoinExisting,
 		NumPartitionShards: numShards,
@@ -326,6 +330,19 @@ func finishStartup(
 	metricsCloser func() error,
 	logger *slog.Logger,
 ) (*Host, error) {
+	// Joiners register themselves with shard 0 BEFORE starting any
+	// local shards: dragonboat's StartOnDiskReplica(nil, join=true,...)
+	// will block forever if the joining ReplicaID isn't already part of
+	// each shard's configuration. SelfJoin dials the metadata leader
+	// (resolved via gossip NodeHostMeta) and proposes RegisterNode +
+	// BeginRebalanceStep; the rebalancer drives SyncRequestAddReplica
+	// from the leader side. See plans/humble-chasing-quokka.md.
+	if multiNode && cfg.Cluster.JoinExisting {
+		if err := callSelfJoin(ctx, cfg, eh, logger); err != nil {
+			return nil, fmt.Errorf("reflow: SelfJoin: %w", err)
+		}
+	}
+
 	// Start shard 0 before partition shards so the partition table is
 	// established as partitions come up.
 	if _, err := eh.StartMetadataShard(); err != nil {
@@ -614,4 +631,92 @@ func startMetricsServer(cfg MetricsConfig, log *slog.Logger) func() error {
 		}
 	}()
 	return srv.Close
+}
+
+// callSelfJoin discovers the metadata leader via gossip
+// (NodeHostMeta.admin_endpoint) and dials its Admin/SelfJoin RPC to
+// register this node with shard 0 before any local shards are started.
+// Discovery is gossip-only — no fallback to peer-list dialing. If the
+// leader hint hasn't propagated within the bounded poll window, the
+// outer 3-attempt retry tries again from scratch; ultimately a timeout
+// surfaces as an error so the process supervisor restarts reflowd.
+//
+// CallWithLeaderRedirect handles per-attempt LeaderHint chasing (the
+// gossip view was stale by one heartbeat); the outer retry here handles
+// transient cluster-wide Unavailable conditions during cold start.
+func callSelfJoin(ctx context.Context, cfg Config, host *engine.Host, log *slog.Logger) error {
+	req := &adminv1.AddNodeRequest{
+		NodeId:       cfg.Node.ID,
+		RaftAddr:     cfg.Node.RaftAddr,
+		GossipAddr:   cfg.Node.GossipAdvAddr,
+		GrpcEndpoint: cfg.Node.DeliveryAddr,
+	}
+	if req.GossipAddr == "" {
+		req.GossipAddr = cfg.Node.GossipBindAddr
+	}
+	backoff := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
+	var lastErr error
+	for attempt := range 3 {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff[attempt-1]):
+			}
+		}
+		leaderAddr, err := waitForLeaderAdmin(ctx, host, 10*time.Second, 200*time.Millisecond)
+		if err != nil {
+			lastErr = err
+			log.Warn("SelfJoin: gossip leader-hint timeout, retrying",
+				"attempt", attempt+1, "err", err)
+			continue
+		}
+		log.Info("SelfJoin: dialing metadata leader", "addr", leaderAddr,
+			"node_id", req.NodeId, "attempt", attempt+1)
+		err = adminclient.CallWithLeaderRedirect(ctx, adminclient.DialOptions{
+			Addr:  leaderAddr,
+			Creds: cfg.Admin.Creds,
+		}, 3, func(rctx context.Context, cli adminv1.AdminClient) error {
+			_, e := cli.SelfJoin(rctx, req)
+			return e
+		})
+		if err == nil {
+			log.Info("SelfJoin: registered with shard 0", "node_id", req.NodeId)
+			return nil
+		}
+		lastErr = err
+		// Retry only on transient Unavailable; terminal errors
+		// (PermissionDenied, InvalidArgument, ...) short-circuit.
+		if st, ok := status.FromError(err); !ok || st.Code() != codes.Unavailable {
+			return err
+		}
+		log.Warn("SelfJoin: transient Unavailable, retrying",
+			"attempt", attempt+1, "err", err)
+	}
+	return fmt.Errorf("exhausted retries: %w", lastErr)
+}
+
+// waitForLeaderAdmin polls Host.PartitionLeaderHint(0) +
+// NodeAdminEndpoint(id) on a bounded ticker. Gossip-only — no fallback
+// to peer-list dialing. Timeout → error so the caller can decide to
+// retry or bail.
+func waitForLeaderAdmin(ctx context.Context, host *engine.Host, timeout, tick time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	for {
+		if id, ok := host.PartitionLeaderHint(0); ok {
+			if addr, ok := host.NodeAdminEndpoint(id); ok {
+				return addr, nil
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return "", fmt.Errorf("no metadata leader via gossip within %s", timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-t.C:
+		}
+	}
 }

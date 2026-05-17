@@ -42,12 +42,12 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type IngressClient interface {
 	// SubmitInvocation enqueues a new invocation. Returns the minted invocation
-	// ID; the caller polls AwaitInvocation (or relies on response routing once
-	// Phase 5 SSE lands) for the result.
+	// ID; the caller polls AwaitInvocation for the result (SSE/streaming is
+	// not implemented yet).
 	SubmitInvocation(ctx context.Context, in *SubmitInvocationRequest, opts ...grpc.CallOption) (*SubmitInvocationResponse, error)
 	// AwaitInvocation blocks (up to deadline) until the named invocation
 	// reaches Completed and returns its output. Currently implemented via
-	// server-side polling of SyncRead; SSE/streaming is Phase 5.
+	// server-side polling of SyncRead; SSE/streaming is a future evolution.
 	AwaitInvocation(ctx context.Context, in *AwaitInvocationRequest, opts ...grpc.CallOption) (*AwaitInvocationResponse, error)
 	// ResolveAwakeable completes an outstanding awakeable previously created
 	// by a handler via ctx.Awakeable(). Routes to the owning partition by
@@ -62,12 +62,11 @@ type IngressClient interface {
 	// AttachInvocation blocks (up to deadline) on an existing invocation and
 	// returns its outcome once Completed. Same shape as AwaitInvocation but
 	// explicit about attaching to an already-submitted invocation by id.
-	// Phase 3.
 	AttachInvocation(ctx context.Context, in *AttachInvocationRequest, opts ...grpc.CallOption) (*AttachInvocationResponse, error)
 	// GetInvocationOutput is a non-blocking lookup of an invocation's current
 	// outcome. Returns PENDING for still-running invocations, COMPLETED_OK /
 	// COMPLETED_FAILED for terminated ones, UNKNOWN if no such invocation is
-	// known to this node. Phase 3.
+	// known to this node.
 	GetInvocationOutput(ctx context.Context, in *GetInvocationOutputRequest, opts ...grpc.CallOption) (*GetInvocationOutputResponse, error)
 	// GetObjectState reads a single state value for a virtual object.
 	// Read-only admin endpoint; routes to the partition owning the object
@@ -169,12 +168,12 @@ func (c *ingressClient) GetObjectState(ctx context.Context, in *GetObjectStateRe
 // for forward compatibility.
 type IngressServer interface {
 	// SubmitInvocation enqueues a new invocation. Returns the minted invocation
-	// ID; the caller polls AwaitInvocation (or relies on response routing once
-	// Phase 5 SSE lands) for the result.
+	// ID; the caller polls AwaitInvocation for the result (SSE/streaming is
+	// not implemented yet).
 	SubmitInvocation(context.Context, *SubmitInvocationRequest) (*SubmitInvocationResponse, error)
 	// AwaitInvocation blocks (up to deadline) until the named invocation
 	// reaches Completed and returns its output. Currently implemented via
-	// server-side polling of SyncRead; SSE/streaming is Phase 5.
+	// server-side polling of SyncRead; SSE/streaming is a future evolution.
 	AwaitInvocation(context.Context, *AwaitInvocationRequest) (*AwaitInvocationResponse, error)
 	// ResolveAwakeable completes an outstanding awakeable previously created
 	// by a handler via ctx.Awakeable(). Routes to the owning partition by
@@ -189,12 +188,11 @@ type IngressServer interface {
 	// AttachInvocation blocks (up to deadline) on an existing invocation and
 	// returns its outcome once Completed. Same shape as AwaitInvocation but
 	// explicit about attaching to an already-submitted invocation by id.
-	// Phase 3.
 	AttachInvocation(context.Context, *AttachInvocationRequest) (*AttachInvocationResponse, error)
 	// GetInvocationOutput is a non-blocking lookup of an invocation's current
 	// outcome. Returns PENDING for still-running invocations, COMPLETED_OK /
 	// COMPLETED_FAILED for terminated ones, UNKNOWN if no such invocation is
-	// known to this node. Phase 3.
+	// known to this node.
 	GetInvocationOutput(context.Context, *GetInvocationOutputRequest) (*GetInvocationOutputResponse, error)
 	// GetObjectState reads a single state value for a virtual object.
 	// Read-only admin endpoint; routes to the partition owning the object

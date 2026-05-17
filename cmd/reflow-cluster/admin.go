@@ -28,7 +28,7 @@ func registerTLSFlags(fs *flag.FlagSet) *tlsFlags {
 	fs.StringVar(&f.clientCert, "client-cert", os.Getenv("REFLOW_CLIENT_CERT"), "operator cert PEM (env REFLOW_CLIENT_CERT)")
 	fs.StringVar(&f.clientKey, "client-key", os.Getenv("REFLOW_CLIENT_KEY"), "operator key PEM (env REFLOW_CLIENT_KEY)")
 	fs.StringVar(&f.ca, "ca", os.Getenv("REFLOW_CA_CERT"), "cluster CA PEM (env REFLOW_CA_CERT)")
-	fs.StringVar(&f.addr, "admin", os.Getenv("REFLOW_ADMIN_ADDR"), "admin gRPC host:port (env REFLOW_ADMIN_ADDR)")
+	fs.StringVar(&f.addr, "admin", os.Getenv("REFLOW_ADMIN_ADDR"), "admin gRPC host:port of any cluster node — mutating RPCs follow LeaderHint redirects (env REFLOW_ADMIN_ADDR)")
 	fs.StringVar(&f.trustDomain, "trust-domain", envOrDefault("REFLOW_TRUST_DOMAIN", "reflow.local"), "SPIFFE trust domain (env REFLOW_TRUST_DOMAIN)")
 	return f
 }
@@ -47,8 +47,8 @@ func (t *tlsFlags) validate() error {
 	return nil
 }
 
-func (t *tlsFlags) dial(ctx context.Context) (*admin.Client, error) {
-	return admin.Dial(ctx, admin.DialOptions{
+func (t *tlsFlags) dialOpts() admin.DialOptions {
+	return admin.DialOptions{
 		Addr: t.addr,
 		Creds: creds.Spec{
 			Driver: creds.DriverTLS,
@@ -59,12 +59,17 @@ func (t *tlsFlags) dial(ctx context.Context) (*admin.Client, error) {
 				TrustDomain: t.trustDomain,
 			},
 		},
-	})
+	}
+}
+
+func (t *tlsFlags) dial(ctx context.Context) (*admin.Client, error) {
+	return admin.Dial(ctx, t.dialOpts())
 }
 
 // withClient validates the registered TLS flags, dials the admin
-// endpoint, and invokes fn with the live client. Centralizes the
-// validate→dial→defer-close boilerplate every subcommand was repeating.
+// endpoint, and invokes fn with the live client. Used by read-only
+// subcommands (ListNodes, ListPartitions, ListSnapshots) where any
+// node — leader or follower — can answer via SyncRead.
 func (t *tlsFlags) withClient(ctx context.Context, fn func(*admin.Client) error) error {
 	if err := t.validate(); err != nil {
 		return err
@@ -75,6 +80,22 @@ func (t *tlsFlags) withClient(ctx context.Context, fn func(*admin.Client) error)
 	}
 	defer cli.Close()
 	return fn(cli)
+}
+
+// withLeaderRedirect validates the registered TLS flags and invokes fn
+// inside admin.CallWithLeaderRedirect — the configured --admin can be
+// any cluster node; on codes.Unavailable + LeaderHint the wrapper
+// redials the hinted endpoint. Used by mutating subcommands (AddNode,
+// RemoveNode, CreateSnapshot, DeleteSnapshot, RegisterDeployment)
+// which must reach the metadata leader.
+func (t *tlsFlags) withLeaderRedirect(
+	ctx context.Context,
+	fn func(context.Context, adminv1.AdminClient) error,
+) error {
+	if err := t.validate(); err != nil {
+		return err
+	}
+	return admin.CallWithLeaderRedirect(ctx, t.dialOpts(), 3, fn)
 }
 
 func cmdAddNode(ctx context.Context, args []string) error {
@@ -91,8 +112,8 @@ func cmdAddNode(ctx context.Context, args []string) error {
 	if *nodeID == 0 || *raftAddr == "" || *gossipAddr == "" || *grpcEndpoint == "" {
 		return errors.New("--node-id, --raft-addr, --gossip-addr, --grpc-endpoint are required")
 	}
-	return tls.withClient(ctx, func(cli *admin.Client) error {
-		resp, err := cli.Admin.AddNode(ctx, &adminv1.AddNodeRequest{
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1.AdminClient) error {
+		resp, err := cli.AddNode(rctx, &adminv1.AddNodeRequest{
 			NodeId:       *nodeID,
 			RaftAddr:     *raftAddr,
 			GossipAddr:   *gossipAddr,
@@ -117,8 +138,8 @@ func cmdRemoveNode(ctx context.Context, args []string) error {
 	if *nodeID == 0 {
 		return errors.New("--node-id is required")
 	}
-	return tls.withClient(ctx, func(cli *admin.Client) error {
-		resp, err := cli.Admin.RemoveNode(ctx, &adminv1.RemoveNodeRequest{NodeId: *nodeID})
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1.AdminClient) error {
+		resp, err := cli.RemoveNode(rctx, &adminv1.RemoveNodeRequest{NodeId: *nodeID})
 		if err != nil {
 			return err
 		}
@@ -194,8 +215,8 @@ func cmdSnapshotCreate(ctx context.Context, args []string) error {
 	if *shard == 0 {
 		return errors.New("--shard is required")
 	}
-	return tls.withClient(ctx, func(cli *admin.Client) error {
-		resp, err := cli.Admin.CreateSnapshot(ctx, &adminv1.CreateSnapshotRequest{ShardId: *shard})
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1.AdminClient) error {
+		resp, err := cli.CreateSnapshot(rctx, &adminv1.CreateSnapshotRequest{ShardId: *shard})
 		if err != nil {
 			return err
 		}
@@ -236,8 +257,8 @@ func cmdRegisterDeployment(ctx context.Context, args []string) error {
 	if *rawURL == "" {
 		return errors.New("--url is required")
 	}
-	return tls.withClient(ctx, func(cli *admin.Client) error {
-		resp, err := cli.Admin.RegisterDeployment(ctx, &adminv1.RegisterDeploymentRequest{Url: *rawURL})
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1.AdminClient) error {
+		resp, err := cli.RegisterDeployment(rctx, &adminv1.RegisterDeploymentRequest{Url: *rawURL})
 		if err != nil {
 			return err
 		}
@@ -260,8 +281,8 @@ func cmdSnapshotDelete(ctx context.Context, args []string) error {
 	if *index == 0 {
 		return errors.New("--index is required")
 	}
-	return tls.withClient(ctx, func(cli *admin.Client) error {
-		if _, err := cli.Admin.DeleteSnapshot(ctx, &adminv1.DeleteSnapshotRequest{
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1.AdminClient) error {
+		if _, err := cli.DeleteSnapshot(rctx, &adminv1.DeleteSnapshotRequest{
 			ShardId: *shard,
 			Index:   *index,
 		}); err != nil {

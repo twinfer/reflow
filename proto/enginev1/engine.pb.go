@@ -247,8 +247,8 @@ func (x *InvocationTarget) GetObjectKey() string {
 	return ""
 }
 
-// Deduplication strategy.
-// Phase 1 only emits SelfProposal (leader) and Arbitrary (ingress).
+// Deduplication strategy. SelfProposal is stamped on leader-originated
+// proposals; Arbitrary on ingress and cross-shard outbox traffic.
 type Dedup struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Kind:
@@ -759,7 +759,7 @@ type Command_Purge struct {
 }
 
 type Command_RegisterNode struct {
-	// Phase 4.1 metadata-shard commands. Accepted only by shardID=0.
+	// Metadata-shard membership commands. Accepted only by shardID=0.
 	RegisterNode *RegisterNode `protobuf:"bytes,6,opt,name=register_node,json=registerNode,proto3,oneof"`
 }
 
@@ -768,7 +768,7 @@ type Command_UpdatePartitionTable struct {
 }
 
 type Command_EvictNode struct {
-	// Phase 4.2 metadata-shard commands. Accepted only by shardID=0.
+	// Metadata-shard rebalance commands. Accepted only by shardID=0.
 	// EvictNode marks a node dead; the metadata-leader rebalancer
 	// observes and drives RebalanceStep sequences against dragonboat.
 	EvictNode *EvictNode `protobuf:"bytes,8,opt,name=evict_node,json=evictNode,proto3,oneof"`
@@ -783,9 +783,9 @@ type Command_CompleteRebalanceStep struct {
 }
 
 type Command_DeliverCallResult struct {
-	// Phase 4.1 partition-shard cross-shard delivery commands. The
-	// outbox shuffler ferries DeliverCallResult to the parent's shard
-	// and OutboxAck back to the producer's shard; both ride the same
+	// Partition-shard cross-shard delivery commands. The outbox
+	// shuffler ferries DeliverCallResult to the parent's shard and
+	// OutboxAck back to the producer's shard; both ride the same
 	// Delivery gRPC + Raft pipeline as Invoke. Accepted only by
 	// shardID >= 1.
 	DeliverCallResult *DeliverCallResult `protobuf:"bytes,16,opt,name=deliver_call_result,json=deliverCallResult,proto3,oneof"`
@@ -914,7 +914,7 @@ type InvokeCommand struct {
 	// ParentLink is set when this invocation is the callee of a ctx.Call from
 	// another invocation. The receiving partition's FSM propagates it onto the
 	// callee's status so the callee's Completed apply arm can journal a
-	// JECallResult back on the parent. Phase 2.5.
+	// JECallResult back on the parent.
 	ParentLink *ParentLink `protobuf:"bytes,5,opt,name=parent_link,json=parentLink,proto3" json:"parent_link,omitempty"`
 	// deployment_id pins this invocation to the deployment that owned the
 	// (service, handler) routing at submit time. The apply arm copies it
@@ -1002,7 +1002,7 @@ func (x *InvokeCommand) GetDeploymentId() string {
 // ParentLink references the parent invocation that spawned a callee via
 // ctx.Call. parent_id is the parent's InvocationId; call_index is the
 // journal index of the parent's JECall entry. The callee's JECallResult
-// lands at call_index + 1. Phase 2.5.
+// lands at call_index + 1.
 type ParentLink struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ParentId      *InvocationId          `protobuf:"bytes,1,opt,name=parent_id,json=parentId,proto3" json:"parent_id,omitempty"`
@@ -1186,7 +1186,6 @@ type InvokerEffect_Suspended struct {
 }
 
 type InvokerEffect_RunProposal struct {
-	// Phase 2 additions.
 	RunProposal *JERunProposal `protobuf:"bytes,5,opt,name=run_proposal,json=runProposal,proto3,oneof"`
 }
 
@@ -1212,9 +1211,9 @@ func (*InvokerEffect_SignalDelivered) isInvokerEffect_Kind() {}
 
 // JERunProposal carries the outcome of a deterministic side-effect block
 // (ctx.Run) from the SDK back to the engine. The FSM applies it by writing
-// a JERun journal entry at entry_index and acking the SDK. Phase 2.
+// a JERun journal entry at entry_index and acking the SDK.
 //
-// Phase 3 additions:
+// Retry fields:
 //
 //	retryable    — set when the SDK classified fn's error as non-terminal
 //	               (anything other than *sdk.Failure). When true the engine
@@ -1314,7 +1313,7 @@ func (x *JERunProposal) GetRetryPolicy() *RunRetryPolicy {
 // AwakeableResolved is proposed by the partition that owns the resolving
 // invocation when an external caller resolves an awakeable. The FSM appends
 // a JEAwakeableResult to the owner's journal and wakes the suspended
-// invocation if needed. Phase 2.
+// invocation if needed.
 type AwakeableResolved struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	AwakeableId    string                 `protobuf:"bytes,1,opt,name=awakeable_id,json=awakeableId,proto3" json:"awakeable_id,omitempty"`
@@ -1377,7 +1376,7 @@ func (x *AwakeableResolved) GetFailureMessage() string {
 
 // SignalDelivered is the receiver-side effect when a JESignal lands on its
 // target invocation. signal_name + payload are the routed bits; the target
-// InvocationId lives on the surrounding InvokerEffect.invocation_id. Phase 2.
+// InvocationId lives on the surrounding InvokerEffect.invocation_id.
 type SignalDelivered struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SignalName    string                 `protobuf:"bytes,1,opt,name=signal_name,json=signalName,proto3" json:"signal_name,omitempty"`
@@ -1583,12 +1582,11 @@ func (x *InvocationSuspended) GetAwaitingOn() []string {
 //
 // Tag assignment:
 //
-//	2-9   : Phase 1 baseline (Input, Sleep+Result, Call+Result, Get/SetState,
-//	        Output).
-//	10-15 : Phase 2 (Run, Awakeable, AwakeableResult, Signal, ClearState,
-//	        GetEagerState).
-//	16+   : reserved for Phase 3 (Promise combinators, AttachInvocation,
-//	        ClearAllState, idempotency-keyed Call, virtual-object queue ops).
+//	2-9   : baseline (Input, Sleep+Result, Call+Result, Get/SetState, Output).
+//	10-15 : Run, Awakeable+Result, Signal, ClearState, GetEagerState.
+//	16-17 : ClearAllState, OneWayCall.
+//	18+   : reserved for future entries (Promise combinators,
+//	        AttachInvocation, virtual-object queue ops).
 type JournalEntry struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Index uint32                 `protobuf:"varint,1,opt,name=index,proto3" json:"index,omitempty"`
@@ -1840,7 +1838,6 @@ type JournalEntry_Output struct {
 }
 
 type JournalEntry_Run struct {
-	// Phase 2 additions.
 	Run *JERun `protobuf:"bytes,10,opt,name=run,proto3,oneof"`
 }
 
@@ -2045,8 +2042,8 @@ type JECall struct {
 	Input  []byte                 `protobuf:"bytes,2,opt,name=input,proto3" json:"input,omitempty"`
 	// Optional idempotency key — when set, the apply arm stamps it onto the
 	// outgoing OutboxEnvelope.Invoke.InvokeCommand.idempotency_key so the
-	// callee's receiving onInvoke runs Phase 3 idempotency dedup against the
-	// (service, handler, object_key, idempotency_key) tuple. Phase 3.
+	// callee's receiving onInvoke dedups against the
+	// (service, handler, object_key, idempotency_key) tuple.
 	IdempotencyKey string `protobuf:"bytes,3,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -2175,7 +2172,7 @@ type JECallResult struct {
 	CallIndex uint32                 `protobuf:"varint,1,opt,name=call_index,json=callIndex,proto3" json:"call_index,omitempty"`
 	Result    []byte                 `protobuf:"bytes,2,opt,name=result,proto3" json:"result,omitempty"`
 	// failure_message is populated when the callee terminated with a failure
-	// instead of a result. Mirrors the JEAwakeableResult / JERun shape. Phase 2.5.
+	// instead of a result. Mirrors the JEAwakeableResult / JERun shape.
 	FailureMessage string `protobuf:"bytes,3,opt,name=failure_message,json=failureMessage,proto3" json:"failure_message,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -2392,7 +2389,7 @@ func (x *JEOutput) GetValue() []byte {
 // runs the body once, journals (value or failure_message), and replays
 // store-only on subsequent retries. attempt is bookkeeping for retry
 // policies. retryable distinguishes a terminal error (handler fails) from a
-// transient one (engine schedules a backoff and re-invokes fn). Phase 3.
+// transient one (engine schedules a backoff and re-invokes fn).
 type JERun struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Value          []byte                 `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
@@ -2465,10 +2462,10 @@ func (x *JERun) GetRetryable() bool {
 // Carried on StartInvocation so the SDK can echo it through to the engine
 // apply arm without per-Run wire traffic. Zero/absent fields fall back to
 // defaults: initial=50ms, factor=2.0, max_interval=10s, max_attempts=64.
-// max_attempts=0 means "use the default", NOT unlimited — Phase 3 has no
-// cancel/kill, so unbounded retries would poison the VO queue. Callers
-// wanting truly unbounded retries must set max_attempts explicitly (e.g.
-// math.MaxUint32). Phase 3.
+// max_attempts=0 means "use the default", NOT unlimited — the engine has
+// no cancel/kill primitive today, so unbounded retries would poison the
+// VO queue. Callers wanting truly unbounded retries must set max_attempts
+// explicitly (e.g. math.MaxUint32).
 type RunRetryPolicy struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	InitialIntervalMs uint64                 `protobuf:"varint,1,opt,name=initial_interval_ms,json=initialIntervalMs,proto3" json:"initial_interval_ms,omitempty"`
@@ -2539,7 +2536,7 @@ func (x *RunRetryPolicy) GetMaxAttempts() uint32 {
 
 // JEClearAllState wipes every state row scoped to the invocation's
 // (service, object_key). Empty body: the target is implied by the
-// surrounding invocation. Apply arm uses StateTable.RangeDelete. Phase 3.
+// surrounding invocation. Apply arm uses StateTable.RangeDelete.
 type JEClearAllState struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -2578,7 +2575,7 @@ func (*JEClearAllState) Descriptor() ([]byte, []int) {
 
 // JEAwakeable is journaled when a handler mints an awakeable. The actual
 // resolution arrives later as JEAwakeableResult after an external caller
-// hits the ingress resolution endpoint. Phase 2.
+// hits the ingress resolution endpoint.
 type JEAwakeable struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AwakeableId   string                 `protobuf:"bytes,1,opt,name=awakeable_id,json=awakeableId,proto3" json:"awakeable_id,omitempty"`
@@ -2624,7 +2621,7 @@ func (x *JEAwakeable) GetAwakeableId() string {
 }
 
 // JEAwakeableResult resolves a previously-minted awakeable. Written by
-// the FSM in response to InvokerEffect.AwakeableResolved. Phase 2.
+// the FSM in response to InvokerEffect.AwakeableResolved.
 type JEAwakeableResult struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	AwakeableId    string                 `protobuf:"bytes,1,opt,name=awakeable_id,json=awakeableId,proto3" json:"awakeable_id,omitempty"`
@@ -2687,7 +2684,7 @@ func (x *JEAwakeableResult) GetFailureMessage() string {
 
 // JESignal is sender-side: the journal entry an invocation writes when it
 // sends a signal to another invocation. The receiver-side effect is
-// InvokerEffect.SignalDelivered. Phase 2.
+// InvokerEffect.SignalDelivered.
 type JESignal struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	TargetInvocationId *InvocationId          `protobuf:"bytes,1,opt,name=target_invocation_id,json=targetInvocationId,proto3" json:"target_invocation_id,omitempty"`
@@ -2748,7 +2745,7 @@ func (x *JESignal) GetPayload() []byte {
 	return nil
 }
 
-// JEClearState records a state deletion. Phase 2.
+// JEClearState records a state deletion.
 type JEClearState struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
@@ -2795,7 +2792,7 @@ func (x *JEClearState) GetKey() string {
 
 // JEGetEagerState is the eager-preload form of GetState: the value is
 // resolved from the state map at StartInvocation time rather than via a
-// follow-up notification. Defined for Phase 3; never emitted in Phase 2.
+// follow-up notification.
 type JEGetEagerState struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
@@ -3147,7 +3144,7 @@ type Scheduled struct {
 	CreatedAtMs uint64                 `protobuf:"fixed64,3,opt,name=created_at_ms,json=createdAtMs,proto3" json:"created_at_ms,omitempty"`
 	// ParentLink is set when this invocation is a callee. Propagated through
 	// every status transition until Completed, where the apply arm consumes
-	// it to journal JECallResult on the parent. Phase 2.5.
+	// it to journal JECallResult on the parent.
 	ParentLink    *ParentLink `protobuf:"bytes,4,opt,name=parent_link,json=parentLink,proto3" json:"parent_link,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3419,7 +3416,7 @@ func (x *Completed) GetCompletedAtMs() uint64 {
 // Virtual Object single-writer invariant. Persisted in KeyLeaseTable; the
 // apply path fires the per-key FSM (internal/engine/object_fsm.go) which
 // reads and writes this message in the same Pebble batch as the invocation
-// status transition. Phase 3.
+// status transition.
 //
 // state==IDLE   : no invocation holds the lease; current_invocation unset;
 //
@@ -3543,8 +3540,8 @@ func (x *DedupEntry) GetLeaderEpoch() uint64 {
 
 // PartitionMeta is the per-shard singleton holding the shard's applied Raft
 // index and leader-epoch view. Stored under the `meta` key in each shard's
-// own Pebble DB. NOT the cluster-wide metadata — that lives in the metadata
-// shard's own state (defined when Phase 4 lands; SAD §6.2).
+// own Pebble DB. NOT the cluster-wide metadata — that lives in shard 0's
+// own state (PartitionTable + NodeMembership rows below; SAD §6.2).
 type PartitionMeta struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	AppliedIndex         uint64                 `protobuf:"varint,1,opt,name=applied_index,json=appliedIndex,proto3" json:"applied_index,omitempty"`
@@ -3552,7 +3549,7 @@ type PartitionMeta struct {
 	LatestAnnouncedEpoch uint64                 `protobuf:"varint,3,opt,name=latest_announced_epoch,json=latestAnnouncedEpoch,proto3" json:"latest_announced_epoch,omitempty"`
 	// next_outbox_seq is the next sequence number the leader will allocate
 	// when appending to OutboxTable. Survives restarts so re-injected
-	// commands keep monotonic ordering. Phase 2.
+	// commands keep monotonic ordering.
 	NextOutboxSeq uint64 `protobuf:"varint,4,opt,name=next_outbox_seq,json=nextOutboxSeq,proto3" json:"next_outbox_seq,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3618,7 +3615,7 @@ func (x *PartitionMeta) GetNextOutboxSeq() uint64 {
 
 // AwakeableEntry is the directory row keyed by awakeable_id, pointing back
 // at the owning invocation and the journal index that minted it. Lets
-// ingress find the right partition to propose AwakeableResolved on. Phase 2.
+// ingress find the right partition to propose AwakeableResolved on.
 type AwakeableEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Owner         *InvocationId          `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
@@ -3675,11 +3672,11 @@ func (x *AwakeableEntry) GetEntryIndex() uint32 {
 // leader-side shuffler scans these and dispatches each one to the
 // destination shard: same-shard rows are re-injected locally via
 // IngressProposer.ProposeIngress; cross-shard rows are sent over the
-// gRPC Delivery service to the destination shard's leader (Phase 4.1).
+// gRPC Delivery service to the destination shard's leader.
 //
 // destination_shard_id is the target Raft shard. A value of 0 means
-// "same shard as the producer" (the Phase 1-3 default; preserves wire
-// compatibility for rows written before 4.1). Phase 4.1+.
+// "same shard as the producer" — the dispatcher short-circuits to the
+// local re-inject path.
 //
 // Variant semantics:
 //
@@ -3693,11 +3690,10 @@ func (x *AwakeableEntry) GetEntryIndex() uint32 {
 //	                      callee partition emits this to the parent's
 //	                      partition so the parent's apply arm can append
 //	                      JECallResult and wake the suspended parent.
-//	                      Phase 4.1.
 //	outbox_ack          — cross-shard acknowledgement that an inbound
 //	                      delivery has been durably applied on the
 //	                      receiver. The producer shard pops the
-//	                      corresponding outbox row on apply. Phase 4.1.
+//	                      corresponding outbox row on apply.
 type OutboxEnvelope struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	DestinationShardId uint64                 `protobuf:"varint,3,opt,name=destination_shard_id,json=destinationShardId,proto3" json:"destination_shard_id,omitempty"`
@@ -3826,7 +3822,7 @@ func (*OutboxEnvelope_OutboxAck) isOutboxEnvelope_Kind() {}
 // (partition.go): on apply the receiver loads the parent's
 // InvocationStatus, appends a JECallResult journal entry at
 // call_index + 1, runs transitionOnCallResultDelivered, and persists in
-// the same Pebble batch. Phase 4.1.
+// the same Pebble batch.
 type DeliverCallResult struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	ParentId       *InvocationId          `protobuf:"bytes,1,opt,name=parent_id,json=parentId,proto3" json:"parent_id,omitempty"`
@@ -3901,7 +3897,7 @@ func (x *DeliverCallResult) GetFailureMessage() string {
 // delivery's apply effects. On apply at the producer's shard the row is
 // dedup'd (the receiver stamped it with its own outbox/<recvShard> seq)
 // and the indicated (producer_shard_id, producer_seq) row is popped from
-// OutboxTable. Phase 4.1.
+// OutboxTable.
 type OutboxAck struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	ProducerShardId uint64                 `protobuf:"varint,1,opt,name=producer_shard_id,json=producerShardId,proto3" json:"producer_shard_id,omitempty"`
@@ -4024,7 +4020,7 @@ func (x *SignalSend) GetPayload() []byte {
 //	{prefix}/p{shard_id:08d}/snapshot-{raft_index:020d}.tar
 //	{prefix}/p{shard_id:08d}/snapshot-{raft_index:020d}.meta.json
 //
-// Phase 4+. See SAD §6.12.
+// See SAD §6.12.
 type SnapshotMeta struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ShardId       uint64                 `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
@@ -4113,10 +4109,16 @@ func (x *SnapshotMeta) GetCreatedAtMs() uint64 {
 // NodeHostMeta is the payload packed into dragonboat's GossipConfig.Meta
 // blob. Every NodeHost advertises it via gossip; peers retrieve it via
 // INodeHostRegistry.GetMeta(nodeHostID) and use it to dial the reflow
-// gRPC Delivery service for cross-partition outbox dispatch. Phase 4.1.
+// gRPC Delivery service for cross-partition outbox dispatch and the
+// reflow Admin service for SelfJoin / LeaderHint redirects.
 type NodeHostMeta struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	GrpcEndpoint  string                 `protobuf:"bytes,1,opt,name=grpc_endpoint,json=grpcEndpoint,proto3" json:"grpc_endpoint,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	GrpcEndpoint string                 `protobuf:"bytes,1,opt,name=grpc_endpoint,json=grpcEndpoint,proto3" json:"grpc_endpoint,omitempty"`
+	// Admin gRPC endpoint advertised so peers (joiners running SelfJoin
+	// and the reflow-cluster CLI following LeaderHint redirects) can
+	// discover the metadata leader's admin port via gossip rather than
+	// requiring it preconfigured.
+	AdminEndpoint string `protobuf:"bytes,2,opt,name=admin_endpoint,json=adminEndpoint,proto3" json:"admin_endpoint,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4154,6 +4156,13 @@ func (*NodeHostMeta) Descriptor() ([]byte, []int) {
 func (x *NodeHostMeta) GetGrpcEndpoint() string {
 	if x != nil {
 		return x.GrpcEndpoint
+	}
+	return ""
+}
+
+func (x *NodeHostMeta) GetAdminEndpoint() string {
+	if x != nil {
+		return x.AdminEndpoint
 	}
 	return ""
 }
@@ -4404,10 +4413,10 @@ func (x *RegisterNode) GetMember() *NodeMembership {
 }
 
 // UpdatePartitionTable replaces shard 0's partition table atomically.
-// the new leader of shard 0 proposes this once at bootstrap
-// with the static RF=3 assignment. assignment_epoch is incremented on
-// every successful apply; consumers fence stale local caches against
-// it. Phase 4.1.
+// The new leader of shard 0 proposes this once at bootstrap with the
+// initial replica assignment derived from the peer set.
+// assignment_epoch is incremented on every successful apply; consumers
+// fence stale local caches against it.
 type UpdatePartitionTable struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Table         *PartitionTable        `protobuf:"bytes,1,opt,name=table,proto3" json:"table,omitempty"`
@@ -4526,9 +4535,10 @@ func (x *NodeMembership) GetLastSeenMs() int64 {
 }
 
 // PartitionTable is shard 0's authoritative map of partition shards to
-// replica node sets. Persisted via UpdatePartitionTable.
-// always populates every partition_shard_id 1..N with the full peer
-// set (RF=3, N=3 → every node hosts every partition).
+// replica node sets. Persisted via UpdatePartitionTable. The number of
+// partition shards (the routing modulus) is independent of peer count;
+// the bootstrap path populates every partition_shard_id 1..N with the
+// configured replica set.
 type PartitionTable struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Shards          map[uint64]*ReplicaSet `protobuf:"bytes,1,rep,name=shards,proto3" json:"shards,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
@@ -4610,7 +4620,7 @@ func (x *PartitionTable) GetMetaReplicas() *ReplicaSet {
 }
 
 // ReplicaSet is the per-partition replica list. Order is not significant
-// for correctness; dragonboat treats the membership as a set. Phase 4.1.
+// for correctness; dragonboat treats the membership as a set.
 type ReplicaSet struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeIds       []uint64               `protobuf:"varint,1,rep,packed,name=node_ids,json=nodeIds,proto3" json:"node_ids,omitempty"`
@@ -4792,7 +4802,7 @@ func (x *RebalanceStep) GetStepId() uint64 {
 // BeginRebalanceStep appends a RebalanceStep to PartitionTable.pending
 // if no entry with the same (shard_id, step_id) already exists.
 // Proposed by the admin handler (after AddNode / EvictNode applies)
-// and re-proposed on retry; the apply path absorbs duplicates. Phase 4.2.
+// and re-proposed on retry; the apply path absorbs duplicates.
 type BeginRebalanceStep struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Step          *RebalanceStep         `protobuf:"bytes,1,opt,name=step,proto3" json:"step,omitempty"`
@@ -5171,9 +5181,10 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\fleader_epoch\x18\x03 \x01(\x04R\vleaderEpoch\x12%\n" +
 	"\x0ereflow_version\x18\x04 \x01(\tR\rreflowVersion\x12'\n" +
 	"\x0fchecksum_sha256\x18\x05 \x01(\tR\x0echecksumSha256\x12\"\n" +
-	"\rcreated_at_ms\x18\x06 \x01(\x06R\vcreatedAtMs\"3\n" +
+	"\rcreated_at_ms\x18\x06 \x01(\x06R\vcreatedAtMs\"Z\n" +
 	"\fNodeHostMeta\x12#\n" +
-	"\rgrpc_endpoint\x18\x01 \x01(\tR\fgrpcEndpoint\"\xb0\x01\n" +
+	"\rgrpc_endpoint\x18\x01 \x01(\tR\fgrpcEndpoint\x12%\n" +
+	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint\"\xb0\x01\n" +
 	"\x10DeploymentRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12?\n" +

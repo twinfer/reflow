@@ -11,15 +11,18 @@
 // or spiffe://<trust-domain>/operator/<name>) that the reflow TLS layer
 // matches against the listener's expected role.
 //
-// Cluster subcommands (mTLS-authenticated against the Admin gRPC port):
+// Cluster subcommands (mTLS-authenticated against the Admin gRPC port).
+// --admin may point at ANY cluster node — mutating commands follow the
+// LeaderHint detail attached to codes.Unavailable to redirect to the
+// metadata leader automatically:
 //
-//	reflow-cluster add-node            --admin=HOST:PORT --node-id=N --raft-addr=... --gossip-addr=... --grpc-endpoint=... [--node-host-id=ID]
-//	reflow-cluster remove-node         --admin=HOST:PORT --node-id=N
-//	reflow-cluster nodes list          --admin=HOST:PORT
-//	reflow-cluster partitions list     --admin=HOST:PORT
-//	reflow-cluster snapshot create     --admin=HOST:PORT --shard=N
-//	reflow-cluster snapshot list       --admin=HOST:PORT --shard=N
-//	reflow-cluster register-deployment --admin=HOST:PORT --url=http://HANDLER:PORT
+//	reflow-cluster add-node            --admin=ANY:PORT --node-id=N --raft-addr=... --gossip-addr=... --grpc-endpoint=... [--node-host-id=ID]
+//	reflow-cluster remove-node         --admin=ANY:PORT --node-id=N
+//	reflow-cluster nodes list          --admin=ANY:PORT
+//	reflow-cluster partitions list     --admin=ANY:PORT
+//	reflow-cluster snapshot create     --admin=ANY:PORT --shard=N
+//	reflow-cluster snapshot list       --admin=ANY:PORT --shard=N
+//	reflow-cluster register-deployment --admin=ANY:PORT --url=http://HANDLER:PORT
 //
 // Every cluster subcommand needs the operator's TLS flags (or matching
 // env vars):

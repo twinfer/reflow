@@ -35,6 +35,14 @@ service Admin {
   // existing partition shard. The non-voting replica is promoted to a
   // voter after dragonboat reports catch-up.
   rpc AddNode(AddNodeRequest) returns (AddNodeResponse);
+  // SelfJoin is AddNode initiated by the joiner itself. Authorized when
+  // the caller's SPIFFE identity is spiffe://<td>/node/<req.node_id>;
+  // any other principal is rejected. Same payload and FSM effect as
+  // AddNode — the two methods exist as distinct authorization paths
+  // so the gRPC authz policy can gate them by role (operator/* vs
+  // node/<id>). Idempotent: the underlying RegisterNode +
+  // BeginRebalanceStep apply arms upsert/dedup.
+  rpc SelfJoin(AddNodeRequest) returns (AddNodeResponse);
   // RemoveNode marks a peer as evicted in shard 0. The rebalancer
   // observes and walks the dragonboat membership-change sequence
   // (DELETE_REPLICA for every shard the node hosted).
@@ -128,5 +136,14 @@ message RegisterDeploymentRequest {
 
 message RegisterDeploymentResponse {
   string deployment_id = 1;
+}
+
+// LeaderHint is attached as a status.Details() entry on codes.Unavailable
+// returned by mutating Admin RPCs when the receiving node is not the
+// metadata leader. Clients (joiner's SelfJoin caller and the
+// reflow-cluster CLI) extract it, dial admin_endpoint, retry.
+message LeaderHint {
+  uint64 node_id = 1;
+  string admin_endpoint = 2;
 }
 

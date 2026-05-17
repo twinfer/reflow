@@ -15,14 +15,26 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// TestMultiNode_JoinExistingCluster verifies the join-existing startup
-// path (HostConfig.JoinExisting=true). A 3-node cluster bootstraps
-// normally, then a 4th node is added via the admin-RPC flow
-// (RegisterNode on shard 0 + BeginRebalanceStep PROMOTE_TO_VOTER on
-// shard 0 AND every partition shard). The 4th Host comes up with
-// JoinExisting=true and catches up via dragonboat snapshot transfer +
-// log replication. The test then proves the joiner is a real cluster
-// member on every shard:
+// TestMultiNode_JoinExistingCluster_OperatorAddNode verifies the
+// operator-driven join path: the existing cluster's metadata leader
+// proposes RegisterNode + PROMOTE_TO_VOTER (the same proposals that
+// Admin.AddNode would emit on the wire), then the joiner brings up its
+// shards with HostConfig.JoinExisting=true and catches up via
+// dragonboat snapshot transfer + log replication. After the refactor
+// that introduced SelfJoin, the underlying FSM-driving body is shared
+// (admin/server.go: addNodeInternal); this test pins the operator-side
+// behavior so that refactor stays regression-safe.
+//
+// The companion SelfJoin path (joiner calls SelfJoin against the
+// leader's admin port via gossip-discovered endpoint) requires admin
+// listeners + mTLS to exercise the SPIFFE authorization check, which
+// loadgen.NewCluster does not currently wire up. The SPIFFE check
+// itself is unit-tested in admin/server_test.go
+// (TestCheckSelfJoinPrincipal_*); the redirect plumbing is
+// unit-tested in pkg/reflow/admin/client_test.go
+// (TestCallWithLeaderRedirect_*).
+//
+// The test proves the joiner is a real cluster member on every shard:
 //
 //   - Partition shards: propose an invocation upstream, then verify a
 //     linearizable read from the joiner observes the Completed status.
@@ -30,7 +42,7 @@ import (
 //     from the joiner returns the expected rows. SyncRead on shard 0
 //     requires the local NodeHost to be a current voting member of
 //     shard 0 — proof the metadata join worked.
-func TestMultiNode_JoinExistingCluster(t *testing.T) {
+func TestMultiNode_JoinExistingCluster_OperatorAddNode(t *testing.T) {
 	const svc = "JoinSvc"
 	const handler = "do"
 	reg := sdk.NewRegistry()

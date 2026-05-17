@@ -66,6 +66,15 @@ type HostConfig struct {
 	// published via gossip NodeHostMeta so peers can dial it for
 	// cross-partition outbox dispatch. Required when Peers is non-empty.
 	GrpcEndpoint string
+	// AdminEndpoint is this node's reflow Admin gRPC endpoint. Published
+	// via gossip NodeHostMeta so peers (notably joiners calling SelfJoin
+	// and the reflow-cluster CLI following LeaderHint redirects) can
+	// dial the metadata leader without preconfiguration. Optional but
+	// recommended when Peers is non-empty; an empty value disables
+	// gossip-based admin discovery for this node (the joiner path then
+	// has no way to find the leader's admin port and SelfJoin will fail
+	// at boot until gossip Meta is updated).
+	AdminEndpoint string
 
 	// CrossShardSender is the dispatcher partition runners hand to their
 	// OutboxService for envelopes whose destination_shard_id is non-
@@ -264,7 +273,10 @@ func applyMultiNodeConfig(nhConfig *config.NodeHostConfig, cfg *HostConfig) erro
 	if adv == "" {
 		adv = cfg.GossipBindAddr
 	}
-	metaBytes, err := proto.Marshal(&enginev1.NodeHostMeta{GrpcEndpoint: cfg.GrpcEndpoint})
+	metaBytes, err := proto.Marshal(&enginev1.NodeHostMeta{
+		GrpcEndpoint:  cfg.GrpcEndpoint,
+		AdminEndpoint: cfg.AdminEndpoint,
+	})
 	if err != nil {
 		return fmt.Errorf("host: marshal NodeHostMeta: %w", err)
 	}
@@ -816,26 +828,49 @@ func (h *Host) PartitionLeaderHint(shardID uint64) (uint64, bool) {
 // ("", false) when gossip is off, the peer is unknown, or its Meta blob
 // has not yet propagated.
 func (h *Host) NodeEndpoint(nodeID uint64) (string, bool) {
-	if h.nh == nil {
-		return "", false
-	}
-	reg, ok := h.nh.GetNodeHostRegistry()
+	meta, ok := h.lookupNodeHostMeta(nodeID)
 	if !ok {
-		return "", false
-	}
-	nhID := h.nodeHostIDOf(nodeID)
-	if nhID == "" {
-		return "", false
-	}
-	raw, ok := reg.GetMeta(nhID)
-	if !ok {
-		return "", false
-	}
-	var meta enginev1.NodeHostMeta
-	if err := proto.Unmarshal(raw, &meta); err != nil {
 		return "", false
 	}
 	return meta.GetGrpcEndpoint(), meta.GetGrpcEndpoint() != ""
+}
+
+// NodeAdminEndpoint mirrors NodeEndpoint, returning the admin gRPC
+// endpoint advertised by the peer's NodeHostMeta. Used by the SelfJoin
+// boot path and the admin server's LeaderHint redirect to resolve the
+// metadata leader's admin port via gossip.
+func (h *Host) NodeAdminEndpoint(nodeID uint64) (string, bool) {
+	meta, ok := h.lookupNodeHostMeta(nodeID)
+	if !ok {
+		return "", false
+	}
+	return meta.GetAdminEndpoint(), meta.GetAdminEndpoint() != ""
+}
+
+// lookupNodeHostMeta resolves nodeID → NodeHostID → gossip Meta blob,
+// unmarshals into NodeHostMeta. Returns (nil, false) when gossip is off,
+// the peer is unknown, or the Meta blob has not yet propagated.
+func (h *Host) lookupNodeHostMeta(nodeID uint64) (*enginev1.NodeHostMeta, bool) {
+	if h.nh == nil {
+		return nil, false
+	}
+	reg, ok := h.nh.GetNodeHostRegistry()
+	if !ok {
+		return nil, false
+	}
+	nhID := h.nodeHostIDOf(nodeID)
+	if nhID == "" {
+		return nil, false
+	}
+	raw, ok := reg.GetMeta(nhID)
+	if !ok {
+		return nil, false
+	}
+	var meta enginev1.NodeHostMeta
+	if err := proto.Unmarshal(raw, &meta); err != nil {
+		return nil, false
+	}
+	return &meta, true
 }
 
 // nodeHostIDOf returns the resolved NodeHostID for a peer NodeID, or

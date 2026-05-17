@@ -855,6 +855,62 @@ func (x *RegisterDeploymentResponse) GetDeploymentId() string {
 	return ""
 }
 
+// LeaderHint is attached as a status.Details() entry on codes.Unavailable
+// returned by mutating Admin RPCs when the receiving node is not the
+// metadata leader. Clients (joiner's SelfJoin caller and the
+// reflow-cluster CLI) extract it, dial admin_endpoint, retry.
+type LeaderHint struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        uint64                 `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	AdminEndpoint string                 `protobuf:"bytes,2,opt,name=admin_endpoint,json=adminEndpoint,proto3" json:"admin_endpoint,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LeaderHint) Reset() {
+	*x = LeaderHint{}
+	mi := &file_adminv1_admin_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LeaderHint) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LeaderHint) ProtoMessage() {}
+
+func (x *LeaderHint) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LeaderHint.ProtoReflect.Descriptor instead.
+func (*LeaderHint) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *LeaderHint) GetNodeId() uint64 {
+	if x != nil {
+		return x.NodeId
+	}
+	return 0
+}
+
+func (x *LeaderHint) GetAdminEndpoint() string {
+	if x != nil {
+		return x.AdminEndpoint
+	}
+	return ""
+}
+
 var File_adminv1_admin_proto protoreflect.FileDescriptor
 
 const file_adminv1_admin_proto_rawDesc = "" +
@@ -904,9 +960,14 @@ const file_adminv1_admin_proto_rawDesc = "" +
 	"\x19RegisterDeploymentRequest\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\"A\n" +
 	"\x1aRegisterDeploymentResponse\x12#\n" +
-	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId2\xf8\x05\n" +
+	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\"L\n" +
+	"\n" +
+	"LeaderHint\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12%\n" +
+	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\xc7\x06\n" +
 	"\x05Admin\x12L\n" +
-	"\aAddNode\x12\x1f.reflow.admin.v1.AddNodeRequest\x1a .reflow.admin.v1.AddNodeResponse\x12U\n" +
+	"\aAddNode\x12\x1f.reflow.admin.v1.AddNodeRequest\x1a .reflow.admin.v1.AddNodeResponse\x12M\n" +
+	"\bSelfJoin\x12\x1f.reflow.admin.v1.AddNodeRequest\x1a .reflow.admin.v1.AddNodeResponse\x12U\n" +
 	"\n" +
 	"RemoveNode\x12\".reflow.admin.v1.RemoveNodeRequest\x1a#.reflow.admin.v1.RemoveNodeResponse\x12R\n" +
 	"\tListNodes\x12!.reflow.admin.v1.ListNodesRequest\x1a\".reflow.admin.v1.ListNodesResponse\x12a\n" +
@@ -928,7 +989,7 @@ func file_adminv1_admin_proto_rawDescGZIP() []byte {
 	return file_adminv1_admin_proto_rawDescData
 }
 
-var file_adminv1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_adminv1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_adminv1_admin_proto_goTypes = []any{
 	(*AddNodeRequest)(nil),             // 0: reflow.admin.v1.AddNodeRequest
 	(*AddNodeResponse)(nil),            // 1: reflow.admin.v1.AddNodeResponse
@@ -947,31 +1008,34 @@ var file_adminv1_admin_proto_goTypes = []any{
 	(*DeleteSnapshotResponse)(nil),     // 14: reflow.admin.v1.DeleteSnapshotResponse
 	(*RegisterDeploymentRequest)(nil),  // 15: reflow.admin.v1.RegisterDeploymentRequest
 	(*RegisterDeploymentResponse)(nil), // 16: reflow.admin.v1.RegisterDeploymentResponse
-	(*enginev1.NodeMembership)(nil),    // 17: reflow.engine.v1.NodeMembership
-	(*enginev1.PartitionTable)(nil),    // 18: reflow.engine.v1.PartitionTable
+	(*LeaderHint)(nil),                 // 17: reflow.admin.v1.LeaderHint
+	(*enginev1.NodeMembership)(nil),    // 18: reflow.engine.v1.NodeMembership
+	(*enginev1.PartitionTable)(nil),    // 19: reflow.engine.v1.PartitionTable
 }
 var file_adminv1_admin_proto_depIdxs = []int32{
-	17, // 0: reflow.admin.v1.ListNodesResponse.nodes:type_name -> reflow.engine.v1.NodeMembership
-	18, // 1: reflow.admin.v1.ListPartitionsResponse.table:type_name -> reflow.engine.v1.PartitionTable
+	18, // 0: reflow.admin.v1.ListNodesResponse.nodes:type_name -> reflow.engine.v1.NodeMembership
+	19, // 1: reflow.admin.v1.ListPartitionsResponse.table:type_name -> reflow.engine.v1.PartitionTable
 	11, // 2: reflow.admin.v1.ListSnapshotsResponse.snapshots:type_name -> reflow.admin.v1.SnapshotRef
 	0,  // 3: reflow.admin.v1.Admin.AddNode:input_type -> reflow.admin.v1.AddNodeRequest
-	2,  // 4: reflow.admin.v1.Admin.RemoveNode:input_type -> reflow.admin.v1.RemoveNodeRequest
-	4,  // 5: reflow.admin.v1.Admin.ListNodes:input_type -> reflow.admin.v1.ListNodesRequest
-	6,  // 6: reflow.admin.v1.Admin.ListPartitions:input_type -> reflow.admin.v1.ListPartitionsRequest
-	8,  // 7: reflow.admin.v1.Admin.CreateSnapshot:input_type -> reflow.admin.v1.CreateSnapshotRequest
-	10, // 8: reflow.admin.v1.Admin.ListSnapshots:input_type -> reflow.admin.v1.ListSnapshotsRequest
-	13, // 9: reflow.admin.v1.Admin.DeleteSnapshot:input_type -> reflow.admin.v1.DeleteSnapshotRequest
-	15, // 10: reflow.admin.v1.Admin.RegisterDeployment:input_type -> reflow.admin.v1.RegisterDeploymentRequest
-	1,  // 11: reflow.admin.v1.Admin.AddNode:output_type -> reflow.admin.v1.AddNodeResponse
-	3,  // 12: reflow.admin.v1.Admin.RemoveNode:output_type -> reflow.admin.v1.RemoveNodeResponse
-	5,  // 13: reflow.admin.v1.Admin.ListNodes:output_type -> reflow.admin.v1.ListNodesResponse
-	7,  // 14: reflow.admin.v1.Admin.ListPartitions:output_type -> reflow.admin.v1.ListPartitionsResponse
-	9,  // 15: reflow.admin.v1.Admin.CreateSnapshot:output_type -> reflow.admin.v1.CreateSnapshotResponse
-	12, // 16: reflow.admin.v1.Admin.ListSnapshots:output_type -> reflow.admin.v1.ListSnapshotsResponse
-	14, // 17: reflow.admin.v1.Admin.DeleteSnapshot:output_type -> reflow.admin.v1.DeleteSnapshotResponse
-	16, // 18: reflow.admin.v1.Admin.RegisterDeployment:output_type -> reflow.admin.v1.RegisterDeploymentResponse
-	11, // [11:19] is the sub-list for method output_type
-	3,  // [3:11] is the sub-list for method input_type
+	0,  // 4: reflow.admin.v1.Admin.SelfJoin:input_type -> reflow.admin.v1.AddNodeRequest
+	2,  // 5: reflow.admin.v1.Admin.RemoveNode:input_type -> reflow.admin.v1.RemoveNodeRequest
+	4,  // 6: reflow.admin.v1.Admin.ListNodes:input_type -> reflow.admin.v1.ListNodesRequest
+	6,  // 7: reflow.admin.v1.Admin.ListPartitions:input_type -> reflow.admin.v1.ListPartitionsRequest
+	8,  // 8: reflow.admin.v1.Admin.CreateSnapshot:input_type -> reflow.admin.v1.CreateSnapshotRequest
+	10, // 9: reflow.admin.v1.Admin.ListSnapshots:input_type -> reflow.admin.v1.ListSnapshotsRequest
+	13, // 10: reflow.admin.v1.Admin.DeleteSnapshot:input_type -> reflow.admin.v1.DeleteSnapshotRequest
+	15, // 11: reflow.admin.v1.Admin.RegisterDeployment:input_type -> reflow.admin.v1.RegisterDeploymentRequest
+	1,  // 12: reflow.admin.v1.Admin.AddNode:output_type -> reflow.admin.v1.AddNodeResponse
+	1,  // 13: reflow.admin.v1.Admin.SelfJoin:output_type -> reflow.admin.v1.AddNodeResponse
+	3,  // 14: reflow.admin.v1.Admin.RemoveNode:output_type -> reflow.admin.v1.RemoveNodeResponse
+	5,  // 15: reflow.admin.v1.Admin.ListNodes:output_type -> reflow.admin.v1.ListNodesResponse
+	7,  // 16: reflow.admin.v1.Admin.ListPartitions:output_type -> reflow.admin.v1.ListPartitionsResponse
+	9,  // 17: reflow.admin.v1.Admin.CreateSnapshot:output_type -> reflow.admin.v1.CreateSnapshotResponse
+	12, // 18: reflow.admin.v1.Admin.ListSnapshots:output_type -> reflow.admin.v1.ListSnapshotsResponse
+	14, // 19: reflow.admin.v1.Admin.DeleteSnapshot:output_type -> reflow.admin.v1.DeleteSnapshotResponse
+	16, // 20: reflow.admin.v1.Admin.RegisterDeployment:output_type -> reflow.admin.v1.RegisterDeploymentResponse
+	12, // [12:21] is the sub-list for method output_type
+	3,  // [3:12] is the sub-list for method input_type
 	3,  // [3:3] is the sub-list for extension type_name
 	3,  // [3:3] is the sub-list for extension extendee
 	0,  // [0:3] is the sub-list for field type_name
@@ -988,7 +1052,7 @@ func file_adminv1_admin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_adminv1_admin_proto_rawDesc), len(file_adminv1_admin_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   17,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

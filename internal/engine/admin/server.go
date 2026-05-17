@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
@@ -114,14 +116,30 @@ func (s *Server) Register(gs *grpc.Server) {
 }
 
 // requireLeader returns Unavailable when this node is not the metadata
-// leader. The CLI retries against another node.
+// leader, attaching a LeaderHint status detail (node_id + admin_endpoint
+// resolved via gossip NodeHostMeta) so clients can redirect via
+// pkg/reflow/admin.CallWithLeaderRedirect. When the hint is unresolvable
+// (gossip not yet converged, peer Meta blob not propagated) the detail
+// is omitted and the client falls back to whatever discovery seam it
+// has.
 func (s *Server) requireLeader() error {
 	if s.runner.IsLeader() {
 		return nil
 	}
-	hint, _ := s.host.PartitionLeaderHint(0)
-	return status.Errorf(codes.Unavailable,
-		"admin: not the metadata leader (hint=%d)", hint)
+	hintID, _ := s.host.PartitionLeaderHint(0)
+	st := status.Newf(codes.Unavailable,
+		"admin: not the metadata leader (hint=%d)", hintID)
+	if hintID != 0 {
+		if addr, ok := s.host.NodeAdminEndpoint(hintID); ok {
+			if withDetails, err := st.WithDetails(&adminv1.LeaderHint{
+				NodeId:        hintID,
+				AdminEndpoint: addr,
+			}); err == nil {
+				st = withDetails
+			}
+		}
+	}
+	return st.Err()
 }
 
 // AddNode registers a new peer and schedules a PROMOTE_TO_VOTER step
@@ -132,6 +150,48 @@ func (s *Server) AddNode(ctx context.Context, req *adminv1.AddNodeRequest) (*adm
 	if err := s.requireLeader(); err != nil {
 		return nil, err
 	}
+	return s.addNodeInternal(ctx, req)
+}
+
+// SelfJoin is AddNode initiated by the joiner itself. Authorization
+// requires the caller's SPIFFE identity to be node/<req.node_id>. The
+// gRPC authz policy already gates this method to node/* principals;
+// this in-handler check is the second gate ensuring the node_id in the
+// request matches the SPIFFE subject (defense in depth: even with the
+// path-level allow rule, a node/7 cert can only register node 7).
+func (s *Server) SelfJoin(ctx context.Context, req *adminv1.AddNodeRequest) (*adminv1.AddNodeResponse, error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
+	if err := checkSelfJoinPrincipal(ctx, req.GetNodeId()); err != nil {
+		return nil, err
+	}
+	return s.addNodeInternal(ctx, req)
+}
+
+// checkSelfJoinPrincipal enforces the SPIFFE-equals-NodeID gate for
+// SelfJoin. Extracted from the handler body so it's unit-testable
+// without standing up an engine.Host / MetadataRunner.
+func checkSelfJoinPrincipal(ctx context.Context, nodeID uint64) error {
+	principal, ok := auth.PrincipalFromContext(ctx)
+	if !ok || principal.Kind != "node" {
+		return status.Error(codes.PermissionDenied,
+			"admin: SelfJoin requires a node SPIFFE identity")
+	}
+	if principal.Subject != strconv.FormatUint(nodeID, 10) {
+		return status.Errorf(codes.PermissionDenied,
+			"admin: SelfJoin SPIFFE node/%s does not match req.node_id=%d",
+			principal.Subject, nodeID)
+	}
+	return nil
+}
+
+// addNodeInternal contains the FSM-driving body shared by AddNode and
+// SelfJoin: propose RegisterNode, read the partition table, propose
+// BeginRebalanceStep for every shard the node isn't already voting on,
+// re-read for the response's assignment_epoch. Caller owns the
+// requireLeader gate and any role-specific authorization.
+func (s *Server) addNodeInternal(ctx context.Context, req *adminv1.AddNodeRequest) (*adminv1.AddNodeResponse, error) {
 	if req.GetNodeId() == 0 || req.GetRaftAddr() == "" {
 		return nil, status.Error(codes.InvalidArgument, "admin: node_id and raft_addr are required")
 	}

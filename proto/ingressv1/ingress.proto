@@ -16,8 +16,8 @@ option go_package = "github.com/twinfer/reflow/proto/ingressv1;ingressv1";
 
 service Ingress {
   // SubmitInvocation enqueues a new invocation. Returns the minted invocation
-  // ID; the caller polls AwaitInvocation (or relies on response routing once
-  // Phase 5 SSE lands) for the result.
+  // ID; the caller polls AwaitInvocation for the result (SSE/streaming is
+  // not implemented yet).
   rpc SubmitInvocation(SubmitInvocationRequest) returns (SubmitInvocationResponse) {
     option (google.api.http) = {
       post: "/invocation/{service}/{handler}"
@@ -27,7 +27,7 @@ service Ingress {
 
   // AwaitInvocation blocks (up to deadline) until the named invocation
   // reaches Completed and returns its output. Currently implemented via
-  // server-side polling of SyncRead; SSE/streaming is Phase 5.
+  // server-side polling of SyncRead; SSE/streaming is a future evolution.
   rpc AwaitInvocation(AwaitInvocationRequest) returns (AwaitInvocationResponse) {
     option (google.api.http) = {
       post: "/await/{invocation_id}"
@@ -64,7 +64,6 @@ service Ingress {
   // AttachInvocation blocks (up to deadline) on an existing invocation and
   // returns its outcome once Completed. Same shape as AwaitInvocation but
   // explicit about attaching to an already-submitted invocation by id.
-  // Phase 3.
   rpc AttachInvocation(AttachInvocationRequest) returns (AttachInvocationResponse) {
     option (google.api.http) = {
       post: "/attach/{invocation_id}"
@@ -75,7 +74,7 @@ service Ingress {
   // GetInvocationOutput is a non-blocking lookup of an invocation's current
   // outcome. Returns PENDING for still-running invocations, COMPLETED_OK /
   // COMPLETED_FAILED for terminated ones, UNKNOWN if no such invocation is
-  // known to this node. Phase 3.
+  // known to this node.
   rpc GetInvocationOutput(GetInvocationOutputRequest) returns (GetInvocationOutputResponse) {
     option (google.api.http) = {
       get: "/output/{invocation_id}"
@@ -104,15 +103,16 @@ message SubmitInvocationRequest {
   // through). For HTTP/JSON callers this comes in as base64 — grpc-gateway
   // handles the bytes encoding.
   bytes input = 4;
-  // Optional idempotency key. Phase 3 honors this for dedup; Phase 2
-  // ignores it (treated as a hint only).
+  // Optional idempotency key. When set, the engine dedups submissions
+  // against the (service, handler, object_key, idempotency_key) tuple so
+  // a retried Submit returns the same invocation_id.
   string idempotency_key = 5;
 }
 
 message SubmitInvocationResponse {
   reflow.engine.v1.InvocationId invocation_id = 1;
   // String form of the invocation ID, for users that pass it back via URL.
-  // Format: "inv_<partition_key:base16>_<uuid:base32>". Stable across phases.
+  // Format: "inv_<partition_key:base16>_<uuid:base32>".
   string invocation_id_str = 2;
 }
 

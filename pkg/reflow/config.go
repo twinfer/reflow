@@ -193,6 +193,12 @@ type Peer struct {
 	RaftAddr   string `koanf:"raft_addr"`
 	GossipAddr string `koanf:"gossip_addr"`
 	NodeHostID string `koanf:"node_host_id"`
+	// AdminAddr, when set, is this peer's reflow Admin gRPC endpoint.
+	// Not consulted by the joiner SelfJoin path (which discovers the
+	// leader via gossip-published NodeHostMeta.admin_endpoint), but
+	// kept here so the reflow-cluster CLI and tests can resolve peers
+	// by NodeID from config without hard-coding host:port. Optional.
+	AdminAddr string `koanf:"admin_addr"`
 }
 
 // ClusterConfig describes the multi-node cluster. Single-node deployments

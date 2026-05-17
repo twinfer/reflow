@@ -25,6 +25,15 @@
           { "key": "x-reflow-principal", "values": ["operator/*"] }
         ]
       }
+    },
+    {
+      "name": "admin_node_selfjoin",
+      "request": {
+        "paths": ["/reflow.admin.v1.Admin/SelfJoin"],
+        "headers": [
+          { "key": "x-reflow-principal", "values": ["node/*"] }
+        ]
+      }
     }
   ]
 }

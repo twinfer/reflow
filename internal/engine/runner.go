@@ -120,12 +120,17 @@ func (r *PartitionRunner) onBecomeLeader() {
 
 	store := r.snapshotter.Store()
 
-	r.timers = NewTimerService(
+	// Build into locals first; install onto r only after Rebuild succeeds.
+	// If we assigned r.timers/r.outbox up front, a Rebuild failure would
+	// leave the fields pointing at services whose Run goroutine never
+	// started — dispatchActions would push onto them and the work would
+	// silently accumulate with no consumer.
+	timers := NewTimerService(
 		tables.TimerTable{S: store},
 		r.proposer,
 		TimerServiceOptions{Log: r.log, Metrics: r.metrics},
 	)
-	r.outbox = NewOutboxService(
+	outbox := NewOutboxService(
 		tables.OutboxTable{S: store},
 		r.proposer,
 		r.sender,
@@ -140,14 +145,16 @@ func (r *PartitionRunner) onBecomeLeader() {
 		)
 	}
 
-	if err := r.timers.Rebuild(); err != nil {
+	if err := timers.Rebuild(); err != nil {
 		r.log.Error("partition: timer rebuild failed", "shard", r.ShardID, "err", err)
 		return
 	}
-	if err := r.outbox.Rebuild(); err != nil {
+	if err := outbox.Rebuild(); err != nil {
 		r.log.Error("partition: outbox rebuild failed", "shard", r.ShardID, "err", err)
 		return
 	}
+	r.timers = timers
+	r.outbox = outbox
 
 	leaderCtx, cancel := context.WithCancel(context.Background())
 	timerDone := make(chan struct{})
@@ -177,15 +184,18 @@ func (r *PartitionRunner) onBecomeLeader() {
 		}
 	}
 
+	// Capture the locally-built services for the Run goroutines so the
+	// closures don't dereference r.timers/r.outbox concurrently with a
+	// future onBecomeLeader that's already started replacing them.
 	go func() {
 		defer close(timerDone)
-		if err := r.timers.Run(leaderCtx); err != nil && !errors.Is(err, context.Canceled) {
+		if err := timers.Run(leaderCtx); err != nil && !errors.Is(err, context.Canceled) {
 			r.log.Error("partition: timer run exited", "shard", r.ShardID, "err", err)
 		}
 	}()
 	go func() {
 		defer close(outboxDone)
-		if err := r.outbox.Run(leaderCtx); err != nil && !errors.Is(err, context.Canceled) {
+		if err := outbox.Run(leaderCtx); err != nil && !errors.Is(err, context.Canceled) {
 			r.log.Error("partition: outbox run exited", "shard", r.ShardID, "err", err)
 		}
 	}()

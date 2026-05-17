@@ -135,25 +135,32 @@ func TestLoad_FromMapDefaults(t *testing.T) {
 	}
 }
 
-// TestLoad_SecretsAsConfig demonstrates the secrets-as-config pattern: a
-// koanf provider populates byte-typed fields directly. This test stands
-// in for a real Vault/AWS-SM provider by injecting raw bytes via a
-// FromMap source — the unmarshal path is identical.
+// TestLoad_SecretsAsConfig demonstrates the secrets-as-config pattern.
+// A real production setup would point a koanf provider (Vault, AWS SM,
+// GCP SM) at the cred-driver's file/string fields — the
+// CertProvider/TLS driver paths consume those via creds.Build. This
+// test stands in for that by injecting a path through ingress.creds
+// and checking the value lands in the right place.
 func TestLoad_SecretsAsConfig(t *testing.T) {
-	cert := []byte("-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJ...\n-----END CERTIFICATE-----\n")
 	cfg, _, err := config.Load(
 		config.FromMap(map[string]any{
-			"node.id":          uint64(1),
-			"node.raft_addr":   ":1",
-			"storage.data_dir": "/tmp/d",
-			"ingress.tls_cert": cert,
+			"node.id":                     uint64(1),
+			"node.raft_addr":              ":1",
+			"storage.data_dir":            "/tmp/d",
+			"ingress.creds.driver":        "tls",
+			"ingress.creds.tls.cert_file": "/etc/reflow/ingress.crt",
+			"ingress.creds.tls.key_file":  "/etc/reflow/ingress.key",
+			"ingress.creds.tls.ca_file":   "/etc/reflow/ca.crt",
 		}),
 	)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if string(cfg.Ingress.TLSCert) != string(cert) {
-		t.Errorf("TLSCert mismatch: got %q want %q", cfg.Ingress.TLSCert, cert)
+	if cfg.Ingress.Creds.TLS == nil {
+		t.Fatal("Ingress.Creds.TLS unmarshalled nil")
+	}
+	if cfg.Ingress.Creds.TLS.CertFile != "/etc/reflow/ingress.crt" {
+		t.Errorf("Creds.TLS.CertFile = %q", cfg.Ingress.Creds.TLS.CertFile)
 	}
 }
 

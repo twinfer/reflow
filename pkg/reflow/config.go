@@ -7,7 +7,6 @@
 package reflow
 
 import (
-	"crypto/tls"
 	"log/slog"
 	"time"
 
@@ -216,16 +215,28 @@ type StorageConfig struct {
 }
 
 // IngressConfig configures the client-facing gRPC + HTTP/JSON gateway.
+// reflow.Run starts ingress unless Disabled is true — it is how clients
+// submit invocations. Empty GRPCAddr + HTTPAddr defaults to :8081 (gRPC)
+// and :8080 (HTTP/JSON); set one explicitly and leave the other empty to
+// enable a single transport. Set Disabled to run engine nodes behind a
+// separate ingress fleet.
 type IngressConfig struct {
-	GRPCAddr string      `koanf:"grpc_addr"`
-	HTTPAddr string      `koanf:"http_addr"`
-	TLS      *tls.Config `koanf:"-"` // assembled from TLSCert/TLSKey at Run time
-	// TLSCert is the PEM-encoded server cert for the ingress endpoint.
-	// Loaded as bytes from any koanf provider (file, Vault, AWS SM).
-	TLSCert []byte `koanf:"tls_cert"`
-	// TLSKey is the matching private key.
-	TLSKey   []byte `koanf:"tls_key"`
-	Disabled bool   `koanf:"disabled"`
+	// Disabled skips starting the ingress server on this node. Use when
+	// clients submit via a separate ingress fleet; the engine still
+	// serves internal cluster traffic (delivery, admin) normally.
+	Disabled bool `koanf:"disabled"`
+	// GRPCAddr is the listen address for the native gRPC server.
+	// Empty disables the gRPC transport when HTTPAddr is set; if both
+	// are empty Run applies :8081.
+	GRPCAddr string `koanf:"grpc_addr"`
+	// HTTPAddr is the listen address for the grpc-gateway HTTP/JSON
+	// server. Empty disables the HTTP transport when GRPCAddr is set;
+	// if both are empty Run applies :8080.
+	HTTPAddr string `koanf:"http_addr"`
+	// Creds selects the transport-security driver. Zero spec is
+	// insecure; multi-node deployments emit a startup warning so the
+	// operator knows the client surface is unauthenticated.
+	Creds creds.Spec `koanf:"creds"`
 }
 
 // MetricsConfig configures the Prometheus collector and the optional

@@ -95,10 +95,11 @@ func buildTLS(s *TLSSpec, _ *slog.Logger) (*ListenerCreds, error) {
 	}
 
 	return &ListenerCreds{
-		Server:        credentials.NewTLS(serverCfg),
-		ClientDial:    []grpc.DialOption{grpc.WithTransportCredentials(credentials.NewTLS(clientCfg))},
-		Driver:        DriverTLS,
-		SecurityLevel: credentials.PrivacyAndIntegrity,
+		Server:          credentials.NewTLS(serverCfg),
+		ServerTLSConfig: serverCfg,
+		ClientDial:      []grpc.DialOption{grpc.WithTransportCredentials(credentials.NewTLS(clientCfg))},
+		Driver:          DriverTLS,
+		SecurityLevel:   credentials.PrivacyAndIntegrity,
 	}, nil
 }
 

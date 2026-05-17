@@ -69,8 +69,14 @@ func defaultValues() map[string]any {
 		"node.raft_addr":   "127.0.0.1:9091",
 		"storage.data_dir": "./data",
 		"cluster.shards":   []uint64{1},
-		"metrics.addr":     ":9090",
-		"logging.level":    "INFO",
+		// Ingress is the user-facing API; reflow.Run starts it
+		// unconditionally and applies these same defaults if the operator
+		// leaves both empty. Surfaced here so `reflowd` users can see the
+		// canonical ports without reading library code.
+		"ingress.grpc_addr": ":8081",
+		"ingress.http_addr": ":8080",
+		"metrics.addr":      ":9090",
+		"logging.level":     "INFO",
 		// Admin + snapshot defaults. The admin server is only started when
 		// Cluster.Peers is non-empty AND TLS is configured, so leaving Addr
 		// populated is safe for single-node out of the box. The snapshot

@@ -10,6 +10,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
+	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -21,6 +22,8 @@ import (
 type Host struct {
 	engine         *engine.Host
 	metricsCloser  func() error
+	ingressRT      *ingress.Runtime
+	ingressCreds   *creds.ListenerCreds
 	deliverySrv    *grpc.Server
 	deliveryLn     net.Listener
 	deliveryClient *delivery.Client
@@ -35,10 +38,18 @@ type Host struct {
 }
 
 // Close stops every partition and the underlying NodeHost. Idempotent.
-// Stops the metrics HTTP server, admin + Delivery gRPC servers, the
-// snapshot producer goroutines, and the pooled delivery client.
+// Stops the ingress server (closed first so client requests stop arriving
+// before in-flight work drains), metrics HTTP server, admin + Delivery
+// gRPC servers, the snapshot producer goroutines, and the pooled
+// delivery client.
 func (h *Host) Close() error {
 	var firstErr error
+	if h.ingressRT != nil {
+		if err := h.ingressRT.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		h.ingressRT = nil
+	}
 	if h.snapshotCxl != nil {
 		h.snapshotCxl()
 		h.snapshotCxl = nil
@@ -90,11 +101,12 @@ func (h *Host) Close() error {
 		}
 		h.authCloser = nil
 	}
-	if err := creds.CloseAll(h.deliveryCreds, h.adminCreds); err != nil && firstErr == nil {
+	if err := creds.CloseAll(h.deliveryCreds, h.adminCreds, h.ingressCreds); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	h.deliveryCreds = nil
 	h.adminCreds = nil
+	h.ingressCreds = nil
 	if h.handlerSigner != nil {
 		h.handlerSigner.Close()
 		h.handlerSigner = nil

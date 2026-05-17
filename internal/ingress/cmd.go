@@ -2,6 +2,7 @@ package ingress
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -27,6 +28,14 @@ type Config struct {
 	// HTTPAddr is the listen address for the grpc-gateway HTTP/JSON server.
 	// Empty disables the HTTP listener.
 	HTTPAddr string
+	// ServerCreds is the gRPC server transport credentials to install
+	// (insecure when nil). For TLS deployments this comes from
+	// creds.ListenerCreds.Server.
+	ServerCreds grpc.ServerOption
+	// HTTPTLSConfig wraps the HTTP/JSON listener with TLS when non-nil.
+	// Typically the same *tls.Config as ServerCreds so the two
+	// transports share cert material and rotation cadence.
+	HTTPTLSConfig *tls.Config
 	// Log is the structured logger; defaults to slog.Default.
 	Log *slog.Logger
 	// ExtraGRPC registers additional services on the ingress gRPC server
@@ -77,9 +86,13 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 		if err != nil {
 			return nil, fmt.Errorf("ingress: listen grpc %s: %w", cfg.GRPCAddr, err)
 		}
-		gs := grpc.NewServer(grpc.ChainUnaryInterceptor(
-			withDefaultDeadline(defaultLookupTimeout),
-		))
+		opts := []grpc.ServerOption{
+			grpc.ChainUnaryInterceptor(withDefaultDeadline(defaultLookupTimeout)),
+		}
+		if cfg.ServerCreds != nil {
+			opts = append(opts, cfg.ServerCreds)
+		}
+		gs := grpc.NewServer(opts...)
 		ingressv1.RegisterIngressServer(gs, srv)
 		if cfg.ExtraGRPC != nil {
 			cfg.ExtraGRPC(gs)
@@ -109,6 +122,9 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 		hs := &http.Server{
 			Handler:           withHTTPDefaultDeadline(mux, defaultLookupTimeout),
 			ReadHeaderTimeout: 5 * time.Second,
+		}
+		if cfg.HTTPTLSConfig != nil {
+			ln = tls.NewListener(ln, cfg.HTTPTLSConfig)
 		}
 		rt.httpSrv = hs
 		rt.httpLn = ln

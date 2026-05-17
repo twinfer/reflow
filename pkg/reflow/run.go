@@ -21,6 +21,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine/admin"
 	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
+	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/internal/observability"
 	adminclient "github.com/twinfer/reflow/pkg/reflow/admin"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
@@ -254,9 +255,16 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		go autoSeedEndpoints(ctx, srv, runner, cfg.Handlers.Endpoints, logger)
 	}
 
+	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, false, logger)
+	if err != nil {
+		return bail(err)
+	}
+
 	return &Host{
 		engine:        eh,
 		metricsCloser: metricsCloser,
+		ingressRT:     ingressRT,
+		ingressCreds:  ingressCreds,
 	}, nil
 }
 
@@ -307,6 +315,51 @@ func startDeliveryListener(
 	logger.Info("reflow: delivery listening", "addr", ln.Addr().String(),
 		"driver", string(lc.Driver))
 	return gs, ln, dc, nil
+}
+
+// startIngressListener builds cfg.Ingress.Creds and starts the ingress
+// runtime against eh. Always called by Run — ingress is the user-facing
+// API. Returns (nil, nil, nil) when cfg.Ingress.Disabled is set so
+// operators can run engine nodes behind a separate ingress fleet.
+// Multi-node insecure deployments emit a WARN at startup; single-node
+// insecure is silent because that's the dev default.
+//
+// Returns (runtime, listenerCreds, error). On error the caller is
+// responsible for releasing any other resources it has accumulated;
+// this helper closes only what it created itself.
+func startIngressListener(
+	ctx context.Context,
+	eh *engine.Host,
+	cfg Config,
+	multiNode bool,
+	logger *slog.Logger,
+) (*ingress.Runtime, *creds.ListenerCreds, error) {
+	if cfg.Ingress.Disabled {
+		logger.Info("reflow: ingress disabled (cfg.ingress.disabled=true); clients must use a separate ingress fleet")
+		return nil, nil, nil
+	}
+	lc, err := creds.Build(cfg.Ingress.Creds, logger)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reflow: ingress creds: %w", err)
+	}
+	if multiNode && lc.SecurityLevel == credentials.NoSecurity {
+		logger.Warn("reflow: ingress is running on an insecure listener — multi-node deployments should configure cfg.Ingress.Creds")
+	}
+	rt, err := ingress.Start(ctx, eh, ingress.Config{
+		GRPCAddr:      cfg.Ingress.GRPCAddr,
+		HTTPAddr:      cfg.Ingress.HTTPAddr,
+		ServerCreds:   grpc.Creds(lc.Server),
+		HTTPTLSConfig: lc.ServerTLSConfig,
+		Log:           logger,
+	})
+	if err != nil {
+		_ = creds.CloseAll(lc)
+		return nil, nil, fmt.Errorf("reflow: ingress start: %w", err)
+	}
+	logger.Info("reflow: ingress listening",
+		"grpc", rt.GRPCAddr(), "http", rt.HTTPAddr(),
+		"driver", string(lc.Driver))
+	return rt, lc, nil
 }
 
 // finishStartup wires shard 0 + partition shards + optional snapshot
@@ -493,9 +546,28 @@ func finishStartup(
 			"endpoints", len(cfg.Handlers.Endpoints))
 	}
 
+	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, multiNode, logger)
+	if err != nil {
+		if snapshotCxl != nil {
+			snapshotCxl()
+		}
+		if snapshotRepo != nil {
+			_ = snapshotRepo.Close()
+		}
+		if adminSrv != nil {
+			adminSrv.GracefulStop()
+		}
+		if adminLn != nil {
+			_ = adminLn.Close()
+		}
+		return nil, err
+	}
+
 	return &Host{
 		engine:         eh,
 		metricsCloser:  metricsCloser,
+		ingressRT:      ingressRT,
+		ingressCreds:   ingressCreds,
 		deliverySrv:    deliverySrv,
 		deliveryLn:     deliveryLn,
 		deliveryClient: deliveryClient,
@@ -590,6 +662,15 @@ func validate(cfg Config) error {
 func withDefaults(cfg Config) Config {
 	if !cfg.Metrics.Disabled && cfg.Metrics.Addr == "" {
 		cfg.Metrics.Addr = ":9090"
+	}
+	// Ingress is started by Run unless cfg.Ingress.Disabled. If the
+	// operator left both addrs empty, fall back to the well-known
+	// reflow ports so `reflow.Run` works out of the box. An operator
+	// who wants only one transport sets that addr and leaves the other
+	// empty; defaults apply only when both are empty.
+	if !cfg.Ingress.Disabled && cfg.Ingress.GRPCAddr == "" && cfg.Ingress.HTTPAddr == "" {
+		cfg.Ingress.GRPCAddr = ":8081"
+		cfg.Ingress.HTTPAddr = ":8080"
 	}
 	return cfg
 }

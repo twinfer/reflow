@@ -12,6 +12,7 @@
 package creds
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -85,6 +86,13 @@ type ListenerCreds struct {
 	// underneath; the Build call returns an error if that combo is
 	// supplied alone.
 	Server credentials.TransportCredentials
+	// ServerTLSConfig is the raw *tls.Config behind Server for callers
+	// that also need to wrap a plain HTTP/JSON listener (e.g. ingress's
+	// grpc-gateway transport). Populated by the TLS and CertProvider
+	// drivers; nil for insecure, ALTS, Local, Google, and PerRPC-only
+	// drivers. Sharing the same config keeps gRPC and HTTP transports
+	// in lock-step on cert rotation.
+	ServerTLSConfig *tls.Config
 	// ClientDial is the slice of DialOptions a client uses to talk to
 	// the matching server. Always non-nil — for insecure it carries
 	// insecure.NewCredentials(); for TLS it carries the verified-chain

@@ -36,6 +36,12 @@ message Frame {
   // 16-bit type | 16-bit flags | 32-bit length, packed big-endian.
   uint64 header = 1;
   bytes payload = 2;
+  // On engine→SDK replay frames, slot identifies the journal index
+  // this entry occupies. Lets the SDK build its replay map without
+  // decoding payloads to extract completion_id / matching awakeable
+  // id. SDK→engine frames leave it unset (engine doesn't track a
+  // replay map); reflow's wire is happy with the field defaulting to 0.
+  uint32 slot = 3;
 }
 
 // Kind classifies the handler addressing model. Stamped at deployment

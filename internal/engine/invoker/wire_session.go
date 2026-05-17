@@ -278,7 +278,7 @@ func (s *wireSession) sendStartAndReplay(stream handlerclient.Stream, entries []
 		return err
 	}
 	for _, f := range frames {
-		if err := stream.Send(handlerclient.FrameFor(f.typeCode, f.payload)); err != nil {
+		if err := stream.Send(handlerclient.FrameForSlot(f.typeCode, f.slot, f.payload)); err != nil {
 			return err
 		}
 	}

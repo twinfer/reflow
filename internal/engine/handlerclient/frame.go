@@ -67,6 +67,18 @@ func FrameFor(typeCode uint16, payload []byte) *protocolv1.Frame {
 	}
 }
 
+// FrameForSlot is FrameFor + a stamped slot. Used by the engine when
+// shipping replay frames so the SDK can place each entry by slot
+// without decoding the payload to extract completion_id / matching
+// awakeable id.
+func FrameForSlot(typeCode uint16, slot uint32, payload []byte) *protocolv1.Frame {
+	return &protocolv1.Frame{
+		Header:  PackHeader(typeCode, 0, uint32(len(payload))),
+		Payload: payload,
+		Slot:    slot,
+	}
+}
+
 // ValidatePayload returns an error when the Frame's declared payload
 // length disagrees with the actual bytes. Cheap consistency check; a
 // peer could lie, but a mismatch always indicates corruption or a buggy

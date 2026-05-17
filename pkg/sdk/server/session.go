@@ -195,30 +195,29 @@ func readStart(src frameSource, codec handlerclient.Codec) (*protocolv1.StartMes
 }
 
 // readReplay consumes the count replay frames the engine ships after
-// StartMessage. Returns the input payload (from JEInput, which is
-// always slot 0 if present) plus the replay buffer indexed by the
-// slot each command/notification corresponds to.
+// StartMessage. Returns the JEInput payload bytes (lazily decoded from
+// the slot-0 entry — handlers consult it once via ctx.Input()) plus the
+// replay buffer keyed by frame.slot.
 //
-// Slot accounting:
-//   - InputCommandMessage → slot 0 (also captured as the input bytes).
-//   - SleepCommandMessage at index N → slot N (the cmd entry).
-//   - SleepCompletionNotificationMessage at index N → slot N (the
-//     result entry; SDK looks it up by completion_id).
-//   - SetState / ClearState / ClearAllState at index N → slot N
-//     (write-only; replay-hit means "skip re-emit").
+// Each frame's slot is engine-stamped (see invoker/wire_replay
+// translateEntry), so this loop is a pure byte-mirror: validate, place
+// at frame.slot, store. Typed decoding for command/notification
+// payloads now happens lazily inside the wireContext primitives when
+// the handler actually consults a slot — entries past the handler's
+// suspension point pay no decode cost.
 //
-// Unknown types are added to the buffer at a synthetic slot
-// (count-based) so future SDK versions can ignore them safely; when a
-// real translation lands the engine + handler stay in sync via the JE
-// → frame table.
+// Cursor inference is retained as a defensive fallback for the
+// pathological case where a frame arrives without a stamped slot (slot
+// 0 collides with JEInput); in that case we synthesize a unique slot
+// past the entry count. Production engines always stamp.
 func readReplay(src frameSource, codec handlerclient.Codec, count uint32) ([]byte, map[uint32]*replayEntry, error) {
 	replay := make(map[uint32]*replayEntry, count)
 	if count == 0 {
 		return nil, replay, nil
 	}
 	var (
-		input    []byte
-		nextSlot uint32 // running cursor for slot assignment
+		input        []byte
+		fallbackSlot uint32 = count // unique synthetic slot for legacy frames
 	)
 	for i := range count {
 		f, err := src.Recv()
@@ -232,100 +231,25 @@ func readReplay(src frameSource, codec handlerclient.Codec, count uint32) ([]byt
 			return nil, nil, err
 		}
 		typeCode, _, _ := handlerclient.UnpackHeader(f.GetHeader())
-		switch typeCode {
-		case handlerclient.TypeCmdInput:
+
+		slot := f.GetSlot()
+		if slot == 0 && typeCode != handlerclient.TypeCmdInput {
+			// Legacy / unstamped frame. Park it past the entry count
+			// so it doesn't collide with JEInput's slot 0.
+			slot = fallbackSlot
+			fallbackSlot++
+		}
+		replay[slot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
+
+		// JEInput is the one frame we decode eagerly so ctx.Input() can
+		// hand the handler its input bytes without re-doing this per
+		// call. Single decode per session, cheap.
+		if typeCode == handlerclient.TypeCmdInput {
 			var in protocolv1.InputCommandMessage
 			if err := codec.Unmarshal(f.GetPayload(), &in); err != nil {
 				return nil, nil, fmt.Errorf("decode replay InputCommandMessage: %w", err)
 			}
 			input = in.GetValue().GetContent()
-			replay[0] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
-			if nextSlot == 0 {
-				nextSlot = 1
-			}
-		case handlerclient.TypeCmdSleep:
-			replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
-			nextSlot += 2 // Sleep allocates 2 slots: cmd + result
-		case handlerclient.TypeNoteSleepDone:
-			var note protocolv1.SleepCompletionNotificationMessage
-			if err := codec.Unmarshal(f.GetPayload(), &note); err != nil {
-				return nil, nil, fmt.Errorf("decode replay SleepCompletionNotificationMessage: %w", err)
-			}
-			replay[note.GetCompletionId()] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
-		case handlerclient.TypeCmdCall:
-			replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
-			nextSlot += 2 // Call allocates 2 slots: cmd + result
-		case handlerclient.TypeNoteCallDone:
-			var note protocolv1.CallCompletionNotificationMessage
-			if err := codec.Unmarshal(f.GetPayload(), &note); err != nil {
-				return nil, nil, fmt.Errorf("decode replay CallCompletionNotificationMessage: %w", err)
-			}
-			replay[note.GetCompletionId()] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
-		case handlerclient.TypeCmdOneWayCall:
-			replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
-			nextSlot++
-		case handlerclient.TypeCmdRun:
-			// Run is single-slot — the marker frame claims the slot; the
-			// matching RunCompletionNotificationMessage that follows in
-			// the replay sequence shares the same slot.
-			replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
-			nextSlot++
-		case handlerclient.TypeNoteRunDone:
-			var note protocolv1.RunCompletionNotificationMessage
-			if err := codec.Unmarshal(f.GetPayload(), &note); err != nil {
-				return nil, nil, fmt.Errorf("decode replay RunCompletionNotificationMessage: %w", err)
-			}
-			// Overwrite the marker entry — the notification carries the
-			// useful payload for replay-hit decoding.
-			replay[note.GetCompletionId()] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
-		case handlerclient.TypeCmdSetState, handlerclient.TypeCmdClearState, handlerclient.TypeCmdClearAllState:
-			replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
-			nextSlot++
-		case handlerclient.TypeCmdAwakeable:
-			// Awakeable allocates 2 slots: cmd at nextSlot, result at nextSlot+1.
-			replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
-			nextSlot += 2
-		case handlerclient.TypeNoteSignal:
-			// SignalNotificationMessage is keyed by the name (awakeable
-			// id) — find the matching AwakeableCommandMessage entry in
-			// replay and store the notification one slot past it.
-			var note protocolv1.SignalNotificationMessage
-			if err := codec.Unmarshal(f.GetPayload(), &note); err != nil {
-				return nil, nil, fmt.Errorf("decode replay SignalNotificationMessage: %w", err)
-			}
-			name := ""
-			if n, ok := note.GetSignalId().(*protocolv1.SignalNotificationMessage_Name); ok {
-				name = n.Name
-			}
-			matched := false
-			for slot, e := range replay {
-				if e.typeCode != handlerclient.TypeCmdAwakeable {
-					continue
-				}
-				var cmd protocolv1.AwakeableCommandMessage
-				if err := codec.Unmarshal(e.payload, &cmd); err != nil {
-					continue
-				}
-				if cmd.GetAwakeableId() == name {
-					replay[slot+1] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				// Forward-compat: store at the next free slot in case the
-				// engine ever ships a signal that doesn't correspond to a
-				// replayed Awakeable (out-of-band cancel etc.).
-				replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
-				nextSlot++
-			}
-		default:
-			// Forward-compat: stash the frame at a per-count synthetic
-			// slot to keep the cursor advancing in lockstep with the
-			// engine; an SDK that doesn't recognize the type can still
-			// finish replay cleanly.
-			replay[nextSlot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
-			nextSlot++
 		}
 	}
 	return input, replay, nil

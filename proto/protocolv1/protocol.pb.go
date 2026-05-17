@@ -110,8 +110,14 @@ func (Kind) EnumDescriptor() ([]byte, []int) {
 type Frame struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// 16-bit type | 16-bit flags | 32-bit length, packed big-endian.
-	Header        uint64 `protobuf:"varint,1,opt,name=header,proto3" json:"header,omitempty"`
-	Payload       []byte `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
+	Header  uint64 `protobuf:"varint,1,opt,name=header,proto3" json:"header,omitempty"`
+	Payload []byte `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
+	// On engine→SDK replay frames, slot identifies the journal index
+	// this entry occupies. Lets the SDK build its replay map without
+	// decoding payloads to extract completion_id / matching awakeable
+	// id. SDK→engine frames leave it unset (engine doesn't track a
+	// replay map); reflow's wire is happy with the field defaulting to 0.
+	Slot          uint32 `protobuf:"varint,3,opt,name=slot,proto3" json:"slot,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -158,6 +164,13 @@ func (x *Frame) GetPayload() []byte {
 		return x.Payload
 	}
 	return nil
+}
+
+func (x *Frame) GetSlot() uint32 {
+	if x != nil {
+		return x.Slot
+	}
+	return 0
 }
 
 // Type: 0x0000
@@ -3543,10 +3556,11 @@ var File_protocolv1_protocol_proto protoreflect.FileDescriptor
 
 const file_protocolv1_protocol_proto_rawDesc = "" +
 	"\n" +
-	"\x19protocolv1/protocol.proto\x12\x12reflow.protocol.v1\"9\n" +
+	"\x19protocolv1/protocol.proto\x12\x12reflow.protocol.v1\"M\n" +
 	"\x05Frame\x12\x16\n" +
 	"\x06header\x18\x01 \x01(\x04R\x06header\x12\x18\n" +
-	"\apayload\x18\x02 \x01(\fR\apayload\"\x94\x05\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\x12\x12\n" +
+	"\x04slot\x18\x03 \x01(\rR\x04slot\"\x94\x05\n" +
 	"\fStartMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\fR\x02id\x12\x19\n" +
 	"\bdebug_id\x18\x02 \x01(\tR\adebugId\x12#\n" +

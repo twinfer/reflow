@@ -14,12 +14,14 @@ import (
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
-// replayFrame is the wire-shaped output of a JournalEntry translation —
-// a (typeCode, marshaled-payload) pair ready to hand to stream.Send via
-// handlerclient.FrameFor. Keeping it pre-marshaled avoids re-encoding
-// per session.
+// replayFrame is the wire-shaped output of a JournalEntry translation
+// — a (typeCode, slot, marshaled-payload) tuple. slot is the journal
+// index the SDK should place this entry at; stamping it here lets the
+// SDK build its replay map without decoding payloads to extract
+// completion_id / matching awakeable id.
 type replayFrame struct {
 	typeCode uint16
+	slot     uint32
 	payload  []byte
 }
 
@@ -75,7 +77,7 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 		msg := &protocolv1.InputCommandMessage{
 			Value: &protocolv1.Value{Content: entry.Input.GetValue()},
 		}
-		return marshalFrame(codec, handlerclient.TypeCmdInput, msg)
+		return marshalFrame(codec, handlerclient.TypeCmdInput, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_Sleep:
 		// result_completion_id is the slot the result will land at.
@@ -85,7 +87,7 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 			WakeUpTime:         entry.Sleep.GetFireAtMs(),
 			ResultCompletionId: e.GetIndex() + 1,
 		}
-		return marshalFrame(codec, handlerclient.TypeCmdSleep, msg)
+		return marshalFrame(codec, handlerclient.TypeCmdSleep, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_SleepResult:
 		msg := &protocolv1.SleepCompletionNotificationMessage{
@@ -94,24 +96,24 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 			CompletionId: e.GetIndex(),
 			Void:         &protocolv1.Void{},
 		}
-		return marshalFrame(codec, handlerclient.TypeNoteSleepDone, msg)
+		return marshalFrame(codec, handlerclient.TypeNoteSleepDone, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_SetState:
 		msg := &protocolv1.SetStateCommandMessage{
 			Key:   []byte(entry.SetState.GetKey()),
 			Value: &protocolv1.Value{Content: entry.SetState.GetValue()},
 		}
-		return marshalFrame(codec, handlerclient.TypeCmdSetState, msg)
+		return marshalFrame(codec, handlerclient.TypeCmdSetState, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_ClearState:
 		msg := &protocolv1.ClearStateCommandMessage{
 			Key: []byte(entry.ClearState.GetKey()),
 		}
-		return marshalFrame(codec, handlerclient.TypeCmdClearState, msg)
+		return marshalFrame(codec, handlerclient.TypeCmdClearState, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_ClearAllState:
 		msg := &protocolv1.ClearAllStateCommandMessage{}
-		return marshalFrame(codec, handlerclient.TypeCmdClearAllState, msg)
+		return marshalFrame(codec, handlerclient.TypeCmdClearAllState, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_Call:
 		// Call allocates 2 slots: cmd at e.Index, result at e.Index+1.
@@ -128,7 +130,7 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 		if tok := entry.Call.GetIdempotencyKey(); tok != "" {
 			msg.IdempotencyToken = &tok
 		}
-		return marshalFrame(codec, handlerclient.TypeCmdCall, msg)
+		return marshalFrame(codec, handlerclient.TypeCmdCall, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_CallResult:
 		// Translate to a CallCompletionNotificationMessage. completion_id
@@ -146,7 +148,7 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 				Value: &protocolv1.Value{Content: entry.CallResult.GetResult()},
 			}
 		}
-		return marshalFrame(codec, handlerclient.TypeNoteCallDone, msg)
+		return marshalFrame(codec, handlerclient.TypeNoteCallDone, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_OneWayCall:
 		t := entry.OneWayCall.GetTarget()
@@ -159,7 +161,7 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 		if tok := entry.OneWayCall.GetIdempotencyKey(); tok != "" {
 			msg.IdempotencyToken = &tok
 		}
-		return marshalFrame(codec, handlerclient.TypeCmdOneWayCall, msg)
+		return marshalFrame(codec, handlerclient.TypeCmdOneWayCall, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_Run:
 		// JERun translates to a RunCommandMessage marker. When the run
@@ -189,7 +191,7 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 		}
 		if entry.Run.GetRetryable() {
 			return []replayFrame{
-				{typeCode: handlerclient.TypeCmdRun, payload: cmdPayload},
+				{typeCode: handlerclient.TypeCmdRun, slot: e.GetIndex(), payload: cmdPayload},
 			}, nil
 		}
 		note := &protocolv1.RunCompletionNotificationMessage{
@@ -209,8 +211,8 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 			return nil, fmt.Errorf("marshal RunCompletionNotificationMessage: %w", err)
 		}
 		return []replayFrame{
-			{typeCode: handlerclient.TypeCmdRun, payload: cmdPayload},
-			{typeCode: handlerclient.TypeNoteRunDone, payload: notePayload},
+			{typeCode: handlerclient.TypeCmdRun, slot: e.GetIndex(), payload: cmdPayload},
+			{typeCode: handlerclient.TypeNoteRunDone, slot: e.GetIndex(), payload: notePayload},
 		}, nil
 
 	case *enginev1.JournalEntry_Awakeable:
@@ -221,7 +223,7 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 			ResultCompletionId: e.GetIndex() + 1,
 			AwakeableId:        entry.Awakeable.GetAwakeableId(),
 		}
-		return marshalFrame(codec, handlerclient.TypeCmdAwakeable, msg)
+		return marshalFrame(codec, handlerclient.TypeCmdAwakeable, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_AwakeableResult:
 		// Translate to a SignalNotificationMessage with the name variant
@@ -243,7 +245,7 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 		} else {
 			msg.Result = &protocolv1.SignalNotificationMessage_Void{Void: &protocolv1.Void{}}
 		}
-		return marshalFrame(codec, handlerclient.TypeNoteSignal, msg)
+		return marshalFrame(codec, handlerclient.TypeNoteSignal, e.GetIndex(), msg)
 
 	default:
 		log.Debug("invoker.wire: skipping JE variant in replay (not yet wired)",
@@ -254,11 +256,14 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 }
 
 // marshalFrame wraps codec.Marshal so the per-variant branches above
-// stay concise.
-func marshalFrame(codec handlerclient.Codec, typeCode uint16, msg proto.Message) ([]replayFrame, error) {
+// stay concise. slot is the journal index the SDK should place this
+// frame at — typically the JournalEntry's own index, except for
+// result-pair entries where it's the result-slot (already encoded in
+// the message's completion_id).
+func marshalFrame(codec handlerclient.Codec, typeCode uint16, slot uint32, msg proto.Message) ([]replayFrame, error) {
 	payload, err := codec.Marshal(msg)
 	if err != nil {
 		return nil, fmt.Errorf("marshal frame 0x%04x: %w", typeCode, err)
 	}
-	return []replayFrame{{typeCode: typeCode, payload: payload}}, nil
+	return []replayFrame{{typeCode: typeCode, slot: slot, payload: payload}}, nil
 }

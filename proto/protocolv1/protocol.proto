@@ -53,7 +53,13 @@ enum Kind {
   // Keyed, locked-per-key, stateful object. Address: (service_name, object_key).
   KIND_OBJECT = 2;
   // One run per (workflow_name, workflow_key). Long-lived; supports promises.
+  // The "main" entry point that drives the workflow lifecycle: submit dedup,
+  // completion retention, state persistence past run completion.
   KIND_WORKFLOW = 3;
+  // Shared handler on a workflow. Concurrent calls allowed, addressed by
+  // (workflow_name, workflow_key); reads/writes workflow state and promises
+  // without driving lifecycle.
+  KIND_WORKFLOW_SHARED = 4;
 }
 
 // ----------------------------------------------------------------------
@@ -304,6 +310,35 @@ message GetPromiseCompletionNotificationMessage {
   }
 }
 
+// Type: 0x040A
+// Non-blocking snapshot of a workflow-scoped named promise. Single-slot:
+// the apply arm reads PromiseValue and stamps the snapshot directly onto
+// the journal entry (completed flag + value/failure). Store-only on replay.
+message PeekPromiseCommandMessage {
+  string key = 1;
+  // Filled by the apply arm on first dispatch — not by the SDK. The
+  // SDK echoes the resulting snapshot on replay via the same fields.
+  bool completed = 2;
+  oneof result {
+    Value value = 3;
+    Failure failure = 4;
+  }
+  string name = 12;
+}
+
+// Type: 0x800A — notification for PeekPromiseCommandMessage. Reserved
+// for symmetry with Get/CompletePromise; Peek is single-slot and the
+// payload is inlined on the command frame, so the engine never emits
+// a separate notification today.
+message PeekPromiseCompletionNotificationMessage {
+  uint32 completion_id = 1;
+  bool completed = 2;
+  oneof result {
+    Value value = 3;
+    Failure failure = 4;
+  }
+}
+
 // Type: 0x040B
 // Completes a workflow-scoped named promise. Single-shot: a second
 // CompletePromise on the same key is a journal-mismatch error.
@@ -477,14 +512,31 @@ message AwakeableCommandMessage {
 }
 
 // Type: 0x0415
-// SDK→engine: deliver a named signal to another invocation. The
-// receiver-side onSignalDelivered apply arm routes the signal to the
-// target's session (typically resolving an awakeable named with the
-// matching string).
+// SDK→engine: deliver a named signal to another invocation, addressed
+// by Target (service + handler + key). The receiver-side apply arm
+// resolves Target → active InvocationId via KeyLeaseTable before
+// dispatching the signal. Target.key must be non-empty (signals are
+// only valid for keyed services — Virtual Objects and Workflows);
+// signaling an unkeyed Target is rejected at the SDK boundary.
 message SendSignalCommandMessage {
-  string target_invocation_id = 1;
-  string signal_name = 2;
-  bytes payload = 3;
+  string service_name = 1;
+  string handler_name = 2;
+  string key = 3;
+  string signal_name = 4;
+  bytes payload = 5;
+}
+
+// Type: 0x0416
+// SDK→engine: register interest in a named signal. Two-slot — this
+// command at cmd_slot, the resolution arrives as a
+// SignalNotificationMessage at result_completion_id (= cmd_slot + 1).
+// The engine writes a SignalAwaiter directory row keyed by (inv, name)
+// and probes the inbox; on hit the result lands synchronously in the
+// same apply batch, on miss the awaiter waits for a future
+// InvokerEffect.SignalDelivered.
+message AwaitSignalCommandMessage {
+  string signal_name = 1;
+  uint32 result_completion_id = 2;
 }
 
 // ----------------------------------------------------------------------

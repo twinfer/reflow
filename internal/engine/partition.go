@@ -17,7 +17,9 @@ import (
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
 // LeadershipObserver is the subset of leadership behavior the FSM needs. It
@@ -465,6 +467,32 @@ func (p *Partition) onInvoke(batch storage.Batch, cmd *enginev1.InvokeCommand, n
 		}
 	}
 
+	// Workflow single-run-per-key dedup. For KIND_WORKFLOW Run handlers, a
+	// successful submission claims (service, workflow_key) for the lifetime
+	// of the run (and its retention window). Subsequent submissions to the
+	// same (service, key) are dropped — ingress's optimistic LookupWorkflowRun
+	// surfaces the existing InvocationId; a losing race lands here and the
+	// new id is silently dropped (callers polling on a minted-but-dropped id
+	// time out, same shape as idempotency dedup).
+	if protocolv1.Kind(cmd.GetKind()) == protocolv1.Kind_KIND_WORKFLOW && target.GetObjectKey() != "" {
+		runT := tables.WorkflowRunTable{S: batch}
+		prior, rerr := runT.Get(target.GetServiceName(), target.GetObjectKey())
+		if rerr != nil {
+			return fmt.Errorf("onInvoke: workflow_run lookup: %w", rerr)
+		}
+		if prior != nil {
+			p.cfg.Log.Debug("partition: workflow_run hit; dropping duplicate workflow submission",
+				"prior_uuid", fmt.Sprintf("%x", prior.GetUuid()),
+				"new_uuid", fmt.Sprintf("%x", id.GetUuid()),
+				"service", target.GetServiceName(),
+				"workflow_key", target.GetObjectKey())
+			return nil
+		}
+		if perr := runT.Put(batch, target.GetServiceName(), target.GetObjectKey(), id); perr != nil {
+			return fmt.Errorf("onInvoke: workflow_run record: %w", perr)
+		}
+	}
+
 	cur, err := inv.Get(id)
 	if err != nil {
 		return fmt.Errorf("onInvoke: load status: %w", err)
@@ -517,19 +545,27 @@ func (p *Partition) onInvoke(batch storage.Batch, cmd *enginev1.InvokeCommand, n
 }
 
 func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEffect, nowMs uint64, meta *enginev1.PartitionMeta, inv tables.InvocationTable, journal tables.JournalTable, isLeader bool) error {
-	id := eff.GetInvocationId()
-	cur, err := inv.Get(id)
-	if err != nil {
-		return fmt.Errorf("onInvokerEffect: load status: %w", err)
-	}
-
 	timersT := tables.TimerTable{S: batch}
 	awakeT := tables.AwakeableTable{S: batch}
 
+	id := eff.GetInvocationId()
+	// SignalDelivered is routed by Target (not InvocationId) so its
+	// surrounding invocation_id is nil; the apply arm resolves the
+	// active id via KeyLeaseTable. For every other variant id is set
+	// and we load the current status up-front to share across cases.
 	var (
+		cur     *enginev1.InvocationStatus
 		next    *enginev1.InvocationStatus
 		actions []Action
 	)
+	if id != nil {
+		var err error
+		cur, err = inv.Get(id)
+		if err != nil {
+			return fmt.Errorf("onInvokerEffect: load status: %w", err)
+		}
+	}
+	var err error
 	switch k := eff.GetKind().(type) {
 	case *enginev1.InvokerEffect_JournalAppended:
 		entry := k.JournalAppended.GetEntry()
@@ -640,16 +676,221 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			}
 		case *enginev1.JournalEntry_Signal:
 			env := &enginev1.OutboxEnvelope{
-				DestinationShardId: p.cfg.Partitioner.ShardForInvocation(e.Signal.GetTargetInvocationId()),
+				DestinationShardId: p.cfg.Partitioner.ShardForTarget(e.Signal.GetTarget()),
 				Kind: &enginev1.OutboxEnvelope_Signal{Signal: &enginev1.SignalSend{
-					TargetInvocationId: e.Signal.GetTargetInvocationId(),
-					SignalName:         e.Signal.GetSignalName(),
-					Payload:            e.Signal.GetPayload(),
+					Target:     e.Signal.GetTarget(),
+					SignalName: e.Signal.GetSignalName(),
+					Payload:    e.Signal.GetPayload(),
 				}},
 			}
 			if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {
 				return fmt.Errorf("onInvokerEffect: outbox append (signal): %w", err)
 			}
+		case *enginev1.JournalEntry_AwaitSignal:
+			// Probe the inbox: a signal delivered before this WaitSignal
+			// call sits in signal_inbox/<id>/<name>. On hit, append the
+			// JESignalResult inline at result_completion_id and delete
+			// the inbox row. On miss, write a SignalAwaiter directory
+			// row so a future SignalDelivered can stitch the result.
+			name := e.AwaitSignal.GetSignalName()
+			resultIdx := e.AwaitSignal.GetResultCompletionId()
+			inboxT := tables.SignalInboxTable{S: batch}
+			buffered, berr := inboxT.Get(id, name)
+			if berr != nil {
+				return fmt.Errorf("onInvokerEffect: signal inbox lookup: %w", berr)
+			}
+			if buffered != nil {
+				resultEntry := &enginev1.JournalEntry{
+					Index: resultIdx,
+					Entry: &enginev1.JournalEntry_SignalResult{
+						SignalResult: &enginev1.JESignalResult{
+							SignalName: name,
+							Payload:    buffered.GetPayload(),
+						},
+					},
+				}
+				if err := journal.Append(batch, id, resultEntry); err != nil {
+					return fmt.Errorf("onInvokerEffect: journal append (signal result inline): %w", err)
+				}
+				if err := inboxT.Delete(batch, id, name); err != nil {
+					return fmt.Errorf("onInvokerEffect: inbox delete (consumed): %w", err)
+				}
+				// The current session emitted JEAwaitSignal expecting a
+				// later notification. Since we just inlined the result
+				// into the journal, the session will still see no
+				// replay entry at result_idx (its StartMessage was
+				// frozen earlier) and emit Suspension. Push ActInvoke
+				// here so the Invoker queues a pendingRespawn — the
+				// fresh session picks up JESignalResult and resumes.
+				if isLeader {
+					if t := statusTarget(cur); t != nil {
+						p.cfg.Collector.Push(ActInvoke{ID: id, Target: t})
+					}
+				}
+			} else {
+				awaiter := &enginev1.SignalAwaiter{
+					Owner:      id,
+					EntryIndex: entry.GetIndex(),
+				}
+				if err := (tables.SignalAwaiterTable{S: batch}).Put(batch, id, name, awaiter); err != nil {
+					return fmt.Errorf("onInvokerEffect: awaiter put: %w", err)
+				}
+			}
+		case *enginev1.JournalEntry_SignalResult:
+			// Receiver-side result entry — written by the apply arm
+			// itself (via the JournalEntry_AwaitSignal inbox-hit branch
+			// or the InvokerEffect_SignalDelivered awaiter-stitch
+			// branch). No additional side effect here; the entry's
+			// presence in the journal drives the SDK future on next
+			// session start.
+		case *enginev1.JournalEntry_GetPromise:
+			// Workflow-scoped Promise(name).Result(). Probe the promise
+			// row at promise/<svc>/<key>/<name>. On Resolved/Rejected,
+			// append JEPromiseResult inline at result_completion_id and
+			// wake; on pending/absent, write a PromiseAwaiter row so a
+			// future JECompletePromise / InvokerEffect.PromiseCompleted
+			// can stitch the result.
+			t := statusTarget(cur)
+			if t == nil {
+				p.cfg.Log.Warn("partition: JEGetPromise on status without target", "status", fmt.Sprintf("%T", cur.GetStatus()))
+				break
+			}
+			name := e.GetPromise.GetName()
+			resultIdx := e.GetPromise.GetResultCompletionId()
+			pv, perr := (tables.PromiseTable{S: batch}).Get(t.GetServiceName(), t.GetObjectKey(), name)
+			if perr != nil {
+				return fmt.Errorf("onInvokerEffect: promise lookup: %w", perr)
+			}
+			if pv != nil && pv.GetPending() == nil {
+				// Already terminal — inline result.
+				resultEntry := &enginev1.JournalEntry{
+					Index: resultIdx,
+					Entry: &enginev1.JournalEntry_PromiseResult{
+						PromiseResult: promiseResultFromValue(name, pv),
+					},
+				}
+				if err := journal.Append(batch, id, resultEntry); err != nil {
+					return fmt.Errorf("onInvokerEffect: journal append (promise result inline): %w", err)
+				}
+				if isLeader {
+					p.cfg.Collector.Push(ActInvoke{ID: id, Target: t})
+				}
+			} else {
+				awaiter := &enginev1.PromiseAwaiter{
+					Owner:      id,
+					EntryIndex: entry.GetIndex(),
+				}
+				if err := (tables.PromiseAwaiterTable{S: batch}).Put(batch, t.GetServiceName(), t.GetObjectKey(), name, awaiter); err != nil {
+					return fmt.Errorf("onInvokerEffect: promise awaiter put: %w", err)
+				}
+			}
+		case *enginev1.JournalEntry_PeekPromise:
+			// Single-slot snapshot. The up-front journal.Append wrote the
+			// entry with empty fields; we mutate it to stamp the
+			// completed/value/failure snapshot and re-append (batch.Set
+			// overwrites). The SDK sees the stamped entry on replay.
+			t := statusTarget(cur)
+			if t == nil {
+				p.cfg.Log.Warn("partition: JEPeekPromise on status without target", "status", fmt.Sprintf("%T", cur.GetStatus()))
+				break
+			}
+			name := e.PeekPromise.GetName()
+			pv, perr := (tables.PromiseTable{S: batch}).Get(t.GetServiceName(), t.GetObjectKey(), name)
+			if perr != nil {
+				return fmt.Errorf("onInvokerEffect: peek promise lookup: %w", perr)
+			}
+			e.PeekPromise.Completed = false
+			e.PeekPromise.Value = nil
+			e.PeekPromise.FailureMessage = ""
+			if pv != nil {
+				if r := pv.GetResolved(); r != nil {
+					e.PeekPromise.Completed = true
+					e.PeekPromise.Value = r.GetValue()
+				} else if rj := pv.GetRejected(); rj != nil {
+					e.PeekPromise.Completed = true
+					e.PeekPromise.FailureMessage = rj.GetFailureMessage()
+				}
+			}
+			if err := journal.Append(batch, id, entry); err != nil {
+				return fmt.Errorf("onInvokerEffect: journal append (peek stamp): %w", err)
+			}
+		case *enginev1.JournalEntry_CompletePromise:
+			// Two-slot. Write PromiseValue (if not already terminal),
+			// then append JEPromiseCompleteResult at result_completion_id
+			// reporting succeeded / already-completed. If an awaiter is
+			// pending, also append JEPromiseResult on the awaiter's
+			// journal at awaiter.entry_index+1 and wake it.
+			t := statusTarget(cur)
+			if t == nil {
+				p.cfg.Log.Warn("partition: JECompletePromise on status without target", "status", fmt.Sprintf("%T", cur.GetStatus()))
+				break
+			}
+			name := e.CompletePromise.GetName()
+			resultIdx := e.CompletePromise.GetResultCompletionId()
+			promiseT := tables.PromiseTable{S: batch}
+			cur_pv, cerr := promiseT.Get(t.GetServiceName(), t.GetObjectKey(), name)
+			if cerr != nil {
+				return fmt.Errorf("onInvokerEffect: promise lookup (complete): %w", cerr)
+			}
+			succeeded := false
+			conflictMsg := "promise already completed"
+			var newPV *enginev1.PromiseValue
+			if cur_pv == nil || cur_pv.GetPending() != nil {
+				newPV = buildPromiseValueFromJournal(e.CompletePromise, nowMs)
+				if err := promiseT.Put(batch, t.GetServiceName(), t.GetObjectKey(), name, newPV); err != nil {
+					return fmt.Errorf("onInvokerEffect: promise put: %w", err)
+				}
+				succeeded = true
+				conflictMsg = ""
+				// Wake any pending awaiter on this promise.
+				awaiterT := tables.PromiseAwaiterTable{S: batch}
+				awaiter, aerr := awaiterT.Get(t.GetServiceName(), t.GetObjectKey(), name)
+				if aerr != nil {
+					return fmt.Errorf("onInvokerEffect: promise awaiter lookup: %w", aerr)
+				}
+				if awaiter != nil {
+					awaiterResultIdx := awaiter.GetEntryIndex() + 1
+					awaiterResult := &enginev1.JournalEntry{
+						Index: awaiterResultIdx,
+						Entry: &enginev1.JournalEntry_PromiseResult{
+							PromiseResult: promiseResultFromValue(name, newPV),
+						},
+					}
+					if err := journal.Append(batch, awaiter.GetOwner(), awaiterResult); err != nil {
+						return fmt.Errorf("onInvokerEffect: journal append (promise result stitch): %w", err)
+					}
+					if err := awaiterT.Delete(batch, t.GetServiceName(), t.GetObjectKey(), name); err != nil {
+						return fmt.Errorf("onInvokerEffect: promise awaiter delete: %w", err)
+					}
+					if isLeader {
+						// Awaiter shares the workflow's (service, key)
+						// scope; reuse t as the wake target.
+						p.cfg.Collector.Push(ActInvoke{ID: awaiter.GetOwner(), Target: t})
+					}
+				}
+			}
+			// Append the result entry on the resolver's journal.
+			ack := &enginev1.JournalEntry{
+				Index: resultIdx,
+				Entry: &enginev1.JournalEntry_PromiseCompleteResult{
+					PromiseCompleteResult: &enginev1.JEPromiseCompleteResult{
+						Succeeded:      succeeded,
+						FailureMessage: conflictMsg,
+					},
+				},
+			}
+			if err := journal.Append(batch, id, ack); err != nil {
+				return fmt.Errorf("onInvokerEffect: journal append (promise complete ack): %w", err)
+			}
+			// Wake the resolver so it sees the ack on respawn.
+			if isLeader {
+				p.cfg.Collector.Push(ActInvoke{ID: id, Target: t})
+			}
+		case *enginev1.JournalEntry_PromiseResult, *enginev1.JournalEntry_PromiseCompleteResult:
+			// Receiver-side result entries — written by the apply arm
+			// itself (via JEGetPromise inline-hit, JECompletePromise
+			// awaiter-stitch, JECompletePromise ack, or the ingress
+			// PromiseCompleted effect). No additional side effect.
 		}
 		next, actions, err = transitionOnJournalAppend(id, cur, k.JournalAppended, nowMs)
 	case *enginev1.InvokerEffect_RunProposal:
@@ -797,77 +1038,170 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			nowMs,
 		)
 	case *enginev1.InvokerEffect_SignalDelivered:
-		// Receive-side journal entry is deferred; the FSM still transitions
-		// state so a suspended invocation wakes up. CompletionID is left at
-		// 0 — the Invoker session inspects its waker queue on resume rather
-		// than relying on the notification carrying a real index.
+		// Receiver-side: resolve Target → active InvocationId via
+		// KeyLeaseTable.current_invocation, then route. The well-known
+		// __cancel__ name short-circuits to a terminal Completed; other
+		// signal names will land in the per-(inv, name) inbox once
+		// Step 2 lands the inbox + awaiter tables. For Step 1 we drop
+		// non-cancel signals with a warning — there's no reader yet.
+		sigTarget := k.SignalDelivered.GetTarget()
+		sigName := k.SignalDelivered.GetSignalName()
+		if sigTarget.GetObjectKey() == "" {
+			p.cfg.Log.Warn("partition: signal delivered for unkeyed target", "service", sigTarget.GetServiceName(), "handler", sigTarget.GetHandlerName())
+			return nil
+		}
+		klt := tables.KeyLeaseTable{S: batch}
+		lease, lerr := klt.Get(sigTarget.GetServiceName(), sigTarget.GetObjectKey())
+		if lerr != nil {
+			return fmt.Errorf("onInvokerEffect: signal key-lease lookup: %w", lerr)
+		}
+		if lease == nil || lease.GetState() != enginev1.KeyLeaseStatus_ACTIVE {
+			p.cfg.Log.Warn("partition: signal to inactive key dropped",
+				"service", sigTarget.GetServiceName(),
+				"object_key", sigTarget.GetObjectKey(),
+				"signal", sigName)
+			return nil
+		}
+		activeID := lease.GetCurrentInvocation()
+		activeCur, gerr := inv.Get(activeID)
+		if gerr != nil {
+			return fmt.Errorf("onInvokerEffect: signal load active status: %w", gerr)
+		}
+		if sigName == wire.WellKnownCancelSignal {
+			completed := &enginev1.InvocationCompleted{
+				FailureMessage: "invocation cancelled",
+				FailureCode:    wire.CancelledCode,
+			}
+			cnext, cacts, cerr := p.applyTerminalCompletion(batch, activeID, activeCur, completed, inv, journal, timersT, meta, isLeader, nowMs)
+			if cerr != nil {
+				return cerr
+			}
+			if cnext != nil {
+				if perr := inv.Put(batch, activeID, cnext); perr != nil {
+					return fmt.Errorf("onInvokerEffect: write status (cancel): %w", perr)
+				}
+			}
+			if isLeader {
+				for _, a := range cacts {
+					p.cfg.Collector.Push(a)
+				}
+			}
+			return nil
+		}
+		// Non-cancel signal: stitch into a pending JEAwaitSignal if
+		// the handler is already waiting, otherwise buffer in the
+		// inbox so a future WaitSignal(name) call can consume it.
+		// Either way the FSM wakes the invocation so the session can
+		// observe the result.
+		payload := k.SignalDelivered.GetPayload()
+		awaiterT := tables.SignalAwaiterTable{S: batch}
+		inboxT := tables.SignalInboxTable{S: batch}
+		awaiter, aerr := awaiterT.Get(activeID, sigName)
+		if aerr != nil {
+			return fmt.Errorf("onInvokerEffect: signal awaiter lookup: %w", aerr)
+		}
+		if awaiter != nil {
+			// Stitch result at awaiter.entry_index + 1 (= the
+			// result_completion_id the SDK allocated when emitting
+			// JEAwaitSignal).
+			resultIdx := awaiter.GetEntryIndex() + 1
+			resultEntry := &enginev1.JournalEntry{
+				Index: resultIdx,
+				Entry: &enginev1.JournalEntry_SignalResult{
+					SignalResult: &enginev1.JESignalResult{
+						SignalName: sigName,
+						Payload:    payload,
+					},
+				},
+			}
+			if err := journal.Append(batch, activeID, resultEntry); err != nil {
+				return fmt.Errorf("onInvokerEffect: journal append (signal result stitch): %w", err)
+			}
+			if err := awaiterT.Delete(batch, activeID, sigName); err != nil {
+				return fmt.Errorf("onInvokerEffect: awaiter delete: %w", err)
+			}
+		} else {
+			// No pending awaiter — buffer in the inbox. The next
+			// WaitSignal(name) consumes it synchronously.
+			entry := &enginev1.SignalInboxEntry{
+				SignalName:    sigName,
+				Payload:       payload,
+				DeliveredAtMs: nowMs,
+			}
+			if err := inboxT.Put(batch, activeID, sigName, entry); err != nil {
+				return fmt.Errorf("onInvokerEffect: inbox put: %w", err)
+			}
+		}
+		id, cur = activeID, activeCur
 		next, actions, err = transitionOnSignalDelivered(
-			id, cur, 0,
-			k.SignalDelivered.GetSignalName(),
-			k.SignalDelivered.GetPayload(),
+			activeID, activeCur, 0,
+			sigName,
+			payload,
 			nowMs,
 		)
 	case *enginev1.InvokerEffect_Completed:
-		next, actions, err = transitionOnComplete(id, cur, k.Completed, nowMs)
-		// Deliver JECallResult to the parent invocation if this callee was
-		// spawned via ctx.Call. Extract parent_link from either Invoked or
-		// Suspended (both are valid pre-Completed states; see
-		// transitionOnComplete's race-safety note). Completed → Completed
-		// is idempotent and must NOT re-deliver — that's why we read from
-		// cur (the prior status) rather than the new Completed status.
-		if err == nil {
-			var pl *enginev1.ParentLink
-			var completedTarget *enginev1.InvocationTarget
-			switch s := cur.GetStatus().(type) {
-			case *enginev1.InvocationStatus_Invoked:
-				pl = s.Invoked.GetParentLink()
-				completedTarget = s.Invoked.GetTarget()
-			case *enginev1.InvocationStatus_Suspended:
-				pl = s.Suspended.GetParentLink()
-				completedTarget = s.Suspended.GetTarget()
-			}
-			if pl.GetParentId() != nil {
-				parentActs, perr := p.deliverCallResultToParent(batch, inv, journal, meta, pl, k.Completed.GetOutput(), k.Completed.GetFailureMessage(), nowMs, isLeader)
-				if perr != nil {
-					return perr
-				}
-				actions = append(actions, parentActs...)
-			}
-			// Release the per-key VO lease and activate the next queued
-			// invocation, if any. Guarded by completedTarget != nil so
-			// replay (cur already Completed) is a no-op: the prior Completed
-			// status carries no target on this code path.
-			if completedTarget.GetObjectKey() != "" {
-				leaseActs, rerr := p.releaseKeyLease(batch, completedTarget)
-				if rerr != nil {
-					return rerr
-				}
-				actions = append(actions, leaseActs...)
-			}
-			// Reap any pending sleep/retry timers for this invocation via
-			// the secondary timer index. Bounded by per-invocation timer
-			// count, not the global timer table size. The cur switch
-			// above only matches Invoked/Suspended, so the idempotent
-			// Completed → Completed replay falls through with
-			// completedTarget=nil and the reap is naturally skipped.
-			if completedTarget != nil {
-				var pending []uint64
-				if err := timersT.ScanByInvocation(id, func(fireAt uint64) error {
-					pending = append(pending, fireAt)
-					return nil
-				}); err != nil {
-					return fmt.Errorf("onInvokerEffect: scan timers (complete): %w", err)
-				}
-				for _, fireAt := range pending {
-					if err := timersT.Delete(batch, fireAt, id); err != nil {
-						return fmt.Errorf("onInvokerEffect: delete timer (complete): %w", err)
-					}
-					if isLeader {
-						actions = append(actions, ActDeleteTimer{FireAtMs: fireAt, ID: id})
-					}
-				}
-			}
+		cnext, cacts, cerr := p.applyTerminalCompletion(batch, id, cur, k.Completed, inv, journal, timersT, meta, isLeader, nowMs)
+		next, actions, err = cnext, cacts, cerr
+	case *enginev1.InvokerEffect_PromiseCompleted:
+		// External promise resolution from ingress. Routed by
+		// (service, workflow_key); the surrounding InvocationId is
+		// unset. Apply path: write PromiseValue (if not already
+		// terminal); wake any awaiter via the standard FSM transition.
+		pc := k.PromiseCompleted
+		svc := pc.GetService()
+		wk := pc.GetWorkflowKey()
+		name := pc.GetPromiseName()
+		if svc == "" || wk == "" || name == "" {
+			p.cfg.Log.Warn("partition: PromiseCompleted with empty addressing",
+				"service", svc, "key", wk, "name", name)
+			return nil
 		}
+		promiseT := tables.PromiseTable{S: batch}
+		cur_pv, perr := promiseT.Get(svc, wk, name)
+		if perr != nil {
+			return fmt.Errorf("onInvokerEffect: promise lookup (ingress): %w", perr)
+		}
+		if cur_pv != nil && cur_pv.GetPending() == nil {
+			// Already terminal — ingress conflict is silent; the RPC
+			// caller can re-check via Peek.
+			return nil
+		}
+		newPV := buildPromiseValueFromEffect(pc, nowMs)
+		if err := promiseT.Put(batch, svc, wk, name, newPV); err != nil {
+			return fmt.Errorf("onInvokerEffect: promise put (ingress): %w", err)
+		}
+		awaiterT := tables.PromiseAwaiterTable{S: batch}
+		awaiter, aerr := awaiterT.Get(svc, wk, name)
+		if aerr != nil {
+			return fmt.Errorf("onInvokerEffect: promise awaiter lookup (ingress): %w", aerr)
+		}
+		if awaiter == nil {
+			// No one is waiting — Promise() reads will see the value on
+			// next Get/Peek. No FSM transition.
+			return nil
+		}
+		awaiterResultIdx := awaiter.GetEntryIndex() + 1
+		awaiterResult := &enginev1.JournalEntry{
+			Index: awaiterResultIdx,
+			Entry: &enginev1.JournalEntry_PromiseResult{
+				PromiseResult: promiseResultFromValue(name, newPV),
+			},
+		}
+		if err := journal.Append(batch, awaiter.GetOwner(), awaiterResult); err != nil {
+			return fmt.Errorf("onInvokerEffect: journal append (promise result ingress): %w", err)
+		}
+		if err := awaiterT.Delete(batch, svc, wk, name); err != nil {
+			return fmt.Errorf("onInvokerEffect: promise awaiter delete (ingress): %w", err)
+		}
+		// Load awaiter status and reassign id/cur for the post-switch
+		// inv.Put + actions flow. Mirrors SignalDelivered.
+		ownerID := awaiter.GetOwner()
+		ownerCur, gerr := inv.Get(ownerID)
+		if gerr != nil {
+			return fmt.Errorf("onInvokerEffect: load awaiter status: %w", gerr)
+		}
+		id, cur = ownerID, ownerCur
+		next, actions, err = transitionOnPromiseResolved(ownerID, ownerCur, awaiterResultIdx, nowMs)
 	case *enginev1.InvokerEffect_Suspended:
 		next, actions, err = transitionOnSuspend(id, cur, k.Suspended, nowMs)
 	case nil:
@@ -892,6 +1226,80 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 		}
 	}
 	return nil
+}
+
+// applyTerminalCompletion folds the terminal-effect post-processing
+// (FSM transition + parent JECallResult delivery + key-lease release +
+// timer reap) into a reusable helper. The InvokerEffect_Completed apply
+// arm uses it directly; the InvokerEffect_SignalDelivered cancel branch
+// uses it after synthesizing an InvocationCompleted with FailureCode=
+// CancelledCode. The caller is responsible for persisting the returned
+// next status via inv.Put and pushing actions onto the collector.
+func (p *Partition) applyTerminalCompletion(
+	batch storage.Batch,
+	id *enginev1.InvocationId,
+	cur *enginev1.InvocationStatus,
+	completed *enginev1.InvocationCompleted,
+	inv tables.InvocationTable,
+	journal tables.JournalTable,
+	timersT tables.TimerTable,
+	meta *enginev1.PartitionMeta,
+	isLeader bool,
+	nowMs uint64,
+) (*enginev1.InvocationStatus, []Action, error) {
+	next, actions, err := transitionOnComplete(id, cur, completed, nowMs)
+	if err != nil {
+		return next, actions, err
+	}
+	// Extract parent_link + terminating target from the pre-transition
+	// status. Completed → Completed (idempotent replay) falls through
+	// with both nil, so the parent delivery / lease release / timer
+	// reap are naturally skipped.
+	var pl *enginev1.ParentLink
+	var completedTarget *enginev1.InvocationTarget
+	switch s := cur.GetStatus().(type) {
+	case *enginev1.InvocationStatus_Scheduled:
+		pl = s.Scheduled.GetParentLink()
+		completedTarget = s.Scheduled.GetTarget()
+	case *enginev1.InvocationStatus_Invoked:
+		pl = s.Invoked.GetParentLink()
+		completedTarget = s.Invoked.GetTarget()
+	case *enginev1.InvocationStatus_Suspended:
+		pl = s.Suspended.GetParentLink()
+		completedTarget = s.Suspended.GetTarget()
+	}
+	if pl.GetParentId() != nil {
+		parentActs, perr := p.deliverCallResultToParent(batch, inv, journal, meta, pl, completed.GetOutput(), completed.GetFailureMessage(), nowMs, isLeader)
+		if perr != nil {
+			return next, actions, perr
+		}
+		actions = append(actions, parentActs...)
+	}
+	if completedTarget.GetObjectKey() != "" {
+		leaseActs, rerr := p.releaseKeyLease(batch, completedTarget)
+		if rerr != nil {
+			return next, actions, rerr
+		}
+		actions = append(actions, leaseActs...)
+	}
+	if completedTarget != nil {
+		var pending []uint64
+		if serr := timersT.ScanByInvocation(id, func(fireAt uint64) error {
+			pending = append(pending, fireAt)
+			return nil
+		}); serr != nil {
+			return next, actions, fmt.Errorf("applyTerminalCompletion: scan timers: %w", serr)
+		}
+		for _, fireAt := range pending {
+			if derr := timersT.Delete(batch, fireAt, id); derr != nil {
+				return next, actions, fmt.Errorf("applyTerminalCompletion: delete timer: %w", derr)
+			}
+			if isLeader {
+				actions = append(actions, ActDeleteTimer{FireAtMs: fireAt, ID: id})
+			}
+		}
+	}
+	return next, actions, nil
 }
 
 // deliverCallResultToParent dispatches the callee's terminal result back
@@ -1070,6 +1478,59 @@ func (p *Partition) releaseKeyLease(batch storage.Batch, target *enginev1.Invoca
 	return leaseActs, nil
 }
 
+// promiseResultFromValue builds a JEPromiseResult from a terminal
+// PromiseValue. Pending state is a programming error here — callers
+// must check pv.GetPending() == nil before invoking.
+func promiseResultFromValue(name string, pv *enginev1.PromiseValue) *enginev1.JEPromiseResult {
+	out := &enginev1.JEPromiseResult{Name: name}
+	if r := pv.GetResolved(); r != nil {
+		out.Value = r.GetValue()
+	} else if rj := pv.GetRejected(); rj != nil {
+		out.FailureMessage = rj.GetFailureMessage()
+	}
+	return out
+}
+
+// buildPromiseValueFromJournal materialises a Resolved or Rejected
+// PromiseValue from a JECompletePromise journal entry. FailureMessage
+// non-empty = Rejected; otherwise Resolved.
+func buildPromiseValueFromJournal(cp *enginev1.JECompletePromise, nowMs uint64) *enginev1.PromiseValue {
+	if fm := cp.GetFailureMessage(); fm != "" {
+		return &enginev1.PromiseValue{
+			State: &enginev1.PromiseValue_Rejected{
+				Rejected: &enginev1.Rejected{FailureMessage: fm, CompletedAtMs: nowMs},
+			},
+			CreatedAtMs: nowMs,
+		}
+	}
+	return &enginev1.PromiseValue{
+		State: &enginev1.PromiseValue_Resolved{
+			Resolved: &enginev1.Resolved{Value: cp.GetValue(), CompletedAtMs: nowMs},
+		},
+		CreatedAtMs: nowMs,
+	}
+}
+
+// buildPromiseValueFromEffect materialises a Resolved or Rejected
+// PromiseValue from an InvokerEffect.PromiseCompleted (ingress path).
+// Same value/failure semantics as buildPromiseValueFromJournal.
+func buildPromiseValueFromEffect(eff *enginev1.PromiseCompleted, nowMs uint64) *enginev1.PromiseValue {
+	if fm := eff.GetFailureMessage(); fm != "" {
+		return &enginev1.PromiseValue{
+			State: &enginev1.PromiseValue_Rejected{
+				Rejected: &enginev1.Rejected{FailureMessage: fm, CompletedAtMs: nowMs},
+			},
+			CreatedAtMs: nowMs,
+		}
+	}
+	return &enginev1.PromiseValue{
+		State: &enginev1.PromiseValue_Resolved{
+			Resolved: &enginev1.Resolved{Value: eff.GetValue(), CompletedAtMs: nowMs},
+		},
+		CreatedAtMs: nowMs,
+	}
+}
+
 // statusTarget extracts the InvocationTarget from a status. Returns nil
 // for Free/Completed (no active target) and for nil/zero statuses. Used
 // by apply arms that need the (service, object_key) tuple of the running
@@ -1233,6 +1694,27 @@ func (p *Partition) onPurge(
 	if err := journal.DeletePrefix(batch, id); err != nil {
 		return fmt.Errorf("onPurge: delete journal: %w", err)
 	}
+	// Signal inbox/awaiter rows live keyed by inv_id but aren't reaped
+	// by the Completed transition (the inbox could legitimately carry
+	// signals that arrived between Suspend and Complete). Purge is the
+	// definitive cleanup point.
+	if err := (tables.SignalInboxTable{S: batch}).DeleteAllForInvocation(batch, id); err != nil {
+		return fmt.Errorf("onPurge: signal inbox cleanup: %w", err)
+	}
+	if err := (tables.SignalAwaiterTable{S: batch}).DeleteAllForInvocation(batch, id); err != nil {
+		return fmt.Errorf("onPurge: signal awaiter cleanup: %w", err)
+	}
+	// State rows (state/<service>/<key>/...) are *not* deleted here.
+	// They are addressed by (service, object_key), not invocation_id, and
+	// outlive any single invocation: an object's state persists across
+	// invocations on the same key, and a workflow's state must survive
+	// the run for downstream readers. Cleanup for workflow state +
+	// workflow_run + promise rows is the workflow retention reaper's job
+	// (not yet wired; see Step 3.3 in the durable-execution-go-sad doc).
+	// Promise rows (promise/<svc>/<key>/<name>) and awaiter rows
+	// (promise_awaiter/<svc>/<key>/<name>) follow the same retention
+	// model — the reaper sweeps them together with state when the
+	// workflow's retention window elapses.
 	// Timer rows are reaped on the Invoked/Suspended → Completed
 	// transition (see InvokerEffect_Completed apply arm); transitionOnPurge
 	// requires Completed, so no pending timer can survive into Purge.
@@ -1273,6 +1755,18 @@ type LookupIdempotency struct {
 }
 
 func (LookupIdempotency) isLookup() {}
+
+// LookupWorkflowRun returns the InvocationId of the active or completed
+// run for (service, workflow_key). Result is *enginev1.InvocationId or nil
+// when no run claims this key. Used by ingress to dedup KIND_WORKFLOW
+// SubmitInvocation: optimistic miss → propose; hit → return the existing
+// id without minting a new one.
+type LookupWorkflowRun struct {
+	Service     string
+	WorkflowKey string
+}
+
+func (LookupWorkflowRun) isLookup() {}
 
 // LookupState resolves a single state value. Result is StateLookupResult
 // so callers can distinguish "absent" (Present=false) from "present-but-
@@ -1317,6 +1811,8 @@ func (p *Partition) Lookup(query any) (any, error) {
 		return StateLookupResult{Value: v, Present: present}, nil
 	case LookupIdempotency:
 		return (tables.IdempotencyTable{S: store}).Get(q.Service, q.Handler, q.ObjectKey, q.IdempotencyKey)
+	case LookupWorkflowRun:
+		return (tables.WorkflowRunTable{S: store}).Get(q.Service, q.WorkflowKey)
 	default:
 		return nil, fmt.Errorf("partition: unknown lookup type %T", query)
 	}

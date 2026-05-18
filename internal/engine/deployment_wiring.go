@@ -63,6 +63,46 @@ func (h *Host) resolveDeployment(ctx context.Context, deploymentID string) (*eng
 	}
 }
 
+// LookupHandlerInfo resolves (service, handler) → (deployment_id, kind)
+// against shard 0. Returns (nil, nil) when no deployment claims the handler;
+// callers decide whether that is an error condition. Returns (nil, err) when
+// shard 0 is unreachable. Mirrors LookupDeploymentIDByHandler's retry shape
+// so ingress callers can wait through shard-0 election rather than failing
+// the invocation terminally.
+func (h *Host) LookupHandlerInfo(ctx context.Context, service, handler string) (*cluster.HandlerInfo, error) {
+	if service == "" || handler == "" {
+		return nil, errors.New("host: LookupHandlerInfo: empty service or handler")
+	}
+	if h.nh == nil {
+		return nil, nil
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+	}
+	var lastErr error
+	for {
+		res, err := h.nh.SyncRead(ctx, 0, cluster.LookupHandlerInfo{Service: service, Handler: handler})
+		if err == nil {
+			info, ok := res.(*cluster.HandlerInfo)
+			if !ok {
+				return nil, fmt.Errorf("host: LookupHandlerInfo: unexpected lookup type %T", res)
+			}
+			return info, nil
+		}
+		lastErr = err
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("host: LookupHandlerInfo: shard 0 unavailable: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("host: LookupHandlerInfo: shard 0 unavailable: %w", lastErr)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
 // LookupDeploymentIDByHandler resolves (service, handler) → deployment_id
 // against shard 0's deployment index. Returns "" + nil when no
 // deployment claims the handler — callers decide whether that is an

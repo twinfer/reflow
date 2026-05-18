@@ -42,7 +42,7 @@ func newTestWireContext(t *testing.T, cache map[string][]byte) (*wireContext, *f
 	t.Helper()
 	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
 	stream := &fakeStream{}
-	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, wire.DefaultCodec(), cache, nil, 7, 0)
+	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, wire.DefaultCodec(), cache, nil, 7, 0, "Svc", "Hdr", "", protocolv1.Kind_KIND_SERVICE)
 	return wctx, stream
 }
 
@@ -52,7 +52,7 @@ func newTestWireContextWithReplay(t *testing.T, replay map[uint32]*replayEntry) 
 	t.Helper()
 	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
 	stream := &fakeStream{}
-	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, wire.DefaultCodec(), nil, replay, 7, 0)
+	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, wire.DefaultCodec(), nil, replay, 7, 0, "Svc", "Hdr", "", protocolv1.Kind_KIND_SERVICE)
 	return wctx, stream
 }
 
@@ -63,7 +63,18 @@ func newTestWireContextWithBudget(t *testing.T, budget uint32) (*wireContext, *f
 	t.Helper()
 	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
 	stream := &fakeStream{}
-	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, wire.DefaultCodec(), nil, nil, 7, budget)
+	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, wire.DefaultCodec(), nil, nil, 7, budget, "Svc", "Hdr", "", protocolv1.Kind_KIND_SERVICE)
+	return wctx, stream
+}
+
+// newTestWireContextWithKind builds a wireContext stamped with a specific
+// service/key/kind tuple — used by Promise tests to assert kind-based
+// validation and workflow scoping.
+func newTestWireContextWithKind(t *testing.T, service, key string, kind protocolv1.Kind) (*wireContext, *fakeStream) {
+	t.Helper()
+	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
+	stream := &fakeStream{}
+	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, wire.DefaultCodec(), nil, nil, 7, 0, service, "run", key, kind)
 	return wctx, stream
 }
 
@@ -493,6 +504,177 @@ func TestWireContext_OneWayCall_ReplayHitSkipsEmit(t *testing.T) {
 	}
 	if len(stream.sent) != 0 {
 		t.Errorf("sent %d frames; want 0 (replay hit should not re-emit)", len(stream.sent))
+	}
+}
+
+// TestWireContext_SendSignal_FreshEmits asserts SendSignal emits a
+// SendSignalCommandMessage at slot 1 and returns nil — mirrors the
+// OneWayCall single-slot pattern.
+func TestWireContext_SendSignal_FreshEmits(t *testing.T) {
+	wctx, stream := newTestWireContext(t, nil)
+	err := wctx.SendSignal(Target{Service: "Counter", Handler: "Increment", Key: "alice"}, "tap", []byte("p"))
+	if err != nil {
+		t.Fatalf("SendSignal: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("sent frames = %d; want 1", len(stream.sent))
+	}
+	tc, _, _ := wire.UnpackHeader(stream.sent[0].GetHeader())
+	if tc != wire.TypeCmdSendSignal {
+		t.Errorf("frame.type = 0x%04x; want 0x%04x (TypeCmdSendSignal)", tc, wire.TypeCmdSendSignal)
+	}
+}
+
+// TestWireContext_SendSignal_ReplayHitSkipsEmit asserts replay sees the
+// pre-journaled entry and skips re-emit.
+func TestWireContext_SendSignal_ReplayHitSkipsEmit(t *testing.T) {
+	wctx, stream := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
+		1: {typeCode: wire.TypeCmdSendSignal},
+	})
+	err := wctx.SendSignal(Target{Service: "Counter", Handler: "h", Key: "alice"}, "tap", nil)
+	if err != nil {
+		t.Errorf("SendSignal: %v", err)
+	}
+	if len(stream.sent) != 0 {
+		t.Errorf("sent %d frames; want 0 (replay hit should not re-emit)", len(stream.sent))
+	}
+}
+
+// TestWireContext_CancelInvocation_EmitsCancelSignal asserts
+// CancelInvocation desugars to a __cancel__ named SendSignal.
+func TestWireContext_CancelInvocation_EmitsCancelSignal(t *testing.T) {
+	wctx, stream := newTestWireContext(t, nil)
+	target := Target{Service: "Counter", Handler: "Increment", Key: "alice"}
+	if err := wctx.CancelInvocation(target); err != nil {
+		t.Fatalf("CancelInvocation: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("sent frames = %d; want 1", len(stream.sent))
+	}
+	tc, _, _ := wire.UnpackHeader(stream.sent[0].GetHeader())
+	if tc != wire.TypeCmdSendSignal {
+		t.Errorf("frame.type = 0x%04x; want 0x%04x (TypeCmdSendSignal)", tc, wire.TypeCmdSendSignal)
+	}
+	// Decode and verify signal_name is WellKnownCancelSignal.
+	var cmd protocolv1.SendSignalCommandMessage
+	if err := wire.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &cmd); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if cmd.GetSignalName() != WellKnownCancelSignal {
+		t.Errorf("signal_name = %q; want %q", cmd.GetSignalName(), WellKnownCancelSignal)
+	}
+	if cmd.GetKey() != "alice" {
+		t.Errorf("key = %q; want alice", cmd.GetKey())
+	}
+}
+
+// TestWireContext_CancelInvocation_RejectsUnkeyedTarget asserts cancel
+// inherits SendSignal's unkeyed-target guard.
+func TestWireContext_CancelInvocation_RejectsUnkeyedTarget(t *testing.T) {
+	wctx, _ := newTestWireContext(t, nil)
+	err := wctx.CancelInvocation(Target{Service: "svc", Handler: "h"})
+	if err == nil {
+		t.Fatalf("CancelInvocation with empty Key: expected error, got nil")
+	}
+	f, ok := AsFailure(err)
+	if !ok || f.Code != SendSignalUnkeyedCode {
+		t.Errorf("err = %v; want *Failure(SendSignalUnkeyedCode)", err)
+	}
+}
+
+// TestWireContext_WaitSignal_FreshEmitsAndSuspends asserts WaitSignal
+// emits AwaitSignalCommandMessage on a fresh run and the returned
+// future suspends with a signal:<name>:<slot> token.
+func TestWireContext_WaitSignal_FreshEmitsAndSuspends(t *testing.T) {
+	wctx, stream := newTestWireContext(t, nil)
+	fut := wctx.WaitSignal("ready")
+	if len(stream.sent) != 1 {
+		t.Fatalf("sent frames = %d; want 1", len(stream.sent))
+	}
+	tc, _, _ := wire.UnpackHeader(stream.sent[0].GetHeader())
+	if tc != wire.TypeCmdAwaitSignal {
+		t.Errorf("frame.type = 0x%04x; want 0x%04x (TypeCmdAwaitSignal)", tc, wire.TypeCmdAwaitSignal)
+	}
+	// Decode and verify cmd_slot / result_slot are 1 / 2.
+	var cmd protocolv1.AwaitSignalCommandMessage
+	if err := wire.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &cmd); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if cmd.GetSignalName() != "ready" {
+		t.Errorf("signal_name = %q; want ready", cmd.GetSignalName())
+	}
+	if cmd.GetResultCompletionId() != 2 {
+		t.Errorf("result_completion_id = %d; want 2", cmd.GetResultCompletionId())
+	}
+
+	// First Poll: not yet resolved; token is signal:ready:2.
+	poller := fut.(Poller)
+	resolved, tokens := poller.Poll()
+	if resolved {
+		t.Error("Poll returned resolved=true for a fresh WaitSignal")
+	}
+	if len(tokens) != 1 || tokens[0] != "signal:ready:2" {
+		t.Errorf("Poll tokens = %v; want [signal:ready:2]", tokens)
+	}
+
+	// Result() should suspend.
+	_, err := fut.Result()
+	if err != ErrSuspended {
+		t.Errorf("Result err = %v; want ErrSuspended", err)
+	}
+}
+
+// TestWireContext_WaitSignal_ReplayResultReturnsPayload asserts that
+// when the resultSlot replay entry carries a SignalNotificationMessage
+// (delivered by the engine on a prior run), WaitSignal's future
+// resolves to the payload without re-emitting the command.
+func TestWireContext_WaitSignal_ReplayResultReturnsPayload(t *testing.T) {
+	// Replay carries:
+	//   slot 1: TypeCmdAwaitSignal (the prior command)
+	//   slot 2: TypeNoteSignal carrying the resolved payload
+	notePayload, err := wire.DefaultCodec().Marshal(&protocolv1.SignalNotificationMessage{
+		SignalId: &protocolv1.SignalNotificationMessage_Name{Name: "ready"},
+		Result: &protocolv1.SignalNotificationMessage_Value{
+			Value: &protocolv1.Value{Content: []byte("payload-1")},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wctx, stream := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
+		1: {typeCode: wire.TypeCmdAwaitSignal},
+		2: {typeCode: wire.TypeNoteSignal, payload: notePayload},
+	})
+	fut := wctx.WaitSignal("ready")
+	// Replay-hit on cmdSlot: nothing is sent.
+	if len(stream.sent) != 0 {
+		t.Errorf("sent %d frames; want 0 (replay hit should not re-emit)", len(stream.sent))
+	}
+	got, err := fut.Result()
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if string(got) != "payload-1" {
+		t.Errorf("payload = %q; want payload-1", got)
+	}
+}
+
+// TestWireContext_WaitSignal_AllocatesTwoSlots asserts WaitSignal
+// reserves cmdSlot + resultSlot (= cmdSlot + 1) like Awakeable, so a
+// subsequent primitive lands at slot 3.
+func TestWireContext_WaitSignal_AllocatesTwoSlots(t *testing.T) {
+	wctx, stream := newTestWireContext(t, nil)
+	wctx.WaitSignal("ready")
+	if err := wctx.SetState("k", []byte("v")); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	// Frames: 1 = TypeCmdAwaitSignal, 2 = TypeCmdSetState. SetState
+	// landed at slot 3 (after cmdSlot + resultSlot).
+	if len(stream.sent) != 2 {
+		t.Fatalf("sent = %d; want 2", len(stream.sent))
+	}
+	if wctx.nextSlot != 4 {
+		t.Errorf("nextSlot = %d; want 4 (1 cmd + 1 result + 1 SetState = next 4)", wctx.nextSlot)
 	}
 }
 
@@ -967,14 +1149,23 @@ func TestWireContext_Suspend_ShortCircuitsSubsequentCalls(t *testing.T) {
 	}
 }
 
-// TestWireContext_SendSignalStillGated covers the one durable primitive
-// that remains not-implemented: SendSignal needs a Target → InvocationId
-// resolver (matching inproc.go's state).
-func TestWireContext_SendSignalStillGated(t *testing.T) {
+// TestWireContext_SendSignal_RejectsUnkeyedTarget verifies that the SDK
+// guards against signaling unkeyed services — there's no well-defined
+// receiver since multiple concurrent invocations may share (service,
+// handler) when no Key is supplied.
+func TestWireContext_SendSignal_RejectsUnkeyedTarget(t *testing.T) {
 	wctx, _ := newTestWireContext(t, nil)
 
-	if err := wctx.SendSignal(Target{}, "s", nil); !errors.Is(err, ErrWireNotImplemented) {
-		t.Errorf("SendSignal err = %v; want ErrWireNotImplemented", err)
+	err := wctx.SendSignal(Target{Service: "svc", Handler: "h"}, "s", nil)
+	if err == nil {
+		t.Fatalf("SendSignal with empty Key: expected error, got nil")
+	}
+	f, ok := AsFailure(err)
+	if !ok {
+		t.Fatalf("SendSignal err = %v (%T); want *Failure", err, err)
+	}
+	if f.Code != SendSignalUnkeyedCode {
+		t.Errorf("Failure.Code = %d; want %d", f.Code, SendSignalUnkeyedCode)
 	}
 }
 
@@ -1037,6 +1228,195 @@ func TestWireContext_AnyAllPendingSuspends(t *testing.T) {
 	awaiting := wctx.snapshotAwaiting()
 	if len(awaiting) != 2 {
 		t.Errorf("awaiting = %v; want 2 tokens", awaiting)
+	}
+}
+
+// TestWireContext_Promise_RejectsNonWorkflowKind asserts Promise methods
+// surface PromiseNotWorkflowFailure when called from a non-workflow
+// handler, without polluting the journal.
+func TestWireContext_Promise_RejectsNonWorkflowKind(t *testing.T) {
+	wctx, stream := newTestWireContextWithKind(t, "Svc", "", protocolv1.Kind_KIND_SERVICE)
+	p := wctx.Promise("done")
+
+	if err := p.Resolve([]byte("v")); err == nil {
+		t.Fatal("Resolve: expected failure for non-workflow kind")
+	} else if f, ok := AsFailure(err); !ok || f.Code != PromiseNotWorkflowCode {
+		t.Errorf("Resolve err = %v; want PromiseNotWorkflowFailure", err)
+	}
+
+	if _, _, _, err := p.Peek(); err != nil {
+		// Peek returns failure as the third value, not err.
+		t.Errorf("Peek unexpected err = %v", err)
+	}
+	_, _, fail, _ := p.Peek()
+	if fail == nil || fail.Code != PromiseNotWorkflowCode {
+		t.Errorf("Peek failure = %v; want PromiseNotWorkflowFailure", fail)
+	}
+
+	fut := p.Result()
+	if _, err := fut.Result(); err == nil {
+		t.Fatal("Result: expected failure for non-workflow kind")
+	} else if f, ok := AsFailure(err); !ok || f.Code != PromiseNotWorkflowCode {
+		t.Errorf("Result err = %v; want PromiseNotWorkflowFailure", err)
+	}
+
+	// No frames sent because each method rejected before allocSlot.
+	if len(stream.sent) != 0 {
+		t.Errorf("sent %d frames; want 0 (non-workflow methods must not emit)", len(stream.sent))
+	}
+	if wctx.nextSlot != 1 {
+		t.Errorf("nextSlot = %d; want 1 (no slot allocation expected)", wctx.nextSlot)
+	}
+}
+
+// TestWireContext_Promise_Result_FreshEmitsAndSuspends asserts
+// Promise.Result emits TypeCmdGetPromise and the future suspends on
+// the resultSlot token.
+func TestWireContext_Promise_Result_FreshEmitsAndSuspends(t *testing.T) {
+	wctx, stream := newTestWireContextWithKind(t, "Wf", "k-1", protocolv1.Kind_KIND_WORKFLOW)
+	fut := wctx.Promise("done").Result()
+	if len(stream.sent) != 1 {
+		t.Fatalf("sent frames = %d; want 1", len(stream.sent))
+	}
+	tc, _, _ := wire.UnpackHeader(stream.sent[0].GetHeader())
+	if tc != wire.TypeCmdGetPromise {
+		t.Errorf("frame.type = 0x%04x; want TypeCmdGetPromise", tc)
+	}
+	var cmd protocolv1.GetPromiseCommandMessage
+	if err := wire.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &cmd); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if cmd.GetName() != "done" || cmd.GetKey() != "k-1" || cmd.GetResultCompletionId() != 2 {
+		t.Errorf("cmd = %+v; want name=done key=k-1 result_completion_id=2", &cmd)
+	}
+
+	if _, err := fut.Result(); err != ErrSuspended {
+		t.Errorf("Result err = %v; want ErrSuspended", err)
+	}
+}
+
+// TestWireContext_Promise_Result_ReplayHitReturnsValue asserts that
+// when the resultSlot replay entry carries a
+// GetPromiseCompletionNotificationMessage, Result returns the cached
+// value without re-emitting.
+func TestWireContext_Promise_Result_ReplayHitReturnsValue(t *testing.T) {
+	notePayload, err := wire.DefaultCodec().Marshal(&protocolv1.GetPromiseCompletionNotificationMessage{
+		CompletionId: 2,
+		Result: &protocolv1.GetPromiseCompletionNotificationMessage_Value{
+			Value: &protocolv1.Value{Content: []byte("done!")},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
+	stream := &fakeStream{}
+	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, wire.DefaultCodec(),
+		nil,
+		map[uint32]*replayEntry{
+			1: {typeCode: wire.TypeCmdGetPromise},
+			2: {typeCode: wire.TypeNoteGetPromise, payload: notePayload},
+		},
+		7, 0, "Wf", "run", "k-1", protocolv1.Kind_KIND_WORKFLOW)
+
+	fut := wctx.Promise("done").Result()
+	if len(stream.sent) != 0 {
+		t.Errorf("sent %d frames; want 0 (replay hit)", len(stream.sent))
+	}
+	got, err := fut.Result()
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if string(got) != "done!" {
+		t.Errorf("payload = %q; want done!", got)
+	}
+}
+
+// TestWireContext_Promise_Resolve_FreshEmitsAndSuspends asserts
+// Promise.Resolve emits TypeCmdCompletePromise carrying the value and
+// suspends waiting for the ack.
+func TestWireContext_Promise_Resolve_FreshEmitsAndSuspends(t *testing.T) {
+	wctx, stream := newTestWireContextWithKind(t, "Wf", "k-1", protocolv1.Kind_KIND_WORKFLOW_SHARED)
+	err := wctx.Promise("done").Resolve([]byte("value-1"))
+	if err != ErrSuspended {
+		t.Errorf("Resolve err = %v; want ErrSuspended (waiting on ack)", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("sent = %d; want 1", len(stream.sent))
+	}
+	tc, _, _ := wire.UnpackHeader(stream.sent[0].GetHeader())
+	if tc != wire.TypeCmdCompletePromise {
+		t.Errorf("frame.type = 0x%04x; want TypeCmdCompletePromise", tc)
+	}
+	var cmd protocolv1.CompletePromiseCommandMessage
+	if err := wire.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &cmd); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	v := cmd.GetCompletionValue()
+	if v == nil || string(v.GetContent()) != "value-1" {
+		t.Errorf("completion value = %+v; want content=value-1", v)
+	}
+}
+
+// TestWireContext_Promise_Resolve_ReplayAckReturnsSuccess asserts that
+// when the ack slot replay entry is present (succeeded), Resolve
+// returns nil without re-emitting.
+func TestWireContext_Promise_Resolve_ReplayAckReturnsSuccess(t *testing.T) {
+	ackPayload, err := wire.DefaultCodec().Marshal(&protocolv1.CompletePromiseCompletionNotificationMessage{
+		CompletionId: 2,
+		Result:       &protocolv1.CompletePromiseCompletionNotificationMessage_Void{Void: &protocolv1.Void{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
+	stream := &fakeStream{}
+	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, wire.DefaultCodec(),
+		nil,
+		map[uint32]*replayEntry{
+			1: {typeCode: wire.TypeCmdCompletePromise},
+			2: {typeCode: wire.TypeNoteCompletePromise, payload: ackPayload},
+		},
+		7, 0, "Wf", "run", "k-1", protocolv1.Kind_KIND_WORKFLOW)
+
+	if err := wctx.Promise("done").Resolve([]byte("v")); err != nil {
+		t.Errorf("Resolve err = %v; want nil (replay ack=succeeded)", err)
+	}
+	if len(stream.sent) != 0 {
+		t.Errorf("sent %d frames; want 0 (replay hit)", len(stream.sent))
+	}
+}
+
+// TestWireContext_Promise_Resolve_ReplayAckSurfacesAlreadyCompleted
+// asserts that when the ack is a Failure notification (succeeded=false
+// path), Resolve surfaces a *Failure.
+func TestWireContext_Promise_Resolve_ReplayAckSurfacesAlreadyCompleted(t *testing.T) {
+	ackPayload, err := wire.DefaultCodec().Marshal(&protocolv1.CompletePromiseCompletionNotificationMessage{
+		CompletionId: 2,
+		Result: &protocolv1.CompletePromiseCompletionNotificationMessage_Failure{
+			Failure: &protocolv1.Failure{Code: PromiseAlreadyCompletedCode, Message: "promise already completed"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
+	stream := &fakeStream{}
+	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, wire.DefaultCodec(),
+		nil,
+		map[uint32]*replayEntry{
+			1: {typeCode: wire.TypeCmdCompletePromise},
+			2: {typeCode: wire.TypeNoteCompletePromise, payload: ackPayload},
+		},
+		7, 0, "Wf", "run", "k-1", protocolv1.Kind_KIND_WORKFLOW)
+
+	err = wctx.Promise("done").Resolve([]byte("v"))
+	f, ok := AsFailure(err)
+	if !ok {
+		t.Fatalf("Resolve err = %v; want *Failure", err)
+	}
+	if f.Code != PromiseAlreadyCompletedCode {
+		t.Errorf("Resolve failure code = %d; want PromiseAlreadyCompletedCode (%d)", f.Code, PromiseAlreadyCompletedCode)
 	}
 }
 

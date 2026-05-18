@@ -259,11 +259,15 @@ func outboxEnvelopeToCommand(env *enginev1.OutboxEnvelope) *enginev1.Command {
 		}
 	case *enginev1.OutboxEnvelope_Signal:
 		sig := k.Signal
+		// InvokerEffect.invocation_id is intentionally left nil for the
+		// signal_delivered variant: the sender doesn't know the
+		// receiver's id, only its Target. The receiver shard's apply
+		// arm resolves Target → active InvocationId via KeyLeaseTable.
 		return &enginev1.Command{
 			Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
-				InvocationId: sig.GetTargetInvocationId(),
 				Kind: &enginev1.InvokerEffect_SignalDelivered{
 					SignalDelivered: &enginev1.SignalDelivered{
+						Target:     sig.GetTarget(),
 						SignalName: sig.GetSignalName(),
 						Payload:    sig.GetPayload(),
 					},

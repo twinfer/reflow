@@ -142,6 +142,13 @@ message InvokeCommand {
   // Empty string when the host has no deployment table (single-node mode
   // without shard 0).
   string deployment_id = 6;
+  // kind is the addressing model the deployment advertises for this
+  // handler — mirrors protocolv1.Kind (1=service, 2=object, 3=workflow,
+  // 4=workflow_shared). Ingress resolves it during submit so the apply
+  // path can decide whether to apply workflow single-run-per-key dedup.
+  // 0 (unspecified) is tolerated; the apply path treats it as "no
+  // workflow lifecycle".
+  uint32 kind = 7;
 }
 
 // ParentLink references the parent invocation that spawned a callee via
@@ -162,6 +169,13 @@ message InvokerEffect {
     JERunProposal run_proposal = 5;
     AwakeableResolved awakeable_resolved = 6;
     SignalDelivered signal_delivered = 7;
+    // PromiseCompleted is the receiver-side effect when an external
+    // caller resolves/rejects a workflow promise via
+    // Ingress.ResolveWorkflowPromise. Routed by (service, workflow_key)
+    // via Partitioner.ShardForTarget. The apply arm writes PromiseValue
+    // and wakes any awaiter in the same batch; InvokerEffect.invocation_id
+    // is unset for this variant.
+    PromiseCompleted promise_completed = 8;
   }
 }
 
@@ -206,11 +220,29 @@ message AwakeableResolved {
 }
 
 // SignalDelivered is the receiver-side effect when a JESignal lands on its
-// target invocation. signal_name + payload are the routed bits; the target
-// InvocationId lives on the surrounding InvokerEffect.invocation_id.
+// target. target identifies (service, key) — the apply arm resolves it to
+// an active InvocationId via KeyLeaseTable.current_invocation before
+// dispatching the signal. The surrounding InvokerEffect.invocation_id is
+// zero for this variant: signals do not know the receiver's id at send
+// time (sender knows only the Target), and routing is by Target hash via
+// Partitioner.ShardForTarget at the sender shard.
 message SignalDelivered {
-  string signal_name = 1;
-  bytes payload = 2;
+  InvocationTarget target = 1;
+  string signal_name = 2;
+  bytes payload = 3;
+}
+
+// PromiseCompleted is proposed by ingress when a caller resolves or
+// rejects a workflow-scoped promise. The apply arm writes a Resolved
+// or Rejected PromiseValue (if not already terminal) and wakes any
+// awaiter in the same batch. value and failure_message are mutually
+// exclusive — failure_message non-empty = reject.
+message PromiseCompleted {
+  string service = 1;
+  string workflow_key = 2;
+  string promise_name = 3;
+  bytes value = 4;
+  string failure_message = 5;
 }
 
 message JournalEntryAppended {
@@ -221,6 +253,13 @@ message JournalEntryAppended {
 message InvocationCompleted {
   bytes output = 1;
   string failure_message = 2;
+  // failure_code mirrors *sdk.Failure.Code so terminal cancellations and
+  // other typed failures can be distinguished from plain string messages.
+  // 0 = no code; non-zero matches the handler's Failure.Code. Reserved
+  // codes:
+  //   9001 = step budget exhausted
+  //   9002 = invocation cancelled
+  uint32 failure_code = 3;
 }
 
 message InvocationSuspended {
@@ -234,8 +273,10 @@ message InvocationSuspended {
 //   2-9   : baseline (Input, Sleep+Result, Call+Result, Get/SetState, Output).
 //   10-15 : Run, Awakeable+Result, Signal, ClearState, GetEagerState.
 //   16-17 : ClearAllState, OneWayCall.
-//   18+   : reserved for future entries (Promise combinators,
-//           AttachInvocation, virtual-object queue ops).
+//   18-19 : AwaitSignal + SignalResult.
+//   20-24 : Promise (Get+Result, Peek, Complete+CompleteResult).
+//   25+   : reserved for future entries (AttachInvocation,
+//           virtual-object queue ops).
 message JournalEntry {
   uint32 index = 1;
   oneof entry {
@@ -258,6 +299,34 @@ message JournalEntry {
     // path enqueues an OutboxEnvelope to the receiver partition exactly
     // like JECall but never waits for a JECallResult.
     JEOneWayCall one_way_call = 17;
+    // Two-slot signal await: ctx.WaitSignal(name) journals a JEAwaitSignal
+    // at slot N; the apply arm writes a SignalAwaiter directory row keyed
+    // by (inv, name) and probes signal_inbox/<inv>/<name>. On a hit, a
+    // JESignalResult lands at slot N+1 inline. On miss, the directory row
+    // waits for a future InvokerEffect.SignalDelivered to stitch the result.
+    JEAwaitSignal await_signal = 18;
+    JESignalResult signal_result = 19;
+    // Two-slot durable promise wait: Promise(name).Result() journals
+    // JEGetPromise at slot N; the apply arm reads the PromiseValue row.
+    // If resolved/rejected, a JEPromiseResult lands at slot N+1 inline.
+    // If pending, a PromiseAwaiter row is written and the result waits
+    // for a future JECompletePromise (same workflow) or
+    // InvokerEffect.PromiseCompleted (ingress) to stitch the result.
+    JEGetPromise get_promise = 20;
+    JEPromiseResult promise_result = 21;
+    // Single-slot promise snapshot: Promise(name).Peek() journals
+    // JEPeekPromise with the captured value/failure/completed flag
+    // inline. Store-only on replay — the apply arm reads PromiseValue
+    // once and stamps the snapshot onto the journal entry.
+    JEPeekPromise peek_promise = 22;
+    // Two-slot promise completion: Promise(name).Resolve / Reject
+    // journals JECompletePromise at slot N. The apply arm writes
+    // PromiseValue if not already completed, then appends a
+    // JEPromiseCompleteResult at slot N+1 reporting succeeded /
+    // already-completed; concurrent awaiter (if any) is woken in the
+    // same batch.
+    JECompletePromise complete_promise = 23;
+    JEPromiseCompleteResult promise_complete_result = 24;
   }
 }
 
@@ -371,12 +440,151 @@ message JEAwakeableResult {
 }
 
 // JESignal is sender-side: the journal entry an invocation writes when it
-// sends a signal to another invocation. The receiver-side effect is
-// InvokerEffect.SignalDelivered.
+// sends a signal to another invocation. Addressed by Target (service +
+// key); the receiver shard resolves Target → active InvocationId via
+// KeyLeaseTable.current_invocation in its SignalDelivered apply arm. The
+// receiver-side effect is InvokerEffect.SignalDelivered.
 message JESignal {
-  InvocationId target_invocation_id = 1;
+  InvocationTarget target = 1;
   string signal_name = 2;
   bytes payload = 3;
+}
+
+// JEAwaitSignal is journaled by the SDK when ctx.WaitSignal(name) is
+// called. Two-slot: this entry at index N, with the resolution
+// JESignalResult landing at result_completion_id (= N+1) once a signal
+// arrives. The apply arm writes a SignalAwaiter directory row keyed by
+// (inv, name) so a future InvokerEffect.SignalDelivered can find the
+// awaiting slot.
+message JEAwaitSignal {
+  string signal_name = 1;
+  uint32 result_completion_id = 2;
+}
+
+// JESignalResult resolves a previously-journaled JEAwaitSignal. Written
+// by the FSM on inbox-hit (synchronous) or on a later SignalDelivered
+// effect (asynchronous). signal_name + payload are echoed so the SDK
+// future surfaces them.
+message JESignalResult {
+  string signal_name = 1;
+  bytes payload = 2;
+}
+
+// SignalAwaiter is the per-(inv, name) directory row written when a
+// JEAwaitSignal lands without a matching inbox entry. Stored at
+// signal_awaiter/<inv_id>/<name>. The owner field is redundant with
+// the key but mirrors AwakeableEntry for symmetry.
+message SignalAwaiter {
+  InvocationId owner = 1;
+  uint32 entry_index = 2;  // slot of JEAwaitSignal; result lands at +1
+}
+
+// SignalInboxEntry is the persisted buffered signal. Stored at
+// signal_inbox/<inv_id>/<name>. Last-writer-wins per name: a second
+// signal with the same name overwrites the first while it sits
+// unconsumed. Cleared on consumption (a matching WaitSignal) and on
+// invocation purge.
+message SignalInboxEntry {
+  string signal_name = 1;
+  bytes payload = 2;
+  fixed64 delivered_at_ms = 3;
+}
+
+// JEGetPromise is journaled by the SDK when Promise(name).Result() is
+// called. Two-slot: this entry at slot N, with the resolution
+// JEPromiseResult landing at result_completion_id (= N+1) once the
+// promise is completed. The apply arm reads promise/<svc>/<key>/<name>;
+// on a Resolved/Rejected hit it appends JEPromiseResult inline, on
+// pending/absent it writes a PromiseAwaiter directory row so a future
+// JECompletePromise (or external resolve) can find the awaiting slot.
+message JEGetPromise {
+  string name = 1;
+  uint32 result_completion_id = 2;
+}
+
+// JEPromiseResult resolves a previously-journaled JEGetPromise. Written
+// by the FSM on synchronous (already-resolved) Get or on a later
+// JECompletePromise / InvokerEffect.PromiseCompleted. failure_message is
+// non-empty when the promise was rejected; mutually exclusive with value.
+message JEPromiseResult {
+  string name = 1;
+  bytes value = 2;
+  string failure_message = 3;
+}
+
+// JEPeekPromise records a non-blocking snapshot of promise state. Single
+// slot — the apply arm reads PromiseValue once and stamps the snapshot
+// directly onto this journal entry. completed=false means "still pending
+// or absent"; completed=true + (value | failure_message) carries the
+// terminal outcome. Store-only on replay.
+message JEPeekPromise {
+  string name = 1;
+  bool completed = 2;
+  bytes value = 3;
+  string failure_message = 4;
+}
+
+// JECompletePromise is journaled by the SDK when Promise(name).Resolve
+// or Reject is called. Two-slot: this entry at slot N, with
+// JEPromiseCompleteResult landing at result_completion_id (= N+1)
+// reporting succeeded or already-completed. The apply arm writes
+// PromiseValue (when not already terminal) and wakes any awaiter in
+// the same batch.
+message JECompletePromise {
+  string name = 1;
+  bytes value = 2;
+  string failure_message = 3;  // non-empty = reject; mutually exclusive with value
+  uint32 result_completion_id = 4;
+}
+
+// JEPromiseCompleteResult acks a JECompletePromise. succeeded=true when
+// the apply arm wrote the PromiseValue; succeeded=false (with
+// failure_message="promise already completed") when a prior terminal
+// state was found and this Resolve/Reject became a no-op.
+message JEPromiseCompleteResult {
+  bool succeeded = 1;
+  string failure_message = 2;
+}
+
+// PromiseValue is the persisted state of a workflow-scoped durable
+// promise. Stored at promise/<service>/<workflow_key>/<name>. Lifetime
+// is the workflow's retention window: created lazily by the first
+// Get/Peek/Complete that touches the name and removed by the workflow
+// reaper when the owning run is purged.
+message PromiseValue {
+  oneof state {
+    Pending pending = 1;
+    Resolved resolved = 2;
+    Rejected rejected = 3;
+  }
+  fixed64 created_at_ms = 4;
+}
+
+// Pending is the lazy-created sentinel state. A Get/Peek that arrives
+// before any Complete writes a Pending row so a later Complete can
+// detect the conflict (it never does — Complete is the only writer; the
+// reader path doesn't create rows). Retained as an explicit state so
+// the FSM can express "exists, not terminal" distinctly from absent.
+message Pending {}
+
+message Resolved {
+  bytes value = 1;
+  fixed64 completed_at_ms = 2;
+}
+
+message Rejected {
+  string failure_message = 1;
+  fixed64 completed_at_ms = 2;
+}
+
+// PromiseAwaiter is the per-(svc, key, name) directory row written when
+// a JEGetPromise lands on a pending or absent promise. Stored at
+// promise_awaiter/<service>/<workflow_key>/<name>. At most one awaiter
+// per (svc, key, name); a second Get with the same name overwrites the
+// first (documented MVP limitation, same as SignalAwaiter).
+message PromiseAwaiter {
+  InvocationId owner = 1;
+  uint32 entry_index = 2;  // slot of JEGetPromise; result lands at +1
 }
 
 // JEClearState records a state deletion.
@@ -418,6 +626,10 @@ message InvocationStatus {
   // every subsequent transition until terminal. Empty string when no
   // deployment table exists (single-node hosts without shard 0).
   string deployment_id = 6;
+  // kind mirrors protocolv1.Kind (see InvokeCommand.kind). Pinned at the
+  // Free→Scheduled transition like deployment_id; lifecycle code (purge,
+  // workflow retention reaper) consults it to decide what to clean up.
+  uint32 kind = 7;
 }
 
 message Free {}
@@ -451,6 +663,10 @@ message Completed {
   bytes output = 2;
   string failure_message = 3;
   fixed64 completed_at_ms = 4;
+  // failure_code mirrors InvocationCompleted.failure_code so the
+  // terminal status preserves the typed failure code (e.g. 9002 for
+  // cancellation) across reads.
+  uint32 failure_code = 5;
 }
 
 // KeyLeaseStatus is the per-(service, object_key) gate enforcing the
@@ -566,7 +782,7 @@ message OutboxAck {
 // shape as JESignal — repeated here so the outbox row is self-contained
 // (the shuffler does not need to load the journal to re-inject).
 message SignalSend {
-  InvocationId target_invocation_id = 1;
+  InvocationTarget target = 1;
   string signal_name = 2;
   bytes payload = 3;
 }

@@ -12,6 +12,16 @@ package engine
 //   - Step 3: object FSM / virtual-object queue invariants.
 //   - Step 4: two Partition instances with cross-shard outbox routing and
 //     ChildCall parent→child journal+outbox flow.
+//   - Step 5: signal-based Cancel via the well-known __cancel__ name,
+//     resolved through KeyLeaseTable → active invocation and applyTerminalCompletion.
+//   - Step 6: workflow-run dedup (KIND_WORKFLOW + non-empty key — second
+//     Invoke at the same (service, workflow_key) is silently dropped);
+//     KIND_WORKFLOW_SHARED companions co-located on the same lease key.
+//   - Step 7: workflow-scoped DurablePromise — PromiseGet (inline-resolve
+//     vs PromiseAwaiter write), PromiseComplete (in-handler resolve;
+//     awaiter stitched without FSM transition — see partition.go:817), PromisePeek
+//     (single-slot mutate-and-reappend), PromiseCompletedExternal (ingress
+//     InvokerEffect.PromiseCompleted; awaiter transitions Suspended → Invoked).
 //
 // The Model is a Go map keyed by InvocationId (hex). After every command we
 // compare it against the SUT via Partition.Lookup. The lenient transitions in
@@ -33,7 +43,9 @@ import (
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/tables"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
 const numShards = 2
@@ -84,9 +96,22 @@ type modelInv struct {
 // id.PartitionKey == routing.PartitionKey(target.service, target.objectKey)
 // (ingress mints it that way; mintCalleeInvocationID enforces it for child
 // calls). The test pool must respect this or it lands rows on the wrong shard.
+//
+// kind is the protocolv1.Kind stamped onto the InvokeCommand; it's how the
+// apply path tells a KIND_WORKFLOW (Run, dedup-eligible) from a
+// KIND_WORKFLOW_SHARED companion or a plain KIND_SERVICE handler.
 type invSpec struct {
-	id  *enginev1.InvocationId
-	tgt modelTarget
+	id   *enginev1.InvocationId
+	tgt  modelTarget
+	kind protocolv1.Kind
+}
+
+// targetSpec is a (target, kind) pair fed to drawSpecPool. Two specs are
+// minted per entry so two distinct InvocationIds map to the same logical
+// handler — necessary to exercise workflow-run dedup and idempotency races.
+type targetSpec struct {
+	tgt  modelTarget
+	kind protocolv1.Kind
 }
 
 // -----------------------------------------------------------------------------
@@ -116,17 +141,22 @@ type engineMachine struct {
 	prevOutboxSeq [numShards]uint64
 
 	// Model (global across shards; classified by id.PartitionKey).
-	invs     map[string]*modelInv     // hex(uuid) -> inv
-	idemPool map[idemKey]string       // (svc,handler,objKey,key) -> winning idHex
-	awks     map[string]string        // registered awakeable_id -> owner idHex
-	leases   map[leaseKey]*modelLease // (service,object_key) -> lease state
+	invs            map[string]*modelInv                // hex(uuid) -> inv
+	idemPool        map[idemKey]string                  // (svc,handler,objKey,key) -> winning idHex
+	awks            map[string]string                   // registered awakeable_id -> owner idHex
+	leases          map[leaseKey]*modelLease            // (service,object_key) -> lease state
+	workflowRuns    map[leaseKey]string                 // (service,workflow_key) -> winning idHex
+	promises        map[promiseKey]*modelPromise        // (svc,key,name) -> promise value
+	promiseAwaiters map[promiseKey]*modelPromiseAwaiter // (svc,key,name) -> pending awaiter
 
 	// Generator pools (drawn once at init).
-	specPool []invSpec     // paired (id, target) — partition_key consistent with target
-	tgtPool  []modelTarget // standalone targets for ChildCall child-target draws
-	idemKs   []string
-	awkPool  []string
-	sigPool  []string
+	specPool    []invSpec     // paired (id, target, kind) — partition_key consistent with target
+	tgtPool     []modelTarget // standalone targets for ChildCall child-target draws
+	wfSpecs     []invSpec     // subset of specPool with KIND_WORKFLOW or KIND_WORKFLOW_SHARED
+	idemKs      []string
+	awkPool     []string
+	sigPool     []string
+	promisePool []string
 }
 
 func (m *engineMachine) shardOf(id *enginev1.InvocationId) uint64 {
@@ -162,13 +192,30 @@ func (m *engineMachine) init(t *rapid.T) {
 	m.idemPool = map[idemKey]string{}
 	m.awks = map[string]string{}
 	m.leases = map[leaseKey]*modelLease{}
+	m.workflowRuns = map[leaseKey]string{}
+	m.promises = map[promiseKey]*modelPromise{}
+	m.promiseAwaiters = map[promiseKey]*modelPromiseAwaiter{}
 	m.pendingTimers = map[timerKey]pendingTimer{}
 	m.pendingOutbox = nil
 	m.tgtPool = []modelTarget{
 		{service: "S", handler: "h"},
 		{service: "Counter", handler: "incr", objectKey: "k1"},
 	}
-	m.specPool = drawSpecPool(m.tgtPool)
+	// Workflow + shared specs share (service, object_key) so they exercise
+	// workflow-run dedup, the same key lease, and the cross-handler promise
+	// resolve path. Two ids per targetSpec — necessary for the dedup arm.
+	specs := []targetSpec{
+		{tgt: m.tgtPool[0], kind: protocolv1.Kind_KIND_SERVICE},
+		{tgt: m.tgtPool[1], kind: protocolv1.Kind_KIND_SERVICE},
+		{tgt: modelTarget{service: "Wf", handler: "run", objectKey: "ord1"}, kind: protocolv1.Kind_KIND_WORKFLOW},
+		{tgt: modelTarget{service: "Wf", handler: "notify", objectKey: "ord1"}, kind: protocolv1.Kind_KIND_WORKFLOW_SHARED},
+	}
+	m.specPool = drawSpecPool(specs)
+	for _, sp := range m.specPool {
+		if sp.kind == protocolv1.Kind_KIND_WORKFLOW || sp.kind == protocolv1.Kind_KIND_WORKFLOW_SHARED {
+			m.wfSpecs = append(m.wfSpecs, sp)
+		}
+	}
 	m.idemKs = []string{"", "req-0", "req-1", "req-2"}
 	m.awkPool = []string{
 		"awk_aaaaaaaaaaaaaaaaaaaaaa",
@@ -177,6 +224,7 @@ func (m *engineMachine) init(t *rapid.T) {
 		"awk_dddddddddddddddddddddd",
 	}
 	m.sigPool = []string{"sig-0", "sig-1", "sig-2", "sig-3"}
+	m.promisePool = []string{"prom-0", "prom-1"}
 }
 
 // spinPartition (re)creates the SUT for one shard. recover=true means we
@@ -211,21 +259,24 @@ func (m *engineMachine) spinPartition(t *rapid.T, shard uint64, recover bool) {
 	m.t.Cleanup(func() { _ = pp.Close() })
 }
 
-// drawSpecPool builds 2 paired specs per target, with id.PartitionKey =
+// drawSpecPool builds 2 paired specs per entry, with id.PartitionKey =
 // PartitionKey(target.service, target.objectKey) — matching production ingress
 // behaviour and ensuring every Invoke lands on the shard that owns the target.
-func drawSpecPool(targets []modelTarget) []invSpec {
-	specs := make([]invSpec, 0, len(targets)*2)
+// The kind is stamped onto every spec so the apply path can tell a workflow
+// Run from a Shared companion or a plain service handler.
+func drawSpecPool(entries []targetSpec) []invSpec {
+	specs := make([]invSpec, 0, len(entries)*2)
 	uuidNonce := uint64(1)
-	for _, tgt := range targets {
-		pk := routing.PartitionKey(tgt.service, tgt.objectKey)
+	for _, e := range entries {
+		pk := routing.PartitionKey(e.tgt.service, e.tgt.objectKey)
 		for range 2 {
 			uuid := make([]byte, 16)
 			binary.BigEndian.PutUint64(uuid, uuidNonce)
 			uuidNonce++
 			specs = append(specs, invSpec{
-				id:  &enginev1.InvocationId{PartitionKey: pk, Uuid: uuid},
-				tgt: tgt,
+				id:   &enginev1.InvocationId{PartitionKey: pk, Uuid: uuid},
+				tgt:  e.tgt,
+				kind: e.kind,
 			})
 		}
 	}
@@ -338,11 +389,22 @@ func (m *engineMachine) onActInvoke(t *rapid.T, shard uint64, a ActInvoke) {
 // applyInvokeToModel is the model-side counterpart of partition.onInvoke. It
 // is called from the Invoke command AND from RouteOutbox when a routed envelope
 // is OutboxEnvelope_Invoke (i.e. cross-shard ctx.Call materialising the child).
-// Returns true if this Invoke is being dropped due to idempotency.
-func (m *engineMachine) applyInvokeToModel(id *enginev1.InvocationId, tgt modelTarget, ik string) bool {
+// Returns true if this Invoke is being dropped (idempotency or workflow-run
+// dedup).
+func (m *engineMachine) applyInvokeToModel(id *enginev1.InvocationId, tgt modelTarget, ik string, kind protocolv1.Kind) bool {
 	if ik != "" {
 		k := idemKey{tgt.service, tgt.handler, tgt.objectKey, ik}
 		if _, ok := m.idemPool[k]; ok {
+			return true
+		}
+	}
+	// Workflow single-run-per-key dedup. Only KIND_WORKFLOW (Run handlers)
+	// participate; KIND_WORKFLOW_SHARED companions and KIND_SERVICE invokes
+	// skip this gate. Keyless workflows can't dedup since the row is
+	// addressed by (service, workflow_key).
+	if kind == protocolv1.Kind_KIND_WORKFLOW && tgt.objectKey != "" {
+		wfk := leaseKey{tgt.service, tgt.objectKey}
+		if _, ok := m.workflowRuns[wfk]; ok {
 			return true
 		}
 	}
@@ -356,6 +418,12 @@ func (m *engineMachine) applyInvokeToModel(id *enginev1.InvocationId, tgt modelT
 		k := idemKey{tgt.service, tgt.handler, tgt.objectKey, ik}
 		if _, exists := m.idemPool[k]; !exists {
 			m.idemPool[k] = idHex(id)
+		}
+	}
+	if kind == protocolv1.Kind_KIND_WORKFLOW && tgt.objectKey != "" {
+		wfk := leaseKey{tgt.service, tgt.objectKey}
+		if _, exists := m.workflowRuns[wfk]; !exists {
+			m.workflowRuns[wfk] = idHex(id)
 		}
 	}
 	if freshInvoke && tgt.objectKey != "" {
@@ -381,13 +449,14 @@ func (m *engineMachine) Invoke(t *rapid.T) {
 	sp := rapid.SampledFrom(m.specPool).Draw(t, "spec")
 	ik := rapid.SampledFrom(m.idemKs).Draw(t, "idem_key")
 
-	m.applyInvokeToModel(sp.id, sp.tgt, ik)
+	m.applyInvokeToModel(sp.id, sp.tgt, ik, sp.kind)
 	m.apply(t, m.shardOf(sp.id), &enginev1.Command{
 		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
 			InvocationId:   sp.id,
 			Target:         sp.tgt.proto(),
 			Input:          []byte("in"),
 			IdempotencyKey: ik,
+			Kind:           uint32(sp.kind),
 		}},
 	})
 }
@@ -484,10 +553,19 @@ func (m *engineMachine) AwakeableResolved(t *rapid.T) {
 }
 
 func (m *engineMachine) SignalDelivered(t *rapid.T) {
-	id := rapid.SampledFrom(m.specPool).Draw(t, "spec").id
+	spec := rapid.SampledFrom(m.specPool).Draw(t, "spec")
 	sig := rapid.SampledFrom(m.sigPool).Draw(t, "sig")
+	// Signals route by Target → KeyLeaseTable.current_invocation, so
+	// they're only meaningful for keyed specs. Unkeyed signals are
+	// dropped by the apply arm with a warning.
+	if spec.tgt.objectKey == "" {
+		return
+	}
+	id := spec.id
 	cur := m.getOrCreate(id)
 	if cur.status != mSuspended && cur.status != mInvoked {
+		// No active lease holder, so the receiver-side KeyLeaseTable
+		// lookup will miss and the signal will be dropped.
 		return
 	}
 	if cur.status == mSuspended {
@@ -495,9 +573,9 @@ func (m *engineMachine) SignalDelivered(t *rapid.T) {
 	}
 	m.apply(t, m.shardOf(id), &enginev1.Command{
 		Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
-			InvocationId: id,
 			Kind: &enginev1.InvokerEffect_SignalDelivered{
 				SignalDelivered: &enginev1.SignalDelivered{
+					Target:     spec.tgt.proto(),
 					SignalName: sig,
 					Payload:    []byte("p"),
 				},
@@ -558,6 +636,262 @@ func (m *engineMachine) Complete(t *rapid.T) {
 			}
 		}
 	}
+}
+
+// Cancel exercises the signal-based cancellation path: an ingress-side
+// __cancel__ signal lands on the (service, key) → active invocation,
+// the apply arm resolves via KeyLeaseTable and synthesizes a terminal
+// Completed. Only fires for keyed targets whose current lease holder
+// matches the drawn spec (other cases are dropped by the apply arm).
+func (m *engineMachine) Cancel(t *rapid.T) {
+	spec := rapid.SampledFrom(m.specPool).Draw(t, "spec")
+	if spec.tgt.objectKey == "" {
+		return // unkeyed targets aren't cancellable via signal
+	}
+	id := spec.id
+	cur := m.getOrCreate(id)
+	if cur.status != mScheduled && cur.status != mInvoked && cur.status != mSuspended {
+		return
+	}
+	// The apply arm only acts when this id is the current lease holder.
+	lk := leaseKey{spec.tgt.service, spec.tgt.objectKey}
+	lease := m.leases[lk]
+	if lease == nil || lease.state != leaseActive || lease.currentIDHex != idHex(id) {
+		return
+	}
+
+	m.apply(t, m.shardOf(id), &enginev1.Command{
+		Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+			Kind: &enginev1.InvokerEffect_SignalDelivered{
+				SignalDelivered: &enginev1.SignalDelivered{
+					Target:     spec.tgt.proto(),
+					SignalName: wire.WellKnownCancelSignal,
+				},
+			},
+		}},
+	})
+	cur.status = mCompleted
+
+	// Cancel runs applyTerminalCompletion, which releases the key lease.
+	if len(lease.queue) == 0 {
+		lease.state = leaseIdle
+		lease.currentIDHex = ""
+	} else {
+		lease.currentIDHex = lease.queue[0]
+		lease.queue = lease.queue[1:]
+	}
+}
+
+// PromiseGet journals a JEGetPromise for an mInvoked/mSuspended workflow or
+// shared invocation. Mirrors the JournalEntry_GetPromise apply arm: if the
+// promise is already terminal the result lands inline (journalLen += 2);
+// otherwise a PromiseAwaiter row is recorded (journalLen += 1) so a
+// subsequent PromiseComplete or PromiseCompletedExternal can stitch the
+// result. A second pending Get on the same (svc,key,name) overwrites the
+// prior awaiter — that's the MVP single-awaiter limitation documented in
+// the design plan.
+func (m *engineMachine) PromiseGet(t *rapid.T) {
+	if len(m.wfSpecs) == 0 {
+		return
+	}
+	spec := rapid.SampledFrom(m.wfSpecs).Draw(t, "wf_spec")
+	name := rapid.SampledFrom(m.promisePool).Draw(t, "promise")
+	cur := m.getOrCreate(spec.id)
+	if cur.status != mInvoked && cur.status != mSuspended {
+		return
+	}
+	idx := cur.journalLen
+	resultIdx := idx + 1
+	pk := promiseKey{spec.tgt.service, spec.tgt.objectKey, name}
+
+	pv := m.promises[pk]
+	inline := pv != nil && pv.state != promisePending
+
+	m.apply(t, m.shardOf(spec.id), &enginev1.Command{
+		Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+			InvocationId: spec.id,
+			Kind: &enginev1.InvokerEffect_JournalAppended{
+				JournalAppended: &enginev1.JournalEntryAppended{
+					Entry: &enginev1.JournalEntry{
+						Index: idx,
+						Entry: &enginev1.JournalEntry_GetPromise{
+							GetPromise: &enginev1.JEGetPromise{
+								Name:               name,
+								ResultCompletionId: resultIdx,
+							},
+						},
+					},
+				},
+			},
+		}},
+	})
+
+	if cur.status == mSuspended {
+		cur.status = mInvoked
+	}
+	if inline {
+		cur.journalLen += 2
+	} else {
+		cur.journalLen += 1
+		m.promiseAwaiters[pk] = &modelPromiseAwaiter{
+			ownerIDHex: idHex(spec.id),
+			entryIndex: idx,
+		}
+	}
+}
+
+// PromiseComplete journals a JECompletePromise. The apply arm writes a
+// PromiseValue (if not already terminal) and appends JEPromiseCompleteResult
+// at result_completion_id regardless of conflict; if an awaiter is pending
+// it stitches a JEPromiseResult on the awaiter's journal at
+// awaiter.entry_index+1 and clears the awaiter row. Note: stitching does
+// NOT transition the awaiter's FSM (the only side effect is an ActInvoke
+// the invoker filters via pendingRespawn) — InvokerEffect_PromiseCompleted
+// is the only path that runs transitionOnPromiseResolved.
+func (m *engineMachine) PromiseComplete(t *rapid.T) {
+	if len(m.wfSpecs) == 0 {
+		return
+	}
+	spec := rapid.SampledFrom(m.wfSpecs).Draw(t, "wf_spec")
+	name := rapid.SampledFrom(m.promisePool).Draw(t, "promise")
+	cur := m.getOrCreate(spec.id)
+	if cur.status != mInvoked && cur.status != mSuspended {
+		return
+	}
+	idx := cur.journalLen
+	resultIdx := idx + 1
+	pk := promiseKey{spec.tgt.service, spec.tgt.objectKey, name}
+	value := []byte("v-" + name)
+
+	m.apply(t, m.shardOf(spec.id), &enginev1.Command{
+		Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+			InvocationId: spec.id,
+			Kind: &enginev1.InvokerEffect_JournalAppended{
+				JournalAppended: &enginev1.JournalEntryAppended{
+					Entry: &enginev1.JournalEntry{
+						Index: idx,
+						Entry: &enginev1.JournalEntry_CompletePromise{
+							CompletePromise: &enginev1.JECompletePromise{
+								Name:               name,
+								Value:              value,
+								ResultCompletionId: resultIdx,
+							},
+						},
+					},
+				},
+			},
+		}},
+	})
+
+	if cur.status == mSuspended {
+		cur.status = mInvoked
+	}
+	// JECompletePromise (the cmd) + JEPromiseCompleteResult (the ack) — two
+	// slots always, regardless of conflict.
+	cur.journalLen += 2
+
+	pv := m.promises[pk]
+	if pv == nil || pv.state == promisePending {
+		m.promises[pk] = &modelPromise{state: promiseResolved, value: value}
+		if awaiter, ok := m.promiseAwaiters[pk]; ok {
+			if owner := m.invs[awaiter.ownerIDHex]; owner != nil {
+				owner.journalLen++
+			}
+			delete(m.promiseAwaiters, pk)
+		}
+	}
+}
+
+// PromisePeek journals a JEPeekPromise. The apply arm mutates the entry in
+// place (stamping completed/value/failure_message from the current
+// PromiseValue) and re-appends it. From the model's perspective the
+// invocation just bumps its journalLen by 1 — peek has no FSM or state
+// side effects.
+func (m *engineMachine) PromisePeek(t *rapid.T) {
+	if len(m.wfSpecs) == 0 {
+		return
+	}
+	spec := rapid.SampledFrom(m.wfSpecs).Draw(t, "wf_spec")
+	name := rapid.SampledFrom(m.promisePool).Draw(t, "promise")
+	cur := m.getOrCreate(spec.id)
+	if cur.status != mInvoked && cur.status != mSuspended {
+		return
+	}
+	idx := cur.journalLen
+	m.apply(t, m.shardOf(spec.id), &enginev1.Command{
+		Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+			InvocationId: spec.id,
+			Kind: &enginev1.InvokerEffect_JournalAppended{
+				JournalAppended: &enginev1.JournalEntryAppended{
+					Entry: &enginev1.JournalEntry{
+						Index: idx,
+						Entry: &enginev1.JournalEntry_PeekPromise{
+							PeekPromise: &enginev1.JEPeekPromise{Name: name},
+						},
+					},
+				},
+			},
+		}},
+	})
+	if cur.status == mSuspended {
+		cur.status = mInvoked
+	}
+	cur.journalLen++
+}
+
+// PromiseCompletedExternal proposes an InvokerEffect.PromiseCompleted
+// envelope, mimicking ingress.ResolveWorkflowPromise. Unlike JECompletePromise
+// the resolver isn't a real invocation — the envelope is addressed by
+// (service, workflow_key, name) and the apply arm runs transitionOnPromiseResolved
+// on the awaiter (Suspended → Invoked + ActInvoke). If no awaiter is pending
+// only the PromiseValue row is written.
+func (m *engineMachine) PromiseCompletedExternal(t *rapid.T) {
+	if len(m.wfSpecs) == 0 {
+		return
+	}
+	spec := rapid.SampledFrom(m.wfSpecs).Draw(t, "wf_spec")
+	name := rapid.SampledFrom(m.promisePool).Draw(t, "promise")
+	if spec.tgt.objectKey == "" {
+		return
+	}
+	pk := promiseKey{spec.tgt.service, spec.tgt.objectKey, name}
+	value := []byte("e-" + name)
+
+	pv := m.promises[pk]
+	alreadyTerminal := pv != nil && pv.state != promisePending
+
+	shard := m.partitioner.ShardForTarget(&enginev1.InvocationTarget{
+		ServiceName: spec.tgt.service,
+		ObjectKey:   spec.tgt.objectKey,
+	})
+	m.apply(t, shard, &enginev1.Command{
+		Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+			Kind: &enginev1.InvokerEffect_PromiseCompleted{
+				PromiseCompleted: &enginev1.PromiseCompleted{
+					Service:     spec.tgt.service,
+					WorkflowKey: spec.tgt.objectKey,
+					PromiseName: name,
+					Value:       value,
+				},
+			},
+		}},
+	})
+
+	if alreadyTerminal {
+		return // ingress is a silent no-op on conflict
+	}
+	m.promises[pk] = &modelPromise{state: promiseResolved, value: value}
+	awaiter, ok := m.promiseAwaiters[pk]
+	if !ok {
+		return
+	}
+	if owner := m.invs[awaiter.ownerIDHex]; owner != nil {
+		owner.journalLen++
+		if owner.status == mSuspended {
+			owner.status = mInvoked
+		}
+	}
+	delete(m.promiseAwaiters, pk)
 }
 
 // TimerFired picks a registered timer (or fires unmatched-zero) and proposes
@@ -725,7 +1059,7 @@ func (m *engineMachine) RouteOutbox(t *rapid.T) {
 	case *enginev1.OutboxEnvelope_Invoke:
 		ic := k.Invoke
 		// Pre-update model with what dest shard's onInvoke will do.
-		m.applyInvokeToModel(ic.GetInvocationId(), targetFromProto(ic.GetTarget()), ic.GetIdempotencyKey())
+		m.applyInvokeToModel(ic.GetInvocationId(), targetFromProto(ic.GetTarget()), ic.GetIdempotencyKey(), protocolv1.Kind(ic.GetKind()))
 		cmd = &enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: ic}}
 	case *enginev1.OutboxEnvelope_DeliverCallResult:
 		dcr := k.DeliverCallResult
@@ -953,6 +1287,93 @@ func (m *engineMachine) Check(t *rapid.T) {
 				awk, shard, idHex(row.GetOwner()), ownerHex)
 		}
 	}
+
+	// WorkflowRunTable ↔ model parity. For every (svc, workflow_key)
+	// where the model recorded a winning workflow Run, the SUT row must
+	// exist on the shard owning the target and point to the same id.
+	// onPurge does not clear workflow_run (retention reaper's job), so
+	// the row outlives a Completed/Purged invocation — the model mirrors
+	// that by never deleting m.workflowRuns entries.
+	for lk, winnerHex := range m.workflowRuns {
+		shard := m.partitioner.ShardForTarget(&enginev1.InvocationTarget{
+			ServiceName: lk.service, ObjectKey: lk.objectKey,
+		})
+		got, err := (tables.WorkflowRunTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(lk.service, lk.objectKey)
+		if err != nil {
+			t.Fatalf("WorkflowRunTable.Get shard=%d %+v: %v", shard, lk, err)
+		}
+		if got == nil {
+			t.Fatalf("workflow_run %+v shard=%d: SUT absent, model expects winner=%s",
+				lk, shard, winnerHex)
+		}
+		if idHex(got) != winnerHex {
+			t.Fatalf("workflow_run %+v shard=%d: SUT=%s model=%s",
+				lk, shard, idHex(got), winnerHex)
+		}
+	}
+
+	// PromiseTable ↔ model parity. Promise rows live on the shard that
+	// owns the workflow target. Both terminal states (Resolved, Rejected)
+	// are compared by value/failure_message; absent rows in the model
+	// (promisePending) must mean either absent SUT row or a Pending
+	// PromiseValue.
+	for pk, want := range m.promises {
+		shard := m.partitioner.ShardForTarget(&enginev1.InvocationTarget{
+			ServiceName: pk.service, ObjectKey: pk.workflowKey,
+		})
+		got, err := (tables.PromiseTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(pk.service, pk.workflowKey, pk.name)
+		if err != nil {
+			t.Fatalf("PromiseTable.Get shard=%d %+v: %v", shard, pk, err)
+		}
+		switch want.state {
+		case promiseResolved:
+			r := got.GetResolved()
+			if r == nil {
+				t.Fatalf("promise %+v shard=%d: SUT not Resolved (got %T), model Resolved", pk, shard, got.GetState())
+			}
+			if !bytes.Equal(r.GetValue(), want.value) {
+				t.Fatalf("promise %+v shard=%d: SUT value=%q model value=%q", pk, shard, r.GetValue(), want.value)
+			}
+		case promiseRejected:
+			rj := got.GetRejected()
+			if rj == nil {
+				t.Fatalf("promise %+v shard=%d: SUT not Rejected (got %T), model Rejected", pk, shard, got.GetState())
+			}
+			if rj.GetFailureMessage() != want.failureMessage {
+				t.Fatalf("promise %+v shard=%d: SUT failure=%q model failure=%q",
+					pk, shard, rj.GetFailureMessage(), want.failureMessage)
+			}
+		case promisePending:
+			if got != nil && got.GetPending() == nil {
+				t.Fatalf("promise %+v shard=%d: SUT terminal, model Pending", pk, shard)
+			}
+		}
+	}
+
+	// PromiseAwaiterTable ↔ model parity. An awaiter row must match the
+	// model's recorded owner and entry_index — the latter is what stitches
+	// the result into the right journal slot on resolution.
+	for pk, want := range m.promiseAwaiters {
+		shard := m.partitioner.ShardForTarget(&enginev1.InvocationTarget{
+			ServiceName: pk.service, ObjectKey: pk.workflowKey,
+		})
+		got, err := (tables.PromiseAwaiterTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(pk.service, pk.workflowKey, pk.name)
+		if err != nil {
+			t.Fatalf("PromiseAwaiterTable.Get shard=%d %+v: %v", shard, pk, err)
+		}
+		if got == nil {
+			t.Fatalf("promise_awaiter %+v shard=%d: SUT absent, model owner=%s entry=%d",
+				pk, shard, want.ownerIDHex, want.entryIndex)
+		}
+		if idHex(got.GetOwner()) != want.ownerIDHex {
+			t.Fatalf("promise_awaiter %+v shard=%d: SUT owner=%s, model owner=%s",
+				pk, shard, idHex(got.GetOwner()), want.ownerIDHex)
+		}
+		if got.GetEntryIndex() != want.entryIndex {
+			t.Fatalf("promise_awaiter %+v shard=%d: SUT entry_index=%d, model entry_index=%d",
+				pk, shard, got.GetEntryIndex(), want.entryIndex)
+		}
+	}
 }
 
 func statusOf(m *modelInv) modelStatus {
@@ -1016,8 +1437,11 @@ func TestEngine_PBT(t *testing.T) {
 func TestEngine_InvokedWakeRespawn(t *testing.T) {
 	p, _, col := newTestPartition(t)
 
-	id := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("wake-respawn-id1")}
-	target := &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"}
+	// Signals route by Target → KeyLeaseTable, so the wake-respawn test
+	// needs a keyed target so the apply arm can resolve back to this id.
+	target := &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h", ObjectKey: "wake-respawn-key"}
+	pk := routing.PartitionKey(target.GetServiceName(), target.GetObjectKey())
+	id := &enginev1.InvocationId{PartitionKey: pk, Uuid: []byte("wake-respawn-id1")}
 
 	apply := func(idx uint64, cmd *enginev1.Command) []Action {
 		t.Helper()
@@ -1104,9 +1528,9 @@ func TestEngine_InvokedWakeRespawn(t *testing.T) {
 	//    finishes its ErrSuspended unwind.
 	actions = apply(3, &enginev1.Command{
 		Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
-			InvocationId: id,
 			Kind: &enginev1.InvokerEffect_SignalDelivered{
 				SignalDelivered: &enginev1.SignalDelivered{
+					Target:     target,
 					SignalName: "sig1", Payload: []byte("p1"),
 				},
 			},
@@ -1132,9 +1556,9 @@ func TestEngine_InvokedWakeRespawn(t *testing.T) {
 	//    branches end-to-end.)
 	actions = apply(5, &enginev1.Command{
 		Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
-			InvocationId: id,
 			Kind: &enginev1.InvokerEffect_SignalDelivered{
 				SignalDelivered: &enginev1.SignalDelivered{
+					Target:     target,
 					SignalName: "sig2", Payload: []byte("p2"),
 				},
 			},

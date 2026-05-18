@@ -101,6 +101,42 @@ type modelOutboxRow struct {
 }
 
 // -----------------------------------------------------------------------------
+// Promises + workflow runs (Step 3 of the durable-execution-go-sad plan).
+// -----------------------------------------------------------------------------
+
+// promiseKey scopes a workflow-scoped DurablePromise. Same address space the
+// SUT uses for PromiseTable and PromiseAwaiterTable.
+type promiseKey struct {
+	service, workflowKey, name string
+}
+
+type modelPromiseState int
+
+const (
+	// promisePending is the implicit state when m.promises has no entry for
+	// a key — both "absent" and "Pending row" map to it. The SUT
+	// distinguishes them on disk (absent vs Pending) but the apply path
+	// treats them identically, so the model collapses them.
+	promisePending modelPromiseState = iota
+	promiseResolved
+	promiseRejected
+)
+
+type modelPromise struct {
+	state          modelPromiseState
+	value          []byte
+	failureMessage string
+}
+
+// modelPromiseAwaiter mirrors the SUT PromiseAwaiter row: which invocation
+// is blocked on this promise, and at what journal slot it logged its
+// JEGetPromise (the result lands at entryIndex+1).
+type modelPromiseAwaiter struct {
+	ownerIDHex string
+	entryIndex uint32
+}
+
+// -----------------------------------------------------------------------------
 // Step 3 (forward-declared): per-key object-FSM model.
 // -----------------------------------------------------------------------------
 

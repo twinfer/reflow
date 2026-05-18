@@ -17,6 +17,11 @@
 //	idempotency/<32-byte sha256>                 -> InvocationId
 //	dedup/self/<8-byte BE leader_epoch>/<8-byte BE seq>          -> DedupEntry
 //	dedup/arbitrary/<producer_id>/<8-byte BE seq>                -> DedupEntry
+//	signal_inbox/<24-byte inv_id>/<name>         -> SignalInboxEntry
+//	signal_awaiter/<24-byte inv_id>/<name>       -> SignalAwaiter
+//	workflow_run/<service>/<workflow_key>        -> InvocationId
+//	promise/<service>/<workflow_key>/<name>      -> PromiseValue
+//	promise_awaiter/<service>/<workflow_key>/<name> -> PromiseAwaiter
 //
 // All multi-byte integers in keys are big-endian so lexicographic byte order
 // equals numeric order. Invocation IDs are encoded as a fixed 24-byte raw
@@ -47,19 +52,24 @@ const (
 	awakeableIDLen   = 26
 	awakeableBodyLen = 16
 
-	metaPrefix      = "meta"
-	formatPrefix    = "format"
-	invPrefix       = "inv/"
-	journalPrefix   = "journal/"
-	timerPrefix     = "timer/"
-	timerIdxPrefix  = "timer_idx/"
-	statePrefix     = "state/"
-	outboxPrefix    = "outbox/"
-	awakeablePrefix = "awakeable/"
-	keyLeasePrefix  = "keylease/"
-	idempPrefix     = "idempotency/"
-	dedupSelfPrefix = "dedup/self/"
-	dedupArbPrefix  = "dedup/arbitrary/"
+	metaPrefix           = "meta"
+	formatPrefix         = "format"
+	invPrefix            = "inv/"
+	journalPrefix        = "journal/"
+	timerPrefix          = "timer/"
+	timerIdxPrefix       = "timer_idx/"
+	statePrefix          = "state/"
+	outboxPrefix         = "outbox/"
+	awakeablePrefix      = "awakeable/"
+	keyLeasePrefix       = "keylease/"
+	idempPrefix          = "idempotency/"
+	dedupSelfPrefix      = "dedup/self/"
+	dedupArbPrefix       = "dedup/arbitrary/"
+	signalInboxPrefix    = "signal_inbox/"
+	signalAwaiterPrefix  = "signal_awaiter/"
+	workflowRunPrefix    = "workflow_run/"
+	promisePrefix        = "promise/"
+	promiseAwaiterPrefix = "promise_awaiter/"
 )
 
 // ErrInvalidInvocationID is returned when an InvocationId has a uuid field of
@@ -389,6 +399,123 @@ func ValidateAwakeableID(id string) error {
 		}
 	}
 	return nil
+}
+
+// SignalInboxKey returns signal_inbox/<inv_id>/<name>. The name is a
+// user-supplied UTF-8 string; callers must reject names containing the
+// "/" delimiter at the SDK boundary so prefix scans on
+// signal_inbox/<inv_id>/ stay unambiguous.
+func SignalInboxKey(id *enginev1.InvocationId, name string) ([]byte, error) {
+	raw, err := EncodeInvocationID(id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(signalInboxPrefix)+invocationIDLen+1+len(name))
+	out = append(out, signalInboxPrefix...)
+	out = append(out, raw...)
+	out = append(out, '/')
+	return append(out, name...), nil
+}
+
+// SignalInboxPrefixForInvocation returns signal_inbox/<inv_id>/, used
+// with PrefixUpperBound for range-delete on Purge.
+func SignalInboxPrefixForInvocation(id *enginev1.InvocationId) ([]byte, error) {
+	raw, err := EncodeInvocationID(id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(signalInboxPrefix)+invocationIDLen+1)
+	out = append(out, signalInboxPrefix...)
+	out = append(out, raw...)
+	return append(out, '/'), nil
+}
+
+// SignalAwaiterKey returns signal_awaiter/<inv_id>/<name>. Same shape
+// as SignalInboxKey.
+func SignalAwaiterKey(id *enginev1.InvocationId, name string) ([]byte, error) {
+	raw, err := EncodeInvocationID(id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(signalAwaiterPrefix)+invocationIDLen+1+len(name))
+	out = append(out, signalAwaiterPrefix...)
+	out = append(out, raw...)
+	out = append(out, '/')
+	return append(out, name...), nil
+}
+
+// SignalAwaiterPrefixForInvocation returns signal_awaiter/<inv_id>/.
+func SignalAwaiterPrefixForInvocation(id *enginev1.InvocationId) ([]byte, error) {
+	raw, err := EncodeInvocationID(id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(signalAwaiterPrefix)+invocationIDLen+1)
+	out = append(out, signalAwaiterPrefix...)
+	out = append(out, raw...)
+	return append(out, '/'), nil
+}
+
+// WorkflowRunKey returns workflow_run/<service>/<workflow_key>. Used by
+// the apply path to dedup repeated SubmitInvocation requests for a
+// KIND_WORKFLOW Run handler — the value is the InvocationId of the
+// currently-active or most-recently-completed run for that (service, key).
+func WorkflowRunKey(service, workflowKey string) []byte {
+	out := make([]byte, 0, len(workflowRunPrefix)+len(service)+1+len(workflowKey))
+	out = append(out, workflowRunPrefix...)
+	out = append(out, service...)
+	out = append(out, '/')
+	return append(out, workflowKey...)
+}
+
+// WorkflowRunPrefix returns the workflow_run/ namespace prefix. Used by
+// the workflow retention reaper to scan completed runs.
+func WorkflowRunPrefix() []byte { return []byte(workflowRunPrefix) }
+
+// PromiseKey returns promise/<service>/<workflow_key>/<name>. Named
+// durable promises are scoped to a workflow run; the key encodes that
+// scope directly so per-workflow range scans are bounded.
+func PromiseKey(service, workflowKey, name string) []byte {
+	out := make([]byte, 0, len(promisePrefix)+len(service)+1+len(workflowKey)+1+len(name))
+	out = append(out, promisePrefix...)
+	out = append(out, service...)
+	out = append(out, '/')
+	out = append(out, workflowKey...)
+	out = append(out, '/')
+	return append(out, name...)
+}
+
+// PromisePrefixForWorkflow returns promise/<service>/<workflow_key>/,
+// suitable as the LowerBound for a per-workflow scan. Used by the
+// retention reaper.
+func PromisePrefixForWorkflow(service, workflowKey string) []byte {
+	out := make([]byte, 0, len(promisePrefix)+len(service)+1+len(workflowKey)+1)
+	out = append(out, promisePrefix...)
+	out = append(out, service...)
+	out = append(out, '/')
+	out = append(out, workflowKey...)
+	return append(out, '/')
+}
+
+// PromiseAwaiterKey returns promise_awaiter/<service>/<workflow_key>/<name>.
+func PromiseAwaiterKey(service, workflowKey, name string) []byte {
+	out := make([]byte, 0, len(promiseAwaiterPrefix)+len(service)+1+len(workflowKey)+1+len(name))
+	out = append(out, promiseAwaiterPrefix...)
+	out = append(out, service...)
+	out = append(out, '/')
+	out = append(out, workflowKey...)
+	out = append(out, '/')
+	return append(out, name...)
+}
+
+// PromiseAwaiterPrefixForWorkflow returns promise_awaiter/<service>/<workflow_key>/.
+func PromiseAwaiterPrefixForWorkflow(service, workflowKey string) []byte {
+	out := make([]byte, 0, len(promiseAwaiterPrefix)+len(service)+1+len(workflowKey)+1)
+	out = append(out, promiseAwaiterPrefix...)
+	out = append(out, service...)
+	out = append(out, '/')
+	out = append(out, workflowKey...)
+	return append(out, '/')
 }
 
 // PrefixUpperBound returns the smallest key strictly greater than every key

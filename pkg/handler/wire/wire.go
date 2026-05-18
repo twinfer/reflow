@@ -66,8 +66,8 @@ type Route struct {
 // Type codes per proto/protocolv1/protocol.proto. The codes are part
 // of the wire contract; keep this list in sync with the proto file.
 // Codes for messages not yet emitted by either side (CommandAck,
-// SendSignal, CallInvocationId) are intentionally omitted — add them
-// here when their handler lands rather than carrying dead constants.
+// CallInvocationId) are intentionally omitted — add them here when
+// their handler lands rather than carrying dead constants.
 const (
 	// Core lifecycle (0x0000-0x00FF).
 	TypeStart          uint16 = 0x0000
@@ -77,26 +77,49 @@ const (
 	TypeProposeRunDone uint16 = 0x0005
 
 	// Commands (0x0400-0x04FF).
-	TypeCmdInput         uint16 = 0x0400
-	TypeCmdOutput        uint16 = 0x0401
-	TypeCmdSetState      uint16 = 0x0403
-	TypeCmdClearState    uint16 = 0x0404
-	TypeCmdClearAllState uint16 = 0x0405
-	TypeCmdSleep         uint16 = 0x040C
-	TypeCmdCall          uint16 = 0x040D
-	TypeCmdOneWayCall    uint16 = 0x040E
-	TypeCmdRun           uint16 = 0x0411
-	TypeCmdAwakeable     uint16 = 0x0414
+	TypeCmdInput           uint16 = 0x0400
+	TypeCmdOutput          uint16 = 0x0401
+	TypeCmdSetState        uint16 = 0x0403
+	TypeCmdClearState      uint16 = 0x0404
+	TypeCmdClearAllState   uint16 = 0x0405
+	TypeCmdGetPromise      uint16 = 0x0409
+	TypeCmdPeekPromise     uint16 = 0x040A
+	TypeCmdCompletePromise uint16 = 0x040B
+	TypeCmdSleep           uint16 = 0x040C
+	TypeCmdCall            uint16 = 0x040D
+	TypeCmdOneWayCall      uint16 = 0x040E
+	TypeCmdRun             uint16 = 0x0411
+	TypeCmdAwakeable       uint16 = 0x0414
+	TypeCmdSendSignal      uint16 = 0x0415
+	TypeCmdAwaitSignal     uint16 = 0x0416
 
 	// Notifications (0x8000-0x80FF).
-	TypeNoteSleepDone uint16 = 0x800C
-	TypeNoteCallDone  uint16 = 0x800D
-	TypeNoteRunDone   uint16 = 0x8011
+	TypeNoteGetPromise      uint16 = 0x8009
+	TypeNotePeekPromise     uint16 = 0x800A
+	TypeNoteCompletePromise uint16 = 0x800B
+	TypeNoteSleepDone       uint16 = 0x800C
+	TypeNoteCallDone        uint16 = 0x800D
+	TypeNoteRunDone         uint16 = 0x8011
 
 	// Out-of-band signal delivery (0xFBFF). The same code carries
 	// awakeable resolutions and any future numbered signals.
 	TypeNoteSignal uint16 = 0xFBFF
 )
+
+// WellKnownCancelSignal is the reserved signal name interpreted by the
+// receiver shard as "force this invocation to terminate with
+// CancelledCode". Sent via ctx.CancelInvocation or the ingress
+// CancelInvocation RPC. The engine special-cases this name in the
+// SignalDelivered apply arm, bypassing the normal signal inbox/awaiter
+// path. Lives in pkg/handler/wire because it is shared engine↔handler
+// vocabulary; both sides must agree on the literal string.
+const WellKnownCancelSignal = "__cancel__"
+
+// CancelledCode is the reserved Failure.Code stamped onto invocations
+// terminated by a __cancel__ signal. Mirrored by handler.CancelledCode
+// for the SDK side; defined here so internal/engine can reference it
+// without importing pkg/handler.
+const CancelledCode uint32 = 9002
 
 // PackHeader encodes (type, flags, payload length) into the 64-bit
 // big-endian header word stored on protocolv1.Frame.header.

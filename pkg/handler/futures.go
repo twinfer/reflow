@@ -154,6 +154,101 @@ func (f awakeableFuture) Result() ([]byte, error) {
 	}
 }
 
+// --- WaitSignal ---
+
+// signalFuture is the deferred handle returned by wireContext.WaitSignal.
+// name is the signal name the SDK is awaiting; resultSlot is the slot
+// the JESignalResult notification will arrive at.
+type signalFuture struct {
+	ctx        *wireContext
+	resultSlot uint32
+	name       string
+}
+
+func (f signalFuture) Poll() (bool, []string) {
+	if f.ctx.lookupReplay(f.resultSlot) != nil {
+		return true, nil
+	}
+	return false, []string{f.token()}
+}
+
+func (f signalFuture) Result() ([]byte, error) {
+	entry := f.ctx.lookupReplay(f.resultSlot)
+	if entry == nil {
+		f.ctx.suspend(f.token())
+		return nil, ErrSuspended
+	}
+	if entry.typeCode != wire.TypeNoteSignal {
+		return nil, fmt.Errorf("signal slot %d carries unexpected frame type 0x%04x", f.resultSlot, entry.typeCode)
+	}
+	var note protocolv1.SignalNotificationMessage
+	if err := f.ctx.codec.Unmarshal(entry.payload, &note); err != nil {
+		return nil, fmt.Errorf("decode replayed SignalNotificationMessage: %w", err)
+	}
+	switch r := note.GetResult().(type) {
+	case *protocolv1.SignalNotificationMessage_Value:
+		return r.Value.GetContent(), nil
+	case *protocolv1.SignalNotificationMessage_Failure:
+		return nil, NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())
+	default:
+		return nil, nil
+	}
+}
+
+// token returns the suspension token format the engine recognises in
+// awaiting_on: signal:<name>:<slot>. Slot is included so two concurrent
+// waits with the same name produce distinct tokens.
+func (f signalFuture) token() string {
+	return fmt.Sprintf("signal:%s:%d", f.name, f.resultSlot)
+}
+
+// --- Promise.Result ---
+
+// promiseResultFuture is the deferred handle returned by
+// DurablePromise.Result. name is the promise name; resultSlot is the
+// slot where the apply arm appends JEPromiseResult once the promise
+// completes (synchronously on inline-hit or asynchronously on a later
+// JECompletePromise / InvokerEffect.PromiseCompleted).
+type promiseResultFuture struct {
+	ctx        *wireContext
+	resultSlot uint32
+	name       string
+}
+
+func (f promiseResultFuture) Poll() (bool, []string) {
+	if f.ctx.lookupReplay(f.resultSlot) != nil {
+		return true, nil
+	}
+	return false, []string{f.token()}
+}
+
+func (f promiseResultFuture) Result() ([]byte, error) {
+	entry := f.ctx.lookupReplay(f.resultSlot)
+	if entry == nil {
+		f.ctx.suspend(f.token())
+		return nil, ErrSuspended
+	}
+	if entry.typeCode != wire.TypeNoteGetPromise {
+		return nil, fmt.Errorf("promise slot %d carries unexpected frame type 0x%04x", f.resultSlot, entry.typeCode)
+	}
+	var note protocolv1.GetPromiseCompletionNotificationMessage
+	if err := f.ctx.codec.Unmarshal(entry.payload, &note); err != nil {
+		return nil, fmt.Errorf("decode replayed GetPromiseCompletionNotificationMessage: %w", err)
+	}
+	switch r := note.GetResult().(type) {
+	case *protocolv1.GetPromiseCompletionNotificationMessage_Value:
+		return r.Value.GetContent(), nil
+	case *protocolv1.GetPromiseCompletionNotificationMessage_Failure:
+		return nil, NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())
+	default:
+		return nil, nil
+	}
+}
+
+func (f promiseResultFuture) token() string {
+	return fmt.Sprintf("promise:%s:%d", f.name, f.resultSlot)
+}
+
 // --- All ---
 
 // allResult is the composite returned by wireContext.All. Pure SDK

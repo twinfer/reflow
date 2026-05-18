@@ -67,6 +67,8 @@ func kindToProto(k Kind) protocolv1.Kind {
 		return protocolv1.Kind_KIND_OBJECT
 	case KindWorkflow:
 		return protocolv1.Kind_KIND_WORKFLOW
+	case KindWorkflowShared:
+		return protocolv1.Kind_KIND_WORKFLOW_SHARED
 	default:
 		return protocolv1.Kind_KIND_UNSPECIFIED
 	}

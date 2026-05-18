@@ -20,18 +20,18 @@ type Handler func(ctx Context, input []byte) ([]byte, error)
 // Mirrors Restate's service kinds (service / virtual object / workflow)
 // and rides on the wire StartMessage.kind field in protocolv1.
 //
-//   - KindService:  unkeyed, per-invocation, stateless.
-//   - KindObject:   addressed by (service_name, object_key); per-invocation
+//   - KindService:        unkeyed, per-invocation, stateless.
+//   - KindObject:         addressed by (service_name, object_key); per-invocation
 //     but locked per key so concurrent invocations for the
 //     same key serialise. Per-key durable state.
-//   - KindWorkflow: addressed by (workflow_name, workflow_key); one run
-//     per (name, key), long-lived. Per-key state + named
-//     promises.
-//
-// Per-kind lifecycle differences (object locking, workflow replay
-// scoping) are still being wired; today every kind dispatches the same
-// wire path. Kind is surfaced now so deployment registration and the
-// wire StartMessage stay stable.
+//   - KindWorkflow:       addressed by (workflow_name, workflow_key); one run per
+//     (name, key) drives the workflow lifecycle. Per-key
+//     state + named promises. Single-run-per-key submit dedup.
+//   - KindWorkflowShared: companion handler on a workflow, addressed by the same
+//     (workflow_name, workflow_key). Concurrent calls allowed;
+//     reads/writes workflow state and promises without
+//     driving lifecycle (no submit dedup; lifetime tied to
+//     the run's retention).
 type Kind int
 
 const (
@@ -40,6 +40,7 @@ const (
 	KindService
 	KindObject
 	KindWorkflow
+	KindWorkflowShared
 )
 
 // String returns a short human-readable form.
@@ -51,9 +52,18 @@ func (k Kind) String() string {
 		return "object"
 	case KindWorkflow:
 		return "workflow"
+	case KindWorkflowShared:
+		return "workflow_shared"
 	default:
 		return "unspecified"
 	}
+}
+
+// IsWorkflow reports whether the kind targets a workflow (Run or Shared).
+// Used by lifecycle code (state purge, promise validation) that treats both
+// kinds as the same workflow family.
+func (k Kind) IsWorkflow() bool {
+	return k == KindWorkflow || k == KindWorkflowShared
 }
 
 // Registry holds the durable handlers a node is willing to run.
@@ -94,11 +104,20 @@ func (r *Registry) RegisterObject(service, handler string, fn Handler) error {
 	return r.register(service, handler, fn, KindObject)
 }
 
-// RegisterWorkflow adds fn under (service, handler) as a workflow
-// handler. The handler will be addressed as (workflow_name, workflow_key)
-// with one durable run per key.
+// RegisterWorkflow adds fn under (service, handler) as the workflow Run
+// handler — the entry point that drives lifecycle for (service, key). One
+// durable run per key; concurrent submissions to (service, key) dedup to
+// the active run id (Active) or its terminal output (Completed).
 func (r *Registry) RegisterWorkflow(service, handler string, fn Handler) error {
 	return r.register(service, handler, fn, KindWorkflow)
+}
+
+// RegisterWorkflowShared adds fn under (service, handler) as a workflow
+// Shared handler — a companion that operates on the same (service, key) as
+// the Run but without driving lifecycle. Concurrent calls allowed; no
+// submit dedup.
+func (r *Registry) RegisterWorkflowShared(service, handler string, fn Handler) error {
+	return r.register(service, handler, fn, KindWorkflowShared)
 }
 
 func (r *Registry) register(service, handler string, fn Handler, kind Kind) error {

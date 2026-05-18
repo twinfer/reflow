@@ -63,6 +63,12 @@ const (
 	IngressGetInvocationOutputProcedure = "/reflow.ingress.v1.Ingress/GetInvocationOutput"
 	// IngressGetObjectStateProcedure is the fully-qualified name of the Ingress's GetObjectState RPC.
 	IngressGetObjectStateProcedure = "/reflow.ingress.v1.Ingress/GetObjectState"
+	// IngressCancelInvocationProcedure is the fully-qualified name of the Ingress's CancelInvocation
+	// RPC.
+	IngressCancelInvocationProcedure = "/reflow.ingress.v1.Ingress/CancelInvocation"
+	// IngressResolveWorkflowPromiseProcedure is the fully-qualified name of the Ingress's
+	// ResolveWorkflowPromise RPC.
+	IngressResolveWorkflowPromiseProcedure = "/reflow.ingress.v1.Ingress/ResolveWorkflowPromise"
 )
 
 // IngressClient is a client for the reflow.ingress.v1.Ingress service.
@@ -99,6 +105,20 @@ type IngressClient interface {
 	// object_key) through the cluster Partitioner. present=false (not an
 	// error) when the key is absent.
 	GetObjectState(context.Context, *connect.Request[ingressv1.GetObjectStateRequest]) (*connect.Response[ingressv1.GetObjectStateResponse], error)
+	// CancelInvocation forces a running invocation to terminate with
+	// FailureCode=9002 (cancelled). Implemented as a __cancel__ signal
+	// delivered to the invocation's (service, key); the receiver shard
+	// resolves the active InvocationId via KeyLeaseTable and synthesizes
+	// a terminal Completed. Idempotent: cancelling an already-completed
+	// invocation is a no-op.
+	CancelInvocation(context.Context, *connect.Request[ingressv1.CancelInvocationRequest]) (*connect.Response[ingressv1.CancelInvocationResponse], error)
+	// ResolveWorkflowPromise resolves or rejects a named workflow-scoped
+	// durable promise. Routes by (service, workflow_key) via
+	// Partitioner.ShardForTarget; the receiver shard writes PromiseValue
+	// and wakes any in-flight Promise(name).Result() awaiter. Idempotent
+	// against already-completed promises: succeeded=false signals
+	// "promise already completed" without an error status.
+	ResolveWorkflowPromise(context.Context, *connect.Request[ingressv1.ResolveWorkflowPromiseRequest]) (*connect.Response[ingressv1.ResolveWorkflowPromiseResponse], error)
 }
 
 // NewIngressClient constructs a client for the reflow.ingress.v1.Ingress service. By default, it
@@ -160,19 +180,33 @@ func NewIngressClient(httpClient connect.HTTPClient, baseURL string, opts ...con
 			connect.WithSchema(ingressMethods.ByName("GetObjectState")),
 			connect.WithClientOptions(opts...),
 		),
+		cancelInvocation: connect.NewClient[ingressv1.CancelInvocationRequest, ingressv1.CancelInvocationResponse](
+			httpClient,
+			baseURL+IngressCancelInvocationProcedure,
+			connect.WithSchema(ingressMethods.ByName("CancelInvocation")),
+			connect.WithClientOptions(opts...),
+		),
+		resolveWorkflowPromise: connect.NewClient[ingressv1.ResolveWorkflowPromiseRequest, ingressv1.ResolveWorkflowPromiseResponse](
+			httpClient,
+			baseURL+IngressResolveWorkflowPromiseProcedure,
+			connect.WithSchema(ingressMethods.ByName("ResolveWorkflowPromise")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // ingressClient implements IngressClient.
 type ingressClient struct {
-	submitInvocation    *connect.Client[ingressv1.SubmitInvocationRequest, ingressv1.SubmitInvocationResponse]
-	awaitInvocation     *connect.Client[ingressv1.AwaitInvocationRequest, ingressv1.AwaitInvocationResponse]
-	resolveAwakeable    *connect.Client[ingressv1.ResolveAwakeableRequest, ingressv1.ResolveAwakeableResponse]
-	listPartitions      *connect.Client[ingressv1.ListPartitionsRequest, ingressv1.ListPartitionsResponse]
-	describeInvocation  *connect.Client[ingressv1.DescribeInvocationRequest, ingressv1.DescribeInvocationResponse]
-	attachInvocation    *connect.Client[ingressv1.AttachInvocationRequest, ingressv1.AttachInvocationResponse]
-	getInvocationOutput *connect.Client[ingressv1.GetInvocationOutputRequest, ingressv1.GetInvocationOutputResponse]
-	getObjectState      *connect.Client[ingressv1.GetObjectStateRequest, ingressv1.GetObjectStateResponse]
+	submitInvocation       *connect.Client[ingressv1.SubmitInvocationRequest, ingressv1.SubmitInvocationResponse]
+	awaitInvocation        *connect.Client[ingressv1.AwaitInvocationRequest, ingressv1.AwaitInvocationResponse]
+	resolveAwakeable       *connect.Client[ingressv1.ResolveAwakeableRequest, ingressv1.ResolveAwakeableResponse]
+	listPartitions         *connect.Client[ingressv1.ListPartitionsRequest, ingressv1.ListPartitionsResponse]
+	describeInvocation     *connect.Client[ingressv1.DescribeInvocationRequest, ingressv1.DescribeInvocationResponse]
+	attachInvocation       *connect.Client[ingressv1.AttachInvocationRequest, ingressv1.AttachInvocationResponse]
+	getInvocationOutput    *connect.Client[ingressv1.GetInvocationOutputRequest, ingressv1.GetInvocationOutputResponse]
+	getObjectState         *connect.Client[ingressv1.GetObjectStateRequest, ingressv1.GetObjectStateResponse]
+	cancelInvocation       *connect.Client[ingressv1.CancelInvocationRequest, ingressv1.CancelInvocationResponse]
+	resolveWorkflowPromise *connect.Client[ingressv1.ResolveWorkflowPromiseRequest, ingressv1.ResolveWorkflowPromiseResponse]
 }
 
 // SubmitInvocation calls reflow.ingress.v1.Ingress.SubmitInvocation.
@@ -215,6 +249,16 @@ func (c *ingressClient) GetObjectState(ctx context.Context, req *connect.Request
 	return c.getObjectState.CallUnary(ctx, req)
 }
 
+// CancelInvocation calls reflow.ingress.v1.Ingress.CancelInvocation.
+func (c *ingressClient) CancelInvocation(ctx context.Context, req *connect.Request[ingressv1.CancelInvocationRequest]) (*connect.Response[ingressv1.CancelInvocationResponse], error) {
+	return c.cancelInvocation.CallUnary(ctx, req)
+}
+
+// ResolveWorkflowPromise calls reflow.ingress.v1.Ingress.ResolveWorkflowPromise.
+func (c *ingressClient) ResolveWorkflowPromise(ctx context.Context, req *connect.Request[ingressv1.ResolveWorkflowPromiseRequest]) (*connect.Response[ingressv1.ResolveWorkflowPromiseResponse], error) {
+	return c.resolveWorkflowPromise.CallUnary(ctx, req)
+}
+
 // IngressHandler is an implementation of the reflow.ingress.v1.Ingress service.
 type IngressHandler interface {
 	// SubmitInvocation enqueues a new invocation. Returns the minted
@@ -249,6 +293,20 @@ type IngressHandler interface {
 	// object_key) through the cluster Partitioner. present=false (not an
 	// error) when the key is absent.
 	GetObjectState(context.Context, *connect.Request[ingressv1.GetObjectStateRequest]) (*connect.Response[ingressv1.GetObjectStateResponse], error)
+	// CancelInvocation forces a running invocation to terminate with
+	// FailureCode=9002 (cancelled). Implemented as a __cancel__ signal
+	// delivered to the invocation's (service, key); the receiver shard
+	// resolves the active InvocationId via KeyLeaseTable and synthesizes
+	// a terminal Completed. Idempotent: cancelling an already-completed
+	// invocation is a no-op.
+	CancelInvocation(context.Context, *connect.Request[ingressv1.CancelInvocationRequest]) (*connect.Response[ingressv1.CancelInvocationResponse], error)
+	// ResolveWorkflowPromise resolves or rejects a named workflow-scoped
+	// durable promise. Routes by (service, workflow_key) via
+	// Partitioner.ShardForTarget; the receiver shard writes PromiseValue
+	// and wakes any in-flight Promise(name).Result() awaiter. Idempotent
+	// against already-completed promises: succeeded=false signals
+	// "promise already completed" without an error status.
+	ResolveWorkflowPromise(context.Context, *connect.Request[ingressv1.ResolveWorkflowPromiseRequest]) (*connect.Response[ingressv1.ResolveWorkflowPromiseResponse], error)
 }
 
 // NewIngressHandler builds an HTTP handler from the service implementation. It returns the path on
@@ -306,6 +364,18 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 		connect.WithSchema(ingressMethods.ByName("GetObjectState")),
 		connect.WithHandlerOptions(opts...),
 	)
+	ingressCancelInvocationHandler := connect.NewUnaryHandler(
+		IngressCancelInvocationProcedure,
+		svc.CancelInvocation,
+		connect.WithSchema(ingressMethods.ByName("CancelInvocation")),
+		connect.WithHandlerOptions(opts...),
+	)
+	ingressResolveWorkflowPromiseHandler := connect.NewUnaryHandler(
+		IngressResolveWorkflowPromiseProcedure,
+		svc.ResolveWorkflowPromise,
+		connect.WithSchema(ingressMethods.ByName("ResolveWorkflowPromise")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/reflow.ingress.v1.Ingress/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case IngressSubmitInvocationProcedure:
@@ -324,6 +394,10 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 			ingressGetInvocationOutputHandler.ServeHTTP(w, r)
 		case IngressGetObjectStateProcedure:
 			ingressGetObjectStateHandler.ServeHTTP(w, r)
+		case IngressCancelInvocationProcedure:
+			ingressCancelInvocationHandler.ServeHTTP(w, r)
+		case IngressResolveWorkflowPromiseProcedure:
+			ingressResolveWorkflowPromiseHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -363,4 +437,12 @@ func (UnimplementedIngressHandler) GetInvocationOutput(context.Context, *connect
 
 func (UnimplementedIngressHandler) GetObjectState(context.Context, *connect.Request[ingressv1.GetObjectStateRequest]) (*connect.Response[ingressv1.GetObjectStateResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.GetObjectState is not implemented"))
+}
+
+func (UnimplementedIngressHandler) CancelInvocation(context.Context, *connect.Request[ingressv1.CancelInvocationRequest]) (*connect.Response[ingressv1.CancelInvocationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.CancelInvocation is not implemented"))
+}
+
+func (UnimplementedIngressHandler) ResolveWorkflowPromise(context.Context, *connect.Request[ingressv1.ResolveWorkflowPromiseRequest]) (*connect.Response[ingressv1.ResolveWorkflowPromiseResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.ResolveWorkflowPromise is not implemented"))
 }

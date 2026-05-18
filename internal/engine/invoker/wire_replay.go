@@ -163,6 +163,44 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 		}
 		return marshalFrame(codec, wire.TypeCmdOneWayCall, e.GetIndex(), msg)
 
+	case *enginev1.JournalEntry_Signal:
+		// JESignal replays as the SendSignalCommandMessage the SDK
+		// originally emitted. Single-slot (no result-pair); on replay
+		// wireContext.SendSignal sees the slot occupied and returns
+		// nil without re-emitting.
+		t := entry.Signal.GetTarget()
+		msg := &protocolv1.SendSignalCommandMessage{
+			ServiceName: t.GetServiceName(),
+			HandlerName: t.GetHandlerName(),
+			Key:         t.GetObjectKey(),
+			SignalName:  entry.Signal.GetSignalName(),
+			Payload:     entry.Signal.GetPayload(),
+		}
+		return marshalFrame(codec, wire.TypeCmdSendSignal, e.GetIndex(), msg)
+
+	case *enginev1.JournalEntry_AwaitSignal:
+		// JEAwaitSignal replays as the original AwaitSignalCommandMessage
+		// at cmdSlot. The matching JESignalResult (if delivered) replays
+		// separately at resultSlot=cmdSlot+1.
+		msg := &protocolv1.AwaitSignalCommandMessage{
+			SignalName:         entry.AwaitSignal.GetSignalName(),
+			ResultCompletionId: entry.AwaitSignal.GetResultCompletionId(),
+		}
+		return marshalFrame(codec, wire.TypeCmdAwaitSignal, e.GetIndex(), msg)
+
+	case *enginev1.JournalEntry_SignalResult:
+		// JESignalResult replays as a SignalNotificationMessage at the
+		// result slot. The same TypeNoteSignal frame code carries
+		// awakeable resolutions; the SDK's signalFuture and
+		// awakeableFuture distinguish by the slot they're polling.
+		msg := &protocolv1.SignalNotificationMessage{
+			SignalId: &protocolv1.SignalNotificationMessage_Name{Name: entry.SignalResult.GetSignalName()},
+			Result: &protocolv1.SignalNotificationMessage_Value{
+				Value: &protocolv1.Value{Content: entry.SignalResult.GetPayload()},
+			},
+		}
+		return marshalFrame(codec, wire.TypeNoteSignal, e.GetIndex(), msg)
+
 	case *enginev1.JournalEntry_Run:
 		// JERun translates to a RunCommandMessage marker. When the run
 		// is terminal (retryable=false), a follow-up
@@ -224,6 +262,80 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 			AwakeableId:        entry.Awakeable.GetAwakeableId(),
 		}
 		return marshalFrame(codec, wire.TypeCmdAwakeable, e.GetIndex(), msg)
+
+	case *enginev1.JournalEntry_GetPromise:
+		msg := &protocolv1.GetPromiseCommandMessage{
+			Name:               entry.GetPromise.GetName(),
+			ResultCompletionId: entry.GetPromise.GetResultCompletionId(),
+		}
+		return marshalFrame(codec, wire.TypeCmdGetPromise, e.GetIndex(), msg)
+
+	case *enginev1.JournalEntry_PromiseResult:
+		msg := &protocolv1.GetPromiseCompletionNotificationMessage{
+			CompletionId: e.GetIndex(),
+		}
+		if fm := entry.PromiseResult.GetFailureMessage(); fm != "" {
+			msg.Result = &protocolv1.GetPromiseCompletionNotificationMessage_Failure{
+				Failure: &protocolv1.Failure{Message: fm},
+			}
+		} else {
+			msg.Result = &protocolv1.GetPromiseCompletionNotificationMessage_Value{
+				Value: &protocolv1.Value{Content: entry.PromiseResult.GetValue()},
+			}
+		}
+		return marshalFrame(codec, wire.TypeNoteGetPromise, e.GetIndex(), msg)
+
+	case *enginev1.JournalEntry_PeekPromise:
+		// JEPeekPromise replays as the snapshot stamped by the apply
+		// arm: completed flag + (value | failure_message). Single slot;
+		// the SDK's Peek decodes the frame at the slot it allocated and
+		// returns the cached value without re-emitting.
+		msg := &protocolv1.PeekPromiseCommandMessage{
+			Name:      entry.PeekPromise.GetName(),
+			Completed: entry.PeekPromise.GetCompleted(),
+		}
+		if fm := entry.PeekPromise.GetFailureMessage(); fm != "" {
+			msg.Result = &protocolv1.PeekPromiseCommandMessage_Failure{
+				Failure: &protocolv1.Failure{Message: fm},
+			}
+		} else if entry.PeekPromise.GetCompleted() {
+			msg.Result = &protocolv1.PeekPromiseCommandMessage_Value{
+				Value: &protocolv1.Value{Content: entry.PeekPromise.GetValue()},
+			}
+		}
+		return marshalFrame(codec, wire.TypeCmdPeekPromise, e.GetIndex(), msg)
+
+	case *enginev1.JournalEntry_CompletePromise:
+		msg := &protocolv1.CompletePromiseCommandMessage{
+			Name:               entry.CompletePromise.GetName(),
+			ResultCompletionId: entry.CompletePromise.GetResultCompletionId(),
+		}
+		if fm := entry.CompletePromise.GetFailureMessage(); fm != "" {
+			msg.Completion = &protocolv1.CompletePromiseCommandMessage_CompletionFailure{
+				CompletionFailure: &protocolv1.Failure{Message: fm},
+			}
+		} else {
+			msg.Completion = &protocolv1.CompletePromiseCommandMessage_CompletionValue{
+				CompletionValue: &protocolv1.Value{Content: entry.CompletePromise.GetValue()},
+			}
+		}
+		return marshalFrame(codec, wire.TypeCmdCompletePromise, e.GetIndex(), msg)
+
+	case *enginev1.JournalEntry_PromiseCompleteResult:
+		msg := &protocolv1.CompletePromiseCompletionNotificationMessage{
+			CompletionId: e.GetIndex(),
+		}
+		if !entry.PromiseCompleteResult.GetSucceeded() {
+			msg.Result = &protocolv1.CompletePromiseCompletionNotificationMessage_Failure{
+				Failure: &protocolv1.Failure{
+					Code:    9005, // PromiseAlreadyCompletedCode, mirrored from pkg/handler/errors.go
+					Message: entry.PromiseCompleteResult.GetFailureMessage(),
+				},
+			}
+		} else {
+			msg.Result = &protocolv1.CompletePromiseCompletionNotificationMessage_Void{Void: &protocolv1.Void{}}
+		}
+		return marshalFrame(codec, wire.TypeNoteCompletePromise, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_AwakeableResult:
 		// Translate to a SignalNotificationMessage with the name variant

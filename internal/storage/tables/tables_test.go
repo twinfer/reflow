@@ -669,6 +669,124 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 	})
 
+	t.Run(name+"/SignalInbox_PutGetDelete", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		it := tables.SignalInboxTable{S: s}
+		id := mkID(42, "0123456789abcdef")
+
+		// Missing returns (nil, nil) — distinguishes from ErrNotFound.
+		got, err := it.Get(id, "ready")
+		if err != nil || got != nil {
+			t.Errorf("missing: got=%+v err=%v; want (nil, nil)", got, err)
+		}
+
+		entry := &enginev1.SignalInboxEntry{
+			SignalName:    "ready",
+			Payload:       []byte("payload-1"),
+			DeliveredAtMs: 12345,
+		}
+		b := s.NewBatch()
+		if err := it.Put(b, id, "ready", entry); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b)
+
+		got, err = it.Get(id, "ready")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.GetSignalName() != "ready" || string(got.GetPayload()) != "payload-1" || got.GetDeliveredAtMs() != 12345 {
+			t.Errorf("roundtrip: %+v", got)
+		}
+
+		b2 := s.NewBatch()
+		if err := it.Delete(b2, id, "ready"); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b2)
+		got, err = it.Get(id, "ready")
+		if err != nil || got != nil {
+			t.Errorf("after delete: got=%+v err=%v; want (nil, nil)", got, err)
+		}
+	})
+
+	t.Run(name+"/SignalInbox_DeleteAllForInvocation", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		it := tables.SignalInboxTable{S: s}
+		id := mkID(42, "0123456789abcdef")
+		other := mkID(42, "fedcba9876543210")
+
+		b := s.NewBatch()
+		for _, name := range []string{"a", "b", "c"} {
+			if err := it.Put(b, id, name, &enginev1.SignalInboxEntry{SignalName: name}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Plant a row for a sibling invocation so we verify the
+		// range-delete doesn't bleed across.
+		if err := it.Put(b, other, "z", &enginev1.SignalInboxEntry{SignalName: "z"}); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b)
+
+		b2 := s.NewBatch()
+		if err := it.DeleteAllForInvocation(b2, id); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b2)
+
+		for _, name := range []string{"a", "b", "c"} {
+			got, _ := it.Get(id, name)
+			if got != nil {
+				t.Errorf("name=%s: %+v survived range-delete", name, got)
+			}
+		}
+		// Sibling untouched.
+		got, _ := it.Get(other, "z")
+		if got == nil {
+			t.Errorf("sibling invocation row z was deleted by mistake")
+		}
+	})
+
+	t.Run(name+"/SignalAwaiter_PutGetDelete", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		at := tables.SignalAwaiterTable{S: s}
+		id := mkID(7, "0123456789abcdef")
+
+		got, err := at.Get(id, "ready")
+		if err != nil || got != nil {
+			t.Errorf("missing: got=%+v err=%v; want (nil, nil)", got, err)
+		}
+
+		entry := &enginev1.SignalAwaiter{Owner: id, EntryIndex: 11}
+		b := s.NewBatch()
+		if err := at.Put(b, id, "ready", entry); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b)
+
+		got, err = at.Get(id, "ready")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.GetEntryIndex() != 11 || got.GetOwner().GetPartitionKey() != 7 {
+			t.Errorf("roundtrip: %+v", got)
+		}
+
+		b2 := s.NewBatch()
+		if err := at.Delete(b2, id, "ready"); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b2)
+		got, _ = at.Get(id, "ready")
+		if got != nil {
+			t.Errorf("after delete: %+v; want nil", got)
+		}
+	})
+
 	t.Run(name+"/KeyLease_MissingReturnsNil", func(t *testing.T) {
 		s := open(t)
 		defer s.Close()
@@ -792,6 +910,170 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 		if !bytes.Equal(gotB.GetUuid(), idB.GetUuid()) {
 			t.Errorf("tuple B: got %x want %x", gotB.GetUuid(), idB.GetUuid())
+		}
+	})
+
+	t.Run(name+"/WorkflowRun_MissingReturnsNil", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		got, err := tables.WorkflowRunTable{S: s}.Get("Orders", "order-42")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != nil {
+			t.Errorf("missing: got=%+v; want nil", got)
+		}
+	})
+
+	t.Run(name+"/WorkflowRun_PutGetDelete", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		runT := tables.WorkflowRunTable{S: s}
+		id := mkID(42, "0123456789abcdef")
+
+		b := s.NewBatch()
+		if err := runT.Put(b, "Orders", "order-42", id); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b)
+
+		got, err := runT.Get("Orders", "order-42")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got.GetUuid(), id.GetUuid()) {
+			t.Errorf("uuid mismatch: got %x want %x", got.GetUuid(), id.GetUuid())
+		}
+
+		b2 := s.NewBatch()
+		if err := runT.Delete(b2, "Orders", "order-42"); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b2)
+		got, _ = runT.Get("Orders", "order-42")
+		if got != nil {
+			t.Errorf("after delete: %+v; want nil", got)
+		}
+	})
+
+	t.Run(name+"/Promise_MissingReturnsNil", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		got, err := tables.PromiseTable{S: s}.Get("Wf", "k", "done")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != nil {
+			t.Errorf("missing: got=%+v; want nil", got)
+		}
+	})
+
+	t.Run(name+"/Promise_PutGetDelete_Resolved", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		pt := tables.PromiseTable{S: s}
+		pv := &enginev1.PromiseValue{
+			State: &enginev1.PromiseValue_Resolved{
+				Resolved: &enginev1.Resolved{Value: []byte("ok"), CompletedAtMs: 1000},
+			},
+			CreatedAtMs: 1000,
+		}
+		b := s.NewBatch()
+		if err := pt.Put(b, "Wf", "k", "done", pv); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b)
+
+		got, err := pt.Get("Wf", "k", "done")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.GetResolved() == nil || string(got.GetResolved().GetValue()) != "ok" {
+			t.Errorf("resolved value mismatch: %+v", got)
+		}
+
+		b2 := s.NewBatch()
+		if err := pt.Delete(b2, "Wf", "k", "done"); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b2)
+		got, _ = pt.Get("Wf", "k", "done")
+		if got != nil {
+			t.Errorf("after delete: %+v", got)
+		}
+	})
+
+	t.Run(name+"/Promise_DeleteAllForWorkflow", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		pt := tables.PromiseTable{S: s}
+		pv := &enginev1.PromiseValue{
+			State: &enginev1.PromiseValue_Resolved{Resolved: &enginev1.Resolved{Value: []byte("v")}},
+		}
+		b := s.NewBatch()
+		for _, n := range []string{"a", "b", "c"} {
+			if err := pt.Put(b, "Wf", "k1", n, pv); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Sibling scope under same service, different key.
+		if err := pt.Put(b, "Wf", "k2", "x", pv); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b)
+
+		b2 := s.NewBatch()
+		if err := pt.DeleteAllForWorkflow(b2, "Wf", "k1"); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b2)
+		for _, n := range []string{"a", "b", "c"} {
+			got, _ := pt.Get("Wf", "k1", n)
+			if got != nil {
+				t.Errorf("name=%s survived range-delete", n)
+			}
+		}
+		// k2 row untouched.
+		got, _ := pt.Get("Wf", "k2", "x")
+		if got == nil {
+			t.Errorf("k2 row deleted by mistake")
+		}
+	})
+
+	t.Run(name+"/PromiseAwaiter_PutGetDelete", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		at := tables.PromiseAwaiterTable{S: s}
+		id := mkID(7, "0123456789abcdef")
+
+		got, err := at.Get("Wf", "k", "done")
+		if err != nil || got != nil {
+			t.Errorf("missing: got=%+v err=%v; want (nil, nil)", got, err)
+		}
+
+		entry := &enginev1.PromiseAwaiter{Owner: id, EntryIndex: 5}
+		b := s.NewBatch()
+		if err := at.Put(b, "Wf", "k", "done", entry); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b)
+
+		got, err = at.Get("Wf", "k", "done")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.GetEntryIndex() != 5 || got.GetOwner().GetPartitionKey() != 7 {
+			t.Errorf("roundtrip: %+v", got)
+		}
+
+		b2 := s.NewBatch()
+		if err := at.Delete(b2, "Wf", "k", "done"); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b2)
+		got, _ = at.Get("Wf", "k", "done")
+		if got != nil {
+			t.Errorf("after delete: %+v; want nil", got)
 		}
 	})
 }

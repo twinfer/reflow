@@ -54,6 +54,22 @@ service Ingress {
   // object_key) through the cluster Partitioner. present=false (not an
   // error) when the key is absent.
   rpc GetObjectState(GetObjectStateRequest) returns (GetObjectStateResponse);
+
+  // CancelInvocation forces a running invocation to terminate with
+  // FailureCode=9002 (cancelled). Implemented as a __cancel__ signal
+  // delivered to the invocation's (service, key); the receiver shard
+  // resolves the active InvocationId via KeyLeaseTable and synthesizes
+  // a terminal Completed. Idempotent: cancelling an already-completed
+  // invocation is a no-op.
+  rpc CancelInvocation(CancelInvocationRequest) returns (CancelInvocationResponse);
+
+  // ResolveWorkflowPromise resolves or rejects a named workflow-scoped
+  // durable promise. Routes by (service, workflow_key) via
+  // Partitioner.ShardForTarget; the receiver shard writes PromiseValue
+  // and wakes any in-flight Promise(name).Result() awaiter. Idempotent
+  // against already-completed promises: succeeded=false signals
+  // "promise already completed" without an error status.
+  rpc ResolveWorkflowPromise(ResolveWorkflowPromiseRequest) returns (ResolveWorkflowPromiseResponse);
 }
 
 message SubmitInvocationRequest {
@@ -89,6 +105,10 @@ message AwaitInvocationResponse {
   bytes output = 1;
   string failure_message = 2;
   bool completed = 3;
+  // failure_code mirrors InvocationStatus.Completed.failure_code so
+  // callers can distinguish typed failures (e.g. 9002 for cancellation)
+  // from plain string messages.
+  uint32 failure_code = 4;
 }
 
 message ResolveAwakeableRequest {
@@ -138,6 +158,7 @@ message AttachInvocationResponse {
   bytes output = 1;
   string failure_message = 2;
   bool completed = 3;
+  uint32 failure_code = 4;
 }
 
 message GetInvocationOutputRequest {
@@ -169,4 +190,38 @@ message GetInvocationOutputResponse {
   Status status = 1;
   bytes output = 2;
   string failure_message = 3;
+  uint32 failure_code = 4;
+}
+
+message CancelInvocationRequest {
+  // Either a stringified id (preferred) or the raw struct.
+  string invocation_id = 1;
+  reflow.engine.v1.InvocationId invocation_id_proto = 2;
+}
+
+message CancelInvocationResponse {
+  // accepted is true when the cancellation request was routed and
+  // proposed. It does not wait for the receiver to apply — callers that
+  // need to confirm termination should poll AwaitInvocation /
+  // GetInvocationOutput.
+  bool accepted = 1;
+}
+
+message ResolveWorkflowPromiseRequest {
+  string service = 1;
+  string workflow_key = 2;
+  string promise_name = 3;
+  // value and failure_message are mutually exclusive; supplying both
+  // routes as a rejection (failure_message wins).
+  bytes value = 4;
+  string failure_message = 5;
+}
+
+message ResolveWorkflowPromiseResponse {
+  // accepted is true when the resolve request was routed and the
+  // command was proposed. Conflicts with an already-completed promise
+  // are not reflected here — callers that need to detect "loser" can
+  // re-read state via the workflow's own Peek (or AwaitInvocation if
+  // the workflow's output already reflects the promise).
+  bool accepted = 1;
 }

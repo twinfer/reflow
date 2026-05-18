@@ -37,6 +37,7 @@ func transitionOnInvoke(
 				},
 			},
 			DeploymentId: cmd.GetDeploymentId(),
+			Kind:         cmd.GetKind(),
 		}
 		return next, []Action{ActInvoke{ID: id, Target: cmd.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Scheduled, *enginev1.InvocationStatus_Invoked:
@@ -87,6 +88,7 @@ func transitionOnJournalAppend(
 					},
 				},
 				DeploymentId: cur.GetDeploymentId(),
+				Kind:         cur.GetKind(),
 			}, nil, nil
 		}
 		return cur, nil, nil
@@ -102,6 +104,7 @@ func transitionOnJournalAppend(
 				},
 			},
 			DeploymentId: cur.GetDeploymentId(),
+			Kind:         cur.GetKind(),
 		}, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	default:
 		return cur, nil, fmt.Errorf("%w: JournalAppend from %T", ErrInvalidTransition, cur.GetStatus())
@@ -111,6 +114,7 @@ func transitionOnJournalAppend(
 // transitionOnComplete handles an InvokerEffect.Completed.
 // Transitions:
 //
+//	Scheduled  → Completed   (cancellation while still queued / pre-Invoked)
 //	Invoked    → Completed
 //	Suspended  → Completed   (race-safe; see below)
 //	Completed  → Completed   (idempotent)
@@ -124,6 +128,12 @@ func transitionOnJournalAppend(
 // to completion, and proposes Completed. By the time Completed applies,
 // the in-flight Suspended has committed and status is Suspended again.
 // Rejecting this would strand the invocation forever.
+//
+// Scheduled → Completed is reached only by the cancellation path: a
+// __cancel__ signal lands while the lease gate has not yet promoted the
+// invocation to Invoked. The synthesized InvocationCompleted carries
+// FailureCode=CancelledCode so callers can distinguish cancellation
+// from natural completion.
 func transitionOnComplete(
 	_ *enginev1.InvocationId,
 	cur *enginev1.InvocationStatus,
@@ -132,6 +142,8 @@ func transitionOnComplete(
 ) (*enginev1.InvocationStatus, []Action, error) {
 	var target *enginev1.InvocationTarget
 	switch s := cur.GetStatus().(type) {
+	case *enginev1.InvocationStatus_Scheduled:
+		target = s.Scheduled.GetTarget()
 	case *enginev1.InvocationStatus_Invoked:
 		target = s.Invoked.GetTarget()
 	case *enginev1.InvocationStatus_Suspended:
@@ -147,10 +159,12 @@ func transitionOnComplete(
 				Target:         target,
 				Output:         eff.GetOutput(),
 				FailureMessage: eff.GetFailureMessage(),
+				FailureCode:    eff.GetFailureCode(),
 				CompletedAtMs:  nowMs,
 			},
 		},
 		DeploymentId: cur.GetDeploymentId(),
+		Kind:         cur.GetKind(),
 	}, nil, nil
 }
 
@@ -178,6 +192,7 @@ func transitionOnSuspend(
 				},
 			},
 			DeploymentId: cur.GetDeploymentId(),
+			Kind:         cur.GetKind(),
 		}, nil, nil
 	case *enginev1.InvocationStatus_Suspended:
 		return cur, nil, nil
@@ -220,6 +235,7 @@ func transitionOnTimerFired(
 				},
 			},
 			DeploymentId: cur.GetDeploymentId(),
+			Kind:         cur.GetKind(),
 		}, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Invoked:
 		return cur, []Action{ActInvoke{ID: id, Target: s.Invoked.GetTarget()}}, nil
@@ -269,6 +285,7 @@ func transitionOnAwakeableResolved(
 				},
 			},
 			DeploymentId: cur.GetDeploymentId(),
+			Kind:         cur.GetKind(),
 		}
 		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Invoked:
@@ -313,6 +330,7 @@ func transitionOnSignalDelivered(
 				},
 			},
 			DeploymentId: cur.GetDeploymentId(),
+			Kind:         cur.GetKind(),
 		}
 		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Invoked:
@@ -357,6 +375,7 @@ func transitionOnCallResultDelivered(
 				},
 			},
 			DeploymentId: cur.GetDeploymentId(),
+			Kind:         cur.GetKind(),
 		}
 		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Invoked:
@@ -365,6 +384,40 @@ func transitionOnCallResultDelivered(
 		return cur, nil, nil
 	default:
 		return cur, nil, fmt.Errorf("%w: CallResultDelivered from %T", ErrInvalidTransition, cur.GetStatus())
+	}
+}
+
+// transitionOnPromiseResolved handles a JEPromiseResult arriving for a
+// waiting workflow invocation. Same wake-up shape as
+// transitionOnAwakeableResolved: Suspended → Invoked (+ ActInvoke),
+// Invoked → Invoked (+ ActInvoke; queue respawn), Completed → no-op.
+// See transitionOnAwakeableResolved for the wake-shape rationale.
+func transitionOnPromiseResolved(
+	id *enginev1.InvocationId,
+	cur *enginev1.InvocationStatus,
+	_ uint32,
+	nowMs uint64,
+) (*enginev1.InvocationStatus, []Action, error) {
+	switch s := cur.GetStatus().(type) {
+	case *enginev1.InvocationStatus_Suspended:
+		next := &enginev1.InvocationStatus{
+			Status: &enginev1.InvocationStatus_Invoked{
+				Invoked: &enginev1.Invoked{
+					Target:      s.Suspended.GetTarget(),
+					InvokedAtMs: nowMs,
+					ParentLink:  s.Suspended.GetParentLink(),
+				},
+			},
+			DeploymentId: cur.GetDeploymentId(),
+			Kind:         cur.GetKind(),
+		}
+		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
+	case *enginev1.InvocationStatus_Invoked:
+		return cur, []Action{ActInvoke{ID: id, Target: s.Invoked.GetTarget()}}, nil
+	case *enginev1.InvocationStatus_Completed:
+		return cur, nil, nil
+	default:
+		return cur, nil, fmt.Errorf("%w: PromiseResolved from %T", ErrInvalidTransition, cur.GetStatus())
 	}
 }
 

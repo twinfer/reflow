@@ -23,6 +23,7 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 	"github.com/twinfer/reflow/proto/ingressv1/ingressv1connect"
+	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
 // Server implements ingressv1connect.IngressHandler over an engine.Host.
@@ -92,33 +93,49 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 		// is authoritative and idempotent on retries.
 	}
 
+	// Resolve (service, handler) → (deployment_id, kind) via shard 0's
+	// index. deployment_id pins this invocation to that deployment for
+	// its lifetime. kind drives workflow lifecycle decisions: a Run-kind
+	// handler enables single-run-per-key submit dedup before we mint a
+	// fresh InvocationId.
+	info, err := s.host.LookupHandlerInfo(ctx, target.GetServiceName(), target.GetHandlerName())
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, connect.NewError(connect.CodeDeadlineExceeded, fmt.Errorf("lookup handler: %w", err))
+		}
+		if errors.Is(err, context.Canceled) {
+			return nil, connect.NewError(connect.CodeCanceled, fmt.Errorf("lookup handler: %w", err))
+		}
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("lookup handler: %w", err))
+	}
+	if info == nil || info.DeploymentID == "" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("no deployment registered for %s/%s", target.GetServiceName(), target.GetHandlerName()))
+	}
+
+	// Workflow single-run-per-key dedup. For Run handlers, a prior submission
+	// to (service, workflow_key) already claimed the key — surface the
+	// existing InvocationId. Apply-path authoritatively dedups losing races.
+	if protocolv1.Kind(info.Kind) == protocolv1.Kind_KIND_WORKFLOW && target.GetObjectKey() != "" {
+		res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupWorkflowRun{
+			Service:     target.GetServiceName(),
+			WorkflowKey: target.GetObjectKey(),
+		})
+		if err == nil {
+			if prior, ok := res.(*enginev1.InvocationId); ok && prior != nil {
+				return connect.NewResponse(&ingressv1.SubmitInvocationResponse{
+					InvocationId:    prior,
+					InvocationIdStr: FormatInvocationID(prior),
+				}), nil
+			}
+		}
+		// SyncRead errors fall through to propose; apply-path dedup is
+		// authoritative and idempotent on retries.
+	}
+
 	id, err := mintInvocationID(target)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("mint invocation id: %w", err))
-	}
-
-	// Resolve (service, handler) → deployment_id via shard 0's index. A
-	// non-empty result pins this invocation to that deployment for its
-	// lifetime, even if a later registration overwrites the (service,
-	// handler) mapping. Empty result means no deployment has been
-	// registered for this handler.
-	//
-	// A non-nil error from LookupDeploymentIDByHandler means shard 0 was
-	// transiently unreachable; map to Unavailable / DeadlineExceeded so
-	// the client retries rather than treating dispatch as permanent.
-	deploymentID, err := s.host.LookupDeploymentIDByHandler(ctx, target.GetServiceName(), target.GetHandlerName())
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, connect.NewError(connect.CodeDeadlineExceeded, fmt.Errorf("lookup deployment: %w", err))
-		}
-		if errors.Is(err, context.Canceled) {
-			return nil, connect.NewError(connect.CodeCanceled, fmt.Errorf("lookup deployment: %w", err))
-		}
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("lookup deployment: %w", err))
-	}
-	if deploymentID == "" {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("no deployment registered for %s/%s", target.GetServiceName(), target.GetHandlerName()))
 	}
 
 	cmd := &enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
@@ -126,7 +143,8 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 		Target:         target,
 		Input:          msg.GetInput(),
 		IdempotencyKey: msg.GetIdempotencyKey(),
-		DeploymentId:   deploymentID,
+		DeploymentId:   info.DeploymentID,
+		Kind:           info.Kind,
 	}}}
 	producerID := "http/" + FormatInvocationID(id)
 	if err := runner.Proposer().ProposeIngress(ctx, producerID, 1, cmd); err != nil {

@@ -509,7 +509,22 @@ type (
 	// claims that handler. Resolves via the (service, handler) → id
 	// index maintained by the RegisterDeployment apply arm.
 	LookupDeploymentByHandler struct{ Service, Handler string }
+
+	// LookupHandlerInfo returns *HandlerInfo (or nil) for (service, handler) —
+	// both deployment_id and the handler's protocolv1.Kind (encoded as uint32
+	// to avoid pulling protocolv1 into cluster). Combines the index read with
+	// a record lookup; saves callers a second SyncRead.
+	LookupHandlerInfo struct{ Service, Handler string }
 )
+
+// HandlerInfo is the result of LookupHandlerInfo — the (service, handler)
+// tuple's current deployment_id plus the kind the deployment advertises
+// for this handler. Kind is encoded as uint32 (protocolv1.Kind values) so
+// cluster doesn't depend on protocolv1.
+type HandlerInfo struct {
+	DeploymentID string
+	Kind         uint32
+}
 
 // Lookup implements statemachine.IOnDiskStateMachine.
 func (f *FSM) Lookup(query any) (any, error) {
@@ -534,6 +549,31 @@ func (f *FSM) Lookup(query any) (any, error) {
 		return (DeploymentTable{S: store}).List()
 	case LookupDeploymentByHandler:
 		return (DeploymentIndexTable{S: store}).Get(q.Service, q.Handler)
+	case LookupHandlerInfo:
+		id, err := (DeploymentIndexTable{S: store}).Get(q.Service, q.Handler)
+		if err != nil {
+			return nil, err
+		}
+		if id == "" {
+			return (*HandlerInfo)(nil), nil
+		}
+		rec, err := (DeploymentTable{S: store}).Get(id)
+		if err != nil {
+			return nil, err
+		}
+		if rec == nil {
+			// Dangling index — the record was deleted but the index row
+			// outlived it. Treat as miss; ingress maps to FailedPrecondition.
+			return (*HandlerInfo)(nil), nil
+		}
+		var kind uint32
+		for _, h := range rec.GetHandlers() {
+			if h.GetService() == q.Service && h.GetHandler() == q.Handler {
+				kind = h.GetKind()
+				break
+			}
+		}
+		return &HandlerInfo{DeploymentID: id, Kind: kind}, nil
 	default:
 		return nil, fmt.Errorf("cluster: unknown lookup type %T", query)
 	}

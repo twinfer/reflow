@@ -39,6 +39,7 @@ func TestRegistry_KindAwareRegistration(t *testing.T) {
 		{"service", r.RegisterService, KindService},
 		{"object", r.RegisterObject, KindObject},
 		{"workflow", r.RegisterWorkflow, KindWorkflow},
+		{"workflow_shared", r.RegisterWorkflowShared, KindWorkflowShared},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -58,14 +59,30 @@ func TestRegistry_KindAwareRegistration(t *testing.T) {
 
 func TestKind_String(t *testing.T) {
 	cases := map[Kind]string{
-		KindUnspecified: "unspecified",
-		KindService:     "service",
-		KindObject:      "object",
-		KindWorkflow:    "workflow",
+		KindUnspecified:    "unspecified",
+		KindService:        "service",
+		KindObject:         "object",
+		KindWorkflow:       "workflow",
+		KindWorkflowShared: "workflow_shared",
 	}
 	for k, want := range cases {
 		if got := k.String(); got != want {
 			t.Errorf("%d.String() = %q; want %q", k, got, want)
+		}
+	}
+}
+
+func TestKind_IsWorkflow(t *testing.T) {
+	cases := map[Kind]bool{
+		KindUnspecified:    false,
+		KindService:        false,
+		KindObject:         false,
+		KindWorkflow:       true,
+		KindWorkflowShared: true,
+	}
+	for k, want := range cases {
+		if got := k.IsWorkflow(); got != want {
+			t.Errorf("Kind(%v).IsWorkflow() = %v; want %v", k, got, want)
 		}
 	}
 }

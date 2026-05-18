@@ -3,6 +3,8 @@ package handler
 import (
 	"errors"
 	"fmt"
+
+	"github.com/twinfer/reflow/pkg/handler/wire"
 )
 
 // ErrSuspended is returned by Context methods when the engine has decided
@@ -48,6 +50,70 @@ func NewFailure(code uint32, message string) *Failure {
 // can errors.As / *Failure-type-assert and compare the code to
 // distinguish step-budget exhaustion from user-defined failures.
 const StepBudgetExhaustedCode uint32 = 9001
+
+// CancelledCode is the reserved Failure.Code reflow stamps onto an
+// invocation that was terminated by a CancelInvocation request (or a
+// well-known __cancel__ signal). The canonical value lives in
+// pkg/handler/wire so the engine can reference it without importing
+// pkg/handler; re-exported here for handler-side convenience.
+const CancelledCode = wire.CancelledCode
+
+// WellKnownCancelSignal is the reserved signal name interpreted by the
+// engine as "force this invocation to terminate with CancelledCode".
+// SendSignal delivers it like any other signal; the receiver's apply
+// arm short-circuits the inbox/awaiter path and synthesizes a terminal
+// Completed{FailureCode=CancelledCode} instead of routing into the
+// handler's signal-await machinery. Re-exported from
+// pkg/handler/wire — both sides of the wire share the literal string.
+const WellKnownCancelSignal = wire.WellKnownCancelSignal
+
+// SendSignalUnkeyedCode is the reserved Failure.Code returned when the
+// SDK rejects a SendSignal/CancelInvocation call whose Target carries
+// an empty Key. Signals are only valid for keyed services (Virtual
+// Objects and Workflows) — addressing an unkeyed Service has no
+// well-defined receiver since multiple concurrent invocations may exist
+// for the same (service, handler).
+const SendSignalUnkeyedCode uint32 = 9003
+
+// NewSendSignalUnkeyedFailure builds the terminal Failure returned when
+// SendSignal/CancelInvocation is called with a Target that has an empty
+// Key.
+func NewSendSignalUnkeyedFailure(service, handler string) *Failure {
+	return &Failure{
+		Code:    SendSignalUnkeyedCode,
+		Message: fmt.Sprintf("reflow: SendSignal target %s/%s has empty key (signals require a keyed target)", service, handler),
+	}
+}
+
+// PromiseNotWorkflowCode is the reserved Failure.Code returned when a
+// Promise method is called from a handler whose Kind is not Workflow or
+// WorkflowShared. Promises are scoped to workflow runs; calling them
+// from a stateless service or virtual object has no well-defined scope.
+const PromiseNotWorkflowCode uint32 = 9004
+
+// NewPromiseNotWorkflowFailure builds the terminal Failure for a Promise
+// method called outside a workflow context.
+func NewPromiseNotWorkflowFailure(service, handler string) *Failure {
+	return &Failure{
+		Code:    PromiseNotWorkflowCode,
+		Message: fmt.Sprintf("reflow: Context.Promise requires KIND_WORKFLOW or KIND_WORKFLOW_SHARED (handler %s/%s)", service, handler),
+	}
+}
+
+// PromiseAlreadyCompletedCode is the reserved Failure.Code returned when
+// Promise.Resolve or Promise.Reject is called on a promise that already
+// has a terminal state. The handler can use this to detect the loser of
+// a complete-race without inspecting Message strings.
+const PromiseAlreadyCompletedCode uint32 = 9005
+
+// NewPromiseAlreadyCompletedFailure builds the terminal Failure surfaced
+// when a second Resolve/Reject hits an already-completed promise.
+func NewPromiseAlreadyCompletedFailure(name string) *Failure {
+	return &Failure{
+		Code:    PromiseAlreadyCompletedCode,
+		Message: fmt.Sprintf("reflow: promise %q already completed", name),
+	}
+}
 
 // NewStepBudgetExhaustedFailure builds the terminal Failure surfaced
 // when a ctx primitive would push the invocation past its journal

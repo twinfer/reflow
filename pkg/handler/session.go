@@ -108,7 +108,11 @@ func runSession(
 		PartitionKey: start.GetPartitionKey(),
 	}
 	stateCache := stateMapToCache(start.GetStateMap())
-	wctx := newWireContext(ctx, invID, input, sink, codec, stateCache, replay, start.GetPartitionKey(), start.GetMaxJournalEntries())
+	wctx := newWireContext(
+		ctx, invID, input, sink, codec, stateCache, replay,
+		start.GetPartitionKey(), start.GetMaxJournalEntries(),
+		start.GetServiceName(), start.GetHandlerName(), start.GetKey(), start.GetKind(),
+	)
 	wctx.partialState = start.GetPartialState()
 
 	output, runErr := runHandler(wctx, fn, input)

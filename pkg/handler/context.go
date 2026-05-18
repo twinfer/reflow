@@ -129,10 +129,99 @@ type Context interface {
 	// that failure.
 	Any(futures ...Future) Future
 
-	// SendSignal delivers signalName + payload to target. The signal is
-	// journaled on the sender side; the receiver's engine apply path
-	// delivers it to the running invocation.
+	// SendSignal delivers signalName + payload to the active invocation
+	// for target's (service, key). The signal is journaled as a single-
+	// slot JESignal on the sender side; the engine routes the outbox to
+	// the receiver shard via Partitioner.ShardForTarget, where the apply
+	// arm resolves target → active InvocationId via KeyLeaseTable and
+	// dispatches the signal into the receiver's inbox.
+	//
+	// target.Key must be non-empty — signals are only valid for keyed
+	// services (Virtual Objects and Workflows). SendSignal returns a
+	// *Failure with SendSignalUnkeyedCode if Key is empty. Signals to a
+	// (service, key) with no active invocation are dropped with a
+	// logged warning on the receiver shard.
+	//
+	// SendSignal is fire-and-forget: the returned error reports local
+	// failures (suspended, unkeyed target, step-budget exhausted) only.
+	// It does not block on delivery confirmation.
 	SendSignal(target Target, signalName string, payload []byte) error
+
+	// CancelInvocation forces the active invocation for target's
+	// (service, key) to terminate with FailureCode=CancelledCode (9002).
+	// Sugar for SendSignal(target, WellKnownCancelSignal, nil) — the
+	// receiver shard special-cases the __cancel__ signal name and
+	// synthesizes a terminal Completed rather than buffering the signal
+	// in the inbox.
+	//
+	// target.Key must be non-empty (same reason as SendSignal).
+	// Cancelling an already-completed invocation is a no-op.
+	CancelInvocation(target Target) error
+
+	// WaitSignal returns a Future that resolves when a named signal
+	// arrives for this invocation. The result's value is the signal's
+	// payload (possibly empty). Two-slot — one for the JEAwaitSignal
+	// command, one for the JESignalResult notification.
+	//
+	// Semantics:
+	//   - If a matching signal is already buffered in the inbox (sent
+	//     before this WaitSignal call), it is consumed synchronously
+	//     and the Future resolves without suspension.
+	//   - Otherwise the SDK suspends with a signal:<name>:<slot> token
+	//     until a future SendSignal lands; the receiver's apply arm
+	//     stitches the result into this invocation's journal at the
+	//     awaiter's recorded slot, then wakes the session.
+	//   - Each call is single-shot — a second WaitSignal(name) consumes
+	//     the next arrival.
+	WaitSignal(signalName string) Future
+
+	// Promise returns a handle to a workflow-scoped named durable promise.
+	// The handle's methods (Result, Peek, Resolve, Reject) operate on the
+	// (workflow_service, workflow_key, name) tuple; the workflow's own
+	// service + key come from this invocation's Target. Each method
+	// allocates journal slots and validates that the invocation is a
+	// workflow (KindWorkflow or KindWorkflowShared) — non-workflow
+	// callers receive a *Failure on first method use.
+	//
+	// Promise lifetime is tied to the owning workflow run's retention
+	// window; rows persist past the run's Completed status until the
+	// retention reaper sweeps them.
+	//
+	// Constraint (MVP): the resolving and waiting invocations must share
+	// the workflow's partition. Two invocations on the same (workflow
+	// service, key) always do; cross-partition completion (a foreign
+	// service resolving the promise) routes via the Ingress
+	// ResolveWorkflowPromise RPC.
+	Promise(name string) DurablePromise
+}
+
+// DurablePromise is a workflow-scoped named promise. The handle is bound
+// to (workflow_service, workflow_key, name) — service+key come from the
+// surrounding workflow invocation; the caller supplies name. The four
+// methods each allocate their own journal slots; calling Promise multiple
+// times with the same name in the same handler is fine — each call
+// records an independent operation in the journal.
+type DurablePromise interface {
+	// Result returns a Future that resolves when the promise is
+	// resolved/rejected. Two slots (JEGetPromise + JEPromiseResult). On
+	// replay, an already-completed promise resolves synchronously
+	// without suspension.
+	Result() Future
+
+	// Peek returns the current state without blocking. completed=false
+	// means "still pending or absent". A rejected promise surfaces via
+	// failure (non-nil). Single slot (JEPeekPromise); store-only on replay.
+	Peek() (value []byte, completed bool, failure *Failure, err error)
+
+	// Resolve writes a Resolved PromiseValue and wakes any awaiter.
+	// Returns a *Failure with code 0 + message "promise already
+	// completed" if a prior Resolve / Reject already terminated the
+	// promise. Two slots (JECompletePromise + JEPromiseCompleteResult).
+	Resolve(value []byte) error
+
+	// Reject writes a Rejected PromiseValue and wakes any awaiter with
+	// the failure. Same conflict semantics as Resolve. Two slots.
+	Reject(failure *Failure) error
 }
 
 // CallOption tunes a Call. Pass via Context.Call's variadic argument.

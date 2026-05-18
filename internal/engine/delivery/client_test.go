@@ -209,7 +209,9 @@ func TestDeliveryClient_NoLeaderHint(t *testing.T) {
 
 // TestDeliveryClient_PolicyDenies stands up the handler with a strict
 // policy that requires a node/* principal. The h2c client dials without
-// a peer cert (anonymous), so the policy must reject with HTTP 403 and
+// a peer cert (anonymous), so the policy must reject. Anonymous denials
+// map to HTTP 401 / connect.CodeUnauthenticated (the auth middleware
+// splits anonymous vs authenticated denials at internal/auth/connect.go);
 // the client surfaces it as a non-Ack error. Exercises the auth path
 // from the inside without TLS fixtures.
 func TestDeliveryClient_PolicyDenies(t *testing.T) {
@@ -276,8 +278,8 @@ func TestDeliveryClient_PolicyDenies(t *testing.T) {
 	if sendErr == nil {
 		t.Fatal("expected anonymous Send to be denied; got nil error")
 	}
-	if !contains(sendErr.Error(), "forbidden") && connect.CodeOf(sendErr) != connect.CodePermissionDenied {
-		t.Fatalf("expected forbidden / PermissionDenied; got %v", sendErr)
+	if !contains(sendErr.Error(), "unauthorized") && connect.CodeOf(sendErr) != connect.CodeUnauthenticated {
+		t.Fatalf("expected unauthorized / Unauthenticated; got %v", sendErr)
 	}
 }
 

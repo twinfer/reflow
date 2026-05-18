@@ -41,6 +41,7 @@ func (s *Server) AwaitInvocation(ctx context.Context, req *connect.Request[ingre
 	return connect.NewResponse(&ingressv1.AwaitInvocationResponse{
 		Output:         c.GetOutput(),
 		FailureMessage: c.GetFailureMessage(),
+		FailureCode:    c.GetFailureCode(),
 		Completed:      true,
 	}), nil
 }

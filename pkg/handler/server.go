@@ -56,12 +56,6 @@ type Config struct {
 	ExpectedAudience string
 }
 
-// ErrWireNotImplemented is returned by wireContext methods whose
-// engine-side wiring is not yet complete (SendSignal). The state-write
-// and combinator primitives are fully wired; only the explicit
-// cross-invocation signal path remains.
-var ErrWireNotImplemented = errors.New("handler: durable primitive not yet supported on wire path")
-
 // ErrLazyStateUnavailable is returned by wireContext.GetState when the
 // engine signaled partial_state (eager preload exceeded the cap) and
 // the requested key was not in the snapshot. Lazy state fetch via

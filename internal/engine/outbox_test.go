@@ -156,12 +156,16 @@ func TestOutbox_SignalEnvelopeConvertsToInvokerEffect(t *testing.T) {
 		<-svc.Done()
 	})
 
-	target := &enginev1.InvocationId{PartitionKey: 5, Uuid: []byte("aaaaaaaaaaaaaaaa")}
+	target := &enginev1.InvocationTarget{
+		ServiceName: "Counter",
+		HandlerName: "Increment",
+		ObjectKey:   "alice",
+	}
 	env := &enginev1.OutboxEnvelope{
 		Kind: &enginev1.OutboxEnvelope_Signal{Signal: &enginev1.SignalSend{
-			TargetInvocationId: target,
-			SignalName:         "ping",
-			Payload:            []byte("hi"),
+			Target:     target,
+			SignalName: "ping",
+			Payload:    []byte("hi"),
 		}},
 	}
 	svc.Push(11, env)
@@ -175,11 +179,20 @@ func TestOutbox_SignalEnvelopeConvertsToInvokerEffect(t *testing.T) {
 	if eff == nil {
 		t.Fatalf("expected InvokerEffect cmd; got %T", call.Cmd.GetKind())
 	}
-	if eff.GetInvocationId().GetPartitionKey() != 5 {
-		t.Errorf("target id partition_key = %d; want 5", eff.GetInvocationId().GetPartitionKey())
+	// InvokerEffect.invocation_id is intentionally nil for signal_delivered:
+	// the sender knows only the Target. The receiver shard resolves it via
+	// KeyLeaseTable in its apply arm.
+	if eff.GetInvocationId() != nil {
+		t.Errorf("InvokerEffect.invocation_id = %+v; want nil for SignalDelivered", eff.GetInvocationId())
 	}
 	sig := eff.GetSignalDelivered()
-	if sig == nil || sig.GetSignalName() != "ping" || string(sig.GetPayload()) != "hi" {
+	if sig == nil {
+		t.Fatalf("expected SignalDelivered effect; got %T", eff.GetKind())
+	}
+	if got := sig.GetTarget(); got.GetServiceName() != "Counter" || got.GetObjectKey() != "alice" {
+		t.Errorf("signal target = %+v; want Counter/alice", got)
+	}
+	if sig.GetSignalName() != "ping" || string(sig.GetPayload()) != "hi" {
 		t.Errorf("signal payload mismatch: %+v", sig)
 	}
 }

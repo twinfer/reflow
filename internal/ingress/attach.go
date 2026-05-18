@@ -35,6 +35,7 @@ func (s *Server) AttachInvocation(ctx context.Context, req *connect.Request[ingr
 	return connect.NewResponse(&ingressv1.AttachInvocationResponse{
 		Output:         c.GetOutput(),
 		FailureMessage: c.GetFailureMessage(),
+		FailureCode:    c.GetFailureCode(),
 		Completed:      true,
 	}), nil
 }
@@ -72,6 +73,7 @@ func (s *Server) GetInvocationOutput(ctx context.Context, req *connect.Request[i
 			return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{
 				Status:         ingressv1.GetInvocationOutputResponse_COMPLETED_FAILED,
 				FailureMessage: fmsg,
+				FailureCode:    s.Completed.GetFailureCode(),
 			}), nil
 		}
 		return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{

@@ -36,14 +36,22 @@ type replayEntry struct {
 
 // wireContext implements Context for handlers running on the
 // protocolv1 wire. Sleep / Run / Call / OneWayCall / Awakeable /
-// SetState / ClearState / ClearAllState / GetState / All / Any are all
-// wired; SendSignal still returns ErrWireNotImplemented pending the
-// receiver-side Target→InvocationId routing.
+// SetState / ClearState / ClearAllState / GetState / All / Any /
+// SendSignal / CancelInvocation / WaitSignal / Promise are all wired.
 type wireContext struct {
 	ctx          context.Context
 	input        []byte
 	invocationID *enginev1.InvocationId
 	partitionKey uint64
+	// service, handler, key are the addressing tuple from StartMessage.
+	// Used by Promise to derive the workflow scope when binding a
+	// DurablePromise. kind is the protocolv1.Kind from StartMessage;
+	// Promise methods reject when this is not KIND_WORKFLOW /
+	// KIND_WORKFLOW_SHARED.
+	service string
+	handler string
+	key     string
+	kind    protocolv1.Kind
 
 	sink  frameSink
 	codec wire.Codec
@@ -105,6 +113,8 @@ func newWireContext(
 	replay map[uint32]*replayEntry,
 	partitionKey uint64,
 	maxJournalEntries uint32,
+	service, handler, key string,
+	kind protocolv1.Kind,
 ) *wireContext {
 	if replay == nil {
 		replay = make(map[uint32]*replayEntry)
@@ -114,6 +124,10 @@ func newWireContext(
 		input:             input,
 		invocationID:      id,
 		partitionKey:      partitionKey,
+		service:           service,
+		handler:           handler,
+		key:               key,
+		kind:              kind,
 		sink:              sink,
 		codec:             codec,
 		stateCache:        stateCache,
@@ -631,6 +645,243 @@ func (c *wireContext) Any(futures ...Future) Future {
 	return &anyFuture{ctx: c, children: append([]Future(nil), futures...)}
 }
 
-func (c *wireContext) SendSignal(Target, string, []byte) error {
-	return ErrWireNotImplemented
+// SendSignal delivers signalName + payload to the active invocation for
+// target's (service, key). Single-slot; mirrors OneWayCall — the receiver
+// shard resolves Target → active InvocationId via KeyLeaseTable when the
+// outbox-shuffled SignalDelivered effect applies.
+//
+// target.Key must be non-empty. Empty Key returns a *Failure with
+// SendSignalUnkeyedCode immediately, without journaling — there's no
+// useful receiver for an unkeyed signal.
+func (c *wireContext) SendSignal(target Target, signalName string, payload []byte) error {
+	if target.Key == "" {
+		return NewSendSignalUnkeyedFailure(target.Service, target.Handler)
+	}
+	slot, err := c.allocSlot(1)
+	if err != nil {
+		return err
+	}
+	if c.lookupReplay(slot) != nil {
+		return nil // already journaled in a prior run
+	}
+	msg := &protocolv1.SendSignalCommandMessage{
+		ServiceName: target.Service,
+		HandlerName: target.Handler,
+		Key:         target.Key,
+		SignalName:  signalName,
+		Payload:     payload,
+	}
+	encoded, err := c.codec.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal SendSignalCommandMessage: %w", err)
+	}
+	return c.sink.Send(wire.FrameFor(wire.TypeCmdSendSignal, encoded))
+}
+
+// CancelInvocation forces the active invocation for target's (service,
+// key) to terminate with FailureCode=CancelledCode. Sugar over
+// SendSignal; the receiver shard special-cases the WellKnownCancelSignal
+// name to synthesize a terminal Completed.
+func (c *wireContext) CancelInvocation(target Target) error {
+	return c.SendSignal(target, WellKnownCancelSignal, nil)
+}
+
+// Promise returns a durable-promise handle bound to this workflow's
+// (service, key) scope. Method calls on the returned handle validate
+// that the surrounding invocation is a workflow (Kind == KIND_WORKFLOW
+// or KIND_WORKFLOW_SHARED) — non-workflow callers get a *Failure on
+// first method use.
+func (c *wireContext) Promise(name string) DurablePromise {
+	return &durablePromise{ctx: c, name: name}
+}
+
+// durablePromise binds a wireContext + promise name; each method
+// allocates its own journal slots when invoked. Concrete result types
+// are surfaced lazily so unused promise handles cost nothing in the
+// journal.
+type durablePromise struct {
+	ctx  *wireContext
+	name string
+}
+
+// requireWorkflow returns *Failure when the surrounding invocation is
+// not a workflow. Called by every method before any slot allocation
+// so an invalid handle never pollutes the journal.
+func (p *durablePromise) requireWorkflow() *Failure {
+	switch p.ctx.kind {
+	case protocolv1.Kind_KIND_WORKFLOW, protocolv1.Kind_KIND_WORKFLOW_SHARED:
+		return nil
+	default:
+		return NewPromiseNotWorkflowFailure(p.ctx.service, p.ctx.handler)
+	}
+}
+
+func (p *durablePromise) Result() Future {
+	if f := p.requireWorkflow(); f != nil {
+		return errFuture{err: f}
+	}
+	cmdSlot, allocErr := p.ctx.allocSlot(2)
+	if allocErr != nil {
+		return futureFromAllocErr(allocErr)
+	}
+	resultSlot := cmdSlot + 1
+
+	if p.ctx.lookupReplay(cmdSlot) == nil {
+		msg := &protocolv1.GetPromiseCommandMessage{
+			Key:                p.ctx.key,
+			Name:               p.name,
+			ResultCompletionId: resultSlot,
+		}
+		payload, err := p.ctx.codec.Marshal(msg)
+		if err != nil {
+			return errFuture{err: fmt.Errorf("marshal GetPromiseCommandMessage: %w", err)}
+		}
+		if err := p.ctx.sink.Send(wire.FrameFor(wire.TypeCmdGetPromise, payload)); err != nil {
+			return errFuture{err: err}
+		}
+	}
+	return promiseResultFuture{ctx: p.ctx, resultSlot: resultSlot, name: p.name}
+}
+
+func (p *durablePromise) Peek() (value []byte, completed bool, failure *Failure, err error) {
+	if f := p.requireWorkflow(); f != nil {
+		return nil, false, f, nil
+	}
+	slot, allocErr := p.ctx.allocSlot(1)
+	if allocErr != nil {
+		return nil, false, nil, allocErr
+	}
+	// Single-slot, store-only on replay: when the slot is already in
+	// the replay buffer, decode the snapshot directly. On fresh runs,
+	// emit the command and suspend pending the apply arm's stamped
+	// reply (which materialises as a replay entry on the next
+	// respawn).
+	if entry := p.ctx.lookupReplay(slot); entry != nil {
+		if entry.typeCode != wire.TypeCmdPeekPromise {
+			return nil, false, nil, fmt.Errorf("peek slot %d carries unexpected frame type 0x%04x", slot, entry.typeCode)
+		}
+		var msg protocolv1.PeekPromiseCommandMessage
+		if err := p.ctx.codec.Unmarshal(entry.payload, &msg); err != nil {
+			return nil, false, nil, fmt.Errorf("decode replayed PeekPromiseCommandMessage: %w", err)
+		}
+		switch r := msg.GetResult().(type) {
+		case *protocolv1.PeekPromiseCommandMessage_Value:
+			return r.Value.GetContent(), msg.GetCompleted(), nil, nil
+		case *protocolv1.PeekPromiseCommandMessage_Failure:
+			return nil, msg.GetCompleted(), NewFailure(r.Failure.GetCode(), r.Failure.GetMessage()), nil
+		default:
+			return nil, msg.GetCompleted(), nil, nil
+		}
+	}
+	msg := &protocolv1.PeekPromiseCommandMessage{
+		Key:  p.ctx.key,
+		Name: p.name,
+	}
+	payload, err := p.ctx.codec.Marshal(msg)
+	if err != nil {
+		return nil, false, nil, fmt.Errorf("marshal PeekPromiseCommandMessage: %w", err)
+	}
+	if err := p.ctx.sink.Send(wire.FrameFor(wire.TypeCmdPeekPromise, payload)); err != nil {
+		return nil, false, nil, err
+	}
+	p.ctx.suspend(fmt.Sprintf("promise_peek:%s:%d", p.name, slot))
+	return nil, false, nil, ErrSuspended
+}
+
+func (p *durablePromise) Resolve(value []byte) error {
+	return p.complete(value, nil)
+}
+
+func (p *durablePromise) Reject(failure *Failure) error {
+	if failure == nil {
+		return fmt.Errorf("reflow: DurablePromise.Reject called with nil failure")
+	}
+	return p.complete(nil, failure)
+}
+
+// complete emits a JECompletePromise + awaits the JEPromiseCompleteResult
+// in slot+1. Two slots; mirrors Sleep's await-on-result-slot shape.
+func (p *durablePromise) complete(value []byte, failure *Failure) error {
+	if f := p.requireWorkflow(); f != nil {
+		return f
+	}
+	cmdSlot, allocErr := p.ctx.allocSlot(2)
+	if allocErr != nil {
+		return allocErr
+	}
+	resultSlot := cmdSlot + 1
+
+	if p.ctx.lookupReplay(cmdSlot) == nil {
+		msg := &protocolv1.CompletePromiseCommandMessage{
+			Key:                p.ctx.key,
+			Name:               p.name,
+			ResultCompletionId: resultSlot,
+		}
+		if failure != nil {
+			msg.Completion = &protocolv1.CompletePromiseCommandMessage_CompletionFailure{
+				CompletionFailure: &protocolv1.Failure{Code: failure.Code, Message: failure.Message},
+			}
+		} else {
+			msg.Completion = &protocolv1.CompletePromiseCommandMessage_CompletionValue{
+				CompletionValue: &protocolv1.Value{Content: value},
+			}
+		}
+		payload, err := p.ctx.codec.Marshal(msg)
+		if err != nil {
+			return fmt.Errorf("marshal CompletePromiseCommandMessage: %w", err)
+		}
+		if err := p.ctx.sink.Send(wire.FrameFor(wire.TypeCmdCompletePromise, payload)); err != nil {
+			return err
+		}
+	}
+
+	// Wait for the apply arm's JEPromiseCompleteResult — either
+	// already present in replay (succeeded or already-completed) or
+	// pending suspension.
+	entry := p.ctx.lookupReplay(resultSlot)
+	if entry == nil {
+		p.ctx.suspend(fmt.Sprintf("promise_complete:%s:%d", p.name, resultSlot))
+		return ErrSuspended
+	}
+	if entry.typeCode != wire.TypeNoteCompletePromise {
+		return fmt.Errorf("promise-complete slot %d carries unexpected frame type 0x%04x", resultSlot, entry.typeCode)
+	}
+	var note protocolv1.CompletePromiseCompletionNotificationMessage
+	if err := p.ctx.codec.Unmarshal(entry.payload, &note); err != nil {
+		return fmt.Errorf("decode replayed CompletePromiseCompletionNotificationMessage: %w", err)
+	}
+	if f := note.GetFailure(); f != nil {
+		return NewFailure(f.GetCode(), f.GetMessage())
+	}
+	return nil
+}
+
+// WaitSignal registers interest in a named signal. Two-slot allocation
+// mirrors Awakeable: cmdSlot for the JEAwaitSignal command, resultSlot
+// (cmdSlot+1) for the JESignalResult notification.
+//
+// On a fresh run: emits a TypeCmdAwaitSignal frame. On replay: surfaces
+// the cached payload from the resultSlot replay entry (if delivered) or
+// returns a future that suspends waiting for the engine to stitch one.
+func (c *wireContext) WaitSignal(signalName string) Future {
+	cmdSlot, allocErr := c.allocSlot(2)
+	if allocErr != nil {
+		return futureFromAllocErr(allocErr)
+	}
+	resultSlot := cmdSlot + 1
+
+	if c.lookupReplay(cmdSlot) == nil {
+		msg := &protocolv1.AwaitSignalCommandMessage{
+			SignalName:         signalName,
+			ResultCompletionId: resultSlot,
+		}
+		payload, err := c.codec.Marshal(msg)
+		if err != nil {
+			return errFuture{err: fmt.Errorf("marshal AwaitSignalCommandMessage: %w", err)}
+		}
+		if err := c.sink.Send(wire.FrameFor(wire.TypeCmdAwaitSignal, payload)); err != nil {
+			return errFuture{err: err}
+		}
+	}
+	return signalFuture{ctx: c, resultSlot: resultSlot, name: signalName}
 }

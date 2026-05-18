@@ -416,6 +416,58 @@ func TestAwakeableResolved_FromFreeInvalid(t *testing.T) {
 	}
 }
 
+func TestPromiseResolved_FromSuspendedWakes(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "Wf", ObjectKey: "k"}
+	next, actions, err := transitionOnPromiseResolved(id, suspendedStatus(target), 7, 400)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := next.GetStatus().(*enginev1.InvocationStatus_Invoked); !ok {
+		t.Fatalf("got %T; want Invoked", next.GetStatus())
+	}
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action (ActInvoke); got %d", len(actions))
+	}
+	if _, ok := actions[0].(ActInvoke); !ok {
+		t.Fatalf("action[0] = %T; want ActInvoke", actions[0])
+	}
+}
+
+func TestPromiseResolved_FromInvokedQueuesRespawn(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "Wf", ObjectKey: "k"}
+	cur := invokedStatus(target)
+	next, actions, err := transitionOnPromiseResolved(id, cur, 9, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next != cur {
+		t.Errorf("Invoked must remain Invoked (same pointer)")
+	}
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action (ActInvoke); got %d", len(actions))
+	}
+}
+
+func TestPromiseResolved_FromCompletedNoop(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "Wf", ObjectKey: "k"}
+	cur := completedStatus(target)
+	next, actions, err := transitionOnPromiseResolved(id, cur, 1, 600)
+	if err != nil || len(actions) != 0 || next != cur {
+		t.Errorf("Completed late arrival: err=%v actions=%d", err, len(actions))
+	}
+}
+
+func TestPromiseResolved_FromFreeInvalid(t *testing.T) {
+	id := mkID()
+	_, _, err := transitionOnPromiseResolved(id, freeStatus(), 1, 0)
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Errorf("expected ErrInvalidTransition, got %v", err)
+	}
+}
+
 func TestSignalDelivered_FromSuspended(t *testing.T) {
 	id := mkID()
 	target := &enginev1.InvocationTarget{ServiceName: "S"}
@@ -457,6 +509,61 @@ func TestSignalDelivered_FromCompletedNoop(t *testing.T) {
 	next, actions, err := transitionOnSignalDelivered(id, cur, 1, "late", nil, 900)
 	if err != nil || len(actions) != 0 || next != cur {
 		t.Errorf("late signal on Completed: err=%v actions=%d", err, len(actions))
+	}
+}
+
+// --- Cancellation (Complete from extra source states / failure_code) ---
+
+// TestComplete_FromScheduledCancellable covers cancellation reaching a
+// keyed invocation that is still queued (Scheduled) and hasn't been
+// promoted to Invoked yet. Pre-cancel this transition was rejected as
+// invalid; the cancel helper synthesizes a terminal Completed via
+// transitionOnComplete with FailureCode=CancelledCode, so Scheduled
+// must be an accepted source.
+func TestComplete_FromScheduledCancellable(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "S", ObjectKey: "k"}
+	eff := &enginev1.InvocationCompleted{
+		FailureMessage: "invocation cancelled",
+		FailureCode:    9002, // CancelledCode
+	}
+	next, actions, err := transitionOnComplete(id, scheduledStatus(target), eff, 700)
+	if err != nil {
+		t.Fatalf("Scheduled → Completed (cancel): %v", err)
+	}
+	if len(actions) != 0 {
+		t.Errorf("expected no actions; got %d", len(actions))
+	}
+	c, ok := next.GetStatus().(*enginev1.InvocationStatus_Completed)
+	if !ok {
+		t.Fatalf("got %T; want Completed", next.GetStatus())
+	}
+	if c.Completed.GetFailureCode() != 9002 {
+		t.Errorf("failure_code = %d; want 9002", c.Completed.GetFailureCode())
+	}
+	if c.Completed.GetTarget().GetObjectKey() != "k" {
+		t.Errorf("target.object_key = %q; want k", c.Completed.GetTarget().GetObjectKey())
+	}
+}
+
+// TestComplete_PreservesFailureCode covers the InvocationCompleted ->
+// Completed.failure_code threading. Both the SDK output path and the
+// cancel synthesis path supply non-zero codes; the FSM must persist
+// them so DescribeInvocation / AwaitInvocation can surface them.
+func TestComplete_PreservesFailureCode(t *testing.T) {
+	id := mkID()
+	target := &enginev1.InvocationTarget{ServiceName: "S"}
+	eff := &enginev1.InvocationCompleted{
+		FailureMessage: "boom",
+		FailureCode:    4242,
+	}
+	next, _, err := transitionOnComplete(id, invokedStatus(target), eff, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := next.GetStatus().(*enginev1.InvocationStatus_Completed)
+	if c.Completed.GetFailureCode() != 4242 {
+		t.Errorf("failure_code = %d; want 4242", c.Completed.GetFailureCode())
 	}
 }
 

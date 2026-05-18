@@ -430,6 +430,14 @@ func (s *wireSession) driveLoop(stream handlerclient.Stream) {
 			if !s.handleOneWayCall(f.GetPayload()) {
 				return
 			}
+		case wire.TypeCmdSendSignal:
+			if !s.handleSendSignal(f.GetPayload()) {
+				return
+			}
+		case wire.TypeCmdAwaitSignal:
+			if !s.handleAwaitSignal(f.GetPayload()) {
+				return
+			}
 		case wire.TypeCmdRun:
 			// Marker frame: record the SDK-stated slot. The actual
 			// JERun proposal arrives via ProposeRunCompletionMessage.
@@ -446,6 +454,18 @@ func (s *wireSession) driveLoop(stream handlerclient.Stream) {
 			}
 		case wire.TypeCmdAwakeable:
 			if !s.handleAwakeable(f.GetPayload()) {
+				return
+			}
+		case wire.TypeCmdGetPromise:
+			if !s.handleGetPromise(f.GetPayload()) {
+				return
+			}
+		case wire.TypeCmdPeekPromise:
+			if !s.handlePeekPromise(f.GetPayload()) {
+				return
+			}
+		case wire.TypeCmdCompletePromise:
+			if !s.handleCompletePromise(f.GetPayload()) {
 				return
 			}
 		case wire.TypeSuspension:
@@ -474,23 +494,25 @@ func (s *wireSession) handleOutput(payload []byte) bool {
 		return false
 	}
 	var (
-		output     []byte
-		failureMsg string
+		output      []byte
+		failureMsg  string
+		failureCode uint32
 	)
 	switch r := out.GetResult().(type) {
 	case *protocolv1.OutputCommandMessage_Value:
 		output = r.Value.GetContent()
 	case *protocolv1.OutputCommandMessage_Failure:
 		failureMsg = r.Failure.GetMessage()
+		failureCode = r.Failure.GetCode()
 	}
-	s.completeTerminal(output, failureMsg)
+	s.completeTerminal(output, failureMsg, failureCode)
 	return false
 }
 
 // handleError translates an ErrorMessage into a terminal failure. The
-// SDK-supplied code is preserved in the failure message string for
-// observability; structured codes will be threaded once the invocation
-// FSM grows a failure_code field.
+// SDK-supplied code is threaded through to InvocationCompleted.failure_code
+// so callers can distinguish typed failures (e.g. CancelledCode) from
+// plain string messages without parsing.
 func (s *wireSession) handleError(payload []byte) {
 	var em protocolv1.ErrorMessage
 	if err := s.codec.Unmarshal(payload, &em); err != nil {
@@ -499,11 +521,7 @@ func (s *wireSession) handleError(payload []byte) {
 		s.failTerminal(fmt.Sprintf("wire dispatch: decode error: %v", err))
 		return
 	}
-	msg := em.GetMessage()
-	if em.GetCode() != 0 {
-		msg = fmt.Sprintf("[%d] %s", em.GetCode(), msg)
-	}
-	s.failTerminal(msg)
+	s.completeTerminal(nil, em.GetMessage(), em.GetCode())
 }
 
 // handleSetState decodes a SetStateCommandMessage and proposes the
@@ -623,6 +641,62 @@ func (s *wireSession) handleCall(payload []byte) bool {
 	return s.proposeJournalOrFail(entry, "JECall")
 }
 
+// handleAwaitSignal decodes an AwaitSignalCommandMessage and proposes
+// JEAwaitSignal. Two-slot — the SDK pre-allocates cmdSlot and
+// resultSlot (=cmdSlot+1); we journal the command at the next free
+// index and the apply arm probes signal_inbox before writing the
+// SignalAwaiter directory row.
+func (s *wireSession) handleAwaitSignal(payload []byte) bool {
+	var cmd protocolv1.AwaitSignalCommandMessage
+	if err := s.codec.Unmarshal(payload, &cmd); err != nil {
+		s.log.Warn("invoker.wire: decode AwaitSignalCommandMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode await_signal: %v", err))
+		return false
+	}
+	entry := &enginev1.JournalEntry{
+		Index: s.allocIdx(),
+		Entry: &enginev1.JournalEntry_AwaitSignal{
+			AwaitSignal: &enginev1.JEAwaitSignal{
+				SignalName:         cmd.GetSignalName(),
+				ResultCompletionId: cmd.GetResultCompletionId(),
+			},
+		},
+	}
+	return s.proposeJournalOrFail(entry, "JEAwaitSignal")
+}
+
+// handleSendSignal decodes a SendSignalCommandMessage and proposes
+// JESignal. Single-slot — fire-and-forget; routing is by Target
+// (service, key) via Partitioner.ShardForTarget when the apply arm
+// builds the OutboxEnvelope. The receiver shard resolves Target →
+// active InvocationId via KeyLeaseTable in its SignalDelivered apply
+// arm. Mirrors handleOneWayCall.
+func (s *wireSession) handleSendSignal(payload []byte) bool {
+	var cmd protocolv1.SendSignalCommandMessage
+	if err := s.codec.Unmarshal(payload, &cmd); err != nil {
+		s.log.Warn("invoker.wire: decode SendSignalCommandMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode send_signal: %v", err))
+		return false
+	}
+	entry := &enginev1.JournalEntry{
+		Index: s.allocIdx(),
+		Entry: &enginev1.JournalEntry_Signal{
+			Signal: &enginev1.JESignal{
+				Target: &enginev1.InvocationTarget{
+					ServiceName: cmd.GetServiceName(),
+					HandlerName: cmd.GetHandlerName(),
+					ObjectKey:   cmd.GetKey(),
+				},
+				SignalName: cmd.GetSignalName(),
+				Payload:    cmd.GetPayload(),
+			},
+		},
+	}
+	return s.proposeJournalOrFail(entry, "JESignal")
+}
+
 // handleOneWayCall decodes an OneWayCallCommandMessage and proposes
 // JEOneWayCall. Single-slot — fire-and-forget, no result-pair.
 func (s *wireSession) handleOneWayCall(payload []byte) bool {
@@ -670,6 +744,89 @@ func (s *wireSession) handleAwakeable(payload []byte) bool {
 		},
 	}
 	return s.proposeJournalOrFail(entry, "JEAwakeable")
+}
+
+// handleGetPromise decodes a GetPromiseCommandMessage and proposes
+// JEGetPromise. Two-slot — the apply arm probes PromiseTable and
+// either appends JEPromiseResult at slot+1 inline (already-resolved
+// promise) or writes a PromiseAwaiter directory row keyed by
+// (service, workflow_key, name).
+func (s *wireSession) handleGetPromise(payload []byte) bool {
+	var cmd protocolv1.GetPromiseCommandMessage
+	if err := s.codec.Unmarshal(payload, &cmd); err != nil {
+		s.log.Warn("invoker.wire: decode GetPromiseCommandMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode get_promise: %v", err))
+		return false
+	}
+	cmdIdx := s.allocIdx()
+	_ = s.allocIdx() // reserve result slot
+	entry := &enginev1.JournalEntry{
+		Index: cmdIdx,
+		Entry: &enginev1.JournalEntry_GetPromise{
+			GetPromise: &enginev1.JEGetPromise{
+				Name:               cmd.GetName(),
+				ResultCompletionId: cmd.GetResultCompletionId(),
+			},
+		},
+	}
+	return s.proposeJournalOrFail(entry, "JEGetPromise")
+}
+
+// handlePeekPromise decodes a PeekPromiseCommandMessage and proposes
+// JEPeekPromise. Single-slot — the apply arm reads PromiseTable and
+// stamps (completed, value | failure_message) onto the journal entry
+// directly. The SDK consumes the snapshot on replay.
+func (s *wireSession) handlePeekPromise(payload []byte) bool {
+	var cmd protocolv1.PeekPromiseCommandMessage
+	if err := s.codec.Unmarshal(payload, &cmd); err != nil {
+		s.log.Warn("invoker.wire: decode PeekPromiseCommandMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode peek_promise: %v", err))
+		return false
+	}
+	entry := &enginev1.JournalEntry{
+		Index: s.allocIdx(),
+		Entry: &enginev1.JournalEntry_PeekPromise{
+			PeekPromise: &enginev1.JEPeekPromise{
+				Name: cmd.GetName(),
+				// Apply arm fills in Completed / Value / FailureMessage.
+			},
+		},
+	}
+	return s.proposeJournalOrFail(entry, "JEPeekPromise")
+}
+
+// handleCompletePromise decodes a CompletePromiseCommandMessage and
+// proposes JECompletePromise. Two-slot — the apply arm writes
+// PromiseValue (if not already terminal), wakes any awaiter, and
+// appends a JEPromiseCompleteResult at slot+1 reporting succeeded /
+// already-completed.
+func (s *wireSession) handleCompletePromise(payload []byte) bool {
+	var cmd protocolv1.CompletePromiseCommandMessage
+	if err := s.codec.Unmarshal(payload, &cmd); err != nil {
+		s.log.Warn("invoker.wire: decode CompletePromiseCommandMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode complete_promise: %v", err))
+		return false
+	}
+	cmdIdx := s.allocIdx()
+	_ = s.allocIdx() // reserve result slot
+	jc := &enginev1.JECompletePromise{
+		Name:               cmd.GetName(),
+		ResultCompletionId: cmd.GetResultCompletionId(),
+	}
+	switch c := cmd.GetCompletion().(type) {
+	case *protocolv1.CompletePromiseCommandMessage_CompletionValue:
+		jc.Value = c.CompletionValue.GetContent()
+	case *protocolv1.CompletePromiseCommandMessage_CompletionFailure:
+		jc.FailureMessage = c.CompletionFailure.GetMessage()
+	}
+	entry := &enginev1.JournalEntry{
+		Index: cmdIdx,
+		Entry: &enginev1.JournalEntry_CompletePromise{CompletePromise: jc},
+	}
+	return s.proposeJournalOrFail(entry, "JECompletePromise")
 }
 
 // handleRunMarker decodes a RunCommandMessage and pins nextIdx to
@@ -830,7 +987,7 @@ func (s *wireSession) proposeJournalOrFail(entry *enginev1.JournalEntry, kind st
 }
 
 // completeTerminal proposes Completed for this invocation.
-func (s *wireSession) completeTerminal(output []byte, failureMsg string) {
+func (s *wireSession) completeTerminal(output []byte, failureMsg string, failureCode uint32) {
 	if s.ctx.Err() != nil {
 		return
 	}
@@ -840,6 +997,7 @@ func (s *wireSession) completeTerminal(output []byte, failureMsg string) {
 			Completed: &enginev1.InvocationCompleted{
 				Output:         output,
 				FailureMessage: failureMsg,
+				FailureCode:    failureCode,
 			},
 		},
 	}
@@ -850,7 +1008,7 @@ func (s *wireSession) completeTerminal(output []byte, failureMsg string) {
 }
 
 func (s *wireSession) failTerminal(msg string) {
-	s.completeTerminal(nil, msg)
+	s.completeTerminal(nil, msg, 0)
 }
 
 func (s *wireSession) proposeJournal(entry *enginev1.JournalEntry) error {

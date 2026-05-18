@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/twinfer/reflow/pkg/sdk"
+	"github.com/twinfer/reflow/pkg/handler"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -19,7 +19,7 @@ import (
 type WorkloadConfig struct {
 	// Cluster is the live cluster the workload drives.
 	Cluster *Cluster
-	// Service / Handler are registered with sdk.Registry by the
+	// Service / Handler are registered with handler.Registry by the
 	// caller before NewCluster; the workload will fan invocations
 	// out to (Service, Handler) using random object keys so that
 	// partition assignment spreads roughly evenly across shards.
@@ -58,10 +58,10 @@ type WorkloadStats struct {
 	FailedSamples []string
 }
 
-// HelloHandler is a trivial sdk.Handler that returns its input
+// HelloHandler is a trivial handler.Handler that returns its input
 // unchanged. Use it as the registered handler for invoke-and-complete
 // workloads.
-func HelloHandler(_ sdk.Context, in []byte) ([]byte, error) { return in, nil }
+func HelloHandler(_ handler.Context, in []byte) ([]byte, error) { return in, nil }
 
 // Run executes the workload until ctx is cancelled or Duration
 // elapses, whichever comes first. Returns a WorkloadStats and the

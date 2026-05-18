@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/sdk"
 )
 
 // TestLoad_SteadyState exercises a 3-node in-process cluster at
@@ -36,7 +35,7 @@ func TestLoad_SteadyState(t *testing.T) {
 		sampleEvery = 1 * time.Second
 	)
 
-	reg := sdk.NewRegistry()
+	reg := handler.NewRegistry()
 	if err := reg.RegisterService(service, handler, loadgen.HelloHandler); err != nil {
 		t.Fatalf("register handler: %v", err)
 	}

@@ -10,7 +10,6 @@ import (
 
 	"github.com/twinfer/reflow/internal/chaos"
 	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/sdk"
 )
 
 // TestChaos_RollingRestart runs a steady-state workload while
@@ -23,15 +22,15 @@ import (
 func TestChaos_RollingRestart(t *testing.T) {
 	const (
 		service     = "loadgen.Hello"
-		handler     = "echo"
+		handlerName = "echo"
 		rate        = 30.0
 		concurrency = 8
 		duration    = 90 * time.Second
 		settle      = 3 * time.Second
 	)
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService(service, handler, loadgen.HelloHandler); err != nil {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService(service, handlerName, loadgen.HelloHandler); err != nil {
 		t.Fatalf("register handler: %v", err)
 	}
 

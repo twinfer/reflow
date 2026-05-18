@@ -1,4 +1,4 @@
-package server_test
+package handler_test
 
 import (
 	"context"
@@ -23,27 +23,26 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/engine/handlerclient/connectclient"
+	"github.com/twinfer/reflow/pkg/handler"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
-	"github.com/twinfer/reflow/pkg/sdk"
-	"github.com/twinfer/reflow/pkg/sdk/server"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
 // TestHTTP2Server_RoundTrip drives a registered handler end-to-end via
-// pkg/sdk/server.NewHTTP2 + internal/engine/handlerclient/connectclient.
+// pkg/handler.NewHTTP2 + internal/engine/handlerclient/connectclient.
 // The engine's wire_session is bypassed — this test asserts the
 // handler-side half on its own: input arrives, handler runs, output
 // flows back over Connect bidi streaming (h2c).
 func TestHTTP2Server_RoundTrip(t *testing.T) {
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Echo", "echo", func(_ handler.Context, in []byte) ([]byte, error) {
 		return append([]byte("h2-echo:"), in...), nil
 	}); err != nil {
 		t.Fatalf("RegisterService: %v", err)
 	}
 
-	srv, err := server.NewHTTP2(server.Config{Registry: reg})
+	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
 	if err != nil {
 		t.Fatalf("NewHTTP2: %v", err)
 	}
@@ -70,14 +69,14 @@ func TestHTTP2Server_RoundTrip(t *testing.T) {
 // TestHTTP2Server_FailureRoundTrip verifies a handler returning *Failure
 // surfaces as OutputCommandMessage.failure on the wire.
 func TestHTTP2Server_FailureRoundTrip(t *testing.T) {
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Echo", "boom", func(_ sdk.Context, _ []byte) ([]byte, error) {
-		return nil, sdk.NewFailure(42, "boom")
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Echo", "boom", func(_ handler.Context, _ []byte) ([]byte, error) {
+		return nil, handler.NewFailure(42, "boom")
 	}); err != nil {
 		t.Fatalf("RegisterService: %v", err)
 	}
 
-	srv, err := server.NewHTTP2(server.Config{Registry: reg})
+	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
 	if err != nil {
 		t.Fatalf("NewHTTP2: %v", err)
 	}
@@ -106,7 +105,7 @@ func TestHTTP2Server_FailureRoundTrip(t *testing.T) {
 // TestHTTP2Server_Discover asserts /discover returns the registered
 // handlers grouped by (service, kind).
 func TestHTTP2Server_Discover(t *testing.T) {
-	reg := sdk.NewRegistry()
+	reg := handler.NewRegistry()
 	for _, sh := range [][3]string{
 		{"Echo", "echo", "service"},
 		{"Cart", "checkout", "object"},
@@ -127,7 +126,7 @@ func TestHTTP2Server_Discover(t *testing.T) {
 		}
 	}
 
-	srv, err := server.NewHTTP2(server.Config{Registry: reg})
+	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
 	if err != nil {
 		t.Fatalf("NewHTTP2: %v", err)
 	}
@@ -336,7 +335,7 @@ func discoverHTTP2(t *testing.T, baseURL string) *discoveryv1.DiscoveryResponse 
 
 // stubHandler is a no-op handler used to populate the registry for the
 // discovery test.
-var stubHandler sdk.Handler = func(_ sdk.Context, _ []byte) ([]byte, error) { return nil, nil }
+var stubHandler handler.Handler = func(_ handler.Context, _ []byte) ([]byte, error) { return nil, nil }
 
 // TestHTTP2Server_RoundTrip_WithAuth wires a real signer + verifier
 // built from the same CA and asserts an /invoke round-trip succeeds
@@ -345,13 +344,13 @@ var stubHandler sdk.Handler = func(_ sdk.Context, _ []byte) ([]byte, error) { re
 func TestHTTP2Server_RoundTrip_WithAuth(t *testing.T) {
 	caPEM, signer, spiffe := buildCAAndSigner(t, "/node/1")
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Echo", "echo", func(_ handler.Context, in []byte) ([]byte, error) {
 		return append([]byte("auth-echo:"), in...), nil
 	}); err != nil {
 		t.Fatalf("RegisterService: %v", err)
 	}
-	srv, err := server.NewHTTP2(server.Config{
+	srv, err := handler.NewHTTP2(handler.Config{
 		Registry:      reg,
 		RootCAs:       caPEM,
 		AllowedSPIFFE: []string{spiffe},
@@ -392,9 +391,9 @@ func TestHTTP2Server_AuthRejectsForeignCA(t *testing.T) {
 	// Foreign signer: rooted at a different CA — verifier won't accept.
 	_, foreignSigner, _ := buildCAAndSigner(t, "/node/1")
 
-	reg := sdk.NewRegistry()
-	_ = reg.RegisterService("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) { return in, nil })
-	srv, err := server.NewHTTP2(server.Config{
+	reg := handler.NewRegistry()
+	_ = reg.RegisterService("Echo", "echo", func(_ handler.Context, in []byte) ([]byte, error) { return in, nil })
+	srv, err := handler.NewHTTP2(handler.Config{
 		Registry:      reg,
 		RootCAs:       caPEM,
 		AllowedSPIFFE: []string{spiffe},
@@ -492,13 +491,13 @@ func (p *e2eFakeProvider) Close() {}
 // teardown. Regression for the bug where Recv terminating on EOF never
 // closed the underlying HTTP/2 stream slot before GC.
 func TestHTTP2Server_NoBodyLeak(t *testing.T) {
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Echo", "echo", func(_ handler.Context, in []byte) ([]byte, error) {
 		return append([]byte("h2-echo:"), in...), nil
 	}); err != nil {
 		t.Fatalf("RegisterService: %v", err)
 	}
-	srv, err := server.NewHTTP2(server.Config{Registry: reg})
+	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
 	if err != nil {
 		t.Fatalf("NewHTTP2: %v", err)
 	}

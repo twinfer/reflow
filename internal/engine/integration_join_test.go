@@ -11,7 +11,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/sdk"
+	"github.com/twinfer/reflow/pkg/handler"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -44,9 +44,9 @@ import (
 //     shard 0 — proof the metadata join worked.
 func TestMultiNode_JoinExistingCluster_OperatorAddNode(t *testing.T) {
 	const svc = "JoinSvc"
-	const handler = "do"
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService(svc, handler, func(_ sdk.Context, in []byte) ([]byte, error) {
+	const handlerName = "do"
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService(svc, handlerName, func(_ handler.Context, in []byte) ([]byte, error) {
 		return append([]byte("joined:"), in...), nil
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -103,7 +103,7 @@ func TestMultiNode_JoinExistingCluster_OperatorAddNode(t *testing.T) {
 		GossipAddr: addrs.gossip,
 		NodeHostID: newHostID,
 	})
-	h4, err := engine.NewHost(engine.HostConfig{
+	h4, err := engine.NewHost(t.Context(), engine.HostConfig{
 		NodeID:             newID,
 		RaftAddr:           addrs.raft,
 		DataDir:            dataDir4,
@@ -202,7 +202,7 @@ func TestMultiNode_JoinExistingCluster_OperatorAddNode(t *testing.T) {
 	// Step 6 — verify the joiner serves traffic. Propose an invocation
 	// for a target that hashes to some shard and confirm the joiner
 	// returns the resulting Completed status via a linearizable read.
-	target := &enginev1.InvocationTarget{ServiceName: svc, HandlerName: handler}
+	target := &enginev1.InvocationTarget{ServiceName: svc, HandlerName: handlerName}
 	shard := p.ShardForTarget(target)
 	leader := findPartitionLeader(rigs, shard)
 	if leader == nil {
@@ -213,7 +213,7 @@ func TestMultiNode_JoinExistingCluster_OperatorAddNode(t *testing.T) {
 		Uuid:         []byte("join-test-uuid!!"),
 	}
 	depLookupCtx, depLookupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	depID, err := leader.Host.LookupDeploymentIDByHandler(depLookupCtx, svc, handler)
+	depID, err := leader.Host.LookupDeploymentIDByHandler(depLookupCtx, svc, handlerName)
 	depLookupCancel()
 	if err != nil || depID == "" {
 		t.Fatalf("LookupDeploymentIDByHandler: id=%q err=%v", depID, err)

@@ -1,15 +1,14 @@
-package server
+package handler
 
 import (
 	"errors"
 	"fmt"
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
-	"github.com/twinfer/reflow/pkg/sdk"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
-// futures.go holds sdk.Future implementations bound to the wire path.
+// futures.go holds Future implementations bound to the wire path.
 // The pattern mirrors internal/engine/invoker/futures.go: Poll consults
 // the session's replay buffer for the result slot; Result either
 // returns the resolved value or suspends with a waker token. Because
@@ -38,15 +37,15 @@ func (f errFuture) Poll() (bool, []string)  { return true, nil }
 // returned ErrSuspended). Every operation short-circuits to ErrSuspended.
 type suspendedFuture struct{}
 
-func (suspendedFuture) Result() ([]byte, error) { return nil, sdk.ErrSuspended }
+func (suspendedFuture) Result() ([]byte, error) { return nil, ErrSuspended }
 func (suspendedFuture) Poll() (bool, []string)  { return false, nil }
 
 // futureFromAllocErr packages an allocSlot error into a Future.
 // ErrSuspended → suspendedFuture (preserves suspend semantics); any
 // other error (a terminal *Failure such as StepBudgetExhausted) →
 // errFuture so Future.Result surfaces it immediately.
-func futureFromAllocErr(err error) sdk.Future {
-	if errors.Is(err, sdk.ErrSuspended) {
+func futureFromAllocErr(err error) Future {
+	if errors.Is(err, ErrSuspended) {
 		return suspendedFuture{}
 	}
 	return errFuture{err: err}
@@ -74,7 +73,7 @@ func (f sleepFuture) Result() ([]byte, error) {
 		return nil, nil
 	}
 	f.ctx.suspend(fmt.Sprintf("completion:%d", f.resultSlot))
-	return nil, sdk.ErrSuspended
+	return nil, ErrSuspended
 }
 
 // --- Call ---
@@ -98,7 +97,7 @@ func (f callFuture) Result() ([]byte, error) {
 	entry := f.ctx.lookupReplay(f.resultSlot)
 	if entry == nil {
 		f.ctx.suspend(fmt.Sprintf("completion:%d", f.resultSlot))
-		return nil, sdk.ErrSuspended
+		return nil, ErrSuspended
 	}
 	var note protocolv1.CallCompletionNotificationMessage
 	if err := f.ctx.codec.Unmarshal(entry.payload, &note); err != nil {
@@ -108,7 +107,7 @@ func (f callFuture) Result() ([]byte, error) {
 	case *protocolv1.CallCompletionNotificationMessage_Value:
 		return r.Value.GetContent(), nil
 	case *protocolv1.CallCompletionNotificationMessage_Failure:
-		return nil, sdk.NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())
+		return nil, NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())
 	default:
 		return nil, fmt.Errorf("CallCompletionNotificationMessage at slot %d carries no result", f.resultSlot)
 	}
@@ -136,7 +135,7 @@ func (f awakeableFuture) Result() ([]byte, error) {
 	entry := f.ctx.lookupReplay(f.resultSlot)
 	if entry == nil {
 		f.ctx.suspend("awakeable:" + f.id)
-		return nil, sdk.ErrSuspended
+		return nil, ErrSuspended
 	}
 	if entry.typeCode != handlerclient.TypeNoteSignal {
 		return nil, fmt.Errorf("awakeable slot %d carries unexpected frame type 0x%04x", f.resultSlot, entry.typeCode)
@@ -149,7 +148,7 @@ func (f awakeableFuture) Result() ([]byte, error) {
 	case *protocolv1.SignalNotificationMessage_Value:
 		return r.Value.GetContent(), nil
 	case *protocolv1.SignalNotificationMessage_Failure:
-		return nil, sdk.NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())
+		return nil, NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())
 	default:
 		return nil, nil
 	}
@@ -161,13 +160,13 @@ func (f awakeableFuture) Result() ([]byte, error) {
 // composition, no journal slot.
 type allResult struct {
 	ctx      *wireContext
-	children []sdk.Future
+	children []Future
 }
 
 func (a *allResult) Poll() (bool, []string) {
 	var pending []string
 	for _, c := range a.children {
-		p, ok := c.(sdk.Poller)
+		p, ok := c.(Poller)
 		if !ok {
 			continue
 		}
@@ -181,7 +180,7 @@ func (a *allResult) Poll() (bool, []string) {
 func (a *allResult) Results() ([][]byte, error) {
 	if done, tokens := a.Poll(); !done {
 		a.ctx.suspend(tokens...)
-		return nil, sdk.ErrSuspended
+		return nil, ErrSuspended
 	}
 	out := make([][]byte, len(a.children))
 	for i, c := range a.children {
@@ -200,14 +199,14 @@ func (a *allResult) Results() ([][]byte, error) {
 // across replays — argument order is the tiebreaker, not wall clock.
 type anyFuture struct {
 	ctx      *wireContext
-	children []sdk.Future
+	children []Future
 }
 
 func (f *anyFuture) Poll() (bool, []string) {
 	var pending []string
 	anyResolved := false
 	for _, c := range f.children {
-		p, ok := c.(sdk.Poller)
+		p, ok := c.(Poller)
 		if !ok {
 			continue
 		}
@@ -227,10 +226,10 @@ func (f *anyFuture) Poll() (bool, []string) {
 func (f *anyFuture) Result() ([]byte, error) {
 	if done, tokens := f.Poll(); !done {
 		f.ctx.suspend(tokens...)
-		return nil, sdk.ErrSuspended
+		return nil, ErrSuspended
 	}
 	for _, c := range f.children {
-		p, ok := c.(sdk.Poller)
+		p, ok := c.(Poller)
 		if !ok {
 			continue
 		}
@@ -238,5 +237,5 @@ func (f *anyFuture) Result() ([]byte, error) {
 			return c.Result()
 		}
 	}
-	return nil, sdk.ErrSuspended
+	return nil, ErrSuspended
 }

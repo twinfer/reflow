@@ -26,7 +26,7 @@ func bringUpSingleNode(t *testing.T, dir, raftAddr string) (*engine.Host, *engin
 	if raftAddr == "" {
 		raftAddr = freeLocalAddr(t)
 	}
-	h, err := engine.NewHost(engine.HostConfig{
+	h, err := engine.NewHost(t.Context(), engine.HostConfig{
 		NodeID:             1,
 		RaftAddr:           raftAddr,
 		DataDir:            dir,
@@ -75,7 +75,7 @@ func bringUpSingleNodeWithDeployment(
 	if raftAddr == "" {
 		raftAddr = freeLocalAddr(t)
 	}
-	h, err := engine.NewHost(engine.HostConfig{
+	h, err := engine.NewHost(t.Context(), engine.HostConfig{
 		NodeID:             1,
 		RaftAddr:           raftAddr,
 		DataDir:            dir,

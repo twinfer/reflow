@@ -46,6 +46,12 @@ type PartitionRunner struct {
 	leaderCancel context.CancelFunc
 	timerDone    chan struct{}
 	outboxDone   chan struct{}
+	// storeRelease releases the Snapshotter lease acquired in
+	// onBecomeLeader. Held for the lifetime of the current leader scope
+	// so Host.Close → Snapshotter.Close waits until our leader-scoped
+	// goroutines (timer.Run, outbox.Run, the invoker session pool) have
+	// stopped touching the underlying pebble.DB.
+	storeRelease func()
 }
 
 // Proposer returns the partition's RaftProposer.
@@ -118,7 +124,14 @@ func (r *PartitionRunner) dispatchActions(actions []Action) {
 func (r *PartitionRunner) onBecomeLeader() {
 	r.log.Info("partition: became leader", "shard", r.ShardID, "epoch", r.leadership.LeaderEpoch())
 
-	store := r.snapshotter.Store()
+	store, release, ok := r.snapshotter.Acquire()
+	if !ok {
+		r.log.Info("partition: snapshotter closing; skipping leader gain",
+			"shard", r.ShardID)
+		return
+	}
+	// Lease released by onStepDown via storeRelease; if any Rebuild
+	// failure short-circuits below, release in the failure path.
 
 	// Build into locals first; install onto r only after Rebuild succeeds.
 	// If we assigned r.timers/r.outbox up front, a Rebuild failure would
@@ -146,10 +159,12 @@ func (r *PartitionRunner) onBecomeLeader() {
 	}
 
 	if err := timers.Rebuild(); err != nil {
+		release()
 		r.log.Error("partition: timer rebuild failed", "shard", r.ShardID, "err", err)
 		return
 	}
 	if err := outbox.Rebuild(); err != nil {
+		release()
 		r.log.Error("partition: outbox rebuild failed", "shard", r.ShardID, "err", err)
 		return
 	}
@@ -175,16 +190,24 @@ func (r *PartitionRunner) onBecomeLeader() {
 	outboxDone := make(chan struct{})
 
 	r.mu.Lock()
-	// Defensive: cancel any prior leader scope. Normal step-down clears
-	// these; if we somehow re-enter without intervening onStepDown, abort
-	// the prior scope before installing the new one.
+	// Defensive: cancel any prior leader scope and release any prior
+	// store lease. Normal step-down clears both; if we somehow re-enter
+	// without intervening onStepDown (Leadership.OnAnnounceLeader fires
+	// onBecomeLeader as an async goroutine per call), abort the prior
+	// scope before installing the new one. Releasing the prior lease is
+	// load-bearing — without it Snapshotter.Close would block on a leak.
 	if r.leaderCancel != nil {
 		r.leaderCancel()
 	}
+	priorRelease := r.storeRelease
 	r.leaderCancel = cancel
 	r.timerDone = timerDone
 	r.outboxDone = outboxDone
+	r.storeRelease = release
 	r.mu.Unlock()
+	if priorRelease != nil {
+		priorRelease()
+	}
 
 	if r.invoker != nil {
 		r.invoker.Start(leaderCtx)
@@ -193,7 +216,7 @@ func (r *PartitionRunner) onBecomeLeader() {
 		// ActInvoke through dispatchActions while the Invoker is not yet
 		// started; those calls are dropped, so the new leader must
 		// re-spawn sessions explicitly from the InvocationTable.
-		if err := r.invoker.ResumeNonTerminal(tables.InvocationTable{S: store}); err != nil {
+		if err := r.invoker.ResumeNonTerminal(leaderCtx, tables.InvocationTable{S: store}); err != nil {
 			r.log.Warn("partition: invoker resume failed", "shard", r.ShardID, "err", err)
 		}
 	}
@@ -232,9 +255,11 @@ func (r *PartitionRunner) onStepDown() {
 	cancel := r.leaderCancel
 	timerDone := r.timerDone
 	outboxDone := r.outboxDone
+	release := r.storeRelease
 	r.leaderCancel = nil
 	r.timerDone = nil
 	r.outboxDone = nil
+	r.storeRelease = nil
 	r.mu.Unlock()
 
 	if cancel != nil {
@@ -249,6 +274,12 @@ func (r *PartitionRunner) onStepDown() {
 	if outboxDone != nil {
 		<-outboxDone
 	}
+	// Release the Snapshotter lease last — after every leader-scoped
+	// goroutine has stopped touching the store. Snapshotter.Close blocks
+	// until this fires.
+	if release != nil {
+		release()
+	}
 }
 
 // Compile-time check that LeadershipObserver is implemented.
@@ -257,5 +288,10 @@ var _ LeadershipObserver = (*Leadership)(nil)
 // StatusOf fetches the InvocationStatus directly from the partition's store;
 // tests use this to avoid a SyncRead round-trip.
 func (r *PartitionRunner) StatusOf(id *enginev1.InvocationId) (*enginev1.InvocationStatus, error) {
-	return (tables.InvocationTable{S: r.snapshotter.Store()}).Get(id)
+	store, release, ok := r.snapshotter.Acquire()
+	if !ok {
+		return nil, errors.New("runner: snapshotter closed")
+	}
+	defer release()
+	return (tables.InvocationTable{S: store}).Get(id)
 }

@@ -12,7 +12,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine/admin"
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/sdk"
+	"github.com/twinfer/reflow/pkg/handler"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
@@ -140,11 +140,11 @@ func TestWireDispatch_HTTP2_Call(t *testing.T) {
 	)
 
 	// Handler B is the callee — a real SDK handler returning "pong".
-	// Registered via pkg/sdk/server so its deployment is durable in
+	// Registered via pkg/handler so its deployment is durable in
 	// shard 0 and (Callee, echo) → deployment_id resolves at outbox
 	// dispatch time.
-	calleeReg := sdk.NewRegistry()
-	if err := calleeReg.RegisterService("Callee", "echo", func(_ sdk.Context, _ []byte) ([]byte, error) {
+	calleeReg := handler.NewRegistry()
+	if err := calleeReg.RegisterService("Callee", "echo", func(_ handler.Context, _ []byte) ([]byte, error) {
 		return []byte("pong"), nil
 	}); err != nil {
 		t.Fatalf("RegisterService Callee: %v", err)

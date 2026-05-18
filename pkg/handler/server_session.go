@@ -1,4 +1,4 @@
-package server
+package handler
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
-	"github.com/twinfer/reflow/pkg/sdk"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
@@ -54,7 +53,7 @@ func runSession(
 	ctx context.Context,
 	src frameSource,
 	sink frameSink,
-	registry *sdk.Registry,
+	registry *Registry,
 	codec handlerclient.Codec,
 	route handlerclient.Route,
 ) error {
@@ -88,7 +87,7 @@ func runSession(
 			"session missing (service, handler) routing: provide either "+
 				"StartMessage.service_name/handler_name or an HTTP/2 URL path")
 	}
-	fn, _, ok := registry.Lookup(&sdk.Target{Service: service, Handler: handler})
+	fn, _, ok := registry.Lookup(&Target{Service: service, Handler: handler})
 	if !ok {
 		return sendError(sink, codec, 404,
 			fmt.Sprintf("no handler registered for %s/%s", service, handler))
@@ -118,13 +117,13 @@ func runSession(
 	// in the replay buffer. Emit SuspensionMessage and exit; the engine
 	// proposes InvokerEffect_Suspended and respawns the session once
 	// the awaited completion lands in the journal.
-	if errors.Is(runErr, sdk.ErrSuspended) {
+	if errors.Is(runErr, ErrSuspended) {
 		return sendSuspension(sink, codec, wctx.snapshotAwaiting())
 	}
 
 	out := &protocolv1.OutputCommandMessage{}
 	if runErr != nil {
-		if f, ok := sdk.AsFailure(runErr); ok {
+		if f, ok := AsFailure(runErr); ok {
 			out.Result = &protocolv1.OutputCommandMessage_Failure{
 				Failure: &protocolv1.Failure{Code: f.Code, Message: f.Message},
 			}
@@ -163,7 +162,7 @@ func runSession(
 
 // runHandler invokes h(wctx, input) under a panic recover so a buggy
 // handler cannot tear down the session goroutine.
-func runHandler(wctx *wireContext, h sdk.Handler, input []byte) (out []byte, err error) {
+func runHandler(wctx *wireContext, h Handler, input []byte) (out []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("handler panic: %v", r)

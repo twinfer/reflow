@@ -1,4 +1,4 @@
-package server
+package handler
 
 import (
 	"context"
@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
-	"github.com/twinfer/reflow/pkg/sdk"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
@@ -35,7 +34,7 @@ type replayEntry struct {
 	payload  []byte
 }
 
-// wireContext implements sdk.Context for handlers running on the
+// wireContext implements Context for handlers running on the
 // protocolv1 wire. Sleep / Run / Call / OneWayCall / Awakeable /
 // SetState / ClearState / ClearAllState / GetState / All / Any are all
 // wired; SendSignal still returns ErrWireNotImplemented pending the
@@ -89,7 +88,7 @@ type wireContext struct {
 	awaitingTokens []string
 }
 
-var _ sdk.Context = (*wireContext)(nil)
+var _ Context = (*wireContext)(nil)
 
 // newWireContext constructs a wireContext for one session. sink is the
 // write-only frame channel back to the engine (HTTP/2 response writer
@@ -131,10 +130,10 @@ func (c *wireContext) InvocationID() *enginev1.InvocationId { return c.invocatio
 // allocSlot reserves span consecutive journal indices and returns the
 // first. err is non-nil in two cases:
 //
-//   - sdk.ErrSuspended — the context is already suspended; caller
+//   - ErrSuspended — the context is already suspended; caller
 //     should propagate it up the handler stack so the session loop
 //     emits SuspensionMessage.
-//   - *sdk.Failure (StepBudgetExhaustedCode) — the per-invocation
+//   - *Failure (StepBudgetExhaustedCode) — the per-invocation
 //     journal-entry cap would be exceeded; caller propagates the
 //     failure so the handler terminates cleanly. The same check runs
 //     defensively on the engine side as a backstop.
@@ -142,10 +141,10 @@ func (c *wireContext) allocSlot(span uint32) (start uint32, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.suspended {
-		return 0, sdk.ErrSuspended
+		return 0, ErrSuspended
 	}
 	if c.maxJournalEntries > 0 && c.nextSlot+span > c.maxJournalEntries {
-		return 0, sdk.NewStepBudgetExhaustedFailure(c.nextSlot, c.maxJournalEntries)
+		return 0, NewStepBudgetExhaustedFailure(c.nextSlot, c.maxJournalEntries)
 	}
 	start = c.nextSlot
 	c.nextSlot += span
@@ -303,7 +302,7 @@ func (c *wireContext) ClearAllState() error {
 // Suspension is deferred to Future.Result so composition under
 // All/Any works: each call only allocates a slot + emits a frame, and
 // the combinator decides when (if at all) to suspend.
-func (c *wireContext) Sleep(d time.Duration) sdk.Future {
+func (c *wireContext) Sleep(d time.Duration) Future {
 	cmdSlot, allocErr := c.allocSlot(2)
 	if allocErr != nil {
 		return futureFromAllocErr(allocErr)
@@ -345,11 +344,11 @@ func (c *wireContext) Sleep(d time.Duration) sdk.Future {
 //     RunCommandMessage + ProposeRunCompletionMessage with the
 //     outcome. On retryable error, suspend pending the engine's
 //     backoff timer.
-func (c *wireContext) Run(name string, fn sdk.RunFunc, opts ...sdk.RunOption) ([]byte, error) {
+func (c *wireContext) Run(name string, fn RunFunc, opts ...RunOption) ([]byte, error) {
 	if fn == nil {
 		return nil, fmt.Errorf("reflow: ctx.Run fn must not be nil")
 	}
-	resolved := sdk.ApplyRunOptions(opts)
+	resolved := ApplyRunOptions(opts)
 	slot, allocErr := c.allocSlot(1)
 	if allocErr != nil {
 		return nil, allocErr
@@ -377,7 +376,7 @@ func (c *wireContext) Run(name string, fn sdk.RunFunc, opts ...sdk.RunOption) ([
 				copy(out, r.Value.GetContent())
 				return out, nil
 			case *protocolv1.RunCompletionNotificationMessage_Failure:
-				return nil, sdk.NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())
+				return nil, NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())
 			}
 			return nil, nil
 		case handlerclient.TypeCmdRun:
@@ -393,14 +392,14 @@ func (c *wireContext) Run(name string, fn sdk.RunFunc, opts ...sdk.RunOption) ([
 	if idempotencyKey == "" {
 		idempotencyKey = deriveIdempotencyKey(c.invocationID, slot, attempt)
 	}
-	rctx := sdk.NewRunContext(c.ctx, attempt, idempotencyKey)
+	rctx := NewRunContext(c.ctx, attempt, idempotencyKey)
 	value, fnErr := fn(rctx)
 	var (
 		failureMessage string
 		retryable      bool
 	)
 	if fnErr != nil {
-		if f, ok := sdk.AsFailure(fnErr); ok {
+		if f, ok := AsFailure(fnErr); ok {
 			failureMessage = f.Message
 		} else {
 			failureMessage = fnErr.Error()
@@ -449,10 +448,10 @@ func (c *wireContext) Run(name string, fn sdk.RunFunc, opts ...sdk.RunOption) ([
 		// updated marker with attempt+1 so fn sees a fresh
 		// RunContext.Attempt() / IdempotencyKey().
 		c.suspend(fmt.Sprintf("run-retry:%d", slot))
-		return nil, sdk.ErrSuspended
+		return nil, ErrSuspended
 	}
 	if failureMessage != "" {
-		return nil, sdk.NewFailure(0, failureMessage)
+		return nil, NewFailure(0, failureMessage)
 	}
 	return value, nil
 }
@@ -460,7 +459,7 @@ func (c *wireContext) Run(name string, fn sdk.RunFunc, opts ...sdk.RunOption) ([
 // runOptionsToWirePolicy lifts the user-facing RunOptions into the
 // protocolv1 RunRetryPolicy carried on every ProposeRunCompletion.
 // Returns nil when every field is zero so the engine uses defaults.
-func runOptionsToWirePolicy(o sdk.RunOptions) *protocolv1.RunRetryPolicy {
+func runOptionsToWirePolicy(o RunOptions) *protocolv1.RunRetryPolicy {
 	if o.MaxAttempts == 0 && o.InitialInterval == 0 && o.Factor == 0 && o.MaxInterval == 0 {
 		return nil
 	}
@@ -491,8 +490,8 @@ func deriveIdempotencyKey(invID *enginev1.InvocationId, slot, attempt uint32) st
 // Call invokes target with input and returns a Future resolving to the
 // callee's response. Suspension is deferred to Future.Result so calls
 // compose under All/Any.
-func (c *wireContext) Call(target sdk.Target, input []byte, opts ...sdk.CallOption) sdk.Future {
-	resolved := sdk.ApplyCallOptions(opts)
+func (c *wireContext) Call(target Target, input []byte, opts ...CallOption) Future {
+	resolved := ApplyCallOptions(opts)
 	cmdSlot, allocErr := c.allocSlot(2)
 	if allocErr != nil {
 		return futureFromAllocErr(allocErr)
@@ -526,7 +525,7 @@ func (c *wireContext) Call(target sdk.Target, input []byte, opts ...sdk.CallOpti
 // OneWayCall invokes target with input fire-and-forget. Single-slot;
 // no future returned because the wire never plumbs a response back to
 // this invocation.
-func (c *wireContext) OneWayCall(target sdk.Target, input []byte) error {
+func (c *wireContext) OneWayCall(target Target, input []byte) error {
 	slot, err := c.allocSlot(1)
 	if err != nil {
 		return err
@@ -553,7 +552,7 @@ func (c *wireContext) OneWayCall(target sdk.Target, input []byte) error {
 //
 // Suspension is deferred to Future.Result so Awakeable composes under
 // All/Any.
-func (c *wireContext) Awakeable() (string, sdk.Future) {
+func (c *wireContext) Awakeable() (string, Future) {
 	cmdSlot, allocErr := c.allocSlot(2)
 	if allocErr != nil {
 		return "", futureFromAllocErr(allocErr)
@@ -621,17 +620,17 @@ func mintAwakeableID(ownerPartitionKey uint64) (string, error) {
 // no journal slot is allocated. Children must emit their command
 // frames before this is called; the combinator only orchestrates
 // suspension and result collection.
-func (c *wireContext) All(futures ...sdk.Future) sdk.AllResult {
-	return &allResult{ctx: c, children: append([]sdk.Future(nil), futures...)}
+func (c *wireContext) All(futures ...Future) AllResult {
+	return &allResult{ctx: c, children: append([]Future(nil), futures...)}
 }
 
 // Any composes child futures: Result resolves to the lowest-indexed
 // child whose Poll reports resolved at suspend-time. "First" is by
 // argument order, not wall clock, so replay is deterministic.
-func (c *wireContext) Any(futures ...sdk.Future) sdk.Future {
-	return &anyFuture{ctx: c, children: append([]sdk.Future(nil), futures...)}
+func (c *wireContext) Any(futures ...Future) Future {
+	return &anyFuture{ctx: c, children: append([]Future(nil), futures...)}
 }
 
-func (c *wireContext) SendSignal(sdk.Target, string, []byte) error {
+func (c *wireContext) SendSignal(Target, string, []byte) error {
 	return ErrWireNotImplemented
 }

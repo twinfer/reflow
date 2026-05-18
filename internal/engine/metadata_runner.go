@@ -75,16 +75,21 @@ func (r *MetadataRunner) onBecomeLeader() {
 	r.leaderCancel = cancel
 	r.mu.Unlock()
 
+	// Each leader-scoped goroutine takes its own short-lived store lease
+	// around the section that touches pebble. Snapshotter.Close blocks on
+	// outstanding leases, so a clean teardown waits for the bootstrap or
+	// rebalancer to finish its current iteration before the pebble.DB is
+	// torn down.
 	go r.bootstrap(leaderCtx)
 	if r.host != nil {
-		// Spawn the rebalancer + failure-detection ticker once shard 0
-		// bootstrap has been kicked off. Both share the leader-scoped
-		// context so step-down tears everything down.
 		go newMetadataRebalancer(r.host, r).run(leaderCtx)
 	}
 }
 
-// onStepDown cancels the leader-scoped context.
+// onStepDown cancels the leader-scoped context. The bootstrap and
+// rebalancer goroutines exit when leaderCtx fires; each holds short
+// store leases around its pebble reads, so Snapshotter.Close waits for
+// them to drop those leases before tearing the underlying DB down.
 func (r *MetadataRunner) onStepDown() {
 	r.log.Info("metadata: stepped down", "shard", r.ShardID)
 	r.mu.Lock()
@@ -129,7 +134,12 @@ func (r *MetadataRunner) bootstrap(ctx context.Context) {
 		}
 	}
 
-	existing, _ := (cluster.PartitionTableTable{S: r.snapshotter.Store()}).Get()
+	store, release, ok := r.snapshotter.Acquire()
+	if !ok {
+		return
+	}
+	existing, _ := (cluster.PartitionTableTable{S: store}).Get()
+	release()
 	pt := buildBootstrapTable(r.peers, existing, r.leadership.LeaderEpoch())
 	cmd := &enginev1.Command{
 		Kind: &enginev1.Command_UpdatePartitionTable{

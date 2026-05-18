@@ -8,13 +8,12 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine/admin"
 	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/sdk"
-	"github.com/twinfer/reflow/pkg/sdk/server"
+	"github.com/twinfer/reflow/pkg/handler"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
 // TestSDKServer_E2E_HTTP2 drives the real handler-side stack
-// (pkg/sdk/server.NewHTTP2) end-to-end through the engine wire path:
+// (pkg/handler.NewHTTP2) end-to-end through the engine wire path:
 // admin.RegisterDeployment → connectclient → InvokeStream → server.runSession
 // → user handler → OutputCommandMessage → engine InvokerEffect.Completed.
 //
@@ -22,8 +21,8 @@ import (
 // bytes) and the output round-trip (engine's Completed.output matches
 // the handler's return).
 func TestSDKServer_E2E_HTTP2(t *testing.T) {
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Echo", "echo", func(ctx sdk.Context, in []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Echo", "echo", func(ctx handler.Context, in []byte) ([]byte, error) {
 		// Confirm we have a real wireContext (Input() / InvocationID()).
 		if ctx.InvocationID() == nil {
 			t.Errorf("handler: InvocationID() returned nil")
@@ -33,7 +32,7 @@ func TestSDKServer_E2E_HTTP2(t *testing.T) {
 		t.Fatalf("RegisterService: %v", err)
 	}
 
-	srv, err := server.NewHTTP2(server.Config{Registry: reg})
+	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
 	if err != nil {
 		t.Fatalf("NewHTTP2: %v", err)
 	}

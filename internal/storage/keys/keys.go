@@ -256,7 +256,7 @@ func StatePrefix() []byte { return []byte(statePrefix) }
 // StateKey returns state/<service>/<obj_key>/<state_key>. For unkeyed
 // services pass objectKey="". Callers must ensure none of the three
 // components contain '/', otherwise the namespace boundary is ambiguous —
-// the API surface in pkg/sdk rejects invalid keys before they reach here.
+// the API surface in pkg/handler rejects invalid keys before they reach here.
 func StateKey(service, objectKey, stateKey string) []byte {
 	out := make([]byte, 0, len(statePrefix)+len(service)+1+len(objectKey)+1+len(stateKey))
 	out = append(out, statePrefix...)

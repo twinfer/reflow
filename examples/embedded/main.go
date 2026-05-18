@@ -9,7 +9,7 @@
 //	┌─────────────────────────────────────────────┐
 //	│ embedded (this main)                        │
 //	│  ┌────────────────────┐  http://127.0.0.1:N │
-//	│  │ pkg/sdk/server     │ ◄────────────────┐  │
+//	│  │ pkg/handler     │ ◄────────────────┐  │
 //	│  └────────────────────┘                  │  │
 //	│  ┌────────────────────┐                  │  │
 //	│  │ reflow.Run engine  │ ─ Handlers.Endpoints
@@ -44,16 +44,15 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/twinfer/reflow/pkg/handler"
 	"github.com/twinfer/reflow/pkg/reflow"
-	"github.com/twinfer/reflow/pkg/sdk"
-	"github.com/twinfer/reflow/pkg/sdk/server"
 )
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	// 1. Build a registry and register the handlers in this process.
-	reg := sdk.NewRegistry()
+	reg := handler.NewRegistry()
 	if err := reg.RegisterService("Greeter", "hello", greet); err != nil {
 		log.Error("register Greeter/hello", "err", err)
 		os.Exit(1)
@@ -71,7 +70,7 @@ func main() {
 		os.Exit(1)
 	}
 	handlerURL := "http://" + ln.Addr().String()
-	srv, err := server.NewHTTP2(server.Config{Registry: reg})
+	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
 	if err != nil {
 		log.Error("sdk server NewHTTP2", "err", err)
 		os.Exit(1)
@@ -141,9 +140,9 @@ func main() {
 //	curl -d '{"input":"d29ybGQ="}' http://127.0.0.1:8080/invocation/Greeter/hello
 //
 // (the JSON `input` field is base64-encoded raw bytes).
-func greet(_ sdk.Context, in []byte) ([]byte, error) {
+func greet(_ handler.Context, in []byte) ([]byte, error) {
 	return fmt.Appendf(nil, "hello, %s", in), nil
 }
 
 // echo returns its input unchanged.
-func echo(_ sdk.Context, in []byte) ([]byte, error) { return in, nil }
+func echo(_ handler.Context, in []byte) ([]byte, error) { return in, nil }

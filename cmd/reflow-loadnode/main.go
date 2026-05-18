@@ -75,7 +75,10 @@ func run() error {
 		return fmt.Errorf("parse peers: %w", err)
 	}
 
-	host, err := engine.NewHost(engine.HostConfig{
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	host, err := engine.NewHost(ctx, engine.HostConfig{
 		NodeID:             nodeID,
 		RaftAddr:           raftAddr,
 		DataDir:            dataDir,
@@ -138,8 +141,6 @@ func run() error {
 	// line on stdout before connecting its ingress client.
 	fmt.Println("reflow-loadnode: ready")
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	<-ctx.Done()
 	return nil
 }

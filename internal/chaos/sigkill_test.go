@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/sdk"
 )
 
 // TestChaos_LeaderSIGKILL runs a steady-state workload against a
@@ -49,8 +48,8 @@ func TestChaos_LeaderSIGKILL(t *testing.T) {
 		loadgen.FreeLocalAddr(t),
 	}
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService(service, handler, loadgen.HelloHandler); err != nil {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService(service, handlerName, loadgen.HelloHandler); err != nil {
 		t.Fatalf("register handler: %v", err)
 	}
 

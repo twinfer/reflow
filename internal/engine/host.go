@@ -186,11 +186,28 @@ type Host struct {
 	// use of a deployment; entries are evicted when a DeploymentRecord
 	// is overwritten with a different URL.
 	handlerRegistry *handlerclient.Registry
+	// closed turns Host.Close into a single-shot operation. The
+	// ctx-watcher goroutine and explicit shutdown paths both call
+	// Close; the second observes closed=true and returns without
+	// re-stopping the NodeHost (dragonboat panics on double-stop).
+	closed bool
+	// asyncStarts tracks goroutines spawned by onPartitionTable that
+	// call StartPartition out-of-band. Close waits on this so a
+	// pebble.Open mid-flight can't race with t.TempDir cleanup or
+	// nh.Close().
+	asyncStarts sync.WaitGroup
 }
 
 // NewHost constructs a Host but does not start any partitions; call
 // StartPartition for each shard the node should host.
-func NewHost(cfg HostConfig) (*Host, error) {
+//
+// ctx is a lifecycle context: when cancelled, the Host self-closes in a
+// background goroutine. This is a safety net for leaked Hosts (e.g.
+// tests that forget to defer Close, leaving dragonboat goroutines alive
+// to race with t.TempDir cleanup). Production code should still call
+// Close explicitly for deterministic teardown ordering; the watcher is
+// belt-and-suspenders.
+func NewHost(ctx context.Context, cfg HostConfig) (*Host, error) {
 	if cfg.NodeID == 0 {
 		return nil, errors.New("host: NodeID must be > 0")
 	}
@@ -248,6 +265,16 @@ func NewHost(cfg HostConfig) (*Host, error) {
 		return nil, fmt.Errorf("host: NewNodeHost: %w", err)
 	}
 	h.nh = nh
+	// Safety-net lifecycle watcher: when ctx is cancelled, self-close
+	// even if no explicit Close was called. Catches leaks in tests that
+	// forget to defer Close; production code (pkg/reflow.Run) closes
+	// explicitly so this never fires there.
+	if ctx != nil {
+		go func() {
+			<-ctx.Done()
+			_ = h.Close()
+		}()
+	}
 	return h, nil
 }
 
@@ -515,6 +542,10 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		return nil, errors.New("host: shardID must be > 0")
 	}
 	h.mu.Lock()
+	if h.partitions == nil {
+		h.mu.Unlock()
+		return nil, errors.New("host: closed")
+	}
 	sm := h.startMu[shardID]
 	if sm == nil {
 		sm = &sync.Mutex{}
@@ -525,6 +556,10 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 	defer sm.Unlock()
 
 	h.mu.Lock()
+	if h.partitions == nil {
+		h.mu.Unlock()
+		return nil, errors.New("host: closed")
+	}
 	if r, ok := h.partitions[shardID]; ok {
 		h.mu.Unlock()
 		return r, nil
@@ -609,13 +644,20 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 	// Register the runner BEFORE StartOnDiskReplica so any LeaderUpdated
 	// event that fires during catch-up reaches our leadership state.
 	h.mu.Lock()
+	if h.partitions == nil {
+		h.mu.Unlock()
+		_ = snap.Close()
+		return nil, errors.New("host: closed")
+	}
 	h.partitions[shardID] = runner
 	h.mu.Unlock()
 
 	initial, join := h.startMembers()
 	if err := h.nh.StartOnDiskReplica(initial, join, pc.Factory(), raftCfg); err != nil {
 		h.mu.Lock()
-		delete(h.partitions, shardID)
+		if h.partitions != nil {
+			delete(h.partitions, shardID)
+		}
 		h.mu.Unlock()
 		_ = snap.Close()
 		return nil, fmt.Errorf("host: StartOnDiskReplica: %w", err)
@@ -651,6 +693,10 @@ func (h *Host) onPartitionTable(pt *enginev1.PartitionTable) {
 	}
 	self := h.cfg.NodeID
 	h.mu.RLock()
+	if h.closed {
+		h.mu.RUnlock()
+		return
+	}
 	var toStart []uint64
 	for shardID, rs := range pt.GetShards() {
 		if shardID == 0 {
@@ -674,7 +720,9 @@ func (h *Host) onPartitionTable(pt *enginev1.PartitionTable) {
 	h.mu.RUnlock()
 
 	for _, shardID := range toStart {
+		h.asyncStarts.Add(1)
 		go func(sh uint64) {
+			defer h.asyncStarts.Done()
 			if _, err := h.StartPartition(sh); err != nil {
 				h.log.Warn("host: OnPartitionTable: StartPartition failed",
 					"shard", sh, "err", err)
@@ -720,8 +768,24 @@ func (h *Host) Partitions() map[uint64]*PartitionRunner {
 	return out
 }
 
-// Close stops every partition and the NodeHost. Idempotent.
+// Close stops every partition and the NodeHost. Idempotent and
+// concurrency-safe: callers race here via the ctx-watcher goroutine
+// installed by NewHost and an explicit Close from the test or
+// pkg/reflow.Run shutdown path. The first call wins; subsequent calls
+// observe the closed state under h.mu and return immediately.
 func (h *Host) Close() error {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return nil
+	}
+	h.closed = true
+	h.mu.Unlock()
+	// Drain in-flight onPartitionTable spawns before tearing down — a
+	// goroutine mid-StartPartition (between the partitions==nil guard
+	// and NewSnapshotter) would otherwise race pebble.Open against
+	// t.TempDir cleanup or nh.Close.
+	h.asyncStarts.Wait()
 	h.mu.Lock()
 	partitions := h.partitions
 	metadataRunners := h.metadataRunners

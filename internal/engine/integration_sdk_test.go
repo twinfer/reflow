@@ -8,14 +8,14 @@ import (
 	"time"
 
 	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/pkg/sdk"
+	"github.com/twinfer/reflow/pkg/handler"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
 // bringUpForSDKTest opens a fresh single-node Host with shard 0 +
-// shard 1, starts a pkg/sdk/server hosting reg, and registers its URL
+// shard 1, starts a pkg/handler hosting reg, and registers its URL
 // as a deployment so invocations dispatch to it.
-func bringUpForSDKTest(t *testing.T, reg *sdk.Registry) (*engine.Host, *engine.PartitionRunner) {
+func bringUpForSDKTest(t *testing.T, reg *handler.Registry) (*engine.Host, *engine.PartitionRunner) {
 	t.Helper()
 	h := singleNodeWithHandlers(t, reg)
 	return h, h.Partition(1)
@@ -28,9 +28,9 @@ func bringUpForSDKTest(t *testing.T, reg *sdk.Registry) (*engine.Host, *engine.P
 func TestSDK_RunReturnsJournaledValue(t *testing.T) {
 	var runCount atomic.Int32
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Runner", "go", func(c sdk.Context, _ []byte) ([]byte, error) {
-		v, err := c.Run("compute", func(*sdk.RunContext) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Runner", "go", func(c handler.Context, _ []byte) ([]byte, error) {
+		v, err := c.Run("compute", func(*handler.RunContext) ([]byte, error) {
 			runCount.Add(1)
 			return []byte("computed"), nil
 		})
@@ -79,8 +79,8 @@ func TestSDK_RunReturnsJournaledValue(t *testing.T) {
 // second session run reads the journaled JESleepResult without re-issuing
 // the timer.
 func TestSDK_SleepResumesAfterTimerFires(t *testing.T) {
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Sleeper", "wait", func(c sdk.Context, in []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Sleeper", "wait", func(c handler.Context, in []byte) ([]byte, error) {
 		if _, err := c.Sleep(80 * time.Millisecond).Result(); err != nil {
 			return nil, err
 		}
@@ -117,8 +117,8 @@ func TestSDK_SleepResumesAfterTimerFires(t *testing.T) {
 // is that the SetState path doesn't accidentally suspend on a missing
 // completion).
 func TestSDK_SetStateCompletesOK(t *testing.T) {
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Stater", "set", func(c sdk.Context, in []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Stater", "set", func(c handler.Context, in []byte) ([]byte, error) {
 		if err := c.SetState("k", in); err != nil {
 			return nil, err
 		}
@@ -153,8 +153,8 @@ func TestSDK_SetStateCompletesOK(t *testing.T) {
 // handler emits a *Failure that propagates out as the invocation's
 // terminal failure_message.
 func TestSDK_StepBudgetExhausts(t *testing.T) {
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Greedy", "loop", func(c sdk.Context, _ []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Greedy", "loop", func(c handler.Context, _ []byte) ([]byte, error) {
 		for range 10 {
 			if err := c.SetState("k", []byte("v")); err != nil {
 				return nil, err
@@ -199,10 +199,10 @@ func TestSDK_StepBudgetExhausts(t *testing.T) {
 // non-empty failure_message, and the handler return path translates the
 // failure cleanly to the engine.
 func TestSDK_RunFailureSurfacesAsFailure(t *testing.T) {
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Boom", "fail", func(c sdk.Context, _ []byte) ([]byte, error) {
-		_, err := c.Run("nope", func(*sdk.RunContext) ([]byte, error) {
-			return nil, sdk.NewFailure(7, "kaboom")
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Boom", "fail", func(c handler.Context, _ []byte) ([]byte, error) {
+		_, err := c.Run("nope", func(*handler.RunContext) ([]byte, error) {
+			return nil, handler.NewFailure(7, "kaboom")
 		})
 		return nil, err
 	}); err != nil {

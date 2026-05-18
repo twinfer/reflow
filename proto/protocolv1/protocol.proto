@@ -189,7 +189,7 @@ message ProposeRunCompletionMessage {
 }
 
 // RunRetryPolicy is the wire-side mirror of enginev1.RunRetryPolicy.
-// Kept in protocolv1 so pkg/sdk/server doesn't import enginev1 — the
+// Kept in protocolv1 so pkg/handler doesn't import enginev1 — the
 // invoker translates between the two at the wire boundary.
 message RunRetryPolicy {
   uint64 initial_interval_ms = 1;

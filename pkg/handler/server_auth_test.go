@@ -1,4 +1,4 @@
-package server
+package handler
 
 import (
 	"context"
@@ -19,7 +19,6 @@ import (
 	"google.golang.org/grpc/credentials/tls/certprovider"
 
 	"github.com/twinfer/reflow/pkg/reflow/creds"
-	"github.com/twinfer/reflow/pkg/sdk"
 )
 
 // testCAAndLeaf builds a self-signed CA + a leaf signed by it carrying
@@ -154,7 +153,7 @@ func TestCallerURI_NoMiddleware(t *testing.T) {
 }
 
 func TestValidateConfig_AuthFieldsWithoutRoots(t *testing.T) {
-	reg := sdk.NewRegistry()
+	reg := NewRegistry()
 	for _, cfg := range []Config{
 		{Registry: reg, AllowedSPIFFE: []string{"x"}},
 		{Registry: reg, TrustDomain: "x"},
@@ -168,14 +167,14 @@ func TestValidateConfig_AuthFieldsWithoutRoots(t *testing.T) {
 
 func TestValidateConfig_RootCAsRequiresAllowlist(t *testing.T) {
 	caPEM, _, _ := testCAAndLeaf(t, "/node/1")
-	cfg := Config{Registry: sdk.NewRegistry(), RootCAs: caPEM}
+	cfg := Config{Registry: NewRegistry(), RootCAs: caPEM}
 	if _, err := validateConfig(&cfg); err == nil {
 		t.Fatal("expected error: RootCAs set without AllowedSPIFFE")
 	}
 }
 
 func TestValidateConfig_NoAuthIsPassthrough(t *testing.T) {
-	cfg := Config{Registry: sdk.NewRegistry()}
+	cfg := Config{Registry: NewRegistry()}
 	v, err := validateConfig(&cfg)
 	if err != nil {
 		t.Fatalf("validateConfig: %v", err)

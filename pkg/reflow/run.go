@@ -38,7 +38,7 @@ import (
 //	    Node:    reflow.NodeConfig{ID: 1, RaftAddr: "127.0.0.1:5410"},
 //	    Storage: reflow.StorageConfig{DataDir: "/var/lib/reflow"},
 //	}
-//	cfg.Handlers.Registry = sdk.NewRegistry()
+//	cfg.Handlers.Registry = handler.NewRegistry()
 //	host, err := reflow.Run(ctx, cfg)
 func Run(ctx context.Context, cfg Config) (*Host, error) {
 	if err := validate(cfg); err != nil {
@@ -124,7 +124,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			}
 		},
 	}
-	eh, err := engine.NewHost(hcfg)
+	eh, err := engine.NewHost(ctx, hcfg)
 	if err != nil {
 		if handlerSigner != nil {
 			handlerSigner.Close()

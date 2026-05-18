@@ -323,7 +323,17 @@ func (i *Invoker) watchSession(id *enginev1.InvocationId, key string, s sessionH
 // TimerService rebuilds from disk and re-fires past-due timers, and
 // the awakeable/signal/call-result paths come from external proposals
 // that happen after leader gain.
-func (i *Invoker) ResumeNonTerminal(table tables.InvocationTable) error {
+//
+// Caller (onBecomeLeader) must hold a Snapshotter lease for the table's
+// backing store; the lease guarantees the underlying pebble.DB stays
+// open for the duration of the scan, so this function never panics with
+// pebble.ErrClosed.
+//
+// ctx is the leader-scope context. ResumeNonTerminal checks ctx.Err()
+// between rows so a step-down mid-scan exits promptly without spawning
+// invoker sessions whose leader is already gone — cooperative shutdown
+// on top of the lease's correctness guarantee.
+func (i *Invoker) ResumeNonTerminal(ctx context.Context, table tables.InvocationTable) error {
 	i.mu.Lock()
 	if !i.started {
 		i.mu.Unlock()
@@ -331,7 +341,7 @@ func (i *Invoker) ResumeNonTerminal(table tables.InvocationTable) error {
 	}
 	i.mu.Unlock()
 
-	return table.ScanAll(func(id *enginev1.InvocationId, s *enginev1.InvocationStatus) error {
+	return table.ScanAll(ctx, func(id *enginev1.InvocationId, s *enginev1.InvocationStatus) error {
 		var target *enginev1.InvocationTarget
 		switch st := s.GetStatus().(type) {
 		case *enginev1.InvocationStatus_Scheduled:

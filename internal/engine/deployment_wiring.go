@@ -18,8 +18,13 @@ import (
 //
 // ctx scopes the SyncRead; the invoker passes its own context so
 // shutdown cancels in-flight lookups rather than spinning until a
-// wall-clock timeout. A bounded fallback deadline (2s) covers callers
+// wall-clock timeout. A bounded fallback deadline (5s) covers callers
 // that pass a never-cancelled context.
+//
+// Retries on transient errors: post-restart, the partition leader may
+// dispatch an invoker session before shard 0 finishes electing its
+// leader. Mirror the LookupDeploymentIDByHandler retry shape so the
+// session waits rather than failing the invocation terminally.
 //
 // Implements invoker.DeploymentResolver. Bound at partition construction
 // via invoker.Config.Deployments.
@@ -32,18 +37,29 @@ func (h *Host) resolveDeployment(ctx context.Context, deploymentID string) (*eng
 	}
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
+		ctx, cancel = context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 	}
-	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupDeployment{ID: deploymentID})
-	if err != nil {
-		return nil, fmt.Errorf("host: SyncRead deployment %s: %w", deploymentID, err)
+	var lastErr error
+	for {
+		res, err := h.nh.SyncRead(ctx, 0, cluster.LookupDeployment{ID: deploymentID})
+		if err == nil {
+			rec, ok := res.(*enginev1.DeploymentRecord)
+			if !ok {
+				return nil, fmt.Errorf("host: resolveDeployment: unexpected lookup type %T", res)
+			}
+			return rec, nil
+		}
+		lastErr = err
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("host: SyncRead deployment %s: %w", deploymentID, err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("host: SyncRead deployment %s: %w", deploymentID, lastErr)
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
-	rec, ok := res.(*enginev1.DeploymentRecord)
-	if !ok {
-		return nil, fmt.Errorf("host: resolveDeployment: unexpected lookup type %T", res)
-	}
-	return rec, nil
 }
 
 // LookupDeploymentIDByHandler resolves (service, handler) → deployment_id

@@ -15,7 +15,7 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/ingress"
-	"github.com/twinfer/reflow/pkg/sdk"
+	"github.com/twinfer/reflow/pkg/handler"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -115,8 +115,8 @@ func TestCombinator_All_ResolvesWhenAllChildrenComplete(t *testing.T) {
 	idsCh := make(chan string, 3)
 	var emitted atomic.Bool
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Joiner", "all", func(c sdk.Context, _ []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Joiner", "all", func(c handler.Context, _ []byte) ([]byte, error) {
 		id1, f1 := c.Awakeable()
 		id2, f2 := c.Awakeable()
 		id3, f3 := c.Awakeable()
@@ -174,8 +174,8 @@ func TestCombinator_All_StaysSuspendedOnPartialResolution(t *testing.T) {
 	idsCh := make(chan string, 3)
 	var emitted atomic.Bool
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Joiner", "partial", func(c sdk.Context, _ []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Joiner", "partial", func(c handler.Context, _ []byte) ([]byte, error) {
 		id1, f1 := c.Awakeable()
 		id2, f2 := c.Awakeable()
 		id3, f3 := c.Awakeable()
@@ -244,8 +244,8 @@ func TestCombinator_Any_ReturnsFirstResolverByArgumentOrder(t *testing.T) {
 	idsCh := make(chan string, 3)
 	var emitted atomic.Bool
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Racer", "any", func(c sdk.Context, _ []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Racer", "any", func(c handler.Context, _ []byte) ([]byte, error) {
 		id1, f1 := c.Awakeable()
 		id2, f2 := c.Awakeable()
 		id3, f3 := c.Awakeable()
@@ -295,8 +295,8 @@ func TestCombinator_Any_ReturnsFirstResolverByArgumentOrder(t *testing.T) {
 // arrives. Confirms Sleep is genuinely a Future and composes under
 // the same Any combinator as Awakeable.
 func TestCombinator_AnyOfAwakeableAndSleep_TimeoutPattern(t *testing.T) {
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Timer", "race", func(c sdk.Context, _ []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Timer", "race", func(c handler.Context, _ []byte) ([]byte, error) {
 		_, never := c.Awakeable()
 		short := c.Sleep(60 * time.Millisecond)
 		// Any picks the first resolved by argument order. The
@@ -341,8 +341,8 @@ func TestCombinator_Nested_AllOfAwakeableAndAny(t *testing.T) {
 	innerCh := make(chan string, 1)
 	var emitted atomic.Bool
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Nest", "ed", func(c sdk.Context, _ []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Nest", "ed", func(c handler.Context, _ []byte) ([]byte, error) {
 		outerID, outerF := c.Awakeable()
 		innerID, innerAwakeable := c.Awakeable()
 		short := c.Sleep(60 * time.Millisecond)
@@ -398,8 +398,8 @@ func TestCombinator_All_SurvivesRestart(t *testing.T) {
 	idsCh := make(chan string, 4)
 	var emitted atomic.Bool
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Persist", "all", func(c sdk.Context, _ []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Persist", "all", func(c handler.Context, _ []byte) ([]byte, error) {
 		id1, f1 := c.Awakeable()
 		id2, f2 := c.Awakeable()
 		// emitted is per-process; both pre- and post-crash runs
@@ -499,7 +499,7 @@ func TestCombinator_All_SurvivesRestart(t *testing.T) {
 	// short-circuits to ErrSuspended after wake. Surface that here so
 	// future regressions in suspend-resume coupling don't silently
 	// pass via output-only checks.
-	if errors.Is(errors.New(completed.GetFailureMessage()), sdk.ErrSuspended) {
+	if errors.Is(errors.New(completed.GetFailureMessage()), handler.ErrSuspended) {
 		t.Errorf("completed with sticky ErrSuspended: %q", completed.GetFailureMessage())
 	}
 }

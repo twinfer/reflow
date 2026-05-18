@@ -2,6 +2,7 @@ package tables
 
 import (
 	"bytes"
+	"context"
 
 	"google.golang.org/protobuf/proto"
 
@@ -54,10 +55,11 @@ func (t InvocationTable) Delete(b storage.Batch, id *enginev1.InvocationId) erro
 
 // ScanAll iterates every persisted invocation status. The callback is called
 // in key order; returning a non-nil error aborts iteration and is returned.
+// Iteration aborts early when ctx is cancelled, returning ctx.Err().
 //
 // Rows whose Status is Free are skipped (they're equivalent to the row being
 // absent; defensive against partial migrations).
-func (t InvocationTable) ScanAll(fn func(id *enginev1.InvocationId, s *enginev1.InvocationStatus) error) error {
+func (t InvocationTable) ScanAll(ctx context.Context, fn func(id *enginev1.InvocationId, s *enginev1.InvocationStatus) error) error {
 	prefix := []byte("inv/")
 	iter, err := t.S.NewIter(prefix, keys.PrefixUpperBound(prefix))
 	if err != nil {
@@ -65,6 +67,9 @@ func (t InvocationTable) ScanAll(fn func(id *enginev1.InvocationId, s *enginev1.
 	}
 	defer iter.Close()
 	for ok := iter.First(); ok; ok = iter.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		key := iter.Key()
 		if !bytes.HasPrefix(key, prefix) {
 			continue

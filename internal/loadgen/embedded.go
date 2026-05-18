@@ -8,12 +8,11 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/admin"
-	"github.com/twinfer/reflow/pkg/sdk"
-	sdkserver "github.com/twinfer/reflow/pkg/sdk/server"
+	"github.com/twinfer/reflow/pkg/handler"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 )
 
-// StartEmbeddedHandlers spins up a pkg/sdk/server.NewHTTP2 endpoint on a
+// StartEmbeddedHandlers spins up a pkg/handler.NewHTTP2 endpoint on a
 // free local port hosting reg and registers it as a deployment with the
 // cluster's metadata leader. Returns a teardown function the caller
 // defers; the function stops the server and closes the listener.
@@ -23,15 +22,15 @@ import (
 // of the old loadgen.ClusterOptions.Handlers field.
 //
 // reg with zero handlers is a no-op (returns a noop teardown).
-func StartEmbeddedHandlers(t testing.TB, cluster *Cluster, reg *sdk.Registry) func() {
+func StartEmbeddedHandlers(t testing.TB, cluster *Cluster, reg *handler.Registry) func() {
 	t.Helper()
 	if reg == nil || reg.Len() == 0 {
 		return func() {}
 	}
 
-	srv, err := sdkserver.NewHTTP2(sdkserver.Config{Registry: reg})
+	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
 	if err != nil {
-		t.Fatalf("loadgen: sdkserver.NewHTTP2: %v", err)
+		t.Fatalf("loadgen: handler.NewHTTP2: %v", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -146,7 +146,7 @@ func (f *fakeHandlerAwakeable) serveInvoke(t *testing.T, stream *connect.BidiStr
 	return drainStream(stream)
 }
 
-// mintAwakeable mirrors pkg/sdk/server.mintAwakeableID for the test
+// mintAwakeable mirrors pkg/handler.mintAwakeableID for the test
 // fixture so we don't have to export the helper out of the public SDK
 // surface.
 func mintAwakeable(ownerPartitionKey uint64) (string, error) {

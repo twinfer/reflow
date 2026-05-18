@@ -486,7 +486,7 @@ func (c *Cluster) bringUpNode(t testing.TB, idx int) error {
 	if c.opts.SubprocessNodes {
 		return c.bringUpSubprocessNode(t, idx)
 	}
-	h, err := engine.NewHost(engine.HostConfig{
+	h, err := engine.NewHost(t.Context(), engine.HostConfig{
 		NodeID:               uint64(idx + 1),
 		RaftAddr:             addrs.raft,
 		DataDir:              c.dataDirs[idx],

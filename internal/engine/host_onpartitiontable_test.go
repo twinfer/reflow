@@ -22,7 +22,7 @@ func TestHost_OnPartitionTable_StartsLocallyOwnedShard(t *testing.T) {
 	raftAddr := ln.Addr().String()
 	_ = ln.Close()
 
-	h, err := NewHost(HostConfig{
+	h, err := NewHost(t.Context(), HostConfig{
 		NodeID:             1,
 		RaftAddr:           raftAddr,
 		DataDir:            t.TempDir(),
@@ -82,7 +82,7 @@ func TestHost_OnPartitionTable_NotLocallyOwned_NoStart(t *testing.T) {
 	raftAddr := ln.Addr().String()
 	_ = ln.Close()
 
-	h, err := NewHost(HostConfig{
+	h, err := NewHost(t.Context(), HostConfig{
 		NodeID:             1,
 		RaftAddr:           raftAddr,
 		DataDir:            t.TempDir(),

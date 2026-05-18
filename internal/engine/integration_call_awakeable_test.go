@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/twinfer/reflow/internal/engine/routing"
-	"github.com/twinfer/reflow/pkg/sdk"
+	"github.com/twinfer/reflow/pkg/handler"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -39,7 +39,7 @@ import (
 func TestHandlerSurvivesKill(t *testing.T) {
 	var runCount atomic.Int32
 
-	handler := func(c sdk.Context, in []byte) ([]byte, error) {
+	fn := func(c handler.Context, in []byte) ([]byte, error) {
 		if err := c.SetState("k", in); err != nil {
 			return nil, err
 		}
@@ -53,7 +53,7 @@ func TestHandlerSurvivesKill(t *testing.T) {
 		if _, err := c.Sleep(1500 * time.Millisecond).Result(); err != nil {
 			return nil, err
 		}
-		v, err := c.Run("compute", func(*sdk.RunContext) ([]byte, error) {
+		v, err := c.Run("compute", func(*handler.RunContext) ([]byte, error) {
 			runCount.Add(1)
 			return []byte("computed"), nil
 		})
@@ -63,8 +63,8 @@ func TestHandlerSurvivesKill(t *testing.T) {
 		return v, nil
 	}
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Survivor", "go", handler); err != nil {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Survivor", "go", fn); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	handlerURL := startSDKServer(t, reg)
@@ -153,15 +153,15 @@ func TestHandlerSurvivesKill(t *testing.T) {
 func TestOutgoingCallSurvivesRestart(t *testing.T) {
 	var calleeRuns atomic.Int32
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Callee", "do", func(_ sdk.Context, in []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Callee", "do", func(_ handler.Context, in []byte) ([]byte, error) {
 		calleeRuns.Add(1)
 		return append([]byte("from-callee:"), in...), nil
 	}); err != nil {
 		t.Fatalf("Register Callee: %v", err)
 	}
-	if err := reg.RegisterService("Caller", "go", func(c sdk.Context, in []byte) ([]byte, error) {
-		out, err := c.Call(sdk.Target{Service: "Callee", Handler: "do"}, in).Result()
+	if err := reg.RegisterService("Caller", "go", func(c handler.Context, in []byte) ([]byte, error) {
+		out, err := c.Call(handler.Target{Service: "Callee", Handler: "do"}, in).Result()
 		if err != nil {
 			return nil, err
 		}
@@ -266,14 +266,14 @@ func TestOutgoingCallSurvivesRestart(t *testing.T) {
 // straight-line happy path proves the apply arm + FSM transition wiring
 // before the crash variants stress the resume paths.
 func TestCallResultDeliveredInline(t *testing.T) {
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("B", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("B", "echo", func(_ handler.Context, in []byte) ([]byte, error) {
 		return append([]byte("pong:"), in...), nil
 	}); err != nil {
 		t.Fatalf("Register B: %v", err)
 	}
-	if err := reg.RegisterService("A", "go", func(c sdk.Context, in []byte) ([]byte, error) {
-		out, err := c.Call(sdk.Target{Service: "B", Handler: "echo"}, in).Result()
+	if err := reg.RegisterService("A", "go", func(c handler.Context, in []byte) ([]byte, error) {
+		out, err := c.Call(handler.Target{Service: "B", Handler: "echo"}, in).Result()
 		if err != nil {
 			return nil, err
 		}
@@ -317,8 +317,8 @@ func TestCallResultDeliveredInline(t *testing.T) {
 // arm journals JECallResult on Caller, and Caller resumes to Completed.
 func TestCallResultSurvivesCallerCrash(t *testing.T) {
 	var calleeRuns atomic.Int32
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("B", "do", func(c sdk.Context, in []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("B", "do", func(c handler.Context, in []byte) ([]byte, error) {
 		// Sleep gives the test window to crash the host before Callee
 		// finishes — Callee's status is Invoked (mid-handler) at crash time.
 		if _, err := c.Sleep(800 * time.Millisecond).Result(); err != nil {
@@ -329,8 +329,8 @@ func TestCallResultSurvivesCallerCrash(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register B: %v", err)
 	}
-	if err := reg.RegisterService("A", "go", func(c sdk.Context, in []byte) ([]byte, error) {
-		out, err := c.Call(sdk.Target{Service: "B", Handler: "do"}, in).Result()
+	if err := reg.RegisterService("A", "go", func(c handler.Context, in []byte) ([]byte, error) {
+		out, err := c.Call(handler.Target{Service: "B", Handler: "do"}, in).Result()
 		if err != nil {
 			return nil, err
 		}
@@ -399,8 +399,8 @@ func TestCallResultSurvivesCallerCrash(t *testing.T) {
 // before its result lands.)
 func TestCallResultSurvivesCalleeCrash(t *testing.T) {
 	var calleeRuns atomic.Int32
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("B", "do", func(c sdk.Context, in []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("B", "do", func(c handler.Context, in []byte) ([]byte, error) {
 		if _, err := c.Sleep(1200 * time.Millisecond).Result(); err != nil {
 			return nil, err
 		}
@@ -409,8 +409,8 @@ func TestCallResultSurvivesCalleeCrash(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register B: %v", err)
 	}
-	if err := reg.RegisterService("A", "go", func(c sdk.Context, in []byte) ([]byte, error) {
-		out, err := c.Call(sdk.Target{Service: "B", Handler: "do"}, in).Result()
+	if err := reg.RegisterService("A", "go", func(c handler.Context, in []byte) ([]byte, error) {
+		out, err := c.Call(handler.Target{Service: "B", Handler: "do"}, in).Result()
 		if err != nil {
 			return nil, err
 		}
@@ -503,8 +503,8 @@ func TestAwakeableResolvedByIngress(t *testing.T) {
 	awakeableCh := make(chan string, 1)
 	var emitted atomic.Bool
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Awaiter", "wait", func(c sdk.Context, _ []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Awaiter", "wait", func(c handler.Context, _ []byte) ([]byte, error) {
 		id, fut := c.Awakeable()
 		// Only publish the id once across replays. After resolution the
 		// session respawns and re-enters this branch; emitting again

@@ -299,10 +299,11 @@ func (r *metadataRebalancer) resolveNodeHostID(nodeID uint64) string {
 	if r.runner == nil || r.runner.snapshotter == nil {
 		return ""
 	}
-	store := r.runner.snapshotter.Store()
-	if store == nil {
+	store, release, ok := r.runner.snapshotter.Acquire()
+	if !ok {
 		return ""
 	}
+	defer release()
 	m, err := (cluster.MembershipTable{S: store}).Get(nodeID)
 	if err != nil || m == nil {
 		return ""

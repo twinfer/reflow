@@ -10,7 +10,6 @@ import (
 
 	"github.com/twinfer/reflow/internal/chaos"
 	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/sdk"
 )
 
 // TestChaos_LeaderIsolated runs a steady-state workload, isolates the
@@ -40,8 +39,8 @@ func TestChaos_LeaderIsolated(t *testing.T) {
 		awaitTerminal = 120 * time.Second
 	)
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService(service, handler, loadgen.HelloHandler); err != nil {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService(service, handlerName, loadgen.HelloHandler); err != nil {
 		t.Fatalf("register handler: %v", err)
 	}
 

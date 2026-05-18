@@ -13,7 +13,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine/admin"
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/sdk"
+	"github.com/twinfer/reflow/pkg/handler"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
@@ -104,8 +104,8 @@ func TestWireDispatch_HTTP2_OneWayCall(t *testing.T) {
 	const wantOutput = "caller-done"
 
 	var calleeRuns atomic.Int32
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Callee", "fired", func(_ sdk.Context, _ []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Callee", "fired", func(_ handler.Context, _ []byte) ([]byte, error) {
 		calleeRuns.Add(1)
 		return []byte("ack"), nil
 	}); err != nil {

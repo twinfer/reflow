@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/pkg/sdk"
+	"github.com/twinfer/reflow/pkg/handler"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -44,7 +44,7 @@ func buildID(pk uint64, name string) *enginev1.InvocationId {
 // TestInvokerWiringEchoCompletes is the smallest end-to-end test
 // that exercises the wiring: admin.RegisterDeployment → Invoker → wire
 // session → handler → InvokerEffect.Completed → FSM. A pure echo handler
-// is registered via pkg/sdk/server + admin.RegisterDeployment, an Invoke
+// is registered via pkg/handler + admin.RegisterDeployment, an Invoke
 // command is proposed via the partition's ingress proposer, and the
 // invocation status is polled until Completed.
 //
@@ -56,8 +56,8 @@ func buildID(pk uint64, name string) *enginev1.InvocationId {
 //   - wireSession.completeTerminal failing to propose Completed (status
 //     stays Invoked forever).
 func TestInvokerWiringEchoCompletes(t *testing.T) {
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, input []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Echo", "echo", func(_ handler.Context, input []byte) ([]byte, error) {
 		return append([]byte("echo:"), input...), nil
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -94,8 +94,8 @@ func TestInvokerWiringEchoCompletes(t *testing.T) {
 // InvokeCommand carries it on ingress, the apply arm copies it onto the
 // new InvocationStatus, and downstream transitions preserve it.
 func TestInvokerWiring_StampsDeploymentID(t *testing.T) {
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Stamper", "go", func(_ sdk.Context, _ []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Stamper", "go", func(_ handler.Context, _ []byte) ([]byte, error) {
 		return []byte("ok"), nil
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -141,8 +141,8 @@ func TestInvokerWiringMissingHandlerFailsTerminally(t *testing.T) {
 	// Register one handler so a deployment exists for the host's auto-
 	// seeding path, but the invocation targets a different (service,
 	// handler) tuple so the handler lookup misses.
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Real", "go", func(_ sdk.Context, _ []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Real", "go", func(_ handler.Context, _ []byte) ([]byte, error) {
 		return nil, nil
 	}); err != nil {
 		t.Fatalf("Register: %v", err)

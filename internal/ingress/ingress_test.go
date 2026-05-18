@@ -16,8 +16,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/admin"
 	"github.com/twinfer/reflow/internal/ingress"
-	"github.com/twinfer/reflow/pkg/sdk"
-	sdkserver "github.com/twinfer/reflow/pkg/sdk/server"
+	"github.com/twinfer/reflow/pkg/handler"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -39,14 +38,14 @@ func freeAddr(t *testing.T) string {
 }
 
 // bringUpHostWithIngress starts a single-node Host with shard 0 +
-// shard 1, starts a pkg/sdk/server hosting reg, registers its URL as a
+// shard 1, starts a pkg/handler hosting reg, registers its URL as a
 // deployment, and starts the ingress HTTP+gRPC transports on ephemeral
 // ports. The cleanup stops everything in the right order (ingress
 // before host so in-flight requests don't dangle).
-func bringUpHostWithIngress(t *testing.T, reg *sdk.Registry) (*engine.Host, *ingress.Runtime) {
+func bringUpHostWithIngress(t *testing.T, reg *handler.Registry) (*engine.Host, *ingress.Runtime) {
 	t.Helper()
 	dir := t.TempDir()
-	h, err := engine.NewHost(engine.HostConfig{
+	h, err := engine.NewHost(t.Context(), engine.HostConfig{
 		NodeID:             1,
 		RaftAddr:           freeAddr(t),
 		DataDir:            filepath.Join(dir, "node1"),
@@ -74,9 +73,9 @@ func bringUpHostWithIngress(t *testing.T, reg *sdk.Registry) (*engine.Host, *ing
 	}
 
 	if reg != nil && reg.Len() > 0 {
-		srv, err := sdkserver.NewHTTP2(sdkserver.Config{Registry: reg})
+		srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
 		if err != nil {
-			t.Fatalf("sdkserver.NewHTTP2: %v", err)
+			t.Fatalf("handler.NewHTTP2: %v", err)
 		}
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -132,8 +131,8 @@ func httpPost(t *testing.T, url string, body any) ([]byte, int) {
 // the same bytes back. Exercises the full grpc-gateway → gRPC → server →
 // Host → Invoker round-trip.
 func TestIngress_SubmitAndAwaitEcho(t *testing.T) {
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Echo", "echo", func(_ handler.Context, in []byte) ([]byte, error) {
 		return append([]byte("echo:"), in...), nil
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -199,8 +198,8 @@ func TestIngress_SubmitAndAwaitEcho(t *testing.T) {
 // endpoints: ListPartitions surfaces shard 1 as leader, DescribeInvocation
 // reports Completed for a finished invocation.
 func TestIngress_DescribeAndListPartitions(t *testing.T) {
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Echo", "echo", func(_ handler.Context, in []byte) ([]byte, error) {
 		return in, nil
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -276,8 +275,8 @@ func TestIngress_DescribeAndListPartitions(t *testing.T) {
 //     COMPLETED_OK after; UNKNOWN for an arbitrary unknown id.
 //   - AttachInvocation blocks until Completed and returns the same output.
 func TestIngress_AttachAndGetOutput(t *testing.T) {
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Echo", "echo", func(_ sdk.Context, in []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Echo", "echo", func(_ handler.Context, in []byte) ([]byte, error) {
 		return append([]byte("echo:"), in...), nil
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -385,8 +384,8 @@ func TestIngress_AttachAndGetOutput(t *testing.T) {
 // a virtual object, then reads it back via the admin endpoint. Also
 // covers the absent-key path (present=false, not an error).
 func TestIngress_GetObjectState(t *testing.T) {
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService("Stater", "set", func(c sdk.Context, in []byte) ([]byte, error) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Stater", "set", func(c handler.Context, in []byte) ([]byte, error) {
 		if err := c.SetState("k", in); err != nil {
 			return nil, err
 		}
@@ -481,7 +480,7 @@ func TestIngress_GetObjectState(t *testing.T) {
 }
 
 func TestIngress_SubmitRejectsEmptyService(t *testing.T) {
-	reg := sdk.NewRegistry()
+	reg := handler.NewRegistry()
 	_, rt := bringUpHostWithIngress(t, reg)
 	base := "http://" + rt.HTTPAddr()
 

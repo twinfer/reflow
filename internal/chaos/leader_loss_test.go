@@ -10,7 +10,6 @@ import (
 
 	"github.com/twinfer/reflow/internal/chaos"
 	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/sdk"
 )
 
 // TestChaos_LeaderLoss runs a steady-state workload, kills the
@@ -25,15 +24,15 @@ import (
 func TestChaos_LeaderLoss(t *testing.T) {
 	const (
 		service     = "loadgen.Hello"
-		handler     = "echo"
+		handlerName = "echo"
 		rate        = 50.0
 		concurrency = 16
 		duration    = 30 * time.Second
 		killAfter   = 5 * time.Second
 	)
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterService(service, handler, loadgen.HelloHandler); err != nil {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService(service, handlerName, loadgen.HelloHandler); err != nil {
 		t.Fatalf("register handler: %v", err)
 	}
 

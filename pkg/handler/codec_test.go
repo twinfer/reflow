@@ -1,10 +1,10 @@
-package sdk_test
+package handler_test
 
 import (
 	"errors"
 	"testing"
 
-	"github.com/twinfer/reflow/pkg/sdk"
+	"github.com/twinfer/reflow/pkg/handler"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -14,7 +14,7 @@ type sample struct {
 }
 
 func TestJSONCodec_RoundTrip(t *testing.T) {
-	c := sdk.JSONCodec{}
+	c := handler.JSONCodec{}
 	if c.Name() != "json/default" {
 		t.Errorf("Name = %q; want json/default", c.Name())
 	}
@@ -33,13 +33,13 @@ func TestJSONCodec_RoundTrip(t *testing.T) {
 }
 
 func TestJSONCodec_DecodeRejectsNil(t *testing.T) {
-	if err := (sdk.JSONCodec{}).Decode([]byte("{}"), nil); !errors.Is(err, sdk.ErrNilCodecTarget) {
+	if err := (handler.JSONCodec{}).Decode([]byte("{}"), nil); !errors.Is(err, handler.ErrNilCodecTarget) {
 		t.Errorf("Decode(nil): err=%v; want ErrNilCodecTarget", err)
 	}
 }
 
 func TestProtoCodec_RoundTripWithProtoMessage(t *testing.T) {
-	c := sdk.ProtoCodec{}
+	c := handler.ProtoCodec{}
 	if c.Name() != "proto/binary" {
 		t.Errorf("Name = %q; want proto/binary", c.Name())
 	}
@@ -62,7 +62,7 @@ func TestProtoCodec_RoundTripWithProtoMessage(t *testing.T) {
 }
 
 func TestProtoCodec_RejectsNonProto(t *testing.T) {
-	c := sdk.ProtoCodec{}
+	c := handler.ProtoCodec{}
 	if _, err := c.Encode(struct{ A int }{1}); err == nil {
 		t.Error("Encode non-proto: want error, got nil")
 	}
@@ -73,7 +73,7 @@ func TestProtoCodec_RejectsNonProto(t *testing.T) {
 }
 
 func TestRawBytesCodec_RoundTrip(t *testing.T) {
-	c := sdk.RawBytesCodec{}
+	c := handler.RawBytesCodec{}
 	if c.Name() != "bytes/raw" {
 		t.Errorf("Name = %q; want bytes/raw", c.Name())
 	}
@@ -97,7 +97,7 @@ func TestRawBytesCodec_RoundTrip(t *testing.T) {
 }
 
 func TestRawBytesCodec_RejectsWrongShapes(t *testing.T) {
-	c := sdk.RawBytesCodec{}
+	c := handler.RawBytesCodec{}
 	if _, err := c.Encode("string"); err == nil {
 		t.Error("Encode non-[]byte: want error, got nil")
 	}
@@ -108,7 +108,7 @@ func TestRawBytesCodec_RejectsWrongShapes(t *testing.T) {
 }
 
 func TestDefaultCodec_IsJSON(t *testing.T) {
-	if sdk.DefaultCodec().Name() != "json/default" {
-		t.Errorf("DefaultCodec = %s; want JSONCodec", sdk.DefaultCodec().Name())
+	if handler.DefaultCodec().Name() != "json/default" {
+		t.Errorf("DefaultCodec = %s; want JSONCodec", handler.DefaultCodec().Name())
 	}
 }

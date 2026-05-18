@@ -1,17 +1,9 @@
-// Package server hosts a reflow handler-side endpoint over the
-// protocolv1 wire. Operators register handlers in an *sdk.Registry,
-// wrap it in NewHTTP2, and Serve on a listener. The reflow engine
-// discovers the deployment over GET /discover, opens a session via
-// HandlerService.InvokeStream (Connect RPC), and drives the handler
-// through StartMessage / InputCommandMessage frames.
-//
-// The current implementation supports the minimum-viable session shape
-// engine-side wire_session understands: StartMessage + InputCommandMessage
-// in, OutputCommandMessage / ErrorMessage / EndMessage out. Context
-// methods that journal durable side effects (Sleep, Run, Call, State,
-// Awakeable) return ErrWireNotImplemented — the wire-protocol expansion
-// for those primitives lands as the wire session matures.
-package server
+// Package handler is the durable-execution SDK + the handler-side Connect
+// server that hosts it. Authors register handlers in a *Registry, wrap it
+// in NewHTTP2, and Serve on a listener. The reflow engine discovers the
+// deployment via GET /discover and opens a session over
+// HandlerService.InvokeStream (Connect RPC).
+package handler
 
 import (
 	"errors"
@@ -20,7 +12,6 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
-	"github.com/twinfer/reflow/pkg/sdk"
 )
 
 // Server is the handler-side endpoint. NewHTTP2 is the one constructor;
@@ -43,7 +34,7 @@ type Config struct {
 	// Registry holds the handlers this server is willing to serve. The
 	// lookup is concurrency-safe; the same registry instance can back
 	// multiple Servers (e.g. h2c and HTTPS on different ports).
-	Registry *sdk.Registry
+	Registry *Registry
 
 	// Codec governs inner-payload encoding for protocolv1 messages.
 	// Defaults to protobuf. Both sides of the session must agree; the

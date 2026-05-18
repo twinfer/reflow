@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/pkg/sdk"
+	"github.com/twinfer/reflow/pkg/handler"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -26,7 +26,7 @@ import (
 // dispatching.
 func openSingleNodeOnDir(t *testing.T, dataDir, raftAddr string) *engine.Host {
 	t.Helper()
-	h, err := engine.NewHost(engine.HostConfig{
+	h, err := engine.NewHost(t.Context(), engine.HostConfig{
 		NodeID:             1,
 		RaftAddr:           raftAddr,
 		DataDir:            dataDir,
@@ -54,6 +54,11 @@ func openSingleNodeOnDir(t *testing.T, dataDir, raftAddr string) *engine.Host {
 		_ = h.Close()
 		t.Fatalf("AwaitLeader(1): %v", err)
 	}
+	// Register a Cleanup so callers don't have to remember to defer
+	// h.Close. Without this, leaked Hosts keep dragonboat goroutines
+	// alive after the test returns; t.TempDir then removes the data
+	// directory out from under them and pebble's WAL rotation panics.
+	t.Cleanup(func() { _ = h.Close() })
 	return h
 }
 
@@ -74,7 +79,7 @@ func TestVirtualObject_FIFOSerializesSameKey(t *testing.T) {
 		inflight     atomic.Int32
 	)
 
-	handler := func(_ sdk.Context, _ []byte) ([]byte, error) {
+	fn := func(_ handler.Context, _ []byte) ([]byte, error) {
 		// Track concurrent inflight count — for a correctly serialized VO
 		// this never exceeds 1.
 		cur := inflight.Add(1)
@@ -95,8 +100,8 @@ func TestVirtualObject_FIFOSerializesSameKey(t *testing.T) {
 		return fmt.Appendf(nil, "step=%d", mine), nil
 	}
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterObject("Counter", "incr", handler); err != nil {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterObject("Counter", "incr", fn); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -181,7 +186,7 @@ func TestVirtualObject_DistinctKeysRunInParallel(t *testing.T) {
 	started := make(chan struct{}, N)
 	release := make(chan struct{})
 
-	handler := func(_ sdk.Context, _ []byte) ([]byte, error) {
+	fn := func(_ handler.Context, _ []byte) ([]byte, error) {
 		cur := inflight.Add(1)
 		defer inflight.Add(-1)
 		for {
@@ -195,8 +200,8 @@ func TestVirtualObject_DistinctKeysRunInParallel(t *testing.T) {
 		return []byte("done"), nil
 	}
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterObject("Counter", "incr", handler); err != nil {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterObject("Counter", "incr", fn); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -265,7 +270,7 @@ func TestVirtualObject_DistinctKeysRunInParallel(t *testing.T) {
 // closed before either completes; on reopen, the engine resumes from the
 // persisted KeyLeaseStatus and drains the queue in order.
 //
-// The SDK handler lives in a separate process (pkg/sdk/server) whose
+// The SDK handler lives in a separate process (pkg/handler) whose
 // lifetime spans both engine epochs. A single closure reads the current
 // gate channel from an atomic pointer; the test swaps it between phases
 // to control when handlers complete.
@@ -276,7 +281,7 @@ func TestVirtualObject_QueueSurvivesRestart(t *testing.T) {
 	)
 	gate1 := make(chan struct{})
 	gate.Store(&gate1)
-	handler := func(c sdk.Context, in []byte) ([]byte, error) {
+	fn := func(c handler.Context, in []byte) ([]byte, error) {
 		s := string(in)
 		holder.Store(&s)
 		g := *gate.Load()
@@ -288,8 +293,8 @@ func TestVirtualObject_QueueSurvivesRestart(t *testing.T) {
 		return []byte("done:" + s), nil
 	}
 
-	reg := sdk.NewRegistry()
-	if err := reg.RegisterObject("Counter", "incr", handler); err != nil {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterObject("Counter", "incr", fn); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	handlerURL := startSDKServer(t, reg)

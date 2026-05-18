@@ -9,7 +9,7 @@ import (
 
 	"github.com/twinfer/reflow/internal/chaos"
 	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/sdk"
+	"github.com/twinfer/reflow/pkg/handler"
 )
 
 // TestChaos_KillRestartIdle exercises the kill+restart primitives
@@ -37,7 +37,7 @@ import (
 //	go test -tags=loadtest -timeout=5m -run=TestChaos_KillRestartIdle \
 //	    -v ./internal/chaos/...
 func TestChaos_KillRestartIdle(t *testing.T) {
-	reg := sdk.NewRegistry()
+	reg := handler.NewRegistry()
 	if err := reg.RegisterService("noop", "fn", loadgen.HelloHandler); err != nil {
 		t.Fatalf("register: %v", err)
 	}

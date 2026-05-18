@@ -18,7 +18,7 @@ import (
 // through the same path as multi-node, just with len(peers) == 1.
 func TestSoloBootstrap_SeedsSelfMembershipAndPartitionTable(t *testing.T) {
 	dir := t.TempDir()
-	h, err := engine.NewHost(engine.HostConfig{
+	h, err := engine.NewHost(t.Context(), engine.HostConfig{
 		NodeID:             1,
 		RaftAddr:           freeLocalAddr(t),
 		DataDir:            filepath.Join(dir, "node1"),

@@ -1,4 +1,4 @@
-package server
+package handler
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
-	"github.com/twinfer/reflow/pkg/sdk"
 	"github.com/twinfer/reflow/proto/handlerv1/handlerv1connect"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
@@ -19,7 +18,7 @@ import (
 // carries no per-handler addressing.
 type handlerService struct {
 	handlerv1connect.UnimplementedHandlerServiceHandler
-	registry *sdk.Registry
+	registry *Registry
 	codec    handlerclient.Codec
 }
 

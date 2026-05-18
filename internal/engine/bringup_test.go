@@ -10,21 +10,20 @@ import (
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/admin"
 	"github.com/twinfer/reflow/internal/ingress"
-	"github.com/twinfer/reflow/pkg/sdk"
-	"github.com/twinfer/reflow/pkg/sdk/server"
+	"github.com/twinfer/reflow/pkg/handler"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 )
 
 // singleNodeWithHandlers brings up a single-node Host on a temp dir
 // with shard 0 (metadata) and shard 1 (partition) live, and starts a
-// pkg/sdk/server hosting reg on a free local port, registering the URL
+// pkg/handler hosting reg on a free local port, registering the URL
 // as a deployment with the local metadata leader. Teardown is t.Cleanup.
 //
 // reg with zero handlers skips the SDK server / deployment registration.
-func singleNodeWithHandlers(t *testing.T, reg *sdk.Registry) *engine.Host {
+func singleNodeWithHandlers(t *testing.T, reg *handler.Registry) *engine.Host {
 	t.Helper()
 	dir := t.TempDir()
-	h, err := engine.NewHost(engine.HostConfig{
+	h, err := engine.NewHost(t.Context(), engine.HostConfig{
 		NodeID:             1,
 		RaftAddr:           freeLocalAddr(t),
 		DataDir:            filepath.Join(dir, "node1"),
@@ -64,13 +63,13 @@ func singleNodeWithHandlers(t *testing.T, reg *sdk.Registry) *engine.Host {
 // budget) construct + register manually after this returns.
 func singleNodeWithoutHandlers(t *testing.T) *engine.Host {
 	t.Helper()
-	return singleNodeWithHandlers(t, sdk.NewRegistry())
+	return singleNodeWithHandlers(t, handler.NewRegistry())
 }
 
 // bringUpHostWithIngress is singleNodeWithHandlers + an ingress runtime
 // on ephemeral HTTP+gRPC ports. Convenience wrapper for tests that
 // exercise the full ingress → engine → handler path.
-func bringUpHostWithIngress(t *testing.T, reg *sdk.Registry) (*engine.Host, *ingress.Runtime) {
+func bringUpHostWithIngress(t *testing.T, reg *handler.Registry) (*engine.Host, *ingress.Runtime) {
 	t.Helper()
 	h := singleNodeWithHandlers(t, reg)
 	rt, err := ingress.Start(context.Background(), h, ingress.Config{
@@ -84,26 +83,26 @@ func bringUpHostWithIngress(t *testing.T, reg *sdk.Registry) (*engine.Host, *ing
 	return h, rt
 }
 
-// registerEmbeddedHandlers starts a pkg/sdk/server.NewHTTP2 endpoint
+// registerEmbeddedHandlers starts a pkg/handler.NewHTTP2 endpoint
 // hosting reg on a free local port and registers the URL as a
 // deployment with h's admin server. Teardown is registered on t.
 // Assumes h.MetadataRunner() is the metadata leader.
-func registerEmbeddedHandlers(t *testing.T, h *engine.Host, reg *sdk.Registry) {
+func registerEmbeddedHandlers(t *testing.T, h *engine.Host, reg *handler.Registry) {
 	t.Helper()
 	url := startSDKServer(t, reg)
 	registerDeploymentURL(t, h, url)
 }
 
-// startSDKServer starts a pkg/sdk/server.NewHTTP2 endpoint hosting reg
+// startSDKServer starts a pkg/handler.NewHTTP2 endpoint hosting reg
 // on a free local port and returns the "http://addr" URL. The server's
 // lifetime is bound to t — restart tests can reuse the URL across
 // Host close/reopen cycles because the deployment registration is
 // durable in shard 0.
-func startSDKServer(t *testing.T, reg *sdk.Registry) string {
+func startSDKServer(t *testing.T, reg *handler.Registry) string {
 	t.Helper()
-	srv, err := server.NewHTTP2(server.Config{Registry: reg})
+	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
 	if err != nil {
-		t.Fatalf("server.NewHTTP2: %v", err)
+		t.Fatalf("handler.NewHTTP2: %v", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

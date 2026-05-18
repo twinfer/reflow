@@ -2,6 +2,7 @@ package tables_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"testing"
 
@@ -143,7 +144,7 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		commit(t, b)
 
 		var seen []string
-		if err := it.ScanAll(func(id *enginev1.InvocationId, _ *enginev1.InvocationStatus) error {
+		if err := it.ScanAll(context.Background(), func(id *enginev1.InvocationId, _ *enginev1.InvocationStatus) error {
 			seen = append(seen, string(id.GetUuid()))
 			return nil
 		}); err != nil {

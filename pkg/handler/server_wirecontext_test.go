@@ -1,4 +1,4 @@
-package server
+package handler
 
 import (
 	"encoding/base64"
@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
-	"github.com/twinfer/reflow/pkg/sdk"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
@@ -284,7 +283,7 @@ func TestWireContext_Sleep_FreshEmits(t *testing.T) {
 
 	fut := wctx.Sleep(50 * time.Millisecond)
 	_, err := fut.Result()
-	if !errors.Is(err, sdk.ErrSuspended) {
+	if !errors.Is(err, ErrSuspended) {
 		t.Errorf("Sleep.Result err = %v; want ErrSuspended", err)
 	}
 	if len(stream.sent) != 1 {
@@ -375,9 +374,9 @@ func TestWireContext_StateWrites_ReplayHitSkipsEmit(t *testing.T) {
 func TestWireContext_Call_FreshEmits(t *testing.T) {
 	wctx, stream := newTestWireContext(t, nil)
 
-	fut := wctx.Call(sdk.Target{Service: "Echo", Handler: "echo", Key: "k1"}, []byte("hi"))
+	fut := wctx.Call(Target{Service: "Echo", Handler: "echo", Key: "k1"}, []byte("hi"))
 	_, err := fut.Result()
-	if !errors.Is(err, sdk.ErrSuspended) {
+	if !errors.Is(err, ErrSuspended) {
 		t.Errorf("Call.Result err = %v; want ErrSuspended", err)
 	}
 	if len(stream.sent) != 1 {
@@ -422,7 +421,7 @@ func TestWireContext_Call_ReplayHitReturnsValue(t *testing.T) {
 		2: {typeCode: handlerclient.TypeNoteCallDone, payload: notePayload},
 	})
 
-	v, err := wctx.Call(sdk.Target{Service: "X", Handler: "y"}, nil).Result()
+	v, err := wctx.Call(Target{Service: "X", Handler: "y"}, nil).Result()
 	if err != nil {
 		t.Errorf("Call.Result err = %v; want nil", err)
 	}
@@ -453,13 +452,13 @@ func TestWireContext_Call_ReplayHitSurfacesFailure(t *testing.T) {
 		2: {typeCode: handlerclient.TypeNoteCallDone, payload: notePayload},
 	})
 
-	_, err = wctx.Call(sdk.Target{Service: "X", Handler: "y"}, nil).Result()
+	_, err = wctx.Call(Target{Service: "X", Handler: "y"}, nil).Result()
 	if err == nil {
 		t.Fatal("Call.Result err = nil; want non-nil failure")
 	}
-	f, ok := sdk.AsFailure(err)
+	f, ok := AsFailure(err)
 	if !ok {
-		t.Fatalf("Call.Result err = %v; want *sdk.Failure", err)
+		t.Fatalf("Call.Result err = %v; want *Failure", err)
 	}
 	if f.Code != 42 || f.Message != "callee failed" {
 		t.Errorf("failure = (code=%d, msg=%q); want (42, callee failed)", f.Code, f.Message)
@@ -471,7 +470,7 @@ func TestWireContext_Call_ReplayHitSurfacesFailure(t *testing.T) {
 // there's no result to await.
 func TestWireContext_OneWayCall_FreshEmits(t *testing.T) {
 	wctx, stream := newTestWireContext(t, nil)
-	if err := wctx.OneWayCall(sdk.Target{Service: "X", Handler: "y", Key: "k1"}, []byte("p")); err != nil {
+	if err := wctx.OneWayCall(Target{Service: "X", Handler: "y", Key: "k1"}, []byte("p")); err != nil {
 		t.Fatalf("OneWayCall: %v", err)
 	}
 	if len(stream.sent) != 1 {
@@ -489,7 +488,7 @@ func TestWireContext_OneWayCall_ReplayHitSkipsEmit(t *testing.T) {
 	wctx, stream := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
 		1: {typeCode: handlerclient.TypeCmdOneWayCall},
 	})
-	if err := wctx.OneWayCall(sdk.Target{Service: "X", Handler: "y"}, nil); err != nil {
+	if err := wctx.OneWayCall(Target{Service: "X", Handler: "y"}, nil); err != nil {
 		t.Errorf("OneWayCall: %v", err)
 	}
 	if len(stream.sent) != 0 {
@@ -505,7 +504,7 @@ func TestWireContext_Run_FreshExecutesAndEmitsBothFrames(t *testing.T) {
 	wctx, stream := newTestWireContext(t, nil)
 
 	ranCount := 0
-	v, err := wctx.Run("compute", func(*sdk.RunContext) ([]byte, error) {
+	v, err := wctx.Run("compute", func(*RunContext) ([]byte, error) {
 		ranCount++
 		return []byte("answer"), nil
 	})
@@ -551,10 +550,10 @@ func TestWireContext_Run_FreshExecutesAndEmitsBothFrames(t *testing.T) {
 func TestWireContext_Run_TransientErrorMarksRetryable(t *testing.T) {
 	wctx, stream := newTestWireContext(t, nil)
 
-	_, err := wctx.Run("fetch", func(*sdk.RunContext) ([]byte, error) {
+	_, err := wctx.Run("fetch", func(*RunContext) ([]byte, error) {
 		return nil, errors.New("network blip")
 	})
-	if !errors.Is(err, sdk.ErrSuspended) {
+	if !errors.Is(err, ErrSuspended) {
 		t.Errorf("Run err = %v; want ErrSuspended (retryable)", err)
 	}
 	var prop protocolv1.ProposeRunCompletionMessage
@@ -566,17 +565,17 @@ func TestWireContext_Run_TransientErrorMarksRetryable(t *testing.T) {
 	}
 }
 
-// TestWireContext_Run_FailureIsTerminal asserts a returned *sdk.Failure
+// TestWireContext_Run_FailureIsTerminal asserts a returned *Failure
 // is recorded as terminal (retryable=false) and surfaced from Run.
 func TestWireContext_Run_FailureIsTerminal(t *testing.T) {
 	wctx, stream := newTestWireContext(t, nil)
 
-	_, err := wctx.Run("validate", func(*sdk.RunContext) ([]byte, error) {
-		return nil, sdk.NewFailure(0, "bad input")
+	_, err := wctx.Run("validate", func(*RunContext) ([]byte, error) {
+		return nil, NewFailure(0, "bad input")
 	})
-	f, ok := sdk.AsFailure(err)
+	f, ok := AsFailure(err)
 	if !ok {
-		t.Fatalf("Run err = %v; want *sdk.Failure", err)
+		t.Fatalf("Run err = %v; want *Failure", err)
 	}
 	if f.Message != "bad input" {
 		t.Errorf("failure.message = %q; want %q", f.Message, "bad input")
@@ -609,7 +608,7 @@ func TestWireContext_Run_ReplayHitReturnsCachedValue(t *testing.T) {
 	})
 
 	ranCount := 0
-	v, err := wctx.Run("compute", func(*sdk.RunContext) ([]byte, error) {
+	v, err := wctx.Run("compute", func(*RunContext) ([]byte, error) {
 		ranCount++
 		return []byte("fresh"), nil
 	})
@@ -645,13 +644,13 @@ func TestWireContext_StepBudget_Exhausts(t *testing.T) {
 	}
 
 	err := wctx.SetState("c", []byte("3"))
-	f, ok := sdk.AsFailure(err)
+	f, ok := AsFailure(err)
 	if !ok {
-		t.Fatalf("third SetState err = %v; want *sdk.Failure", err)
+		t.Fatalf("third SetState err = %v; want *Failure", err)
 	}
-	if f.Code != sdk.StepBudgetExhaustedCode {
+	if f.Code != StepBudgetExhaustedCode {
 		t.Errorf("failure.code = %d; want %d (StepBudgetExhaustedCode)",
-			f.Code, sdk.StepBudgetExhaustedCode)
+			f.Code, StepBudgetExhaustedCode)
 	}
 	if !strings.Contains(f.Message, "step budget") {
 		t.Errorf("failure.message = %q; want 'step budget' substring", f.Message)
@@ -674,12 +673,12 @@ func TestWireContext_StepBudget_MultiSlotAllocs(t *testing.T) {
 	// 2+2 > 3 → exhausted.
 	fut := wctx.Sleep(time.Millisecond)
 	_, err := fut.Result()
-	f, ok := sdk.AsFailure(err)
+	f, ok := AsFailure(err)
 	if !ok {
-		t.Fatalf("Sleep result err = %v; want *sdk.Failure", err)
+		t.Fatalf("Sleep result err = %v; want *Failure", err)
 	}
-	if f.Code != sdk.StepBudgetExhaustedCode {
-		t.Errorf("failure.code = %d; want %d", f.Code, sdk.StepBudgetExhaustedCode)
+	if f.Code != StepBudgetExhaustedCode {
+		t.Errorf("failure.code = %d; want %d", f.Code, StepBudgetExhaustedCode)
 	}
 }
 
@@ -704,7 +703,7 @@ func TestWireContext_Run_RunContextExposed(t *testing.T) {
 
 	var seenAttempt uint32
 	var seenKey string
-	if _, err := wctx.Run("compute", func(rc *sdk.RunContext) ([]byte, error) {
+	if _, err := wctx.Run("compute", func(rc *RunContext) ([]byte, error) {
 		seenAttempt = rc.Attempt()
 		seenKey = rc.IdempotencyKey()
 		return []byte("ok"), nil
@@ -751,7 +750,7 @@ func TestWireContext_Run_RetryReplayBumpsAttempt(t *testing.T) {
 
 	var seenAttempt uint32
 	var seenKey string
-	_, err = wctx.Run("compute", func(rc *sdk.RunContext) ([]byte, error) {
+	_, err = wctx.Run("compute", func(rc *RunContext) ([]byte, error) {
 		seenAttempt = rc.Attempt()
 		seenKey = rc.IdempotencyKey()
 		return []byte("retry-ok"), nil
@@ -774,9 +773,9 @@ func TestWireContext_Run_OptionsThreadPolicyOntoWire(t *testing.T) {
 	wctx, stream := newTestWireContext(t, nil)
 
 	_, _ = wctx.Run("fetch",
-		func(*sdk.RunContext) ([]byte, error) { return nil, errors.New("blip") },
-		sdk.MaxAttempts(5),
-		sdk.Backoff(200*time.Millisecond, 3.0, 20*time.Second),
+		func(*RunContext) ([]byte, error) { return nil, errors.New("blip") },
+		MaxAttempts(5),
+		Backoff(200*time.Millisecond, 3.0, 20*time.Second),
 	)
 
 	var prop protocolv1.ProposeRunCompletionMessage
@@ -832,7 +831,7 @@ func TestWireContext_Awakeable_FreshMintsAndSuspends(t *testing.T) {
 	if len(id) != 26 {
 		t.Errorf("id len = %d; want 26 (awk_ + 22 base64url)", len(id))
 	}
-	if _, err := fut.Result(); !errors.Is(err, sdk.ErrSuspended) {
+	if _, err := fut.Result(); !errors.Is(err, ErrSuspended) {
 		t.Errorf("Awakeable future.Result err = %v; want ErrSuspended", err)
 	}
 	if len(stream.sent) != 1 {
@@ -918,7 +917,7 @@ func TestWireContext_Awakeable_ReplayHitCmdOnlyStillSuspends(t *testing.T) {
 	if id != "awk_pending1234567890123456789" {
 		t.Errorf("Awakeable id = %q; want cached id", id)
 	}
-	if _, err := fut.Result(); !errors.Is(err, sdk.ErrSuspended) {
+	if _, err := fut.Result(); !errors.Is(err, ErrSuspended) {
 		t.Errorf("future.Result err = %v; want ErrSuspended (cmd-only replay)", err)
 	}
 	if len(stream.sent) != 0 {
@@ -955,15 +954,15 @@ func TestWireContext_Suspend_ShortCircuitsSubsequentCalls(t *testing.T) {
 	wctx, _ := newTestWireContext(t, nil)
 
 	// First Sleep call suspends.
-	if _, err := wctx.Sleep(time.Second).Result(); !errors.Is(err, sdk.ErrSuspended) {
+	if _, err := wctx.Sleep(time.Second).Result(); !errors.Is(err, ErrSuspended) {
 		t.Fatalf("first Sleep.Result err = %v; want ErrSuspended", err)
 	}
 	// SetState after suspend short-circuits without emitting.
-	if err := wctx.SetState("k", []byte("v")); !errors.Is(err, sdk.ErrSuspended) {
+	if err := wctx.SetState("k", []byte("v")); !errors.Is(err, ErrSuspended) {
 		t.Errorf("SetState after suspend err = %v; want ErrSuspended", err)
 	}
 	// Second Sleep also short-circuits.
-	if _, err := wctx.Sleep(time.Second).Result(); !errors.Is(err, sdk.ErrSuspended) {
+	if _, err := wctx.Sleep(time.Second).Result(); !errors.Is(err, ErrSuspended) {
 		t.Errorf("second Sleep.Result err = %v; want ErrSuspended", err)
 	}
 }
@@ -974,7 +973,7 @@ func TestWireContext_Suspend_ShortCircuitsSubsequentCalls(t *testing.T) {
 func TestWireContext_SendSignalStillGated(t *testing.T) {
 	wctx, _ := newTestWireContext(t, nil)
 
-	if err := wctx.SendSignal(sdk.Target{}, "s", nil); !errors.Is(err, ErrWireNotImplemented) {
+	if err := wctx.SendSignal(Target{}, "s", nil); !errors.Is(err, ErrWireNotImplemented) {
 		t.Errorf("SendSignal err = %v; want ErrWireNotImplemented", err)
 	}
 }
@@ -1000,8 +999,8 @@ func TestWireContext_AllPendingSuspends(t *testing.T) {
 	pending := sleepFuture{ctx: wctx, resultSlot: 99} // no replay at slot 99
 	r := wctx.All(readyFuture{value: []byte("ok")}, pending)
 	_, err := r.Results()
-	if !errors.Is(err, sdk.ErrSuspended) {
-		t.Errorf("All.Results err = %v; want sdk.ErrSuspended", err)
+	if !errors.Is(err, ErrSuspended) {
+		t.Errorf("All.Results err = %v; want ErrSuspended", err)
 	}
 	awaiting := wctx.snapshotAwaiting()
 	if len(awaiting) != 1 || awaiting[0] != "completion:99" {
@@ -1032,8 +1031,8 @@ func TestWireContext_AnyAllPendingSuspends(t *testing.T) {
 	p2 := sleepFuture{ctx: wctx, resultSlot: 20}
 	r := wctx.Any(p1, p2)
 	_, err := r.Result()
-	if !errors.Is(err, sdk.ErrSuspended) {
-		t.Errorf("Any.Result err = %v; want sdk.ErrSuspended", err)
+	if !errors.Is(err, ErrSuspended) {
+		t.Errorf("Any.Result err = %v; want ErrSuspended", err)
 	}
 	awaiting := wctx.snapshotAwaiting()
 	if len(awaiting) != 2 {

@@ -22,8 +22,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/twinfer/reflow/pkg/sdk"
-	"github.com/twinfer/reflow/pkg/sdk/server"
+	"github.com/twinfer/reflow/pkg/handler"
 )
 
 func main() {
@@ -32,7 +31,7 @@ func main() {
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	reg := sdk.NewRegistry()
+	reg := handler.NewRegistry()
 	if err := reg.RegisterService("Greeter", "hello", greet); err != nil {
 		log.Error("register Greeter/hello", "err", err)
 		os.Exit(1)
@@ -48,7 +47,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	srv, err := server.NewHTTP2(server.Config{Registry: reg})
+	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
 	if err != nil {
 		log.Error("NewHTTP2", "err", err)
 		os.Exit(1)
@@ -75,10 +74,10 @@ func main() {
 
 // greet returns "hello, <input>" — the smoke handler for asserting
 // engine→handler routing.
-func greet(_ sdk.Context, in []byte) ([]byte, error) {
+func greet(_ handler.Context, in []byte) ([]byte, error) {
 	return fmt.Appendf(nil, "hello, %s", in), nil
 }
 
 // echo returns its input unchanged. Used by tests that round-trip a
 // byte payload through the wire path.
-func echo(_ sdk.Context, in []byte) ([]byte, error) { return in, nil }
+func echo(_ handler.Context, in []byte) ([]byte, error) { return in, nil }

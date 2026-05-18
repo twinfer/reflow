@@ -2,16 +2,16 @@ package delivery
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-
 	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
+	"github.com/twinfer/reflow/proto/deliveryv1/deliveryv1connect"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -20,34 +20,40 @@ import (
 // gossip and retry.
 var ErrNotLeader = errors.New("delivery: receiver is not leader")
 
-// EndpointResolver maps a destination shard id to (leaderNodeID, gRPC
+// EndpointResolver maps a destination shard id to (leaderNodeID,
 // endpoint). Returning ok=false means "no current leader known"; callers
 // back off and retry. *engine.Host satisfies this with the pair
-// PartitionLeaderHint + NodeEndpoint.
+// PartitionLeaderHint + NodeEndpoint. The endpoint is a bare host:port
+// string published over gossip; the URL scheme is derived from
+// ClientConfig.ClientTLSConfig.
 type EndpointResolver interface {
 	// PartitionLeaderHint returns the believed leader's NodeID for the
 	// given partition shard.
 	PartitionLeaderHint(shardID uint64) (uint64, bool)
-	// NodeEndpoint returns the reflow Delivery gRPC endpoint for the
+	// NodeEndpoint returns the reflow Delivery endpoint for the
 	// given NodeID, sourced from gossip Meta.
 	NodeEndpoint(nodeID uint64) (string, bool)
 }
 
 // ClientConfig collects the small surface of tunables. SendTimeout
-// bounds a single round trip. Dialing is non-blocking under grpc-go
-// (grpc.NewClient never waits for a connection); the first Send is
-// what surfaces unreachable endpoints, gated by SendTimeout.
+// bounds a single round trip. ClientTLSConfig selects the transport:
+// non-nil → https + HTTP/2 over TLS; nil → http + h2c.
 type ClientConfig struct {
-	Resolver    EndpointResolver
-	Log         *slog.Logger
-	SendTimeout time.Duration
-	DialOptions []grpc.DialOption // overrides; defaults to insecure for in-cluster.
+	Resolver        EndpointResolver
+	Log             *slog.Logger
+	SendTimeout     time.Duration
+	ClientTLSConfig *tls.Config
+	// Transport, when non-nil, replaces the http.Transport this client
+	// would otherwise construct. Used by tests that need to dial a
+	// non-network listener (httptest server, bufconn-like fakes).
+	Transport http.RoundTripper
 }
 
 // Client is a pooled bidi-stream client for the Delivery service. Each
-// destination endpoint shares a single grpc.ClientConn; sends serialize
-// per endpoint behind a mutex so the request/response correlation stays
-// trivially one-to-one (echoed by the seq field on the wire).
+// destination endpoint shares a single http.Client + Connect client;
+// sends serialize per endpoint behind a mutex so the request/response
+// correlation stays trivially one-to-one (echoed by the seq field on the
+// wire).
 //
 // Favors correctness over throughput: a single in-flight send per
 // endpoint avoids interleaving concerns. Pipelining can be added if it
@@ -56,11 +62,13 @@ type Client struct {
 	cfg ClientConfig
 
 	mu    sync.Mutex
-	conns map[string]*conn // keyed by endpoint
+	conns map[string]*conn // keyed by base URL (scheme + endpoint)
 }
 
 type conn struct {
-	cc     *grpc.ClientConn
+	httpc  *http.Client
+	tr     http.RoundTripper // owned, may be *http.Transport for CloseIdleConnections
+	client deliveryv1connect.DeliveryClient
 	sendMu sync.Mutex
 }
 
@@ -75,11 +83,6 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}
 	if cfg.SendTimeout == 0 {
 		cfg.SendTimeout = 5 * time.Second
-	}
-	if len(cfg.DialOptions) == 0 {
-		cfg.DialOptions = []grpc.DialOption{
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-		}
 	}
 	return &Client{cfg: cfg, conns: make(map[string]*conn)}, nil
 }
@@ -97,7 +100,7 @@ func (c *Client) Send(ctx context.Context, destShardID uint64, producerID string
 		return fmt.Errorf("delivery: no endpoint for node %d", leaderID)
 	}
 
-	co, err := c.dial(ctx, endpoint)
+	co, err := c.dial(endpoint)
 	if err != nil {
 		return fmt.Errorf("delivery: dial %s: %w", endpoint, err)
 	}
@@ -113,28 +116,29 @@ func (c *Client) Send(ctx context.Context, destShardID uint64, producerID string
 	co.sendMu.Lock()
 	defer co.sendMu.Unlock()
 
-	cli := deliveryv1.NewDeliveryClient(co.cc)
-	stream, err := cli.Deliver(callCtx)
-	if err != nil {
-		return fmt.Errorf("delivery: open stream: %w", err)
-	}
-
+	stream := co.client.Deliver(callCtx)
 	if err := stream.Send(&deliveryv1.DeliverRequest{
 		ShardId:    destShardID,
 		ProducerId: producerID,
 		Seq:        seq,
 		Command:    cmd,
 	}); err != nil {
-		_ = stream.CloseSend()
+		_ = stream.CloseRequest()
+		_ = stream.CloseResponse()
 		return fmt.Errorf("delivery: send: %w", err)
 	}
-	if err := stream.CloseSend(); err != nil {
+	if err := stream.CloseRequest(); err != nil {
+		_ = stream.CloseResponse()
 		return fmt.Errorf("delivery: close send: %w", err)
 	}
 
-	resp, err := stream.Recv()
+	resp, err := stream.Receive()
+	closeErr := stream.CloseResponse()
 	if err != nil {
 		return fmt.Errorf("delivery: recv: %w", err)
+	}
+	if closeErr != nil {
+		c.cfg.Log.Debug("delivery: close response stream", "err", closeErr)
 	}
 	if resp.GetSeq() != seq {
 		return fmt.Errorf("delivery: seq mismatch: got %d want %d", resp.GetSeq(), seq)
@@ -151,52 +155,84 @@ func (c *Client) Send(ctx context.Context, destShardID uint64, producerID string
 	}
 }
 
-// dial returns the pooled connection for endpoint, creating one on first
-// use. grpc.NewClient is non-blocking — the first Send is what surfaces
-// an unreachable endpoint. Connections live until Close; the test for
-// staleness is left to gRPC's built-in keepalive (defaults are fine for
-// in-cluster RPCs).
-//
-// We prefix the target with the passthrough resolver scheme: reflow's
-// endpoints are bare host:port strings (or test-only bufconn names like
-// "bufnet") published over gossip; we don't want grpc.NewClient's default
-// DNS resolver parsing or rejecting them. Connection establishment still
-// goes through whatever WithContextDialer / TLS the caller configured.
-func (c *Client) dial(_ context.Context, endpoint string) (*conn, error) {
+// dial returns the pooled connection for endpoint, creating one on
+// first use. The base URL scheme is derived from ClientTLSConfig: https
+// when set, http (h2c) otherwise. Connections live until Close.
+func (c *Client) dial(endpoint string) (*conn, error) {
+	baseURL := c.baseURL(endpoint)
+
 	c.mu.Lock()
-	if existing, ok := c.conns[endpoint]; ok {
+	if existing, ok := c.conns[baseURL]; ok {
 		c.mu.Unlock()
 		return existing, nil
 	}
 	c.mu.Unlock()
 
-	cc, err := grpc.NewClient("passthrough:///"+endpoint, c.cfg.DialOptions...)
+	tr, err := c.newTransport()
 	if err != nil {
 		return nil, err
 	}
+	hc := &http.Client{Transport: tr}
+	co := &conn{
+		httpc:  hc,
+		tr:     tr,
+		client: deliveryv1connect.NewDeliveryClient(hc, baseURL),
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Re-check: another goroutine may have raced us to the same endpoint.
-	if existing, ok := c.conns[endpoint]; ok {
-		_ = cc.Close()
+	if existing, ok := c.conns[baseURL]; ok {
+		// Lost the race: another goroutine inserted first. Discard ours.
+		closeTransport(tr)
 		return existing, nil
 	}
-	co := &conn{cc: cc}
-	c.conns[endpoint] = co
+	c.conns[baseURL] = co
 	return co, nil
 }
 
-// Close releases all pooled gRPC connections.
+// baseURL builds the scheme + host:port URL for endpoint. h2c if TLS is
+// not configured, https otherwise.
+func (c *Client) baseURL(endpoint string) string {
+	if c.cfg.ClientTLSConfig != nil {
+		return "https://" + endpoint
+	}
+	return "http://" + endpoint
+}
+
+// newTransport returns a fresh http.RoundTripper for one endpoint. Honors
+// ClientConfig.Transport if set (tests), otherwise builds an
+// *http.Transport with HTTP/2 or h2c selected by ClientTLSConfig.
+func (c *Client) newTransport() (http.RoundTripper, error) {
+	if c.cfg.Transport != nil {
+		return c.cfg.Transport, nil
+	}
+	tr := &http.Transport{Protocols: new(http.Protocols)}
+	if c.cfg.ClientTLSConfig != nil {
+		tr.Protocols.SetHTTP2(true)
+		tr.Protocols.SetHTTP1(false)
+		tr.TLSClientConfig = c.cfg.ClientTLSConfig.Clone()
+	} else {
+		tr.Protocols.SetUnencryptedHTTP2(true)
+		tr.Protocols.SetHTTP1(false)
+	}
+	return tr, nil
+}
+
+// Close releases all pooled connections.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var firstErr error
 	for _, co := range c.conns {
-		if err := co.cc.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
+		closeTransport(co.tr)
 	}
 	c.conns = nil
-	return firstErr
+	return nil
+}
+
+// closeTransport drops idle connections on *http.Transport; no-op for
+// other RoundTripper implementations (test fakes).
+func closeTransport(tr http.RoundTripper) {
+	if t, ok := tr.(*http.Transport); ok {
+		t.CloseIdleConnections()
+	}
 }

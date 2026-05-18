@@ -1,9 +1,7 @@
 package creds
 
 import (
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/credentials/sts"
 )
 
@@ -11,6 +9,10 @@ import (
 // the client trades a local credential for a server-issued access
 // token, and attaches that token per-RPC. See grpc-go's
 // credentials/sts package for the field semantics.
+//
+// The PerRPC credential populated by this driver is preserved on
+// ListenerCreds for forward-compatibility but is not yet consumed by
+// the Connect-based transport.
 type STSSpec struct {
 	TokenExchangeServiceURI string   `koanf:"token_exchange_service_uri"`
 	Resource                string   `koanf:"resource"`
@@ -52,11 +54,6 @@ func buildSTS(s *STSSpec) (*ListenerCreds, error) {
 		return nil, err
 	}
 	return &ListenerCreds{
-		Server: insecure.NewCredentials(),
-		ClientDial: []grpc.DialOption{
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithPerRPCCredentials(perRPC),
-		},
 		PerRPC:        perRPC,
 		Driver:        DriverSTS,
 		SecurityLevel: credentials.NoSecurity,

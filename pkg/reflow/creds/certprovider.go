@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/tls/certprovider"
 )
@@ -141,10 +140,8 @@ func buildCertProvider(s *CertProviderSpec, _ *slog.Logger) (*ListenerCreds, err
 	}
 
 	return &ListenerCreds{
-		Server:          credentials.NewTLS(serverCfg),
 		ServerTLSConfig: serverCfg,
 		ClientTLSConfig: clientCfg,
-		ClientDial:      []grpc.DialOption{grpc.WithTransportCredentials(credentials.NewTLS(clientCfg))},
 		Driver:          DriverCertProvider,
 		SecurityLevel:   credentials.PrivacyAndIntegrity,
 		Close:           closer,

@@ -5,14 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"time"
 
 	connect "connectrpc.com/connect"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
 	"github.com/twinfer/reflow/internal/admin"
@@ -27,7 +25,6 @@ import (
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	"github.com/twinfer/reflow/proto/adminv1/adminv1connect"
-	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
 )
 
 // Run starts a reflow node from cfg and returns a Host. The Host owns
@@ -143,19 +140,20 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	adminEnabled := !cfg.Admin.Disabled && cfg.Admin.Addr != ""
 
 	// All transport-security and authn/z material is built upfront so a
-	// configuration error halts startup before any listener opens.
+	// configuration error halts startup before any listener opens. The
+	// HTTP auth middleware is built unconditionally — admin, delivery,
+	// and ingress all wrap their Connect handlers with it. The policy
+	// file (or embedded starter policy when unset) is the single knob
+	// for who is allowed through; "ingress is open to anonymous" is
+	// expressed in the policy's ingress_open allow rule, not by
+	// skipping the middleware.
 	var (
-		deliveryCreds   *creds.ListenerCreds
-		adminCreds      *creds.ListenerCreds
-		grpcAuthCloser  func() error
-		httpAuthCloser  func() error
-		interceptors    *serverInterceptors
-		adminMiddleware func(http.Handler) http.Handler
+		deliveryCreds  *creds.ListenerCreds
+		adminCreds     *creds.ListenerCreds
+		httpAuthCloser func() error
+		httpAuthMW     func(http.Handler) http.Handler
 	)
 	bail := func(err error) (*Host, error) {
-		if grpcAuthCloser != nil {
-			_ = grpcAuthCloser()
-		}
 		if httpAuthCloser != nil {
 			_ = httpAuthCloser()
 		}
@@ -169,6 +167,17 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		}
 		return nil, err
 	}
+
+	mw, mwCloser, mwErr := auth.HTTPMiddleware(
+		cfg.Auth.trustDomainOrDefault(),
+		cfg.Auth.PolicyFile,
+		logger,
+	)
+	if mwErr != nil {
+		return bail(fmt.Errorf("reflow: auth middleware: %w", mwErr))
+	}
+	httpAuthMW = mw
+	httpAuthCloser = mwCloser
 
 	if crossShard {
 		dc, derr := creds.Build(cfg.Delivery.Creds, logger)
@@ -190,58 +199,26 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		adminCreds = ac
 		recordListenerSecurity(metrics, "admin", ac)
 	}
-	if crossShard {
-		// Delivery still uses gRPC interceptors; admin runs Connect HTTP
-		// middleware below. Both consult the same starter/operator
-		// policy file via separate loaders.
-		uIc, sIc, closer, ierr := auth.NewServerInterceptors(auth.Config{
-			Extractor:  &auth.SPIFFEExtractor{TrustDomain: cfg.Auth.trustDomainOrDefault()},
-			PolicyFile: cfg.Auth.PolicyFile,
-			Log:        logger,
-		})
-		if ierr != nil {
-			return bail(fmt.Errorf("reflow: auth interceptors: %w", ierr))
-		}
-		grpcAuthCloser = closer
-		interceptors = &serverInterceptors{unary: uIc, stream: sIc}
-	}
-	if adminEnabled {
-		mw, closer, ierr := auth.HTTPMiddleware(
-			cfg.Auth.trustDomainOrDefault(),
-			cfg.Auth.PolicyFile,
-			logger,
-		)
-		if ierr != nil {
-			return bail(fmt.Errorf("reflow: admin auth middleware: %w", ierr))
-		}
-		httpAuthCloser = closer
-		adminMiddleware = mw
-	}
 
 	var (
-		deliverySrv    *grpc.Server
-		deliveryLn     net.Listener
+		deliverySrv    *connectserver.Server
 		deliveryClient *delivery.Client
 	)
 	if crossShard {
-		ds, dln, dc, derr := startDeliveryListener(eh, cfg, deliveryCreds, interceptors, logger)
+		ds, dc, derr := startDeliveryListener(ctx, eh, cfg, deliveryCreds, httpAuthMW, logger)
 		if derr != nil {
 			return bail(derr)
 		}
-		deliverySrv, deliveryLn, deliveryClient = ds, dln, dc
+		deliverySrv, deliveryClient = ds, dc
 		eh.SetCrossShardSender(dc)
 	}
 
-	authClosers := combineClosers(grpcAuthCloser, httpAuthCloser)
-	host, herr := finishStartup(ctx, cfg, eh, crossShard, adminEnabled, shards, snapshotTriggers,
-		deliverySrv, deliveryLn, deliveryClient, deliveryCreds, adminCreds, handlerSigner,
-		adminMiddleware, authClosers, metricsCloser, logger)
+	host, herr := finishStartup(ctx, cfg, eh, adminEnabled, shards, snapshotTriggers,
+		deliverySrv, deliveryClient, deliveryCreds, adminCreds, handlerSigner,
+		httpAuthMW, httpAuthCloser, metricsCloser, logger)
 	if herr != nil {
 		if deliverySrv != nil {
-			deliverySrv.Stop()
-		}
-		if deliveryLn != nil {
-			_ = deliveryLn.Close()
+			_ = deliverySrv.Close()
 		}
 		if deliveryClient != nil {
 			_ = deliveryClient.Close()
@@ -251,76 +228,42 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	return host, nil
 }
 
-// combineClosers folds 0..N closer funcs into one. All run, first error
-// surfaces. nil entries are skipped.
-func combineClosers(fns ...func() error) func() error {
-	out := fns[:0]
-	for _, f := range fns {
-		if f != nil {
-			out = append(out, f)
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return func() error {
-		var firstErr error
-		for _, f := range out {
-			if err := f(); err != nil && firstErr == nil {
-				firstErr = err
-			}
-		}
-		return firstErr
-	}
-}
-
-// serverInterceptors bundles the unary+stream pair so it can be passed
-// without three positional args.
-type serverInterceptors struct {
-	unary  grpc.UnaryServerInterceptor
-	stream grpc.StreamServerInterceptor
-}
-
 // startDeliveryListener builds the Delivery client (so partitions get a
-// Sender on startup) and the Delivery gRPC server. The two share one
+// Sender on startup) and the Delivery Connect server. The two share one
 // creds.Spec (mTLS or insecure) so the cluster forms a closed trust loop.
+// The auth middleware is the same instance admin and ingress use; the
+// starter policy gates /reflow.delivery.v1.Delivery/* to node/* principals.
 func startDeliveryListener(
+	ctx context.Context,
 	eh *engine.Host,
 	cfg Config,
 	lc *creds.ListenerCreds,
-	ic *serverInterceptors,
+	mw func(http.Handler) http.Handler,
 	logger *slog.Logger,
-) (*grpc.Server, net.Listener, *delivery.Client, error) {
+) (*connectserver.Server, *delivery.Client, error) {
 	dc, err := delivery.NewClient(delivery.ClientConfig{
-		Resolver:    eh,
-		Log:         logger,
-		DialOptions: lc.ClientDial,
+		Resolver:        eh,
+		Log:             logger,
+		ClientTLSConfig: lc.ClientTLSConfig,
 	})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("reflow: delivery client: %w", err)
+		return nil, nil, fmt.Errorf("reflow: delivery client: %w", err)
 	}
 
-	ln, err := net.Listen("tcp", cfg.Node.DeliveryAddr)
-	if err != nil {
+	srv := delivery.NewServer(eh, logger)
+	path, handler := srv.NewHandler()
+	cs, cerr := connectserver.New(ctx, connectserver.Config{
+		Addr: cfg.Node.DeliveryAddr,
+		TLS:  lc.ServerTLSConfig,
+		Log:  logger,
+	}, connectserver.Route{Path: path, Handler: mw(handler)})
+	if cerr != nil {
 		_ = dc.Close()
-		return nil, nil, nil, fmt.Errorf("reflow: listen delivery %s: %w", cfg.Node.DeliveryAddr, err)
+		return nil, nil, fmt.Errorf("reflow: listen delivery %s: %w", cfg.Node.DeliveryAddr, cerr)
 	}
-
-	opts := []grpc.ServerOption{
-		grpc.Creds(lc.Server),
-		grpc.ChainUnaryInterceptor(ic.unary),
-		grpc.ChainStreamInterceptor(ic.stream),
-	}
-	gs := grpc.NewServer(opts...)
-	deliveryv1.RegisterDeliveryServer(gs, delivery.NewServer(eh, logger))
-	go func() {
-		if err := gs.Serve(ln); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			logger.Error("reflow: delivery gRPC Serve exited", "err", err)
-		}
-	}()
-	logger.Info("reflow: delivery listening", "addr", ln.Addr().String(),
+	logger.Info("reflow: delivery listening", "addr", cs.Addr(),
 		"driver", string(lc.Driver))
-	return gs, ln, dc, nil
+	return cs, dc, nil
 }
 
 // startIngressListener builds cfg.Ingress.Creds and starts the ingress
@@ -330,6 +273,11 @@ func startDeliveryListener(
 // Multi-node insecure deployments emit a WARN at startup; single-node
 // insecure is silent because that's the dev default.
 //
+// The auth middleware is required and is the same instance admin and
+// delivery share. The starter policy's ingress_open allow rule lets
+// anonymous traffic through; operators tighten this in the policy
+// file, never by skipping the middleware here.
+//
 // Returns (runtime, listenerCreds, error). On error the caller is
 // responsible for releasing any other resources it has accumulated;
 // this helper closes only what it created itself.
@@ -338,6 +286,7 @@ func startIngressListener(
 	eh *engine.Host,
 	cfg Config,
 	multiNode bool,
+	mw func(http.Handler) http.Handler,
 	logger *slog.Logger,
 ) (*ingress.Runtime, *creds.ListenerCreds, error) {
 	if cfg.Ingress.Disabled {
@@ -352,9 +301,10 @@ func startIngressListener(
 		logger.Warn("reflow: ingress is running on an insecure listener — multi-node deployments should configure cfg.Ingress.Creds")
 	}
 	rt, err := ingress.Start(ctx, eh, ingress.Config{
-		Addr: cfg.Ingress.Addr,
-		TLS:  lc.ServerTLSConfig,
-		Log:  logger,
+		Addr:       cfg.Ingress.Addr,
+		TLS:        lc.ServerTLSConfig,
+		Log:        logger,
+		Middleware: mw,
 	})
 	if err != nil {
 		_ = creds.CloseAll(lc)
@@ -373,17 +323,15 @@ func finishStartup(
 	ctx context.Context,
 	cfg Config,
 	eh *engine.Host,
-	crossShard bool,
 	adminEnabled bool,
 	shards []uint64,
 	snapshotTriggers map[uint64]chan struct{},
-	deliverySrv *grpc.Server,
-	deliveryLn net.Listener,
+	deliverySrv *connectserver.Server,
 	deliveryClient *delivery.Client,
 	deliveryCreds *creds.ListenerCreds,
 	adminCreds *creds.ListenerCreds,
 	handlerSigner *creds.Signer,
-	adminMiddleware func(http.Handler) http.Handler,
+	httpAuthMW func(http.Handler) http.Handler,
 	authCloser func() error,
 	metricsCloser func() error,
 	logger *slog.Logger,
@@ -506,14 +454,11 @@ func finishStartup(
 
 	if adminEnabled {
 		path, h := srv.NewHandler()
-		if adminMiddleware != nil {
-			h = adminMiddleware(h)
-		}
 		cs, lErr := connectserver.New(ctx, connectserver.Config{
 			Addr: cfg.Admin.Addr,
 			TLS:  adminCreds.ServerTLSConfig,
 			Log:  logger,
-		}, connectserver.Route{Path: path, Handler: h})
+		}, connectserver.Route{Path: path, Handler: httpAuthMW(h)})
 		if lErr != nil {
 			if snapshotCxl != nil {
 				snapshotCxl()
@@ -536,7 +481,8 @@ func finishStartup(
 		go autoSeedEndpoints(ctx, srv, runner, cfg.Handlers.Endpoints, logger)
 	}
 
-	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, crossShard, logger)
+	multiNode := len(cfg.Cluster.Peers) > 1
+	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, logger)
 	if err != nil {
 		if snapshotCxl != nil {
 			snapshotCxl()
@@ -556,7 +502,6 @@ func finishStartup(
 		ingressRT:      ingressRT,
 		ingressCreds:   ingressCreds,
 		deliverySrv:    deliverySrv,
-		deliveryLn:     deliveryLn,
 		deliveryClient: deliveryClient,
 		deliveryCreds:  deliveryCreds,
 		adminSrv:       adminSrv,

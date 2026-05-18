@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	connect "connectrpc.com/connect"
 
@@ -26,6 +27,14 @@ type Config struct {
 	TLS *tls.Config
 	// Log is the structured logger; defaults to slog.Default.
 	Log *slog.Logger
+	// Middleware wraps the Connect handler with the unified auth
+	// middleware (auth.HTTPMiddleware). REQUIRED — Start returns an
+	// error when nil. Anonymous traffic is permitted only by the policy
+	// (the embedded starter policy includes an ingress_open allow rule
+	// for /reflow.ingress.v1.Ingress/* with no principal restriction),
+	// not by skipping the middleware. Tests that intentionally bypass
+	// auth must pass an explicit identity passthrough.
+	Middleware func(http.Handler) http.Handler
 }
 
 // Runtime is a started ingress server. Close it to stop the listener
@@ -46,6 +55,9 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 	if cfg.Addr == "" {
 		return nil, errors.New("ingress: Addr is required")
 	}
+	if cfg.Middleware == nil {
+		return nil, errors.New("ingress: Middleware is required (policy enforcement happens here; tests should pass an explicit identity passthrough)")
+	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
@@ -57,7 +69,7 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 		Addr: cfg.Addr,
 		TLS:  cfg.TLS,
 		Log:  cfg.Log,
-	}, connectserver.Route{Path: path, Handler: handler})
+	}, connectserver.Route{Path: path, Handler: cfg.Middleware(handler)})
 	if err != nil {
 		return nil, fmt.Errorf("ingress: %w", err)
 	}

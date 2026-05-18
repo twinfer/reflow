@@ -14,6 +14,17 @@ import (
 	"time"
 )
 
+// PrincipalHeader is the canonical HTTP header reflow stamps with the
+// server-verified principal (e.g. "node/3", "operator/alice"). Inbound
+// values are stripped by HTTPMiddleware to prevent forgery — only the
+// server-stamped header survives into downstream handlers.
+const PrincipalHeader = "X-Reflow-Principal"
+
+// FileWatcherReload is how often the policy reloader checks the policy
+// file for mtime changes when a file is configured. Embedded-policy
+// installations don't spawn the watcher.
+const FileWatcherReload = 30 * time.Second
+
 // HTTPMiddleware wraps a Connect-mounted http.Handler with the same
 // principal-stamping + policy enforcement that gRPC's auth.NewServerInterceptors
 // provides for the delivery surface. The middleware:

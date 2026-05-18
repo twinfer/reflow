@@ -19,6 +19,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -26,12 +27,10 @@ import (
 	"syscall"
 	"time"
 
-	"google.golang.org/grpc"
-
+	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/ingress"
-	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
 )
 
 func main() {
@@ -105,14 +104,20 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("listen delivery: %w", err)
 	}
-	dgs := grpc.NewServer()
-	deliveryv1.RegisterDeliveryServer(dgs, delivery.NewServer(host, nil))
+	dgs, deliveryCancel := newDeliveryHTTPServer(delivery.NewServer(host, nil))
 	go func() {
-		if err := dgs.Serve(dln); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+		if err := dgs.Serve(dln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintf(os.Stderr, "loadnode: delivery Serve exited: %v\n", err)
 		}
 	}()
-	defer dgs.GracefulStop()
+	defer func() {
+		// Cancel BaseContext so in-flight handler ProposeIngress calls
+		// observe ctx.Done() and return; without this the subsequent
+		// host.Close would deadlock on dragonboat NodeHost.Close
+		// waiting for the in-flight proposal to settle.
+		deliveryCancel()
+		_ = dgs.Close()
+	}()
 
 	if _, err := host.StartMetadataShard(); err != nil {
 		return fmt.Errorf("StartMetadataShard: %w", err)
@@ -130,7 +135,14 @@ func run() error {
 	} else {
 		_ = iln.Close()
 	}
-	irt, err := ingress.Start(ctx, host, ingress.Config{Addr: ingressAddr})
+	ingressMW, _, mwErr := auth.HTTPMiddleware("reflow.local", "", nil)
+	if mwErr != nil {
+		return fmt.Errorf("auth.HTTPMiddleware: %w", mwErr)
+	}
+	irt, err := ingress.Start(ctx, host, ingress.Config{
+		Addr:       ingressAddr,
+		Middleware: ingressMW,
+	})
 	if err != nil {
 		return fmt.Errorf("ingress.Start: %w", err)
 	}
@@ -200,4 +212,24 @@ func listenWithRetry(addr string, timeout time.Duration) (net.Listener, error) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return nil, lastErr
+}
+
+// newDeliveryHTTPServer builds an h2c http.Server hosting the Delivery
+// Connect handler. Returns the server + a cancel func that cancels its
+// BaseContext (and therefore every in-flight handler's context). The
+// chaos harness runs without TLS or auth middleware — production
+// deployments use cmd/reflowd, not this.
+func newDeliveryHTTPServer(srv *delivery.Server) (*http.Server, context.CancelFunc) {
+	baseCtx, cancel := context.WithCancel(context.Background())
+	mux := http.NewServeMux()
+	path, handler := srv.NewHandler()
+	mux.Handle(path, handler)
+	hs := &http.Server{
+		Handler:     mux,
+		Protocols:   new(http.Protocols),
+		BaseContext: func(net.Listener) context.Context { return baseCtx },
+	}
+	hs.Protocols.SetUnencryptedHTTP2(true)
+	hs.Protocols.SetHTTP1(false)
+	return hs, cancel
 }

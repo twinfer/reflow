@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflow/internal/admin"
+	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/pkg/handler"
@@ -19,6 +21,20 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
+
+// testIngressMiddleware returns the embedded starter policy via the
+// production auth middleware. The starter policy's ingress_open allow
+// rule lets anonymous traffic through /reflow.ingress.v1.Ingress/*, so
+// h2c tests reach the handler. Exercising the middleware end-to-end
+// guarantees the wiring isn't silently skipped.
+func testIngressMiddleware(t *testing.T) func(http.Handler) http.Handler {
+	t.Helper()
+	mw, _, err := auth.HTTPMiddleware("reflow.local", "", nil)
+	if err != nil {
+		t.Fatalf("auth.HTTPMiddleware: %v", err)
+	}
+	return mw
+}
 
 // makeID builds an InvocationId from a partition key and a 16-byte uuid.
 func makeID(pk uint64, uuid []byte) *enginev1.InvocationId {
@@ -97,7 +113,10 @@ func bringUpHostWithIngress(t *testing.T, reg *handler.Registry) (*engine.Host, 
 		}
 	}
 
-	rt, err := ingress.Start(context.Background(), h, ingress.Config{Addr: "127.0.0.1:0"})
+	rt, err := ingress.Start(context.Background(), h, ingress.Config{
+		Addr:       "127.0.0.1:0",
+		Middleware: testIngressMiddleware(t),
+	})
 	if err != nil {
 		t.Fatalf("ingress.Start: %v", err)
 	}

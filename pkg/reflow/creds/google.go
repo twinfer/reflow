@@ -1,24 +1,14 @@
 package creds
 
-import (
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/google"
-)
+import "errors"
 
-// GoogleSpec drives the bundled google credentials path: ALTS on GCE,
-// TLS elsewhere, with a Google access token attached per-call. There
-// are no operator-tunable knobs today; the struct exists so future
-// scopes / quota-project hooks can land without a shape change.
+// GoogleSpec carried the Google bundled-credentials configuration when
+// reflow's transport was gRPC. The bundle (ALTS on GCE, TLS elsewhere +
+// per-RPC Google access token) has no HTTP/2 equivalent in the Connect
+// stack. The struct stays as a koanf-decodable placeholder; selecting
+// this driver now returns an error at startup.
 type GoogleSpec struct{}
 
 func buildGoogle(_ *GoogleSpec) (*ListenerCreds, error) {
-	bundle := google.NewDefaultCredentials()
-	return &ListenerCreds{
-		Server:        bundle.TransportCredentials(),
-		ClientDial:    []grpc.DialOption{grpc.WithCredentialsBundle(bundle)},
-		PerRPC:        bundle.PerRPCCredentials(),
-		Driver:        DriverGoogle,
-		SecurityLevel: credentials.PrivacyAndIntegrity,
-	}, nil
+	return nil, errors.New("reflow/creds: Google bundled-credentials driver is not supported on the Connect transport; use tls or tls_certprovider")
 }

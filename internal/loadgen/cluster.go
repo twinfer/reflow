@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,12 +24,10 @@ import (
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/lni/dragonboat/v4/config"
-	"google.golang.org/grpc"
 
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/engine/routing"
-	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -86,13 +85,19 @@ type Node interface {
 }
 
 // InProcessNode owns one in-process reflowd node: the engine Host, the
-// Delivery gRPC server / listener, and the pooled Delivery client the
+// Delivery Connect server / listener, and the pooled Delivery client the
 // host's outbox uses for cross-shard dispatch. Implements Node.
 type InProcessNode struct {
 	Host           *engine.Host
-	DeliveryServer *grpc.Server
+	DeliveryServer *http.Server
 	DeliveryLn     net.Listener
 	DeliveryClient *delivery.Client
+	// deliveryCancel cancels the BaseContext of DeliveryServer, which
+	// is inherited by every handler request. Firing it at shutdown
+	// surfaces ctx.Done() inside any in-flight ProposeIngress so the
+	// handler returns immediately — otherwise its SyncPropose would
+	// hold the local dragonboat NodeHost open and deadlock nh.Close.
+	deliveryCancel context.CancelFunc
 	raftAddr       string
 }
 
@@ -159,8 +164,15 @@ func (n *InProcessNode) Close() {
 	if n == nil {
 		return
 	}
+	if n.deliveryCancel != nil {
+		// Cancel BaseContext first so in-flight handler ProposeIngress
+		// calls observe ctx.Done() and return. Then close the server
+		// (immediate); the handler goroutines drain without blocking
+		// the subsequent host.Close on dragonboat NodeHost.Close.
+		n.deliveryCancel()
+	}
 	if n.DeliveryServer != nil {
-		n.DeliveryServer.GracefulStop()
+		_ = n.DeliveryServer.Close()
 	}
 	if n.DeliveryLn != nil {
 		_ = n.DeliveryLn.Close()
@@ -517,10 +529,9 @@ func (c *Cluster) bringUpNode(t testing.TB, idx int) error {
 		_ = h.Close()
 		return fmt.Errorf("listen delivery: %w", err)
 	}
-	gs := grpc.NewServer()
-	deliveryv1.RegisterDeliveryServer(gs, delivery.NewServer(h, nil))
+	gs, deliveryCancel := newDeliveryHTTPServer(delivery.NewServer(h, nil))
 	go func() {
-		if err := gs.Serve(ln); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+		if err := gs.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			t.Logf("loadgen: delivery Serve(%d) exited: %v", idx+1, err)
 		}
 	}()
@@ -530,9 +541,30 @@ func (c *Cluster) bringUpNode(t testing.TB, idx int) error {
 		DeliveryServer: gs,
 		DeliveryLn:     ln,
 		DeliveryClient: dc,
+		deliveryCancel: deliveryCancel,
 		raftAddr:       addrs.raft,
 	}
 	return nil
+}
+
+// newDeliveryHTTPServer builds an h2c http.Server hosting the Delivery
+// Connect handler. Returns the server + a cancel func that cancels its
+// BaseContext (and therefore every in-flight handler's context). The
+// chaos / loadgen harness runs without TLS or auth middleware — auth is
+// exercised by dedicated tests.
+func newDeliveryHTTPServer(srv *delivery.Server) (*http.Server, context.CancelFunc) {
+	baseCtx, cancel := context.WithCancel(context.Background())
+	mux := http.NewServeMux()
+	path, handler := srv.NewHandler()
+	mux.Handle(path, handler)
+	hs := &http.Server{
+		Handler:     mux,
+		Protocols:   new(http.Protocols),
+		BaseContext: func(net.Listener) context.Context { return baseCtx },
+	}
+	hs.Protocols.SetUnencryptedHTTP2(true)
+	hs.Protocols.SetHTTP1(false)
+	return hs, cancel
 }
 
 // listenWithRetry retries net.Listen briefly to ride out TIME_WAIT

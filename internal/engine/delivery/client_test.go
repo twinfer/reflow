@@ -3,21 +3,23 @@ package delivery
 import (
 	"context"
 	"errors"
-	"io"
 	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/test/bufconn"
+	connect "connectrpc.com/connect"
 
+	"github.com/twinfer/reflow/internal/auth"
 	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
+	"github.com/twinfer/reflow/proto/deliveryv1/deliveryv1connect"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
 // stubResolver maps a shard to (nodeID, endpoint) — endpoint is the
-// bufconn name used by the dial hook below.
+// host:port of the in-process httptest server.
 type stubResolver struct {
 	leader   map[uint64]uint64
 	endpoint map[uint64]string
@@ -32,24 +34,22 @@ func (r *stubResolver) NodeEndpoint(nodeID uint64) (string, bool) {
 	return ep, ok
 }
 
-// stubServer is a bare-bones DeliveryServer for tests. respond is the
-// closure that builds the reply for each request.
-type stubServer struct {
-	deliveryv1.UnimplementedDeliveryServer
+// stubHandler implements deliveryv1connect.DeliveryHandler. respond is
+// invoked per DeliverRequest and produces the reply.
+type stubHandler struct {
+	deliveryv1connect.UnimplementedDeliveryHandler
 	respond func(*deliveryv1.DeliverRequest) *deliveryv1.DeliverResponse
 
 	mu       sync.Mutex
 	received []*deliveryv1.DeliverRequest
 }
 
-func (s *stubServer) Deliver(stream deliveryv1.Delivery_DeliverServer) error {
+func (s *stubHandler) Deliver(ctx context.Context, stream *connect.BidiStream[deliveryv1.DeliverRequest, deliveryv1.DeliverResponse]) error {
 	for {
-		req, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
+		req, err := stream.Receive()
 		if err != nil {
-			return err
+			// EOF on the request half ends the loop cleanly.
+			return nil
 		}
 		s.mu.Lock()
 		s.received = append(s.received, req)
@@ -60,42 +60,76 @@ func (s *stubServer) Deliver(stream deliveryv1.Delivery_DeliverServer) error {
 	}
 }
 
-// startBufconnDelivery returns a Client wired through bufconn to the
-// given stub server. The bufconn endpoint name "bufnet" is registered as
-// node 1's endpoint via the resolver.
-func startBufconnDelivery(t *testing.T, srv *stubServer) (*Client, func()) {
+// writeTestPolicy writes a permissive policy that allows anonymous
+// access to /reflow.delivery.v1.Delivery/*. Wiring tests still go
+// through auth.HTTPMiddleware so the middleware/policy/extractor stack
+// runs end-to-end; TLS + node-cert fixtures are exercised separately by
+// the integration tests in internal/engine.
+func writeTestPolicy(t *testing.T) string {
 	t.Helper()
-	lis := bufconn.Listen(1 << 20)
-	grpcSrv := grpc.NewServer()
-	deliveryv1.RegisterDeliveryServer(grpcSrv, srv)
-	go func() {
-		_ = grpcSrv.Serve(lis)
-	}()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "policy.json")
+	body := `{
+  "allow_rules": [
+    {
+      "name": "test_delivery_open",
+      "request": {"paths": ["/reflow.delivery.v1.Delivery/*"]}
+    }
+  ]
+}`
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	return p
+}
+
+// startTestDelivery stands up the Connect Delivery handler over h2c on a
+// random local port. The handler is wrapped by auth.HTTPMiddleware using
+// the temp test policy so the auth flow exercises in tests.
+func startTestDelivery(t *testing.T, h *stubHandler) (*Client, func()) {
+	t.Helper()
+
+	mw, mwCloser, err := auth.HTTPMiddleware("reflow.local", writeTestPolicy(t), nil)
+	if err != nil {
+		t.Fatalf("HTTPMiddleware: %v", err)
+	}
+
+	path, handler := deliveryv1connect.NewDeliveryHandler(h)
+	mux := http.NewServeMux()
+	mux.Handle(path, mw(handler))
+
+	srv := &http.Server{Handler: mux, Protocols: new(http.Protocols)}
+	srv.Protocols.SetUnencryptedHTTP2(true)
+	srv.Protocols.SetHTTP1(false)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+
 	cli, err := NewClient(ClientConfig{
 		Resolver: &stubResolver{
 			leader:   map[uint64]uint64{7: 1},
-			endpoint: map[uint64]string{1: "bufnet"},
-		},
-		DialOptions: []grpc.DialOption{
-			grpc.WithContextDialer(func(_ context.Context, _ string) (net.Conn, error) {
-				return lis.Dial()
-			}),
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			endpoint: map[uint64]string{1: ln.Addr().String()},
 		},
 	})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("NewClient: %v", err)
 	}
 	cleanup := func() {
 		_ = cli.Close()
-		grpcSrv.Stop()
-		_ = lis.Close()
+		_ = srv.Close()
+		_ = ln.Close()
+		if mwCloser != nil {
+			_ = mwCloser()
+		}
 	}
 	return cli, cleanup
 }
 
 func TestDeliveryClient_Ack(t *testing.T) {
-	srv := &stubServer{
+	h := &stubHandler{
 		respond: func(req *deliveryv1.DeliverRequest) *deliveryv1.DeliverResponse {
 			return &deliveryv1.DeliverResponse{
 				Seq:  req.GetSeq(),
@@ -103,20 +137,21 @@ func TestDeliveryClient_Ack(t *testing.T) {
 			}
 		},
 	}
-	cli, cleanup := startBufconnDelivery(t, srv)
+	cli, cleanup := startTestDelivery(t, h)
 	defer cleanup()
 
-	err := cli.Send(context.Background(), 7, "outbox/p1", 42, &enginev1.Command{})
-	if err != nil {
+	if err := cli.Send(context.Background(), 7, "outbox/p1", 42, &enginev1.Command{}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	if len(srv.received) != 1 || srv.received[0].GetSeq() != 42 || srv.received[0].GetShardId() != 7 {
-		t.Fatalf("server got unexpected requests: %+v", srv.received)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.received) != 1 || h.received[0].GetSeq() != 42 || h.received[0].GetShardId() != 7 {
+		t.Fatalf("server got unexpected requests: %+v", h.received)
 	}
 }
 
 func TestDeliveryClient_NotLeader(t *testing.T) {
-	srv := &stubServer{
+	h := &stubHandler{
 		respond: func(req *deliveryv1.DeliverRequest) *deliveryv1.DeliverResponse {
 			return &deliveryv1.DeliverResponse{
 				Seq: req.GetSeq(),
@@ -126,7 +161,7 @@ func TestDeliveryClient_NotLeader(t *testing.T) {
 			}
 		},
 	}
-	cli, cleanup := startBufconnDelivery(t, srv)
+	cli, cleanup := startTestDelivery(t, h)
 	defer cleanup()
 
 	err := cli.Send(context.Background(), 7, "outbox/p1", 1, &enginev1.Command{})
@@ -136,7 +171,7 @@ func TestDeliveryClient_NotLeader(t *testing.T) {
 }
 
 func TestDeliveryClient_Err(t *testing.T) {
-	srv := &stubServer{
+	h := &stubHandler{
 		respond: func(req *deliveryv1.DeliverRequest) *deliveryv1.DeliverResponse {
 			return &deliveryv1.DeliverResponse{
 				Seq: req.GetSeq(),
@@ -146,7 +181,7 @@ func TestDeliveryClient_Err(t *testing.T) {
 			}
 		},
 	}
-	cli, cleanup := startBufconnDelivery(t, srv)
+	cli, cleanup := startTestDelivery(t, h)
 	defer cleanup()
 
 	err := cli.Send(context.Background(), 7, "outbox/p1", 1, &enginev1.Command{})
@@ -169,6 +204,80 @@ func TestDeliveryClient_NoLeaderHint(t *testing.T) {
 	err = cli.Send(context.Background(), 7, "outbox/p1", 1, &enginev1.Command{})
 	if err == nil || !contains(err.Error(), "no leader known") {
 		t.Fatalf("expected 'no leader known' error; got %v", err)
+	}
+}
+
+// TestDeliveryClient_PolicyDenies stands up the handler with a strict
+// policy that requires a node/* principal. The h2c client dials without
+// a peer cert (anonymous), so the policy must reject with HTTP 403 and
+// the client surfaces it as a non-Ack error. Exercises the auth path
+// from the inside without TLS fixtures.
+func TestDeliveryClient_PolicyDenies(t *testing.T) {
+	dir := t.TempDir()
+	policy := filepath.Join(dir, "policy.json")
+	body := `{
+  "allow_rules": [
+    {
+      "name": "deny_anonymous_delivery",
+      "request": {
+        "paths": ["/reflow.delivery.v1.Delivery/*"],
+        "headers": [{"key": "x-reflow-principal", "values": ["node/*"]}]
+      }
+    }
+  ]
+}`
+	if err := os.WriteFile(policy, []byte(body), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	mw, mwCloser, err := auth.HTTPMiddleware("reflow.local", policy, nil)
+	if err != nil {
+		t.Fatalf("HTTPMiddleware: %v", err)
+	}
+	defer func() {
+		if mwCloser != nil {
+			_ = mwCloser()
+		}
+	}()
+
+	h := &stubHandler{respond: func(req *deliveryv1.DeliverRequest) *deliveryv1.DeliverResponse {
+		t.Fatalf("handler reached despite anonymous caller; received %+v", req)
+		return nil
+	}}
+	path, handler := deliveryv1connect.NewDeliveryHandler(h)
+	mux := http.NewServeMux()
+	mux.Handle(path, mw(handler))
+
+	srv := &http.Server{Handler: mux, Protocols: new(http.Protocols)}
+	srv.Protocols.SetUnencryptedHTTP2(true)
+	srv.Protocols.SetHTTP1(false)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		_ = srv.Close()
+		_ = ln.Close()
+	}()
+
+	cli, err := NewClient(ClientConfig{
+		Resolver: &stubResolver{
+			leader:   map[uint64]uint64{7: 1},
+			endpoint: map[uint64]string{1: ln.Addr().String()},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer cli.Close()
+
+	sendErr := cli.Send(context.Background(), 7, "outbox/p1", 1, &enginev1.Command{})
+	if sendErr == nil {
+		t.Fatal("expected anonymous Send to be denied; got nil error")
+	}
+	if !contains(sendErr.Error(), "forbidden") && connect.CodeOf(sendErr) != connect.CodePermissionDenied {
+		t.Fatalf("expected forbidden / PermissionDenied; got %v", sendErr)
 	}
 }
 

@@ -3,9 +3,6 @@ package reflow
 import (
 	"context"
 	"errors"
-	"net"
-
-	"google.golang.org/grpc"
 
 	"github.com/twinfer/reflow/internal/connectserver"
 	"github.com/twinfer/reflow/internal/engine"
@@ -25,8 +22,7 @@ type Host struct {
 	metricsCloser  func() error
 	ingressRT      *ingress.Runtime
 	ingressCreds   *creds.ListenerCreds
-	deliverySrv    *grpc.Server
-	deliveryLn     net.Listener
+	deliverySrv    *connectserver.Server
 	deliveryClient *delivery.Client
 	deliveryCreds  *creds.ListenerCreds
 	adminSrv       *connectserver.Server
@@ -40,7 +36,7 @@ type Host struct {
 // Close stops every partition and the underlying NodeHost. Idempotent.
 // Stops the ingress server (closed first so client requests stop arriving
 // before in-flight work drains), metrics HTTP server, admin + Delivery
-// gRPC servers, the snapshot producer goroutines, and the pooled
+// Connect servers, the snapshot producer goroutines, and the pooled
 // delivery client.
 func (h *Host) Close() error {
 	var firstErr error
@@ -67,14 +63,10 @@ func (h *Host) Close() error {
 		h.adminSrv = nil
 	}
 	if h.deliverySrv != nil {
-		h.deliverySrv.GracefulStop()
-		h.deliverySrv = nil
-	}
-	if h.deliveryLn != nil {
-		if err := h.deliveryLn.Close(); err != nil && firstErr == nil && !errors.Is(err, net.ErrClosed) {
+		if err := h.deliverySrv.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		h.deliveryLn = nil
+		h.deliverySrv = nil
 	}
 	if h.deliveryClient != nil {
 		if err := h.deliveryClient.Close(); err != nil && firstErr == nil {

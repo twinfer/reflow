@@ -1,23 +1,13 @@
 package creds
 
-import (
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/local"
-)
+import "errors"
 
-// LocalSpec drives grpc-go's local credentials. The handshake only
-// succeeds for UDS or loopback peers; reflow uses this for in-host
-// sidecars or test harnesses that want a SecurityLevel above
-// NoSecurity without an actual cert.
+// LocalSpec carried grpc-go's local-credentials configuration. Local
+// creds are gRPC-specific (UDS / loopback handshake); there's no HTTP/2
+// equivalent. The struct stays as a koanf-decodable placeholder;
+// selecting this driver now returns an error at startup.
 type LocalSpec struct{}
 
 func buildLocal(_ *LocalSpec) (*ListenerCreds, error) {
-	creds := local.NewCredentials()
-	return &ListenerCreds{
-		Server:        creds,
-		ClientDial:    []grpc.DialOption{grpc.WithTransportCredentials(local.NewCredentials())},
-		Driver:        DriverLocal,
-		SecurityLevel: credentials.PrivacyAndIntegrity,
-	}, nil
+	return nil, errors.New("reflow/creds: local-credentials driver is not supported on the Connect transport; use insecure for loopback or tls for in-host")
 }

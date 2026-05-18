@@ -27,8 +27,9 @@ func TestBuild_ZeroSpecIsInsecure(t *testing.T) {
 	if lc.SecurityLevel != credentials.NoSecurity {
 		t.Errorf("SecurityLevel=%v; want NoSecurity", lc.SecurityLevel)
 	}
-	if lc.Server == nil || len(lc.ClientDial) == 0 {
-		t.Error("Server or ClientDial unset")
+	if lc.ServerTLSConfig != nil || lc.ClientTLSConfig != nil {
+		t.Errorf("insecure driver returned non-nil TLS configs: server=%v client=%v",
+			lc.ServerTLSConfig, lc.ClientTLSConfig)
 	}
 }
 
@@ -71,8 +72,8 @@ func TestBuild_TLS(t *testing.T) {
 	if lc.SecurityLevel != credentials.PrivacyAndIntegrity {
 		t.Errorf("SecurityLevel=%v; want PrivacyAndIntegrity", lc.SecurityLevel)
 	}
-	if lc.Server == nil || len(lc.ClientDial) == 0 {
-		t.Error("Server or ClientDial unset")
+	if lc.ServerTLSConfig == nil || lc.ClientTLSConfig == nil {
+		t.Error("ServerTLSConfig or ClientTLSConfig unset")
 	}
 }
 
@@ -88,10 +89,11 @@ func TestBuild_TLSMissingCAErrors(t *testing.T) {
 	}
 }
 
-func TestBuild_TransportOnlyDrivers(t *testing.T) {
-	// Constructors that need no on-disk material and no environment
-	// (handshake happens later on dial). Each should produce a
-	// PrivacyAndIntegrity-level listener.
+func TestBuild_GRPCOnlyDriversRejected(t *testing.T) {
+	// ALTS, Google, and Local are gRPC-specific transport credentials.
+	// They have no HTTP/2 equivalent on the Connect stack and Build now
+	// rejects them at startup so an operator's mis-configured creds.Spec
+	// surfaces early.
 	cases := []struct {
 		name string
 		spec Spec
@@ -102,15 +104,8 @@ func TestBuild_TransportOnlyDrivers(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			lc, err := Build(c.spec, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if lc.Server == nil || len(lc.ClientDial) == 0 {
-				t.Error("Server or ClientDial unset")
-			}
-			if lc.SecurityLevel != credentials.PrivacyAndIntegrity {
-				t.Errorf("SecurityLevel=%v; want PrivacyAndIntegrity", lc.SecurityLevel)
+			if _, err := Build(c.spec, nil); err == nil {
+				t.Errorf("expected error for driver %q on Connect transport; got nil", c.spec.Driver)
 			}
 		})
 	}

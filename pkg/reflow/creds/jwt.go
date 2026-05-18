@@ -1,9 +1,7 @@
 package creds
 
 import (
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/credentials/jwt"
 )
 
@@ -12,8 +10,11 @@ import (
 // is the path to a file holding a JWT (e.g. a k8s service-account
 // projected token); grpc-go re-reads it on each call so external
 // rotation works without restart.
+//
+// The PerRPC credential populated by this driver is preserved on
+// ListenerCreds for forward-compatibility but is not yet consumed by
+// the Connect-based transport.
 type JWTSpec struct {
-	// TokenFile is the path to the JWT token file.
 	TokenFile string `koanf:"token_file"`
 }
 
@@ -29,11 +30,6 @@ func buildJWT(s *JWTSpec) (*ListenerCreds, error) {
 		return nil, err
 	}
 	return &ListenerCreds{
-		Server: insecure.NewCredentials(),
-		ClientDial: []grpc.DialOption{
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithPerRPCCredentials(perRPC),
-		},
 		PerRPC:        perRPC,
 		Driver:        DriverJWT,
 		SecurityLevel: credentials.NoSecurity,

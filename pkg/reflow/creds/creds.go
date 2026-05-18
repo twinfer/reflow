@@ -1,9 +1,9 @@
-// Package creds is the operator-facing gRPC transport-credential layer for
+// Package creds is the operator-facing transport-credential layer for
 // reflow. Each listener (Delivery, Admin, Ingress) and each handler-dial
-// endpoint takes a Spec; Build returns a ListenerCreds carrying the
-// server TransportCredentials, the matching DialOptions for clients, an
-// optional PerRPCCredentials, and a Close that releases any background
-// resources (cert provider goroutines, token refreshers, …).
+// endpoint takes a Spec; Build returns a ListenerCreds carrying matching
+// server + client *tls.Config values, an optional PerRPCCredentials, and
+// a Close that releases any background resources (cert provider
+// goroutines, token refreshers, …).
 //
 // The zero Spec (Driver == "") builds the insecure listener — that
 // default is load-bearing for "go run ./cmd/reflowd" to start cert-free.
@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
 
@@ -79,32 +78,25 @@ type Spec struct {
 
 // ListenerCreds is what Build returns: everything one listener (or one
 // dial-out client) needs to terminate or originate a secure connection.
+//
+// Reflow's transport layer is HTTP/2 (Connect RPC for admin/delivery/
+// ingress; HTTP/2 with optional TLS for engine→handler). The *tls.Config
+// pair is the primary interface.
 type ListenerCreds struct {
-	// Server is the TransportCredentials installed into a gRPC server
-	// via grpc.Creds. For PerRPC-only drivers (OAuth, JWT, STS) the
-	// value is insecure — callers MUST layer transport security
-	// underneath; the Build call returns an error if that combo is
-	// supplied alone.
-	Server credentials.TransportCredentials
-	// ServerTLSConfig is the raw *tls.Config behind Server for callers
-	// that also need to wrap a plain HTTP listener (Connect ingress
-	// + admin, h2c when nil). Populated by the TLS and CertProvider
-	// drivers; nil for insecure, ALTS, Local, Google, and PerRPC-only
-	// drivers. Sharing the same config keeps gRPC and HTTP transports
-	// in lock-step on cert rotation.
+	// ServerTLSConfig is the *tls.Config for the listening side
+	// (Connect ingress / admin / delivery, h2c when nil). Populated by
+	// the TLS and CertProvider drivers; nil for insecure and PerRPC-
+	// only drivers.
 	ServerTLSConfig *tls.Config
-	// ClientTLSConfig is the raw *tls.Config for dial-out HTTP/2
-	// clients (pkg/adminclient, pkg/ingressclient). Mirror of
-	// ServerTLSConfig's client side. Nil for insecure / PerRPC-only.
+	// ClientTLSConfig is the *tls.Config for dial-out HTTP/2 clients
+	// (pkg/adminclient, pkg/ingressclient, internal/engine/delivery
+	// Client). Mirror of ServerTLSConfig's client side. Nil for
+	// insecure / PerRPC-only.
 	ClientTLSConfig *tls.Config
-	// ClientDial is the slice of DialOptions a client uses to talk to
-	// the matching server. Always non-nil — for insecure it carries
-	// insecure.NewCredentials(); for TLS it carries the verified-chain
-	// credentials; for PerRPC drivers it ALSO carries the per-call
-	// token attachment.
-	ClientDial []grpc.DialOption
-	// PerRPC is the call-credential when the driver attaches a bearer
-	// token (OAuth, JWT, STS). nil for transport-only drivers.
+	// PerRPC is a call-level credential when the driver attaches a
+	// bearer token (OAuth, JWT, STS). Currently unused on the Connect
+	// path; preserved as a forward-compat seam for Connect interceptor
+	// integration.
 	PerRPC credentials.PerRPCCredentials
 	// Driver echoes Spec.Driver after defaulting (i.e. "insecure" for
 	// the zero spec). Useful for metrics labelling.

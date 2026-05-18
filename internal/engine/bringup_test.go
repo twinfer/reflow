@@ -3,15 +3,31 @@ package engine_test
 import (
 	"context"
 	"net"
+	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/twinfer/reflow/internal/admin"
+	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/pkg/handler"
 )
+
+// testIngressMiddleware returns the embedded starter policy via the
+// production auth middleware. The starter policy's ingress_open allow
+// rule lets anonymous traffic through /reflow.ingress.v1.Ingress/*; the
+// middleware path itself is exercised so a regression that skips it
+// surfaces in the same integration coverage.
+func testIngressMiddleware(t *testing.T) func(http.Handler) http.Handler {
+	t.Helper()
+	mw, _, err := auth.HTTPMiddleware("reflow.local", "", nil)
+	if err != nil {
+		t.Fatalf("auth.HTTPMiddleware: %v", err)
+	}
+	return mw
+}
 
 // singleNodeWithHandlers brings up a single-node Host on a temp dir
 // with shard 0 (metadata) and shard 1 (partition) live, and starts a
@@ -72,7 +88,8 @@ func bringUpHostWithIngress(t *testing.T, reg *handler.Registry) (*engine.Host, 
 	t.Helper()
 	h := singleNodeWithHandlers(t, reg)
 	rt, err := ingress.Start(context.Background(), h, ingress.Config{
-		Addr: "127.0.0.1:0",
+		Addr:       "127.0.0.1:0",
+		Middleware: testIngressMiddleware(t),
 	})
 	if err != nil {
 		t.Fatalf("ingress.Start: %v", err)

@@ -1,5 +1,5 @@
-// Package delivery implements the inter-node Delivery gRPC service used
-// for cross-partition outbox dispatch.
+// Package delivery implements the inter-node Delivery Connect RPC service
+// used for cross-partition outbox dispatch.
 //
 // Sender side (Client): when a shard's leader-side OutboxService sees an
 // OutboxEnvelope addressed to a different shard, it dials the destination
@@ -18,12 +18,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflow/internal/engine"
 	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
+	"github.com/twinfer/reflow/proto/deliveryv1/deliveryv1connect"
 )
 
 // RunnerView is re-exported from engine so unit tests can stub the
@@ -44,9 +45,9 @@ type HostView interface {
 	PartitionLeaderHint(shardID uint64) (uint64, bool)
 }
 
-// Server implements deliveryv1.DeliveryServer over an *engine.Host.
+// Server implements deliveryv1connect.DeliveryHandler over an *engine.Host.
 type Server struct {
-	deliveryv1.UnimplementedDeliveryServer
+	deliveryv1connect.UnimplementedDeliveryHandler
 	host HostView
 	log  *slog.Logger
 }
@@ -59,14 +60,20 @@ func NewServer(host HostView, log *slog.Logger) *Server {
 	return &Server{host: host, log: log}
 }
 
+// NewHandler returns the path + http.Handler pair to mount on a
+// connectserver. opts is forwarded to the generated handler (e.g.
+// connect.WithInterceptors for cross-cutting concerns).
+func (s *Server) NewHandler(opts ...connect.HandlerOption) (string, http.Handler) {
+	return deliveryv1connect.NewDeliveryHandler(s, opts...)
+}
+
 // Deliver is the bidi-stream handler. For each DeliverRequest received,
 // the server attempts to propose the command via the destination shard's
 // RaftProposer and replies with Ack / NotLeader / Err. The stream stays
 // open until the sender closes its half or the context is cancelled.
-func (s *Server) Deliver(stream deliveryv1.Delivery_DeliverServer) error {
-	ctx := stream.Context()
+func (s *Server) Deliver(ctx context.Context, stream *connect.BidiStream[deliveryv1.DeliverRequest, deliveryv1.DeliverResponse]) error {
 	for {
-		req, err := stream.Recv()
+		req, err := stream.Receive()
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
@@ -103,7 +110,7 @@ func (s *Server) handle(ctx context.Context, req *deliveryv1.DeliverRequest) *de
 		if errors.Is(err, engine.ErrShardClosed) {
 			return s.notLeaderResponse(req.GetSeq(), shardID)
 		}
-		if st, ok := status.FromError(err); ok && st.Code() == codes.Unavailable {
+		if connect.CodeOf(err) == connect.CodeUnavailable {
 			return s.notLeaderResponse(req.GetSeq(), shardID)
 		}
 		s.log.Warn("delivery: ProposeIngress failed",

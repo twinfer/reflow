@@ -46,6 +46,11 @@ type Server struct {
 	closeMu sync.Mutex
 	closed  bool
 	doneCh  chan struct{}
+	// baseCancel cancels the http.Server BaseContext. Firing it at
+	// Close surfaces ctx.Done() inside every in-flight handler so a
+	// handler stuck in a blocking call (e.g. dragonboat SyncPropose)
+	// returns immediately rather than holding the engine open.
+	baseCancel context.CancelFunc
 }
 
 // New binds the listener and starts Serve in a background goroutine.
@@ -83,21 +88,24 @@ func New(ctx context.Context, cfg Config, routes ...Route) (*Server, error) {
 		ln = tls.NewListener(ln, cfg.TLS)
 	}
 
+	baseCtx, baseCancel := context.WithCancel(context.Background())
 	srv := &http.Server{
 		Handler:           mux,
 		Protocols:         new(http.Protocols),
 		ReadHeaderTimeout: hdr,
+		BaseContext:       func(net.Listener) context.Context { return baseCtx },
 	}
 	srv.Protocols.SetHTTP1(true)
 	srv.Protocols.SetUnencryptedHTTP2(cfg.TLS == nil)
 	srv.Protocols.SetHTTP2(cfg.TLS != nil)
 
 	s := &Server{
-		srv:    srv,
-		ln:     ln,
-		addr:   ln.Addr().String(),
-		log:    log,
-		doneCh: make(chan struct{}),
+		srv:        srv,
+		ln:         ln,
+		addr:       ln.Addr().String(),
+		log:        log,
+		doneCh:     make(chan struct{}),
+		baseCancel: baseCancel,
 	}
 	go func() {
 		defer close(s.doneCh)
@@ -118,8 +126,14 @@ func New(ctx context.Context, cfg Config, routes ...Route) (*Server, error) {
 // in ":0").
 func (s *Server) Addr() string { return s.addr }
 
-// Close gracefully shuts the server down (2s deadline) and waits for the
-// Serve goroutine to exit. Idempotent.
+// Close gracefully shuts the server down and waits for the Serve
+// goroutine to exit. Idempotent. Steps:
+//
+//  1. Cancel BaseContext so every active handler observes ctx.Done()
+//     and unwinds (handlers blocked in dragonboat SyncPropose etc.
+//     return immediately on their next select).
+//  2. Shutdown(2s) drains any remaining connections.
+//  3. Wait for the Serve goroutine to close doneCh.
 func (s *Server) Close() error {
 	s.closeMu.Lock()
 	if s.closed {
@@ -130,6 +144,9 @@ func (s *Server) Close() error {
 	s.closed = true
 	s.closeMu.Unlock()
 
+	if s.baseCancel != nil {
+		s.baseCancel()
+	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_ = s.srv.Shutdown(shutdownCtx)

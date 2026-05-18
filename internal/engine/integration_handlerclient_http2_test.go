@@ -10,38 +10,42 @@ import (
 	"time"
 
 	connect "connectrpc.com/connect"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/twinfer/reflow/internal/engine/admin"
+	"github.com/twinfer/reflow/internal/admin"
+	"github.com/twinfer/reflow/internal/connectserver"
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/loadgen"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
+	"github.com/twinfer/reflow/proto/adminv1/adminv1connect"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
-// callRegisterDeployment invokes admin.Server.RegisterDeployment via
-// gRPC loopback so the request rides the same auth + dispatch path
-// production uses. Avoids reaching into the unexported method.
+// callRegisterDeployment invokes admin.Server.RegisterDeployment via a
+// Connect h2c loopback so the request rides the same auth + dispatch
+// path production uses.
 func callRegisterDeployment(ctx context.Context, srv *admin.Server, url string) (*adminv1.RegisterDeploymentResponse, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	path, h := srv.NewHandler()
+	cs, err := connectserver.New(ctx, connectserver.Config{
+		Addr: "127.0.0.1:0",
+	}, connectserver.Route{Path: path, Handler: h})
 	if err != nil {
 		return nil, err
 	}
-	gs := grpc.NewServer()
-	srv.Register(gs)
-	go func() { _ = gs.Serve(ln) }()
-	defer func() { gs.GracefulStop(); _ = ln.Close() }()
+	defer cs.Close()
 
-	cc, err := grpc.NewClient(ln.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	tr := &http.Transport{Protocols: new(http.Protocols)}
+	tr.Protocols.SetUnencryptedHTTP2(true)
+	tr.Protocols.SetHTTP1(false)
+	defer tr.CloseIdleConnections()
+	cli := adminv1connect.NewAdminClient(&http.Client{Transport: tr}, "http://"+cs.Addr())
+	resp, err := cli.RegisterDeployment(ctx, connect.NewRequest(&adminv1.RegisterDeploymentRequest{Url: url}))
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = cc.Close() }()
-	return adminv1.NewAdminClient(cc).RegisterDeployment(ctx, &adminv1.RegisterDeploymentRequest{Url: url})
+	return resp.Msg, nil
 }
 
 // fakeHandlerHTTP2 is the handler-side h2c server used by the HTTP/2

@@ -1,14 +1,14 @@
-// Package admin implements reflow's mTLS-protected cluster Admin gRPC
-// surface. It owns the gRPC handlers and the per-RPC business logic
-// (Raft proposals against shard 0, snapshot orchestration). Identity,
-// audit, and authorization all live in internal/auth — the same auth
-// stack drives the Delivery service too.
+// Package admin implements reflow's mTLS-protected cluster Admin
+// Connect RPC surface. It owns the per-RPC business logic (Raft
+// proposals against shard 0, snapshot orchestration). Identity, audit,
+// and authorization all live in internal/auth — the same auth stack
+// drives the Delivery service too.
 //
 // Every mutating RPC translates into a shard-0 Raft proposal via
 // MetadataRunner.Proposer().ProposeSelf, so all admin calls must reach
-// the metadata leader. Non-leader nodes return codes.Unavailable with
-// a leader hint in the error message; the reflow-cluster CLI is the
-// canonical client and is responsible for retrying.
+// the metadata leader. Non-leader nodes return CodeUnavailable with a
+// LeaderHint detail attached; pkg/adminclient.CallWithLeaderRedirect
+// is the canonical retry helper.
 package admin
 
 import (
@@ -28,15 +28,13 @@ import (
 
 	connect "connectrpc.com/connect"
 	"github.com/google/uuid"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
+	"github.com/twinfer/reflow/proto/adminv1/adminv1connect"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -46,26 +44,18 @@ import (
 // handler-side discovery response must advertise the same string.
 const protocolVersion = "v1"
 
-// Server implements adminv1.AdminServer.
+// Server implements adminv1connect.AdminHandler.
 type Server struct {
-	adminv1.UnimplementedAdminServer
+	adminv1connect.UnimplementedAdminHandler
 
 	host   *engine.Host
 	runner *engine.MetadataRunner
 	repo   snapshot.Repository
 	src    snapshot.Source
 	log    *slog.Logger
-	// signer, when non-nil, stamps Authorization: Bearer on outgoing
-	// DiscoveryService.Discover requests so the handler's verifier
-	// accepts them. Nil disables the header (single-node and
-	// insecure-creds posture).
 	signer handlerclient.Signer
 
-	// scratchDir holds export directories created for CreateSnapshot.
-	// Each call writes into a fresh sub-directory.
-	scratchDir string
-
-	// adminCallTimeout caps the wall-clock time of a single admin RPC.
+	scratchDir       string
 	adminCallTimeout time.Duration
 }
 
@@ -77,9 +67,8 @@ type Config struct {
 	Source     snapshot.Source
 	Log        *slog.Logger
 	ScratchDir string
-	// Signer, when non-nil, is used to mint a JWT on outgoing
+	// Signer, when non-nil, mints a JWT on outgoing
 	// DiscoveryService.Discover requests during RegisterDeployment.
-	// Same Signer the handlerclient connectclient uses.
 	Signer handlerclient.Signer
 }
 
@@ -111,90 +100,92 @@ func NewServer(cfg Config) (*Server, error) {
 	}, nil
 }
 
-// Register installs s on gs.
-func (s *Server) Register(gs *grpc.Server) {
-	adminv1.RegisterAdminServer(gs, s)
+// NewHandler returns the path + http.Handler pair to mount on a
+// connectserver. opts is forwarded to the generated handler (e.g.
+// connect.WithInterceptors for cross-cutting concerns).
+func (s *Server) NewHandler(opts ...connect.HandlerOption) (string, http.Handler) {
+	return adminv1connect.NewAdminHandler(s, opts...)
 }
 
-// requireLeader returns Unavailable when this node is not the metadata
-// leader, attaching a LeaderHint status detail (node_id + admin_endpoint
-// resolved via gossip NodeHostMeta) so clients can redirect via
-// pkg/reflow/admin.CallWithLeaderRedirect. When the hint is unresolvable
-// (gossip not yet converged, peer Meta blob not propagated) the detail
-// is omitted and the client falls back to whatever discovery seam it
-// has.
+// requireLeader returns CodeUnavailable when this node is not the
+// metadata leader, attaching a LeaderHint detail (node_id +
+// admin_endpoint resolved via gossip NodeHostMeta) so clients can
+// redirect via pkg/adminclient.CallWithLeaderRedirect.
 func (s *Server) requireLeader() error {
 	if s.runner.IsLeader() {
 		return nil
 	}
 	hintID, _ := s.host.PartitionLeaderHint(0)
-	st := status.Newf(codes.Unavailable,
-		"admin: not the metadata leader (hint=%d)", hintID)
+	cerr := connect.NewError(connect.CodeUnavailable,
+		fmt.Errorf("admin: not the metadata leader (hint=%d)", hintID))
 	if hintID != 0 {
 		if addr, ok := s.host.NodeAdminEndpoint(hintID); ok {
-			if withDetails, err := st.WithDetails(&adminv1.LeaderHint{
+			if d, derr := connect.NewErrorDetail(&adminv1.LeaderHint{
 				NodeId:        hintID,
 				AdminEndpoint: addr,
-			}); err == nil {
-				st = withDetails
+			}); derr == nil {
+				cerr.AddDetail(d)
 			}
 		}
 	}
-	return st.Err()
+	return cerr
 }
 
 // AddNode registers a new peer and schedules a PROMOTE_TO_VOTER step
-// for every existing partition shard. Catch-up happens automatically
-// inside dragonboat when SyncRequestAddReplica is called by the
-// rebalancer.
-func (s *Server) AddNode(ctx context.Context, req *adminv1.AddNodeRequest) (*adminv1.AddNodeResponse, error) {
+// for every existing partition shard.
+func (s *Server) AddNode(ctx context.Context, req *connect.Request[adminv1.AddNodeRequest]) (*connect.Response[adminv1.AddNodeResponse], error) {
 	if err := s.requireLeader(); err != nil {
 		return nil, err
 	}
-	return s.addNodeInternal(ctx, req)
+	out, err := s.addNodeInternal(ctx, req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(out), nil
 }
 
 // SelfJoin is AddNode initiated by the joiner itself. Authorization
-// requires the caller's SPIFFE identity to be node/<req.node_id>. The
-// gRPC authz policy already gates this method to node/* principals;
-// this in-handler check is the second gate ensuring the node_id in the
-// request matches the SPIFFE subject (defense in depth: even with the
-// path-level allow rule, a node/7 cert can only register node 7).
-func (s *Server) SelfJoin(ctx context.Context, req *adminv1.AddNodeRequest) (*adminv1.AddNodeResponse, error) {
+// requires the caller's SPIFFE identity to be node/<req.node_id>.
+// Transport authz already gates this method to node/* principals; this
+// in-handler check is the second gate ensuring the node_id in the
+// request matches the SPIFFE subject (defense in depth).
+func (s *Server) SelfJoin(ctx context.Context, req *connect.Request[adminv1.AddNodeRequest]) (*connect.Response[adminv1.AddNodeResponse], error) {
 	if err := s.requireLeader(); err != nil {
 		return nil, err
 	}
-	if err := checkSelfJoinPrincipal(ctx, req.GetNodeId()); err != nil {
+	if err := checkSelfJoinPrincipal(ctx, req.Msg.GetNodeId()); err != nil {
 		return nil, err
 	}
-	return s.addNodeInternal(ctx, req)
+	out, err := s.addNodeInternal(ctx, req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(out), nil
 }
 
 // checkSelfJoinPrincipal enforces the SPIFFE-equals-NodeID gate for
-// SelfJoin. Extracted from the handler body so it's unit-testable
-// without standing up an engine.Host / MetadataRunner.
+// SelfJoin. Extracted so it's unit-testable without standing up an
+// engine.Host / MetadataRunner.
 func checkSelfJoinPrincipal(ctx context.Context, nodeID uint64) error {
 	principal, ok := auth.PrincipalFromContext(ctx)
 	if !ok || principal.Kind != "node" {
-		return status.Error(codes.PermissionDenied,
-			"admin: SelfJoin requires a node SPIFFE identity")
+		return connect.NewError(connect.CodePermissionDenied,
+			errors.New("admin: SelfJoin requires a node SPIFFE identity"))
 	}
 	if principal.Subject != strconv.FormatUint(nodeID, 10) {
-		return status.Errorf(codes.PermissionDenied,
-			"admin: SelfJoin SPIFFE node/%s does not match req.node_id=%d",
-			principal.Subject, nodeID)
+		return connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("admin: SelfJoin SPIFFE node/%s does not match req.node_id=%d",
+				principal.Subject, nodeID))
 	}
 	return nil
 }
 
 // addNodeInternal contains the FSM-driving body shared by AddNode and
-// SelfJoin: propose RegisterNode, read the partition table, propose
-// BeginRebalanceStep for every shard the node isn't already voting on,
-// re-read for the response's assignment_epoch. Caller owns the
-// requireLeader gate and any role-specific authorization.
+// SelfJoin.
 func (s *Server) addNodeInternal(ctx context.Context, req *adminv1.AddNodeRequest) (*adminv1.AddNodeResponse, error) {
 	if req.GetNodeId() == 0 || req.GetRaftAddr() == "" {
-		return nil, status.Error(codes.InvalidArgument, "admin: node_id and raft_addr are required")
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("admin: node_id and raft_addr are required"))
 	}
 	mem := &enginev1.NodeMembership{
 		NodeId:     req.GetNodeId(),
@@ -210,20 +201,19 @@ func (s *Server) addNodeInternal(ctx context.Context, req *adminv1.AddNodeReques
 	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
 	defer cancel()
 	if err := s.runner.Proposer().ProposeSelf(callCtx, regCmd); err != nil {
-		return nil, status.Errorf(codes.Internal, "admin: propose RegisterNode: %v", err)
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("admin: propose RegisterNode: %w", err))
 	}
 
-	// Read the current partition table to find every shard that needs
-	// the new node added.
 	pt, err := s.host.PartitionTable(callCtx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "admin: read partition table: %v", err)
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("admin: read partition table: %w", err))
 	}
 	if pt == nil {
-		return nil, status.Error(codes.FailedPrecondition, "admin: partition table not yet bootstrapped")
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("admin: partition table not yet bootstrapped"))
 	}
-	// Build the union {0} ∪ partition-shard-ids so shard 0 is proposed
-	// alongside the partition shards in one uniform loop.
 	addShard := func(shardID uint64, rs *enginev1.ReplicaSet) error {
 		if replicaSetContainsID(rs.GetNodeIds(), req.GetNodeId()) {
 			return nil
@@ -234,8 +224,6 @@ func (s *Server) addNodeInternal(ctx context.Context, req *adminv1.AddNodeReques
 			AddNodeId: req.GetNodeId(),
 			StepId:    nextStepIDForShard(pt.GetPending(), shardID),
 		}
-		// Mutate the in-memory copy so successive iterations pick a
-		// fresh step_id without re-reading from shard 0.
 		pt.Pending = append(pt.Pending, step)
 		beginCmd := &enginev1.Command{
 			Kind: &enginev1.Command_BeginRebalanceStep{
@@ -243,8 +231,9 @@ func (s *Server) addNodeInternal(ctx context.Context, req *adminv1.AddNodeReques
 			},
 		}
 		if err := s.runner.Proposer().ProposeSelf(callCtx, beginCmd); err != nil {
-			return status.Errorf(codes.Internal, "admin: propose BeginRebalanceStep shard=%d: %v",
-				shardID, err)
+			return connect.NewError(connect.CodeInternal,
+				fmt.Errorf("admin: propose BeginRebalanceStep shard=%d: %w",
+					shardID, err))
 		}
 		return nil
 	}
@@ -256,7 +245,6 @@ func (s *Server) addNodeInternal(ctx context.Context, req *adminv1.AddNodeReques
 			return nil, err
 		}
 	}
-	// Re-read the table for the response's assignment_epoch.
 	pt2, err := s.host.PartitionTable(callCtx)
 	if err != nil || pt2 == nil {
 		return &adminv1.AddNodeResponse{}, nil
@@ -264,128 +252,136 @@ func (s *Server) addNodeInternal(ctx context.Context, req *adminv1.AddNodeReques
 	return &adminv1.AddNodeResponse{AssignmentEpoch: pt2.GetAssignmentEpoch()}, nil
 }
 
-// RemoveNode proposes EvictNode; the apply arm + rebalancer drive the
-// rest.
-func (s *Server) RemoveNode(ctx context.Context, req *adminv1.RemoveNodeRequest) (*adminv1.RemoveNodeResponse, error) {
+// RemoveNode proposes EvictNode; the apply arm + rebalancer drive the rest.
+func (s *Server) RemoveNode(ctx context.Context, req *connect.Request[adminv1.RemoveNodeRequest]) (*connect.Response[adminv1.RemoveNodeResponse], error) {
 	if err := s.requireLeader(); err != nil {
 		return nil, err
 	}
-	if req.GetNodeId() == 0 {
-		return nil, status.Error(codes.InvalidArgument, "admin: node_id required")
+	if req.Msg.GetNodeId() == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("admin: node_id required"))
 	}
-	if req.GetNodeId() == s.host.NodeID() {
-		return nil, status.Error(codes.FailedPrecondition,
-			"admin: refusing to remove self; redirect to another node first")
+	if req.Msg.GetNodeId() == s.host.NodeID() {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("admin: refusing to remove self; redirect to another node first"))
 	}
 	cmd := &enginev1.Command{
 		Kind: &enginev1.Command_EvictNode{
-			EvictNode: &enginev1.EvictNode{NodeId: req.GetNodeId()},
+			EvictNode: &enginev1.EvictNode{NodeId: req.Msg.GetNodeId()},
 		},
 	}
 	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
 	defer cancel()
 	if err := s.runner.Proposer().ProposeSelf(callCtx, cmd); err != nil {
-		return nil, status.Errorf(codes.Internal, "admin: propose EvictNode: %v", err)
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("admin: propose EvictNode: %w", err))
 	}
 	pt, _ := s.host.PartitionTable(callCtx)
 	var epoch uint64
 	if pt != nil {
 		epoch = pt.GetAssignmentEpoch()
 	}
-	return &adminv1.RemoveNodeResponse{AssignmentEpoch: epoch}, nil
+	return connect.NewResponse(&adminv1.RemoveNodeResponse{AssignmentEpoch: epoch}), nil
 }
 
-// ListNodes streams the current Membership rows.
-func (s *Server) ListNodes(ctx context.Context, _ *adminv1.ListNodesRequest) (*adminv1.ListNodesResponse, error) {
+// ListNodes returns the current Membership rows.
+func (s *Server) ListNodes(ctx context.Context, _ *connect.Request[adminv1.ListNodesRequest]) (*connect.Response[adminv1.ListNodesResponse], error) {
 	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
 	defer cancel()
 	members, err := s.host.Membership(callCtx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "admin: read membership: %v", err)
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("admin: read membership: %w", err))
 	}
-	return &adminv1.ListNodesResponse{Nodes: members}, nil
+	return connect.NewResponse(&adminv1.ListNodesResponse{Nodes: members}), nil
 }
 
 // ListPartitions returns the current PartitionTable.
-func (s *Server) ListPartitions(ctx context.Context, _ *adminv1.ListPartitionsRequest) (*adminv1.ListPartitionsResponse, error) {
+func (s *Server) ListPartitions(ctx context.Context, _ *connect.Request[adminv1.ListPartitionsRequest]) (*connect.Response[adminv1.ListPartitionsResponse], error) {
 	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
 	defer cancel()
 	pt, err := s.host.PartitionTable(callCtx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "admin: read partition table: %v", err)
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("admin: read partition table: %w", err))
 	}
-	return &adminv1.ListPartitionsResponse{Table: pt}, nil
+	return connect.NewResponse(&adminv1.ListPartitionsResponse{Table: pt}), nil
 }
 
 // CreateSnapshot delegates to snapshot.SnapshotOnce.
-func (s *Server) CreateSnapshot(ctx context.Context, req *adminv1.CreateSnapshotRequest) (*adminv1.CreateSnapshotResponse, error) {
+func (s *Server) CreateSnapshot(ctx context.Context, req *connect.Request[adminv1.CreateSnapshotRequest]) (*connect.Response[adminv1.CreateSnapshotResponse], error) {
 	if s.repo == nil || s.src == nil {
-		return nil, status.Error(codes.FailedPrecondition, "admin: snapshot repository not configured")
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("admin: snapshot repository not configured"))
 	}
-	if req.GetShardId() == 0 {
-		return nil, status.Error(codes.InvalidArgument, "admin: shard_id required")
+	if req.Msg.GetShardId() == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("admin: shard_id required"))
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	if err := snapshot.SnapshotOnce(callCtx, snapshot.ProducerConfig{
-		ShardID:    req.GetShardId(),
+		ShardID:    req.Msg.GetShardId(),
 		Source:     s.src,
 		Repo:       s.repo,
 		ScratchDir: s.scratchDir,
 		Log:        s.log,
 	}); err != nil {
-		return nil, status.Errorf(codes.Internal, "admin: snapshot: %v", err)
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("admin: snapshot: %w", err))
 	}
-	refs, err := s.repo.List(callCtx, req.GetShardId())
+	refs, err := s.repo.List(callCtx, req.Msg.GetShardId())
 	if err != nil || len(refs) == 0 {
-		return &adminv1.CreateSnapshotResponse{ShardId: req.GetShardId()}, nil
+		return connect.NewResponse(&adminv1.CreateSnapshotResponse{ShardId: req.Msg.GetShardId()}), nil
 	}
-	// Pick the highest-Index ref explicitly instead of trusting List's
-	// slice order — the Repository contract sorts ascending but we
-	// don't want the response to silently flip if that ever changes.
 	latest := refs[0]
 	for _, r := range refs[1:] {
 		if r.Index > latest.Index {
 			latest = r
 		}
 	}
-	return &adminv1.CreateSnapshotResponse{
-		ShardId:   req.GetShardId(),
+	return connect.NewResponse(&adminv1.CreateSnapshotResponse{
+		ShardId:   req.Msg.GetShardId(),
 		Index:     latest.Index,
 		SizeBytes: latest.SizeBytes,
-	}, nil
+	}), nil
 }
 
 // DeleteSnapshot removes (shard_id, index) from the configured
 // repository. Idempotent — succeeds when the snapshot is already absent.
-func (s *Server) DeleteSnapshot(ctx context.Context, req *adminv1.DeleteSnapshotRequest) (*adminv1.DeleteSnapshotResponse, error) {
+func (s *Server) DeleteSnapshot(ctx context.Context, req *connect.Request[adminv1.DeleteSnapshotRequest]) (*connect.Response[adminv1.DeleteSnapshotResponse], error) {
 	if s.repo == nil {
-		return nil, status.Error(codes.FailedPrecondition, "admin: snapshot repository not configured")
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("admin: snapshot repository not configured"))
 	}
-	if req.GetShardId() == 0 {
-		return nil, status.Error(codes.InvalidArgument, "admin: shard_id required")
+	if req.Msg.GetShardId() == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("admin: shard_id required"))
 	}
-	if req.GetIndex() == 0 {
-		return nil, status.Error(codes.InvalidArgument, "admin: index required")
+	if req.Msg.GetIndex() == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("admin: index required"))
 	}
 	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
 	defer cancel()
-	if err := s.repo.Delete(callCtx, req.GetShardId(), req.GetIndex()); err != nil {
-		return nil, status.Errorf(codes.Internal, "admin: delete snapshot: %v", err)
+	if err := s.repo.Delete(callCtx, req.Msg.GetShardId(), req.Msg.GetIndex()); err != nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("admin: delete snapshot: %w", err))
 	}
-	return &adminv1.DeleteSnapshotResponse{}, nil
+	return connect.NewResponse(&adminv1.DeleteSnapshotResponse{}), nil
 }
 
 // ListSnapshots delegates to Repository.List.
-func (s *Server) ListSnapshots(ctx context.Context, req *adminv1.ListSnapshotsRequest) (*adminv1.ListSnapshotsResponse, error) {
+func (s *Server) ListSnapshots(ctx context.Context, req *connect.Request[adminv1.ListSnapshotsRequest]) (*connect.Response[adminv1.ListSnapshotsResponse], error) {
 	if s.repo == nil {
-		return nil, status.Error(codes.FailedPrecondition, "admin: snapshot repository not configured")
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("admin: snapshot repository not configured"))
 	}
 	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
 	defer cancel()
-	refs, err := s.repo.List(callCtx, req.GetShardId())
+	refs, err := s.repo.List(callCtx, req.Msg.GetShardId())
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "admin: list snapshots: %v", err)
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("admin: list snapshots: %w", err))
 	}
 	out := make([]*adminv1.SnapshotRef, 0, len(refs))
 	for _, r := range refs {
@@ -396,31 +392,38 @@ func (s *Server) ListSnapshots(ctx context.Context, req *adminv1.ListSnapshotsRe
 			CreatedAtUnixMs: r.CreatedAt.UnixMilli(),
 		})
 	}
-	return &adminv1.ListSnapshotsResponse{Snapshots: out}, nil
+	return connect.NewResponse(&adminv1.ListSnapshotsResponse{Snapshots: out}), nil
 }
 
 // RegisterDeployment accepts a remote-handler URL, dials its discovery
-// endpoint, and proposes Command_RegisterDeployment to shard 0. The
-// synthetic inproc deployment is registered internally at metadata-leader
-// bootstrap, NOT via this RPC; operators do not see it.
-//
-// Wired schemes: http:// (h2c) and https:// (HTTP/2 + TLS). inproc:// is
-// reserved internally and rejected.
-func (s *Server) RegisterDeployment(ctx context.Context, req *adminv1.RegisterDeploymentRequest) (*adminv1.RegisterDeploymentResponse, error) {
+// endpoint, and proposes Command_RegisterDeployment to shard 0.
+func (s *Server) RegisterDeployment(ctx context.Context, req *connect.Request[adminv1.RegisterDeploymentRequest]) (*connect.Response[adminv1.RegisterDeploymentResponse], error) {
 	if err := s.requireLeader(); err != nil {
 		return nil, err
 	}
+	out, err := s.registerDeployment(ctx, req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(out), nil
+}
+
+// registerDeployment is the leader-side body, also called by
+// pkg/reflow/run.go's autoSeedEndpoints via AutoSeed.
+func (s *Server) registerDeployment(ctx context.Context, req *adminv1.RegisterDeploymentRequest) (*adminv1.RegisterDeploymentResponse, error) {
 	raw := req.GetUrl()
 	if raw == "" {
-		return nil, status.Error(codes.InvalidArgument, "admin: url required")
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("admin: url required"))
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "admin: parse url: %v", err)
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("admin: parse url: %w", err))
 	}
 	scheme := strings.ToLower(u.Scheme)
 	if err := validateDeploymentScheme(scheme); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "admin: %v", err)
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("admin: %w", err))
 	}
 
 	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
@@ -428,11 +431,12 @@ func (s *Server) RegisterDeployment(ctx context.Context, req *adminv1.RegisterDe
 
 	resp, err := discoverConnect(callCtx, raw, scheme == "http", s.signer)
 	if err != nil {
-		return nil, status.Errorf(codes.Unavailable, "admin: discovery: %v", err)
+		return nil, connect.NewError(connect.CodeUnavailable,
+			fmt.Errorf("admin: discovery: %w", err))
 	}
 	if got := resp.GetProtocolVersion(); got != protocolVersion {
-		return nil, status.Errorf(codes.FailedPrecondition,
-			"admin: handler advertised protocol %q; engine speaks %q", got, protocolVersion)
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("admin: handler advertised protocol %q; engine speaks %q", got, protocolVersion))
 	}
 
 	deploymentID := uuid.NewString()
@@ -458,15 +462,34 @@ func (s *Server) RegisterDeployment(ctx context.Context, req *adminv1.RegisterDe
 		},
 	}
 	if err := s.runner.Proposer().ProposeSelf(callCtx, cmd); err != nil {
-		return nil, status.Errorf(codes.Internal, "admin: propose RegisterDeployment: %v", err)
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("admin: propose RegisterDeployment: %w", err))
 	}
 	return &adminv1.RegisterDeploymentResponse{DeploymentId: deploymentID}, nil
 }
 
-// validateDeploymentScheme rejects schemes the engine cannot dial. The
-// only supported wire transport is HTTP/2 (h2c for http://, TLS for
-// https://). inproc:// is reserved internally so operators can't shadow
-// the synthetic in-proc deployment via this RPC.
+// AutoSeed is the in-process registration path used by run.go's
+// autoSeedEndpoints and by engine integration tests. Same body as
+// RegisterDeployment minus the leader gate (callers wait for leadership
+// themselves). budget=0 → engine default.
+func (s *Server) AutoSeed(ctx context.Context, url string) (string, error) {
+	return s.AutoSeedWithBudget(ctx, url, 0)
+}
+
+// AutoSeedWithBudget mirrors AutoSeed and additionally stamps a per-
+// invocation step-budget override onto the deployment record.
+func (s *Server) AutoSeedWithBudget(ctx context.Context, url string, budget uint32) (string, error) {
+	resp, err := s.registerDeployment(ctx, &adminv1.RegisterDeploymentRequest{
+		Url:               url,
+		MaxJournalEntries: budget,
+	})
+	if err != nil {
+		return "", err
+	}
+	return resp.GetDeploymentId(), nil
+}
+
+// validateDeploymentScheme rejects schemes the engine cannot dial.
 func validateDeploymentScheme(scheme string) error {
 	switch scheme {
 	case "http", "https":
@@ -483,8 +506,7 @@ func validateDeploymentScheme(scheme string) error {
 // discoverConnect calls DiscoveryService.Discover on the deployment URL
 // over HTTP/2 (h2c for http://, TLS for https://). When signer is
 // non-nil the request carries Authorization: Bearer <jwt> with the
-// deployment URL as audience so the handler's verifier (if configured)
-// accepts it.
+// deployment URL as audience.
 func discoverConnect(ctx context.Context, rawURL string, plaintextH2C bool, signer handlerclient.Signer) (*discoveryv1.DiscoveryResponse, error) {
 	tr := &http.Transport{Protocols: new(http.Protocols)}
 	if plaintextH2C {

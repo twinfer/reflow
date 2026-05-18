@@ -7,11 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/twinfer/reflow/internal/admin"
 	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/internal/engine/admin"
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/pkg/handler"
-	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 )
 
 // singleNodeWithHandlers brings up a single-node Host on a temp dir
@@ -133,11 +132,8 @@ func registerDeploymentURLWithBudget(t *testing.T, h *engine.Host, url string, b
 	}
 	regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer regCancel()
-	if _, err := asrv.RegisterDeployment(regCtx, &adminv1.RegisterDeploymentRequest{
-		Url:               url,
-		MaxJournalEntries: budget,
-	}); err != nil {
-		t.Fatalf("RegisterDeployment: %v", err)
+	if _, err := asrv.AutoSeedWithBudget(regCtx, url, budget); err != nil {
+		t.Fatalf("AutoSeedWithBudget: %v", err)
 	}
 }
 

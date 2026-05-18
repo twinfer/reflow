@@ -9,23 +9,24 @@ import (
 	"net/http"
 	"time"
 
+	connect "connectrpc.com/connect"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/status"
 
+	"github.com/twinfer/reflow/internal/admin"
 	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflow/internal/connectserver"
 	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/internal/engine/admin"
 	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/internal/observability"
-	adminclient "github.com/twinfer/reflow/pkg/reflow/admin"
+	"github.com/twinfer/reflow/pkg/adminclient"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
+	"github.com/twinfer/reflow/proto/adminv1/adminv1connect"
 	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
 )
 
@@ -140,19 +141,23 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	// the multi-node-insecure warning.
 	crossShard := len(hcfg.Peers) > 1
 	adminEnabled := !cfg.Admin.Disabled && cfg.Admin.Addr != ""
-	authNeeded := crossShard || adminEnabled
 
 	// All transport-security and authn/z material is built upfront so a
 	// configuration error halts startup before any listener opens.
 	var (
-		deliveryCreds *creds.ListenerCreds
-		adminCreds    *creds.ListenerCreds
-		authCloser    func() error
-		interceptors  *serverInterceptors
+		deliveryCreds   *creds.ListenerCreds
+		adminCreds      *creds.ListenerCreds
+		grpcAuthCloser  func() error
+		httpAuthCloser  func() error
+		interceptors    *serverInterceptors
+		adminMiddleware func(http.Handler) http.Handler
 	)
 	bail := func(err error) (*Host, error) {
-		if authCloser != nil {
-			_ = authCloser()
+		if grpcAuthCloser != nil {
+			_ = grpcAuthCloser()
+		}
+		if httpAuthCloser != nil {
+			_ = httpAuthCloser()
 		}
 		_ = creds.CloseAll(deliveryCreds, adminCreds)
 		if handlerSigner != nil {
@@ -185,7 +190,10 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		adminCreds = ac
 		recordListenerSecurity(metrics, "admin", ac)
 	}
-	if authNeeded {
+	if crossShard {
+		// Delivery still uses gRPC interceptors; admin runs Connect HTTP
+		// middleware below. Both consult the same starter/operator
+		// policy file via separate loaders.
 		uIc, sIc, closer, ierr := auth.NewServerInterceptors(auth.Config{
 			Extractor:  &auth.SPIFFEExtractor{TrustDomain: cfg.Auth.trustDomainOrDefault()},
 			PolicyFile: cfg.Auth.PolicyFile,
@@ -194,8 +202,20 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		if ierr != nil {
 			return bail(fmt.Errorf("reflow: auth interceptors: %w", ierr))
 		}
-		authCloser = closer
+		grpcAuthCloser = closer
 		interceptors = &serverInterceptors{unary: uIc, stream: sIc}
+	}
+	if adminEnabled {
+		mw, closer, ierr := auth.HTTPMiddleware(
+			cfg.Auth.trustDomainOrDefault(),
+			cfg.Auth.PolicyFile,
+			logger,
+		)
+		if ierr != nil {
+			return bail(fmt.Errorf("reflow: admin auth middleware: %w", ierr))
+		}
+		httpAuthCloser = closer
+		adminMiddleware = mw
 	}
 
 	var (
@@ -212,9 +232,10 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		eh.SetCrossShardSender(dc)
 	}
 
+	authClosers := combineClosers(grpcAuthCloser, httpAuthCloser)
 	host, herr := finishStartup(ctx, cfg, eh, crossShard, adminEnabled, shards, snapshotTriggers,
 		deliverySrv, deliveryLn, deliveryClient, deliveryCreds, adminCreds, handlerSigner,
-		interceptors, authCloser, metricsCloser, logger)
+		adminMiddleware, authClosers, metricsCloser, logger)
 	if herr != nil {
 		if deliverySrv != nil {
 			deliverySrv.Stop()
@@ -228,6 +249,29 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		return bail(herr)
 	}
 	return host, nil
+}
+
+// combineClosers folds 0..N closer funcs into one. All run, first error
+// surfaces. nil entries are skipped.
+func combineClosers(fns ...func() error) func() error {
+	out := fns[:0]
+	for _, f := range fns {
+		if f != nil {
+			out = append(out, f)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return func() error {
+		var firstErr error
+		for _, f := range out {
+			if err := f(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		return firstErr
+	}
 }
 
 // serverInterceptors bundles the unary+stream pair so it can be passed
@@ -339,7 +383,7 @@ func finishStartup(
 	deliveryCreds *creds.ListenerCreds,
 	adminCreds *creds.ListenerCreds,
 	handlerSigner *creds.Signer,
-	ic *serverInterceptors,
+	adminMiddleware func(http.Handler) http.Handler,
 	authCloser func() error,
 	metricsCloser func() error,
 	logger *slog.Logger,
@@ -373,8 +417,7 @@ func finishStartup(
 	}
 
 	var (
-		adminSrv     *grpc.Server
-		adminLn      net.Listener
+		adminSrv     *connectserver.Server
 		snapshotCxl  context.CancelFunc
 		snapshotRepo *snapshot.BlobRepository
 	)
@@ -462,7 +505,15 @@ func finishStartup(
 	}
 
 	if adminEnabled {
-		ln, lErr := net.Listen("tcp", cfg.Admin.Addr)
+		path, h := srv.NewHandler()
+		if adminMiddleware != nil {
+			h = adminMiddleware(h)
+		}
+		cs, lErr := connectserver.New(ctx, connectserver.Config{
+			Addr: cfg.Admin.Addr,
+			TLS:  adminCreds.ServerTLSConfig,
+			Log:  logger,
+		}, connectserver.Route{Path: path, Handler: h})
 		if lErr != nil {
 			if snapshotCxl != nil {
 				snapshotCxl()
@@ -470,24 +521,10 @@ func finishStartup(
 			if snapshotRepo != nil {
 				_ = snapshotRepo.Close()
 			}
-			return nil, fmt.Errorf("reflow: listen admin %s: %w", cfg.Admin.Addr, lErr)
+			return nil, fmt.Errorf("reflow: admin listener: %w", lErr)
 		}
-		adminLn = ln
-		opts := []grpc.ServerOption{grpc.Creds(adminCreds.Server)}
-		if ic != nil {
-			opts = append(opts,
-				grpc.ChainUnaryInterceptor(ic.unary),
-				grpc.ChainStreamInterceptor(ic.stream),
-			)
-		}
-		adminSrv = grpc.NewServer(opts...)
-		srv.Register(adminSrv)
-		go func() {
-			if err := adminSrv.Serve(adminLn); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-				logger.Error("reflow: admin gRPC Serve exited", "err", err)
-			}
-		}()
-		logger.Info("reflow: admin listening", "addr", adminLn.Addr().String(),
+		adminSrv = cs
+		logger.Info("reflow: admin listening", "addr", cs.Addr(),
 			"driver", string(adminCreds.Driver))
 	}
 
@@ -508,10 +545,7 @@ func finishStartup(
 			_ = snapshotRepo.Close()
 		}
 		if adminSrv != nil {
-			adminSrv.GracefulStop()
-		}
-		if adminLn != nil {
-			_ = adminLn.Close()
+			_ = adminSrv.Close()
 		}
 		return nil, err
 	}
@@ -526,7 +560,6 @@ func finishStartup(
 		deliveryClient: deliveryClient,
 		deliveryCreds:  deliveryCreds,
 		adminSrv:       adminSrv,
-		adminLn:        adminLn,
 		adminCreds:     adminCreds,
 		authCloser:     authCloser,
 		snapshotCxl:    snapshotCxl,
@@ -571,14 +604,14 @@ func autoSeedEndpoints(ctx context.Context, srv *admin.Server, runner *engine.Me
 			return
 		}
 		regCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		resp, err := srv.RegisterDeployment(regCtx, &adminv1.RegisterDeploymentRequest{Url: ep.URL})
+		depID, err := srv.AutoSeed(regCtx, ep.URL)
 		cancel()
 		if err != nil {
 			log.Warn("reflow: auto-seed endpoint failed", "url", ep.URL, "err", err)
 			continue
 		}
 		log.Info("reflow: auto-seed endpoint registered",
-			"url", ep.URL, "deployment_id", resp.GetDeploymentId())
+			"url", ep.URL, "deployment_id", depID)
 	}
 }
 
@@ -707,8 +740,8 @@ func callSelfJoin(ctx context.Context, cfg Config, host *engine.Host, log *slog.
 		err = adminclient.CallWithLeaderRedirect(ctx, adminclient.DialOptions{
 			Addr:  leaderAddr,
 			Creds: cfg.Admin.Creds,
-		}, 3, func(rctx context.Context, cli adminv1.AdminClient) error {
-			_, e := cli.SelfJoin(rctx, req)
+		}, 3, func(rctx context.Context, cli adminv1connect.AdminClient) error {
+			_, e := cli.SelfJoin(rctx, connect.NewRequest(req))
 			return e
 		})
 		if err == nil {
@@ -718,7 +751,7 @@ func callSelfJoin(ctx context.Context, cfg Config, host *engine.Host, log *slog.
 		lastErr = err
 		// Retry only on transient Unavailable; terminal errors
 		// (PermissionDenied, InvalidArgument, ...) short-circuit.
-		if st, ok := status.FromError(err); !ok || st.Code() != codes.Unavailable {
+		if connect.CodeOf(err) != connect.CodeUnavailable {
 			return err
 		}
 		log.Warn("SelfJoin: transient Unavailable, retrying",

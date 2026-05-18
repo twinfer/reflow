@@ -6,9 +6,6 @@ plugins:
   - remote: buf.build/grpc/go
     out: proto
     opt: paths=source_relative
-  - remote: buf.build/grpc-ecosystem/gateway
-    out: proto
-    opt: paths=source_relative
   - remote: buf.build/connectrpc/go:v1.19.0
     out: proto
     opt: paths=source_relative

@@ -87,12 +87,16 @@ type ListenerCreds struct {
 	// supplied alone.
 	Server credentials.TransportCredentials
 	// ServerTLSConfig is the raw *tls.Config behind Server for callers
-	// that also need to wrap a plain HTTP/JSON listener (e.g. ingress's
-	// grpc-gateway transport). Populated by the TLS and CertProvider
+	// that also need to wrap a plain HTTP listener (Connect ingress
+	// + admin, h2c when nil). Populated by the TLS and CertProvider
 	// drivers; nil for insecure, ALTS, Local, Google, and PerRPC-only
 	// drivers. Sharing the same config keeps gRPC and HTTP transports
 	// in lock-step on cert rotation.
 	ServerTLSConfig *tls.Config
+	// ClientTLSConfig is the raw *tls.Config for dial-out HTTP/2
+	// clients (pkg/adminclient, pkg/ingressclient). Mirror of
+	// ServerTLSConfig's client side. Nil for insecure / PerRPC-only.
+	ClientTLSConfig *tls.Config
 	// ClientDial is the slice of DialOptions a client uses to talk to
 	// the matching server. Always non-nil — for insecure it carries
 	// insecure.NewCredentials(); for TLS it carries the verified-chain

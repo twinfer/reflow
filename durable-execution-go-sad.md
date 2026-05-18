@@ -323,7 +323,7 @@ reflow-cluster add-node    --node-id=4 --raft-addr=10.0.0.4:9091 \
 reflow-cluster remove-node --node-id=2
 ```
 
-- **`add-node`** (`internal/engine/admin/server.go:AddNode`): proposes
+- **`add-node`** (`internal/admin/server.go:AddNode`): proposes
   `RegisterNode{Member}` to shard 0, then enqueues a
   `BeginRebalanceStep{Kind: PROMOTE_TO_VOTER, AddNodeId}` for every
   partition the new node should hold. The metadata rebalancer
@@ -1330,7 +1330,7 @@ Dragonboat gossip (memberlist/SWIM) drives K-of-N liveness; SWIM observers
 turn missed probes into `RemoveNode` proposals to shard 0. `reflow-cluster`
 CLI lands as a subcommand of `reflowd` (`add-node`, `remove-node`,
 `partitions list`, `partition move`). `SnapshotRepository` filesystem driver
-wired. Admin gRPC server (`adminv1`) protected by mTLS.
+wired. Admin Connect RPC server (`adminv1`) protected by mTLS.
 
 **Storage format version marker.** Per-Pebble-DB `uint32` marker
 (`internal/storage/format.go`). Refuses to open a DB written by a binary

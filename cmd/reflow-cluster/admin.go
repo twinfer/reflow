@@ -8,12 +8,15 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/twinfer/reflow/pkg/reflow/admin"
+	connect "connectrpc.com/connect"
+
+	"github.com/twinfer/reflow/pkg/adminclient"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
+	"github.com/twinfer/reflow/proto/adminv1/adminv1connect"
 )
 
-// addTLSFlags installs --client-cert / --client-key / --ca / --trust-domain
+// tlsFlags installs --client-cert / --client-key / --ca / --trust-domain
 // with env fallbacks.
 type tlsFlags struct {
 	clientCert  string
@@ -28,7 +31,7 @@ func registerTLSFlags(fs *flag.FlagSet) *tlsFlags {
 	fs.StringVar(&f.clientCert, "client-cert", os.Getenv("REFLOW_CLIENT_CERT"), "operator cert PEM (env REFLOW_CLIENT_CERT)")
 	fs.StringVar(&f.clientKey, "client-key", os.Getenv("REFLOW_CLIENT_KEY"), "operator key PEM (env REFLOW_CLIENT_KEY)")
 	fs.StringVar(&f.ca, "ca", os.Getenv("REFLOW_CA_CERT"), "cluster CA PEM (env REFLOW_CA_CERT)")
-	fs.StringVar(&f.addr, "admin", os.Getenv("REFLOW_ADMIN_ADDR"), "admin gRPC host:port of any cluster node — mutating RPCs follow LeaderHint redirects (env REFLOW_ADMIN_ADDR)")
+	fs.StringVar(&f.addr, "admin", os.Getenv("REFLOW_ADMIN_ADDR"), "admin host:port of any cluster node — mutating RPCs follow LeaderHint redirects (env REFLOW_ADMIN_ADDR)")
 	fs.StringVar(&f.trustDomain, "trust-domain", envOrDefault("REFLOW_TRUST_DOMAIN", "reflow.local"), "SPIFFE trust domain (env REFLOW_TRUST_DOMAIN)")
 	return f
 }
@@ -47,8 +50,8 @@ func (t *tlsFlags) validate() error {
 	return nil
 }
 
-func (t *tlsFlags) dialOpts() admin.DialOptions {
-	return admin.DialOptions{
+func (t *tlsFlags) dialOpts() adminclient.DialOptions {
+	return adminclient.DialOptions{
 		Addr: t.addr,
 		Creds: creds.Spec{
 			Driver: creds.DriverTLS,
@@ -62,15 +65,14 @@ func (t *tlsFlags) dialOpts() admin.DialOptions {
 	}
 }
 
-func (t *tlsFlags) dial(ctx context.Context) (*admin.Client, error) {
-	return admin.Dial(ctx, t.dialOpts())
+func (t *tlsFlags) dial(ctx context.Context) (*adminclient.Client, error) {
+	return adminclient.Dial(ctx, t.dialOpts())
 }
 
 // withClient validates the registered TLS flags, dials the admin
 // endpoint, and invokes fn with the live client. Used by read-only
-// subcommands (ListNodes, ListPartitions, ListSnapshots) where any
-// node — leader or follower — can answer via SyncRead.
-func (t *tlsFlags) withClient(ctx context.Context, fn func(*admin.Client) error) error {
+// subcommands where any node can answer.
+func (t *tlsFlags) withClient(ctx context.Context, fn func(*adminclient.Client) error) error {
 	if err := t.validate(); err != nil {
 		return err
 	}
@@ -83,19 +85,15 @@ func (t *tlsFlags) withClient(ctx context.Context, fn func(*admin.Client) error)
 }
 
 // withLeaderRedirect validates the registered TLS flags and invokes fn
-// inside admin.CallWithLeaderRedirect — the configured --admin can be
-// any cluster node; on codes.Unavailable + LeaderHint the wrapper
-// redials the hinted endpoint. Used by mutating subcommands (AddNode,
-// RemoveNode, CreateSnapshot, DeleteSnapshot, RegisterDeployment)
-// which must reach the metadata leader.
+// inside adminclient.CallWithLeaderRedirect.
 func (t *tlsFlags) withLeaderRedirect(
 	ctx context.Context,
-	fn func(context.Context, adminv1.AdminClient) error,
+	fn func(context.Context, adminv1connect.AdminClient) error,
 ) error {
 	if err := t.validate(); err != nil {
 		return err
 	}
-	return admin.CallWithLeaderRedirect(ctx, t.dialOpts(), 3, fn)
+	return adminclient.CallWithLeaderRedirect(ctx, t.dialOpts(), 3, fn)
 }
 
 func cmdAddNode(ctx context.Context, args []string) error {
@@ -112,18 +110,18 @@ func cmdAddNode(ctx context.Context, args []string) error {
 	if *nodeID == 0 || *raftAddr == "" || *gossipAddr == "" || *grpcEndpoint == "" {
 		return errors.New("--node-id, --raft-addr, --gossip-addr, --grpc-endpoint are required")
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1.AdminClient) error {
-		resp, err := cli.AddNode(rctx, &adminv1.AddNodeRequest{
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1connect.AdminClient) error {
+		resp, err := cli.AddNode(rctx, connect.NewRequest(&adminv1.AddNodeRequest{
 			NodeId:       *nodeID,
 			RaftAddr:     *raftAddr,
 			GossipAddr:   *gossipAddr,
 			GrpcEndpoint: *grpcEndpoint,
 			NodeHostId:   *nhID,
-		})
+		}))
 		if err != nil {
 			return err
 		}
-		fmt.Printf("AddNode ok (assignment_epoch=%d)\n", resp.GetAssignmentEpoch())
+		fmt.Printf("AddNode ok (assignment_epoch=%d)\n", resp.Msg.GetAssignmentEpoch())
 		return nil
 	})
 }
@@ -138,12 +136,12 @@ func cmdRemoveNode(ctx context.Context, args []string) error {
 	if *nodeID == 0 {
 		return errors.New("--node-id is required")
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1.AdminClient) error {
-		resp, err := cli.RemoveNode(rctx, &adminv1.RemoveNodeRequest{NodeId: *nodeID})
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1connect.AdminClient) error {
+		resp, err := cli.RemoveNode(rctx, connect.NewRequest(&adminv1.RemoveNodeRequest{NodeId: *nodeID}))
 		if err != nil {
 			return err
 		}
-		fmt.Printf("RemoveNode ok (assignment_epoch=%d)\n", resp.GetAssignmentEpoch())
+		fmt.Printf("RemoveNode ok (assignment_epoch=%d)\n", resp.Msg.GetAssignmentEpoch())
 		return nil
 	})
 }
@@ -157,14 +155,14 @@ func cmdNodes(ctx context.Context, args []string) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	return tls.withClient(ctx, func(cli *admin.Client) error {
-		resp, err := cli.Admin.ListNodes(ctx, &adminv1.ListNodesRequest{})
+	return tls.withClient(ctx, func(cli *adminclient.Client) error {
+		resp, err := cli.Admin.ListNodes(ctx, connect.NewRequest(&adminv1.ListNodesRequest{}))
 		if err != nil {
 			return err
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(resp.GetNodes())
+		return enc.Encode(resp.Msg.GetNodes())
 	})
 }
 
@@ -177,14 +175,14 @@ func cmdPartitions(ctx context.Context, args []string) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	return tls.withClient(ctx, func(cli *admin.Client) error {
-		resp, err := cli.Admin.ListPartitions(ctx, &adminv1.ListPartitionsRequest{})
+	return tls.withClient(ctx, func(cli *adminclient.Client) error {
+		resp, err := cli.Admin.ListPartitions(ctx, connect.NewRequest(&adminv1.ListPartitionsRequest{}))
 		if err != nil {
 			return err
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(resp.GetTable())
+		return enc.Encode(resp.Msg.GetTable())
 	})
 }
 
@@ -215,13 +213,13 @@ func cmdSnapshotCreate(ctx context.Context, args []string) error {
 	if *shard == 0 {
 		return errors.New("--shard is required")
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1.AdminClient) error {
-		resp, err := cli.CreateSnapshot(rctx, &adminv1.CreateSnapshotRequest{ShardId: *shard})
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1connect.AdminClient) error {
+		resp, err := cli.CreateSnapshot(rctx, connect.NewRequest(&adminv1.CreateSnapshotRequest{ShardId: *shard}))
 		if err != nil {
 			return err
 		}
 		fmt.Printf("snapshot ok shard=%d index=%d size=%d\n",
-			resp.GetShardId(), resp.GetIndex(), resp.GetSizeBytes())
+			resp.Msg.GetShardId(), resp.Msg.GetIndex(), resp.Msg.GetSizeBytes())
 		return nil
 	})
 }
@@ -236,14 +234,14 @@ func cmdSnapshotList(ctx context.Context, args []string) error {
 	if *shard == 0 {
 		return errors.New("--shard is required")
 	}
-	return tls.withClient(ctx, func(cli *admin.Client) error {
-		resp, err := cli.Admin.ListSnapshots(ctx, &adminv1.ListSnapshotsRequest{ShardId: *shard})
+	return tls.withClient(ctx, func(cli *adminclient.Client) error {
+		resp, err := cli.Admin.ListSnapshots(ctx, connect.NewRequest(&adminv1.ListSnapshotsRequest{ShardId: *shard}))
 		if err != nil {
 			return err
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(resp.GetSnapshots())
+		return enc.Encode(resp.Msg.GetSnapshots())
 	})
 }
 
@@ -257,12 +255,12 @@ func cmdRegisterDeployment(ctx context.Context, args []string) error {
 	if *rawURL == "" {
 		return errors.New("--url is required")
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1.AdminClient) error {
-		resp, err := cli.RegisterDeployment(rctx, &adminv1.RegisterDeploymentRequest{Url: *rawURL})
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1connect.AdminClient) error {
+		resp, err := cli.RegisterDeployment(rctx, connect.NewRequest(&adminv1.RegisterDeploymentRequest{Url: *rawURL}))
 		if err != nil {
 			return err
 		}
-		fmt.Printf("RegisterDeployment ok (deployment_id=%s)\n", resp.GetDeploymentId())
+		fmt.Printf("RegisterDeployment ok (deployment_id=%s)\n", resp.Msg.GetDeploymentId())
 		return nil
 	})
 }
@@ -281,11 +279,11 @@ func cmdSnapshotDelete(ctx context.Context, args []string) error {
 	if *index == 0 {
 		return errors.New("--index is required")
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1.AdminClient) error {
-		if _, err := cli.DeleteSnapshot(rctx, &adminv1.DeleteSnapshotRequest{
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1connect.AdminClient) error {
+		if _, err := cli.DeleteSnapshot(rctx, connect.NewRequest(&adminv1.DeleteSnapshotRequest{
 			ShardId: *shard,
 			Index:   *index,
-		}); err != nil {
+		})); err != nil {
 			return err
 		}
 		fmt.Printf("snapshot deleted shard=%d index=%d\n", *shard, *index)

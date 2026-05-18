@@ -10,7 +10,7 @@ import (
 	connect "connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/twinfer/reflow/internal/engine/admin"
+	"github.com/twinfer/reflow/internal/admin"
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/loadgen"
 	"github.com/twinfer/reflow/pkg/handler"

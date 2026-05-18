@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/engine/admin"
+	"github.com/twinfer/reflow/internal/admin"
 	"github.com/twinfer/reflow/internal/loadgen"
 	"github.com/twinfer/reflow/pkg/handler"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"

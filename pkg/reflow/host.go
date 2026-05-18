@@ -7,6 +7,7 @@ import (
 
 	"google.golang.org/grpc"
 
+	"github.com/twinfer/reflow/internal/connectserver"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
@@ -28,8 +29,7 @@ type Host struct {
 	deliveryLn     net.Listener
 	deliveryClient *delivery.Client
 	deliveryCreds  *creds.ListenerCreds
-	adminSrv       *grpc.Server
-	adminLn        net.Listener
+	adminSrv       *connectserver.Server
 	adminCreds     *creds.ListenerCreds
 	authCloser     func() error
 	snapshotCxl    context.CancelFunc
@@ -61,17 +61,10 @@ func (h *Host) Close() error {
 		h.snapshotRepo = nil
 	}
 	if h.adminSrv != nil {
-		h.adminSrv.GracefulStop()
-		h.adminSrv = nil
-	}
-	if h.adminLn != nil {
-		// adminLn closes first — firstErr is still nil; drop the
-		// otherwise-tautological nil check (vet's `nilness` analyzer
-		// would flag it).
-		if err := h.adminLn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		if err := h.adminSrv.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		h.adminLn = nil
+		h.adminSrv = nil
 	}
 	if h.deliverySrv != nil {
 		h.deliverySrv.GracefulStop()

@@ -11,12 +11,11 @@ import (
 
 	connect "connectrpc.com/connect"
 
+	"github.com/twinfer/reflow/internal/admin"
 	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/internal/engine/admin"
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/pkg/handler"
 	"github.com/twinfer/reflow/pkg/ingressclient"
-	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
@@ -93,10 +92,8 @@ func bringUpHostWithIngress(t *testing.T, reg *handler.Registry) (*engine.Host, 
 		}
 		regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer regCancel()
-		if _, err := asrv.RegisterDeployment(regCtx, &adminv1.RegisterDeploymentRequest{
-			Url: "http://" + ln.Addr().String(),
-		}); err != nil {
-			t.Fatalf("RegisterDeployment: %v", err)
+		if _, err := asrv.AutoSeed(regCtx, "http://"+ln.Addr().String()); err != nil {
+			t.Fatalf("AutoSeed: %v", err)
 		}
 	}
 

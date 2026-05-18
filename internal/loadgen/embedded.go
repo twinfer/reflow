@@ -6,10 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/twinfer/reflow/internal/admin"
 	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/internal/engine/admin"
 	"github.com/twinfer/reflow/pkg/handler"
-	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 )
 
 // StartEmbeddedHandlers spins up a pkg/handler.NewServer endpoint on a
@@ -63,11 +62,9 @@ func StartEmbeddedHandlers(t testing.TB, cluster *Cluster, reg *handler.Registry
 
 	regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer regCancel()
-	if _, err := asrv.RegisterDeployment(regCtx, &adminv1.RegisterDeploymentRequest{
-		Url: "http://" + ln.Addr().String(),
-	}); err != nil {
+	if _, err := asrv.AutoSeed(regCtx, "http://"+ln.Addr().String()); err != nil {
 		teardown()
-		t.Fatalf("loadgen: RegisterDeployment: %v", err)
+		t.Fatalf("loadgen: AutoSeed: %v", err)
 	}
 	return teardown
 }

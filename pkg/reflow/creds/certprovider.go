@@ -143,6 +143,7 @@ func buildCertProvider(s *CertProviderSpec, _ *slog.Logger) (*ListenerCreds, err
 	return &ListenerCreds{
 		Server:          credentials.NewTLS(serverCfg),
 		ServerTLSConfig: serverCfg,
+		ClientTLSConfig: clientCfg,
 		ClientDial:      []grpc.DialOption{grpc.WithTransportCredentials(credentials.NewTLS(clientCfg))},
 		Driver:          DriverCertProvider,
 		SecurityLevel:   credentials.PrivacyAndIntegrity,

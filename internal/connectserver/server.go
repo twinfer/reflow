@@ -113,7 +113,11 @@ func New(ctx context.Context, cfg Config, routes ...Route) (*Server, error) {
 			log.Error("connectserver: Serve exited", "addr", s.addr, "err", err)
 		}
 	}()
-	if ctx != nil {
+	// Skip the watchdog when ctx is nil or non-cancellable
+	// (e.g. context.Background()) — ctx.Done() == nil would block forever
+	// and leak the goroutine until process exit. Tests that pass
+	// context.Background() rely on explicit s.Close() instead.
+	if ctx != nil && ctx.Done() != nil {
 		go func() {
 			<-ctx.Done()
 			_ = s.Close()

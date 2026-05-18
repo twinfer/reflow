@@ -52,6 +52,15 @@ type PartitionRunner struct {
 	// goroutines (timer.Run, outbox.Run, the invoker session pool) have
 	// stopped touching the underlying pebble.DB.
 	storeRelease func()
+	// inflightOnLeader tracks in-flight onBecomeLeader goroutines (each
+	// spawned by Leadership.OnAnnounceLeader via `go onBecomeLeader()`).
+	// onStepDown Waits on this before reading r.storeRelease so it
+	// observes any lease/cancel a concurrent onBecomeLeader is about to
+	// install. Without the wait, onStepDown could run between
+	// onBecomeLeader's Acquire and its r.mu.Lock + install, leaving the
+	// timer/outbox Run goroutines spawned afterwards with a leaderCtx
+	// nobody will cancel — and the snapshotter lease leaked forever.
+	inflightOnLeader sync.WaitGroup
 }
 
 // Proposer returns the partition's RaftProposer.
@@ -122,6 +131,9 @@ func (r *PartitionRunner) dispatchActions(actions []Action) {
 // are single-use; reusing the prior instance would panic on the next
 // `defer close(done)` invocation.
 func (r *PartitionRunner) onBecomeLeader() {
+	r.inflightOnLeader.Add(1)
+	defer r.inflightOnLeader.Done()
+
 	r.log.Info("partition: became leader", "shard", r.ShardID, "epoch", r.leadership.LeaderEpoch())
 
 	store, release, ok := r.snapshotter.Acquire()
@@ -250,6 +262,14 @@ func (r *PartitionRunner) onBecomeLeader() {
 // objects after waiting — the next onBecomeLeader will construct fresh
 // instances. Holding on to the old ones would risk panic on second-Run.
 func (r *PartitionRunner) onStepDown() {
+	// Wait for any in-flight onBecomeLeader goroutine to finish installing
+	// r.storeRelease + r.leaderCancel before we read them; otherwise a
+	// concurrent onBecomeLeader still mid-Rebuild would leave the timer +
+	// outbox Run goroutines it spawns afterwards with an uncancellable
+	// leaderCtx, and the Snapshotter lease would leak. See the field doc
+	// on r.inflightOnLeader.
+	r.inflightOnLeader.Wait()
+
 	r.log.Info("partition: stepped down", "shard", r.ShardID)
 	r.mu.Lock()
 	cancel := r.leaderCancel

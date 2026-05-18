@@ -714,7 +714,7 @@ func (m *engineMachine) RouteOutbox(t *rapid.T) {
 	}
 	dedup := &enginev1.Dedup{Kind: &enginev1.Dedup_Arbitrary{
 		Arbitrary: &enginev1.ArbitraryDedup{
-			ProducerId: fmt.Sprintf("outbox/%d", row.srcShard),
+			ProducerId: fmt.Sprintf("outbox/p%d", row.srcShard),
 			Seq:        row.seq,
 		},
 	}}

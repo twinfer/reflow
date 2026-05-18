@@ -44,6 +44,12 @@ type MetadataRunner struct {
 
 	mu           sync.Mutex
 	leaderCancel context.CancelFunc
+	// inflightOnLeader tracks in-flight onBecomeLeader goroutines so
+	// onStepDown waits for them before reading r.leaderCancel. Mirrors the
+	// guard in PartitionRunner: without the wait, onStepDown can race the
+	// `r.leaderCancel = cancel` assignment and leave bootstrap/rebalancer
+	// goroutines with a leaderCtx nobody will cancel.
+	inflightOnLeader sync.WaitGroup
 }
 
 // Snapshotter exposes the underlying snapshotter for tests.
@@ -64,6 +70,9 @@ func (r *MetadataRunner) IsLeader() bool { return r.leadership.IsLeader() }
 // RegisterNode rows. Runs in its own goroutine off the FSM apply path; safe
 // to block on Raft proposals.
 func (r *MetadataRunner) onBecomeLeader() {
+	r.inflightOnLeader.Add(1)
+	defer r.inflightOnLeader.Done()
+
 	r.log.Info("metadata: became leader",
 		"shard", r.ShardID, "epoch", r.leadership.LeaderEpoch())
 
@@ -91,6 +100,10 @@ func (r *MetadataRunner) onBecomeLeader() {
 // store leases around its pebble reads, so Snapshotter.Close waits for
 // them to drop those leases before tearing the underlying DB down.
 func (r *MetadataRunner) onStepDown() {
+	// Wait for any in-flight onBecomeLeader to install r.leaderCancel
+	// before we capture it; see r.inflightOnLeader doc.
+	r.inflightOnLeader.Wait()
+
 	r.log.Info("metadata: stepped down", "shard", r.ShardID)
 	r.mu.Lock()
 	cancel := r.leaderCancel

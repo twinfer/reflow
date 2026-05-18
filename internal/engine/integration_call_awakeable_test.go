@@ -476,16 +476,25 @@ func TestCallResultSurvivesCalleeCrash(t *testing.T) {
 }
 
 // deriveCalleeID mirrors engine.mintCalleeInvocationID: SHA-256 of the
-// parent uuid + 4 big-endian bytes of the call entry index for the
-// 16-byte uuid; the PartitionKey is derived from the callee's target
-// tuple (service, object_key). Kept here as a local helper because the
-// engine function is package-private.
+// parent uuid + 4 big-endian bytes of the entry index + length-prefixed
+// (service, handler, object_key) for the 16-byte uuid; the PartitionKey
+// is derived from the callee's target tuple (service, object_key). Kept
+// here as a local helper because the engine function is package-private.
 func deriveCalleeID(parent *enginev1.InvocationId, entryIdx uint32, target *enginev1.InvocationTarget) *enginev1.InvocationId {
 	h := sha256.New()
 	h.Write(parent.GetUuid())
 	var idxBuf [4]byte
 	binary.BigEndian.PutUint32(idxBuf[:], entryIdx)
 	h.Write(idxBuf[:])
+	writeLP := func(s string) {
+		var lenBuf [4]byte
+		binary.BigEndian.PutUint32(lenBuf[:], uint32(len(s)))
+		h.Write(lenBuf[:])
+		h.Write([]byte(s))
+	}
+	writeLP(target.GetServiceName())
+	writeLP(target.GetHandlerName())
+	writeLP(target.GetObjectKey())
 	sum := h.Sum(nil)
 	return &enginev1.InvocationId{
 		PartitionKey: routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()),

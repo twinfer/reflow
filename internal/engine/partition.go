@@ -244,7 +244,7 @@ func (p *Partition) Update(entries []statemachine.Entry) ([]statemachine.Entry, 
 								},
 							},
 						}
-						if seq, err := p.enqueueOutbox(batch, store, meta, ackEnv, isLeader); err != nil {
+						if seq, err := p.enqueueOutbox(batch, meta, ackEnv, isLeader); err != nil {
 							p.cfg.Log.Warn("partition: outbox append (ack) failed",
 								"seq", seq, "dest_shard", senderShard, "err", err)
 						}
@@ -358,13 +358,7 @@ func leaderLabel(isLeader bool) string {
 // and any storage error; meta is bumped in memory regardless, but
 // since a non-nil error aborts the Update batch the increment is not
 // persisted.
-func (p *Partition) enqueueOutbox(
-	batch storage.Batch,
-	store storage.Store,
-	meta *enginev1.PartitionMeta,
-	env *enginev1.OutboxEnvelope,
-	isLeader bool,
-) (uint64, error) {
+func (p *Partition) enqueueOutbox(batch storage.Batch, meta *enginev1.PartitionMeta, env *enginev1.OutboxEnvelope, isLeader bool) (uint64, error) {
 	seq := meta.GetNextOutboxSeq()
 	meta.NextOutboxSeq = seq + 1
 	outboxT := tables.OutboxTable{S: batch}
@@ -401,17 +395,17 @@ func (p *Partition) applyCommand(
 	case *enginev1.Command_AnnounceLeader:
 		return p.onAnnounceLeader(batch, k.AnnounceLeader, meta, isLeader)
 	case *enginev1.Command_Invoke:
-		return p.onInvoke(batch, store, k.Invoke, now, inv, isLeader)
+		return p.onInvoke(batch, k.Invoke, now, inv, isLeader)
 	case *enginev1.Command_InvokerEffect:
-		return p.onInvokerEffect(batch, store, k.InvokerEffect, now, meta, inv, journal, isLeader)
+		return p.onInvokerEffect(batch, k.InvokerEffect, now, meta, inv, journal, isLeader)
 	case *enginev1.Command_TimerFired:
-		return p.onTimerFired(batch, store, k.TimerFired, now, inv, timers, isLeader)
+		return p.onTimerFired(batch, k.TimerFired, now, inv, timers, isLeader)
 	case *enginev1.Command_Purge:
 		return p.onPurge(batch, k.Purge, inv, journal)
 	case *enginev1.Command_DeliverCallResult:
 		return p.onDeliverCallResult(batch, store, k.DeliverCallResult, now, inv, journal, isLeader)
 	case *enginev1.Command_OutboxAck:
-		return p.onOutboxAck(batch, store, k.OutboxAck)
+		return p.onOutboxAck(batch, k.OutboxAck)
 	case nil:
 		p.cfg.Log.Warn("partition: envelope has no command kind", "raft_index", raftIndex)
 		return nil
@@ -439,14 +433,7 @@ func (p *Partition) onAnnounceLeader(
 	return nil
 }
 
-func (p *Partition) onInvoke(
-	batch storage.Batch,
-	store storage.Store,
-	cmd *enginev1.InvokeCommand,
-	nowMs uint64,
-	inv tables.InvocationTable,
-	isLeader bool,
-) error {
+func (p *Partition) onInvoke(batch storage.Batch, cmd *enginev1.InvokeCommand, nowMs uint64, inv tables.InvocationTable, isLeader bool) error {
 	id := cmd.GetInvocationId()
 	target := cmd.GetTarget()
 
@@ -529,16 +516,7 @@ func (p *Partition) onInvoke(
 	return nil
 }
 
-func (p *Partition) onInvokerEffect(
-	batch storage.Batch,
-	store storage.Store,
-	eff *enginev1.InvokerEffect,
-	nowMs uint64,
-	meta *enginev1.PartitionMeta,
-	inv tables.InvocationTable,
-	journal tables.JournalTable,
-	isLeader bool,
-) error {
+func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEffect, nowMs uint64, meta *enginev1.PartitionMeta, inv tables.InvocationTable, journal tables.JournalTable, isLeader bool) error {
 	id := eff.GetInvocationId()
 	cur, err := inv.Get(id)
 	if err != nil {
@@ -606,7 +584,7 @@ func (p *Partition) onInvokerEffect(
 					},
 				}},
 			}
-			if _, err := p.enqueueOutbox(batch, store, meta, env, isLeader); err != nil {
+			if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {
 				return fmt.Errorf("onInvokerEffect: outbox append (call): %w", err)
 			}
 		case *enginev1.JournalEntry_OneWayCall:
@@ -623,7 +601,7 @@ func (p *Partition) onInvokerEffect(
 					IdempotencyKey: e.OneWayCall.GetIdempotencyKey(),
 				}},
 			}
-			if _, err := p.enqueueOutbox(batch, store, meta, env, isLeader); err != nil {
+			if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {
 				return fmt.Errorf("onInvokerEffect: outbox append (one-way call): %w", err)
 			}
 		case *enginev1.JournalEntry_SetState:
@@ -669,7 +647,7 @@ func (p *Partition) onInvokerEffect(
 					Payload:            e.Signal.GetPayload(),
 				}},
 			}
-			if _, err := p.enqueueOutbox(batch, store, meta, env, isLeader); err != nil {
+			if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {
 				return fmt.Errorf("onInvokerEffect: outbox append (signal): %w", err)
 			}
 		}
@@ -849,13 +827,7 @@ func (p *Partition) onInvokerEffect(
 				completedTarget = s.Suspended.GetTarget()
 			}
 			if pl.GetParentId() != nil {
-				parentActs, perr := p.deliverCallResultToParent(
-					batch, store, inv, journal, meta, pl,
-					k.Completed.GetOutput(),
-					k.Completed.GetFailureMessage(),
-					nowMs,
-					isLeader,
-				)
+				parentActs, perr := p.deliverCallResultToParent(batch, inv, journal, meta, pl, k.Completed.GetOutput(), k.Completed.GetFailureMessage(), nowMs, isLeader)
 				if perr != nil {
 					return perr
 				}
@@ -866,7 +838,7 @@ func (p *Partition) onInvokerEffect(
 			// replay (cur already Completed) is a no-op: the prior Completed
 			// status carries no target on this code path.
 			if completedTarget.GetObjectKey() != "" {
-				leaseActs, rerr := p.releaseKeyLease(batch, store, completedTarget)
+				leaseActs, rerr := p.releaseKeyLease(batch, completedTarget)
 				if rerr != nil {
 					return rerr
 				}
@@ -934,18 +906,7 @@ func (p *Partition) onInvokerEffect(
 // Returns the parent-side actions to push onto the collector. Cross-shard
 // dispatches return no actions on this side; the destination shard
 // generates the wake actions when DeliverCallResult applies there.
-func (p *Partition) deliverCallResultToParent(
-	batch storage.Batch,
-	store storage.Store,
-	inv tables.InvocationTable,
-	journal tables.JournalTable,
-	meta *enginev1.PartitionMeta,
-	pl *enginev1.ParentLink,
-	output []byte,
-	failureMessage string,
-	nowMs uint64,
-	isLeader bool,
-) ([]Action, error) {
+func (p *Partition) deliverCallResultToParent(batch storage.Batch, inv tables.InvocationTable, journal tables.JournalTable, meta *enginev1.PartitionMeta, pl *enginev1.ParentLink, output []byte, failureMessage string, nowMs uint64, isLeader bool) ([]Action, error) {
 	parentID := pl.GetParentId()
 	parentShard := p.cfg.Partitioner.ShardForInvocation(parentID)
 
@@ -966,7 +927,7 @@ func (p *Partition) deliverCallResultToParent(
 			},
 		},
 	}
-	if _, err := p.enqueueOutbox(batch, store, meta, env, isLeader); err != nil {
+	if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {
 		return nil, fmt.Errorf("deliverCallResultToParent: outbox append: %w", err)
 	}
 	return nil, nil
@@ -1058,7 +1019,7 @@ func (p *Partition) onDeliverCallResult(
 // path emits an outbox-shaped command); cross-shard producers receive
 // their ack here. Misrouted acks (producer_shard != local) are dropped
 // silently so replays / fan-out cannot corrupt unrelated outboxes.
-func (p *Partition) onOutboxAck(batch storage.Batch, store storage.Store, ack *enginev1.OutboxAck) error {
+func (p *Partition) onOutboxAck(batch storage.Batch, ack *enginev1.OutboxAck) error {
 	if ack.GetProducerShardId() != p.shardID {
 		p.cfg.Log.Warn("partition: OutboxAck for foreign shard; dropping",
 			"ack_producer_shard", ack.GetProducerShardId(),
@@ -1084,11 +1045,7 @@ func (p *Partition) onOutboxAck(batch storage.Batch, store storage.Store, ack *e
 // Idempotent on replay: the caller guards entry via cur.GetStatus() so a
 // second Completed apply pass (which finds cur already Completed) never
 // enters this function.
-func (p *Partition) releaseKeyLease(
-	batch storage.Batch,
-	store storage.Store,
-	target *enginev1.InvocationTarget,
-) ([]Action, error) {
+func (p *Partition) releaseKeyLease(batch storage.Batch, target *enginev1.InvocationTarget) ([]Action, error) {
 	klt := tables.KeyLeaseTable{S: batch}
 	cur, err := klt.Get(target.GetServiceName(), target.GetObjectKey())
 	if err != nil {
@@ -1132,17 +1089,39 @@ func statusTarget(cur *enginev1.InvocationStatus) *enginev1.InvocationTarget {
 
 // mintCalleeInvocationID derives a deterministic InvocationId for the
 // callee of a JECall, hashing the parent uuid with the JECall journal
-// index. Determinism keeps the result identical across replay on every
-// replica. The partition_key is derived from the target tuple (service,
-// object_key) so cross-partition Call dispatch routes the callee to its
-// owning partition (single-partition deployments degenerate to the local
-// shard via the Partitioner fallback).
+// index AND the target's (service, handler, object_key). Determinism keeps
+// the result identical across replay on every replica. Mixing the target
+// into the hash prevents UUID collisions in the edge case where the parent
+// gets Purged and Re-Invoked: without it, ChildCall(idx=N, target=X) then
+// Purge+Re-Invoke then ChildCall(idx=N, target=Y) would mint two children
+// with the same UUID and different PartitionKeys — independently legal in
+// storage (each shard keys by full (PK, uuid)) but a footgun for any code
+// reasoning about uuids as a process-wide identifier.
+//
+// The partition_key is derived from the target tuple (service, object_key)
+// so cross-partition Call dispatch routes the callee to its owning
+// partition (single-partition deployments degenerate to the local shard
+// via the Partitioner fallback).
 func mintCalleeInvocationID(parent *enginev1.InvocationId, idx uint32, target *enginev1.InvocationTarget) *enginev1.InvocationId {
 	h := sha256.New()
 	h.Write(parent.GetUuid())
 	var idxBuf [4]byte
 	binary.BigEndian.PutUint32(idxBuf[:], idx)
 	h.Write(idxBuf[:])
+	// Length-prefix each target field so adjacent fields cannot collide
+	// (("ab","c") vs ("a","bc")) regardless of the field contents. Safer
+	// than a NUL separator: the SDK rejects NUL inside identifiers, but
+	// length-prefixing keeps the hash robust if that invariant is ever
+	// relaxed or bypassed.
+	writeLP := func(s string) {
+		var lenBuf [4]byte
+		binary.BigEndian.PutUint32(lenBuf[:], uint32(len(s)))
+		h.Write(lenBuf[:])
+		h.Write([]byte(s))
+	}
+	writeLP(target.GetServiceName())
+	writeLP(target.GetHandlerName())
+	writeLP(target.GetObjectKey())
 	sum := h.Sum(nil)
 	return &enginev1.InvocationId{
 		PartitionKey: routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()),
@@ -1150,15 +1129,7 @@ func mintCalleeInvocationID(parent *enginev1.InvocationId, idx uint32, target *e
 	}
 }
 
-func (p *Partition) onTimerFired(
-	batch storage.Batch,
-	store storage.Store,
-	cmd *enginev1.TimerFired,
-	nowMs uint64,
-	inv tables.InvocationTable,
-	timers tables.TimerTable,
-	isLeader bool,
-) error {
+func (p *Partition) onTimerFired(batch storage.Batch, cmd *enginev1.TimerFired, nowMs uint64, inv tables.InvocationTable, timers tables.TimerTable, isLeader bool) error {
 	id := cmd.GetInvocationId()
 	cur, err := inv.Get(id)
 	if err != nil {

@@ -104,14 +104,10 @@ func (r *MetadataRunner) onStepDown() {
 //
 // Re-proposed on every leader gain. UpdatePartitionTable is an idempotent
 // singleton overwrite; RegisterNode is an upsert. Slow stale leaders that
-// come back online write the same content — harmless.
+// come back online write the same content — harmless. Solo deployments
+// (len(peers) == 1) bootstrap a 1-shard table for self so subsequent
+// AddNode calls can grow the cluster without restart.
 func (r *MetadataRunner) bootstrap(ctx context.Context) {
-	if len(r.peers) == 0 {
-		// Single-node deployments don't reach here (StartMetadataShard is
-		// only called when Peers is non-empty), but be defensive.
-		return
-	}
-
 	for _, p := range r.peers {
 		mem := &enginev1.NodeMembership{
 			NodeId:     p.NodeID,

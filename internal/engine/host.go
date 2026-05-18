@@ -49,12 +49,12 @@ type HostConfig struct {
 	// RTTMillisecond is the dragonboat logical-clock tick. Defaults to 200ms.
 	RTTMillisecond uint64
 
-	// Peers is the static cluster membership known at bootstrap. When
-	// non-empty, the Host runs multi-node: dragonboat gossip is enabled,
-	// NodeHostID-keyed targets are used, and every shard the node hosts
-	// starts with initialMembers covering the full peer set. The current
-	// node's NodeID must appear in Peers. When empty the Host runs
-	// single-node (initialMembers={self}).
+	// Peers is the static cluster membership known at bootstrap. NewHost
+	// normalizes an empty slice to a single self-entry so the rest of the
+	// engine sees one uniform "1+ node cluster" shape. Multi-node
+	// (len(Peers) > 1) turns on dragonboat gossip and NodeHostID-keyed
+	// targets; solo (len(Peers) == 1) uses the self RaftAddr directly
+	// because there's no gossip layer to resolve NodeHostIDs.
 	Peers []Peer
 	// GossipBindAddr is the address dragonboat's gossip layer binds to
 	// (host:port). Required when Peers is non-empty.
@@ -213,6 +213,13 @@ func NewHost(cfg HostConfig) (*Host, error) {
 		return nil, fmt.Errorf("host: create data dir: %w", err)
 	}
 
+	// Normalize solo deployments to a 1-peer cluster so metadata-shard
+	// bootstrap, initialMembers, and the runner's peer-iteration logic
+	// all see one uniform shape (no len(Peers) == 0 short-circuits).
+	if len(cfg.Peers) == 0 {
+		cfg.Peers = []Peer{{NodeID: cfg.NodeID, RaftAddr: cfg.RaftAddr}}
+	}
+
 	h := &Host{
 		cfg:             cfg,
 		log:             cfg.Log,
@@ -228,7 +235,7 @@ func NewHost(cfg HostConfig) (*Host, error) {
 		EnableMetrics:     cfg.EnableMetrics,
 		RaftEventListener: &raftEventListener{host: h},
 	}
-	if len(cfg.Peers) > 0 {
+	if len(cfg.Peers) > 1 {
 		if err := applyMultiNodeConfig(&nhConfig, &cfg); err != nil {
 			return nil, err
 		}
@@ -777,11 +784,11 @@ func (h *Host) AwaitLeader(ctx context.Context, shardID uint64) error {
 }
 
 // initialMembers builds the dragonboat StartOnDiskReplica seed map.
-// Multi-node clusters (Peers populated) use NodeHostID targets so
-// dragonboat's gossip can resolve them to live RaftAddresses; single-node
-// clusters use a self-only RaftAddress target.
+// Multi-node clusters (len(Peers) > 1) use NodeHostID targets so
+// dragonboat's gossip can resolve them to live RaftAddresses; solo
+// deployments use the self RaftAddr because gossip is off.
 func (h *Host) initialMembers() map[uint64]dragonboat.Target {
-	if len(h.cfg.Peers) == 0 {
+	if len(h.cfg.Peers) <= 1 {
 		return map[uint64]dragonboat.Target{h.cfg.NodeID: dragonboat.Target(h.cfg.RaftAddr)}
 	}
 	out := make(map[uint64]dragonboat.Target, len(h.cfg.Peers))

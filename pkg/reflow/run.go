@@ -84,12 +84,10 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 
 	// Build the engine→handler JWT signer up front when delivery creds
 	// use the cert-provider driver, so it can be wired into the host's
-	// handler registry at construction. Single-node and non-certprovider
-	// deployments leave it nil — connectclient then skips the
-	// Authorization header (existing posture).
-	multiNodeBoot := len(cfg.Cluster.Peers) > 0
+	// handler registry at construction. Other drivers leave it nil —
+	// connectclient then skips the Authorization header.
 	var handlerSigner *creds.Signer
-	if multiNodeBoot && cfg.Delivery.Creds.Driver == creds.DriverCertProvider {
+	if cfg.Delivery.Creds.Driver == creds.DriverCertProvider {
 		hs, sErr := creds.BuildSigner(cfg.Delivery.Creds.CertProvider, logger)
 		if sErr != nil {
 			if metricsCloser != nil {
@@ -137,16 +135,20 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		return nil, fmt.Errorf("reflow: NewHost: %w", err)
 	}
 
-	multiNode := len(hcfg.Peers) > 0
+	// Feature predicates. Each listener and ancillary service is gated on
+	// its own config — peer count drives only cross-shard delivery and
+	// the multi-node-insecure warning.
+	crossShard := len(hcfg.Peers) > 1
+	adminEnabled := !cfg.Admin.Disabled && cfg.Admin.Addr != ""
+	authNeeded := crossShard || adminEnabled
 
 	// All transport-security and authn/z material is built upfront so a
-	// configuration error halts startup before any listener opens. Each
-	// listener owns its own creds.ListenerCreds (Close threaded through
-	// Host.Close); the auth interceptors are shared.
+	// configuration error halts startup before any listener opens.
 	var (
 		deliveryCreds *creds.ListenerCreds
 		adminCreds    *creds.ListenerCreds
 		authCloser    func() error
+		interceptors  *serverInterceptors
 	)
 	bail := func(err error) (*Host, error) {
 		if authCloser != nil {
@@ -163,7 +165,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		return nil, err
 	}
 
-	if multiNode {
+	if crossShard {
 		dc, derr := creds.Build(cfg.Delivery.Creds, logger)
 		if derr != nil {
 			return bail(fmt.Errorf("reflow: delivery creds: %w", derr))
@@ -175,7 +177,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 				"node-to-node traffic is unauthenticated and unencrypted")
 		}
 	}
-	if multiNode && !cfg.Admin.Disabled && cfg.Admin.Addr != "" {
+	if adminEnabled {
 		ac, aerr := creds.Build(cfg.Admin.Creds, logger)
 		if aerr != nil {
 			return bail(fmt.Errorf("reflow: admin creds: %w", aerr))
@@ -183,7 +185,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		adminCreds = ac
 		recordListenerSecurity(metrics, "admin", ac)
 	}
-	if multiNode {
+	if authNeeded {
 		uIc, sIc, closer, ierr := auth.NewServerInterceptors(auth.Config{
 			Extractor:  &auth.SPIFFEExtractor{TrustDomain: cfg.Auth.trustDomainOrDefault()},
 			PolicyFile: cfg.Auth.PolicyFile,
@@ -193,79 +195,39 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			return bail(fmt.Errorf("reflow: auth interceptors: %w", ierr))
 		}
 		authCloser = closer
-		_ = uIc // captured by buildServerOpts
-		_ = sIc
-		// stash for later — Go's flow control means we just call
-		// buildServerOpts inside the listener-startup sections below.
-		// Bundle them into a small struct to avoid free-variable noise.
-		interceptors := &serverInterceptors{unary: uIc, stream: sIc}
+		interceptors = &serverInterceptors{unary: uIc, stream: sIc}
+	}
 
+	var (
+		deliverySrv    *grpc.Server
+		deliveryLn     net.Listener
+		deliveryClient *delivery.Client
+	)
+	if crossShard {
 		ds, dln, dc, derr := startDeliveryListener(eh, cfg, deliveryCreds, interceptors, logger)
 		if derr != nil {
 			return bail(derr)
 		}
-
-		// Wire the delivery host with both the inbound server and the
-		// pooled outbound client. Both share the same creds spec so the
-		// cluster forms a closed trust loop.
-		_ = ds
-		_ = dln
+		deliverySrv, deliveryLn, deliveryClient = ds, dln, dc
 		eh.SetCrossShardSender(dc)
+	}
 
-		host, herr := finishStartup(ctx, cfg, eh, multiNode, shards, snapshotTriggers,
-			ds, dln, dc, deliveryCreds, adminCreds, handlerSigner, interceptors, authCloser,
-			metricsCloser, logger)
-		if herr != nil {
-			ds.Stop()
-			_ = dln.Close()
-			_ = dc.Close()
-			return bail(herr)
+	host, herr := finishStartup(ctx, cfg, eh, crossShard, adminEnabled, shards, snapshotTriggers,
+		deliverySrv, deliveryLn, deliveryClient, deliveryCreds, adminCreds, handlerSigner,
+		interceptors, authCloser, metricsCloser, logger)
+	if herr != nil {
+		if deliverySrv != nil {
+			deliverySrv.Stop()
 		}
-		return host, nil
-	}
-
-	// Single-node path: no Delivery listener, no Admin listener, no auth
-	// interceptors. Shard 0 still runs (1-replica Raft group) so the
-	// deployment registry is available; an in-memory admin.Server is
-	// constructed only when Handlers.Endpoints is non-empty so
-	// autoSeedEndpoints can register deployments without an external
-	// admin listener.
-	runner, err := eh.StartMetadataShard()
-	if err != nil {
-		return bail(fmt.Errorf("reflow: StartMetadataShard: %w", err))
-	}
-	logger.Info("reflow: metadata shard started", "shard", 0)
-
-	for _, sh := range shards {
-		if _, err := eh.StartPartition(sh); err != nil {
-			return bail(fmt.Errorf("reflow: StartPartition(%d): %w", sh, err))
+		if deliveryLn != nil {
+			_ = deliveryLn.Close()
 		}
-		logger.Info("reflow: partition started", "shard", sh)
-	}
-
-	if len(cfg.Handlers.Endpoints) > 0 {
-		srv, sErr := admin.NewServer(admin.Config{
-			Host:   eh,
-			Runner: runner,
-			Log:    logger,
-		})
-		if sErr != nil {
-			return bail(fmt.Errorf("reflow: admin.NewServer: %w", sErr))
+		if deliveryClient != nil {
+			_ = deliveryClient.Close()
 		}
-		go autoSeedEndpoints(ctx, srv, runner, cfg.Handlers.Endpoints, logger)
+		return bail(herr)
 	}
-
-	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, false, logger)
-	if err != nil {
-		return bail(err)
-	}
-
-	return &Host{
-		engine:        eh,
-		metricsCloser: metricsCloser,
-		ingressRT:     ingressRT,
-		ingressCreds:  ingressCreds,
-	}, nil
+	return host, nil
 }
 
 // serverInterceptors bundles the unary+stream pair so it can be passed
@@ -369,7 +331,8 @@ func finishStartup(
 	ctx context.Context,
 	cfg Config,
 	eh *engine.Host,
-	multiNode bool,
+	crossShard bool,
+	adminEnabled bool,
 	shards []uint64,
 	snapshotTriggers map[uint64]chan struct{},
 	deliverySrv *grpc.Server,
@@ -390,7 +353,7 @@ func finishStartup(
 	// (resolved via gossip NodeHostMeta) and proposes RegisterNode +
 	// BeginRebalanceStep; the rebalancer drives SyncRequestAddReplica
 	// from the leader side. See plans/humble-chasing-quokka.md.
-	if multiNode && cfg.Cluster.JoinExisting {
+	if cfg.Cluster.JoinExisting {
 		if err := callSelfJoin(ctx, cfg, eh, logger); err != nil {
 			return nil, fmt.Errorf("reflow: SelfJoin: %w", err)
 		}
@@ -398,7 +361,8 @@ func finishStartup(
 
 	// Start shard 0 before partition shards so the partition table is
 	// established as partitions come up.
-	if _, err := eh.StartMetadataShard(); err != nil {
+	runner, err := eh.StartMetadataShard()
+	if err != nil {
 		return nil, fmt.Errorf("reflow: StartMetadataShard: %w", err)
 	}
 	logger.Info("reflow: metadata shard started", "shard", 0)
@@ -418,7 +382,7 @@ func finishStartup(
 	)
 
 	var snapshotRepoIface snapshot.Repository
-	if multiNode && cfg.Snapshot.URL != "" {
+	if cfg.Snapshot.URL != "" {
 		bucket, err := snapshot.OpenBucket(context.Background(), cfg.Snapshot.URL)
 		if err != nil {
 			return nil, fmt.Errorf("reflow: open snapshot bucket: %w", err)
@@ -471,17 +435,35 @@ func finishStartup(
 		}
 	}
 
-	if multiNode && !cfg.Admin.Disabled && cfg.Admin.Addr != "" {
-		runner := eh.MetadataRunner()
-		if runner == nil {
-			if snapshotCxl != nil {
-				snapshotCxl()
-			}
-			if snapshotRepo != nil {
-				_ = snapshotRepo.Close()
-			}
-			return nil, errors.New("reflow: metadata runner not initialized; cannot start admin")
+	// Build the in-process admin.Server unconditionally — it's the engine
+	// proposer + snapshot/deployment glue that autoSeedEndpoints needs,
+	// even when no external listener is configured. The gRPC listener
+	// only goes up when adminEnabled.
+	adminCfg := admin.Config{
+		Host:       eh,
+		Runner:     runner,
+		Repo:       snapshotRepoIface,
+		Source:     &engine.HostSnapshotSource{Host: eh},
+		Log:        logger,
+		ScratchDir: cfg.Snapshot.ScratchDir,
+	}
+	// Avoid the typed-nil interface trap: only assign the Signer field
+	// when the underlying *creds.Signer is non-nil.
+	if handlerSigner != nil {
+		adminCfg.Signer = handlerSigner
+	}
+	srv, sErr := admin.NewServer(adminCfg)
+	if sErr != nil {
+		if snapshotCxl != nil {
+			snapshotCxl()
 		}
+		if snapshotRepo != nil {
+			_ = snapshotRepo.Close()
+		}
+		return nil, fmt.Errorf("reflow: admin server: %w", sErr)
+	}
+
+	if adminEnabled {
 		ln, lErr := net.Listen("tcp", cfg.Admin.Addr)
 		if lErr != nil {
 			if snapshotCxl != nil {
@@ -493,37 +475,14 @@ func finishStartup(
 			return nil, fmt.Errorf("reflow: listen admin %s: %w", cfg.Admin.Addr, lErr)
 		}
 		adminLn = ln
-		adminCfg := admin.Config{
-			Host:       eh,
-			Runner:     runner,
-			Repo:       snapshotRepoIface,
-			Source:     &engine.HostSnapshotSource{Host: eh},
-			Log:        logger,
-			ScratchDir: cfg.Snapshot.ScratchDir,
+		opts := []grpc.ServerOption{grpc.Creds(adminCreds.Server)}
+		if ic != nil {
+			opts = append(opts,
+				grpc.ChainUnaryInterceptor(ic.unary),
+				grpc.ChainStreamInterceptor(ic.stream),
+			)
 		}
-		// Avoid the typed-nil interface trap: only assign the Signer
-		// field when the underlying *creds.Signer is non-nil, so a
-		// nil-driver setup leaves admin's signer field as a true nil
-		// interface (handlerclient skips the Authorization header).
-		if handlerSigner != nil {
-			adminCfg.Signer = handlerSigner
-		}
-		srv, sErr := admin.NewServer(adminCfg)
-		if sErr != nil {
-			if snapshotCxl != nil {
-				snapshotCxl()
-			}
-			if snapshotRepo != nil {
-				_ = snapshotRepo.Close()
-			}
-			_ = adminLn.Close()
-			return nil, fmt.Errorf("reflow: admin server: %w", sErr)
-		}
-		adminSrv = grpc.NewServer(
-			grpc.Creds(adminCreds.Server),
-			grpc.ChainUnaryInterceptor(ic.unary),
-			grpc.ChainStreamInterceptor(ic.stream),
-		)
+		adminSrv = grpc.NewServer(opts...)
 		srv.Register(adminSrv)
 		go func() {
 			if err := adminSrv.Serve(adminLn); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
@@ -532,21 +491,17 @@ func finishStartup(
 		}()
 		logger.Info("reflow: admin listening", "addr", adminLn.Addr().String(),
 			"driver", string(adminCreds.Driver))
-
-		// Auto-seed remote-handler deployments from config. Runs as a
-		// background goroutine so a slow handler endpoint doesn't block
-		// Run; each failure is logged and the next endpoint is tried.
-		// ctx is the Run caller's context — cancelling it cancels the
-		// seed loop.
-		if len(cfg.Handlers.Endpoints) > 0 {
-			go autoSeedEndpoints(ctx, srv, runner, cfg.Handlers.Endpoints, logger)
-		}
-	} else if len(cfg.Handlers.Endpoints) > 0 {
-		logger.Warn("reflow: Handlers.Endpoints requires admin server (multi-node + Admin.Addr); skipping",
-			"endpoints", len(cfg.Handlers.Endpoints))
 	}
 
-	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, multiNode, logger)
+	// Auto-seed remote-handler deployments from config. Runs as a
+	// background goroutine so a slow handler endpoint doesn't block Run;
+	// each failure is logged and the next endpoint is tried. ctx is the
+	// Run caller's context — cancelling it cancels the seed loop.
+	if len(cfg.Handlers.Endpoints) > 0 {
+		go autoSeedEndpoints(ctx, srv, runner, cfg.Handlers.Endpoints, logger)
+	}
+
+	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, crossShard, logger)
 	if err != nil {
 		if snapshotCxl != nil {
 			snapshotCxl()

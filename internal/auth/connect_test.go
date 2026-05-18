@@ -146,6 +146,33 @@ func TestHTTPMiddleware_AllowsAnonymousIngress(t *testing.T) {
 	}
 }
 
+// TestHTTPMiddleware_DeniesAnonymousOnGuardedPath: anonymous principal
+// hitting /Admin/ListNodes must be 401 (not 403). The policy allows the
+// path for operator/* only; an anonymous caller can authenticate then
+// retry, so 401 is the correct signal — 403 would suggest "known but
+// not allowed", which monitoring/operators read differently.
+func TestHTTPMiddleware_DeniesAnonymousOnGuardedPath(t *testing.T) {
+	mw, _, err := HTTPMiddleware("reflow.local", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	// No TLS, no leaf — caller is anonymous.
+	w := httptest.NewRecorder()
+	mw(next).ServeHTTP(w, r)
+	if w.Result().StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d; want 401", w.Result().StatusCode)
+	}
+	if called {
+		t.Error("downstream handler should not run on anonymous denial")
+	}
+}
+
 // TestHTTPMiddleware_MalformedLeafRejected returns 401 on a leaf without
 // a SPIFFE URI.
 func TestHTTPMiddleware_MalformedLeafRejected(t *testing.T) {

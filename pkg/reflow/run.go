@@ -473,14 +473,6 @@ func finishStartup(
 			"driver", string(adminCreds.Driver))
 	}
 
-	// Auto-seed remote-handler deployments from config. Runs as a
-	// background goroutine so a slow handler endpoint doesn't block Run;
-	// each failure is logged and the next endpoint is tried. ctx is the
-	// Run caller's context — cancelling it cancels the seed loop.
-	if len(cfg.Handlers.Endpoints) > 0 {
-		go autoSeedEndpoints(ctx, srv, runner, cfg.Handlers.Endpoints, logger)
-	}
-
 	multiNode := len(cfg.Cluster.Peers) > 1
 	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, logger)
 	if err != nil {
@@ -494,6 +486,15 @@ func finishStartup(
 			_ = adminSrv.Close()
 		}
 		return nil, err
+	}
+
+	// Auto-seed remote-handler deployments from config. Spawned AFTER
+	// the last error-returning step so a failed Run doesn't leave this
+	// goroutine running with no Host to attach to. Each failure inside
+	// the seed loop is logged and the next endpoint is tried; ctx is the
+	// Run caller's context — cancelling it cancels the seed loop.
+	if len(cfg.Handlers.Endpoints) > 0 {
+		go autoSeedEndpoints(ctx, srv, runner, cfg.Handlers.Endpoints, logger)
 	}
 
 	return &Host{

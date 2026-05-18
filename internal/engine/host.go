@@ -718,10 +718,17 @@ func (h *Host) onPartitionTable(pt *enginev1.PartitionTable) {
 			notOwned = append(notOwned, shardID)
 		}
 	}
+	// Increment asyncStarts while still holding RLock so the Add is
+	// atomic with the h.closed check: a concurrent Host.Close must wait
+	// behind our RLock before flipping h.closed and reaching
+	// asyncStarts.Wait. Without this, Close could move past Wait between
+	// our RUnlock and the Add, and the spawned goroutines would
+	// pebble.Open after Close returned (observed as "directory not
+	// empty" on TempDir teardown in TestSoloBootstrap).
+	h.asyncStarts.Add(len(toStart))
 	h.mu.RUnlock()
 
 	for _, shardID := range toStart {
-		h.asyncStarts.Add(1)
 		go func(sh uint64) {
 			defer h.asyncStarts.Done()
 			if _, err := h.StartPartition(sh); err != nil {

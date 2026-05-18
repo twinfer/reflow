@@ -64,7 +64,16 @@ func HTTPMiddleware(td, policyFile string, log *slog.Logger) (mw func(http.Handl
 			if !pol.Load().Allow(r.URL.Path, principal) {
 				log.Warn("auth: policy denied request",
 					"path", r.URL.Path, "principal", principal.String())
-				http.Error(w, "auth: forbidden", http.StatusForbidden)
+				// 401 vs 403: anonymous principals get 401 (authenticate
+				// then retry), authenticated principals get 403 (you're
+				// known, but not allowed). Conflating them would let
+				// monitoring page on "auth-config rejects principal X"
+				// the same way as "no client cert presented".
+				if principal.IsAnonymous() {
+					http.Error(w, "auth: unauthorized", http.StatusUnauthorized)
+				} else {
+					http.Error(w, "auth: forbidden", http.StatusForbidden)
+				}
 				return
 			}
 			r = r.WithContext(ContextWithPrincipal(r.Context(), principal))

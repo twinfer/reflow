@@ -254,20 +254,28 @@ func TestDedupBlocksDuplicateIngress(t *testing.T) {
 	proposeInvoke(t, r, id, target, "ingress-X", 7)
 	proposeInvoke(t, r, id, target, "ingress-X", 7)
 
-	// We expect exactly one Scheduled invocation row. Verify by reading the
-	// status — the second propose with same dedup is silently skipped, so
-	// the state is still Scheduled.
+	// Exactly one invocation row must exist — the second propose with the
+	// same (producer, seq) is silently dedup'd. The status it lands at
+	// depends on whether the invoker has tried to dispatch yet: Scheduled
+	// when the partition leader hasn't run the dispatch action, Invoked
+	// once it has, Completed when the session immediately fails (no
+	// metadata shard means no deployment lookup, so failTerminal lands
+	// quickly). Any non-Free status confirms the dedup worked.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		s, err := r.StatusOf(id)
 		if err == nil {
-			if _, ok := s.GetStatus().(*enginev1.InvocationStatus_Scheduled); ok {
-				return // success
+			switch s.GetStatus().(type) {
+			case *enginev1.InvocationStatus_Scheduled,
+				*enginev1.InvocationStatus_Invoked,
+				*enginev1.InvocationStatus_Suspended,
+				*enginev1.InvocationStatus_Completed:
+				return // success — one row exists, dedup absorbed the duplicate
 			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("invocation status not observed as Scheduled within timeout")
+	t.Fatalf("invocation status not observed within timeout")
 }
 
 func TestTimerSurvivesRestart(t *testing.T) {

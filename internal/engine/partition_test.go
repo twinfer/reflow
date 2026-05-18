@@ -452,14 +452,16 @@ func TestPartition_RunProposal_RetryableSchedulesTimer(t *testing.T) {
 	col.Drain()
 
 	// Retryable proposal — apply must (a) write JERun{retryable=true},
-	// (b) insert a timer, (c) push ActRegisterTimer.
+	// (b) insert a timer, (c) push ActRegisterTimer. The default policy
+	// is MaxAttempts=1 (no retries); the test wants to exercise the
+	// retry branch, so it ships an explicit policy.
 	retryable := envelope(t, &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
 		InvocationId: id,
 		Kind: &enginev1.InvokerEffect_RunProposal{RunProposal: &enginev1.JERunProposal{
 			EntryIndex:     1,
 			FailureMessage: "transient",
 			Retryable:      true,
-			Attempt:        0,
+			RetryPolicy:    &enginev1.RunRetryPolicy{MaxAttempts: 4},
 		}},
 	}}})
 	if _, err := p.Update([]statemachine.Entry{{Index: 3, Cmd: retryable}}); err != nil {
@@ -524,23 +526,37 @@ func TestPartition_RunProposal_ExhaustedPolicyDemotesToTerminal(t *testing.T) {
 	}
 	col.Drain()
 
-	// max_attempts=2; this is attempt=2 → exhausted → demoted to terminal.
+	// Engine-authoritative attempt counting reads the prior JERun and
+	// increments — so to land at attempt=2 (exhausted under
+	// MaxAttempts=2), submit two retryable proposals. The first lands as
+	// attempt=1 (schedules a retry timer); the second observes the prior
+	// JERun, advances to attempt=2, and demotes to terminal.
+	policy := &enginev1.RunRetryPolicy{MaxAttempts: 2}
 	proposal := envelope(t, &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
 		InvocationId: id,
 		Kind: &enginev1.InvokerEffect_RunProposal{RunProposal: &enginev1.JERunProposal{
 			EntryIndex:     1,
 			FailureMessage: "boom",
 			Retryable:      true,
-			Attempt:        2,
-			RetryPolicy:    &enginev1.RunRetryPolicy{MaxAttempts: 2},
+			RetryPolicy:    policy,
 		}},
 	}}})
 	if _, err := p.Update([]statemachine.Entry{{Index: 3, Cmd: proposal}}); err != nil {
 		t.Fatal(err)
 	}
+	col.Drain() // first attempt schedules a timer — discard.
+
+	if _, err := p.Update([]statemachine.Entry{{Index: 4, Cmd: proposal}}); err != nil {
+		t.Fatal(err)
+	}
 	for _, a := range col.Drain() {
 		if _, isTimer := a.(ActRegisterTimer); isTimer {
-			t.Errorf("exhausted policy must not schedule a timer; got %T", a)
+			// Exhausted-policy path schedules an *immediate* wake (fireAtMs = nowMs+1)
+			// so the SDK observes the terminal JERun. That wake timer is fine —
+			// it differs from the retry timer by being scheduled at +1ms.
+			if rt, ok := a.(ActRegisterTimer); ok && rt.FireAtMs > testEnvelopeNowMs+1 {
+				t.Errorf("exhausted policy must not schedule a backoff timer; got %v", a)
+			}
 		}
 	}
 

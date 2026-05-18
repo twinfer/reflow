@@ -722,7 +722,7 @@ func (*ProposeRunCompletionMessage_Value) isProposeRunCompletionMessage_Result()
 func (*ProposeRunCompletionMessage_Failure) isProposeRunCompletionMessage_Result() {}
 
 // RunRetryPolicy is the wire-side mirror of enginev1.RunRetryPolicy.
-// Kept in protocolv1 so pkg/sdk/server doesn't import enginev1 — the
+// Kept in protocolv1 so pkg/handler doesn't import enginev1 — the
 // invoker translates between the two at the wire boundary.
 type RunRetryPolicy struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`

@@ -5,12 +5,14 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"google.golang.org/protobuf/proto"
+	connect "connectrpc.com/connect"
 
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
+	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
 )
 
 // stubSigner records calls and returns a canned token.
@@ -34,17 +36,17 @@ func (s *stubSigner) audience() string {
 	return s.lastAud
 }
 
-// TestDiscoverHTTP_SignerStampsAuthorization asserts that when a Signer
-// is configured, discoverHTTP stamps the Authorization header with the
+// TestDiscover_SignerStampsAuthorization asserts that when a Signer is
+// configured, discoverConnect stamps the Authorization header with the
 // deployment URL as audience.
-func TestDiscoverHTTP_SignerStampsAuthorization(t *testing.T) {
+func TestDiscover_SignerStampsAuthorization(t *testing.T) {
 	addr, gotAuth := startH2CDiscoverServer(t)
 	signer := &stubSigner{}
 
 	rawURL := "http://" + addr
-	resp, err := discoverHTTP(context.Background(), rawURL, true, signer)
+	resp, err := discoverConnect(context.Background(), rawURL, true, signer)
 	if err != nil {
-		t.Fatalf("discoverHTTP: %v", err)
+		t.Fatalf("discoverConnect: %v", err)
 	}
 	if resp == nil {
 		t.Fatal("nil response")
@@ -55,19 +57,19 @@ func TestDiscoverHTTP_SignerStampsAuthorization(t *testing.T) {
 			t.Errorf("Authorization = %q; want %q", got, want)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for /discover request")
+		t.Fatal("timeout waiting for Discover request")
 	}
 	if got := signer.audience(); got != rawURL {
 		t.Errorf("signer audience = %q; want %q", got, rawURL)
 	}
 }
 
-// TestDiscoverHTTP_NoSignerLeavesHeaderUnset asserts the nil-Signer
-// posture (single-node and insecure-creds) sends no Authorization.
-func TestDiscoverHTTP_NoSignerLeavesHeaderUnset(t *testing.T) {
+// TestDiscover_NoSignerLeavesHeaderUnset asserts the nil-Signer posture
+// (single-node and insecure-creds) sends no Authorization header.
+func TestDiscover_NoSignerLeavesHeaderUnset(t *testing.T) {
 	addr, gotAuth := startH2CDiscoverServer(t)
-	if _, err := discoverHTTP(context.Background(), "http://"+addr, true, nil); err != nil {
-		t.Fatalf("discoverHTTP: %v", err)
+	if _, err := discoverConnect(context.Background(), "http://"+addr, true, nil); err != nil {
+		t.Fatalf("discoverConnect: %v", err)
 	}
 	select {
 	case got := <-gotAuth:
@@ -75,30 +77,39 @@ func TestDiscoverHTTP_NoSignerLeavesHeaderUnset(t *testing.T) {
 			t.Errorf("Authorization = %q; want empty (nil signer)", got)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for /discover request")
+		t.Fatal("timeout waiting for Discover request")
 	}
 }
 
-// startH2CDiscoverServer accepts GET /discover over h2c, records the
-// Authorization header into the returned channel, and replies with a
-// minimal DiscoveryResponse.
+// fakeDiscoveryService captures the Authorization header on the first
+// request and replies with a minimal DiscoveryResponse.
+type fakeDiscoveryService struct {
+	discoveryv1connect.UnimplementedDiscoveryServiceHandler
+	authCh chan<- string
+	sent   atomic.Bool
+}
+
+func (f *fakeDiscoveryService) Discover(_ context.Context, req *connect.Request[discoveryv1.DiscoveryRequest]) (*connect.Response[discoveryv1.DiscoveryResponse], error) {
+	if f.sent.CompareAndSwap(false, true) {
+		select {
+		case f.authCh <- req.Header().Get("Authorization"):
+		default:
+		}
+	}
+	return connect.NewResponse(&discoveryv1.DiscoveryResponse{ProtocolVersion: protocolVersion}), nil
+}
+
+// startH2CDiscoverServer mounts the DiscoveryService over h2c and
+// returns the listener address plus a channel that receives the first
+// request's Authorization header.
 func startH2CDiscoverServer(t *testing.T) (addr string, gotAuth <-chan string) {
 	t.Helper()
 	ch := make(chan string, 1)
-	body, err := proto.Marshal(&discoveryv1.DiscoveryResponse{ProtocolVersion: protocolVersion})
-	if err != nil {
-		t.Fatalf("marshal DiscoveryResponse: %v", err)
-	}
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case ch <- r.Header.Get("Authorization"):
-		default:
-		}
-		w.Header().Set("Content-Type", "application/vnd.reflow.invocation.v1+protobuf")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
-	})
-	srv := &http.Server{Handler: handler, Protocols: new(http.Protocols)}
+	svc := &fakeDiscoveryService{authCh: ch}
+	mux := http.NewServeMux()
+	path, h := discoveryv1connect.NewDiscoveryServiceHandler(svc)
+	mux.Handle(path, h)
+	srv := &http.Server{Handler: mux, Protocols: new(http.Protocols)}
 	srv.Protocols.SetUnencryptedHTTP2(true)
 	srv.Protocols.SetHTTP1(false)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

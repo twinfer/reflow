@@ -1,9 +1,8 @@
 // Reflow handler discovery v1 — engine-to-handler capability probe.
 //
-// At RegisterDeployment time the engine issues GET <url>/discover and
-// expects a protobuf-encoded DiscoveryResponse describing the handlers
-// the deployment can serve. The result is persisted into the
-// DeploymentRecord on shard 0 so future invocations can route by id.
+// At RegisterDeployment time the engine calls DiscoveryService.Discover
+// and persists the response into the DeploymentRecord on shard 0 so
+// future invocations can route by id.
 //
 // This file is intentionally separated from the session wire protocol
 // (proto/protocolv1) because discovery is a one-shot request/response
@@ -217,7 +216,9 @@ const file_discoveryv1_discovery_proto_rawDesc = "" +
 	"\x11DiscoveredHandler\x12\x18\n" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12,\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x18.reflow.protocol.v1.KindR\x04kind\x12#\n" +
-	"\rhandler_names\x18\x03 \x03(\tR\fhandlerNamesB9Z7github.com/twinfer/reflow/proto/discoveryv1;discoveryv1b\x06proto3"
+	"\rhandler_names\x18\x03 \x03(\tR\fhandlerNames2m\n" +
+	"\x10DiscoveryService\x12Y\n" +
+	"\bDiscover\x12%.reflow.discovery.v1.DiscoveryRequest\x1a&.reflow.discovery.v1.DiscoveryResponseB9Z7github.com/twinfer/reflow/proto/discoveryv1;discoveryv1b\x06proto3"
 
 var (
 	file_discoveryv1_discovery_proto_rawDescOnce sync.Once
@@ -241,8 +242,10 @@ var file_discoveryv1_discovery_proto_goTypes = []any{
 var file_discoveryv1_discovery_proto_depIdxs = []int32{
 	2, // 0: reflow.discovery.v1.DiscoveryResponse.handlers:type_name -> reflow.discovery.v1.DiscoveredHandler
 	3, // 1: reflow.discovery.v1.DiscoveredHandler.kind:type_name -> reflow.protocol.v1.Kind
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
+	0, // 2: reflow.discovery.v1.DiscoveryService.Discover:input_type -> reflow.discovery.v1.DiscoveryRequest
+	1, // 3: reflow.discovery.v1.DiscoveryService.Discover:output_type -> reflow.discovery.v1.DiscoveryResponse
+	3, // [3:4] is the sub-list for method output_type
+	2, // [2:3] is the sub-list for method input_type
 	2, // [2:2] is the sub-list for extension type_name
 	2, // [2:2] is the sub-list for extension extendee
 	0, // [0:2] is the sub-list for field type_name
@@ -261,7 +264,7 @@ func file_discoveryv1_discovery_proto_init() {
 			NumEnums:      0,
 			NumMessages:   3,
 			NumExtensions: 0,
-			NumServices:   0,
+			NumServices:   1,
 		},
 		GoTypes:           file_discoveryv1_discovery_proto_goTypes,
 		DependencyIndexes: file_discoveryv1_discovery_proto_depIdxs,

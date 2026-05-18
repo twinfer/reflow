@@ -1,0 +1,55 @@
+version: 1
+
+# Surfaced as MCP resources so an agent navigating reflow always sees the
+
+
+# Citations of the Restate Rust source. Source comments cite lines like
+# `crates/worker/src/partition/leadership/self_proposer.rs:36-58`; the
+# `cite_resolve` tool reads the exact line out of vendor_root.
+citations:
+  - pattern: 'crates/[\w/.-]+\.rs:\d+(-\d+)?'
+    vendor_root: ./restate
+    description: Restate Rust source (mirrored for design parity).
+
+# Generated proto Go packages. The `proto_field_xref` tool maps a proto
+# message + snake_case field name to every Go read/write of the generated
+# struct field.
+proto:
+  - import: github.com/twinfer/reflow/proto/enginev1
+  - import: github.com/twinfer/reflow/proto/protocolv1
+  - import: github.com/twinfer/reflow/proto/ingressv1
+  - import: github.com/twinfer/reflow/proto/deliveryv1
+  - import: github.com/twinfer/reflow/proto/adminv1
+  - import: github.com/twinfer/reflow/proto/discoveryv1
+
+# Determinism guard for handler code: code under pkg/sdk and the examples
+# directories runs inside the deterministic execution sandbox; it must not
+# reach for wall-clock time, random sources, network, or environment state
+# directly. The engine provides deterministic equivalents.
+lint:
+  - import: github.com/twinfer/gopher-mcp/pkg/analyzers/bannedinscope
+    config:
+      banned:
+        - time.Now
+        - time.Since
+        - time.Until
+        - "math/rand.*"
+        - "crypto/rand.*"
+        - net/http.Get
+        - net/http.Post
+        - os.Getenv
+        - os.Hostname
+      scope_packages:
+        - github.com/twinfer/reflow/pkg/sdk/...
+        - github.com/twinfer/reflow/examples/...
+
+# Named goroutine roots for reverse_trace ("which entry can reach this?").
+# apply_path: the raft state-machine apply loop. dispatchActions runs on the
+# runner goroutine after Update returns Actions. leadership: dragonboat
+# RaftEventListener callback that drives the two-phase leader handoff.
+entry_points:
+  apply_path:
+    - "(*github.com/twinfer/reflow/internal/engine.Partition).Update"
+    - "(*github.com/twinfer/reflow/internal/engine.PartitionRunner).dispatchActions"
+  leadership:
+    - "(*github.com/twinfer/reflow/internal/engine.Leadership).OnRaftLeaderChange"

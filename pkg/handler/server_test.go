@@ -9,7 +9,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -18,14 +17,15 @@ import (
 	"testing"
 	"time"
 
+	connect "connectrpc.com/connect"
 	"google.golang.org/grpc/credentials/tls/certprovider"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/engine/handlerclient/connectclient"
 	"github.com/twinfer/reflow/pkg/handler"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
+	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
@@ -296,10 +296,9 @@ func sendStart(stream handlerclient.Stream, route handlerclient.Route, input []b
 	return stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdInput, inputBytes))
 }
 
-// discoverHTTP2 issues GET /discover over h2c and decodes the response.
-// The engine's admin path uses the same shape (see
-// internal/engine/admin/server.go.discoverHTTP); here we hit the
-// endpoint directly so the test stays self-contained.
+// discoverHTTP2 calls DiscoveryService.Discover over h2c. The engine's
+// admin path uses the same Connect client (discoverConnect); here we
+// hit the endpoint directly so the test stays self-contained.
 func discoverHTTP2(t *testing.T, baseURL string) *discoveryv1.DiscoveryResponse {
 	t.Helper()
 	tr := &http.Transport{Protocols: new(http.Protocols)}
@@ -308,29 +307,12 @@ func discoverHTTP2(t *testing.T, baseURL string) *discoveryv1.DiscoveryResponse 
 	hc := &http.Client{Transport: tr, Timeout: 5 * time.Second}
 	defer tr.CloseIdleConnections()
 
-	target := strings.TrimRight(baseURL, "/") + "/discover"
-	req, err := http.NewRequest(http.MethodGet, target, nil)
+	client := discoveryv1connect.NewDiscoveryServiceClient(hc, strings.TrimRight(baseURL, "/"))
+	resp, err := client.Discover(context.Background(), connect.NewRequest(&discoveryv1.DiscoveryRequest{ProtocolVersion: "v1"}))
 	if err != nil {
-		t.Fatalf("build /discover request: %v", err)
+		t.Fatalf("Discover: %v", err)
 	}
-	resp, err := hc.Do(req)
-	if err != nil {
-		t.Fatalf("GET /discover: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
-		t.Fatalf("/discover returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read /discover body: %v", err)
-	}
-	var dr discoveryv1.DiscoveryResponse
-	if err := proto.Unmarshal(body, &dr); err != nil {
-		t.Fatalf("unmarshal DiscoveryResponse: %v", err)
-	}
-	return &dr
+	return resp.Msg
 }
 
 // stubHandler is a no-op handler used to populate the registry for the

@@ -1,8 +1,8 @@
 // Package handler is the durable-execution SDK + the handler-side Connect
 // server that hosts it. Authors register handlers in a *Registry, wrap it
 // in NewServer, and Serve on a listener. The reflow engine discovers the
-// deployment via GET /discover and opens a session over
-// HandlerService.InvokeStream (Connect RPC).
+// deployment via DiscoveryService.Discover and opens a session over
+// HandlerService.InvokeStream, both Connect RPCs over HTTP/2.
 package handler
 
 import (
@@ -14,10 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"google.golang.org/protobuf/proto"
-
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
+	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
 	"github.com/twinfer/reflow/proto/handlerv1/handlerv1connect"
 )
 
@@ -72,9 +71,9 @@ var ErrLazyStateUnavailable = errors.New("handler: state preload incomplete; laz
 
 // Server hosts a reflow handler over HTTP/2. Routes:
 //   - /reflow.handler.v1.HandlerService/InvokeStream — bidi-streaming
-//     session, served over Connect (Connect / gRPC / gRPC-Web all
-//     negotiated on the one endpoint).
-//   - /discover returns a protobuf-encoded discoveryv1.DiscoveryResponse.
+//     session over Connect.
+//   - /reflow.discovery.v1.DiscoveryService/Discover — capability probe
+//     over Connect.
 //
 // Accepts HTTP/1.1, h2c (engine's bidi path), and HTTP/2 over TLS via
 // stdlib net/http's Protocols field (Go 1.24+).
@@ -88,10 +87,10 @@ type Server struct {
 
 // NewServer constructs a handler-side server.
 //
-// When cfg.RootCAs is non-nil, every InvokeStream and /discover request
-// must carry an Authorization: Bearer <jwt> header whose x5c chain
-// anchors at one of the configured roots and whose leaf SPIFFE URI
-// appears in cfg.AllowedSPIFFE; verification failures reject with 401.
+// When cfg.RootCAs is non-nil, every request must carry an
+// Authorization: Bearer <jwt> header whose x5c chain anchors at one of
+// the configured roots and whose leaf SPIFFE URI appears in
+// cfg.AllowedSPIFFE; verification failures reject with 401.
 func NewServer(cfg Config) (*Server, error) {
 	verifier, err := validateConfig(&cfg)
 	if err != nil {
@@ -104,13 +103,15 @@ func NewServer(cfg Config) (*Server, error) {
 		registry: cfg.Registry,
 		codec:    cfg.Codec,
 	})
-	discoverHandler := http.Handler(http.HandlerFunc(s.handleDiscover))
+	discoverPath, discoverHandler := discoveryv1connect.NewDiscoveryServiceHandler(&discoveryService{
+		registry: cfg.Registry,
+	})
 	if verifier != nil {
 		invokeHandler = withAuth(verifier, nil, invokeHandler)
 		discoverHandler = withAuth(verifier, nil, discoverHandler)
 	}
-	mux.Handle("/discover", discoverHandler)
 	mux.Handle(invokePath, invokeHandler)
+	mux.Handle(discoverPath, discoverHandler)
 
 	s.srv = &http.Server{Handler: mux, Protocols: new(http.Protocols)}
 	s.srv.Protocols.SetHTTP1(true)
@@ -146,19 +147,6 @@ func (s *Server) Shutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return s.srv.Shutdown(ctx)
-}
-
-// handleDiscover writes a protobuf-encoded discoveryv1.DiscoveryResponse
-// listing every handler in the registry.
-func (s *Server) handleDiscover(w http.ResponseWriter, _ *http.Request) {
-	resp := buildDiscoveryResponse(s.cfg.Registry)
-	body, err := proto.Marshal(resp)
-	if err != nil {
-		http.Error(w, "marshal DiscoveryResponse: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/vnd.reflow.invocation.v1+protobuf")
-	_, _ = w.Write(body)
 }
 
 // validateConfig fills defaults, rejects obviously broken inputs, and

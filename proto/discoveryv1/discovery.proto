@@ -1,9 +1,8 @@
 // Reflow handler discovery v1 — engine-to-handler capability probe.
 //
-// At RegisterDeployment time the engine issues GET <url>/discover and
-// expects a protobuf-encoded DiscoveryResponse describing the handlers
-// the deployment can serve. The result is persisted into the
-// DeploymentRecord on shard 0 so future invocations can route by id.
+// At RegisterDeployment time the engine calls DiscoveryService.Discover
+// and persists the response into the DeploymentRecord on shard 0 so
+// future invocations can route by id.
 //
 // This file is intentionally separated from the session wire protocol
 // (proto/protocolv1) because discovery is a one-shot request/response
@@ -17,6 +16,15 @@ package reflow.discovery.v1;
 import "protocolv1/protocol.proto";
 
 option go_package = "github.com/twinfer/reflow/proto/discoveryv1;discoveryv1";
+
+// DiscoveryService is the engine-to-handler capability probe. Served by
+// every reflow handler deployment over Connect alongside HandlerService.
+service DiscoveryService {
+  // Discover returns the (service, kind, handler_names) tuples this
+  // deployment exposes. The engine calls this once at
+  // RegisterDeployment time.
+  rpc Discover(DiscoveryRequest) returns (DiscoveryResponse);
+}
 
 // DiscoveryRequest is sent by the engine when registering a deployment.
 // Carries the engine-advertised protocol version so the handler can

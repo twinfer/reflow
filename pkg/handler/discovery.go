@@ -1,9 +1,24 @@
 package handler
 
 import (
+	"context"
+
+	connect "connectrpc.com/connect"
+
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
+	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
+
+// discoveryService implements discoveryv1connect.DiscoveryServiceHandler.
+type discoveryService struct {
+	discoveryv1connect.UnimplementedDiscoveryServiceHandler
+	registry *Registry
+}
+
+func (d *discoveryService) Discover(_ context.Context, _ *connect.Request[discoveryv1.DiscoveryRequest]) (*connect.Response[discoveryv1.DiscoveryResponse], error) {
+	return connect.NewResponse(buildDiscoveryResponse(d.registry)), nil
+}
 
 // buildDiscoveryResponse groups Entries by (service, kind) and collects
 // every handler name under that group. Sorted-by-service-then-handler

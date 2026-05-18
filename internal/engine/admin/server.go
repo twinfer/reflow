@@ -16,7 +16,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -27,11 +26,11 @@ import (
 	"strings"
 	"time"
 
+	connect "connectrpc.com/connect"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/engine"
@@ -39,6 +38,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
+	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -56,8 +56,9 @@ type Server struct {
 	src    snapshot.Source
 	log    *slog.Logger
 	// signer, when non-nil, stamps Authorization: Bearer on outgoing
-	// GET /discover requests so the handler's verifier accepts them.
-	// Nil disables the header (single-node and insecure-creds posture).
+	// DiscoveryService.Discover requests so the handler's verifier
+	// accepts them. Nil disables the header (single-node and
+	// insecure-creds posture).
 	signer handlerclient.Signer
 
 	// scratchDir holds export directories created for CreateSnapshot.
@@ -77,8 +78,8 @@ type Config struct {
 	Log        *slog.Logger
 	ScratchDir string
 	// Signer, when non-nil, is used to mint a JWT on outgoing
-	// GET /discover requests during RegisterDeployment. Same Signer
-	// the handlerclient connectclient uses.
+	// DiscoveryService.Discover requests during RegisterDeployment.
+	// Same Signer the handlerclient connectclient uses.
 	Signer handlerclient.Signer
 }
 
@@ -425,7 +426,7 @@ func (s *Server) RegisterDeployment(ctx context.Context, req *adminv1.RegisterDe
 	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
 	defer cancel()
 
-	resp, err := discoverHTTP(callCtx, raw, scheme == "http", s.signer)
+	resp, err := discoverConnect(callCtx, raw, scheme == "http", s.signer)
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "admin: discovery: %v", err)
 	}
@@ -479,12 +480,12 @@ func validateDeploymentScheme(scheme string) error {
 	}
 }
 
-// discoverHTTP issues GET <url>/discover over HTTP/2 (h2c for http://,
-// TLS for https://). The response body is a protobuf-encoded
-// DiscoveryResponse. When signer is non-nil the request carries
-// Authorization: Bearer <jwt> with the deployment URL as audience so
-// the handler's verifier (if configured) accepts it.
-func discoverHTTP(ctx context.Context, rawURL string, plaintextH2C bool, signer handlerclient.Signer) (*discoveryv1.DiscoveryResponse, error) {
+// discoverConnect calls DiscoveryService.Discover on the deployment URL
+// over HTTP/2 (h2c for http://, TLS for https://). When signer is
+// non-nil the request carries Authorization: Bearer <jwt> with the
+// deployment URL as audience so the handler's verifier (if configured)
+// accepts it.
+func discoverConnect(ctx context.Context, rawURL string, plaintextH2C bool, signer handlerclient.Signer) (*discoveryv1.DiscoveryResponse, error) {
 	tr := &http.Transport{Protocols: new(http.Protocols)}
 	if plaintextH2C {
 		tr.Protocols.SetUnencryptedHTTP2(true)
@@ -497,37 +498,20 @@ func discoverHTTP(ctx context.Context, rawURL string, plaintextH2C bool, signer 
 	hc := &http.Client{Transport: tr}
 	defer tr.CloseIdleConnections()
 
-	target := strings.TrimRight(rawURL, "/") + "/discover"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Accept", "application/vnd.reflow.invocation.v1+protobuf")
+	client := discoveryv1connect.NewDiscoveryServiceClient(hc, strings.TrimRight(rawURL, "/"))
+	req := connect.NewRequest(&discoveryv1.DiscoveryRequest{ProtocolVersion: protocolVersion})
 	if signer != nil {
 		tok, serr := signer.Sign(rawURL)
 		if serr != nil {
 			return nil, fmt.Errorf("sign discover: %w", serr)
 		}
-		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header().Set("Authorization", "Bearer "+tok)
 	}
-	resp, err := hc.Do(req)
+	resp, err := client.Discover(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("do: %w", err)
+		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
-		return nil, fmt.Errorf("handler returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read body: %w", err)
-	}
-	var out discoveryv1.DiscoveryResponse
-	if err := proto.Unmarshal(body, &out); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-	return &out, nil
+	return resp.Msg, nil
 }
 
 // replicaSetContainsID is a small predicate; cluster has the same logic

@@ -8,10 +8,10 @@ import (
 	"testing"
 
 	connect "connectrpc.com/connect"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
+	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
 	"github.com/twinfer/reflow/proto/handlerv1/handlerv1connect"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
@@ -35,26 +35,32 @@ func (c connectFakeImpl) InvokeStream(_ context.Context, stream *connect.BidiStr
 }
 
 // mountFakeHandler builds an http.Handler that mimics a real reflow
-// handler deployment: a /discover endpoint returning the provided
-// DiscoveryResponse, and the Connect HandlerService.InvokeStream route
-// driven by session. Used by every wire integration test in this
-// package.
+// handler deployment: DiscoveryService.Discover returning the provided
+// DiscoveryResponse, and HandlerService.InvokeStream driven by session.
+// Used by every wire integration test in this package.
 func mountFakeHandler(t *testing.T, discovery *discoveryv1.DiscoveryResponse, session connectFakeSession) http.Handler {
 	t.Helper()
 	mux := http.NewServeMux()
-	body, err := proto.Marshal(discovery)
-	if err != nil {
-		t.Fatalf("marshal discovery: %v", err)
-	}
-	mux.HandleFunc("/discover", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/vnd.reflow.invocation.v1+protobuf")
-		_, _ = w.Write(body)
-	})
+	discoverPath, discoverHandler := discoveryv1connect.NewDiscoveryServiceHandler(
+		fakeDiscoverImpl{resp: discovery},
+	)
+	mux.Handle(discoverPath, discoverHandler)
 	invokePath, invokeHandler := handlerv1connect.NewHandlerServiceHandler(
 		connectFakeImpl{t: t, session: session},
 	)
 	mux.Handle(invokePath, invokeHandler)
 	return mux
+}
+
+// fakeDiscoverImpl replies to DiscoveryService.Discover with a canned
+// response. Tests construct it once per fake handler.
+type fakeDiscoverImpl struct {
+	discoveryv1connect.UnimplementedDiscoveryServiceHandler
+	resp *discoveryv1.DiscoveryResponse
+}
+
+func (f fakeDiscoverImpl) Discover(_ context.Context, _ *connect.Request[discoveryv1.DiscoveryRequest]) (*connect.Response[discoveryv1.DiscoveryResponse], error) {
+	return connect.NewResponse(f.resp), nil
 }
 
 // frameFor builds a protocolv1.Frame with header packed from typeCode +

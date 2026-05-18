@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "reflow": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "cd /Users/khalid/dev/x/gopher-mcp && exec go run ./cmd/gopher-mcp"
+      ],
+      "env": {
+        "REPO_ROOT": "/Users/khalid/dev/x/reflow"
+      }
+    }
+  }
+}

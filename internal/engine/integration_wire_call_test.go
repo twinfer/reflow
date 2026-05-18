@@ -10,9 +10,9 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/admin"
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/loadgen"
 	"github.com/twinfer/reflow/pkg/handler"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
@@ -67,8 +67,8 @@ func (f *fakeHandlerCaller) serveInvoke(t *testing.T, stream *connect.BidiStream
 		if err != nil {
 			return err
 		}
-		tc, _, _ := handlerclient.UnpackHeader(frame.GetHeader())
-		if tc == handlerclient.TypeNoteCallDone {
+		tc, _, _ := wire.UnpackHeader(frame.GetHeader())
+		if tc == wire.TypeNoteCallDone {
 			var note protocolv1.CallCompletionNotificationMessage
 			if err := proto.Unmarshal(frame.GetPayload(), &note); err == nil {
 				if v, ok := note.GetResult().(*protocolv1.CallCompletionNotificationMessage_Value); ok {
@@ -89,13 +89,13 @@ func (f *fakeHandlerCaller) serveInvoke(t *testing.T, stream *connect.BidiStream
 		if err != nil {
 			return err
 		}
-		if err := stream.Send(frameFor(handlerclient.TypeCmdCall, payload)); err != nil {
+		if err := stream.Send(frameFor(wire.TypeCmdCall, payload)); err != nil {
 			return err
 		}
 
 		sus := &protocolv1.SuspensionMessage{WaitingCompletions: []uint32{2}}
 		susPayload, _ := proto.Marshal(sus)
-		if err := stream.Send(frameFor(handlerclient.TypeSuspension, susPayload)); err != nil {
+		if err := stream.Send(frameFor(wire.TypeSuspension, susPayload)); err != nil {
 			return err
 		}
 		return drainStream(stream)
@@ -109,11 +109,11 @@ func (f *fakeHandlerCaller) serveInvoke(t *testing.T, stream *connect.BidiStream
 		},
 	}
 	outPayload, _ := proto.Marshal(outMsg)
-	if err := stream.Send(frameFor(handlerclient.TypeCmdOutput, outPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeCmdOutput, outPayload)); err != nil {
 		return err
 	}
 	endPayload, _ := proto.Marshal(&protocolv1.EndMessage{})
-	if err := stream.Send(frameFor(handlerclient.TypeEnd, endPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeEnd, endPayload)); err != nil {
 		return err
 	}
 	return drainStream(stream)

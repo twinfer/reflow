@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
@@ -42,7 +42,7 @@ func newTestWireContext(t *testing.T, cache map[string][]byte) (*wireContext, *f
 	t.Helper()
 	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
 	stream := &fakeStream{}
-	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, handlerclient.DefaultCodec(), cache, nil, 7, 0)
+	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, wire.DefaultCodec(), cache, nil, 7, 0)
 	return wctx, stream
 }
 
@@ -52,7 +52,7 @@ func newTestWireContextWithReplay(t *testing.T, replay map[uint32]*replayEntry) 
 	t.Helper()
 	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
 	stream := &fakeStream{}
-	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, handlerclient.DefaultCodec(), nil, replay, 7, 0)
+	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, wire.DefaultCodec(), nil, replay, 7, 0)
 	return wctx, stream
 }
 
@@ -63,7 +63,7 @@ func newTestWireContextWithBudget(t *testing.T, budget uint32) (*wireContext, *f
 	t.Helper()
 	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("0123456789ABCDEF")}
 	stream := &fakeStream{}
-	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, handlerclient.DefaultCodec(), nil, nil, 7, budget)
+	wctx := newWireContext(t.Context(), id, []byte("hello"), stream, wire.DefaultCodec(), nil, nil, 7, budget)
 	return wctx, stream
 }
 
@@ -102,12 +102,12 @@ func TestWireContext_StateWrites(t *testing.T) {
 	}
 
 	// SetState frame.
-	tc, _, _ := handlerclient.UnpackHeader(stream.sent[0].GetHeader())
-	if tc != handlerclient.TypeCmdSetState {
-		t.Errorf("frame[0].type = 0x%04x; want 0x%04x", tc, handlerclient.TypeCmdSetState)
+	tc, _, _ := wire.UnpackHeader(stream.sent[0].GetHeader())
+	if tc != wire.TypeCmdSetState {
+		t.Errorf("frame[0].type = 0x%04x; want 0x%04x", tc, wire.TypeCmdSetState)
 	}
 	var setMsg protocolv1.SetStateCommandMessage
-	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &setMsg); err != nil {
+	if err := wire.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &setMsg); err != nil {
 		t.Fatalf("decode SetStateCommandMessage: %v", err)
 	}
 	if got := string(setMsg.GetKey()); got != "counter" {
@@ -118,12 +118,12 @@ func TestWireContext_StateWrites(t *testing.T) {
 	}
 
 	// ClearState frame.
-	tc, _, _ = handlerclient.UnpackHeader(stream.sent[1].GetHeader())
-	if tc != handlerclient.TypeCmdClearState {
-		t.Errorf("frame[1].type = 0x%04x; want 0x%04x", tc, handlerclient.TypeCmdClearState)
+	tc, _, _ = wire.UnpackHeader(stream.sent[1].GetHeader())
+	if tc != wire.TypeCmdClearState {
+		t.Errorf("frame[1].type = 0x%04x; want 0x%04x", tc, wire.TypeCmdClearState)
 	}
 	var clrMsg protocolv1.ClearStateCommandMessage
-	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[1].GetPayload(), &clrMsg); err != nil {
+	if err := wire.DefaultCodec().Unmarshal(stream.sent[1].GetPayload(), &clrMsg); err != nil {
 		t.Fatalf("decode ClearStateCommandMessage: %v", err)
 	}
 	if got := string(clrMsg.GetKey()); got != "temp" {
@@ -131,9 +131,9 @@ func TestWireContext_StateWrites(t *testing.T) {
 	}
 
 	// ClearAllState frame.
-	tc, _, _ = handlerclient.UnpackHeader(stream.sent[2].GetHeader())
-	if tc != handlerclient.TypeCmdClearAllState {
-		t.Errorf("frame[2].type = 0x%04x; want 0x%04x", tc, handlerclient.TypeCmdClearAllState)
+	tc, _, _ = wire.UnpackHeader(stream.sent[2].GetHeader())
+	if tc != wire.TypeCmdClearAllState {
+		t.Errorf("frame[2].type = 0x%04x; want 0x%04x", tc, wire.TypeCmdClearAllState)
 	}
 }
 
@@ -289,12 +289,12 @@ func TestWireContext_Sleep_FreshEmits(t *testing.T) {
 	if len(stream.sent) != 1 {
 		t.Fatalf("sent frames = %d; want 1 (SleepCommandMessage)", len(stream.sent))
 	}
-	tc, _, _ := handlerclient.UnpackHeader(stream.sent[0].GetHeader())
-	if tc != handlerclient.TypeCmdSleep {
-		t.Errorf("frame.type = 0x%04x; want 0x%04x", tc, handlerclient.TypeCmdSleep)
+	tc, _, _ := wire.UnpackHeader(stream.sent[0].GetHeader())
+	if tc != wire.TypeCmdSleep {
+		t.Errorf("frame.type = 0x%04x; want 0x%04x", tc, wire.TypeCmdSleep)
 	}
 	var msg protocolv1.SleepCommandMessage
-	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &msg); err != nil {
+	if err := wire.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &msg); err != nil {
 		t.Fatalf("decode SleepCommandMessage: %v", err)
 	}
 	if msg.GetResultCompletionId() != 2 {
@@ -314,7 +314,7 @@ func TestWireContext_Sleep_FreshEmits(t *testing.T) {
 // replay buffer contains the SleepCompletionNotificationMessage for
 // this slot, Sleep returns a ready future without emitting any frame.
 func TestWireContext_Sleep_ReplayHitReturnsReady(t *testing.T) {
-	codec := handlerclient.DefaultCodec()
+	codec := wire.DefaultCodec()
 	cmdPayload, err := codec.Marshal(&protocolv1.SleepCommandMessage{
 		WakeUpTime:         12345,
 		ResultCompletionId: 2,
@@ -330,8 +330,8 @@ func TestWireContext_Sleep_ReplayHitReturnsReady(t *testing.T) {
 		t.Fatalf("marshal SleepCompletionNotificationMessage: %v", err)
 	}
 	wctx, stream := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
-		1: {typeCode: handlerclient.TypeCmdSleep, payload: cmdPayload},
-		2: {typeCode: handlerclient.TypeNoteSleepDone, payload: notePayload},
+		1: {typeCode: wire.TypeCmdSleep, payload: cmdPayload},
+		2: {typeCode: wire.TypeNoteSleepDone, payload: notePayload},
 	})
 
 	fut := wctx.Sleep(50 * time.Millisecond)
@@ -352,7 +352,7 @@ func TestWireContext_Sleep_ReplayHitReturnsReady(t *testing.T) {
 // engine already journaled it in a prior run).
 func TestWireContext_StateWrites_ReplayHitSkipsEmit(t *testing.T) {
 	wctx, stream := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
-		1: {typeCode: handlerclient.TypeCmdSetState, payload: nil},
+		1: {typeCode: wire.TypeCmdSetState, payload: nil},
 	})
 
 	if err := wctx.SetState("counter", []byte("42")); err != nil {
@@ -382,12 +382,12 @@ func TestWireContext_Call_FreshEmits(t *testing.T) {
 	if len(stream.sent) != 1 {
 		t.Fatalf("sent frames = %d; want 1 (CallCommandMessage)", len(stream.sent))
 	}
-	tc, _, _ := handlerclient.UnpackHeader(stream.sent[0].GetHeader())
-	if tc != handlerclient.TypeCmdCall {
-		t.Errorf("frame.type = 0x%04x; want 0x%04x", tc, handlerclient.TypeCmdCall)
+	tc, _, _ := wire.UnpackHeader(stream.sent[0].GetHeader())
+	if tc != wire.TypeCmdCall {
+		t.Errorf("frame.type = 0x%04x; want 0x%04x", tc, wire.TypeCmdCall)
 	}
 	var msg protocolv1.CallCommandMessage
-	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &msg); err != nil {
+	if err := wire.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &msg); err != nil {
 		t.Fatalf("decode CallCommandMessage: %v", err)
 	}
 	if msg.GetServiceName() != "Echo" || msg.GetHandlerName() != "echo" || msg.GetKey() != "k1" {
@@ -406,7 +406,7 @@ func TestWireContext_Call_FreshEmits(t *testing.T) {
 // notification in the replay buffer surfaces as a ready future
 // carrying the value, with no fresh frame on the wire.
 func TestWireContext_Call_ReplayHitReturnsValue(t *testing.T) {
-	codec := handlerclient.DefaultCodec()
+	codec := wire.DefaultCodec()
 	notePayload, err := codec.Marshal(&protocolv1.CallCompletionNotificationMessage{
 		CompletionId: 2,
 		Result: &protocolv1.CallCompletionNotificationMessage_Value{
@@ -417,8 +417,8 @@ func TestWireContext_Call_ReplayHitReturnsValue(t *testing.T) {
 		t.Fatalf("marshal note: %v", err)
 	}
 	wctx, stream := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
-		1: {typeCode: handlerclient.TypeCmdCall},
-		2: {typeCode: handlerclient.TypeNoteCallDone, payload: notePayload},
+		1: {typeCode: wire.TypeCmdCall},
+		2: {typeCode: wire.TypeNoteCallDone, payload: notePayload},
 	})
 
 	v, err := wctx.Call(Target{Service: "X", Handler: "y"}, nil).Result()
@@ -437,7 +437,7 @@ func TestWireContext_Call_ReplayHitReturnsValue(t *testing.T) {
 // with a Failure result becomes a terminal failure via the returned
 // future's error.
 func TestWireContext_Call_ReplayHitSurfacesFailure(t *testing.T) {
-	codec := handlerclient.DefaultCodec()
+	codec := wire.DefaultCodec()
 	notePayload, err := codec.Marshal(&protocolv1.CallCompletionNotificationMessage{
 		CompletionId: 2,
 		Result: &protocolv1.CallCompletionNotificationMessage_Failure{
@@ -448,8 +448,8 @@ func TestWireContext_Call_ReplayHitSurfacesFailure(t *testing.T) {
 		t.Fatalf("marshal note: %v", err)
 	}
 	wctx, _ := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
-		1: {typeCode: handlerclient.TypeCmdCall},
-		2: {typeCode: handlerclient.TypeNoteCallDone, payload: notePayload},
+		1: {typeCode: wire.TypeCmdCall},
+		2: {typeCode: wire.TypeNoteCallDone, payload: notePayload},
 	})
 
 	_, err = wctx.Call(Target{Service: "X", Handler: "y"}, nil).Result()
@@ -476,9 +476,9 @@ func TestWireContext_OneWayCall_FreshEmits(t *testing.T) {
 	if len(stream.sent) != 1 {
 		t.Fatalf("sent frames = %d; want 1", len(stream.sent))
 	}
-	tc, _, _ := handlerclient.UnpackHeader(stream.sent[0].GetHeader())
-	if tc != handlerclient.TypeCmdOneWayCall {
-		t.Errorf("frame.type = 0x%04x; want 0x%04x", tc, handlerclient.TypeCmdOneWayCall)
+	tc, _, _ := wire.UnpackHeader(stream.sent[0].GetHeader())
+	if tc != wire.TypeCmdOneWayCall {
+		t.Errorf("frame.type = 0x%04x; want 0x%04x", tc, wire.TypeCmdOneWayCall)
 	}
 }
 
@@ -486,7 +486,7 @@ func TestWireContext_OneWayCall_FreshEmits(t *testing.T) {
 // OneWayCall is a no-op (engine already journaled it).
 func TestWireContext_OneWayCall_ReplayHitSkipsEmit(t *testing.T) {
 	wctx, stream := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
-		1: {typeCode: handlerclient.TypeCmdOneWayCall},
+		1: {typeCode: wire.TypeCmdOneWayCall},
 	})
 	if err := wctx.OneWayCall(Target{Service: "X", Handler: "y"}, nil); err != nil {
 		t.Errorf("OneWayCall: %v", err)
@@ -520,16 +520,16 @@ func TestWireContext_Run_FreshExecutesAndEmitsBothFrames(t *testing.T) {
 	if len(stream.sent) != 2 {
 		t.Fatalf("sent frames = %d; want 2 (Run + ProposeRun)", len(stream.sent))
 	}
-	tc, _, _ := handlerclient.UnpackHeader(stream.sent[0].GetHeader())
-	if tc != handlerclient.TypeCmdRun {
-		t.Errorf("frame[0].type = 0x%04x; want 0x%04x (TypeCmdRun)", tc, handlerclient.TypeCmdRun)
+	tc, _, _ := wire.UnpackHeader(stream.sent[0].GetHeader())
+	if tc != wire.TypeCmdRun {
+		t.Errorf("frame[0].type = 0x%04x; want 0x%04x (TypeCmdRun)", tc, wire.TypeCmdRun)
 	}
-	tc, _, _ = handlerclient.UnpackHeader(stream.sent[1].GetHeader())
-	if tc != handlerclient.TypeProposeRunDone {
-		t.Errorf("frame[1].type = 0x%04x; want 0x%04x (TypeProposeRunDone)", tc, handlerclient.TypeProposeRunDone)
+	tc, _, _ = wire.UnpackHeader(stream.sent[1].GetHeader())
+	if tc != wire.TypeProposeRunDone {
+		t.Errorf("frame[1].type = 0x%04x; want 0x%04x (TypeProposeRunDone)", tc, wire.TypeProposeRunDone)
 	}
 	var prop protocolv1.ProposeRunCompletionMessage
-	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[1].GetPayload(), &prop); err != nil {
+	if err := wire.DefaultCodec().Unmarshal(stream.sent[1].GetPayload(), &prop); err != nil {
 		t.Fatalf("decode ProposeRunCompletionMessage: %v", err)
 	}
 	if prop.GetRetryable() {
@@ -557,7 +557,7 @@ func TestWireContext_Run_TransientErrorMarksRetryable(t *testing.T) {
 		t.Errorf("Run err = %v; want ErrSuspended (retryable)", err)
 	}
 	var prop protocolv1.ProposeRunCompletionMessage
-	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[1].GetPayload(), &prop); err != nil {
+	if err := wire.DefaultCodec().Unmarshal(stream.sent[1].GetPayload(), &prop); err != nil {
 		t.Fatalf("decode ProposeRunCompletionMessage: %v", err)
 	}
 	if !prop.GetRetryable() {
@@ -581,7 +581,7 @@ func TestWireContext_Run_FailureIsTerminal(t *testing.T) {
 		t.Errorf("failure.message = %q; want %q", f.Message, "bad input")
 	}
 	var prop protocolv1.ProposeRunCompletionMessage
-	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[1].GetPayload(), &prop); err != nil {
+	if err := wire.DefaultCodec().Unmarshal(stream.sent[1].GetPayload(), &prop); err != nil {
 		t.Fatalf("decode ProposeRunCompletionMessage: %v", err)
 	}
 	if prop.GetRetryable() {
@@ -593,7 +593,7 @@ func TestWireContext_Run_FailureIsTerminal(t *testing.T) {
 // RunCompletionNotificationMessage surfaces directly without
 // re-executing fn.
 func TestWireContext_Run_ReplayHitReturnsCachedValue(t *testing.T) {
-	codec := handlerclient.DefaultCodec()
+	codec := wire.DefaultCodec()
 	notePayload, err := codec.Marshal(&protocolv1.RunCompletionNotificationMessage{
 		CompletionId: 1,
 		Result: &protocolv1.RunCompletionNotificationMessage_Value{
@@ -604,7 +604,7 @@ func TestWireContext_Run_ReplayHitReturnsCachedValue(t *testing.T) {
 		t.Fatalf("marshal note: %v", err)
 	}
 	wctx, stream := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
-		1: {typeCode: handlerclient.TypeNoteRunDone, payload: notePayload},
+		1: {typeCode: wire.TypeNoteRunDone, payload: notePayload},
 	})
 
 	ranCount := 0
@@ -718,7 +718,7 @@ func TestWireContext_Run_RunContextExposed(t *testing.T) {
 	}
 
 	var marker protocolv1.RunCommandMessage
-	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &marker); err != nil {
+	if err := wire.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &marker); err != nil {
 		t.Fatalf("decode RunCommandMessage: %v", err)
 	}
 	if marker.GetAttempt() != 1 {
@@ -735,7 +735,7 @@ func TestWireContext_Run_RunContextExposed(t *testing.T) {
 // attempt counter is surfaced to fn — so the user sees a fresh
 // attempt + idempotency key on the second invocation of fn.
 func TestWireContext_Run_RetryReplayBumpsAttempt(t *testing.T) {
-	codec := handlerclient.DefaultCodec()
+	codec := wire.DefaultCodec()
 	markerPayload, err := codec.Marshal(&protocolv1.RunCommandMessage{
 		ResultCompletionId: 1,
 		Attempt:            2,
@@ -745,7 +745,7 @@ func TestWireContext_Run_RetryReplayBumpsAttempt(t *testing.T) {
 		t.Fatalf("marshal marker: %v", err)
 	}
 	wctx, _ := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
-		1: {typeCode: handlerclient.TypeCmdRun, payload: markerPayload},
+		1: {typeCode: wire.TypeCmdRun, payload: markerPayload},
 	})
 
 	var seenAttempt uint32
@@ -779,7 +779,7 @@ func TestWireContext_Run_OptionsThreadPolicyOntoWire(t *testing.T) {
 	)
 
 	var prop protocolv1.ProposeRunCompletionMessage
-	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[1].GetPayload(), &prop); err != nil {
+	if err := wire.DefaultCodec().Unmarshal(stream.sent[1].GetPayload(), &prop); err != nil {
 		t.Fatalf("decode prop: %v", err)
 	}
 	p := prop.GetRetryPolicy()
@@ -837,12 +837,12 @@ func TestWireContext_Awakeable_FreshMintsAndSuspends(t *testing.T) {
 	if len(stream.sent) != 1 {
 		t.Fatalf("sent frames = %d; want 1 (AwakeableCommandMessage)", len(stream.sent))
 	}
-	tc, _, _ := handlerclient.UnpackHeader(stream.sent[0].GetHeader())
-	if tc != handlerclient.TypeCmdAwakeable {
-		t.Errorf("frame.type = 0x%04x; want 0x%04x", tc, handlerclient.TypeCmdAwakeable)
+	tc, _, _ := wire.UnpackHeader(stream.sent[0].GetHeader())
+	if tc != wire.TypeCmdAwakeable {
+		t.Errorf("frame.type = 0x%04x; want 0x%04x", tc, wire.TypeCmdAwakeable)
 	}
 	var msg protocolv1.AwakeableCommandMessage
-	if err := handlerclient.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &msg); err != nil {
+	if err := wire.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &msg); err != nil {
 		t.Fatalf("decode AwakeableCommandMessage: %v", err)
 	}
 	if msg.GetAwakeableId() != id {
@@ -857,7 +857,7 @@ func TestWireContext_Awakeable_FreshMintsAndSuspends(t *testing.T) {
 // AwakeableCommandMessage + SignalNotificationMessage pair surfaces
 // the cached id + resolved value without re-minting or re-emitting.
 func TestWireContext_Awakeable_ReplayHitWithSignal(t *testing.T) {
-	codec := handlerclient.DefaultCodec()
+	codec := wire.DefaultCodec()
 	cmdPayload, err := codec.Marshal(&protocolv1.AwakeableCommandMessage{
 		ResultCompletionId: 2,
 		AwakeableId:        "awk_replayid12345678901234567",
@@ -877,8 +877,8 @@ func TestWireContext_Awakeable_ReplayHitWithSignal(t *testing.T) {
 		t.Fatalf("marshal SignalNotificationMessage: %v", err)
 	}
 	wctx, stream := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
-		1: {typeCode: handlerclient.TypeCmdAwakeable, payload: cmdPayload},
-		2: {typeCode: handlerclient.TypeNoteSignal, payload: signalPayload},
+		1: {typeCode: wire.TypeCmdAwakeable, payload: cmdPayload},
+		2: {typeCode: wire.TypeNoteSignal, payload: signalPayload},
 	})
 
 	id, fut := wctx.Awakeable()
@@ -901,7 +901,7 @@ func TestWireContext_Awakeable_ReplayHitWithSignal(t *testing.T) {
 // Awakeable that has its command journaled but no resolution yet
 // returns the cached id + suspendedFuture.
 func TestWireContext_Awakeable_ReplayHitCmdOnlyStillSuspends(t *testing.T) {
-	codec := handlerclient.DefaultCodec()
+	codec := wire.DefaultCodec()
 	cmdPayload, err := codec.Marshal(&protocolv1.AwakeableCommandMessage{
 		ResultCompletionId: 2,
 		AwakeableId:        "awk_pending1234567890123456789",
@@ -910,7 +910,7 @@ func TestWireContext_Awakeable_ReplayHitCmdOnlyStillSuspends(t *testing.T) {
 		t.Fatalf("marshal AwakeableCommandMessage: %v", err)
 	}
 	wctx, stream := newTestWireContextWithReplay(t, map[uint32]*replayEntry{
-		1: {typeCode: handlerclient.TypeCmdAwakeable, payload: cmdPayload},
+		1: {typeCode: wire.TypeCmdAwakeable, payload: cmdPayload},
 	})
 
 	id, fut := wctx.Awakeable()

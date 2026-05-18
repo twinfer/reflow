@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
@@ -54,8 +54,8 @@ func runSession(
 	src frameSource,
 	sink frameSink,
 	registry *Registry,
-	codec handlerclient.Codec,
-	route handlerclient.Route,
+	codec wire.Codec,
+	route wire.Route,
 ) error {
 	start, err := readStart(src, codec)
 	if err != nil {
@@ -147,14 +147,14 @@ func runSession(
 	if err != nil {
 		return fmt.Errorf("marshal OutputCommandMessage: %w", err)
 	}
-	if err := sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdOutput, outBytes)); err != nil {
+	if err := sink.Send(wire.FrameFor(wire.TypeCmdOutput, outBytes)); err != nil {
 		return fmt.Errorf("send OutputCommandMessage: %w", err)
 	}
 	endBytes, err := codec.Marshal(&protocolv1.EndMessage{})
 	if err != nil {
 		return fmt.Errorf("marshal EndMessage: %w", err)
 	}
-	if err := sink.Send(handlerclient.FrameFor(handlerclient.TypeEnd, endBytes)); err != nil {
+	if err := sink.Send(wire.FrameFor(wire.TypeEnd, endBytes)); err != nil {
 		return fmt.Errorf("send EndMessage: %w", err)
 	}
 	return nil
@@ -173,18 +173,18 @@ func runHandler(wctx *wireContext, h Handler, input []byte) (out []byte, err err
 
 // readStart consumes the StartMessage frame. Errors if the first frame
 // is not TypeStart or fails to decode.
-func readStart(src frameSource, codec handlerclient.Codec) (*protocolv1.StartMessage, error) {
+func readStart(src frameSource, codec wire.Codec) (*protocolv1.StartMessage, error) {
 	f, err := src.Recv()
 	if err != nil {
 		return nil, err
 	}
-	if err := handlerclient.ValidatePayload(f); err != nil {
+	if err := wire.ValidatePayload(f); err != nil {
 		return nil, err
 	}
-	typeCode, _, _ := handlerclient.UnpackHeader(f.GetHeader())
-	if typeCode != handlerclient.TypeStart {
+	typeCode, _, _ := wire.UnpackHeader(f.GetHeader())
+	if typeCode != wire.TypeStart {
 		return nil, fmt.Errorf("first frame type 0x%04x; expected StartMessage (0x%04x)",
-			typeCode, handlerclient.TypeStart)
+			typeCode, wire.TypeStart)
 	}
 	var start protocolv1.StartMessage
 	if err := codec.Unmarshal(f.GetPayload(), &start); err != nil {
@@ -209,7 +209,7 @@ func readStart(src frameSource, codec handlerclient.Codec) (*protocolv1.StartMes
 // pathological case where a frame arrives without a stamped slot (slot
 // 0 collides with JEInput); in that case we synthesize a unique slot
 // past the entry count. Production engines always stamp.
-func readReplay(src frameSource, codec handlerclient.Codec, count uint32) ([]byte, map[uint32]*replayEntry, error) {
+func readReplay(src frameSource, codec wire.Codec, count uint32) ([]byte, map[uint32]*replayEntry, error) {
 	replay := make(map[uint32]*replayEntry, count)
 	if count == 0 {
 		return nil, replay, nil
@@ -226,13 +226,13 @@ func readReplay(src frameSource, codec handlerclient.Codec, count uint32) ([]byt
 			}
 			return nil, nil, err
 		}
-		if err := handlerclient.ValidatePayload(f); err != nil {
+		if err := wire.ValidatePayload(f); err != nil {
 			return nil, nil, err
 		}
-		typeCode, _, _ := handlerclient.UnpackHeader(f.GetHeader())
+		typeCode, _, _ := wire.UnpackHeader(f.GetHeader())
 
 		slot := f.GetSlot()
-		if slot == 0 && typeCode != handlerclient.TypeCmdInput {
+		if slot == 0 && typeCode != wire.TypeCmdInput {
 			// Legacy / unstamped frame. Park it past the entry count
 			// so it doesn't collide with JEInput's slot 0.
 			slot = fallbackSlot
@@ -243,7 +243,7 @@ func readReplay(src frameSource, codec handlerclient.Codec, count uint32) ([]byt
 		// JEInput is the one frame we decode eagerly so ctx.Input() can
 		// hand the handler its input bytes without re-doing this per
 		// call. Single decode per session, cheap.
-		if typeCode == handlerclient.TypeCmdInput {
+		if typeCode == wire.TypeCmdInput {
 			var in protocolv1.InputCommandMessage
 			if err := codec.Unmarshal(f.GetPayload(), &in); err != nil {
 				return nil, nil, fmt.Errorf("decode replay InputCommandMessage: %w", err)
@@ -259,7 +259,7 @@ func readReplay(src frameSource, codec handlerclient.Codec, count uint32) ([]byt
 // InvocationSuspended.awaiting_on for observability; the wake path
 // itself is respawn-driven by Suspended→Invoked transitions on the
 // next completion event.
-func sendSuspension(sink frameSink, codec handlerclient.Codec, awaitingTokens []string) error {
+func sendSuspension(sink frameSink, codec wire.Codec, awaitingTokens []string) error {
 	sm := &protocolv1.SuspensionMessage{}
 	// Translate token strings back to typed waiting_* fields. Tokens
 	// shaped "completion:<N>" land in waiting_completions; "signal:<N>"
@@ -282,19 +282,19 @@ func sendSuspension(sink frameSink, codec handlerclient.Codec, awaitingTokens []
 	if err != nil {
 		return fmt.Errorf("marshal SuspensionMessage: %w", err)
 	}
-	return sink.Send(handlerclient.FrameFor(handlerclient.TypeSuspension, body))
+	return sink.Send(wire.FrameFor(wire.TypeSuspension, body))
 }
 
 // sendError emits an ErrorMessage frame, terminating the session. The
 // engine treats ErrorMessage as a terminal failure with the supplied
 // code + message round-tripped into InvocationStatus.Completed.
-func sendError(sink frameSink, codec handlerclient.Codec, code uint32, message string) error {
+func sendError(sink frameSink, codec wire.Codec, code uint32, message string) error {
 	em := &protocolv1.ErrorMessage{Code: code, Message: message}
 	body, err := codec.Marshal(em)
 	if err != nil {
 		return fmt.Errorf("marshal ErrorMessage: %w", err)
 	}
-	return sink.Send(handlerclient.FrameFor(handlerclient.TypeError, body))
+	return sink.Send(wire.FrameFor(wire.TypeError, body))
 }
 
 // stateMapToCache materializes StartMessage.state_map into the in-memory

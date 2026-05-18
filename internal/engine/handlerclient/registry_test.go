@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
@@ -17,7 +18,7 @@ type fakeClient struct {
 	closed int
 }
 
-func (c *fakeClient) Invoke(_ context.Context, _ Route) (Stream, error) {
+func (c *fakeClient) Invoke(_ context.Context, _ wire.Route) (Stream, error) {
 	return nil, errors.New("fakeClient: Invoke not used in registry tests")
 }
 

@@ -23,6 +23,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/engine/handlerclient/connectclient"
 	"github.com/twinfer/reflow/pkg/handler"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
@@ -60,7 +61,7 @@ func TestServer_RoundTrip(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	output := runOneSession(t, client, handlerclient.Route{Service: "Echo", Handler: "echo"}, []byte("hi"))
+	output := runOneSession(t, client, wire.Route{Service: "Echo", Handler: "echo"}, []byte("hi"))
 	if got, want := string(output), "h2-echo:hi"; got != want {
 		t.Errorf("output = %q; want %q", got, want)
 	}
@@ -95,7 +96,7 @@ func TestServer_FailureRoundTrip(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	failure := runOneSessionExpectFailure(t, client,
-		handlerclient.Route{Service: "Echo", Handler: "boom"}, []byte("input"))
+		wire.Route{Service: "Echo", Handler: "boom"}, []byte("input"))
 	if failure.GetCode() != 42 || failure.GetMessage() != "boom" {
 		t.Errorf("failure = (code=%d, msg=%q); want (42, %q)",
 			failure.GetCode(), failure.GetMessage(), "boom")
@@ -170,7 +171,7 @@ func TestServer_Discover(t *testing.T) {
 // InputCommandMessage matching the engine's wire-session protocol, and
 // reads frames until EndMessage. Returns the OutputCommandMessage.value
 // payload; fails the test on any unexpected condition.
-func runOneSession(t *testing.T, client handlerclient.Client, route handlerclient.Route, input []byte) []byte {
+func runOneSession(t *testing.T, client handlerclient.Client, route wire.Route, input []byte) []byte {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -184,25 +185,25 @@ func runOneSession(t *testing.T, client handlerclient.Client, route handlerclien
 		t.Fatalf("send start: %v", err)
 	}
 
-	codec := handlerclient.DefaultCodec()
+	codec := wire.DefaultCodec()
 	var got *protocolv1.OutputCommandMessage
 	for {
 		f, err := stream.Recv()
 		if err != nil {
 			t.Fatalf("recv: %v", err)
 		}
-		if err := handlerclient.ValidatePayload(f); err != nil {
+		if err := wire.ValidatePayload(f); err != nil {
 			t.Fatalf("frame validate: %v", err)
 		}
-		typeCode, _, _ := handlerclient.UnpackHeader(f.GetHeader())
+		typeCode, _, _ := wire.UnpackHeader(f.GetHeader())
 		switch typeCode {
-		case handlerclient.TypeCmdOutput:
+		case wire.TypeCmdOutput:
 			var out protocolv1.OutputCommandMessage
 			if err := codec.Unmarshal(f.GetPayload(), &out); err != nil {
 				t.Fatalf("decode OutputCommandMessage: %v", err)
 			}
 			got = &out
-		case handlerclient.TypeEnd:
+		case wire.TypeEnd:
 			if got == nil {
 				t.Fatal("EndMessage before OutputCommandMessage")
 			}
@@ -211,7 +212,7 @@ func runOneSession(t *testing.T, client handlerclient.Client, route handlerclien
 				t.Fatalf("output result = %T; want Value", got.GetResult())
 			}
 			return val.Value.GetContent()
-		case handlerclient.TypeError:
+		case wire.TypeError:
 			var em protocolv1.ErrorMessage
 			_ = codec.Unmarshal(f.GetPayload(), &em)
 			t.Fatalf("ErrorMessage from handler: code=%d msg=%q", em.GetCode(), em.GetMessage())
@@ -223,7 +224,7 @@ func runOneSession(t *testing.T, client handlerclient.Client, route handlerclien
 
 // runOneSessionExpectFailure mirrors runOneSession but expects the
 // terminal OutputCommandMessage.result to be a Failure.
-func runOneSessionExpectFailure(t *testing.T, client handlerclient.Client, route handlerclient.Route, input []byte) *protocolv1.Failure {
+func runOneSessionExpectFailure(t *testing.T, client handlerclient.Client, route wire.Route, input []byte) *protocolv1.Failure {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -237,22 +238,22 @@ func runOneSessionExpectFailure(t *testing.T, client handlerclient.Client, route
 		t.Fatalf("send start: %v", err)
 	}
 
-	codec := handlerclient.DefaultCodec()
+	codec := wire.DefaultCodec()
 	var got *protocolv1.OutputCommandMessage
 	for {
 		f, err := stream.Recv()
 		if err != nil {
 			t.Fatalf("recv: %v", err)
 		}
-		typeCode, _, _ := handlerclient.UnpackHeader(f.GetHeader())
+		typeCode, _, _ := wire.UnpackHeader(f.GetHeader())
 		switch typeCode {
-		case handlerclient.TypeCmdOutput:
+		case wire.TypeCmdOutput:
 			var out protocolv1.OutputCommandMessage
 			if err := codec.Unmarshal(f.GetPayload(), &out); err != nil {
 				t.Fatalf("decode OutputCommandMessage: %v", err)
 			}
 			got = &out
-		case handlerclient.TypeEnd:
+		case wire.TypeEnd:
 			if got == nil {
 				t.Fatal("EndMessage before OutputCommandMessage")
 			}
@@ -271,8 +272,8 @@ func runOneSessionExpectFailure(t *testing.T, client handlerclient.Client, route
 // sends. The reflow-internal wire_session is bypassed here, so the
 // helper has to do the encoding itself. known_entries=1 because the
 // only replay frame is the InputCommandMessage at slot 0.
-func sendStart(stream handlerclient.Stream, route handlerclient.Route, input []byte) error {
-	codec := handlerclient.DefaultCodec()
+func sendStart(stream handlerclient.Stream, route wire.Route, input []byte) error {
+	codec := wire.DefaultCodec()
 	start := &protocolv1.StartMessage{
 		Id:           []byte("test-uuid-16bytes"[:16]),
 		DebugId:      "t/" + route.Service + "/" + route.Handler,
@@ -285,7 +286,7 @@ func sendStart(stream handlerclient.Stream, route handlerclient.Route, input []b
 	if err != nil {
 		return err
 	}
-	if err := stream.Send(handlerclient.FrameFor(handlerclient.TypeStart, startBytes)); err != nil {
+	if err := stream.Send(wire.FrameFor(wire.TypeStart, startBytes)); err != nil {
 		return err
 	}
 	in := &protocolv1.InputCommandMessage{Value: &protocolv1.Value{Content: input}}
@@ -293,7 +294,7 @@ func sendStart(stream handlerclient.Stream, route handlerclient.Route, input []b
 	if err != nil {
 		return err
 	}
-	return stream.Send(handlerclient.FrameFor(handlerclient.TypeCmdInput, inputBytes))
+	return stream.Send(wire.FrameFor(wire.TypeCmdInput, inputBytes))
 }
 
 // discoverHTTP2 calls DiscoveryService.Discover over h2c. The engine's
@@ -356,7 +357,7 @@ func TestServer_RoundTrip_WithAuth(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	output := runOneSession(t, client,
-		handlerclient.Route{Service: "Echo", Handler: "echo"}, []byte("hi"))
+		wire.Route{Service: "Echo", Handler: "echo"}, []byte("hi"))
 	if got, want := string(output), "auth-echo:hi"; got != want {
 		t.Errorf("output = %q; want %q", got, want)
 	}
@@ -504,7 +505,7 @@ func TestServer_NoBodyLeak(t *testing.T) {
 	// real leak would manifest as stalls or stream-limit errors.
 	for i := range 32 {
 		output := runOneSession(t, client,
-			handlerclient.Route{Service: "Echo", Handler: "echo"}, []byte("ping"))
+			wire.Route{Service: "Echo", Handler: "echo"}, []byte("ping"))
 		if got, want := string(output), "h2-echo:ping"; got != want {
 			t.Fatalf("session %d output = %q; want %q", i, got, want)
 		}

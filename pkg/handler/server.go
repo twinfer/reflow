@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
 	"github.com/twinfer/reflow/proto/handlerv1/handlerv1connect"
@@ -30,8 +30,8 @@ type Config struct {
 
 	// Codec governs inner-payload encoding for protocolv1 messages.
 	// Defaults to protobuf. Both sides of the session must agree; the
-	// engine's handlerclient.Codec is the matching half.
-	Codec handlerclient.Codec
+	// engine's wire.Codec is the matching half.
+	Codec wire.Codec
 
 	// RootCAs, when non-nil, enables JWT verification of every
 	// InvokeStream and /discover request via Authorization: Bearer <jwt>.
@@ -157,7 +157,7 @@ func validateConfig(cfg *Config) (*creds.Verifier, error) {
 		return nil, fmt.Errorf("handler: Config.Registry is required")
 	}
 	if cfg.Codec == nil {
-		cfg.Codec = handlerclient.DefaultCodec()
+		cfg.Codec = wire.DefaultCodec()
 	}
 	if cfg.RootCAs == nil {
 		if len(cfg.AllowedSPIFFE) > 0 || cfg.TrustDomain != "" || cfg.ExpectedAudience != "" {

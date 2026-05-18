@@ -4,7 +4,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
@@ -30,7 +30,7 @@ func (s *frameSourceFromSlice) Recv() (*protocolv1.Frame, error) {
 // Mirrors the layout the engine builds for an invocation that did
 // Input → Sleep(cmd+result) → SetState.
 func TestReadReplay_PlacesBySlot(t *testing.T) {
-	codec := handlerclient.DefaultCodec()
+	codec := wire.DefaultCodec()
 	inputPayload, err := codec.Marshal(&protocolv1.InputCommandMessage{
 		Value: &protocolv1.Value{Content: []byte("hi")},
 	})
@@ -45,10 +45,10 @@ func TestReadReplay_PlacesBySlot(t *testing.T) {
 	setStatePayload := []byte("set-state-opaque")
 
 	frames := []*protocolv1.Frame{
-		handlerclient.FrameForSlot(handlerclient.TypeCmdInput, 0, inputPayload),
-		handlerclient.FrameForSlot(handlerclient.TypeCmdSleep, 1, sleepCmdPayload),
-		handlerclient.FrameForSlot(handlerclient.TypeNoteSleepDone, 2, sleepNotePayload),
-		handlerclient.FrameForSlot(handlerclient.TypeCmdSetState, 3, setStatePayload),
+		wire.FrameForSlot(wire.TypeCmdInput, 0, inputPayload),
+		wire.FrameForSlot(wire.TypeCmdSleep, 1, sleepCmdPayload),
+		wire.FrameForSlot(wire.TypeNoteSleepDone, 2, sleepNotePayload),
+		wire.FrameForSlot(wire.TypeCmdSetState, 3, setStatePayload),
 	}
 	src := &frameSourceFromSlice{frames: frames}
 
@@ -70,10 +70,10 @@ func TestReadReplay_PlacesBySlot(t *testing.T) {
 		typ     uint16
 		payload []byte
 	}{
-		{0, handlerclient.TypeCmdInput, inputPayload},
-		{1, handlerclient.TypeCmdSleep, sleepCmdPayload},
-		{2, handlerclient.TypeNoteSleepDone, sleepNotePayload},
-		{3, handlerclient.TypeCmdSetState, setStatePayload},
+		{0, wire.TypeCmdInput, inputPayload},
+		{1, wire.TypeCmdSleep, sleepCmdPayload},
+		{2, wire.TypeNoteSleepDone, sleepNotePayload},
+		{3, wire.TypeCmdSetState, setStatePayload},
 	}
 	for _, c := range cases {
 		e, ok := replay[c.slot]
@@ -96,17 +96,17 @@ func TestReadReplay_PlacesBySlot(t *testing.T) {
 // slot means even malformed payloads can pass through (they'd error
 // later if the handler actually consults that slot).
 func TestReadReplay_NoDecodeOnOpaquePayloads(t *testing.T) {
-	codec := handlerclient.DefaultCodec()
+	codec := wire.DefaultCodec()
 	inputPayload, _ := codec.Marshal(&protocolv1.InputCommandMessage{
 		Value: &protocolv1.Value{Content: nil},
 	})
 	garbage := []byte{0xff, 0xff, 0xff, 0xff} // not a valid protobuf
 
 	frames := []*protocolv1.Frame{
-		handlerclient.FrameForSlot(handlerclient.TypeCmdInput, 0, inputPayload),
-		handlerclient.FrameForSlot(handlerclient.TypeNoteSleepDone, 1, garbage),
-		handlerclient.FrameForSlot(handlerclient.TypeNoteCallDone, 2, garbage),
-		handlerclient.FrameForSlot(handlerclient.TypeNoteRunDone, 3, garbage),
+		wire.FrameForSlot(wire.TypeCmdInput, 0, inputPayload),
+		wire.FrameForSlot(wire.TypeNoteSleepDone, 1, garbage),
+		wire.FrameForSlot(wire.TypeNoteCallDone, 2, garbage),
+		wire.FrameForSlot(wire.TypeNoteRunDone, 3, garbage),
 	}
 	src := &frameSourceFromSlice{frames: frames}
 

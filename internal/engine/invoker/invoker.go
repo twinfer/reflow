@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/storage/tables"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -38,7 +38,7 @@ type Config struct {
 	WireDispatcher WireDispatcher
 
 	// Codec governs wire payload encoding (default protobuf).
-	Codec handlerclient.Codec
+	Codec wire.Codec
 }
 
 // HandlerLookup resolves (service, handler) → deployment_id.
@@ -70,7 +70,7 @@ type Invoker struct {
 	deployments     DeploymentResolver
 	handlerLookup   HandlerLookup
 	dispatcher      WireDispatcher
-	codec           handlerclient.Codec
+	codec           wire.Codec
 	log             *slog.Logger
 
 	mu       sync.Mutex
@@ -108,7 +108,7 @@ func New(cfg Config) *Invoker {
 	}
 	codec := cfg.Codec
 	if codec == nil {
-		codec = handlerclient.DefaultCodec()
+		codec = wire.DefaultCodec()
 	}
 	return &Invoker{
 		journal:         NewJournalReader(cfg.JournalTable),

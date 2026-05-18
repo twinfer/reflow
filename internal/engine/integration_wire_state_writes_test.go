@@ -11,9 +11,9 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/admin"
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/loadgen"
 	"github.com/twinfer/reflow/internal/storage/tables"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
@@ -74,14 +74,14 @@ func (f *fakeHandlerStateWrites) serveInvoke(t *testing.T, stream *connect.BidiS
 	if err != nil {
 		return err
 	}
-	if err := stream.Send(frameFor(handlerclient.TypeCmdOutput, payload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeCmdOutput, payload)); err != nil {
 		return err
 	}
 	endPayload, err := proto.Marshal(&protocolv1.EndMessage{})
 	if err != nil {
 		return err
 	}
-	if err := stream.Send(frameFor(handlerclient.TypeEnd, endPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeEnd, endPayload)); err != nil {
 		return err
 	}
 	return drainStream(stream)
@@ -121,9 +121,9 @@ func TestWireDispatch_HTTP2_StateWrites(t *testing.T) {
 	fake := &fakeHandlerStateWrites{
 		output: []byte(wantOutput),
 		commands: []stateCommand{
-			{typeCode: handlerclient.TypeCmdSetState, payload: setPayload},
-			{typeCode: handlerclient.TypeCmdClearState, payload: clearPayload},
-			{typeCode: handlerclient.TypeCmdClearAllState, payload: clearAllPayload},
+			{typeCode: wire.TypeCmdSetState, payload: setPayload},
+			{typeCode: wire.TypeCmdClearState, payload: clearPayload},
+			{typeCode: wire.TypeCmdClearAllState, payload: clearAllPayload},
 		},
 	}
 	fakeAddr, teardown := startFakeHandlerHTTP2WithHandler(t, fake.handler(t))
@@ -211,7 +211,7 @@ func TestWireDispatch_HTTP2_StateWrites(t *testing.T) {
 	setOnly := &fakeHandlerStateWrites{
 		output: []byte("set-only:ok"),
 		commands: []stateCommand{
-			{typeCode: handlerclient.TypeCmdSetState, payload: setPayload},
+			{typeCode: wire.TypeCmdSetState, payload: setPayload},
 		},
 	}
 	setOnlyAddr, setOnlyTeardown := startFakeHandlerHTTP2WithHandler(t, setOnly.handler(t))

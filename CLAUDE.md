@@ -34,7 +34,7 @@ go test -tags=loadtest -timeout=10m -run=TestLoad_SteadyState   -v ./internal/lo
 
 ## Architecture map
 
-The dependency direction is `cmd → pkg → internal → proto`. Internal packages must not depend on `pkg/*`.
+The dependency direction is `cmd → pkg → internal → proto`. Internal packages must not depend on `pkg/*`, with one deliberate exception: `pkg/handler/wire` holds the shared engine↔handler protocol vocabulary (Codec, frame helpers, Type* constants, Route) and is imported by both sides — keeping it in pkg/ makes it part of the public SDK contract; bending the rule for this one focused package is preferable to duplicating the wire format.
 
 - **`cmd/reflowd`** — the production binary with three subcommand groups:
   - `reflowd run` — start the engine. Loads layered koanf config (defaults → optional file from `$REFLOW_CONFIG` → `REFLOW_*` env vars; later overrides earlier), then calls `reflow.Run`. Handlers run in separate Go processes registered with the engine as HTTP/2 deployments; `examples/embedded/` shows a single-`main` dev setup that runs both.

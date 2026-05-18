@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
@@ -46,7 +46,7 @@ type wireContext struct {
 	partitionKey uint64
 
 	sink  frameSink
-	codec handlerclient.Codec
+	codec wire.Codec
 
 	// stateCache is the eager-preloaded K/V snapshot for this
 	// invocation's (service, object_key), populated from
@@ -100,7 +100,7 @@ func newWireContext(
 	id *enginev1.InvocationId,
 	input []byte,
 	sink frameSink,
-	codec handlerclient.Codec,
+	codec wire.Codec,
 	stateCache map[string][]byte,
 	replay map[uint32]*replayEntry,
 	partitionKey uint64,
@@ -232,7 +232,7 @@ func (c *wireContext) SetState(key string, value []byte) error {
 		if err != nil {
 			return fmt.Errorf("marshal SetStateCommandMessage: %w", err)
 		}
-		if err := c.sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdSetState, payload)); err != nil {
+		if err := c.sink.Send(wire.FrameFor(wire.TypeCmdSetState, payload)); err != nil {
 			return err
 		}
 	}
@@ -259,7 +259,7 @@ func (c *wireContext) ClearState(key string) error {
 		if err != nil {
 			return fmt.Errorf("marshal ClearStateCommandMessage: %w", err)
 		}
-		if err := c.sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdClearState, payload)); err != nil {
+		if err := c.sink.Send(wire.FrameFor(wire.TypeCmdClearState, payload)); err != nil {
 			return err
 		}
 	}
@@ -283,7 +283,7 @@ func (c *wireContext) ClearAllState() error {
 		if err != nil {
 			return fmt.Errorf("marshal ClearAllStateCommandMessage: %w", err)
 		}
-		if err := c.sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdClearAllState, payload)); err != nil {
+		if err := c.sink.Send(wire.FrameFor(wire.TypeCmdClearAllState, payload)); err != nil {
 			return err
 		}
 	}
@@ -325,7 +325,7 @@ func (c *wireContext) Sleep(d time.Duration) Future {
 		if err != nil {
 			return errFuture{err: fmt.Errorf("marshal SleepCommandMessage: %w", err)}
 		}
-		if err := c.sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdSleep, payload)); err != nil {
+		if err := c.sink.Send(wire.FrameFor(wire.TypeCmdSleep, payload)); err != nil {
 			return errFuture{err: err}
 		}
 	}
@@ -365,7 +365,7 @@ func (c *wireContext) Run(name string, fn RunFunc, opts ...RunOption) ([]byte, e
 	idempotencyKey := ""
 	if entry := c.lookupReplay(slot); entry != nil {
 		switch entry.typeCode {
-		case handlerclient.TypeNoteRunDone:
+		case wire.TypeNoteRunDone:
 			var note protocolv1.RunCompletionNotificationMessage
 			if err := c.codec.Unmarshal(entry.payload, &note); err != nil {
 				return nil, fmt.Errorf("decode replayed RunCompletionNotificationMessage: %w", err)
@@ -379,7 +379,7 @@ func (c *wireContext) Run(name string, fn RunFunc, opts ...RunOption) ([]byte, e
 				return nil, NewFailure(r.Failure.GetCode(), r.Failure.GetMessage())
 			}
 			return nil, nil
-		case handlerclient.TypeCmdRun:
+		case wire.TypeCmdRun:
 			var marker protocolv1.RunCommandMessage
 			if err := c.codec.Unmarshal(entry.payload, &marker); err == nil {
 				if a := marker.GetAttempt(); a != 0 {
@@ -418,7 +418,7 @@ func (c *wireContext) Run(name string, fn RunFunc, opts ...RunOption) ([]byte, e
 	if err != nil {
 		return nil, fmt.Errorf("marshal RunCommandMessage: %w", err)
 	}
-	if err := c.sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdRun, cmdPayload)); err != nil {
+	if err := c.sink.Send(wire.FrameFor(wire.TypeCmdRun, cmdPayload)); err != nil {
 		return nil, err
 	}
 	prop := &protocolv1.ProposeRunCompletionMessage{
@@ -437,7 +437,7 @@ func (c *wireContext) Run(name string, fn RunFunc, opts ...RunOption) ([]byte, e
 	if err != nil {
 		return nil, fmt.Errorf("marshal ProposeRunCompletionMessage: %w", err)
 	}
-	if err := c.sink.Send(handlerclient.FrameFor(handlerclient.TypeProposeRunDone, propPayload)); err != nil {
+	if err := c.sink.Send(wire.FrameFor(wire.TypeProposeRunDone, propPayload)); err != nil {
 		return nil, err
 	}
 
@@ -515,7 +515,7 @@ func (c *wireContext) Call(target Target, input []byte, opts ...CallOption) Futu
 		if err != nil {
 			return errFuture{err: fmt.Errorf("marshal CallCommandMessage: %w", err)}
 		}
-		if err := c.sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdCall, payload)); err != nil {
+		if err := c.sink.Send(wire.FrameFor(wire.TypeCmdCall, payload)); err != nil {
 			return errFuture{err: err}
 		}
 	}
@@ -543,7 +543,7 @@ func (c *wireContext) OneWayCall(target Target, input []byte) error {
 	if err != nil {
 		return fmt.Errorf("marshal OneWayCallCommandMessage: %w", err)
 	}
-	return c.sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdOneWayCall, payload))
+	return c.sink.Send(wire.FrameFor(wire.TypeCmdOneWayCall, payload))
 }
 
 // Awakeable mints a fresh awakeable id bound to this invocation's
@@ -580,7 +580,7 @@ func (c *wireContext) Awakeable() (string, Future) {
 	if err != nil {
 		return "", errFuture{err: fmt.Errorf("marshal AwakeableCommandMessage: %w", err)}
 	}
-	if err := c.sink.Send(handlerclient.FrameFor(handlerclient.TypeCmdAwakeable, payload)); err != nil {
+	if err := c.sink.Send(wire.FrameFor(wire.TypeCmdAwakeable, payload)); err != nil {
 		return "", errFuture{err: err}
 	}
 	return id, awakeableFuture{ctx: c, resultSlot: resultSlot, id: id}
@@ -591,7 +591,7 @@ func (c *wireContext) Awakeable() (string, Future) {
 // replay-hits where the SDK called Awakeable in a prior run.
 func (c *wireContext) replayAwakeableID(slot uint32) string {
 	entry := c.lookupReplay(slot)
-	if entry == nil || entry.typeCode != handlerclient.TypeCmdAwakeable {
+	if entry == nil || entry.typeCode != wire.TypeCmdAwakeable {
 		return ""
 	}
 	var cmd protocolv1.AwakeableCommandMessage

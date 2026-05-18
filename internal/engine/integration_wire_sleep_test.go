@@ -10,8 +10,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/admin"
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/loadgen"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
@@ -79,7 +79,7 @@ func (f *fakeHandlerSleep) serveInvoke(t *testing.T, stream *connect.BidiStream[
 		if err != nil {
 			return err
 		}
-		if err := stream.Send(frameFor(handlerclient.TypeCmdSleep, payload)); err != nil {
+		if err := stream.Send(frameFor(wire.TypeCmdSleep, payload)); err != nil {
 			return err
 		}
 		sus := &protocolv1.SuspensionMessage{WaitingCompletions: []uint32{2}}
@@ -87,7 +87,7 @@ func (f *fakeHandlerSleep) serveInvoke(t *testing.T, stream *connect.BidiStream[
 		if err != nil {
 			return err
 		}
-		if err := stream.Send(frameFor(handlerclient.TypeSuspension, susPayload)); err != nil {
+		if err := stream.Send(frameFor(wire.TypeSuspension, susPayload)); err != nil {
 			return err
 		}
 		return drainStream(stream)
@@ -102,11 +102,11 @@ func (f *fakeHandlerSleep) serveInvoke(t *testing.T, stream *connect.BidiStream[
 	if err != nil {
 		return err
 	}
-	if err := stream.Send(frameFor(handlerclient.TypeCmdOutput, outPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeCmdOutput, outPayload)); err != nil {
 		return err
 	}
 	endPayload, _ := proto.Marshal(&protocolv1.EndMessage{})
-	if err := stream.Send(frameFor(handlerclient.TypeEnd, endPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeEnd, endPayload)); err != nil {
 		return err
 	}
 	return drainStream(stream)

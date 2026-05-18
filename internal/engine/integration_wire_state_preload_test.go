@@ -10,8 +10,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/admin"
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/loadgen"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
@@ -84,12 +84,12 @@ func (f *fakeStatePreloadHandler) serveInvoke(t *testing.T, stream *connect.Bidi
 	if err != nil {
 		return err
 	}
-	if err := stream.Send(frameFor(handlerclient.TypeCmdOutput, payload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeCmdOutput, payload)); err != nil {
 		return err
 	}
 
 	endPayload, _ := proto.Marshal(&protocolv1.EndMessage{})
-	if err := stream.Send(frameFor(handlerclient.TypeEnd, endPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeEnd, endPayload)); err != nil {
 		return err
 	}
 	return drainStream(stream)
@@ -122,7 +122,7 @@ func TestWireDispatch_HTTP2_StatePreload(t *testing.T) {
 	writerHandler := &fakeStatePreloadHandler{
 		output: []byte("written"),
 		commands: []stateCommand{
-			{typeCode: handlerclient.TypeCmdSetState, payload: setPayload},
+			{typeCode: wire.TypeCmdSetState, payload: setPayload},
 		},
 	}
 	writerAddr, writerTeardown := startFakeHandlerHTTP2WithHandler(t, writerHandler.handler(t))

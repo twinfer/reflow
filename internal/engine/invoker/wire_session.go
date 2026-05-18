@@ -10,6 +10,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/engine/limits"
 	"github.com/twinfer/reflow/internal/storage/tables"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
@@ -45,7 +46,7 @@ type wireSession struct {
 	rec           *enginev1.DeploymentRecord
 
 	dispatcher WireDispatcher
-	codec      handlerclient.Codec
+	codec      wire.Codec
 	proposer   Proposer
 	invocation tables.InvocationTable
 	stateTable tables.StateTable
@@ -85,7 +86,7 @@ func newWireSession(
 	deployments DeploymentResolver,
 	handlerLookup HandlerLookup,
 	dispatcher WireDispatcher,
-	codec handlerclient.Codec,
+	codec wire.Codec,
 	proposer Proposer,
 	invocation tables.InvocationTable,
 	stateTable tables.StateTable,
@@ -94,7 +95,7 @@ func newWireSession(
 ) *wireSession {
 	ctx, cancel := context.WithCancel(parent)
 	if codec == nil {
-		codec = handlerclient.DefaultCodec()
+		codec = wire.DefaultCodec()
 	}
 	return &wireSession{
 		id:            id,
@@ -274,11 +275,11 @@ func (s *wireSession) sendStartAndReplay(stream handlerclient.Stream, entries []
 	if err != nil {
 		return fmt.Errorf("marshal StartMessage: %w", err)
 	}
-	if err := stream.Send(handlerclient.FrameFor(handlerclient.TypeStart, startBytes)); err != nil {
+	if err := stream.Send(wire.FrameFor(wire.TypeStart, startBytes)); err != nil {
 		return err
 	}
 	for _, f := range frames {
-		if err := stream.Send(handlerclient.FrameForSlot(f.typeCode, f.slot, f.payload)); err != nil {
+		if err := stream.Send(wire.FrameForSlot(f.typeCode, f.slot, f.payload)); err != nil {
 			return err
 		}
 	}
@@ -389,47 +390,47 @@ func (s *wireSession) driveLoop(stream handlerclient.Stream) {
 			s.failTerminal(fmt.Sprintf("wire dispatch: recv: %v", err))
 			return
 		}
-		if err := handlerclient.ValidatePayload(f); err != nil {
+		if err := wire.ValidatePayload(f); err != nil {
 			s.failTerminal(err.Error())
 			return
 		}
-		typeCode, _, _ := handlerclient.UnpackHeader(f.GetHeader())
+		typeCode, _, _ := wire.UnpackHeader(f.GetHeader())
 		switch typeCode {
-		case handlerclient.TypeCmdOutput:
+		case wire.TypeCmdOutput:
 			if !s.handleOutput(f.GetPayload()) {
 				return
 			}
-		case handlerclient.TypeEnd:
+		case wire.TypeEnd:
 			// EndMessage carries no payload; the session is done.
 			return
-		case handlerclient.TypeError:
+		case wire.TypeError:
 			s.handleError(f.GetPayload())
 			return
-		case handlerclient.TypeCmdSetState:
+		case wire.TypeCmdSetState:
 			if !s.handleSetState(f.GetPayload()) {
 				return
 			}
-		case handlerclient.TypeCmdClearState:
+		case wire.TypeCmdClearState:
 			if !s.handleClearState(f.GetPayload()) {
 				return
 			}
-		case handlerclient.TypeCmdClearAllState:
+		case wire.TypeCmdClearAllState:
 			if !s.handleClearAllState(f.GetPayload()) {
 				return
 			}
-		case handlerclient.TypeCmdSleep:
+		case wire.TypeCmdSleep:
 			if !s.handleSleep(f.GetPayload()) {
 				return
 			}
-		case handlerclient.TypeCmdCall:
+		case wire.TypeCmdCall:
 			if !s.handleCall(f.GetPayload()) {
 				return
 			}
-		case handlerclient.TypeCmdOneWayCall:
+		case wire.TypeCmdOneWayCall:
 			if !s.handleOneWayCall(f.GetPayload()) {
 				return
 			}
-		case handlerclient.TypeCmdRun:
+		case wire.TypeCmdRun:
 			// Marker frame: record the SDK-stated slot. The actual
 			// JERun proposal arrives via ProposeRunCompletionMessage.
 			// We pin nextIdx to result_completion_id+1 so retry
@@ -439,15 +440,15 @@ func (s *wireSession) driveLoop(stream handlerclient.Stream) {
 			if !s.handleRunMarker(f.GetPayload()) {
 				return
 			}
-		case handlerclient.TypeProposeRunDone:
+		case wire.TypeProposeRunDone:
 			if !s.handleProposeRunCompletion(f.GetPayload()) {
 				return
 			}
-		case handlerclient.TypeCmdAwakeable:
+		case wire.TypeCmdAwakeable:
 			if !s.handleAwakeable(f.GetPayload()) {
 				return
 			}
-		case handlerclient.TypeSuspension:
+		case wire.TypeSuspension:
 			s.handleSuspension(f.GetPayload())
 			return
 		default:

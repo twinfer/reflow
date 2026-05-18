@@ -9,7 +9,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
@@ -33,7 +33,7 @@ type replayFrame struct {
 // JE variants the wire path doesn't yet model are logged and skipped
 // rather than failing — additive extension turns each one into a real
 // translation as the protocol grows.
-func translateJournal(invID *enginev1.InvocationId, entries []*enginev1.JournalEntry, codec handlerclient.Codec, log *slog.Logger) ([]replayFrame, error) {
+func translateJournal(invID *enginev1.InvocationId, entries []*enginev1.JournalEntry, codec wire.Codec, log *slog.Logger) ([]replayFrame, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
@@ -71,13 +71,13 @@ func DeriveIdempotencyKey(invID *enginev1.InvocationId, slot, attempt uint32) st
 // the call command, then the result notification). Run fans out into
 // a marker + a completion notification when terminal; retryable runs
 // emit only the marker so the SDK re-invokes fn on respawn.
-func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, codec handlerclient.Codec, log *slog.Logger) ([]replayFrame, error) {
+func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, codec wire.Codec, log *slog.Logger) ([]replayFrame, error) {
 	switch entry := e.GetEntry().(type) {
 	case *enginev1.JournalEntry_Input:
 		msg := &protocolv1.InputCommandMessage{
 			Value: &protocolv1.Value{Content: entry.Input.GetValue()},
 		}
-		return marshalFrame(codec, handlerclient.TypeCmdInput, e.GetIndex(), msg)
+		return marshalFrame(codec, wire.TypeCmdInput, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_Sleep:
 		// result_completion_id is the slot the result will land at.
@@ -87,7 +87,7 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 			WakeUpTime:         entry.Sleep.GetFireAtMs(),
 			ResultCompletionId: e.GetIndex() + 1,
 		}
-		return marshalFrame(codec, handlerclient.TypeCmdSleep, e.GetIndex(), msg)
+		return marshalFrame(codec, wire.TypeCmdSleep, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_SleepResult:
 		msg := &protocolv1.SleepCompletionNotificationMessage{
@@ -96,24 +96,24 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 			CompletionId: e.GetIndex(),
 			Void:         &protocolv1.Void{},
 		}
-		return marshalFrame(codec, handlerclient.TypeNoteSleepDone, e.GetIndex(), msg)
+		return marshalFrame(codec, wire.TypeNoteSleepDone, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_SetState:
 		msg := &protocolv1.SetStateCommandMessage{
 			Key:   []byte(entry.SetState.GetKey()),
 			Value: &protocolv1.Value{Content: entry.SetState.GetValue()},
 		}
-		return marshalFrame(codec, handlerclient.TypeCmdSetState, e.GetIndex(), msg)
+		return marshalFrame(codec, wire.TypeCmdSetState, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_ClearState:
 		msg := &protocolv1.ClearStateCommandMessage{
 			Key: []byte(entry.ClearState.GetKey()),
 		}
-		return marshalFrame(codec, handlerclient.TypeCmdClearState, e.GetIndex(), msg)
+		return marshalFrame(codec, wire.TypeCmdClearState, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_ClearAllState:
 		msg := &protocolv1.ClearAllStateCommandMessage{}
-		return marshalFrame(codec, handlerclient.TypeCmdClearAllState, e.GetIndex(), msg)
+		return marshalFrame(codec, wire.TypeCmdClearAllState, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_Call:
 		// Call allocates 2 slots: cmd at e.Index, result at e.Index+1.
@@ -130,7 +130,7 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 		if tok := entry.Call.GetIdempotencyKey(); tok != "" {
 			msg.IdempotencyToken = &tok
 		}
-		return marshalFrame(codec, handlerclient.TypeCmdCall, e.GetIndex(), msg)
+		return marshalFrame(codec, wire.TypeCmdCall, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_CallResult:
 		// Translate to a CallCompletionNotificationMessage. completion_id
@@ -148,7 +148,7 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 				Value: &protocolv1.Value{Content: entry.CallResult.GetResult()},
 			}
 		}
-		return marshalFrame(codec, handlerclient.TypeNoteCallDone, e.GetIndex(), msg)
+		return marshalFrame(codec, wire.TypeNoteCallDone, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_OneWayCall:
 		t := entry.OneWayCall.GetTarget()
@@ -161,7 +161,7 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 		if tok := entry.OneWayCall.GetIdempotencyKey(); tok != "" {
 			msg.IdempotencyToken = &tok
 		}
-		return marshalFrame(codec, handlerclient.TypeCmdOneWayCall, e.GetIndex(), msg)
+		return marshalFrame(codec, wire.TypeCmdOneWayCall, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_Run:
 		// JERun translates to a RunCommandMessage marker. When the run
@@ -191,7 +191,7 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 		}
 		if entry.Run.GetRetryable() {
 			return []replayFrame{
-				{typeCode: handlerclient.TypeCmdRun, slot: e.GetIndex(), payload: cmdPayload},
+				{typeCode: wire.TypeCmdRun, slot: e.GetIndex(), payload: cmdPayload},
 			}, nil
 		}
 		note := &protocolv1.RunCompletionNotificationMessage{
@@ -211,8 +211,8 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 			return nil, fmt.Errorf("marshal RunCompletionNotificationMessage: %w", err)
 		}
 		return []replayFrame{
-			{typeCode: handlerclient.TypeCmdRun, slot: e.GetIndex(), payload: cmdPayload},
-			{typeCode: handlerclient.TypeNoteRunDone, slot: e.GetIndex(), payload: notePayload},
+			{typeCode: wire.TypeCmdRun, slot: e.GetIndex(), payload: cmdPayload},
+			{typeCode: wire.TypeNoteRunDone, slot: e.GetIndex(), payload: notePayload},
 		}, nil
 
 	case *enginev1.JournalEntry_Awakeable:
@@ -223,7 +223,7 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 			ResultCompletionId: e.GetIndex() + 1,
 			AwakeableId:        entry.Awakeable.GetAwakeableId(),
 		}
-		return marshalFrame(codec, handlerclient.TypeCmdAwakeable, e.GetIndex(), msg)
+		return marshalFrame(codec, wire.TypeCmdAwakeable, e.GetIndex(), msg)
 
 	case *enginev1.JournalEntry_AwakeableResult:
 		// Translate to a SignalNotificationMessage with the name variant
@@ -245,7 +245,7 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 		} else {
 			msg.Result = &protocolv1.SignalNotificationMessage_Void{Void: &protocolv1.Void{}}
 		}
-		return marshalFrame(codec, handlerclient.TypeNoteSignal, e.GetIndex(), msg)
+		return marshalFrame(codec, wire.TypeNoteSignal, e.GetIndex(), msg)
 
 	default:
 		log.Debug("invoker.wire: skipping JE variant in replay (not yet wired)",
@@ -260,7 +260,7 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 // frame at — typically the JournalEntry's own index, except for
 // result-pair entries where it's the result-slot (already encoded in
 // the message's completion_id).
-func marshalFrame(codec handlerclient.Codec, typeCode uint16, slot uint32, msg proto.Message) ([]replayFrame, error) {
+func marshalFrame(codec wire.Codec, typeCode uint16, slot uint32, msg proto.Message) ([]replayFrame, error) {
 	payload, err := codec.Marshal(msg)
 	if err != nil {
 		return nil, fmt.Errorf("marshal frame 0x%04x: %w", typeCode, err)

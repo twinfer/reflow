@@ -10,8 +10,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/admin"
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/loadgen"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
@@ -65,7 +65,7 @@ func (f *fakeHandlerRun) serveInvoke(t *testing.T, stream *connect.BidiStream[pr
 
 	runCmd := &protocolv1.RunCommandMessage{ResultCompletionId: 1, Name: "compute"}
 	runPayload, _ := proto.Marshal(runCmd)
-	if err := stream.Send(frameFor(handlerclient.TypeCmdRun, runPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeCmdRun, runPayload)); err != nil {
 		return err
 	}
 
@@ -76,7 +76,7 @@ func (f *fakeHandlerRun) serveInvoke(t *testing.T, stream *connect.BidiStream[pr
 		},
 	}
 	propPayload, _ := proto.Marshal(prop)
-	if err := stream.Send(frameFor(handlerclient.TypeProposeRunDone, propPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeProposeRunDone, propPayload)); err != nil {
 		return err
 	}
 
@@ -88,11 +88,11 @@ func (f *fakeHandlerRun) serveInvoke(t *testing.T, stream *connect.BidiStream[pr
 		},
 	}
 	outPayload, _ := proto.Marshal(outMsg)
-	if err := stream.Send(frameFor(handlerclient.TypeCmdOutput, outPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeCmdOutput, outPayload)); err != nil {
 		return err
 	}
 	endPayload, _ := proto.Marshal(&protocolv1.EndMessage{})
-	if err := stream.Send(frameFor(handlerclient.TypeEnd, endPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeEnd, endPayload)); err != nil {
 		return err
 	}
 	return drainStream(stream)

@@ -12,27 +12,22 @@
 // protocolv1 frames through it. Translation between protocolv1 commands /
 // notifications and enginev1.JournalEntry lives in the invoker's
 // wire-session path, not here — the handlerclient layer is the byte pump.
+//
+// Shared wire vocabulary (Codec, Type* constants, Frame helpers, Route)
+// lives in pkg/handler/wire — both engine and handler SDK speak it.
 package handlerclient
 
 import (
 	"context"
 	"errors"
 
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
 // ErrClientClosed is returned by Invoke and Stream methods after Close
 // has been called on the Client.
 var ErrClientClosed = errors.New("handlerclient: client closed")
-
-// Route is the per-session destination metadata: the (service, handler)
-// tuple the engine wants to invoke. Connect RPC has no per-handler URL
-// addressing, so this tuple flows inside the StartMessage frame the
-// engine writes first.
-type Route struct {
-	Service string
-	Handler string
-}
 
 // Client is the connection-pool view of one deployment. A Client is bound
 // to a single deployment URL + transport + creds tuple at construction
@@ -46,7 +41,7 @@ type Client interface {
 	// ctx scopes the lifetime of the stream; cancelling ctx tears it
 	// down. The returned Stream is owned by the caller and must be
 	// drained or closed.
-	Invoke(ctx context.Context, route Route) (Stream, error)
+	Invoke(ctx context.Context, route wire.Route) (Stream, error)
 
 	// Close releases the underlying HTTP/2 transport pool. Idempotent.
 	// After Close, Invoke returns ErrClientClosed.

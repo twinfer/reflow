@@ -9,6 +9,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine/cluster"
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/engine/handlerclient/connectclient"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -139,7 +140,7 @@ func (h *Host) openWireStream(ctx context.Context, rec *enginev1.DeploymentRecor
 	if err != nil {
 		return nil, fmt.Errorf("host: get handlerclient: %w", err)
 	}
-	return client.Invoke(ctx, handlerclient.Route{
+	return client.Invoke(ctx, wire.Route{
 		Service: target.GetServiceName(),
 		Handler: target.GetHandlerName(),
 	})

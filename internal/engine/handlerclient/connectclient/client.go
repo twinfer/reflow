@@ -25,6 +25,7 @@ import (
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	"github.com/twinfer/reflow/proto/handlerv1/handlerv1connect"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
@@ -115,7 +116,7 @@ type Client struct {
 // itself carries no per-handler addressing — the engine puts (service,
 // handler) inside StartMessage and the handler-side server echoes the
 // same tuple from there.
-func (c *Client) Invoke(ctx context.Context, route handlerclient.Route) (handlerclient.Stream, error) {
+func (c *Client) Invoke(ctx context.Context, route wire.Route) (handlerclient.Stream, error) {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()

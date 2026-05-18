@@ -16,9 +16,9 @@ import (
 
 	"github.com/twinfer/reflow/internal/admin"
 	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/loadgen"
 	"github.com/twinfer/reflow/internal/storage/tables"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
@@ -78,14 +78,14 @@ func (f *fakeHandlerAwakeable) serveInvoke(t *testing.T, stream *connect.BidiStr
 		if err != nil {
 			return err
 		}
-		tc, _, _ := handlerclient.UnpackHeader(frame.GetHeader())
+		tc, _, _ := wire.UnpackHeader(frame.GetHeader())
 		switch tc {
-		case handlerclient.TypeCmdAwakeable:
+		case wire.TypeCmdAwakeable:
 			var ac protocolv1.AwakeableCommandMessage
 			if err := proto.Unmarshal(frame.GetPayload(), &ac); err == nil {
 				resolvedID = ac.GetAwakeableId()
 			}
-		case handlerclient.TypeNoteSignal:
+		case wire.TypeNoteSignal:
 			var sn protocolv1.SignalNotificationMessage
 			if err := proto.Unmarshal(frame.GetPayload(), &sn); err == nil {
 				if v, ok := sn.GetResult().(*protocolv1.SignalNotificationMessage_Value); ok {
@@ -108,7 +108,7 @@ func (f *fakeHandlerAwakeable) serveInvoke(t *testing.T, stream *connect.BidiStr
 			AwakeableId:        id,
 		}
 		akPayload, _ := proto.Marshal(akCmd)
-		if err := stream.Send(frameFor(handlerclient.TypeCmdAwakeable, akPayload)); err != nil {
+		if err := stream.Send(frameFor(wire.TypeCmdAwakeable, akPayload)); err != nil {
 			return err
 		}
 
@@ -117,13 +117,13 @@ func (f *fakeHandlerAwakeable) serveInvoke(t *testing.T, stream *connect.BidiStr
 			Value: &protocolv1.Value{Content: []byte(id)},
 		}
 		setPayload, _ := proto.Marshal(setCmd)
-		if err := stream.Send(frameFor(handlerclient.TypeCmdSetState, setPayload)); err != nil {
+		if err := stream.Send(frameFor(wire.TypeCmdSetState, setPayload)); err != nil {
 			return err
 		}
 
 		sus := &protocolv1.SuspensionMessage{WaitingCompletions: []uint32{2}}
 		susPayload, _ := proto.Marshal(sus)
-		if err := stream.Send(frameFor(handlerclient.TypeSuspension, susPayload)); err != nil {
+		if err := stream.Send(frameFor(wire.TypeSuspension, susPayload)); err != nil {
 			return err
 		}
 		return drainStream(stream)
@@ -136,11 +136,11 @@ func (f *fakeHandlerAwakeable) serveInvoke(t *testing.T, stream *connect.BidiStr
 		},
 	}
 	outPayload, _ := proto.Marshal(out)
-	if err := stream.Send(frameFor(handlerclient.TypeCmdOutput, outPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeCmdOutput, outPayload)); err != nil {
 		return err
 	}
 	endPayload, _ := proto.Marshal(&protocolv1.EndMessage{})
-	if err := stream.Send(frameFor(handlerclient.TypeEnd, endPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeEnd, endPayload)); err != nil {
 		return err
 	}
 	return drainStream(stream)

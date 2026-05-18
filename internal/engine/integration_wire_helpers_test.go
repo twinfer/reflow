@@ -9,7 +9,7 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
 	"github.com/twinfer/reflow/proto/handlerv1/handlerv1connect"
@@ -68,7 +68,7 @@ func (f fakeDiscoverImpl) Discover(_ context.Context, _ *connect.Request[discove
 // onto the Connect stream.
 func frameFor(typeCode uint16, payload []byte) *protocolv1.Frame {
 	return &protocolv1.Frame{
-		Header:  handlerclient.PackHeader(typeCode, 0, uint32(len(payload))),
+		Header:  wire.PackHeader(typeCode, 0, uint32(len(payload))),
 		Payload: payload,
 	}
 }

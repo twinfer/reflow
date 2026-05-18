@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
@@ -137,7 +137,7 @@ func (f awakeableFuture) Result() ([]byte, error) {
 		f.ctx.suspend("awakeable:" + f.id)
 		return nil, ErrSuspended
 	}
-	if entry.typeCode != handlerclient.TypeNoteSignal {
+	if entry.typeCode != wire.TypeNoteSignal {
 		return nil, fmt.Errorf("awakeable slot %d carries unexpected frame type 0x%04x", f.resultSlot, entry.typeCode)
 	}
 	var note protocolv1.SignalNotificationMessage

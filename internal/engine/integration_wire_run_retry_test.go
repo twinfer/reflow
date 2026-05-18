@@ -14,8 +14,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/admin"
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/loadgen"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
@@ -70,7 +70,7 @@ func (f *fakeHandlerRunRetry) serveInvoke(t *testing.T, stream *connect.BidiStre
 
 	runCmd := &protocolv1.RunCommandMessage{ResultCompletionId: 1, Name: "compute"}
 	runPayload, _ := proto.Marshal(runCmd)
-	if err := stream.Send(frameFor(handlerclient.TypeCmdRun, runPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeCmdRun, runPayload)); err != nil {
 		return err
 	}
 
@@ -86,12 +86,12 @@ func (f *fakeHandlerRunRetry) serveInvoke(t *testing.T, stream *connect.BidiStre
 			Failure: &protocolv1.Failure{Message: f.retryFail},
 		}
 		propPayload, _ := proto.Marshal(prop)
-		if err := stream.Send(frameFor(handlerclient.TypeProposeRunDone, propPayload)); err != nil {
+		if err := stream.Send(frameFor(wire.TypeProposeRunDone, propPayload)); err != nil {
 			return err
 		}
 		susp := &protocolv1.SuspensionMessage{WaitingCompletions: []uint32{1}}
 		suspPayload, _ := proto.Marshal(susp)
-		if err := stream.Send(frameFor(handlerclient.TypeSuspension, suspPayload)); err != nil {
+		if err := stream.Send(frameFor(wire.TypeSuspension, suspPayload)); err != nil {
 			return err
 		}
 		return drainStream(stream)
@@ -99,7 +99,7 @@ func (f *fakeHandlerRunRetry) serveInvoke(t *testing.T, stream *connect.BidiStre
 
 	prop.Result = &protocolv1.ProposeRunCompletionMessage_Value{Value: f.finalOut}
 	propPayload, _ := proto.Marshal(prop)
-	if err := stream.Send(frameFor(handlerclient.TypeProposeRunDone, propPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeProposeRunDone, propPayload)); err != nil {
 		return err
 	}
 
@@ -109,11 +109,11 @@ func (f *fakeHandlerRunRetry) serveInvoke(t *testing.T, stream *connect.BidiStre
 		},
 	}
 	outPayload, _ := proto.Marshal(outMsg)
-	if err := stream.Send(frameFor(handlerclient.TypeCmdOutput, outPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeCmdOutput, outPayload)); err != nil {
 		return err
 	}
 	endPayload, _ := proto.Marshal(&protocolv1.EndMessage{})
-	if err := stream.Send(frameFor(handlerclient.TypeEnd, endPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeEnd, endPayload)); err != nil {
 		return err
 	}
 	return drainStream(stream)
@@ -251,16 +251,16 @@ func (f *fakeHandlerRunExhaust) serveInvoke(t *testing.T, stream *connect.BidiSt
 		if err != nil {
 			return err
 		}
-		tc, _, _ := handlerclient.UnpackHeader(rf.GetHeader())
+		tc, _, _ := wire.UnpackHeader(rf.GetHeader())
 		switch tc {
-		case handlerclient.TypeCmdRun:
+		case wire.TypeCmdRun:
 			var marker protocolv1.RunCommandMessage
 			if perr := proto.Unmarshal(rf.GetPayload(), &marker); perr == nil {
 				f.keys.mu.Lock()
 				f.keys.v = append(f.keys.v, marker.GetIdempotencyKey())
 				f.keys.mu.Unlock()
 			}
-		case handlerclient.TypeNoteRunDone:
+		case wire.TypeNoteRunDone:
 			var note protocolv1.RunCompletionNotificationMessage
 			if perr := proto.Unmarshal(rf.GetPayload(), &note); perr == nil {
 				if fail, ok := note.GetResult().(*protocolv1.RunCompletionNotificationMessage_Failure); ok {
@@ -277,11 +277,11 @@ func (f *fakeHandlerRunExhaust) serveInvoke(t *testing.T, stream *connect.BidiSt
 			Result: &protocolv1.OutputCommandMessage_Failure{Failure: terminalFailure},
 		}
 		outPayload, _ := proto.Marshal(outMsg)
-		if err := stream.Send(frameFor(handlerclient.TypeCmdOutput, outPayload)); err != nil {
+		if err := stream.Send(frameFor(wire.TypeCmdOutput, outPayload)); err != nil {
 			return err
 		}
 		endPayload, _ := proto.Marshal(&protocolv1.EndMessage{})
-		if err := stream.Send(frameFor(handlerclient.TypeEnd, endPayload)); err != nil {
+		if err := stream.Send(frameFor(wire.TypeEnd, endPayload)); err != nil {
 			return err
 		}
 		return drainStream(stream)
@@ -291,7 +291,7 @@ func (f *fakeHandlerRunExhaust) serveInvoke(t *testing.T, stream *connect.BidiSt
 
 	runCmd := &protocolv1.RunCommandMessage{ResultCompletionId: 1, Name: "alwaysFails"}
 	runPayload, _ := proto.Marshal(runCmd)
-	if err := stream.Send(frameFor(handlerclient.TypeCmdRun, runPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeCmdRun, runPayload)); err != nil {
 		return err
 	}
 	prop := &protocolv1.ProposeRunCompletionMessage{
@@ -303,12 +303,12 @@ func (f *fakeHandlerRunExhaust) serveInvoke(t *testing.T, stream *connect.BidiSt
 		},
 	}
 	propPayload, _ := proto.Marshal(prop)
-	if err := stream.Send(frameFor(handlerclient.TypeProposeRunDone, propPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeProposeRunDone, propPayload)); err != nil {
 		return err
 	}
 	susp := &protocolv1.SuspensionMessage{WaitingCompletions: []uint32{1}}
 	suspPayload, _ := proto.Marshal(susp)
-	if err := stream.Send(frameFor(handlerclient.TypeSuspension, suspPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeSuspension, suspPayload)); err != nil {
 		return err
 	}
 	return drainStream(stream)

@@ -7,7 +7,7 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	"github.com/twinfer/reflow/proto/handlerv1/handlerv1connect"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
@@ -19,12 +19,12 @@ import (
 type handlerService struct {
 	handlerv1connect.UnimplementedHandlerServiceHandler
 	registry *Registry
-	codec    handlerclient.Codec
+	codec    wire.Codec
 }
 
 func (s *handlerService) InvokeStream(ctx context.Context, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
 	cs := &connectStream{stream: stream}
-	if err := runSession(ctx, cs, cs, s.registry, s.codec, handlerclient.Route{}); err != nil {
+	if err := runSession(ctx, cs, cs, s.registry, s.codec, wire.Route{}); err != nil {
 		// runSession's terminal frame (Output / Suspension / Error) has
 		// already been sent on the wire. Don't promote the err to a
 		// connect.Error — that would attach gRPC status trailers the

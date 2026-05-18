@@ -1,10 +1,67 @@
-package handlerclient
+// Package wire is the shared protocol vocabulary spoken by both the
+// reflow engine (internal/engine/handlerclient) and the handler SDK
+// (pkg/handler). It contains the Codec interface, the Type* frame-code
+// constants, the Frame helpers, and Route — anything that needs the
+// same definition on both sides of an engine↔handler session.
+package wire
 
 import (
 	"fmt"
 
+	"google.golang.org/protobuf/proto"
+
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
+
+// Codec encodes the inner protocolv1 message payloads carried inside a
+// Frame's payload field. The Frame envelope itself is always protobuf
+// for wire compatibility across reflow nodes and languages; Codec
+// controls only the inner message encoding (StartMessage,
+// OutputCommandMessage, etc.).
+//
+// Both sides of a session must agree on the codec. The engine and the
+// handler-side server are configured separately; the HTTP Content-Type
+// carries the codec name (application/vnd.reflow.invocation.v1+<codec>)
+// so the handler can verify negotiation succeeded.
+type Codec interface {
+	Marshal(v any) ([]byte, error)
+	Unmarshal(data []byte, v any) error
+	Name() string
+}
+
+// DefaultCodec is the protobuf codec. The framing layer always uses
+// protobuf for the outer Frame envelope; Codec controls only the inner
+// payload encoding.
+func DefaultCodec() Codec { return protoCodec{} }
+
+type protoCodec struct{}
+
+func (protoCodec) Marshal(v any) ([]byte, error) {
+	m, ok := v.(proto.Message)
+	if !ok {
+		return nil, fmt.Errorf("wire: protoCodec.Marshal: %T is not a proto.Message", v)
+	}
+	return proto.Marshal(m)
+}
+
+func (protoCodec) Unmarshal(data []byte, v any) error {
+	m, ok := v.(proto.Message)
+	if !ok {
+		return fmt.Errorf("wire: protoCodec.Unmarshal: %T is not a proto.Message", v)
+	}
+	return proto.Unmarshal(data, m)
+}
+
+func (protoCodec) Name() string { return "protobuf" }
+
+// Route is the per-session destination metadata: the (service, handler)
+// tuple the engine wants to invoke. Connect RPC has no per-handler URL
+// addressing, so this tuple flows inside the StartMessage frame the
+// engine writes first.
+type Route struct {
+	Service string
+	Handler string
+}
 
 // Type codes per proto/protocolv1/protocol.proto. The codes are part
 // of the wire contract; keep this list in sync with the proto file.
@@ -86,7 +143,7 @@ func FrameForSlot(typeCode uint16, slot uint32, payload []byte) *protocolv1.Fram
 func ValidatePayload(f *protocolv1.Frame) error {
 	_, _, length := UnpackHeader(f.GetHeader())
 	if int(length) != len(f.GetPayload()) {
-		return fmt.Errorf("handlerclient: frame header length %d != payload bytes %d", length, len(f.GetPayload()))
+		return fmt.Errorf("wire: frame header length %d != payload bytes %d", length, len(f.GetPayload()))
 	}
 	return nil
 }

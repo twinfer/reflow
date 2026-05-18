@@ -14,8 +14,8 @@ import (
 
 	"github.com/twinfer/reflow/internal/admin"
 	"github.com/twinfer/reflow/internal/connectserver"
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/loadgen"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	"github.com/twinfer/reflow/proto/adminv1/adminv1connect"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
@@ -85,8 +85,8 @@ func (f *fakeHandlerHTTP2) serveInvoke(t *testing.T, stream *connect.BidiStream[
 	if err != nil {
 		return err
 	}
-	typeCode, _, _ := handlerclient.UnpackHeader(start.GetHeader())
-	if typeCode != handlerclient.TypeStart {
+	typeCode, _, _ := wire.UnpackHeader(start.GetHeader())
+	if typeCode != wire.TypeStart {
 		return errors.New("first frame not StartMessage")
 	}
 	var sm protocolv1.StartMessage
@@ -108,14 +108,14 @@ func (f *fakeHandlerHTTP2) serveInvoke(t *testing.T, stream *connect.BidiStream[
 	if err != nil {
 		return err
 	}
-	if err := stream.Send(frameFor(handlerclient.TypeCmdOutput, payload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeCmdOutput, payload)); err != nil {
 		return err
 	}
 	endPayload, err := proto.Marshal(&protocolv1.EndMessage{})
 	if err != nil {
 		return err
 	}
-	if err := stream.Send(frameFor(handlerclient.TypeEnd, endPayload)); err != nil {
+	if err := stream.Send(frameFor(wire.TypeEnd, endPayload)); err != nil {
 		return err
 	}
 

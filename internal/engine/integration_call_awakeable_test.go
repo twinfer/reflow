@@ -1,22 +1,22 @@
 package engine_test
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
-	"io"
-	"net/http"
+	"errors"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	connect "connectrpc.com/connect"
+
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/pkg/handler"
+	"github.com/twinfer/reflow/pkg/ingressclient"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
 
 // TestHandlerSurvivesKill verifies kill-9 safety. A handler doing
@@ -526,7 +526,11 @@ func TestAwakeableResolvedByIngress(t *testing.T) {
 	}
 
 	h, rt := bringUpHostWithIngress(t, reg)
-	base := "http://" + rt.HTTPAddr()
+	cli, err := ingressclient.Dial(ingressclient.Options{BaseURL: "http://" + rt.Addr()})
+	if err != nil {
+		t.Fatalf("ingressclient.Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = cli.Close() })
 
 	r := h.Partition(1)
 	if r == nil {
@@ -537,7 +541,7 @@ func TestAwakeableResolvedByIngress(t *testing.T) {
 	target := &enginev1.InvocationTarget{ServiceName: "Awaiter", HandlerName: "wait"}
 	depID := resolveDeploymentID(t, h, target.ServiceName, target.HandlerName)
 	propCtx, propCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	err := r.Proposer().ProposeIngress(propCtx, "test/awaiter", 1, &enginev1.Command{
+	err = r.Proposer().ProposeIngress(propCtx, "test/awaiter", 1, &enginev1.Command{
 		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
 			InvocationId: id, Target: target, DeploymentId: depID,
 		}},
@@ -557,42 +561,32 @@ func TestAwakeableResolvedByIngress(t *testing.T) {
 		t.Fatal("empty awakeable id")
 	}
 
-	resolveURL := base + "/awakeable/" + awakeableID + "/resolve"
-	resolveBody, _ := json.Marshal(map[string]any{
-		"value": base64.StdEncoding.EncodeToString([]byte("payload")),
-	})
 	// Poll briefly: the JEAwakeable journal write races with the ingress
 	// resolve call; on the AwakeableTable.Get miss the server returns
 	// NotFound and we retry.
-	var (
-		resolveResp *http.Response
-		resolveRaw  []byte
-	)
+	var resolved bool
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		req, _ := http.NewRequest(http.MethodPost, resolveURL, bytes.NewReader(resolveBody))
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("resolve POST: %v", err)
-		}
-		body, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
-			resolveResp = resp
-			resolveRaw = body
+		resp, err := cli.ResolveAwakeable(context.Background(), connect.NewRequest(&ingressv1.ResolveAwakeableRequest{
+			AwakeableId: awakeableID,
+			Value:       []byte("payload"),
+		}))
+		if err == nil {
+			if !resp.Msg.GetResolved() {
+				t.Errorf("resolve response missing resolved:true; got %+v", resp.Msg)
+			}
+			resolved = true
 			break
 		}
-		if resp.StatusCode != http.StatusNotFound {
-			t.Fatalf("resolve POST: code=%d body=%s", resp.StatusCode, string(body))
+		var ce *connect.Error
+		if errors.As(err, &ce) && ce.Code() == connect.CodeNotFound {
+			time.Sleep(50 * time.Millisecond)
+			continue
 		}
-		time.Sleep(50 * time.Millisecond)
+		t.Fatalf("ResolveAwakeable: %v", err)
 	}
-	if resolveResp == nil {
-		t.Fatalf("awakeable resolve never reached OK (last polled %s)", resolveURL)
-	}
-	if !bytes.Contains(resolveRaw, []byte(`"resolved":true`)) {
-		t.Errorf("resolve response missing resolved:true; got %s", string(resolveRaw))
+	if !resolved {
+		t.Fatal("awakeable resolve never reached OK")
 	}
 
 	completed := awaitCompleted(t, h, 1, id, 10*time.Second)

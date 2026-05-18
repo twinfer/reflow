@@ -2,22 +2,22 @@ package ingress
 
 import (
 	"context"
+	"fmt"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	connect "connectrpc.com/connect"
 
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
 
 // AttachInvocation blocks until the named invocation reaches Completed
-// (or the timeout fires) and returns its outcome. Same long-poll pattern
+// (or the timeout fires) and returns its outcome. Same long-poll shape
 // as AwaitInvocation; the distinction is explicit intent: "I already
-// submitted this id; give me its result" vs. "I just submitted, give
-// me the result of that submission".
-func (s *Server) AttachInvocation(ctx context.Context, req *ingressv1.AttachInvocationRequest) (*ingressv1.AttachInvocationResponse, error) {
-	id, err := resolveID(req.GetInvocationId(), req.GetInvocationIdProto())
+// submitted this id; give me its result".
+func (s *Server) AttachInvocation(ctx context.Context, req *connect.Request[ingressv1.AttachInvocationRequest]) (*connect.Response[ingressv1.AttachInvocationResponse], error) {
+	msg := req.Msg
+	id, err := resolveID(msg.GetInvocationId(), msg.GetInvocationIdProto())
 	if err != nil {
 		return nil, err
 	}
@@ -25,25 +25,27 @@ func (s *Server) AttachInvocation(ctx context.Context, req *ingressv1.AttachInvo
 	if err != nil {
 		return nil, err
 	}
-	c, err := s.pollUntilCompleted(ctx, id, shardID, req.GetTimeoutMs())
+	c, err := s.pollUntilCompleted(ctx, id, shardID, msg.GetTimeoutMs())
 	if err != nil {
 		return nil, err
 	}
 	if c == nil {
-		return &ingressv1.AttachInvocationResponse{Completed: false}, nil
+		return connect.NewResponse(&ingressv1.AttachInvocationResponse{Completed: false}), nil
 	}
-	return &ingressv1.AttachInvocationResponse{
+	return connect.NewResponse(&ingressv1.AttachInvocationResponse{
 		Output:         c.GetOutput(),
 		FailureMessage: c.GetFailureMessage(),
 		Completed:      true,
-	}, nil
+	}), nil
 }
 
 // GetInvocationOutput is a non-blocking lookup. Returns PENDING for
-// non-terminal invocations, COMPLETED_OK / COMPLETED_FAILED for terminal
-// ones, and UNKNOWN if the invocation_id is not registered on this node.
-func (s *Server) GetInvocationOutput(ctx context.Context, req *ingressv1.GetInvocationOutputRequest) (*ingressv1.GetInvocationOutputResponse, error) {
-	id, err := resolveID(req.GetInvocationId(), req.GetInvocationIdProto())
+// non-terminal invocations, COMPLETED_OK / COMPLETED_FAILED for
+// terminal ones, and UNKNOWN if the invocation_id is not registered on
+// this node.
+func (s *Server) GetInvocationOutput(ctx context.Context, req *connect.Request[ingressv1.GetInvocationOutputRequest]) (*connect.Response[ingressv1.GetInvocationOutputResponse], error) {
+	msg := req.Msg
+	id, err := resolveID(msg.GetInvocationId(), msg.GetInvocationIdProto())
 	if err != nil {
 		return nil, err
 	}
@@ -57,28 +59,28 @@ func (s *Server) GetInvocationOutput(ctx context.Context, req *ingressv1.GetInvo
 	st, err := s.host.LookupInvocationStatus(readCtx, shardID, id)
 	if err != nil {
 		if isTransientLookupErr(err) {
-			return &ingressv1.GetInvocationOutputResponse{Status: ingressv1.GetInvocationOutputResponse_UNKNOWN}, nil
+			return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{Status: ingressv1.GetInvocationOutputResponse_UNKNOWN}), nil
 		}
-		return nil, status.Errorf(codes.Internal, "lookup invocation: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup invocation: %w", err))
 	}
 	if st == nil {
-		return &ingressv1.GetInvocationOutputResponse{Status: ingressv1.GetInvocationOutputResponse_UNKNOWN}, nil
+		return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{Status: ingressv1.GetInvocationOutputResponse_UNKNOWN}), nil
 	}
 	switch s := st.GetStatus().(type) {
 	case *enginev1.InvocationStatus_Completed:
-		if msg := s.Completed.GetFailureMessage(); msg != "" {
-			return &ingressv1.GetInvocationOutputResponse{
+		if fmsg := s.Completed.GetFailureMessage(); fmsg != "" {
+			return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{
 				Status:         ingressv1.GetInvocationOutputResponse_COMPLETED_FAILED,
-				FailureMessage: msg,
-			}, nil
+				FailureMessage: fmsg,
+			}), nil
 		}
-		return &ingressv1.GetInvocationOutputResponse{
+		return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{
 			Status: ingressv1.GetInvocationOutputResponse_COMPLETED_OK,
 			Output: s.Completed.GetOutput(),
-		}, nil
+		}), nil
 	case nil, *enginev1.InvocationStatus_Free:
-		return &ingressv1.GetInvocationOutputResponse{Status: ingressv1.GetInvocationOutputResponse_UNKNOWN}, nil
+		return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{Status: ingressv1.GetInvocationOutputResponse_UNKNOWN}), nil
 	default:
-		return &ingressv1.GetInvocationOutputResponse{Status: ingressv1.GetInvocationOutputResponse_PENDING}, nil
+		return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{Status: ingressv1.GetInvocationOutputResponse_PENDING}), nil
 	}
 }

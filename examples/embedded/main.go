@@ -101,8 +101,7 @@ func main() {
 			DataDir: filepath.Join(dataDir, "node1"),
 		},
 		Ingress: reflow.IngressConfig{
-			GRPCAddr: "127.0.0.1:8081",
-			HTTPAddr: "127.0.0.1:8080",
+			Addr: "127.0.0.1:8080",
 		},
 		Metrics: reflow.MetricsConfig{Disabled: true},
 		Handlers: reflow.HandlersConfig{

@@ -26,8 +26,7 @@ node:
 storage:
   data_dir: "/tmp/reflow"
 ingress:
-  grpc_addr: ":8081"
-  http_addr: ":8080"
+  addr: ":8080"
 cluster:
   shards: [1, 2, 3]
 `
@@ -44,7 +43,7 @@ cluster:
 	if cfg.Storage.DataDir != "/tmp/reflow" {
 		t.Errorf("Storage.DataDir = %q", cfg.Storage.DataDir)
 	}
-	if cfg.Ingress.GRPCAddr != ":8081" || cfg.Ingress.HTTPAddr != ":8080" {
+	if cfg.Ingress.Addr != ":8080" {
 		t.Errorf("Ingress = %+v", cfg.Ingress)
 	}
 	if len(cfg.Cluster.Shards) != 3 || cfg.Cluster.Shards[2] != 3 {
@@ -92,7 +91,7 @@ func TestLoad_FromEnvOnly(t *testing.T) {
 	t.Setenv("REFLOW_NODE_ID", "9")
 	t.Setenv("REFLOW_NODE_RAFT_ADDR", ":5410")
 	t.Setenv("REFLOW_STORAGE_DATA_DIR", "/var/reflow")
-	t.Setenv("REFLOW_INGRESS_GRPC_ADDR", ":8081")
+	t.Setenv("REFLOW_INGRESS_ADDR", ":8080")
 	t.Setenv("REFLOW_LOGGING_LEVEL", "DEBUG")
 
 	cfg, _, err := config.Load(config.FromEnv())
@@ -108,17 +107,17 @@ func TestLoad_FromEnvOnly(t *testing.T) {
 	if cfg.Storage.DataDir != "/var/reflow" {
 		t.Errorf("Storage.DataDir = %q", cfg.Storage.DataDir)
 	}
-	if cfg.Ingress.GRPCAddr != ":8081" {
-		t.Errorf("Ingress.GRPCAddr = %q", cfg.Ingress.GRPCAddr)
+	if cfg.Ingress.Addr != ":8080" {
+		t.Errorf("Ingress.Addr = %q", cfg.Ingress.Addr)
 	}
 }
 
 func TestLoad_FromMapDefaults(t *testing.T) {
 	defaults := map[string]any{
-		"node.id":           uint64(1),
-		"node.raft_addr":    "127.0.0.1:0",
-		"storage.data_dir":  "/tmp/d",
-		"ingress.grpc_addr": ":0",
+		"node.id":          uint64(1),
+		"node.raft_addr":   "127.0.0.1:0",
+		"storage.data_dir": "/tmp/d",
+		"ingress.addr":     ":0",
 	}
 	cfg, _, err := config.Load(config.FromMap(defaults))
 	if err != nil {
@@ -130,8 +129,8 @@ func TestLoad_FromMapDefaults(t *testing.T) {
 	if cfg.Storage.DataDir != "/tmp/d" {
 		t.Errorf("Storage.DataDir = %q", cfg.Storage.DataDir)
 	}
-	if cfg.Ingress.GRPCAddr != ":0" {
-		t.Errorf("Ingress.GRPCAddr = %q", cfg.Ingress.GRPCAddr)
+	if cfg.Ingress.Addr != ":0" {
+		t.Errorf("Ingress.Addr = %q", cfg.Ingress.Addr)
 	}
 }
 

@@ -1,111 +1,72 @@
 // Reflow ingress service.
 //
 // Exposes the user-facing entrypoints for submitting invocations, awaiting
-// their results, and resolving awakeables. Dual-served over gRPC and
-// HTTP/JSON via grpc-gateway annotations. See SAD §10 for routing rules;
-// the default reflowd config is single-partition (shard 1) but the ingress
-// is partition-agnostic and routes via Host.Partitioner.
+// their results, and resolving awakeables. Served over Connect (HTTP/2)
+// with content-negotiated Connect / gRPC / gRPC-Web / HTTP-JSON; clients
+// pick a wire encoding by setting Content-Type. The default reflowd
+// config is single-partition (shard 1) but ingress is partition-agnostic
+// and routes via Host.Partitioner.
 syntax = "proto3";
 
 package reflow.ingress.v1;
 
 import "enginev1/engine.proto";
-import "google/api/annotations.proto";
 
 option go_package = "github.com/twinfer/reflow/proto/ingressv1;ingressv1";
 
 service Ingress {
-  // SubmitInvocation enqueues a new invocation. Returns the minted invocation
-  // ID; the caller polls AwaitInvocation for the result (SSE/streaming is
-  // not implemented yet).
-  rpc SubmitInvocation(SubmitInvocationRequest) returns (SubmitInvocationResponse) {
-    option (google.api.http) = {
-      post: "/invocation/{service}/{handler}"
-      body: "*"
-    };
-  }
+  // SubmitInvocation enqueues a new invocation. Returns the minted
+  // invocation ID; the caller polls AwaitInvocation for the result.
+  rpc SubmitInvocation(SubmitInvocationRequest) returns (SubmitInvocationResponse);
 
   // AwaitInvocation blocks (up to deadline) until the named invocation
-  // reaches Completed and returns its output. Currently implemented via
-  // server-side polling of SyncRead; SSE/streaming is a future evolution.
-  rpc AwaitInvocation(AwaitInvocationRequest) returns (AwaitInvocationResponse) {
-    option (google.api.http) = {
-      post: "/await/{invocation_id}"
-      body: "*"
-    };
-  }
+  // reaches Completed and returns its output. Server-side polling of
+  // SyncRead today; SSE/streaming is a future evolution.
+  rpc AwaitInvocation(AwaitInvocationRequest) returns (AwaitInvocationResponse);
 
-  // ResolveAwakeable completes an outstanding awakeable previously created
-  // by a handler via ctx.Awakeable(). Routes to the owning partition by
-  // looking up the awakeable directory.
-  rpc ResolveAwakeable(ResolveAwakeableRequest) returns (ResolveAwakeableResponse) {
-    option (google.api.http) = {
-      post: "/awakeable/{awakeable_id}/resolve"
-      body: "*"
-    };
-  }
+  // ResolveAwakeable completes an outstanding awakeable previously
+  // created by a handler via ctx.Awakeable(). Routes to the owning
+  // partition by looking up the awakeable directory.
+  rpc ResolveAwakeable(ResolveAwakeableRequest) returns (ResolveAwakeableResponse);
 
-  // ListPartitions reports the partitions hosted on this node and their
-  // leadership state. Read-only debug endpoint.
-  rpc ListPartitions(ListPartitionsRequest) returns (ListPartitionsResponse) {
-    option (google.api.http) = {
-      get: "/admin/partitions"
-    };
-  }
+  // ListPartitions reports the partitions hosted on this node and
+  // their leadership state. Read-only debug endpoint.
+  rpc ListPartitions(ListPartitionsRequest) returns (ListPartitionsResponse);
 
-  // DescribeInvocation returns the current status of an invocation without
-  // blocking. Read-only debug endpoint.
-  rpc DescribeInvocation(DescribeInvocationRequest) returns (DescribeInvocationResponse) {
-    option (google.api.http) = {
-      get: "/admin/invocation/{invocation_id}"
-    };
-  }
+  // DescribeInvocation returns the current status of an invocation
+  // without blocking. Read-only debug endpoint.
+  rpc DescribeInvocation(DescribeInvocationRequest) returns (DescribeInvocationResponse);
 
-  // AttachInvocation blocks (up to deadline) on an existing invocation and
-  // returns its outcome once Completed. Same shape as AwaitInvocation but
-  // explicit about attaching to an already-submitted invocation by id.
-  rpc AttachInvocation(AttachInvocationRequest) returns (AttachInvocationResponse) {
-    option (google.api.http) = {
-      post: "/attach/{invocation_id}"
-      body: "*"
-    };
-  }
+  // AttachInvocation blocks (up to deadline) on an existing invocation
+  // and returns its outcome once Completed. Same shape as
+  // AwaitInvocation but explicit about attaching to an already-
+  // submitted invocation by id.
+  rpc AttachInvocation(AttachInvocationRequest) returns (AttachInvocationResponse);
 
-  // GetInvocationOutput is a non-blocking lookup of an invocation's current
-  // outcome. Returns PENDING for still-running invocations, COMPLETED_OK /
-  // COMPLETED_FAILED for terminated ones, UNKNOWN if no such invocation is
-  // known to this node.
-  rpc GetInvocationOutput(GetInvocationOutputRequest) returns (GetInvocationOutputResponse) {
-    option (google.api.http) = {
-      get: "/output/{invocation_id}"
-    };
-  }
+  // GetInvocationOutput is a non-blocking lookup of an invocation's
+  // current outcome. Returns PENDING for still-running invocations,
+  // COMPLETED_OK / COMPLETED_FAILED for terminated ones, UNKNOWN if no
+  // such invocation is known to this node.
+  rpc GetInvocationOutput(GetInvocationOutputRequest) returns (GetInvocationOutputResponse);
 
   // GetObjectState reads a single state value for a virtual object.
-  // Read-only admin endpoint; routes to the partition owning the object
-  // by hashing (service, object_key) through the cluster Partitioner.
-  // Returns present=false (not an error) when the key is absent.
-  rpc GetObjectState(GetObjectStateRequest) returns (GetObjectStateResponse) {
-    option (google.api.http) = {
-      get: "/admin/object/{service}/{object_key}/state/{state_key}"
-    };
-  }
+  // Routes to the partition owning the object by hashing (service,
+  // object_key) through the cluster Partitioner. present=false (not an
+  // error) when the key is absent.
+  rpc GetObjectState(GetObjectStateRequest) returns (GetObjectStateResponse);
 }
 
 message SubmitInvocationRequest {
-  // Path-bound: service name (e.g. "Greeter").
   string service = 1;
-  // Path-bound: handler name (e.g. "hello").
   string handler = 2;
   // Optional object key. Empty for unkeyed services.
   string object_key = 3;
-  // Handler input bytes (JSON, proto, anything — the SDK opaquely passes it
-  // through). For HTTP/JSON callers this comes in as base64 — grpc-gateway
-  // handles the bytes encoding.
+  // Handler input bytes (JSON, proto, anything — the SDK opaquely
+  // passes it through).
   bytes input = 4;
   // Optional idempotency key. When set, the engine dedups submissions
-  // against the (service, handler, object_key, idempotency_key) tuple so
-  // a retried Submit returns the same invocation_id.
+  // against the (service, handler, object_key, idempotency_key) tuple
+  // so a retried Submit returns the same invocation_id.
   string idempotency_key = 5;
 }
 
@@ -134,8 +95,8 @@ message ResolveAwakeableRequest {
   // Awakeable identifier (format "awk_<22 base64url chars>").
   string awakeable_id = 1;
   bytes value = 2;
-  // If set, the awakeable is rejected with this failure message rather than
-  // resolved with `value`.
+  // If set, the awakeable is rejected with this failure message rather
+  // than resolved with `value`.
   string failure_message = 3;
 }
 
@@ -165,11 +126,11 @@ message DescribeInvocationResponse {
 }
 
 message AttachInvocationRequest {
-  // Path-bound stringified id (preferred).
   string invocation_id = 1;
   reflow.engine.v1.InvocationId invocation_id_proto = 2;
-  // Server-side timeout in milliseconds. 0 means use the default-deadline
-  // interceptor's bound (2s). Capped at 60_000 by the server.
+  // Server-side timeout in milliseconds. 0 means use the
+  // default-deadline interceptor's bound (2s). Capped at 60_000 by the
+  // server.
   uint32 timeout_ms = 3;
 }
 
@@ -185,11 +146,8 @@ message GetInvocationOutputRequest {
 }
 
 message GetObjectStateRequest {
-  // Path-bound: service name.
   string service = 1;
-  // Path-bound: object key.
   string object_key = 2;
-  // Path-bound: state key within the object.
   string state_key = 3;
 }
 

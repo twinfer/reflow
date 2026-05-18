@@ -8,7 +8,6 @@ require (
 	github.com/cockroachdb/pebble/v2 v2.1.5
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/uuid v1.6.0
-	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0
 	github.com/knadh/koanf/parsers/json v1.0.0
 	github.com/knadh/koanf/parsers/yaml v1.1.0
 	github.com/knadh/koanf/providers/confmap v1.0.0
@@ -21,7 +20,6 @@ require (
 	gocloud.dev v0.45.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/time v0.14.0
-	google.golang.org/genproto/googleapis/api v0.0.0-20260511170946-3700d4141b60
 	google.golang.org/grpc v1.81.0
 	google.golang.org/protobuf v1.36.11
 	pgregory.net/rapid v1.3.0
@@ -151,5 +149,6 @@ require (
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	google.golang.org/api v0.256.0 // indirect
 	google.golang.org/genproto v0.0.0-20251124214823-79d6a2a48846 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260511170946-3700d4141b60 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260511170946-3700d4141b60 // indirect
 )

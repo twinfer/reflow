@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	connect "connectrpc.com/connect"
 
+	"github.com/twinfer/reflow/pkg/ingressclient"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
@@ -24,12 +24,11 @@ import (
 // cannot reach.
 //
 // SubmitInvocation / DescribeInvocation / ListPartitions go over the
-// public ingressv1.Ingress gRPC service the binary serves; the chaos
-// primitives manipulate the child process via Kill / Close.
+// Connect Ingress service the binary serves; the chaos primitives
+// manipulate the child process via Kill / Close.
 type SubprocessNode struct {
 	cmd         *exec.Cmd
-	conn        *grpc.ClientConn
-	client      ingressv1.IngressClient
+	client      *ingressclient.Client
 	ingressAddr string
 	raftAddr    string
 
@@ -124,9 +123,7 @@ func startSubprocessNode(opts SubprocessNodeOptions) (*SubprocessNode, error) {
 		return nil, fmt.Errorf("timeout waiting for ready (%s)", opts.StartupTimeout)
 	}
 
-	conn, err := grpc.NewClient(opts.IngressAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	cli, err := ingressclient.Dial(ingressclient.Options{BaseURL: "http://" + opts.IngressAddr})
 	if err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
@@ -135,8 +132,7 @@ func startSubprocessNode(opts SubprocessNodeOptions) (*SubprocessNode, error) {
 
 	n := &SubprocessNode{
 		cmd:         cmd,
-		conn:        conn,
-		client:      ingressv1.NewIngressClient(conn),
+		client:      cli,
 		ingressAddr: opts.IngressAddr,
 		raftAddr:    opts.RaftAddr,
 	}
@@ -155,42 +151,42 @@ func (n *SubprocessNode) reap() {
 	n.mu.Unlock()
 }
 
-// SubmitInvocation routes through ingressv1.Ingress.SubmitInvocation.
-// The server mints the invocation id and routes to the destination
-// shard via its Partitioner.
+// SubmitInvocation routes through Ingress.SubmitInvocation. The server
+// mints the invocation id and routes to the destination shard via its
+// Partitioner.
 func (n *SubprocessNode) SubmitInvocation(ctx context.Context, service, handler, objectKey string, input []byte) (*enginev1.InvocationId, error) {
-	resp, err := n.client.SubmitInvocation(ctx, &ingressv1.SubmitInvocationRequest{
+	resp, err := n.client.SubmitInvocation(ctx, connect.NewRequest(&ingressv1.SubmitInvocationRequest{
 		Service:   service,
 		Handler:   handler,
 		ObjectKey: objectKey,
 		Input:     input,
-	})
+	}))
 	if err != nil {
 		return nil, err
 	}
-	return resp.GetInvocationId(), nil
+	return resp.Msg.GetInvocationId(), nil
 }
 
 // DescribeInvocation queries the non-blocking ingress endpoint.
 func (n *SubprocessNode) DescribeInvocation(ctx context.Context, id *enginev1.InvocationId) (*enginev1.InvocationStatus, error) {
-	resp, err := n.client.DescribeInvocation(ctx, &ingressv1.DescribeInvocationRequest{
+	resp, err := n.client.DescribeInvocation(ctx, connect.NewRequest(&ingressv1.DescribeInvocationRequest{
 		InvocationIdProto: id,
-	})
+	}))
 	if err != nil {
 		return nil, err
 	}
-	return resp.GetStatus(), nil
+	return resp.Msg.GetStatus(), nil
 }
 
-// ListPartitions queries ingressv1.Ingress.ListPartitions and projects
-// the proto into the loadgen-local shape.
+// ListPartitions queries Ingress.ListPartitions and projects the proto
+// into the loadgen-local shape.
 func (n *SubprocessNode) ListPartitions(ctx context.Context) ([]PartitionInfo, error) {
-	resp, err := n.client.ListPartitions(ctx, &ingressv1.ListPartitionsRequest{})
+	resp, err := n.client.ListPartitions(ctx, connect.NewRequest(&ingressv1.ListPartitionsRequest{}))
 	if err != nil {
 		return nil, err
 	}
-	out := make([]PartitionInfo, 0, len(resp.GetPartitions()))
-	for _, p := range resp.GetPartitions() {
+	out := make([]PartitionInfo, 0, len(resp.Msg.GetPartitions()))
+	for _, p := range resp.Msg.GetPartitions() {
 		out = append(out, PartitionInfo{
 			ShardID:     p.GetShardId(),
 			IsLeader:    p.GetIsLeader(),
@@ -209,7 +205,7 @@ func (n *SubprocessNode) Close() {
 	if n == nil {
 		return
 	}
-	_ = n.conn.Close()
+	_ = n.client.Close()
 	n.mu.Lock()
 	exited := n.exited
 	n.mu.Unlock()
@@ -232,7 +228,7 @@ func (n *SubprocessNode) Kill() {
 	if n == nil {
 		return
 	}
-	_ = n.conn.Close()
+	_ = n.client.Close()
 	n.mu.Lock()
 	exited := n.exited
 	n.mu.Unlock()

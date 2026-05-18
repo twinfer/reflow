@@ -214,25 +214,17 @@ type StorageConfig struct {
 	DataDir string `koanf:"data_dir"`
 }
 
-// IngressConfig configures the client-facing gRPC + HTTP/JSON gateway.
-// reflow.Run starts ingress unless Disabled is true — it is how clients
-// submit invocations. Empty GRPCAddr + HTTPAddr defaults to :8081 (gRPC)
-// and :8080 (HTTP/JSON); set one explicitly and leave the other empty to
-// enable a single transport. Set Disabled to run engine nodes behind a
-// separate ingress fleet.
+// IngressConfig configures the client-facing Connect listener. One
+// HTTP/2 port serves Connect / gRPC / gRPC-Web / HTTP-JSON via Connect
+// content negotiation. reflow.Run starts ingress unless Disabled is
+// true — it is how clients submit invocations.
 type IngressConfig struct {
 	// Disabled skips starting the ingress server on this node. Use when
 	// clients submit via a separate ingress fleet; the engine still
 	// serves internal cluster traffic (delivery, admin) normally.
 	Disabled bool `koanf:"disabled"`
-	// GRPCAddr is the listen address for the native gRPC server.
-	// Empty disables the gRPC transport when HTTPAddr is set; if both
-	// are empty Run applies :8081.
-	GRPCAddr string `koanf:"grpc_addr"`
-	// HTTPAddr is the listen address for the grpc-gateway HTTP/JSON
-	// server. Empty disables the HTTP transport when GRPCAddr is set;
-	// if both are empty Run applies :8080.
-	HTTPAddr string `koanf:"http_addr"`
+	// Addr is the listen address. Empty defaults to ":8080".
+	Addr string `koanf:"addr"`
 	// Creds selects the transport-security driver. Zero spec is
 	// insecure; multi-node deployments emit a startup warning so the
 	// operator knows the client surface is unauthenticated.

@@ -3,20 +3,20 @@ package engine_test
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
-	"io"
-	"net/http"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	connect "connectrpc.com/connect"
+
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/pkg/handler"
+	"github.com/twinfer/reflow/pkg/ingressclient"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
 
 // Integration tests for combinator futures (ctx.All / ctx.Any):
@@ -33,36 +33,41 @@ import (
 // All tests bring up a single-node host + ingress and resolve awakeables
 // via the HTTP endpoint.
 
-// resolveAwakeable POSTs the value to /awakeable/{id}/resolve, retrying
-// while the server reports NotFound. The JEAwakeable journal write
-// races with the resolve call on the first attempt; retrying for a
-// couple of seconds covers the gap without falsely failing on cold
-// start.
-func resolveAwakeable(t *testing.T, base, id string, value []byte) {
+// dialIngress wraps ingressclient.Dial with t.Cleanup.
+func dialIngress(t *testing.T, addr string) *ingressclient.Client {
 	t.Helper()
-	body, _ := json.Marshal(map[string]any{
-		"value": base64.StdEncoding.EncodeToString(value),
-	})
+	cli, err := ingressclient.Dial(ingressclient.Options{BaseURL: "http://" + addr})
+	if err != nil {
+		t.Fatalf("ingressclient.Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = cli.Close() })
+	return cli
+}
+
+// resolveAwakeable calls Ingress.ResolveAwakeable, retrying while the
+// server reports NotFound. The JEAwakeable journal write races with the
+// resolve call on the first attempt; retrying for a couple of seconds
+// covers the gap without falsely failing on cold start.
+func resolveAwakeable(t *testing.T, cli *ingressclient.Client, id string, value []byte) {
+	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		req, _ := http.NewRequest(http.MethodPost, base+"/awakeable/"+id+"/resolve", bytes.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("resolve %s: %v", id, err)
-		}
-		respBody, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
-			if !bytes.Contains(respBody, []byte(`"resolved":true`)) {
-				t.Fatalf("resolve %s: missing resolved:true in %s", id, string(respBody))
+		resp, err := cli.ResolveAwakeable(context.Background(), connect.NewRequest(&ingressv1.ResolveAwakeableRequest{
+			AwakeableId: id,
+			Value:       value,
+		}))
+		if err == nil {
+			if !resp.Msg.GetResolved() {
+				t.Fatalf("resolve %s: missing resolved:true", id)
 			}
 			return
 		}
-		if resp.StatusCode != http.StatusNotFound {
-			t.Fatalf("resolve %s: code=%d body=%s", id, resp.StatusCode, string(respBody))
+		var ce *connect.Error
+		if errors.As(err, &ce) && ce.Code() == connect.CodeNotFound {
+			time.Sleep(40 * time.Millisecond)
+			continue
 		}
-		time.Sleep(40 * time.Millisecond)
+		t.Fatalf("resolve %s: %v", id, err)
 	}
 	t.Fatalf("awakeable %s never became resolvable", id)
 }
@@ -135,7 +140,7 @@ func TestCombinator_All_ResolvesWhenAllChildrenComplete(t *testing.T) {
 	}
 
 	h, rt := bringUpHostWithIngress(t, reg)
-	base := "http://" + rt.HTTPAddr()
+	cli := dialIngress(t, rt.Addr())
 
 	id := buildID(1, "joiner-all")
 	target := &enginev1.InvocationTarget{ServiceName: "Joiner", HandlerName: "all"}
@@ -152,9 +157,9 @@ func TestCombinator_All_ResolvesWhenAllChildrenComplete(t *testing.T) {
 	got := drainAwakeableIDs(t, idsCh, 3, 5*time.Second)
 	// Resolve out of argument order — Results must still pick them up in
 	// the original (f1, f2, f3) sequence.
-	resolveAwakeable(t, base, got[2], []byte("third"))
-	resolveAwakeable(t, base, got[0], []byte("first"))
-	resolveAwakeable(t, base, got[1], []byte("second"))
+	resolveAwakeable(t, cli, got[2], []byte("third"))
+	resolveAwakeable(t, cli, got[0], []byte("first"))
+	resolveAwakeable(t, cli, got[1], []byte("second"))
 
 	completed := awaitCompleted(t, h, 1, id, 10*time.Second)
 	if want := "first|second|third"; string(completed.GetOutput()) != want {
@@ -194,7 +199,7 @@ func TestCombinator_All_StaysSuspendedOnPartialResolution(t *testing.T) {
 	}
 
 	h, rt := bringUpHostWithIngress(t, reg)
-	base := "http://" + rt.HTTPAddr()
+	cli := dialIngress(t, rt.Addr())
 
 	id := buildID(1, "joiner-part")
 	target := &enginev1.InvocationTarget{ServiceName: "Joiner", HandlerName: "partial"}
@@ -212,8 +217,8 @@ func TestCombinator_All_StaysSuspendedOnPartialResolution(t *testing.T) {
 
 	// Resolve two of three. The handler will fast-replay, see partial
 	// resolution, and re-suspend on the remaining one.
-	resolveAwakeable(t, base, got[0], []byte("v0"))
-	resolveAwakeable(t, base, got[1], []byte("v1"))
+	resolveAwakeable(t, cli, got[0], []byte("v0"))
+	resolveAwakeable(t, cli, got[1], []byte("v1"))
 
 	// Wait for Suspended with only the third awakeable's token left.
 	awaitingOn := awaitSuspended(t, h, 1, id, 5*time.Second)
@@ -229,7 +234,7 @@ func TestCombinator_All_StaysSuspendedOnPartialResolution(t *testing.T) {
 	}
 
 	// Finish the join.
-	resolveAwakeable(t, base, got[2], []byte("v2"))
+	resolveAwakeable(t, cli, got[2], []byte("v2"))
 	completed := awaitCompleted(t, h, 1, id, 10*time.Second)
 	if want := "v0,v1,v2"; string(completed.GetOutput()) != want {
 		t.Errorf("output = %q; want %q", completed.GetOutput(), want)
@@ -264,7 +269,7 @@ func TestCombinator_Any_ReturnsFirstResolverByArgumentOrder(t *testing.T) {
 	}
 
 	h, rt := bringUpHostWithIngress(t, reg)
-	base := "http://" + rt.HTTPAddr()
+	cli := dialIngress(t, rt.Addr())
 
 	id := buildID(1, "racer-any")
 	target := &enginev1.InvocationTarget{ServiceName: "Racer", HandlerName: "any"}
@@ -281,7 +286,7 @@ func TestCombinator_Any_ReturnsFirstResolverByArgumentOrder(t *testing.T) {
 	got := drainAwakeableIDs(t, idsCh, 3, 5*time.Second)
 	// Resolve only the middle awakeable; Any should pick it up because
 	// it is the lowest-indexed *resolved* child.
-	resolveAwakeable(t, base, got[1], []byte("middle"))
+	resolveAwakeable(t, cli, got[1], []byte("middle"))
 
 	completed := awaitCompleted(t, h, 1, id, 10*time.Second)
 	if want := "won:middle"; string(completed.GetOutput()) != want {
@@ -364,7 +369,7 @@ func TestCombinator_Nested_AllOfAwakeableAndAny(t *testing.T) {
 	}
 
 	h, rt := bringUpHostWithIngress(t, reg)
-	base := "http://" + rt.HTTPAddr()
+	cli := dialIngress(t, rt.Addr())
 
 	id := buildID(1, "nest-ed")
 	target := &enginev1.InvocationTarget{ServiceName: "Nest", HandlerName: "ed"}
@@ -380,7 +385,7 @@ func TestCombinator_Nested_AllOfAwakeableAndAny(t *testing.T) {
 
 	outerID := <-outerCh
 	<-innerCh // drain but never resolve — the Sleep wins the inner Any
-	resolveAwakeable(t, base, outerID, []byte("payload"))
+	resolveAwakeable(t, cli, outerID, []byte("payload"))
 
 	completed := awaitCompleted(t, h, 1, id, 10*time.Second)
 	if want := "outer=payload"; string(completed.GetOutput()) != want {
@@ -428,13 +433,12 @@ func TestCombinator_All_SurvivesRestart(t *testing.T) {
 	hBefore := openSingleNodeOnDir(t, dataDir, raftAddr)
 	registerDeploymentURL(t, hBefore, handlerURL)
 	rtBefore, err := ingress.Start(context.Background(), hBefore, ingress.Config{
-		HTTPAddr: "127.0.0.1:0",
-		GRPCAddr: "127.0.0.1:0",
+		Addr: "127.0.0.1:0",
 	})
 	if err != nil {
 		t.Fatalf("ingress: %v", err)
 	}
-	baseBefore := "http://" + rtBefore.HTTPAddr()
+	cliBefore := dialIngress(t, rtBefore.Addr())
 
 	id := buildID(1, "persist-all")
 	target := &enginev1.InvocationTarget{ServiceName: "Persist", HandlerName: "all"}
@@ -450,7 +454,7 @@ func TestCombinator_All_SurvivesRestart(t *testing.T) {
 	propCancel()
 
 	got := drainAwakeableIDs(t, idsCh, 2, 5*time.Second)
-	resolveAwakeable(t, baseBefore, got[0], []byte("pre"))
+	resolveAwakeable(t, cliBefore, got[0], []byte("pre"))
 	// Wait for the handler to fast-replay, observe the first
 	// resolution, and re-suspend on the second awakeable. Otherwise
 	// the kill could land before the partial-resolution journal write
@@ -471,21 +475,20 @@ func TestCombinator_All_SurvivesRestart(t *testing.T) {
 	emitted.Store(false)
 	hAfter := openSingleNodeOnDir(t, dataDir, raftAddr)
 	rtAfter, err := ingress.Start(context.Background(), hAfter, ingress.Config{
-		HTTPAddr: "127.0.0.1:0",
-		GRPCAddr: "127.0.0.1:0",
+		Addr: "127.0.0.1:0",
 	})
 	if err != nil {
 		t.Fatalf("ingress after restart: %v", err)
 	}
 	t.Cleanup(func() { _ = rtAfter.Close() })
-	baseAfter := "http://" + rtAfter.HTTPAddr()
+	cliAfter := dialIngress(t, rtAfter.Addr())
 
 	// Post-restart the invocation is still Suspended on awakeable[1]
 	// (engine doesn't auto-resume Suspended; it wakes on the next
 	// journal append). Resolve directly using the pre-crash ID — the
 	// awakeable journal entry preserved it across the restart, so the
 	// engine routes the resolution to the same suspended invocation.
-	resolveAwakeable(t, baseAfter, got[1], []byte("post"))
+	resolveAwakeable(t, cliAfter, got[1], []byte("post"))
 
 	completed := awaitCompleted(t, hAfter, 1, id, 15*time.Second)
 	if want := "pre:post"; string(completed.GetOutput()) != want {

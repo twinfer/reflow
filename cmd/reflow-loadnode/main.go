@@ -32,7 +32,6 @@ import (
 	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/ingress"
 	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
-	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
 
 func main() {
@@ -124,18 +123,18 @@ func run() error {
 		}
 	}
 
-	iln, err := listenWithRetry(ingressAddr, 2*time.Second)
-	if err != nil {
+	// Pre-bind to fail fast if the port is taken, then close so
+	// ingress.Start can bind it itself.
+	if iln, err := listenWithRetry(ingressAddr, 2*time.Second); err != nil {
 		return fmt.Errorf("listen ingress: %w", err)
+	} else {
+		_ = iln.Close()
 	}
-	igs := grpc.NewServer()
-	ingressv1.RegisterIngressServer(igs, ingress.NewServer(host, nil))
-	go func() {
-		if err := igs.Serve(iln); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			fmt.Fprintf(os.Stderr, "reflow-loadnode: ingress Serve exited: %v\n", err)
-		}
-	}()
-	defer igs.GracefulStop()
+	irt, err := ingress.Start(ctx, host, ingress.Config{Addr: ingressAddr})
+	if err != nil {
+		return fmt.Errorf("ingress.Start: %w", err)
+	}
+	defer func() { _ = irt.Close() }()
 
 	// Tell the parent process we're serving. The test waits for this
 	// line on stdout before connecting its ingress client.

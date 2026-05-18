@@ -3,22 +3,22 @@ package ingress_test
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/json"
-	"fmt"
-	"io"
+	"errors"
 	"net"
-	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
+
+	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/admin"
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/pkg/handler"
+	"github.com/twinfer/reflow/pkg/ingressclient"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
 
 // makeID builds an InvocationId from a partition key and a 16-byte uuid.
@@ -38,11 +38,11 @@ func freeAddr(t *testing.T) string {
 }
 
 // bringUpHostWithIngress starts a single-node Host with shard 0 +
-// shard 1, starts a pkg/handler hosting reg, registers its URL as a
-// deployment, and starts the ingress HTTP+gRPC transports on ephemeral
-// ports. The cleanup stops everything in the right order (ingress
-// before host so in-flight requests don't dangle).
-func bringUpHostWithIngress(t *testing.T, reg *handler.Registry) (*engine.Host, *ingress.Runtime) {
+// shard 1, starts a handler hosting reg, registers its URL as a
+// deployment, and starts the ingress Connect transport on an ephemeral
+// port. Returns the host, the runtime, and a typed Connect client
+// dialed at the ingress address.
+func bringUpHostWithIngress(t *testing.T, reg *handler.Registry) (*engine.Host, *ingress.Runtime, *ingressclient.Client) {
 	t.Helper()
 	dir := t.TempDir()
 	h, err := engine.NewHost(t.Context(), engine.HostConfig{
@@ -100,36 +100,22 @@ func bringUpHostWithIngress(t *testing.T, reg *handler.Registry) (*engine.Host, 
 		}
 	}
 
-	rt, err := ingress.Start(context.Background(), h, ingress.Config{
-		HTTPAddr: "127.0.0.1:0",
-		GRPCAddr: "127.0.0.1:0",
-	})
+	rt, err := ingress.Start(context.Background(), h, ingress.Config{Addr: "127.0.0.1:0"})
 	if err != nil {
 		t.Fatalf("ingress.Start: %v", err)
 	}
 	t.Cleanup(func() { _ = rt.Close() })
-	return h, rt
+
+	cli, err := ingressclient.Dial(ingressclient.Options{BaseURL: "http://" + rt.Addr()})
+	if err != nil {
+		t.Fatalf("ingressclient.Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = cli.Close() })
+	return h, rt, cli
 }
 
-func httpPost(t *testing.T, url string, body any) ([]byte, int) {
-	t.Helper()
-	buf, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	resp, err := http.Post(url, "application/json", bytes.NewReader(buf))
-	if err != nil {
-		t.Fatalf("POST %s: %v", url, err)
-	}
-	defer resp.Body.Close()
-	out, _ := io.ReadAll(resp.Body)
-	return out, resp.StatusCode
-}
-
-// TestIngress_SubmitAndAwaitEcho is the smallest happy-path test: HTTP
-// /invocation/Echo/echo with a JSON-base64-encoded input, poll /await, get
-// the same bytes back. Exercises the full grpc-gateway → gRPC → server →
-// Host → Invoker round-trip.
+// TestIngress_SubmitAndAwaitEcho is the smallest happy-path test:
+// SubmitInvocation, then poll AwaitInvocation, get the same bytes back.
 func TestIngress_SubmitAndAwaitEcho(t *testing.T) {
 	reg := handler.NewRegistry()
 	if err := reg.RegisterService("Echo", "echo", func(_ handler.Context, in []byte) ([]byte, error) {
@@ -137,60 +123,44 @@ func TestIngress_SubmitAndAwaitEcho(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	_, rt := bringUpHostWithIngress(t, reg)
-	base := "http://" + rt.HTTPAddr()
+	_, _, cli := bringUpHostWithIngress(t, reg)
 
-	submitBody := map[string]any{
-		"input": base64.StdEncoding.EncodeToString([]byte("hello")),
+	submitResp, err := cli.SubmitInvocation(context.Background(), connect.NewRequest(&ingressv1.SubmitInvocationRequest{
+		Service: "Echo",
+		Handler: "echo",
+		Input:   []byte("hello"),
+	}))
+	if err != nil {
+		t.Fatalf("submit: %v", err)
 	}
-	raw, code := httpPost(t, base+"/invocation/Echo/echo", submitBody)
-	if code != http.StatusOK {
-		t.Fatalf("submit: code=%d body=%s", code, string(raw))
-	}
-	var submitResp struct {
-		InvocationIdStr string `json:"invocationIdStr"`
-	}
-	if err := json.Unmarshal(raw, &submitResp); err != nil {
-		t.Fatalf("submit decode: %v (body=%s)", err, string(raw))
-	}
-	if submitResp.InvocationIdStr == "" {
-		t.Fatalf("submit: missing invocation_id_str (body=%s)", string(raw))
+	idStr := submitResp.Msg.GetInvocationIdStr()
+	if idStr == "" {
+		t.Fatalf("submit: missing invocation_id_str")
 	}
 
-	awaitURL := fmt.Sprintf("%s/await/%s", base, submitResp.InvocationIdStr)
-	// Poll a few times — the handler is fast but the Raft round-trip + leader
-	// gain race can take a moment after startup.
-	var awaitResp struct {
-		Output         string `json:"output"`
-		FailureMessage string `json:"failureMessage"`
-		Completed      bool   `json:"completed"`
-	}
+	var awaitMsg *ingressv1.AwaitInvocationResponse
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		raw, code = httpPost(t, awaitURL, map[string]any{"timeoutMs": 1000})
-		if code != http.StatusOK {
-			t.Fatalf("await: code=%d body=%s", code, string(raw))
+		resp, err := cli.AwaitInvocation(context.Background(), connect.NewRequest(&ingressv1.AwaitInvocationRequest{
+			InvocationId: idStr,
+			TimeoutMs:    1000,
+		}))
+		if err != nil {
+			t.Fatalf("await: %v", err)
 		}
-		if err := json.Unmarshal(raw, &awaitResp); err != nil {
-			t.Fatalf("await decode: %v (body=%s)", err, string(raw))
-		}
-		if awaitResp.Completed {
+		awaitMsg = resp.Msg
+		if awaitMsg.GetCompleted() {
 			break
 		}
 	}
-	if !awaitResp.Completed {
-		t.Fatalf("await never completed: %+v", awaitResp)
+	if awaitMsg == nil || !awaitMsg.GetCompleted() {
+		t.Fatalf("await never completed: %+v", awaitMsg)
 	}
-	// grpc-gateway base64-encodes bytes fields in JSON.
-	got, err := base64.StdEncoding.DecodeString(awaitResp.Output)
-	if err != nil {
-		t.Fatalf("decode output: %v", err)
+	if got := string(awaitMsg.GetOutput()); got != "echo:hello" {
+		t.Errorf("output = %q; want echo:hello", got)
 	}
-	if string(got) != "echo:hello" {
-		t.Errorf("output = %q; want echo:hello", string(got))
-	}
-	if awaitResp.FailureMessage != "" {
-		t.Errorf("failure_message = %q; want empty", awaitResp.FailureMessage)
+	if msg := awaitMsg.GetFailureMessage(); msg != "" {
+		t.Errorf("failure_message = %q; want empty", msg)
 	}
 }
 
@@ -204,70 +174,41 @@ func TestIngress_DescribeAndListPartitions(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	_, rt := bringUpHostWithIngress(t, reg)
-	base := "http://" + rt.HTTPAddr()
+	_, _, cli := bringUpHostWithIngress(t, reg)
 
-	// ListPartitions
-	resp, err := http.Get(base + "/admin/partitions")
+	listResp, err := cli.ListPartitions(context.Background(), connect.NewRequest(&ingressv1.ListPartitionsRequest{}))
 	if err != nil {
-		t.Fatalf("GET partitions: %v", err)
+		t.Fatalf("ListPartitions: %v", err)
 	}
-	raw, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("list partitions: code=%d body=%s", resp.StatusCode, string(raw))
+	parts := listResp.Msg.GetPartitions()
+	if len(parts) != 1 || parts[0].GetShardId() != 1 {
+		t.Fatalf("ListPartitions: got %+v", parts)
 	}
-	var listResp struct {
-		Partitions []struct {
-			ShardId  string `json:"shardId"`
-			IsLeader bool   `json:"isLeader"`
-		} `json:"partitions"`
-	}
-	if err := json.Unmarshal(raw, &listResp); err != nil {
-		t.Fatalf("list decode: %v (body=%s)", err, string(raw))
-	}
-	if len(listResp.Partitions) != 1 || listResp.Partitions[0].ShardId != "1" {
-		t.Fatalf("list partitions: got %+v", listResp.Partitions)
-	}
-	if !listResp.Partitions[0].IsLeader {
-		t.Errorf("shard 1 should be leader; got %+v", listResp.Partitions[0])
+	if !parts[0].GetIsLeader() {
+		t.Errorf("shard 1 should be leader; got %+v", parts[0])
 	}
 
-	// Submit an invocation, then DescribeInvocation should eventually
-	// report Completed.
-	submitBody := map[string]any{
-		"input": base64.StdEncoding.EncodeToString([]byte("x")),
+	submitResp, err := cli.SubmitInvocation(context.Background(), connect.NewRequest(&ingressv1.SubmitInvocationRequest{
+		Service: "Echo",
+		Handler: "echo",
+		Input:   []byte("x"),
+	}))
+	if err != nil {
+		t.Fatalf("submit: %v", err)
 	}
-	raw, code := httpPost(t, base+"/invocation/Echo/echo", submitBody)
-	if code != http.StatusOK {
-		t.Fatalf("submit: code=%d body=%s", code, string(raw))
-	}
-	var submitResp struct {
-		InvocationIdStr string `json:"invocationIdStr"`
-	}
-	if err := json.Unmarshal(raw, &submitResp); err != nil {
-		t.Fatalf("submit decode: %v", err)
-	}
-	descURL := base + "/admin/invocation/" + submitResp.InvocationIdStr
+	idStr := submitResp.Msg.GetInvocationIdStr()
 	deadline := time.Now().Add(5 * time.Second)
-	for {
-		resp, err := http.Get(descURL)
+	for time.Now().Before(deadline) {
+		desc, err := cli.DescribeInvocation(context.Background(), connect.NewRequest(&ingressv1.DescribeInvocationRequest{InvocationId: idStr}))
 		if err != nil {
-			t.Fatalf("GET describe: %v", err)
+			t.Fatalf("DescribeInvocation: %v", err)
 		}
-		raw, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("describe: code=%d body=%s", resp.StatusCode, string(raw))
-		}
-		if bytes.Contains(raw, []byte(`"completed":`)) {
+		if _, ok := desc.Msg.GetStatus().GetStatus().(*enginev1.InvocationStatus_Completed); ok {
 			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("describe never reached Completed: body=%s", string(raw))
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	t.Fatal("describe never reached Completed")
 }
 
 // TestIngress_AttachAndGetOutput exercises the attach and output endpoints:
@@ -281,105 +222,62 @@ func TestIngress_AttachAndGetOutput(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	_, rt := bringUpHostWithIngress(t, reg)
-	base := "http://" + rt.HTTPAddr()
+	_, _, cli := bringUpHostWithIngress(t, reg)
 
-	// Submit.
-	submitBody := map[string]any{
-		"input": base64.StdEncoding.EncodeToString([]byte("phase3")),
+	submitResp, err := cli.SubmitInvocation(context.Background(), connect.NewRequest(&ingressv1.SubmitInvocationRequest{
+		Service: "Echo",
+		Handler: "echo",
+		Input:   []byte("phase3"),
+	}))
+	if err != nil {
+		t.Fatalf("submit: %v", err)
 	}
-	raw, code := httpPost(t, base+"/invocation/Echo/echo", submitBody)
-	if code != http.StatusOK {
-		t.Fatalf("submit: code=%d body=%s", code, string(raw))
-	}
-	var submitResp struct {
-		InvocationIdStr string `json:"invocationIdStr"`
-	}
-	if err := json.Unmarshal(raw, &submitResp); err != nil {
-		t.Fatalf("submit decode: %v", err)
-	}
+	idStr := submitResp.Msg.GetInvocationIdStr()
 
-	// GetInvocationOutput / AttachInvocation eventually return COMPLETED_OK.
-	outputURL := base + "/output/" + submitResp.InvocationIdStr
-	attachURL := base + "/attach/" + submitResp.InvocationIdStr
+	var attach *ingressv1.AttachInvocationResponse
 	deadline := time.Now().Add(5 * time.Second)
-	var attachResp struct {
-		Output    string `json:"output"`
-		Completed bool   `json:"completed"`
-	}
 	for time.Now().Before(deadline) {
-		raw, code = httpPost(t, attachURL, map[string]any{"timeoutMs": 1000})
-		if code != http.StatusOK {
-			t.Fatalf("attach: code=%d body=%s", code, string(raw))
+		resp, err := cli.AttachInvocation(context.Background(), connect.NewRequest(&ingressv1.AttachInvocationRequest{
+			InvocationId: idStr,
+			TimeoutMs:    1000,
+		}))
+		if err != nil {
+			t.Fatalf("attach: %v", err)
 		}
-		if err := json.Unmarshal(raw, &attachResp); err != nil {
-			t.Fatalf("attach decode: %v body=%s", err, string(raw))
-		}
-		if attachResp.Completed {
+		attach = resp.Msg
+		if attach.GetCompleted() {
 			break
 		}
 	}
-	if !attachResp.Completed {
-		t.Fatalf("attach never completed: %+v", attachResp)
+	if attach == nil || !attach.GetCompleted() {
+		t.Fatalf("attach never completed: %+v", attach)
 	}
-	got, err := base64.StdEncoding.DecodeString(attachResp.Output)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if string(got) != "echo:phase3" {
-		t.Errorf("attach output = %q; want echo:phase3", string(got))
+	if got := string(attach.GetOutput()); got != "echo:phase3" {
+		t.Errorf("attach output = %q; want echo:phase3", got)
 	}
 
-	// GetInvocationOutput post-completion: status COMPLETED_OK + output.
-	resp, err := http.Get(outputURL)
+	outResp, err := cli.GetInvocationOutput(context.Background(), connect.NewRequest(&ingressv1.GetInvocationOutputRequest{InvocationId: idStr}))
 	if err != nil {
-		t.Fatalf("GET output: %v", err)
+		t.Fatalf("GetInvocationOutput: %v", err)
 	}
-	raw, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("output: code=%d body=%s", resp.StatusCode, string(raw))
+	if outResp.Msg.GetStatus() != ingressv1.GetInvocationOutputResponse_COMPLETED_OK {
+		t.Errorf("status = %v; want COMPLETED_OK", outResp.Msg.GetStatus())
 	}
-	var outResp struct {
-		Status string `json:"status"`
-		Output string `json:"output"`
-	}
-	if err := json.Unmarshal(raw, &outResp); err != nil {
-		t.Fatalf("output decode: %v body=%s", err, string(raw))
-	}
-	if outResp.Status != "COMPLETED_OK" {
-		t.Errorf("status = %q; want COMPLETED_OK", outResp.Status)
-	}
-	gotOut, _ := base64.StdEncoding.DecodeString(outResp.Output)
-	if string(gotOut) != "echo:phase3" {
-		t.Errorf("output = %q; want echo:phase3", string(gotOut))
+	if got := string(outResp.Msg.GetOutput()); got != "echo:phase3" {
+		t.Errorf("output = %q; want echo:phase3", got)
 	}
 
-	// GetInvocationOutput for an unknown id → UNKNOWN. Use a syntactically
-	// valid id whose UUID is all zero (never minted by the ingress's rand).
+	// GetInvocationOutput for an unknown id → UNKNOWN.
 	unknown := ingress.FormatInvocationID(makeID(1, make([]byte, 16)))
-	resp, err = http.Get(base + "/output/" + unknown)
+	unkResp, err := cli.GetInvocationOutput(context.Background(), connect.NewRequest(&ingressv1.GetInvocationOutputRequest{InvocationId: unknown}))
 	if err != nil {
-		t.Fatalf("GET output unknown: %v", err)
+		t.Fatalf("GetInvocationOutput unknown: %v", err)
 	}
-	raw, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("output unknown: code=%d body=%s", resp.StatusCode, string(raw))
-	}
-	var unkResp struct {
-		Status string `json:"status"`
-	}
-	if err := json.Unmarshal(raw, &unkResp); err != nil {
-		t.Fatalf("unknown decode: %v body=%s", err, string(raw))
-	}
-	// "UNKNOWN" or "PENDING" (Free maps to UNKNOWN; transient errors also UNKNOWN).
-	if unkResp.Status != "UNKNOWN" {
-		t.Errorf("unknown id status = %q; want UNKNOWN", unkResp.Status)
+	if unkResp.Msg.GetStatus() != ingressv1.GetInvocationOutputResponse_UNKNOWN {
+		t.Errorf("unknown id status = %v; want UNKNOWN", unkResp.Msg.GetStatus())
 	}
 }
 
-// TestIngress_SubmitRejectsEmptyService verifies the InvalidArgument path.
 // TestIngress_GetObjectState submits an invocation that writes state for
 // a virtual object, then reads it back via the admin endpoint. Also
 // covers the absent-key path (present=false, not an error).
@@ -393,100 +291,80 @@ func TestIngress_GetObjectState(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	_, rt := bringUpHostWithIngress(t, reg)
-	base := "http://" + rt.HTTPAddr()
+	_, _, cli := bringUpHostWithIngress(t, reg)
 
-	// Submit with object_key="obj-1" so state is scoped under (Stater, obj-1).
-	submitBody := map[string]any{
-		"objectKey": "obj-1",
-		"input":     base64.StdEncoding.EncodeToString([]byte("payload")),
+	submitResp, err := cli.SubmitInvocation(context.Background(), connect.NewRequest(&ingressv1.SubmitInvocationRequest{
+		Service:   "Stater",
+		Handler:   "set",
+		ObjectKey: "obj-1",
+		Input:     []byte("payload"),
+	}))
+	if err != nil {
+		t.Fatalf("submit: %v", err)
 	}
-	raw, code := httpPost(t, base+"/invocation/Stater/set", submitBody)
-	if code != http.StatusOK {
-		t.Fatalf("submit: code=%d body=%s", code, string(raw))
-	}
-	var submitResp struct {
-		InvocationIdStr string `json:"invocationIdStr"`
-	}
-	if err := json.Unmarshal(raw, &submitResp); err != nil {
-		t.Fatalf("submit decode: %v", err)
-	}
+	idStr := submitResp.Msg.GetInvocationIdStr()
 
-	// Wait for completion so the state write has applied.
-	attachURL := base + "/attach/" + submitResp.InvocationIdStr
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		raw, code = httpPost(t, attachURL, map[string]any{"timeoutMs": 1000})
-		if code != http.StatusOK {
-			t.Fatalf("attach: code=%d body=%s", code, string(raw))
+		resp, err := cli.AttachInvocation(context.Background(), connect.NewRequest(&ingressv1.AttachInvocationRequest{
+			InvocationId: idStr,
+			TimeoutMs:    1000,
+		}))
+		if err != nil {
+			t.Fatalf("attach: %v", err)
 		}
-		var att struct {
-			Completed bool `json:"completed"`
-		}
-		_ = json.Unmarshal(raw, &att)
-		if att.Completed {
+		if resp.Msg.GetCompleted() {
 			break
 		}
 	}
 
-	// Read state back.
-	resp, err := http.Get(base + "/admin/object/Stater/obj-1/state/k")
+	stateResp, err := cli.GetObjectState(context.Background(), connect.NewRequest(&ingressv1.GetObjectStateRequest{
+		Service:   "Stater",
+		ObjectKey: "obj-1",
+		StateKey:  "k",
+	}))
 	if err != nil {
-		t.Fatalf("GET state: %v", err)
+		t.Fatalf("GetObjectState: %v", err)
 	}
-	raw, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("get state: code=%d body=%s", resp.StatusCode, string(raw))
+	if !stateResp.Msg.GetPresent() {
+		t.Fatalf("present = false; want true")
 	}
-	var stateResp struct {
-		Value   string `json:"value"`
-		Present bool   `json:"present"`
-	}
-	if err := json.Unmarshal(raw, &stateResp); err != nil {
-		t.Fatalf("state decode: %v (body=%s)", err, string(raw))
-	}
-	if !stateResp.Present {
-		t.Fatalf("present = false; want true (body=%s)", string(raw))
-	}
-	got, err := base64.StdEncoding.DecodeString(stateResp.Value)
-	if err != nil {
-		t.Fatalf("decode value: %v", err)
-	}
-	if string(got) != "payload" {
-		t.Errorf("value = %q; want payload", string(got))
+	if got := string(stateResp.Msg.GetValue()); got != "payload" {
+		t.Errorf("value = %q; want payload", got)
 	}
 
 	// Absent key on a never-touched object → present=false, no error.
-	resp, err = http.Get(base + "/admin/object/Stater/never-existed/state/missing")
+	absent, err := cli.GetObjectState(context.Background(), connect.NewRequest(&ingressv1.GetObjectStateRequest{
+		Service:   "Stater",
+		ObjectKey: "never-existed",
+		StateKey:  "missing",
+	}))
 	if err != nil {
-		t.Fatalf("GET absent state: %v", err)
+		t.Fatalf("GetObjectState absent: %v", err)
 	}
-	raw, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("get absent state: code=%d body=%s", resp.StatusCode, string(raw))
-	}
-	stateResp = struct {
-		Value   string `json:"value"`
-		Present bool   `json:"present"`
-	}{}
-	if err := json.Unmarshal(raw, &stateResp); err != nil {
-		t.Fatalf("absent state decode: %v", err)
-	}
-	if stateResp.Present {
+	if absent.Msg.GetPresent() {
 		t.Errorf("absent key reported present=true")
 	}
 }
 
+// TestIngress_SubmitRejectsEmptyService verifies the InvalidArgument path.
 func TestIngress_SubmitRejectsEmptyService(t *testing.T) {
 	reg := handler.NewRegistry()
-	_, rt := bringUpHostWithIngress(t, reg)
-	base := "http://" + rt.HTTPAddr()
+	_, _, cli := bringUpHostWithIngress(t, reg)
 
-	raw, code := httpPost(t, base+"/invocation//echo", map[string]any{})
-	if code == http.StatusOK {
-		t.Fatalf("submit with empty service unexpectedly OK: body=%s", string(raw))
+	_, err := cli.SubmitInvocation(context.Background(), connect.NewRequest(&ingressv1.SubmitInvocationRequest{
+		Service: "",
+		Handler: "echo",
+	}))
+	if err == nil {
+		t.Fatal("submit with empty service unexpectedly OK")
+	}
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) {
+		t.Fatalf("error not a *connect.Error: %v", err)
+	}
+	if connectErr.Code() != connect.CodeInvalidArgument {
+		t.Errorf("code = %v; want InvalidArgument", connectErr.Code())
 	}
 }
 

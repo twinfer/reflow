@@ -308,18 +308,16 @@ func startIngressListener(
 		logger.Warn("reflow: ingress is running on an insecure listener — multi-node deployments should configure cfg.Ingress.Creds")
 	}
 	rt, err := ingress.Start(ctx, eh, ingress.Config{
-		GRPCAddr:      cfg.Ingress.GRPCAddr,
-		HTTPAddr:      cfg.Ingress.HTTPAddr,
-		ServerCreds:   grpc.Creds(lc.Server),
-		HTTPTLSConfig: lc.ServerTLSConfig,
-		Log:           logger,
+		Addr: cfg.Ingress.Addr,
+		TLS:  lc.ServerTLSConfig,
+		Log:  logger,
 	})
 	if err != nil {
 		_ = creds.CloseAll(lc)
 		return nil, nil, fmt.Errorf("reflow: ingress start: %w", err)
 	}
 	logger.Info("reflow: ingress listening",
-		"grpc", rt.GRPCAddr(), "http", rt.HTTPAddr(),
+		"addr", rt.Addr(),
 		"driver", string(lc.Driver))
 	return rt, lc, nil
 }
@@ -619,13 +617,10 @@ func withDefaults(cfg Config) Config {
 		cfg.Metrics.Addr = ":9090"
 	}
 	// Ingress is started by Run unless cfg.Ingress.Disabled. If the
-	// operator left both addrs empty, fall back to the well-known
-	// reflow ports so `reflow.Run` works out of the box. An operator
-	// who wants only one transport sets that addr and leaves the other
-	// empty; defaults apply only when both are empty.
-	if !cfg.Ingress.Disabled && cfg.Ingress.GRPCAddr == "" && cfg.Ingress.HTTPAddr == "" {
-		cfg.Ingress.GRPCAddr = ":8081"
-		cfg.Ingress.HTTPAddr = ":8080"
+	// operator left Addr empty, fall back to the well-known reflow port
+	// so `reflow.Run` works out of the box.
+	if !cfg.Ingress.Disabled && cfg.Ingress.Addr == "" {
+		cfg.Ingress.Addr = ":8080"
 	}
 	return cfg
 }

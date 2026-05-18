@@ -73,8 +73,7 @@ func bringUpHostWithIngress(t *testing.T, reg *handler.Registry) (*engine.Host, 
 	t.Helper()
 	h := singleNodeWithHandlers(t, reg)
 	rt, err := ingress.Start(context.Background(), h, ingress.Config{
-		HTTPAddr: "127.0.0.1:0",
-		GRPCAddr: "127.0.0.1:0",
+		Addr: "127.0.0.1:0",
 	})
 	if err != nil {
 		t.Fatalf("ingress.Start: %v", err)

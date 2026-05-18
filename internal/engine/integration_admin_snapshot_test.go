@@ -496,6 +496,61 @@ func TestAdminDeleteSnapshot(t *testing.T) {
 	}
 }
 
+// TestAdminSnapshotRPCs_RejectFollower verifies CreateSnapshot and
+// DeleteSnapshot reject a non-leader caller with CodeUnavailable so
+// pkg/adminclient.CallWithLeaderRedirect can chase the leader the same
+// way it does for the other mutating RPCs. The LeaderHint *detail* is
+// gossip-driven and best-effort; the test rig doesn't publish admin
+// endpoints over gossip, so we only assert the code here.
+func TestAdminSnapshotRPCs_RejectFollower(t *testing.T) {
+	rigs, _ := bringUpThreeNodeCluster(t, handler.NewRegistry())
+	defer closeAll(rigs)
+
+	leader := awaitMetadataLeaderRig(t, rigs, 15*time.Second)
+	awaitMembership(t, leader, 3, 10*time.Second)
+
+	var follower *nodeRig
+	for _, r := range rigs {
+		if r != leader {
+			follower = r
+			break
+		}
+	}
+	if follower == nil {
+		t.Fatal("could not pick a non-leader rig")
+	}
+
+	ar := startAdminInsecure(t, follower)
+	defer func() {
+		if ar.srv != nil {
+			_ = ar.srv.Close()
+		}
+	}()
+	cli, done := dialInsecureAdmin(t, ar.addr())
+	defer done()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	expectUnavailable := func(name string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("%s on follower returned nil; want CodeUnavailable", name)
+		}
+		if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+			t.Fatalf("%s on follower: code=%s; want Unavailable; err=%v", name, got, err)
+		}
+	}
+
+	_, cErr := cli.CreateSnapshot(ctx, connect.NewRequest(&adminv1.CreateSnapshotRequest{ShardId: 1}))
+	expectUnavailable("CreateSnapshot", cErr)
+
+	_, dErr := cli.DeleteSnapshot(ctx, connect.NewRequest(&adminv1.DeleteSnapshotRequest{
+		ShardId: 1, Index: 1,
+	}))
+	expectUnavailable("DeleteSnapshot", dErr)
+}
+
 // writeAdminTLSFixtures builds an ephemeral single-CA PKI with a node
 // leaf (for the server) + an operator leaf (for the client).
 func writeAdminTLSFixtures(t *testing.T, dir string) (creds.TLSSpec, string, string, string) {

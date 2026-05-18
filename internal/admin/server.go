@@ -307,8 +307,14 @@ func (s *Server) ListPartitions(ctx context.Context, _ *connect.Request[adminv1.
 	return connect.NewResponse(&adminv1.ListPartitionsResponse{Table: pt}), nil
 }
 
-// CreateSnapshot delegates to snapshot.SnapshotOnce.
+// CreateSnapshot delegates to snapshot.SnapshotOnce. Leader-only: every
+// node has its own local store, so the leader's snapshot is the only one
+// guaranteed to contain the latest applied state, and writes to the
+// shared blob repo from multiple nodes would race.
 func (s *Server) CreateSnapshot(ctx context.Context, req *connect.Request[adminv1.CreateSnapshotRequest]) (*connect.Response[adminv1.CreateSnapshotResponse], error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
 	if s.repo == nil || s.src == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("admin: snapshot repository not configured"))
@@ -348,7 +354,13 @@ func (s *Server) CreateSnapshot(ctx context.Context, req *connect.Request[adminv
 
 // DeleteSnapshot removes (shard_id, index) from the configured
 // repository. Idempotent — succeeds when the snapshot is already absent.
+// Leader-only: serializing through the leader keeps concurrent reaper /
+// admin deletes from racing on the shared blob repo. ListSnapshots is
+// intentionally not gated — read-only, served by any node.
 func (s *Server) DeleteSnapshot(ctx context.Context, req *connect.Request[adminv1.DeleteSnapshotRequest]) (*connect.Response[adminv1.DeleteSnapshotResponse], error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
 	if s.repo == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("admin: snapshot repository not configured"))

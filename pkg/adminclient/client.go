@@ -1,5 +1,5 @@
 // Package adminclient is the Connect-based admin client shared by the
-// reflow-cluster CLI, the SelfJoin path in pkg/reflow/run.go, and
+// `reflowd cluster ...` CLI, the SelfJoin path in pkg/reflow/run.go, and
 // integration tests. Thin wrapper over the generated
 // adminv1connect.AdminClient with credential handling + connection
 // cleanup.

@@ -4125,10 +4125,10 @@ func (x *SnapshotMeta) GetCreatedAtMs() uint64 {
 type NodeHostMeta struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
 	GrpcEndpoint string                 `protobuf:"bytes,1,opt,name=grpc_endpoint,json=grpcEndpoint,proto3" json:"grpc_endpoint,omitempty"`
-	// Admin gRPC endpoint advertised so peers (joiners running SelfJoin
-	// and the reflow-cluster CLI following LeaderHint redirects) can
-	// discover the metadata leader's admin port via gossip rather than
-	// requiring it preconfigured.
+	// Admin Connect endpoint advertised so peers (joiners running
+	// SelfJoin and the `reflowd cluster ...` CLI following LeaderHint
+	// redirects) can discover the metadata leader's admin port via
+	// gossip rather than requiring it preconfigured.
 	AdminEndpoint string `protobuf:"bytes,2,opt,name=admin_endpoint,json=adminEndpoint,proto3" json:"admin_endpoint,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

@@ -148,7 +148,7 @@ func cmdRemoveNode(ctx context.Context, args []string) error {
 
 func cmdNodes(ctx context.Context, args []string) error {
 	if len(args) == 0 || args[0] != "list" {
-		return errors.New("usage: reflow-cluster nodes list [flags]")
+		return errors.New("usage: reflowd cluster nodes list [flags]")
 	}
 	fs := flag.NewFlagSet("nodes list", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)
@@ -168,7 +168,7 @@ func cmdNodes(ctx context.Context, args []string) error {
 
 func cmdPartitions(ctx context.Context, args []string) error {
 	if len(args) == 0 || args[0] != "list" {
-		return errors.New("usage: reflow-cluster partitions list [flags]")
+		return errors.New("usage: reflowd cluster partitions list [flags]")
 	}
 	fs := flag.NewFlagSet("partitions list", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)
@@ -188,7 +188,7 @@ func cmdPartitions(ctx context.Context, args []string) error {
 
 func cmdSnapshot(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: reflow-cluster snapshot {create|list|delete} [flags]")
+		return errors.New("usage: reflowd cluster snapshot {create|list|delete} [flags]")
 	}
 	sub := args[0]
 	switch sub {

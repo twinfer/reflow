@@ -22,7 +22,7 @@ import (
 //   - the joiner's callSelfJoin path in pkg/reflow/run.go (initial dial
 //     comes from gossip-resolved leader admin endpoint; redirect is the
 //     safety net for one-heartbeat-stale gossip);
-//   - the reflow-cluster CLI, whose --admin flag means "any cluster
+//   - the `reflowd cluster ...` CLI, whose --admin flag means "any cluster
 //     node" — every mutating command wraps its RPC in this helper.
 func CallWithLeaderRedirect(
 	ctx context.Context,

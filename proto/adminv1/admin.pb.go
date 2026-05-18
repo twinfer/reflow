@@ -1,15 +1,16 @@
 // Reflow cluster Admin service.
 //
-// Every reflowd process hosts an Admin gRPC server on a dedicated port
-// (typically :8082). The server is mTLS-protected against the cluster
-// CA; the caller's SPIFFE URI SAN identifies its role
-// (`spiffe://<trust-domain>/operator/<name>` for operators). The
-// reflow-cluster CLI is the canonical client.
+// Every reflowd process hosts an Admin Connect RPC server on a
+// dedicated port (typically :8082). The server is mTLS-protected
+// against the cluster CA; the caller's SPIFFE URI SAN identifies its
+// role (`spiffe://<trust-domain>/operator/<name>` for operators). The
+// `reflowd cluster ...` CLI is the canonical client.
 //
-// Authorization lives in the shared grpc-go authz policy (see
+// Authorization lives in the shared starter authz policy (see
 // internal/auth/starter_policy.json or the operator-supplied policy
-// file). The starter policy restricts /reflow.admin.v1.Admin/* to
-// principals matching "operator/*".
+// file) consumed by both the gRPC delivery interceptor and the
+// Connect HTTP middleware. The starter policy restricts
+// /reflow.admin.v1.Admin/* to principals matching "operator/*".
 //
 // Mutating RPCs (AddNode, RemoveNode) translate to shard-0 Raft
 // proposals; the apply arms in the metadata FSM and the metadata-
@@ -865,10 +866,11 @@ func (x *RegisterDeploymentResponse) GetDeploymentId() string {
 	return ""
 }
 
-// LeaderHint is attached as a status.Details() entry on codes.Unavailable
-// returned by mutating Admin RPCs when the receiving node is not the
-// metadata leader. Clients (joiner's SelfJoin caller and the
-// reflow-cluster CLI) extract it, dial admin_endpoint, retry.
+// LeaderHint is attached as a connect.Error detail on
+// connect.CodeUnavailable returned by mutating Admin RPCs when the
+// receiving node is not the metadata leader. Clients (joiner's SelfJoin
+// caller and the `reflowd cluster ...` CLI) extract it, dial
+// admin_endpoint, retry.
 type LeaderHint struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeId        uint64                 `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`

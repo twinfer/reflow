@@ -46,7 +46,7 @@ type PartitionInfo struct {
 // drive one cluster member. Two impls exist:
 //
 //   - *InProcessNode wraps an in-process *engine.Host (current default).
-//   - *SubprocessNode spawns cmd/reflow-loadnode and speaks the existing
+//   - *SubprocessNode spawns cmd/loadnode and speaks the existing
 //     ingressv1.Ingress gRPC service. Lets tests SIGKILL a node to
 //     exercise torn-write Pebble WAL recovery.
 //
@@ -195,13 +195,13 @@ type ClusterOptions struct {
 	RaftTransportFactory config.TransportFactory
 
 	// SubprocessNodes, when true, spawns each cluster member as a
-	// reflow-loadnode child process instead of an in-process Host.
+	// loadnode child process instead of an in-process Host.
 	// Requires LoadnodeBinaryPath. Enables tests to SIGKILL a node and
 	// exercise torn-write Pebble WAL recovery. Default false.
 	SubprocessNodes bool
 
 	// LoadnodeBinaryPath is the absolute path to a pre-built
-	// reflow-loadnode binary. Required when SubprocessNodes is true.
+	// loadnode binary. Required when SubprocessNodes is true.
 	// Tests typically build the binary once via BuildLoadnodeBinary
 	// and reuse the result across cluster members.
 	LoadnodeBinaryPath string
@@ -634,7 +634,7 @@ func inProcessHost(node Node) *engine.Host {
 	return nil
 }
 
-// bringUpSubprocessNode spawns one reflow-loadnode child and dials its
+// bringUpSubprocessNode spawns one loadnode child and dials its
 // ingress endpoint. Called from bringUpNode when SubprocessNodes is on.
 func (c *Cluster) bringUpSubprocessNode(t testing.TB, idx int) error {
 	t.Helper()
@@ -668,7 +668,7 @@ func (c *Cluster) bringUpSubprocessNode(t testing.TB, idx int) error {
 }
 
 // formatPeersFlag encodes the cluster's peer list in the form the
-// reflow-loadnode binary's -peers flag expects:
+// loadnode binary's -peers flag expects:
 // "id@raft,gossip;id@raft,gossip;..."
 func formatPeersFlag(peers []engine.Peer) string {
 	parts := make([]string, 0, len(peers))
@@ -709,15 +709,15 @@ func indexByte(b []byte, c byte) int {
 	return -1
 }
 
-// BuildLoadnodeBinary compiles cmd/reflow-loadnode into a temporary
+// BuildLoadnodeBinary compiles cmd/loadnode into a temporary
 // path and returns it. Cached on the test's outer t.TempDir so multiple
 // clusters in the same test share one binary. Call from TestMain or
 // the start of a test that sets SubprocessNodes: true.
 func BuildLoadnodeBinary(t testing.TB) string {
 	t.Helper()
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "reflow-loadnode")
-	cmd := exec.Command("go", "build", "-o", bin, "github.com/twinfer/reflow/cmd/reflow-loadnode")
+	bin := filepath.Join(dir, "loadnode")
+	cmd := exec.Command("go", "build", "-o", bin, "github.com/twinfer/reflow/cmd/loadnode")
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
 	if err != nil {

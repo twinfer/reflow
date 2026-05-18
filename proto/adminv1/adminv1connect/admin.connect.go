@@ -1,15 +1,16 @@
 // Reflow cluster Admin service.
 //
-// Every reflowd process hosts an Admin gRPC server on a dedicated port
-// (typically :8082). The server is mTLS-protected against the cluster
-// CA; the caller's SPIFFE URI SAN identifies its role
-// (`spiffe://<trust-domain>/operator/<name>` for operators). The
-// reflow-cluster CLI is the canonical client.
+// Every reflowd process hosts an Admin Connect RPC server on a
+// dedicated port (typically :8082). The server is mTLS-protected
+// against the cluster CA; the caller's SPIFFE URI SAN identifies its
+// role (`spiffe://<trust-domain>/operator/<name>` for operators). The
+// `reflowd cluster ...` CLI is the canonical client.
 //
-// Authorization lives in the shared grpc-go authz policy (see
+// Authorization lives in the shared starter authz policy (see
 // internal/auth/starter_policy.json or the operator-supplied policy
-// file). The starter policy restricts /reflow.admin.v1.Admin/* to
-// principals matching "operator/*".
+// file) consumed by both the gRPC delivery interceptor and the
+// Connect HTTP middleware. The starter policy restricts
+// /reflow.admin.v1.Admin/* to principals matching "operator/*".
 //
 // Mutating RPCs (AddNode, RemoveNode) translate to shard-0 Raft
 // proposals; the apply arms in the metadata FSM and the metadata-

@@ -66,9 +66,10 @@ type HostConfig struct {
 	// published via gossip NodeHostMeta so peers can dial it for
 	// cross-partition outbox dispatch. Required when Peers is non-empty.
 	GrpcEndpoint string
-	// AdminEndpoint is this node's reflow Admin gRPC endpoint. Published
-	// via gossip NodeHostMeta so peers (notably joiners calling SelfJoin
-	// and the reflow-cluster CLI following LeaderHint redirects) can
+	// AdminEndpoint is this node's reflow Admin Connect endpoint.
+	// Published via gossip NodeHostMeta so peers (notably joiners
+	// calling SelfJoin and the `reflowd cluster ...` CLI following
+	// LeaderHint redirects) can
 	// dial the metadata leader without preconfiguration. Optional but
 	// recommended when Peers is non-empty; an empty value disables
 	// gossip-based admin discovery for this node (the joiner path then

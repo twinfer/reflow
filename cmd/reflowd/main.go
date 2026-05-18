@@ -1,10 +1,44 @@
-// Command reflowd starts a reflow engine node using layered configuration
-// from environment variables and optional config files. Handlers run as
-// separate Go processes that the engine reaches over HTTP/2; declare
-// their URLs in the handlers.endpoints config block or register them at
-// runtime via the reflow-cluster admin CLI.
+// Command reflowd is the production reflow binary. It exposes three
+// top-level subcommands:
 //
-// Configuration sources (later overrides earlier):
+//	reflowd run                 # start the engine
+//	reflowd pki <subcmd>        # offline CA + leaf issuance
+//	reflowd cluster <subcmd>    # mTLS-authenticated admin RPCs
+//
+// PKI subcommands (no cluster contact needed):
+//
+//	reflowd pki init-ca        --out=DIR
+//	reflowd pki issue-cert     --kind=node --node-id=N --hostname=H --ca-dir=DIR --out=DIR [--trust-domain=reflow.local]
+//	reflowd pki issue-operator --name=NAME --ca-dir=DIR --out=DIR [--trust-domain=reflow.local]
+//
+// init-ca writes ca.crt + ca.key. Every leaf is signed by that single CA
+// and carries a SPIFFE URI SAN (spiffe://<trust-domain>/node/<id> or
+// spiffe://<trust-domain>/operator/<name>) that the reflow TLS layer
+// matches against the listener's expected role.
+//
+// Cluster subcommands (mTLS-authenticated against the Admin Connect
+// port). --admin may point at ANY cluster node — mutating commands
+// follow the LeaderHint detail attached to connect.CodeUnavailable to
+// redirect to the metadata leader automatically:
+//
+//	reflowd cluster add-node            --admin=ANY:PORT --node-id=N --raft-addr=... --gossip-addr=... --grpc-endpoint=... [--node-host-id=ID]
+//	reflowd cluster remove-node         --admin=ANY:PORT --node-id=N
+//	reflowd cluster nodes list          --admin=ANY:PORT
+//	reflowd cluster partitions list     --admin=ANY:PORT
+//	reflowd cluster snapshot create     --admin=ANY:PORT --shard=N
+//	reflowd cluster snapshot list       --admin=ANY:PORT --shard=N
+//	reflowd cluster snapshot delete     --admin=ANY:PORT --shard=N --index=I
+//	reflowd cluster register-deployment --admin=ANY:PORT --url=http://HANDLER:PORT
+//
+// Cluster subcommands need the operator TLS flags (or matching env vars):
+//
+//	--client-cert   $REFLOW_CLIENT_CERT
+//	--client-key    $REFLOW_CLIENT_KEY
+//	--ca            $REFLOW_CA_CERT
+//	--trust-domain  $REFLOW_TRUST_DOMAIN  (defaults to "reflow.local")
+//
+// `reflowd run` reads layered configuration sources (later overrides
+// earlier):
 //
 //  1. Built-in defaults (single-node, shard 1, sensible ports).
 //  2. Optional config file from $REFLOW_CONFIG (YAML or JSON).
@@ -14,77 +48,110 @@ package main
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
-
-	"github.com/twinfer/reflow/pkg/reflow"
-	"github.com/twinfer/reflow/pkg/reflow/config"
 )
 
 func main() {
-	cfg, err := loadConfig()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "reflowd: %v\n", err)
+	if len(os.Args) < 2 {
+		usage(os.Stderr)
 		os.Exit(2)
 	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	host, err := reflow.Run(ctx, cfg)
+	cmd := os.Args[1]
+	args := os.Args[2:]
+	var err error
+	switch cmd {
+	case "run":
+		err = cmdRun(args)
+	case "pki":
+		err = dispatchPKI(args)
+	case "cluster":
+		err = dispatchCluster(ctx, args)
+	case "help", "-h", "--help":
+		usage(os.Stdout)
+		return
+	default:
+		fmt.Fprintf(os.Stderr, "reflowd: unknown subcommand %q\n\n", cmd)
+		usage(os.Stderr)
+		os.Exit(2)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "reflowd: %v\n", err)
 		os.Exit(1)
 	}
-	<-ctx.Done()
-	slog.Default().Info("reflowd: shutting down")
-	_ = host.Close()
 }
 
-// loadConfig layers built-in defaults, an optional config file, and
-// REFLOW_* env vars (in that order — later sources win). Returns the
-// merged Config or any error from a source.
-func loadConfig() (reflow.Config, error) {
-	sources := []config.Source{
-		config.FromMap(defaultValues()),
+// dispatchPKI routes "reflowd pki <subcmd> ..." to the right handler.
+func dispatchPKI(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: reflowd pki {init-ca|issue-cert|issue-operator} [flags]")
 	}
-	if path := os.Getenv("REFLOW_CONFIG"); path != "" {
-		sources = append(sources, config.FromFile(path))
+	sub := args[0]
+	rest := args[1:]
+	switch sub {
+	case "init-ca":
+		return cmdInitCA(rest)
+	case "issue-cert":
+		return cmdIssueCert(rest)
+	case "issue-operator":
+		return cmdIssueOperator(rest)
+	default:
+		return fmt.Errorf("reflowd pki: unknown subcommand %q", sub)
 	}
-	sources = append(sources, config.FromEnv())
-
-	cfg, _, err := config.Load(sources...)
-	return cfg, err
 }
 
-// defaultValues are the baked-in defaults. Picked to make `go run
-// ./cmd/reflowd` work out of the box on a developer machine. Multi-node
-// fields (node.gossip_bind_addr, node.delivery_addr, cluster.peers) are
-// left empty by default — single-node bootstrap when they are unset.
-func defaultValues() map[string]any {
-	return map[string]any{
-		"node.id":          uint64(1),
-		"node.raft_addr":   "127.0.0.1:9091",
-		"storage.data_dir": "./data",
-		"cluster.shards":   []uint64{1},
-		// Ingress is the user-facing API; reflow.Run starts it
-		// unconditionally and applies these same defaults if the operator
-		// leaves both empty. Surfaced here so `reflowd` users can see the
-		// canonical ports without reading library code.
-		"ingress.grpc_addr": ":8081",
-		"ingress.http_addr": ":8080",
-		"metrics.addr":      ":9090",
-		"logging.level":     "INFO",
-		// Admin + snapshot defaults. The admin server is only started when
-		// Cluster.Peers is non-empty AND TLS is configured, so leaving Addr
-		// populated is safe for single-node out of the box. The snapshot
-		// producer is disabled by default (Interval=0); operators opt in via
-		// REFLOW_SNAPSHOT_INTERVAL once they have a sustained DR plan.
-		"admin.addr":           ":8082",
-		"snapshot.retain":      24,
-		"snapshot.interval":    "0s",
-		"snapshot.scratch_dir": "",
+// dispatchCluster routes "reflowd cluster <subcmd> ..." to the right
+// handler.
+func dispatchCluster(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: reflowd cluster {add-node|remove-node|nodes|partitions|snapshot|register-deployment} [flags]")
 	}
+	sub := args[0]
+	rest := args[1:]
+	switch sub {
+	case "add-node":
+		return cmdAddNode(ctx, rest)
+	case "remove-node":
+		return cmdRemoveNode(ctx, rest)
+	case "nodes":
+		return cmdNodes(ctx, rest)
+	case "partitions":
+		return cmdPartitions(ctx, rest)
+	case "snapshot":
+		return cmdSnapshot(ctx, rest)
+	case "register-deployment":
+		return cmdRegisterDeployment(ctx, rest)
+	default:
+		return fmt.Errorf("reflowd cluster: unknown subcommand %q", sub)
+	}
+}
+
+func usage(w *os.File) {
+	fmt.Fprint(w, `reflowd — reflow engine + admin CLI
+
+Engine:
+  run                  Start the engine. Reads layered config:
+                         defaults → $REFLOW_CONFIG file → REFLOW_* env.
+
+PKI (offline, no cluster contact):
+  pki init-ca            Create the cluster CA.
+  pki issue-cert         Issue a node leaf cert.
+  pki issue-operator     Issue an operator client cert.
+
+Cluster (Connect RPC; mTLS-authenticated; --admin can be ANY node):
+  cluster add-node              Register a new peer and start rebalance.
+  cluster remove-node           Mark a peer evicted.
+  cluster nodes list            List current membership.
+  cluster partitions list       Print the partition table.
+  cluster snapshot create       Trigger an exported snapshot of one shard.
+  cluster snapshot list         List archived snapshots.
+  cluster snapshot delete       Remove an archived snapshot.
+  cluster register-deployment   Register a handler deployment URL.
+
+Run any subcommand with --help for its specific flags.
+`)
 }

@@ -1,4 +1,4 @@
-// Command reflow-loadnode is a minimal reflow node used by the chaos
+// Command loadnode is a minimal reflow node used by the chaos
 // test harness. It spawns one engine.Host wired the same way the
 // in-process test cluster (internal/loadgen) wires its nodes, registers
 // loadgen.HelloHandler, serves the Delivery + Ingress gRPC services,
@@ -36,7 +36,7 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "reflow-loadnode: %v\n", err)
+		fmt.Fprintf(os.Stderr, "loadnode: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -109,7 +109,7 @@ func run() error {
 	deliveryv1.RegisterDeliveryServer(dgs, delivery.NewServer(host, nil))
 	go func() {
 		if err := dgs.Serve(dln); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			fmt.Fprintf(os.Stderr, "reflow-loadnode: delivery Serve exited: %v\n", err)
+			fmt.Fprintf(os.Stderr, "loadnode: delivery Serve exited: %v\n", err)
 		}
 	}()
 	defer dgs.GracefulStop()
@@ -138,7 +138,7 @@ func run() error {
 
 	// Tell the parent process we're serving. The test waits for this
 	// line on stdout before connecting its ingress client.
-	fmt.Println("reflow-loadnode: ready")
+	fmt.Println("loadnode: ready")
 
 	<-ctx.Done()
 	return nil

@@ -18,7 +18,7 @@ import (
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
 
-// SubprocessNode is a Node backed by an out-of-process reflow-loadnode
+// SubprocessNode is a Node backed by an out-of-process loadnode
 // binary. The chaos harness uses it to SIGKILL a process and exercise
 // the torn-write Pebble WAL recovery path that graceful Host.Close
 // cannot reach.
@@ -56,7 +56,7 @@ type SubprocessNodeOptions struct {
 }
 
 // startSubprocessNode spawns the loadnode binary, waits for it to log
-// "reflow-loadnode: ready" on stdout, and dials its ingress address.
+// "loadnode: ready" on stdout, and dials its ingress address.
 // On any failure the process is torn down and the error is returned.
 func startSubprocessNode(opts SubprocessNodeOptions) (*SubprocessNode, error) {
 	if opts.StartupTimeout <= 0 {
@@ -96,7 +96,7 @@ func startSubprocessNode(opts SubprocessNodeOptions) (*SubprocessNode, error) {
 			n, err := stdout.Read(buf)
 			if n > 0 {
 				got.Write(buf[:n])
-				if strings.Contains(got.String(), "reflow-loadnode: ready") {
+				if strings.Contains(got.String(), "loadnode: ready") {
 					readyCh <- nil
 					// Drain any remaining stdout so the pipe doesn't block.
 					_, _ = io.Copy(io.Discard, stdout)

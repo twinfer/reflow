@@ -596,10 +596,10 @@ message SnapshotMeta {
 // reflow Admin service for SelfJoin / LeaderHint redirects.
 message NodeHostMeta {
   string grpc_endpoint = 1;
-  // Admin gRPC endpoint advertised so peers (joiners running SelfJoin
-  // and the reflow-cluster CLI following LeaderHint redirects) can
-  // discover the metadata leader's admin port via gossip rather than
-  // requiring it preconfigured.
+  // Admin Connect endpoint advertised so peers (joiners running
+  // SelfJoin and the `reflowd cluster ...` CLI following LeaderHint
+  // redirects) can discover the metadata leader's admin port via
+  // gossip rather than requiring it preconfigured.
   string admin_endpoint = 2;
 }
 

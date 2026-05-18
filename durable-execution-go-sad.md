@@ -316,11 +316,11 @@ The admin RPC, cluster FSM, and metadata rebalancer that drive
 *post-bootstrap* membership changes all exist:
 
 ```bash
-reflow-cluster add-node    --node-id=4 --raft-addr=10.0.0.4:9091 \
-                           --gossip-addr=10.0.0.4:9092 \
-                           --grpc-endpoint=10.0.0.4:8081 \
-                           --node-host-id=<uuid>
-reflow-cluster remove-node --node-id=2
+reflowd cluster add-node    --node-id=4 --raft-addr=10.0.0.4:9091 \
+                            --gossip-addr=10.0.0.4:9092 \
+                            --grpc-endpoint=10.0.0.4:8081 \
+                            --node-host-id=<uuid>
+reflowd cluster remove-node --node-id=2
 ```
 
 - **`add-node`** (`internal/admin/server.go:AddNode`): proposes
@@ -1327,8 +1327,8 @@ membership, partition table, assignment epoch; founder/joiner bootstrap via
 
 **Dynamic membership + failure detection + DR snapshots + mTLS admin.**
 Dragonboat gossip (memberlist/SWIM) drives K-of-N liveness; SWIM observers
-turn missed probes into `RemoveNode` proposals to shard 0. `reflow-cluster`
-CLI lands as a subcommand of `reflowd` (`add-node`, `remove-node`,
+turn missed probes into `RemoveNode` proposals to shard 0. The cluster
+admin CLI lives in `reflowd cluster` (`add-node`, `remove-node`,
 `partitions list`, `partition move`). `SnapshotRepository` filesystem driver
 wired. Admin Connect RPC server (`adminv1`) protected by mTLS.
 
@@ -1357,8 +1357,8 @@ enforcement lives entirely in `auth.UnaryInterceptor` /
   partition assignment epoch.
 - **Static peer bootstrap.** `--bootstrap-cluster` for the founder,
   `--join=<addr>` for joiners. No discovery service required.
-- **`reflow-cluster` admin subcommands** (in the same `reflowd` binary)
-  for `add-node`, `remove-node`, `partitions list`, `partition move`.
+- **`reflowd cluster` admin subcommands** for `add-node`, `remove-node`,
+  `partitions list`, `partition move`.
 - **Multi-node partition shards** with dragonboat membership operations
   (`RequestAddNonVoting` → catch-up → `RequestAddReplica` →
   `RequestRemoveReplica`).
@@ -1393,7 +1393,7 @@ add/remove operations.
   `BlobRepository` over `gocloud.dev/blob` covers S3, GCS, Azure Blob,
   filesystem, and in-memory. `.meta.json` sidecar per archive. Count,
   age, and GFS tiered retention via a per-shard reaper goroutine.
-  Admin `DeleteSnapshot` RPC + `reflow-cluster snapshot delete` CLI.
+  Admin `DeleteSnapshot` RPC + `reflowd cluster snapshot delete` CLI.
   Server-side encryption flows through gocloud URL parameters. Restore
   RPC and DR/migration runbooks remain future work. See §6.12.
 - Pebble snapshot tuning (compaction, log retention, checkpoint cadence).

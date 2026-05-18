@@ -183,7 +183,7 @@ type Peer struct {
 	// AdminAddr, when set, is this peer's reflow Admin gRPC endpoint.
 	// Not consulted by the joiner SelfJoin path (which discovers the
 	// leader via gossip-published NodeHostMeta.admin_endpoint), but
-	// kept here so the reflow-cluster CLI and tests can resolve peers
+	// kept here so the `reflowd cluster ...` CLI and tests can resolve peers
 	// by NodeID from config without hard-coding host:port. Optional.
 	AdminAddr string `koanf:"admin_addr"`
 }
@@ -200,7 +200,7 @@ type ClusterConfig struct {
 	// already-running cluster: dragonboat StartOnDiskReplica is called
 	// with (nil, join=true) so the node catches up from a Raft snapshot
 	// instead of seeding the initial membership. The operator must have
-	// run `reflow-cluster add-node` (which proposes RegisterNode +
+	// run `reflowd cluster add-node` (which proposes RegisterNode +
 	// PROMOTE_TO_VOTER) against an existing leader first; that workflow
 	// is what makes this ReplicaID a known member of every shard's
 	// configuration. Default false preserves the static-bootstrap path.

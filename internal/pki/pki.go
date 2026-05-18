@@ -2,7 +2,7 @@
 // for reflow's single-CA mTLS surface. Both node and operator leaves are
 // signed by the same root; role lives in each leaf's SPIFFE URI SAN
 // (spiffe://<trust-domain>/node/<id>, spiffe://<trust-domain>/operator/<name>).
-// Used by the reflow-cluster init-ca / issue-cert / issue-operator
+// Used by the reflowd pki init-ca / issue-cert / issue-operator
 // subcommands and by integration tests.
 //
 // Stdlib-only — no external CA, no ACME, no SPIFFE workload-API runtime.

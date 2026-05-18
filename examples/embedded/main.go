@@ -70,9 +70,9 @@ func main() {
 		os.Exit(1)
 	}
 	handlerURL := "http://" + ln.Addr().String()
-	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
+	srv, err := handler.NewServer(handler.Config{Registry: reg})
 	if err != nil {
-		log.Error("sdk server NewHTTP2", "err", err)
+		log.Error("sdk server NewServer", "err", err)
 		os.Exit(1)
 	}
 	go func() {

@@ -12,7 +12,7 @@ import (
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 )
 
-// StartEmbeddedHandlers spins up a pkg/handler.NewHTTP2 endpoint on a
+// StartEmbeddedHandlers spins up a pkg/handler.NewServer endpoint on a
 // free local port hosting reg and registers it as a deployment with the
 // cluster's metadata leader. Returns a teardown function the caller
 // defers; the function stops the server and closes the listener.
@@ -28,9 +28,9 @@ func StartEmbeddedHandlers(t testing.TB, cluster *Cluster, reg *handler.Registry
 		return func() {}
 	}
 
-	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
+	srv, err := handler.NewServer(handler.Config{Registry: reg})
 	if err != nil {
-		t.Fatalf("loadgen: handler.NewHTTP2: %v", err)
+		t.Fatalf("loadgen: handler.NewServer: %v", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

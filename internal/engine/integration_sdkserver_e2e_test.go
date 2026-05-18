@@ -13,7 +13,7 @@ import (
 )
 
 // TestSDKServer_E2E_HTTP2 drives the real handler-side stack
-// (pkg/handler.NewHTTP2) end-to-end through the engine wire path:
+// (pkg/handler.NewServer) end-to-end through the engine wire path:
 // admin.RegisterDeployment → connectclient → InvokeStream → server.runSession
 // → user handler → OutputCommandMessage → engine InvokerEffect.Completed.
 //
@@ -32,9 +32,9 @@ func TestSDKServer_E2E_HTTP2(t *testing.T) {
 		t.Fatalf("RegisterService: %v", err)
 	}
 
-	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
+	srv, err := handler.NewServer(handler.Config{Registry: reg})
 	if err != nil {
-		t.Fatalf("NewHTTP2: %v", err)
+		t.Fatalf("NewServer: %v", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

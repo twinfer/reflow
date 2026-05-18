@@ -29,12 +29,12 @@ import (
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
-// TestHTTP2Server_RoundTrip drives a registered handler end-to-end via
-// pkg/handler.NewHTTP2 + internal/engine/handlerclient/connectclient.
+// TestServer_RoundTrip drives a registered handler end-to-end via
+// pkg/handler.NewServer + internal/engine/handlerclient/connectclient.
 // The engine's wire_session is bypassed — this test asserts the
 // handler-side half on its own: input arrives, handler runs, output
 // flows back over Connect bidi streaming (h2c).
-func TestHTTP2Server_RoundTrip(t *testing.T) {
+func TestServer_RoundTrip(t *testing.T) {
 	reg := handler.NewRegistry()
 	if err := reg.RegisterService("Echo", "echo", func(_ handler.Context, in []byte) ([]byte, error) {
 		return append([]byte("h2-echo:"), in...), nil
@@ -42,9 +42,9 @@ func TestHTTP2Server_RoundTrip(t *testing.T) {
 		t.Fatalf("RegisterService: %v", err)
 	}
 
-	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
+	srv, err := handler.NewServer(handler.Config{Registry: reg})
 	if err != nil {
-		t.Fatalf("NewHTTP2: %v", err)
+		t.Fatalf("NewServer: %v", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -66,9 +66,9 @@ func TestHTTP2Server_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestHTTP2Server_FailureRoundTrip verifies a handler returning *Failure
+// TestServer_FailureRoundTrip verifies a handler returning *Failure
 // surfaces as OutputCommandMessage.failure on the wire.
-func TestHTTP2Server_FailureRoundTrip(t *testing.T) {
+func TestServer_FailureRoundTrip(t *testing.T) {
 	reg := handler.NewRegistry()
 	if err := reg.RegisterService("Echo", "boom", func(_ handler.Context, _ []byte) ([]byte, error) {
 		return nil, handler.NewFailure(42, "boom")
@@ -76,9 +76,9 @@ func TestHTTP2Server_FailureRoundTrip(t *testing.T) {
 		t.Fatalf("RegisterService: %v", err)
 	}
 
-	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
+	srv, err := handler.NewServer(handler.Config{Registry: reg})
 	if err != nil {
-		t.Fatalf("NewHTTP2: %v", err)
+		t.Fatalf("NewServer: %v", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -102,9 +102,9 @@ func TestHTTP2Server_FailureRoundTrip(t *testing.T) {
 	}
 }
 
-// TestHTTP2Server_Discover asserts /discover returns the registered
+// TestServer_Discover asserts /discover returns the registered
 // handlers grouped by (service, kind).
-func TestHTTP2Server_Discover(t *testing.T) {
+func TestServer_Discover(t *testing.T) {
 	reg := handler.NewRegistry()
 	for _, sh := range [][3]string{
 		{"Echo", "echo", "service"},
@@ -126,9 +126,9 @@ func TestHTTP2Server_Discover(t *testing.T) {
 		}
 	}
 
-	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
+	srv, err := handler.NewServer(handler.Config{Registry: reg})
 	if err != nil {
-		t.Fatalf("NewHTTP2: %v", err)
+		t.Fatalf("NewServer: %v", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -337,11 +337,11 @@ func discoverHTTP2(t *testing.T, baseURL string) *discoveryv1.DiscoveryResponse 
 // discovery test.
 var stubHandler handler.Handler = func(_ handler.Context, _ []byte) ([]byte, error) { return nil, nil }
 
-// TestHTTP2Server_RoundTrip_WithAuth wires a real signer + verifier
+// TestServer_RoundTrip_WithAuth wires a real signer + verifier
 // built from the same CA and asserts an /invoke round-trip succeeds
 // when the engine-side dispatch signs the request. Mirrors
-// TestHTTP2Server_RoundTrip but with auth enabled on both ends.
-func TestHTTP2Server_RoundTrip_WithAuth(t *testing.T) {
+// TestServer_RoundTrip but with auth enabled on both ends.
+func TestServer_RoundTrip_WithAuth(t *testing.T) {
 	caPEM, signer, spiffe := buildCAAndSigner(t, "/node/1")
 
 	reg := handler.NewRegistry()
@@ -350,14 +350,14 @@ func TestHTTP2Server_RoundTrip_WithAuth(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RegisterService: %v", err)
 	}
-	srv, err := handler.NewHTTP2(handler.Config{
+	srv, err := handler.NewServer(handler.Config{
 		Registry:      reg,
 		RootCAs:       caPEM,
 		AllowedSPIFFE: []string{spiffe},
 		TrustDomain:   "reflow.local",
 	})
 	if err != nil {
-		t.Fatalf("NewHTTP2: %v", err)
+		t.Fatalf("NewServer: %v", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -380,27 +380,27 @@ func TestHTTP2Server_RoundTrip_WithAuth(t *testing.T) {
 	}
 }
 
-// TestHTTP2Server_AuthRejectsForeignCA: a client whose leaf is signed
+// TestServer_AuthRejectsForeignCA: a client whose leaf is signed
 // by a CA the server doesn't trust gets rejected at the HTTP layer.
 // We bypass connectclient (which would surface the 401 as a transport
 // error inside Receive) and hit the Connect InvokeStream URL directly
 // — withAuth runs before Connect's stream handler, so an empty POST
 // is enough to exercise the 401 path.
-func TestHTTP2Server_AuthRejectsForeignCA(t *testing.T) {
+func TestServer_AuthRejectsForeignCA(t *testing.T) {
 	caPEM, _, spiffe := buildCAAndSigner(t, "/node/1")
 	// Foreign signer: rooted at a different CA — verifier won't accept.
 	_, foreignSigner, _ := buildCAAndSigner(t, "/node/1")
 
 	reg := handler.NewRegistry()
 	_ = reg.RegisterService("Echo", "echo", func(_ handler.Context, in []byte) ([]byte, error) { return in, nil })
-	srv, err := handler.NewHTTP2(handler.Config{
+	srv, err := handler.NewServer(handler.Config{
 		Registry:      reg,
 		RootCAs:       caPEM,
 		AllowedSPIFFE: []string{spiffe},
 		TrustDomain:   "reflow.local",
 	})
 	if err != nil {
-		t.Fatalf("NewHTTP2: %v", err)
+		t.Fatalf("NewServer: %v", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -485,21 +485,21 @@ func (p *e2eFakeProvider) KeyMaterial(_ context.Context) (*certprovider.KeyMater
 }
 func (p *e2eFakeProvider) Close() {}
 
-// TestHTTP2Server_NoBodyLeak runs many sequential sessions through one
+// TestServer_NoBodyLeak runs many sequential sessions through one
 // connectclient.Client and asserts the transport doesn't accumulate
 // idle connections after the engine's typical "defer CloseSend"
 // teardown. Regression for the bug where Recv terminating on EOF never
 // closed the underlying HTTP/2 stream slot before GC.
-func TestHTTP2Server_NoBodyLeak(t *testing.T) {
+func TestServer_NoBodyLeak(t *testing.T) {
 	reg := handler.NewRegistry()
 	if err := reg.RegisterService("Echo", "echo", func(_ handler.Context, in []byte) ([]byte, error) {
 		return append([]byte("h2-echo:"), in...), nil
 	}); err != nil {
 		t.Fatalf("RegisterService: %v", err)
 	}
-	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
+	srv, err := handler.NewServer(handler.Config{Registry: reg})
 	if err != nil {
-		t.Fatalf("NewHTTP2: %v", err)
+		t.Fatalf("NewServer: %v", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

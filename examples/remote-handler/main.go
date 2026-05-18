@@ -47,9 +47,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
+	srv, err := handler.NewServer(handler.Config{Registry: reg})
 	if err != nil {
-		log.Error("NewHTTP2", "err", err)
+		log.Error("NewServer", "err", err)
 		os.Exit(1)
 	}
 	log.Info("remote-handler listening (HTTP/2 h2c)",

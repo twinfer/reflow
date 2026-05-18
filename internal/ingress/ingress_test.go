@@ -73,9 +73,9 @@ func bringUpHostWithIngress(t *testing.T, reg *handler.Registry) (*engine.Host, 
 	}
 
 	if reg != nil && reg.Len() > 0 {
-		srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
+		srv, err := handler.NewServer(handler.Config{Registry: reg})
 		if err != nil {
-			t.Fatalf("handler.NewHTTP2: %v", err)
+			t.Fatalf("handler.NewServer: %v", err)
 		}
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {

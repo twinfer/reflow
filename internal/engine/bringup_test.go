@@ -83,7 +83,7 @@ func bringUpHostWithIngress(t *testing.T, reg *handler.Registry) (*engine.Host, 
 	return h, rt
 }
 
-// registerEmbeddedHandlers starts a pkg/handler.NewHTTP2 endpoint
+// registerEmbeddedHandlers starts a pkg/handler.NewServer endpoint
 // hosting reg on a free local port and registers the URL as a
 // deployment with h's admin server. Teardown is registered on t.
 // Assumes h.MetadataRunner() is the metadata leader.
@@ -93,16 +93,16 @@ func registerEmbeddedHandlers(t *testing.T, h *engine.Host, reg *handler.Registr
 	registerDeploymentURL(t, h, url)
 }
 
-// startSDKServer starts a pkg/handler.NewHTTP2 endpoint hosting reg
+// startSDKServer starts a pkg/handler.NewServer endpoint hosting reg
 // on a free local port and returns the "http://addr" URL. The server's
 // lifetime is bound to t — restart tests can reuse the URL across
 // Host close/reopen cycles because the deployment registration is
 // durable in shard 0.
 func startSDKServer(t *testing.T, reg *handler.Registry) string {
 	t.Helper()
-	srv, err := handler.NewHTTP2(handler.Config{Registry: reg})
+	srv, err := handler.NewServer(handler.Config{Registry: reg})
 	if err != nil {
-		t.Fatalf("handler.NewHTTP2: %v", err)
+		t.Fatalf("handler.NewServer: %v", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

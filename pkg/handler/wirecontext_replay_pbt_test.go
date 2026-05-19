@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -249,10 +250,13 @@ func runScript(rt *rapid.T, ctx *wireContext, script []scriptStep, phase string)
 	results := make([]stepResult, len(script))
 	for i, step := range script {
 		results[i] = step.apply(rt, ctx, phase)
-		if results[i].err != nil {
-			// The state-surface ops only error on suspension (lazy fetch),
-			// which Phase 1 excludes. A real error here is a test bug.
-			rt.Fatalf("%s step %d (%s) errored: %v", phase, i, step, results[i].err)
+		// Errors are part of the per-step result and compared by
+		// equalStepResult — Run with a terminal *Failure outcome is
+		// the canonical case. Only ErrSuspended is fatal: that means
+		// the synthetic engine failed to stamp a result and the SDK
+		// is now in a bad state for subsequent steps.
+		if errors.Is(results[i].err, ErrSuspended) {
+			rt.Fatalf("%s step %d (%s) suspended; synthetic engine missed a result slot", phase, i, step)
 		}
 	}
 	return results

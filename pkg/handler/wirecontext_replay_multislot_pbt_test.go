@@ -132,6 +132,22 @@ var (
 			payload: signalPayloadGen.Draw(t, "payload"),
 		}
 	})
+	runNameGen       = rapid.SampledFrom([]string{"r0", "r1"})
+	runValueGen      = rapid.Map(rapid.SampledFrom([]string{"ok", "ok2"}), func(s string) []byte { return []byte(s) })
+	runFailureMsgGen = rapid.SampledFrom([]string{"boom", "nope"})
+	runStepGen       = rapid.Custom(func(t *rapid.T) scriptStep {
+		success := rapid.Bool().Draw(t, "success")
+		s := stepRun{name: runNameGen.Draw(t, "name"), success: success}
+		if success {
+			s.value = runValueGen.Draw(t, "value")
+		} else {
+			s.failureMsg = runFailureMsgGen.Draw(t, "fail")
+		}
+		return s
+	})
+	awaitSignalStepGen = rapid.Custom(func(t *rapid.T) scriptStep {
+		return stepAwaitSignal{name: signalNameGen.Draw(t, "name")}
+	})
 
 	multiSlotStepGen = rapid.OneOf(
 		// State-surface (reused from Phase 1; lazy paths exercised
@@ -140,6 +156,8 @@ var (
 		// Multi-slot + fire-and-forget added in Phase 2B and the
 		// Call/OneWayCall/Awakeable/SendSignal extension.
 		sleepStepGen, callStepGen, oneWayCallStepGen, awakeableStepGen, sendSignalStepGen,
+		// Run + AwaitSignal — synthetic engine resolves both inline.
+		runStepGen, awaitSignalStepGen,
 	)
 	multiSlotScriptGen = rapid.SliceOfN(multiSlotStepGen, 0, 16)
 )
@@ -196,6 +214,45 @@ func (s stepSendSignal) apply(_ *rapid.T, ctx *wireContext, _ string) stepResult
 	return stepResult{kind: "void", err: ctx.SendSignal(pbtCallTarget, s.name, s.payload)}
 }
 func (s stepSendSignal) String() string { return fmt.Sprintf("SendSignal(%q,%q)", s.name, s.payload) }
+
+// stepRun drives ctx.Run with a pre-drawn outcome. Only terminal
+// outcomes are exercised (success + handler-Failure): a plain non-Failure
+// error from fn would mark the run retryable and the SDK would suspend,
+// which the single-session PBT can't drive.
+type stepRun struct {
+	name       string
+	success    bool
+	value      []byte
+	failureMsg string
+}
+
+func (s stepRun) apply(_ *rapid.T, ctx *wireContext, _ string) stepResult {
+	v, err := ctx.Run(s.name, func(*RunContext) ([]byte, error) {
+		if s.success {
+			return append([]byte(nil), s.value...), nil
+		}
+		return nil, NewFailure(0, s.failureMsg)
+	})
+	return stepResult{kind: "get", val: v, present: err == nil, err: err}
+}
+func (s stepRun) String() string {
+	if s.success {
+		return fmt.Sprintf("Run(%q,ok=%q)", s.name, s.value)
+	}
+	return fmt.Sprintf("Run(%q,fail=%q)", s.name, s.failureMsg)
+}
+
+// stepAwaitSignal drives ctx.WaitSignal. The synthetic engine resolves
+// the result inline using the signal name (echoed as the payload), so
+// only the buffered-delivery path is exercised — the SDK never waits
+// on an external SignalDelivered effect.
+type stepAwaitSignal struct{ name string }
+
+func (s stepAwaitSignal) apply(_ *rapid.T, ctx *wireContext, _ string) stepResult {
+	v, err := ctx.WaitSignal(s.name).Result()
+	return stepResult{kind: "get", val: v, present: err == nil, err: err}
+}
+func (s stepAwaitSignal) String() string { return fmt.Sprintf("WaitSignal(%q)", s.name) }
 
 // ----------------------------------------------------------------------
 // syntheticEngine — the active sink that stands in for the real engine
@@ -390,6 +447,67 @@ func (e *syntheticEngine) Send(f *protocolv1.Frame) error {
 		// Fire-and-forget signal. Single-slot, no result.
 		e.replay[slot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
 		e.nextSlot++
+
+	case wire.TypeCmdRun:
+		// Marker frame. Stamp at the slot; advance the cursor by 1.
+		// TypeProposeRunDone arrives next and may replace this entry
+		// with a TypeNoteRunDone (terminal outcome). Same-slot, no
+		// additional cursor advance.
+		e.replay[slot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
+		e.nextSlot++
+
+	case wire.TypeProposeRunDone:
+		// Control frame. Replaces the marker at the slot encoded in the
+		// proposal with a terminal outcome note. The proposal carries
+		// its target slot explicitly; the engine never allocates a new
+		// one. Retryable proposals would cause the SDK to suspend, which
+		// the single-session PBT can't drive — runStepGen only emits
+		// terminal outcomes.
+		var prop protocolv1.ProposeRunCompletionMessage
+		if err := e.codec.Unmarshal(f.GetPayload(), &prop); err != nil {
+			return fmt.Errorf("syntheticEngine: decode ProposeRunCompletion: %w", err)
+		}
+		if prop.GetRetryable() {
+			return fmt.Errorf("syntheticEngine: retryable Run outcome not supported (would suspend)")
+		}
+		target := prop.GetResultCompletionId()
+		note := &protocolv1.RunCompletionNotificationMessage{CompletionId: target}
+		switch r := prop.GetResult().(type) {
+		case *protocolv1.ProposeRunCompletionMessage_Value:
+			note.Result = &protocolv1.RunCompletionNotificationMessage_Value{
+				Value: &protocolv1.Value{Content: append([]byte(nil), r.Value...)},
+			}
+		case *protocolv1.ProposeRunCompletionMessage_Failure:
+			note.Result = &protocolv1.RunCompletionNotificationMessage_Failure{Failure: r.Failure}
+		}
+		payload, err := e.codec.Marshal(note)
+		if err != nil {
+			return fmt.Errorf("syntheticEngine: marshal RunCompletionNote: %w", err)
+		}
+		e.replay[target] = &replayEntry{typeCode: wire.TypeNoteRunDone, payload: payload}
+		// No cursor advance — same slot as the marker.
+
+	case wire.TypeCmdAwaitSignal:
+		// 2-slot. Only the buffered case is exercised: the engine
+		// echoes signal name as the payload, stamps the result inline,
+		// so the SDK never waits on an external SignalDelivered.
+		var cmd protocolv1.AwaitSignalCommandMessage
+		if err := e.codec.Unmarshal(f.GetPayload(), &cmd); err != nil {
+			return fmt.Errorf("syntheticEngine: decode AwaitSignal: %w", err)
+		}
+		e.replay[slot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
+		note := &protocolv1.SignalNotificationMessage{
+			SignalId: &protocolv1.SignalNotificationMessage_Name{Name: cmd.GetSignalName()},
+			Result: &protocolv1.SignalNotificationMessage_Value{
+				Value: &protocolv1.Value{Content: []byte("sig:" + cmd.GetSignalName())},
+			},
+		}
+		payload, err := e.codec.Marshal(note)
+		if err != nil {
+			return fmt.Errorf("syntheticEngine: marshal AwaitSignalNote: %w", err)
+		}
+		e.replay[slot+1] = &replayEntry{typeCode: wire.TypeNoteSignal, payload: payload}
+		e.nextSlot += 2
 
 	default:
 		return fmt.Errorf("syntheticEngine: unsupported frame type 0x%04x (extend the engine to add new ops)", typeCode)

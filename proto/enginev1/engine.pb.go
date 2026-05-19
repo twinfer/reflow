@@ -1936,13 +1936,16 @@ func (x *InvocationSuspended) GetAwaitingOn() []string {
 // Tag assignment:
 //
 //	2-9   : baseline (Input, Sleep+Result, Call+Result, Get/SetState, Output).
-//	10-15 : Run, Awakeable+Result, Signal, ClearState, GetEagerState.
+//	10-14 : Run, Awakeable+Result, Signal, ClearState.
+//	15    : free (was JEGetEagerState — Reflow does not journal cache-hit
+//	        eager value reads; see durable-execution-go-sad.md §6.10.3).
 //	16-17 : ClearAllState, OneWayCall.
 //	18-19 : AwaitSignal + SignalResult.
 //	20-24 : Promise (Get+Result, Peek, Complete+CompleteResult).
 //	25-28 : Lazy state (GetState already at 7 — re-shaped as command;
-//	        GetStateResult, GetStateKeys, GetStateKeysResult at 25-27).
-//	28+   : reserved for future entries (AttachInvocation,
+//	        GetStateResult, GetStateKeys, GetStateKeysResult at 25-27);
+//	        JEGetEagerStateKeys at 28.
+//	29+   : reserved for future entries (AttachInvocation,
 //	        virtual-object queue ops).
 type JournalEntry struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1962,7 +1965,6 @@ type JournalEntry struct {
 	//	*JournalEntry_AwakeableResult
 	//	*JournalEntry_Signal
 	//	*JournalEntry_ClearState
-	//	*JournalEntry_GetEagerState
 	//	*JournalEntry_ClearAllState
 	//	*JournalEntry_OneWayCall
 	//	*JournalEntry_AwaitSignal
@@ -1975,6 +1977,7 @@ type JournalEntry struct {
 	//	*JournalEntry_GetStateResult
 	//	*JournalEntry_GetStateKeys
 	//	*JournalEntry_GetStateKeysResult
+	//	*JournalEntry_GetEagerStateKeys
 	Entry         isJournalEntry_Entry `protobuf_oneof:"entry"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2141,15 +2144,6 @@ func (x *JournalEntry) GetClearState() *JEClearState {
 	return nil
 }
 
-func (x *JournalEntry) GetGetEagerState() *JEGetEagerState {
-	if x != nil {
-		if x, ok := x.Entry.(*JournalEntry_GetEagerState); ok {
-			return x.GetEagerState
-		}
-	}
-	return nil
-}
-
 func (x *JournalEntry) GetClearAllState() *JEClearAllState {
 	if x != nil {
 		if x, ok := x.Entry.(*JournalEntry_ClearAllState); ok {
@@ -2258,6 +2252,15 @@ func (x *JournalEntry) GetGetStateKeysResult() *JEGetStateKeysResult {
 	return nil
 }
 
+func (x *JournalEntry) GetGetEagerStateKeys() *JEGetEagerStateKeys {
+	if x != nil {
+		if x, ok := x.Entry.(*JournalEntry_GetEagerStateKeys); ok {
+			return x.GetEagerStateKeys
+		}
+	}
+	return nil
+}
+
 type isJournalEntry_Entry interface {
 	isJournalEntry_Entry()
 }
@@ -2312,10 +2315,6 @@ type JournalEntry_Signal struct {
 
 type JournalEntry_ClearState struct {
 	ClearState *JEClearState `protobuf:"bytes,14,opt,name=clear_state,json=clearState,proto3,oneof"`
-}
-
-type JournalEntry_GetEagerState struct {
-	GetEagerState *JEGetEagerState `protobuf:"bytes,15,opt,name=get_eager_state,json=getEagerState,proto3,oneof"`
 }
 
 type JournalEntry_ClearAllState struct {
@@ -2399,6 +2398,16 @@ type JournalEntry_GetStateKeysResult struct {
 	GetStateKeysResult *JEGetStateKeysResult `protobuf:"bytes,27,opt,name=get_state_keys_result,json=getStateKeysResult,proto3,oneof"`
 }
 
+type JournalEntry_GetEagerStateKeys struct {
+	// Single-slot eager-keys read: ctx.GetStateKeys() emits this when
+	// StartMessage.partial_state=false. The SDK builds the sorted key
+	// list from its local state cache (which mirrors StartMessage.state_map
+	// plus session writes) and ships it inline; the apply arm trusts the
+	// payload and stamps it as-is. No completion notification — the SDK
+	// already has the answer locally.
+	GetEagerStateKeys *JEGetEagerStateKeys `protobuf:"bytes,28,opt,name=get_eager_state_keys,json=getEagerStateKeys,proto3,oneof"`
+}
+
 func (*JournalEntry_Input) isJournalEntry_Entry() {}
 
 func (*JournalEntry_Sleep) isJournalEntry_Entry() {}
@@ -2425,8 +2434,6 @@ func (*JournalEntry_Signal) isJournalEntry_Entry() {}
 
 func (*JournalEntry_ClearState) isJournalEntry_Entry() {}
 
-func (*JournalEntry_GetEagerState) isJournalEntry_Entry() {}
-
 func (*JournalEntry_ClearAllState) isJournalEntry_Entry() {}
 
 func (*JournalEntry_OneWayCall) isJournalEntry_Entry() {}
@@ -2450,6 +2457,8 @@ func (*JournalEntry_GetStateResult) isJournalEntry_Entry() {}
 func (*JournalEntry_GetStateKeys) isJournalEntry_Entry() {}
 
 func (*JournalEntry_GetStateKeysResult) isJournalEntry_Entry() {}
+
+func (*JournalEntry_GetEagerStateKeys) isJournalEntry_Entry() {}
 
 type JEInput struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -4426,32 +4435,31 @@ func (x *JEClearState) GetKey() string {
 	return ""
 }
 
-// JEGetEagerState is the eager-preload form of GetState: the value is
-// resolved from the state map at StartInvocation time rather than via a
-// follow-up notification.
-type JEGetEagerState struct {
+// JEGetEagerStateKeys is the single-slot eager form of GetStateKeys.
+// keys is the sorted list the SDK derived from its local state cache;
+// the apply arm trusts the payload and stamps it as-is. No completion
+// notification — the SDK already has the answer locally.
+type JEGetEagerStateKeys struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
-	Value         []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
-	Present       bool                   `protobuf:"varint,3,opt,name=present,proto3" json:"present,omitempty"`
+	Keys          []string               `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *JEGetEagerState) Reset() {
-	*x = JEGetEagerState{}
+func (x *JEGetEagerStateKeys) Reset() {
+	*x = JEGetEagerStateKeys{}
 	mi := &file_enginev1_engine_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *JEGetEagerState) String() string {
+func (x *JEGetEagerStateKeys) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*JEGetEagerState) ProtoMessage() {}
+func (*JEGetEagerStateKeys) ProtoMessage() {}
 
-func (x *JEGetEagerState) ProtoReflect() protoreflect.Message {
+func (x *JEGetEagerStateKeys) ProtoReflect() protoreflect.Message {
 	mi := &file_enginev1_engine_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -4463,30 +4471,16 @@ func (x *JEGetEagerState) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use JEGetEagerState.ProtoReflect.Descriptor instead.
-func (*JEGetEagerState) Descriptor() ([]byte, []int) {
+// Deprecated: Use JEGetEagerStateKeys.ProtoReflect.Descriptor instead.
+func (*JEGetEagerStateKeys) Descriptor() ([]byte, []int) {
 	return file_enginev1_engine_proto_rawDescGZIP(), []int{55}
 }
 
-func (x *JEGetEagerState) GetKey() string {
+func (x *JEGetEagerStateKeys) GetKeys() []string {
 	if x != nil {
-		return x.Key
-	}
-	return ""
-}
-
-func (x *JEGetEagerState) GetValue() []byte {
-	if x != nil {
-		return x.Value
+		return x.Keys
 	}
 	return nil
-}
-
-func (x *JEGetEagerState) GetPresent() bool {
-	if x != nil {
-		return x.Present
-	}
-	return false
 }
 
 type TimerFired struct {
@@ -6737,7 +6731,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\ffailure_code\x18\x03 \x01(\rR\vfailureCode\"6\n" +
 	"\x13InvocationSuspended\x12\x1f\n" +
 	"\vawaiting_on\x18\x01 \x03(\tR\n" +
-	"awaitingOn\"\xa3\x0e\n" +
+	"awaitingOn\"\xb0\x0e\n" +
 	"\fJournalEntry\x12\x14\n" +
 	"\x05index\x18\x01 \x01(\rR\x05index\x121\n" +
 	"\x05input\x18\x02 \x01(\v2\x19.reflow.engine.v1.JEInputH\x00R\x05input\x121\n" +
@@ -6756,7 +6750,6 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x06signal\x18\r \x01(\v2\x1a.reflow.engine.v1.JESignalH\x00R\x06signal\x12A\n" +
 	"\vclear_state\x18\x0e \x01(\v2\x1e.reflow.engine.v1.JEClearStateH\x00R\n" +
 	"clearState\x12K\n" +
-	"\x0fget_eager_state\x18\x0f \x01(\v2!.reflow.engine.v1.JEGetEagerStateH\x00R\rgetEagerState\x12K\n" +
 	"\x0fclear_all_state\x18\x10 \x01(\v2!.reflow.engine.v1.JEClearAllStateH\x00R\rclearAllState\x12B\n" +
 	"\fone_way_call\x18\x11 \x01(\v2\x1e.reflow.engine.v1.JEOneWayCallH\x00R\n" +
 	"oneWayCall\x12D\n" +
@@ -6770,7 +6763,8 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x17promise_complete_result\x18\x18 \x01(\v2).reflow.engine.v1.JEPromiseCompleteResultH\x00R\x15promiseCompleteResult\x12N\n" +
 	"\x10get_state_result\x18\x19 \x01(\v2\".reflow.engine.v1.JEGetStateResultH\x00R\x0egetStateResult\x12H\n" +
 	"\x0eget_state_keys\x18\x1a \x01(\v2 .reflow.engine.v1.JEGetStateKeysH\x00R\fgetStateKeys\x12[\n" +
-	"\x15get_state_keys_result\x18\x1b \x01(\v2&.reflow.engine.v1.JEGetStateKeysResultH\x00R\x12getStateKeysResultB\a\n" +
+	"\x15get_state_keys_result\x18\x1b \x01(\v2&.reflow.engine.v1.JEGetStateKeysResultH\x00R\x12getStateKeysResult\x12X\n" +
+	"\x14get_eager_state_keys\x18\x1c \x01(\v2%.reflow.engine.v1.JEGetEagerStateKeysH\x00R\x11getEagerStateKeysB\a\n" +
 	"\x05entry\"\x1f\n" +
 	"\aJEInput\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\fR\x05value\"'\n" +
@@ -6894,11 +6888,9 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\ventry_index\x18\x02 \x01(\rR\n" +
 	"entryIndex\" \n" +
 	"\fJEClearState\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\"S\n" +
-	"\x0fJEGetEagerState\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value\x12\x18\n" +
-	"\apresent\x18\x03 \x01(\bR\apresent\"\x90\x01\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\")\n" +
+	"\x13JEGetEagerStateKeys\x12\x12\n" +
+	"\x04keys\x18\x01 \x03(\tR\x04keys\"\x90\x01\n" +
 	"\n" +
 	"TimerFired\x12C\n" +
 	"\rinvocation_id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\finvocationId\x12\x1f\n" +
@@ -7125,7 +7117,7 @@ var file_enginev1_engine_proto_goTypes = []any{
 	(*Rejected)(nil),                // 54: reflow.engine.v1.Rejected
 	(*PromiseAwaiter)(nil),          // 55: reflow.engine.v1.PromiseAwaiter
 	(*JEClearState)(nil),            // 56: reflow.engine.v1.JEClearState
-	(*JEGetEagerState)(nil),         // 57: reflow.engine.v1.JEGetEagerState
+	(*JEGetEagerStateKeys)(nil),     // 57: reflow.engine.v1.JEGetEagerStateKeys
 	(*TimerFired)(nil),              // 58: reflow.engine.v1.TimerFired
 	(*PurgeInvocation)(nil),         // 59: reflow.engine.v1.PurgeInvocation
 	(*InvocationStatus)(nil),        // 60: reflow.engine.v1.InvocationStatus
@@ -7209,19 +7201,19 @@ var file_enginev1_engine_proto_depIdxs = []int32{
 	40,  // 47: reflow.engine.v1.JournalEntry.awakeable_result:type_name -> reflow.engine.v1.JEAwakeableResult
 	41,  // 48: reflow.engine.v1.JournalEntry.signal:type_name -> reflow.engine.v1.JESignal
 	56,  // 49: reflow.engine.v1.JournalEntry.clear_state:type_name -> reflow.engine.v1.JEClearState
-	57,  // 50: reflow.engine.v1.JournalEntry.get_eager_state:type_name -> reflow.engine.v1.JEGetEagerState
-	38,  // 51: reflow.engine.v1.JournalEntry.clear_all_state:type_name -> reflow.engine.v1.JEClearAllState
-	28,  // 52: reflow.engine.v1.JournalEntry.one_way_call:type_name -> reflow.engine.v1.JEOneWayCall
-	42,  // 53: reflow.engine.v1.JournalEntry.await_signal:type_name -> reflow.engine.v1.JEAwaitSignal
-	43,  // 54: reflow.engine.v1.JournalEntry.signal_result:type_name -> reflow.engine.v1.JESignalResult
-	46,  // 55: reflow.engine.v1.JournalEntry.get_promise:type_name -> reflow.engine.v1.JEGetPromise
-	47,  // 56: reflow.engine.v1.JournalEntry.promise_result:type_name -> reflow.engine.v1.JEPromiseResult
-	48,  // 57: reflow.engine.v1.JournalEntry.peek_promise:type_name -> reflow.engine.v1.JEPeekPromise
-	49,  // 58: reflow.engine.v1.JournalEntry.complete_promise:type_name -> reflow.engine.v1.JECompletePromise
-	50,  // 59: reflow.engine.v1.JournalEntry.promise_complete_result:type_name -> reflow.engine.v1.JEPromiseCompleteResult
-	31,  // 60: reflow.engine.v1.JournalEntry.get_state_result:type_name -> reflow.engine.v1.JEGetStateResult
-	32,  // 61: reflow.engine.v1.JournalEntry.get_state_keys:type_name -> reflow.engine.v1.JEGetStateKeys
-	33,  // 62: reflow.engine.v1.JournalEntry.get_state_keys_result:type_name -> reflow.engine.v1.JEGetStateKeysResult
+	38,  // 50: reflow.engine.v1.JournalEntry.clear_all_state:type_name -> reflow.engine.v1.JEClearAllState
+	28,  // 51: reflow.engine.v1.JournalEntry.one_way_call:type_name -> reflow.engine.v1.JEOneWayCall
+	42,  // 52: reflow.engine.v1.JournalEntry.await_signal:type_name -> reflow.engine.v1.JEAwaitSignal
+	43,  // 53: reflow.engine.v1.JournalEntry.signal_result:type_name -> reflow.engine.v1.JESignalResult
+	46,  // 54: reflow.engine.v1.JournalEntry.get_promise:type_name -> reflow.engine.v1.JEGetPromise
+	47,  // 55: reflow.engine.v1.JournalEntry.promise_result:type_name -> reflow.engine.v1.JEPromiseResult
+	48,  // 56: reflow.engine.v1.JournalEntry.peek_promise:type_name -> reflow.engine.v1.JEPeekPromise
+	49,  // 57: reflow.engine.v1.JournalEntry.complete_promise:type_name -> reflow.engine.v1.JECompletePromise
+	50,  // 58: reflow.engine.v1.JournalEntry.promise_complete_result:type_name -> reflow.engine.v1.JEPromiseCompleteResult
+	31,  // 59: reflow.engine.v1.JournalEntry.get_state_result:type_name -> reflow.engine.v1.JEGetStateResult
+	32,  // 60: reflow.engine.v1.JournalEntry.get_state_keys:type_name -> reflow.engine.v1.JEGetStateKeys
+	33,  // 61: reflow.engine.v1.JournalEntry.get_state_keys_result:type_name -> reflow.engine.v1.JEGetStateKeysResult
+	57,  // 62: reflow.engine.v1.JournalEntry.get_eager_state_keys:type_name -> reflow.engine.v1.JEGetEagerStateKeys
 	3,   // 63: reflow.engine.v1.JECall.target:type_name -> reflow.engine.v1.InvocationTarget
 	3,   // 64: reflow.engine.v1.JEOneWayCall.target:type_name -> reflow.engine.v1.InvocationTarget
 	3,   // 65: reflow.engine.v1.JESignal.target:type_name -> reflow.engine.v1.InvocationTarget
@@ -7322,7 +7314,6 @@ func file_enginev1_engine_proto_init() {
 		(*JournalEntry_AwakeableResult)(nil),
 		(*JournalEntry_Signal)(nil),
 		(*JournalEntry_ClearState)(nil),
-		(*JournalEntry_GetEagerState)(nil),
 		(*JournalEntry_ClearAllState)(nil),
 		(*JournalEntry_OneWayCall)(nil),
 		(*JournalEntry_AwaitSignal)(nil),
@@ -7335,6 +7326,7 @@ func file_enginev1_engine_proto_init() {
 		(*JournalEntry_GetStateResult)(nil),
 		(*JournalEntry_GetStateKeys)(nil),
 		(*JournalEntry_GetStateKeysResult)(nil),
+		(*JournalEntry_GetEagerStateKeys)(nil),
 	}
 	file_enginev1_engine_proto_msgTypes[49].OneofWrappers = []any{
 		(*PromiseValue_Pending)(nil),

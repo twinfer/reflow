@@ -414,6 +414,10 @@ func (s *wireSession) driveLoop(stream handlerclient.Stream) {
 			if !s.handleGetLazyStateKeys(f.GetPayload()) {
 				return
 			}
+		case wire.TypeCmdGetEagerStateKeys:
+			if !s.handleGetEagerStateKeys(f.GetPayload()) {
+				return
+			}
 		case wire.TypeCmdSetState:
 			if !s.handleSetState(f.GetPayload()) {
 				return
@@ -644,6 +648,35 @@ func (s *wireSession) handleGetLazyStateKeys(payload []byte) bool {
 		},
 	}
 	return s.proposeJournalOrFail(entry, "JEGetStateKeys")
+}
+
+// handleGetEagerStateKeys decodes a GetEagerStateKeysCommandMessage and
+// proposes JEGetEagerStateKeys with the SDK-supplied keys list inline.
+// Single-slot — the SDK already has the answer locally (derived from
+// StartMessage.state_map plus session writes); the apply arm trusts the
+// payload and stamps it as-is. No completion notification is emitted.
+func (s *wireSession) handleGetEagerStateKeys(payload []byte) bool {
+	var cmd protocolv1.GetEagerStateKeysCommandMessage
+	if err := s.codec.Unmarshal(payload, &cmd); err != nil {
+		s.log.Warn("invoker.wire: decode GetEagerStateKeysCommandMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode get_eager_state_keys: %v", err))
+		return false
+	}
+	src := cmd.GetValue().GetKeys()
+	keys := make([]string, len(src))
+	for i, k := range src {
+		keys[i] = string(k)
+	}
+	entry := &enginev1.JournalEntry{
+		Index: s.allocIdx(),
+		Entry: &enginev1.JournalEntry_GetEagerStateKeys{
+			GetEagerStateKeys: &enginev1.JEGetEagerStateKeys{
+				Keys: keys,
+			},
+		},
+	}
+	return s.proposeJournalOrFail(entry, "JEGetEagerStateKeys")
 }
 
 // handleSleep decodes a SleepCommandMessage and proposes JESleep at

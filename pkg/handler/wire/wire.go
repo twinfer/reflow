@@ -77,23 +77,24 @@ const (
 	TypeProposeRunDone uint16 = 0x0005
 
 	// Commands (0x0400-0x04FF).
-	TypeCmdInput            uint16 = 0x0400
-	TypeCmdOutput           uint16 = 0x0401
-	TypeCmdGetLazyState     uint16 = 0x0402
-	TypeCmdSetState         uint16 = 0x0403
-	TypeCmdClearState       uint16 = 0x0404
-	TypeCmdClearAllState    uint16 = 0x0405
-	TypeCmdGetLazyStateKeys uint16 = 0x0406
-	TypeCmdGetPromise       uint16 = 0x0409
-	TypeCmdPeekPromise      uint16 = 0x040A
-	TypeCmdCompletePromise  uint16 = 0x040B
-	TypeCmdSleep            uint16 = 0x040C
-	TypeCmdCall             uint16 = 0x040D
-	TypeCmdOneWayCall       uint16 = 0x040E
-	TypeCmdRun              uint16 = 0x0411
-	TypeCmdAwakeable        uint16 = 0x0414
-	TypeCmdSendSignal       uint16 = 0x0415
-	TypeCmdAwaitSignal      uint16 = 0x0416
+	TypeCmdInput             uint16 = 0x0400
+	TypeCmdOutput            uint16 = 0x0401
+	TypeCmdGetLazyState      uint16 = 0x0402
+	TypeCmdSetState          uint16 = 0x0403
+	TypeCmdClearState        uint16 = 0x0404
+	TypeCmdClearAllState     uint16 = 0x0405
+	TypeCmdGetLazyStateKeys  uint16 = 0x0406
+	TypeCmdGetEagerStateKeys uint16 = 0x0408
+	TypeCmdGetPromise        uint16 = 0x0409
+	TypeCmdPeekPromise       uint16 = 0x040A
+	TypeCmdCompletePromise   uint16 = 0x040B
+	TypeCmdSleep             uint16 = 0x040C
+	TypeCmdCall              uint16 = 0x040D
+	TypeCmdOneWayCall        uint16 = 0x040E
+	TypeCmdRun               uint16 = 0x0411
+	TypeCmdAwakeable         uint16 = 0x0414
+	TypeCmdSendSignal        uint16 = 0x0415
+	TypeCmdAwaitSignal       uint16 = 0x0416
 
 	// Notifications (0x8000-0x80FF).
 	TypeNoteGetLazyState     uint16 = 0x8002

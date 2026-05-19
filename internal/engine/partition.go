@@ -369,8 +369,8 @@ func journalEntryKindLabel(e *enginev1.JournalEntry) string {
 		return "GetStateKeys"
 	case *enginev1.JournalEntry_GetStateKeysResult:
 		return "GetStateKeysResult"
-	case *enginev1.JournalEntry_GetEagerState:
-		return "GetEagerState"
+	case *enginev1.JournalEntry_GetEagerStateKeys:
+		return "GetEagerStateKeys"
 	case *enginev1.JournalEntry_Signal:
 		return "Signal"
 	case *enginev1.JournalEntry_Output:
@@ -780,6 +780,11 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			// Result entries are appended directly by the engine in the
 			// inline branches above — they never arrive via the SDK's
 			// JournalAppended effect. Defensive no-op for forward-compat.
+		case *enginev1.JournalEntry_GetEagerStateKeys:
+			// Single-slot. The SDK already shipped the sorted keys list
+			// inline; journal.Append above persisted it. The session is
+			// not suspended (the answer was local) so no ActInvoke wake
+			// is needed.
 		case *enginev1.JournalEntry_Signal:
 			env := &enginev1.OutboxEnvelope{
 				DestinationShardId: p.cfg.Partitioner.ShardForTarget(e.Signal.GetTarget()),

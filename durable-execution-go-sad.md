@@ -824,6 +824,73 @@ running the engine and a Go handler in one binary for local dev — the
 engine still reaches the handler over a loopback HTTP/2 connection,
 identical to the production path.
 
+#### 6.10.3 State read journaling — deliberately partial
+
+Restate's protocol distinguishes four state-read commands:
+`GetEagerState` / `GetEagerStateKeys` (single-slot, value carried inline
+on the journal entry — SDK already has the answer locally from
+`StartMessage.state_map`) and `GetLazyState` / `GetLazyStateKeys`
+(two-slot, command + completion — engine resolves on apply). Reflow
+wires only **three** of the four:
+
+| Command             | Reflow wire path | Slot cost            |
+|---------------------|------------------|----------------------|
+| `GetLazyState`      | wired            | 2 (cmd + result)     |
+| `GetLazyStateKeys`  | wired            | 2 (cmd + result)     |
+| `GetEagerStateKeys` | wired            | 1 (cmd, keys inline) |
+| `GetEagerState`     | **dropped**      | n/a — see below      |
+
+Individual cache-hit `GetState` reads are not journaled. The SDK reads
+from `wireContext.stateCache` (populated from `StartMessage.state_map`
+plus session writes) and returns the value silently — slot cost 0.
+
+**Why we skip per-read eager journaling.** Reflow's apply model gets
+eager-read determinism for free that Restate has to recover by journaling:
+
+- Virtual objects serialize. Only one session per `(service, object_key)`
+  runs at a time; the next session starts only after the prior one's
+  writes have committed to durable state.
+- `state_map` is recomputed from durable state at every session start
+  via `preloadEagerState` (`internal/engine/invoker/common.go`). So a
+  session-2 snapshot reflects every session-1 write.
+- Read-after-write inside the session is served by `stateCache` (mutated
+  inline by `SetState` / `ClearState` / `ClearAllState`).
+
+The only divergence risk that survives is "eager cap caused a key that
+fit on session 1 to fall out on session 2" — and that's already covered
+by the lazy-fetch fallback (`partial_state=true` triggers a 2-slot
+journaled `GetLazyState`). The marginal win from also journaling
+cache-hit reads is "catch a `preloadEagerState` bug at the read site
+instead of at the next `SetState`," which is small in exchange for **one
+journal slot per state read** (a state-heavy handler doing 100 reads
+goes from 0 to 100 extra slots).
+
+The proto type `GetEagerStateCommandMessage` (was wire type 0x0407) and
+the journal-entry variant `JEGetEagerState` (was oneof tag 15) were
+deleted to avoid hinting at a path the engine doesn't implement.
+Tag 15 in `JournalEntry.entry` is free; tag 0x0407 in the protocolv1
+type-code space is free. Reflow is preproduction so we are not
+preserving them.
+
+**Why we keep `GetEagerStateKeys`.** `GetStateKeys` is a single bulk
+read — it's not on the hot path the way `GetState` is, and going
+2-slot-lazy even when the snapshot is complete was a clear
+slot-cost regression. The eager-keys variant lets the SDK ship the
+sorted key list (derived locally from `stateCache`) in a single inline
+journal frame when `partial_state=false`. On replay the slot's frame
+type code (`TypeCmdGetEagerStateKeys` vs `TypeCmdGetLazyStateKeys`)
+decides the path so a `partial_state` flip between sessions doesn't
+misalign slot counts — the journal stays the source of truth.
+
+If we ever do need explicit per-read eager journaling (e.g. as a
+defense-in-depth gate against a `preloadEagerState` regression, or for
+cross-implementation wire-protocol parity with a Restate handler
+binary), the work is: re-add `GetEagerStateCommandMessage` at wire type
+0x0407, re-add `JEGetEagerState` at tag 15 in `JournalEntry.entry`,
+wire an emit branch on cache-hit in `pkg/handler/wirecontext.go:GetState`,
+and add the apply-path + replay-translation cases that mirror the
+existing `GetEagerStateKeys` path.
+
 ---
 
 ### 6.11 Storage Pluggability
@@ -1279,8 +1346,9 @@ with `reflowd`, have it become a durable goroutine.
 - **Ingress** — gRPC + grpc-gateway in `internal/ingress/`. Awakeable
   resolution rides the same surface.
 - **Journal entry types**: `JERun`, `JEGetState` / `JESetState` /
-  `JEClearState` / `JEClearAllState`, `JEAwakeable` / `JEAwakeableResult`,
-  `JESignal`. Eager state via `JEGetEagerState` (see Virtual Objects below).
+  `JEClearState` / `JEClearAllState`, `JEGetStateKeys` /
+  `JEGetEagerStateKeys`, `JEAwakeable` / `JEAwakeableResult`, `JESignal`.
+  Eager-state preload at session start (no per-read journaling — see §6.10.3).
 - **Outbox** (`internal/engine/outbox.go`, `internal/storage/tables/outbox.go`)
   for parent-invocation notifications and cross-partition call results.
 - **Exactly-once side-effect replay** via the journal — verified by
@@ -1295,7 +1363,8 @@ with `reflowd`, have it become a durable goroutine.
   `qmuntal/stateless` (`internal/engine/object_fsm.go`).
 - Object K/V state in Pebble (`state/` namespace via
   `tables.StateTable`), with eager-state preload on session start
-  (`JEGetEagerState`).
+  (`StartMessage.state_map`, served locally by `wireContext.stateCache`;
+  see §6.10.3).
 - Single-writer gate: only `KeyLeaseStatus.CurrentInvocation` may run;
   new arrivals for an `ACTIVE` lease queue and stay `Scheduled`.
 - **Idempotency keys** (`tables.IdempotencyTable`): first

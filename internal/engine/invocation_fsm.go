@@ -66,7 +66,7 @@ func transitionOnInvoke(
 // Outbox queueing for Call / OneWayCall / outbound JESignal is layered on
 // in partition.go before the transition runs.
 // All JournalEntry kinds (JERun, JEAwakeable, JEAwakeableResult, JESignal,
-// JEClearState, JEGetEagerState, etc.) are accepted by the Invoked /
+// JEClearState, JEGetEagerStateKeys, etc.) are accepted by the Invoked /
 // Suspended arms without per-type cases.
 func transitionOnJournalAppend(
 	id *enginev1.InvocationId,

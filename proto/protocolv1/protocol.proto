@@ -276,19 +276,14 @@ message GetLazyStateKeysCompletionNotificationMessage {
   StateKeys state_keys = 17;
 }
 
-// Type: 0x0407
-// "Eager" reads are served directly from the StartMessage state_map
-// snapshot — no completion notification is needed.
-message GetEagerStateCommandMessage {
-  bytes key = 1;
-  oneof result {
-    Void void = 13;
-    Value value = 14;
-  }
-  string name = 12;
-}
-
 // Type: 0x0408
+// "Eager" keys are served from the local view (StartMessage.state_map
+// plus session writes) — no completion notification is needed; the
+// SDK ships the sorted key list inline and the engine stamps it as-is.
+//
+// Note: the per-key counterpart (was 0x0407 GetEagerStateCommandMessage)
+// is intentionally absent. Reflow does not journal cache-hit GetState
+// reads — see durable-execution-go-sad.md §6.10.3.
 message GetEagerStateKeysCommandMessage {
   StateKeys value = 14;
   string name = 12;

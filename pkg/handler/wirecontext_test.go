@@ -402,10 +402,84 @@ func TestWireContext_GetState_ClearAllStateClearsPartialFlag(t *testing.T) {
 	}
 }
 
-// TestWireContext_GetStateKeys_FreshEmits verifies a fresh GetStateKeys
-// call emits a GetLazyStateKeysCommandMessage and suspends.
-func TestWireContext_GetStateKeys_FreshEmits(t *testing.T) {
+// TestWireContext_GetStateKeys_EagerFreshEmits verifies that with a
+// complete eager snapshot (partialState=false) GetStateKeys takes the
+// 1-slot eager path: derives the sorted key list locally and emits
+// GetEagerStateKeysCommandMessage with the keys inline. No suspension.
+func TestWireContext_GetStateKeys_EagerFreshEmits(t *testing.T) {
+	// Intentionally unsorted to verify snapshotEagerKeys sorts.
+	wctx, stream := newTestWireContext(t, map[string][]byte{"c": []byte("3"), "a": []byte("1"), "b": []byte("2")})
+
+	keys, err := wctx.GetStateKeys()
+	if err != nil {
+		t.Fatalf("GetStateKeys err = %v; want nil", err)
+	}
+	if got, want := strings.Join(keys, ","), "a,b,c"; got != want {
+		t.Errorf("GetStateKeys = %v; want %q (sorted)", keys, want)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("emitted %d frame(s); want 1", len(stream.sent))
+	}
+	typeCode, _, _ := wire.UnpackHeader(stream.sent[0].GetHeader())
+	if typeCode != wire.TypeCmdGetEagerStateKeys {
+		t.Errorf("emitted frame type = 0x%04x; want TypeCmdGetEagerStateKeys", typeCode)
+	}
+	var cmd protocolv1.GetEagerStateKeysCommandMessage
+	if err := wctx.codec.Unmarshal(stream.sent[0].GetPayload(), &cmd); err != nil {
+		t.Fatalf("decode GetEagerStateKeysCommandMessage: %v", err)
+	}
+	gotKeys := cmd.GetValue().GetKeys()
+	if len(gotKeys) != 3 || string(gotKeys[0]) != "a" || string(gotKeys[1]) != "b" || string(gotKeys[2]) != "c" {
+		t.Errorf("frame keys = %v; want [a b c]", gotKeys)
+	}
+	// Eager is 1-slot — nextSlot must have advanced by exactly 1.
+	if wctx.nextSlot != 2 {
+		t.Errorf("nextSlot = %d after eager GetStateKeys; want 2", wctx.nextSlot)
+	}
+}
+
+// TestWireContext_GetStateKeys_EagerReplayHit verifies a JEGetEagerStateKeys
+// replay entry decodes into the returned key list without re-emitting.
+// Also covers the "snapshot changed between sessions" case: stateCache is
+// empty on the replaying session but the journal-frozen keys are returned.
+func TestWireContext_GetStateKeys_EagerReplayHit(t *testing.T) {
+	codec := wire.DefaultCodec()
+	cmd := &protocolv1.GetEagerStateKeysCommandMessage{
+		Value: &protocolv1.StateKeys{
+			Keys: [][]byte{[]byte("a"), []byte("b"), []byte("c")},
+		},
+	}
+	cmdPayload, err := codec.Marshal(cmd)
+	if err != nil {
+		t.Fatalf("marshal cmd: %v", err)
+	}
+	replay := map[uint32]*replayEntry{
+		1: {typeCode: wire.TypeCmdGetEagerStateKeys, payload: cmdPayload},
+	}
+	wctx, stream := newTestWireContextWithReplay(t, replay)
+
+	keys, err := wctx.GetStateKeys()
+	if err != nil {
+		t.Fatalf("GetStateKeys err = %v; want nil", err)
+	}
+	if got, want := strings.Join(keys, ","), "a,b,c"; got != want {
+		t.Errorf("GetStateKeys = %v; want %q", keys, want)
+	}
+	if len(stream.sent) != 0 {
+		t.Errorf("replay-hit emitted %d frame(s); want 0", len(stream.sent))
+	}
+	// Single slot consumed.
+	if wctx.nextSlot != 2 {
+		t.Errorf("nextSlot = %d; want 2", wctx.nextSlot)
+	}
+}
+
+// TestWireContext_GetStateKeys_LazyFreshEmits verifies the partial-snapshot
+// path: GetStateKeys allocates 2 slots, emits GetLazyStateKeysCommandMessage,
+// and suspends pending the result.
+func TestWireContext_GetStateKeys_LazyFreshEmits(t *testing.T) {
 	wctx, stream := newTestWireContext(t, nil)
+	wctx.partialState = true
 
 	keys, err := wctx.GetStateKeys()
 	if !errors.Is(err, ErrSuspended) {
@@ -428,11 +502,15 @@ func TestWireContext_GetStateKeys_FreshEmits(t *testing.T) {
 	if cmd.GetResultCompletionId() != 2 {
 		t.Errorf("cmd.ResultCompletionId = %d; want 2", cmd.GetResultCompletionId())
 	}
+	if wctx.nextSlot != 3 {
+		t.Errorf("nextSlot = %d after lazy GetStateKeys; want 3", wctx.nextSlot)
+	}
 }
 
-// TestWireContext_GetStateKeys_ReplayHit verifies a JEGetStateKeysResult
-// replay entry decodes into the returned key list without emitting.
-func TestWireContext_GetStateKeys_ReplayHit(t *testing.T) {
+// TestWireContext_GetStateKeys_LazyReplayHit verifies the partial-snapshot
+// replay path: with TypeCmdGetLazyStateKeys at slot N, the SDK consumes
+// both N and N+1 (the result notification) and returns its keys.
+func TestWireContext_GetStateKeys_LazyReplayHit(t *testing.T) {
 	codec := wire.DefaultCodec()
 	note := &protocolv1.GetLazyStateKeysCompletionNotificationMessage{
 		CompletionId: 2,
@@ -449,6 +527,7 @@ func TestWireContext_GetStateKeys_ReplayHit(t *testing.T) {
 		2: {typeCode: wire.TypeNoteGetLazyStateKeys, payload: notePayload},
 	}
 	wctx, stream := newTestWireContextWithReplay(t, replay)
+	// partialState doesn't matter on replay — the slot-frame type decides.
 
 	keys, err := wctx.GetStateKeys()
 	if err != nil {
@@ -459,6 +538,30 @@ func TestWireContext_GetStateKeys_ReplayHit(t *testing.T) {
 	}
 	if len(stream.sent) != 0 {
 		t.Errorf("replay-hit emitted %d frame(s); want 0", len(stream.sent))
+	}
+	if wctx.nextSlot != 3 {
+		t.Errorf("nextSlot = %d; want 3 (2 slots consumed)", wctx.nextSlot)
+	}
+}
+
+// TestWireContext_GetStateKeys_EagerHonorsSessionWrites verifies the
+// eager keys list reflects session-local writes — SetState adds, ClearState
+// removes.
+func TestWireContext_GetStateKeys_EagerHonorsSessionWrites(t *testing.T) {
+	wctx, _ := newTestWireContext(t, map[string][]byte{"a": []byte("1"), "b": []byte("2")})
+	if err := wctx.SetState("c", []byte("3")); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	if err := wctx.ClearState("a"); err != nil {
+		t.Fatalf("ClearState: %v", err)
+	}
+
+	keys, err := wctx.GetStateKeys()
+	if err != nil {
+		t.Fatalf("GetStateKeys err = %v; want nil", err)
+	}
+	if got, want := strings.Join(keys, ","), "b,c"; got != want {
+		t.Errorf("GetStateKeys = %v; want %q", keys, want)
 	}
 }
 

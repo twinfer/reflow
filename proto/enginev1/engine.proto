@@ -321,13 +321,16 @@ message InvocationSuspended {
 //
 // Tag assignment:
 //   2-9   : baseline (Input, Sleep+Result, Call+Result, Get/SetState, Output).
-//   10-15 : Run, Awakeable+Result, Signal, ClearState, GetEagerState.
+//   10-14 : Run, Awakeable+Result, Signal, ClearState.
+//   15    : free (was JEGetEagerState — Reflow does not journal cache-hit
+//           eager value reads; see durable-execution-go-sad.md §6.10.3).
 //   16-17 : ClearAllState, OneWayCall.
 //   18-19 : AwaitSignal + SignalResult.
 //   20-24 : Promise (Get+Result, Peek, Complete+CompleteResult).
 //   25-28 : Lazy state (GetState already at 7 — re-shaped as command;
-//           GetStateResult, GetStateKeys, GetStateKeysResult at 25-27).
-//   28+   : reserved for future entries (AttachInvocation,
+//           GetStateResult, GetStateKeys, GetStateKeysResult at 25-27);
+//           JEGetEagerStateKeys at 28.
+//   29+   : reserved for future entries (AttachInvocation,
 //           virtual-object queue ops).
 message JournalEntry {
   uint32 index = 1;
@@ -345,7 +348,6 @@ message JournalEntry {
     JEAwakeableResult awakeable_result = 12;
     JESignal signal = 13;
     JEClearState clear_state = 14;
-    JEGetEagerState get_eager_state = 15;
     JEClearAllState clear_all_state = 16;
     // Fire-and-forget call. Single-slot (no result variant); the apply
     // path enqueues an OutboxEnvelope to the receiver partition exactly
@@ -391,6 +393,13 @@ message JournalEntry {
     // (= N+1) in the same batch.
     JEGetStateKeys get_state_keys = 26;
     JEGetStateKeysResult get_state_keys_result = 27;
+    // Single-slot eager-keys read: ctx.GetStateKeys() emits this when
+    // StartMessage.partial_state=false. The SDK builds the sorted key
+    // list from its local state cache (which mirrors StartMessage.state_map
+    // plus session writes) and ships it inline; the apply arm trusts the
+    // payload and stamps it as-is. No completion notification — the SDK
+    // already has the answer locally.
+    JEGetEagerStateKeys get_eager_state_keys = 28;
   }
 }
 
@@ -696,13 +705,12 @@ message JEClearState {
   string key = 1;
 }
 
-// JEGetEagerState is the eager-preload form of GetState: the value is
-// resolved from the state map at StartInvocation time rather than via a
-// follow-up notification.
-message JEGetEagerState {
-  string key = 1;
-  bytes value = 2;
-  bool present = 3;
+// JEGetEagerStateKeys is the single-slot eager form of GetStateKeys.
+// keys is the sorted list the SDK derived from its local state cache;
+// the apply arm trusts the payload and stamps it as-is. No completion
+// notification — the SDK already has the answer locally.
+message JEGetEagerStateKeys {
+  repeated string keys = 1;
 }
 
 message TimerFired {

@@ -30,6 +30,9 @@ import (
 //     its value as the invocation output.
 //   - "lazyReadKeys": same shape but for GetLazyStateKeysCommandMessage.
 //     Echoes the comma-joined keys list as output.
+//   - "eagerReadKeys": single-session — derives the sorted keys list
+//     from StartMessage.state_map, emits GetEagerStateKeysCommandMessage
+//     (single slot, no completion) and echoes the comma-joined keys.
 type fakeHandlerLazyState struct {
 	mode         string
 	writes       map[string][]byte
@@ -78,6 +81,9 @@ func (f *fakeHandlerLazyState) serveInvoke(t *testing.T, stream *connect.BidiStr
 	case "lazyReadKeys":
 		f.partialFound = sm.GetPartialState()
 		return f.handleLazyReadKeys(stream, known, replay)
+	case "eagerReadKeys":
+		f.partialFound = sm.GetPartialState()
+		return f.handleEagerReadKeys(stream, sm.GetStateMap())
 	default:
 		return fmt.Errorf("unknown mode %q", f.mode)
 	}
@@ -177,6 +183,40 @@ func (f *fakeHandlerLazyState) handleLazyReadKeys(stream *connect.BidiStream[pro
 	}
 	f.output = []byte(strings.Join(keys, ","))
 	return f.sendOutputAndEnd(stream)
+}
+
+func (f *fakeHandlerLazyState) handleEagerReadKeys(stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame], stateMap []*protocolv1.StartMessage_StateEntry) error {
+	keys := make([]string, 0, len(stateMap))
+	for _, e := range stateMap {
+		keys = append(keys, string(e.GetKey()))
+	}
+	// StateTable.ScanObject populates state_map in lex order, but be
+	// defensive — the SDK contract is "sorted on the wire".
+	sortStrings(keys)
+	keysBytes := make([][]byte, len(keys))
+	for i, k := range keys {
+		keysBytes[i] = []byte(k)
+	}
+	cmd := &protocolv1.GetEagerStateKeysCommandMessage{
+		Value: &protocolv1.StateKeys{Keys: keysBytes},
+	}
+	payload, err := proto.Marshal(cmd)
+	if err != nil {
+		return err
+	}
+	if err := stream.Send(frameFor(wire.TypeCmdGetEagerStateKeys, payload)); err != nil {
+		return err
+	}
+	f.output = []byte(strings.Join(keys, ","))
+	return f.sendOutputAndEnd(stream)
+}
+
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j-1] > s[j]; j-- {
+			s[j-1], s[j] = s[j], s[j-1]
+		}
+	}
 }
 
 func (f *fakeHandlerLazyState) sendOutputAndEnd(stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
@@ -458,5 +498,89 @@ func TestWireDispatch_HTTP2_LazyStateKeys(t *testing.T) {
 	// StateTable.ScanObject returns keys in lex order; assert exact match.
 	if got := string(completedB.GetOutput()); got != "alpha,beta,charlie" {
 		t.Errorf("output = %q; want %q", got, "alpha,beta,charlie")
+	}
+}
+
+// TestWireDispatch_HTTP2_EagerStateKeys verifies the single-slot eager
+// keys path: with state small enough to fit the 64 KiB cap, the SDK
+// derives sorted keys from StartMessage.state_map and emits
+// GetEagerStateKeysCommandMessage inline. The engine stamps
+// JEGetEagerStateKeys; the invocation completes without suspension.
+func TestWireDispatch_HTTP2_EagerStateKeys(t *testing.T) {
+	writer := &fakeHandlerLazyState{
+		mode: "write",
+		writes: map[string][]byte{
+			"alpha":   []byte("a"),
+			"beta":    []byte("b"),
+			"charlie": []byte("c"),
+		},
+		output: []byte("write:ok"),
+	}
+	reader := &fakeHandlerLazyState{mode: "eagerReadKeys"}
+
+	writerAddr, writerTeardown := startFakeHandlerHTTP2WithHandler(t, mountFakeHandler(t, writer.discovery(), writer.serveInvoke))
+	defer writerTeardown()
+	readerAddr, readerTeardown := startFakeHandlerHTTP2WithHandler(t, mountFakeHandler(t, reader.discovery(), reader.serveInvoke))
+	defer readerTeardown()
+
+	cluster := loadgen.NewCluster(t, loadgen.ClusterOptions{N: 3})
+	defer cluster.Close()
+	awaitCtx, awaitCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer awaitCancel()
+	if err := cluster.AwaitAnyMetadataLeader(awaitCtx); err != nil {
+		t.Fatalf("AwaitAnyMetadataLeader: %v", err)
+	}
+	leaderRig := findMetadataLeader(t, cluster)
+	host := leaderRig.Host
+	srv, err := admin.NewServer(admin.Config{Host: host, Runner: host.MetadataRunner()})
+	if err != nil {
+		t.Fatalf("admin.NewServer: %v", err)
+	}
+
+	regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer regCancel()
+	writerResp, err := callRegisterDeployment(regCtx, srv, "http://"+writerAddr)
+	if err != nil {
+		t.Fatalf("RegisterDeployment writer: %v", err)
+	}
+	readerResp, err := callRegisterDeployment(regCtx, srv, "http://"+readerAddr)
+	if err != nil {
+		t.Fatalf("RegisterDeployment reader: %v", err)
+	}
+
+	target := &enginev1.InvocationTarget{ServiceName: "BigState", HandlerName: "tick", ObjectKey: "obj-eager-keys"}
+	pr := host.Partition(1)
+	if pr == nil {
+		t.Fatal("partition 1 not running")
+	}
+	subCtx, subCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer subCancel()
+
+	idA := buildID(1, "eager-keys-write")
+	if err := pr.Proposer().ProposeIngress(subCtx, "test/eager-keys-write", 1, &enginev1.Command{
+		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
+			InvocationId: idA, Target: target, Input: []byte("hello"),
+			DeploymentId: writerResp.GetDeploymentId(),
+		}},
+	}); err != nil {
+		t.Fatalf("ProposeIngress writer: %v", err)
+	}
+	_ = awaitCompleted(t, host, 1, idA, 15*time.Second)
+
+	idB := buildID(1, "eager-keys-read")
+	if err := pr.Proposer().ProposeIngress(subCtx, "test/eager-keys-read", 1, &enginev1.Command{
+		Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
+			InvocationId: idB, Target: target, Input: []byte("hello"),
+			DeploymentId: readerResp.GetDeploymentId(),
+		}},
+	}); err != nil {
+		t.Fatalf("ProposeIngress reader: %v", err)
+	}
+	completedB := awaitCompleted(t, host, 1, idB, 15*time.Second)
+	if got := string(completedB.GetOutput()); got != "alpha,beta,charlie" {
+		t.Errorf("output = %q; want %q", got, "alpha,beta,charlie")
+	}
+	if reader.partialFound {
+		t.Errorf("reader observed partial_state=true; want false (state fits the eager cap)")
 	}
 }

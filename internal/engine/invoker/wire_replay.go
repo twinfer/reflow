@@ -160,6 +160,21 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 		}
 		return marshalFrame(codec, wire.TypeNoteGetLazyStateKeys, e.GetIndex(), msg)
 
+	case *enginev1.JournalEntry_GetEagerStateKeys:
+		// Single-slot eager keys read. The journal carries the sorted key
+		// list the SDK shipped; replay it as GetEagerStateKeysCommandMessage
+		// at the same slot so wireContext.GetStateKeys decodes the payload
+		// and returns the keys without re-emitting.
+		src := entry.GetEagerStateKeys.GetKeys()
+		keysBytes := make([][]byte, len(src))
+		for i, k := range src {
+			keysBytes[i] = []byte(k)
+		}
+		msg := &protocolv1.GetEagerStateKeysCommandMessage{
+			Value: &protocolv1.StateKeys{Keys: keysBytes},
+		}
+		return marshalFrame(codec, wire.TypeCmdGetEagerStateKeys, e.GetIndex(), msg)
+
 	case *enginev1.JournalEntry_Call:
 		// Call allocates 2 slots: cmd at e.Index, result at e.Index+1.
 		// The wire ships result_completion_id pointing at the matching

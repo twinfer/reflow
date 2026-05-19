@@ -343,3 +343,93 @@ func (m *engineMachine) GetLazyStateKeys(t *rapid.T) {
 
 	m.routeActions(t, shard, actions)
 }
+
+// GetEagerStateKeys journals a single-slot JEGetEagerStateKeys with the
+// model's current keys inline. Asserts:
+//
+//   - the SUT journal carries the entry at the right slot with the
+//     payload the SDK shipped (the engine trusts the inline list — no
+//     re-derivation, no extra result entry);
+//   - no result slot was written at idx+1;
+//   - ActInvoke is pushed iff the prior status was Suspended (the
+//     FSM's Suspended → Invoked branch wakes on any JournalAppended;
+//     eager's apply path adds no further push of its own).
+func (m *engineMachine) GetEagerStateKeys(t *rapid.T) {
+	spec, ok := m.keyedLiveSpec(t, "get_eager_state_keys_spec")
+	if !ok {
+		return
+	}
+
+	cur := m.invs[idHex(spec.id)]
+	idx := cur.journalLen
+	shard := m.shardOf(spec.id)
+
+	lk := leaseKey{service: spec.tgt.service, objectKey: spec.tgt.objectKey}
+	var keys []string
+	if inner, ok := m.state[lk]; ok {
+		for k := range inner {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+	}
+
+	wasSuspended := cur.status == mSuspended
+	actions := m.applyEnvelope(t, shard, &enginev1.Envelope{
+		Command: &enginev1.Command{
+			Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+				InvocationId: spec.id,
+				Kind: &enginev1.InvokerEffect_JournalAppended{
+					JournalAppended: &enginev1.JournalEntryAppended{
+						Entry: &enginev1.JournalEntry{
+							Index: idx,
+							Entry: &enginev1.JournalEntry_GetEagerStateKeys{
+								GetEagerStateKeys: &enginev1.JEGetEagerStateKeys{
+									Keys: keys,
+								},
+							},
+						},
+					},
+				},
+			}},
+		},
+	})
+	cur.journalLen = idx + 1
+	wakeOnAppend(cur)
+
+	jt := tables.JournalTable{S: m.snaps[m.sIdx(shard)].Store()}
+	je, err := jt.Read(spec.id, idx)
+	if err != nil {
+		t.Fatalf("GetEagerStateKeys: Journal.Read(idx=%d): %v", idx, err)
+	}
+	gesk := je.GetGetEagerStateKeys()
+	if gesk == nil {
+		t.Fatalf("GetEagerStateKeys: entry at idx=%d has type %T; want JEGetEagerStateKeys",
+			idx, je.GetEntry())
+	}
+	gotKeys := gesk.GetKeys()
+	if !(len(gotKeys) == 0 && len(keys) == 0) && !reflect.DeepEqual(gotKeys, keys) {
+		t.Fatalf("GetEagerStateKeys %+v: SUT keys=%v, sent=%v", lk, gotKeys, keys)
+	}
+	// Single-slot — nothing must have been appended at idx+1 by the
+	// apply path on our behalf.
+	if next, err := jt.Read(spec.id, idx+1); err == nil && next != nil {
+		t.Fatalf("GetEagerStateKeys %+v: unexpected entry at idx+1 (%T); eager is single-slot",
+			lk, next.GetEntry())
+	}
+
+	sawInvoke := false
+	for _, a := range actions {
+		if ai, ok := a.(ActInvoke); ok && idHex(ai.ID) == idHex(spec.id) {
+			sawInvoke = true
+			break
+		}
+	}
+	if wasSuspended && !sawInvoke {
+		t.Fatalf("GetEagerStateKeys %+v: prior=Suspended; want ActInvoke (FSM wake)", lk)
+	}
+	if !wasSuspended && sawInvoke {
+		t.Fatalf("GetEagerStateKeys %+v: prior=Invoked; want no ActInvoke (eager has no apply-path push)", lk)
+	}
+
+	m.routeActions(t, shard, actions)
+}

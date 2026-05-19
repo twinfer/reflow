@@ -9,7 +9,9 @@ import (
 
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/tables"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
 // TestPreloadEagerState_OverflowKeepsPartialCache verifies that when
@@ -124,4 +126,42 @@ func TestPreloadEagerState_UnkeyedReturnsNil(t *testing.T) {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// TestTranslateEntry_GetEagerStateKeys verifies the JEGetEagerStateKeys
+// replay path: the journal entry's keys list is rendered as a single
+// GetEagerStateKeysCommandMessage frame at the entry's own slot. No
+// completion notification — eager is single-slot.
+func TestTranslateEntry_GetEagerStateKeys(t *testing.T) {
+	codec := wire.DefaultCodec()
+	invID := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("0123456789ABCDEF")}
+	entry := &enginev1.JournalEntry{
+		Index: 1,
+		Entry: &enginev1.JournalEntry_GetEagerStateKeys{
+			GetEagerStateKeys: &enginev1.JEGetEagerStateKeys{
+				Keys: []string{"alpha", "beta", "charlie"},
+			},
+		},
+	}
+	frames, err := translateEntry(invID, entry, codec, discardLogger())
+	if err != nil {
+		t.Fatalf("translateEntry: %v", err)
+	}
+	if len(frames) != 1 {
+		t.Fatalf("frames = %d; want 1 (eager is single-slot)", len(frames))
+	}
+	if frames[0].typeCode != wire.TypeCmdGetEagerStateKeys {
+		t.Errorf("typeCode = 0x%04x; want TypeCmdGetEagerStateKeys", frames[0].typeCode)
+	}
+	if frames[0].slot != 1 {
+		t.Errorf("slot = %d; want 1", frames[0].slot)
+	}
+	var cmd protocolv1.GetEagerStateKeysCommandMessage
+	if err := codec.Unmarshal(frames[0].payload, &cmd); err != nil {
+		t.Fatalf("decode GetEagerStateKeysCommandMessage: %v", err)
+	}
+	got := cmd.GetValue().GetKeys()
+	if len(got) != 3 || string(got[0]) != "alpha" || string(got[1]) != "beta" || string(got[2]) != "charlie" {
+		t.Errorf("keys = %v; want [alpha beta charlie]", got)
+	}
 }

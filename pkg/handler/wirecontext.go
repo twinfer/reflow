@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -292,16 +293,88 @@ func (c *wireContext) GetState(key string) ([]byte, bool, error) {
 }
 
 // GetStateKeys returns the lexicographically-sorted set of state keys
-// for the invocation's owning virtual object. Always journals a fetch
-// (2 slots: JEGetStateKeys + JEGetStateKeysResult) — the engine's apply
-// arm scans StateTable for the (service, object_key) prefix and stamps
-// the result inline, so the answer reflects every prior session write
-// that was journaled before this call.
+// for the invocation's owning virtual object.
+//
+// Two paths:
+//
+//   - Eager (1 slot, partialState=false): the SDK derives the keys from
+//     its local stateCache (StartMessage.state_map plus session writes)
+//     and ships them inline as JEGetEagerStateKeys. The apply arm trusts
+//     the payload and stamps it as-is; no completion needed.
+//   - Lazy (2 slots, partialState=true): JEGetStateKeys + JEGetStateKeysResult.
+//     The apply arm scans StateTable for the (service, object_key) prefix
+//     because the SDK's local view is known-incomplete.
+//
+// On replay the slot-frame type code decides the path so a partialState
+// flip between sessions doesn't misalign slot counts.
 func (c *wireContext) GetStateKeys() ([]string, error) {
-	cmdSlot, allocErr := c.allocSlot(2)
+	c.mu.Lock()
+	nextSlot := c.nextSlot
+	partialState := c.partialState
+	var span uint32 = 1
+	if entry := c.replay[nextSlot]; entry != nil {
+		switch entry.typeCode {
+		case wire.TypeCmdGetEagerStateKeys:
+			span = 1
+		case wire.TypeCmdGetLazyStateKeys:
+			span = 2
+		default:
+			c.mu.Unlock()
+			return nil, fmt.Errorf("getstatekeys slot %d carries unexpected frame type 0x%04x", nextSlot, entry.typeCode)
+		}
+	} else if partialState {
+		span = 2
+	}
+	c.mu.Unlock()
+
+	cmdSlot, allocErr := c.allocSlot(span)
 	if allocErr != nil {
 		return nil, allocErr
 	}
+	if span == 1 {
+		return c.getStateKeysEager(cmdSlot)
+	}
+	return c.getStateKeysLazy(cmdSlot)
+}
+
+// getStateKeysEager handles the single-slot path. On fresh emit it
+// derives the sorted key list from stateCache and ships it inline. On
+// replay-hit it decodes the original payload so the answer is durable
+// even if stateCache changed shape between sessions.
+func (c *wireContext) getStateKeysEager(cmdSlot uint32) ([]string, error) {
+	if entry := c.lookupReplay(cmdSlot); entry != nil {
+		var msg protocolv1.GetEagerStateKeysCommandMessage
+		if err := c.codec.Unmarshal(entry.payload, &msg); err != nil {
+			return nil, fmt.Errorf("decode replayed GetEagerStateKeysCommandMessage: %w", err)
+		}
+		src := msg.GetValue().GetKeys()
+		out := make([]string, len(src))
+		for i, k := range src {
+			out[i] = string(k)
+		}
+		return out, nil
+	}
+	keys := c.snapshotEagerKeys()
+	keysBytes := make([][]byte, len(keys))
+	for i, k := range keys {
+		keysBytes[i] = []byte(k)
+	}
+	msg := &protocolv1.GetEagerStateKeysCommandMessage{
+		Value: &protocolv1.StateKeys{Keys: keysBytes},
+	}
+	payload, err := c.codec.Marshal(msg)
+	if err != nil {
+		return nil, fmt.Errorf("marshal GetEagerStateKeysCommandMessage: %w", err)
+	}
+	if err := c.sink.Send(wire.FrameFor(wire.TypeCmdGetEagerStateKeys, payload)); err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
+// getStateKeysLazy handles the two-slot path. cmdSlot was already
+// allocated by the caller; the result lands at cmdSlot+1.
+func (c *wireContext) getStateKeysLazy(cmdSlot uint32) ([]string, error) {
 	resultSlot := cmdSlot + 1
 
 	if c.lookupReplay(cmdSlot) == nil {
@@ -335,6 +408,21 @@ func (c *wireContext) GetStateKeys() ([]string, error) {
 		out[i] = string(k)
 	}
 	return out, nil
+}
+
+// snapshotEagerKeys derives the sorted state-key list from the local
+// session view. stateCache always reflects present-only keys (ClearState
+// removes them and adds to absentKeys; ClearAllState wipes both), so we
+// just sort its keys.
+func (c *wireContext) snapshotEagerKeys() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	keys := make([]string, 0, len(c.stateCache))
+	for k := range c.stateCache {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // SetState journals a state write by emitting SetStateCommandMessage.

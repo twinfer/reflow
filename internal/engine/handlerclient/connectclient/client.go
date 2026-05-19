@@ -9,6 +9,14 @@
 // if a deployment prefers gRPC semantics. h2c is selected via
 // http.Protocols.SetUnencryptedHTTP2 for http:// URLs; TLS via
 // SetHTTP2 for https://.
+//
+// Request gzip is enabled via connect.WithSendGzip — meaningful for
+// StartMessage.state_map and replay frames. Connect-Go's gzip codec
+// has a built-in minimum-byte threshold so tiny command frames stay
+// uncompressed and the CPU cost only kicks in on payloads worth
+// compressing. The handler-side server registers gzip by default (it
+// ships with protoc-gen-connect-go) so no handler-side change is
+// needed for decode.
 package connectclient
 
 import (
@@ -89,7 +97,7 @@ func newClient(deploymentID, rawURL string, plaintextH2C bool, signer handlercli
 		baseURL:      baseURL,
 		http:         hc,
 		tr:           tr,
-		connect:      handlerv1connect.NewHandlerServiceClient(hc, baseURL),
+		connect:      handlerv1connect.NewHandlerServiceClient(hc, baseURL, connect.WithSendGzip()),
 		signer:       signer,
 	}, nil
 }

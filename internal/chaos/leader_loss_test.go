@@ -10,6 +10,7 @@ import (
 
 	"github.com/twinfer/reflow/internal/chaos"
 	"github.com/twinfer/reflow/internal/loadgen"
+	"github.com/twinfer/reflow/pkg/handler"
 )
 
 // TestChaos_LeaderLoss runs a steady-state workload, kills the
@@ -63,7 +64,7 @@ func TestChaos_LeaderLoss(t *testing.T) {
 	wl := loadgen.WorkloadConfig{
 		Cluster:      cluster,
 		Service:      service,
-		Handler:      handler,
+		Handler:      handlerName,
 		RatePerSec:   rate,
 		Concurrency:  concurrency,
 		Duration:     duration,

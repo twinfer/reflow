@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/twinfer/reflow/internal/loadgen"
+	"github.com/twinfer/reflow/pkg/handler"
 )
 
 // TestChaos_LeaderSIGKILL runs a steady-state workload against a
@@ -27,9 +28,18 @@ import (
 //	go test -tags=loadtest -timeout=10m -run=TestChaos_LeaderSIGKILL \
 //	    -v ./internal/chaos/...
 func TestChaos_LeaderSIGKILL(t *testing.T) {
+	// TODO: loadgen.StartEmbeddedHandlers only works for in-process
+	// clusters — it needs an *engine.Host to call admin.AutoSeed against,
+	// and cmd/loadnode does not serve admin. The pre-339525d path that
+	// in-process-registered handlers inside the loadnode binary is gone.
+	// Re-enable once subprocess clusters can register handler deployments
+	// (loadnode -endpoint flag + reflow.Run autoSeed, or a ClusterOptions.
+	// Endpoints field threaded into loadnode flags / admin.AutoSeed).
+	t.Skip("subprocess handler registration unimplemented after inproc removal (339525d)")
+
 	const (
 		service       = "loadgen.Hello"
-		handler       = "echo"
+		handlerName   = "echo"
 		rate          = 30.0
 		concurrency   = 8
 		duration      = 30 * time.Second
@@ -109,7 +119,7 @@ func TestChaos_LeaderSIGKILL(t *testing.T) {
 	wl := loadgen.WorkloadConfig{
 		Cluster:      cluster,
 		Service:      service,
-		Handler:      handler,
+		Handler:      handlerName,
 		RatePerSec:   rate,
 		Concurrency:  concurrency,
 		Duration:     duration,

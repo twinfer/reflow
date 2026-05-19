@@ -10,6 +10,7 @@ import (
 
 	"github.com/twinfer/reflow/internal/chaos"
 	"github.com/twinfer/reflow/internal/loadgen"
+	"github.com/twinfer/reflow/pkg/handler"
 )
 
 // TestChaos_LeaderIsolated runs a steady-state workload, isolates the
@@ -30,7 +31,7 @@ import (
 func TestChaos_LeaderIsolated(t *testing.T) {
 	const (
 		service       = "loadgen.Hello"
-		handler       = "echo"
+		handlerName   = "echo"
 		rate          = 50.0
 		concurrency   = 16
 		duration      = 30 * time.Second
@@ -79,7 +80,7 @@ func TestChaos_LeaderIsolated(t *testing.T) {
 	wl := loadgen.WorkloadConfig{
 		Cluster:      cluster,
 		Service:      service,
-		Handler:      handler,
+		Handler:      handlerName,
 		RatePerSec:   rate,
 		Concurrency:  concurrency,
 		Duration:     duration,

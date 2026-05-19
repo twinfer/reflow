@@ -149,6 +149,7 @@ type engineMachine struct {
 	workflowRuns    map[leaseKey]string                   // (service,workflow_key) -> winning idHex
 	promises        map[promiseKey]*modelPromise          // (svc,key,name) -> promise value
 	promiseAwaiters map[promiseKey][]*modelPromiseAwaiter // (svc,key,name) -> pending awaiters by entry_index
+	state           map[leaseKey]map[string][]byte        // (svc,object_key) -> {state_key -> value}
 
 	// Generator pools (drawn once at init).
 	specPool    []invSpec     // paired (id, target, kind) — partition_key consistent with target
@@ -196,6 +197,7 @@ func (m *engineMachine) init(t *rapid.T) {
 	m.workflowRuns = map[leaseKey]string{}
 	m.promises = map[promiseKey]*modelPromise{}
 	m.promiseAwaiters = map[promiseKey][]*modelPromiseAwaiter{}
+	m.state = map[leaseKey]map[string][]byte{}
 	m.pendingTimers = map[timerKey]pendingTimer{}
 	m.pendingOutbox = nil
 	m.tgtPool = []modelTarget{
@@ -1458,6 +1460,36 @@ func (m *engineMachine) Check(t *rapid.T) {
 			if idHex(a.GetOwner()) != w.ownerIDHex {
 				t.Fatalf("promise_awaiter %+v shard=%d entry_index=%d: SUT owner=%s, model owner=%s",
 					pk, shard, w.entryIndex, idHex(a.GetOwner()), w.ownerIDHex)
+			}
+		}
+	}
+
+	// StateTable ↔ model parity. Scoped per (service, object_key) target
+	// and rooted on the shard that owns the partition key, so writes/reads
+	// from any invocation under the same lease key target the same store.
+	for lk, want := range m.state {
+		shard := m.partitioner.ShardForTarget(&enginev1.InvocationTarget{
+			ServiceName: lk.service, ObjectKey: lk.objectKey,
+		})
+		target := &enginev1.InvocationTarget{ServiceName: lk.service, ObjectKey: lk.objectKey}
+		got := map[string][]byte{}
+		if err := (tables.StateTable{S: m.snaps[m.sIdx(shard)].Store()}).ScanObject(target, func(k string, v []byte) error {
+			got[k] = append([]byte(nil), v...)
+			return nil
+		}); err != nil {
+			t.Fatalf("StateTable.ScanObject shard=%d %+v: %v", shard, lk, err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("state %+v shard=%d: SUT has %d keys (%v), model has %d (%v)",
+				lk, shard, len(got), sortedKeys(got), len(want), sortedKeys(want))
+		}
+		for k, v := range want {
+			gv, ok := got[k]
+			if !ok {
+				t.Fatalf("state %+v shard=%d: key %q absent in SUT", lk, shard, k)
+			}
+			if !bytes.Equal(gv, v) {
+				t.Fatalf("state %+v shard=%d[%q]: SUT=%q model=%q", lk, shard, k, gv, v)
 			}
 		}
 	}

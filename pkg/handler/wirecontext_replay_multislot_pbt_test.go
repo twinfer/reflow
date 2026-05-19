@@ -41,11 +41,21 @@ import (
 //  3. Replay run must emit zero frames; every step result must equal
 //     the fresh run's.
 //
-// Scope: state + Sleep. Call / Run / Awakeable / Signal / Promise have
-// different state models (callee outcomes, signal inboxes, promise
-// stores) and each merits its own focused PBT — bundling them into
-// one synthetic engine would duplicate logic that already lives in
-// integration tests for each.
+// Scope: state + Sleep + the easy multi-slot ops that fit the same
+// "engine stamps result inline" template — Call, OneWayCall, Awakeable,
+// SendSignal. Out of scope:
+//
+//   - AwaitSignal: needs an inbox model (signals delivered before the
+//     await are inlined; otherwise the result is stitched in by a later
+//     SignalDelivered effect).
+//   - Promise (Get/Peek/Complete): workflow-scoped, multi-handler
+//     coordination, scope-name model.
+//   - Run: emits a marker (RunCommandMessage) plus a separate
+//     ProposeRunCompletionMessage carrying the SDK-computed outcome —
+//     the propose-completion shape doesn't fit the "engine stamps
+//     result" template.
+//
+// Each deserves a focused PBT rather than being bundled here.
 func TestWireContext_ReplayDeterminism_MultiSlot(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		initState := drawInitState(rt)
@@ -107,10 +117,12 @@ func drawMultiSlotScript(rt *rapid.T) []scriptStep {
 }
 
 func drawMultiSlotStep(rt *rapid.T, i int) scriptStep {
-	// Same step kinds as Phase 1 plus Sleep. We reuse the existing
-	// step types (their apply method on *wireContext works identically;
-	// the difference is only in which path inside wireContext fires).
-	kind := rapid.IntRange(0, 5).Draw(rt, fmt.Sprintf("ms_step_kind_%d", i))
+	// State-surface step kinds (0-4) reuse Phase 1's step types — their
+	// apply method on *wireContext works identically; the difference is
+	// only in which path inside wireContext fires under partialState=true.
+	// Multi-slot kinds (5-8) cover Sleep, Call, OneWayCall, Awakeable,
+	// SendSignal.
+	kind := rapid.IntRange(0, 9).Draw(rt, fmt.Sprintf("ms_step_kind_%d", i))
 	switch kind {
 	case 0:
 		return stepSet{
@@ -133,6 +145,21 @@ func drawMultiSlotStep(rt *rapid.T, i int) scriptStep {
 		return stepSleep{
 			durMs: uint64(rapid.IntRange(1, 1000).Draw(rt, fmt.Sprintf("ms_sleep_dur_%d", i))),
 		}
+	case 6:
+		return stepCall{
+			input: []byte(rapid.SampledFrom([]string{"a", "bb", "ccc"}).Draw(rt, fmt.Sprintf("ms_call_input_%d", i))),
+		}
+	case 7:
+		return stepOneWayCall{
+			input: []byte(rapid.SampledFrom([]string{"ow0", "ow1"}).Draw(rt, fmt.Sprintf("ms_owcall_input_%d", i))),
+		}
+	case 8:
+		return stepAwakeable{}
+	case 9:
+		return stepSendSignal{
+			name:    rapid.SampledFrom([]string{"sig_a", "sig_b"}).Draw(rt, fmt.Sprintf("ms_signal_name_%d", i)),
+			payload: []byte(rapid.SampledFrom([]string{"", "p0", "p1"}).Draw(rt, fmt.Sprintf("ms_signal_payload_%d", i))),
+		}
 	}
 	panic("unreachable")
 }
@@ -144,6 +171,51 @@ func (s stepSleep) apply(_ *rapid.T, ctx *wireContext, _ string) stepResult {
 	return stepResult{kind: "void", err: err}
 }
 func (s stepSleep) String() string { return fmt.Sprintf("Sleep(%dms)", s.durMs) }
+
+// Call target is fixed — these PBTs care about the replay invariant,
+// not routing. The synthetic engine echoes input as the result so
+// callFuture.Result has something deterministic to compare.
+var pbtCallTarget = Target{Service: "Svc", Handler: "Hdr", Key: "ckey"}
+
+type stepCall struct{ input []byte }
+
+func (s stepCall) apply(_ *rapid.T, ctx *wireContext, _ string) stepResult {
+	v, err := ctx.Call(pbtCallTarget, s.input).Result()
+	return stepResult{kind: "get", val: v, present: err == nil, err: err}
+}
+func (s stepCall) String() string { return fmt.Sprintf("Call(%q)", s.input) }
+
+type stepOneWayCall struct{ input []byte }
+
+func (s stepOneWayCall) apply(_ *rapid.T, ctx *wireContext, _ string) stepResult {
+	return stepResult{kind: "void", err: ctx.OneWayCall(pbtCallTarget, s.input)}
+}
+func (s stepOneWayCall) String() string { return fmt.Sprintf("OneWayCall(%q)", s.input) }
+
+type stepAwakeable struct{}
+
+func (s stepAwakeable) apply(_ *rapid.T, ctx *wireContext, _ string) stepResult {
+	// Awakeable returns (id, future). The id is non-deterministic on the
+	// fresh run (mintAwakeableID uses crypto/rand) but the same id is
+	// surfaced on replay (from the journaled cmd frame). Discard id from
+	// the result comparison since we're testing the result-resolution
+	// path; the awakeableFuture's id-matching is exercised inline by
+	// the SDK reading the cmd payload.
+	_, future := ctx.Awakeable()
+	v, err := future.Result()
+	return stepResult{kind: "get", val: v, present: err == nil, err: err}
+}
+func (s stepAwakeable) String() string { return "Awakeable()" }
+
+type stepSendSignal struct {
+	name    string
+	payload []byte
+}
+
+func (s stepSendSignal) apply(_ *rapid.T, ctx *wireContext, _ string) stepResult {
+	return stepResult{kind: "void", err: ctx.SendSignal(pbtCallTarget, s.name, s.payload)}
+}
+func (s stepSendSignal) String() string { return fmt.Sprintf("SendSignal(%q,%q)", s.name, s.payload) }
 
 // ----------------------------------------------------------------------
 // syntheticEngine — the active sink that stands in for the real engine
@@ -282,6 +354,62 @@ func (e *syntheticEngine) Send(f *protocolv1.Frame) error {
 		}
 		e.replay[slot+1] = &replayEntry{typeCode: wire.TypeNoteSleepDone, payload: payload}
 		e.nextSlot += 2
+
+	case wire.TypeCmdCall:
+		var cmd protocolv1.CallCommandMessage
+		if err := e.codec.Unmarshal(f.GetPayload(), &cmd); err != nil {
+			return fmt.Errorf("syntheticEngine: decode Call: %w", err)
+		}
+		e.replay[slot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
+		// Echo input as the callee's result — deterministic, lets the
+		// SDK's callFuture.Result do its decode and return something
+		// the PBT can compare across fresh / replay.
+		note := &protocolv1.CallCompletionNotificationMessage{
+			CompletionId: slot + 1,
+			Result: &protocolv1.CallCompletionNotificationMessage_Value{
+				Value: &protocolv1.Value{Content: append([]byte(nil), cmd.GetParameter()...)},
+			},
+		}
+		payload, err := e.codec.Marshal(note)
+		if err != nil {
+			return fmt.Errorf("syntheticEngine: marshal CallNote: %w", err)
+		}
+		e.replay[slot+1] = &replayEntry{typeCode: wire.TypeNoteCallDone, payload: payload}
+		e.nextSlot += 2
+
+	case wire.TypeCmdOneWayCall:
+		// Fire-and-forget. Single-slot, no result; the SDK never reads
+		// back so stamping the cmd is enough for replay.
+		e.replay[slot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
+		e.nextSlot++
+
+	case wire.TypeCmdAwakeable:
+		var cmd protocolv1.AwakeableCommandMessage
+		if err := e.codec.Unmarshal(f.GetPayload(), &cmd); err != nil {
+			return fmt.Errorf("syntheticEngine: decode Awakeable: %w", err)
+		}
+		e.replay[slot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
+		// Resolve immediately with a deterministic value. awakeableFuture
+		// expects a SignalNotificationMessage with a Name-shaped signal_id
+		// (the awakeable id from the cmd) — id-matching happens inside
+		// the SDK, not in the wire frame's slot stamp.
+		note := &protocolv1.SignalNotificationMessage{
+			SignalId: &protocolv1.SignalNotificationMessage_Name{Name: cmd.GetAwakeableId()},
+			Result: &protocolv1.SignalNotificationMessage_Value{
+				Value: &protocolv1.Value{Content: []byte("awk-result")},
+			},
+		}
+		payload, err := e.codec.Marshal(note)
+		if err != nil {
+			return fmt.Errorf("syntheticEngine: marshal AwakeableNote: %w", err)
+		}
+		e.replay[slot+1] = &replayEntry{typeCode: wire.TypeNoteSignal, payload: payload}
+		e.nextSlot += 2
+
+	case wire.TypeCmdSendSignal:
+		// Fire-and-forget signal. Single-slot, no result.
+		e.replay[slot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
+		e.nextSlot++
 
 	default:
 		return fmt.Errorf("syntheticEngine: unsupported frame type 0x%04x (extend the engine to add new ops)", typeCode)

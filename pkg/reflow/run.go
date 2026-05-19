@@ -20,6 +20,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	"github.com/twinfer/reflow/internal/ingress"
+	"github.com/twinfer/reflow/internal/ingress/eventsource"
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/pkg/adminclient"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
@@ -215,7 +216,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 
 	host, herr := finishStartup(ctx, cfg, eh, adminEnabled, shards, snapshotTriggers,
 		deliverySrv, deliveryClient, deliveryCreds, adminCreds, handlerSigner,
-		httpAuthMW, httpAuthCloser, metricsCloser, logger)
+		httpAuthMW, httpAuthCloser, metricsCloser, metricsRegisterer, logger)
 	if herr != nil {
 		if deliverySrv != nil {
 			_ = deliverySrv.Close()
@@ -334,6 +335,7 @@ func finishStartup(
 	httpAuthMW func(http.Handler) http.Handler,
 	authCloser func() error,
 	metricsCloser func() error,
+	metricsRegisterer prometheus.Registerer,
 	logger *slog.Logger,
 ) (*Host, error) {
 	// Joiners register themselves with shard 0 BEFORE starting any
@@ -488,6 +490,38 @@ func finishStartup(
 		return nil, err
 	}
 
+	var esManager *eventsource.Manager
+	if ingressRT != nil {
+		esManager, err = eventsource.NewManager(cfg.EventSources, ingressRT.Server(), metricsRegisterer, logger)
+		if err != nil {
+			_ = ingressRT.Close()
+			if snapshotCxl != nil {
+				snapshotCxl()
+			}
+			if snapshotRepo != nil {
+				_ = snapshotRepo.Close()
+			}
+			if adminSrv != nil {
+				_ = adminSrv.Close()
+			}
+			return nil, err
+		}
+	} else if len(cfg.EventSources.Sources) > 0 {
+		if snapshotCxl != nil {
+			snapshotCxl()
+		}
+		if snapshotRepo != nil {
+			_ = snapshotRepo.Close()
+		}
+		if adminSrv != nil {
+			_ = adminSrv.Close()
+		}
+		return nil, fmt.Errorf("reflow: event_sources requires an enabled ingress listener")
+	}
+	if esManager != nil {
+		go esManager.Run(ctx)
+	}
+
 	// Auto-seed remote-handler deployments from config. Spawned AFTER
 	// the last error-returning step so a failed Run doesn't leave this
 	// goroutine running with no Host to attach to. Each failure inside
@@ -511,6 +545,7 @@ func finishStartup(
 		snapshotCxl:    snapshotCxl,
 		snapshotRepo:   snapshotRepo,
 		handlerSigner:  handlerSigner,
+		eventSources:   esManager,
 	}, nil
 }
 

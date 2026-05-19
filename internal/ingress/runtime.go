@@ -81,5 +81,10 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 // passed ":0" to let the kernel pick a port).
 func (r *Runtime) Addr() string { return r.srv.Addr() }
 
+// Server exposes the in-process Connect handler so in-binary subsystems
+// (event-source dispatcher, embedded admin tooling) can call ingress
+// methods without going through the network listener.
+func (r *Runtime) Server() *Server { return r.server }
+
 // Close stops the transport. Idempotent.
 func (r *Runtime) Close() error { return r.srv.Close() }

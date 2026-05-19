@@ -12,8 +12,14 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/twinfer/reflow/internal/ingress/eventsource"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 )
+
+// EventSourcesConfig is re-exported from internal/ingress/eventsource so
+// the public Config surface stays in pkg/reflow while the implementation
+// lives next to its consumers.
+type EventSourcesConfig = eventsource.Config
 
 // Config is the typed configuration for a reflow node. All fields are
 // optional except Node.ID, Node.RaftAddr, and Storage.DataDir. Defaults
@@ -27,17 +33,18 @@ import (
 // spec is insecure. Multi-node deployments are allowed on insecure
 // transport but Run emits a WARN log.
 type Config struct {
-	Node     NodeConfig     `koanf:"node"`
-	Cluster  ClusterConfig  `koanf:"cluster"`
-	Storage  StorageConfig  `koanf:"storage"`
-	Ingress  IngressConfig  `koanf:"ingress"`
-	Metrics  MetricsConfig  `koanf:"metrics"`
-	Logging  LoggingConfig  `koanf:"logging"`
-	Delivery DeliveryConfig `koanf:"delivery"`
-	Admin    AdminConfig    `koanf:"admin"`
-	Auth     AuthConfig     `koanf:"auth"`
-	Snapshot SnapshotConfig `koanf:"snapshot"`
-	Handlers HandlersConfig `koanf:"handlers"`
+	Node         NodeConfig         `koanf:"node"`
+	Cluster      ClusterConfig      `koanf:"cluster"`
+	Storage      StorageConfig      `koanf:"storage"`
+	Ingress      IngressConfig      `koanf:"ingress"`
+	Metrics      MetricsConfig      `koanf:"metrics"`
+	Logging      LoggingConfig      `koanf:"logging"`
+	Delivery     DeliveryConfig     `koanf:"delivery"`
+	Admin        AdminConfig        `koanf:"admin"`
+	Auth         AuthConfig         `koanf:"auth"`
+	Snapshot     SnapshotConfig     `koanf:"snapshot"`
+	Handlers     HandlersConfig     `koanf:"handlers"`
+	EventSources EventSourcesConfig `koanf:"event_sources"`
 }
 
 // HandlersConfig groups the handler-related knobs. Endpoints lists

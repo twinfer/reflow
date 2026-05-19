@@ -234,36 +234,231 @@ func TestWireContext_GetState_NilCache(t *testing.T) {
 	}
 }
 
-// TestWireContext_GetState_PartialMiss returns
-// ErrLazyStateUnavailable on a miss when StartMessage.partial_state was
-// true. Lazy fetch isn't wired, so the handler must distinguish "key
-// absent" from "snapshot incomplete."
-func TestWireContext_GetState_PartialMiss(t *testing.T) {
-	wctx, _ := newTestWireContext(t, map[string][]byte{"present": []byte("v")})
+// TestWireContext_GetState_PartialMissEmitsLazyFetch verifies that when
+// partialState=true and the key isn't in the eager cache, GetState emits
+// a GetLazyStateCommandMessage and suspends pending the result.
+func TestWireContext_GetState_PartialMissEmitsLazyFetch(t *testing.T) {
+	wctx, stream := newTestWireContext(t, map[string][]byte{"present": []byte("v")})
 	wctx.partialState = true
 
 	if v, ok, err := wctx.GetState("present"); err != nil || !ok || string(v) != "v" {
 		t.Errorf("present-key GetState = (%q, %v, %v); want (v, true, nil)", v, ok, err)
 	}
+	if len(stream.sent) != 0 {
+		t.Errorf("present-key GetState emitted %d frame(s); want 0 (cache hit)", len(stream.sent))
+	}
+
 	v, ok, err := wctx.GetState("missing")
-	if !errors.Is(err, ErrLazyStateUnavailable) {
-		t.Errorf("partial-miss GetState err = %v; want ErrLazyStateUnavailable", err)
+	if !errors.Is(err, ErrSuspended) {
+		t.Errorf("partial-miss GetState err = %v; want ErrSuspended", err)
 	}
 	if ok || v != nil {
 		t.Errorf("partial-miss GetState = (%q, %v); want (nil, false)", v, ok)
 	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("partial-miss GetState emitted %d frame(s); want 1", len(stream.sent))
+	}
+	typeCode, _, _ := wire.UnpackHeader(stream.sent[0].GetHeader())
+	if typeCode != wire.TypeCmdGetLazyState {
+		t.Errorf("emitted frame type = 0x%04x; want 0x%04x (TypeCmdGetLazyState)", typeCode, wire.TypeCmdGetLazyState)
+	}
+	var cmd protocolv1.GetLazyStateCommandMessage
+	if err := wctx.codec.Unmarshal(stream.sent[0].GetPayload(), &cmd); err != nil {
+		t.Fatalf("decode GetLazyStateCommandMessage: %v", err)
+	}
+	if string(cmd.GetKey()) != "missing" {
+		t.Errorf("cmd.Key = %q; want %q", cmd.GetKey(), "missing")
+	}
+	// cmd at slot 1 (first allocation), result at slot 2.
+	if cmd.GetResultCompletionId() != 2 {
+		t.Errorf("cmd.ResultCompletionId = %d; want 2", cmd.GetResultCompletionId())
+	}
 }
 
-// TestWireContext_GetState_PartialNoCache surfaces
-// ErrLazyStateUnavailable when partialState is true and there is no
-// cache map at all (engine declined to send any state_map entries).
-func TestWireContext_GetState_PartialNoCache(t *testing.T) {
-	wctx, _ := newTestWireContext(t, nil)
+// TestWireContext_GetState_LazyReplayHit verifies that when the replay
+// buffer carries a JEGetStateResult at the result slot, GetState
+// decodes it without emitting a fetch.
+func TestWireContext_GetState_LazyReplayHit(t *testing.T) {
+	codec := wire.DefaultCodec()
+	// Result slot will be 2 (cmdSlot=1, resultSlot=2).
+	note := &protocolv1.GetLazyStateCompletionNotificationMessage{
+		CompletionId: 2,
+		Result: &protocolv1.GetLazyStateCompletionNotificationMessage_Value{
+			Value: &protocolv1.Value{Content: []byte("hello")},
+		},
+	}
+	notePayload, err := codec.Marshal(note)
+	if err != nil {
+		t.Fatalf("marshal note: %v", err)
+	}
+	replay := map[uint32]*replayEntry{
+		1: {typeCode: wire.TypeCmdGetLazyState, payload: nil},
+		2: {typeCode: wire.TypeNoteGetLazyState, payload: notePayload},
+	}
+	wctx, stream := newTestWireContextWithReplay(t, replay)
 	wctx.partialState = true
 
-	_, _, err := wctx.GetState("anything")
-	if !errors.Is(err, ErrLazyStateUnavailable) {
-		t.Errorf("GetState err = %v; want ErrLazyStateUnavailable", err)
+	v, ok, err := wctx.GetState("k")
+	if err != nil {
+		t.Fatalf("GetState err = %v; want nil", err)
+	}
+	if !ok || string(v) != "hello" {
+		t.Errorf("GetState = (%q, %v); want (hello, true)", v, ok)
+	}
+	if len(stream.sent) != 0 {
+		t.Errorf("replay-hit emitted %d frame(s); want 0", len(stream.sent))
+	}
+
+	// Repeat read should hit cache, not re-fetch.
+	v2, ok2, err2 := wctx.GetState("k")
+	if err2 != nil || !ok2 || string(v2) != "hello" {
+		t.Errorf("repeat GetState = (%q, %v, %v); want (hello, true, nil)", v2, ok2, err2)
+	}
+}
+
+// TestWireContext_GetState_LazyReplayVoid verifies an absent-key replay
+// (JEGetStateResult{present=false}) returns (nil, false, nil) and
+// caches the "absent" verdict so a repeat read doesn't re-fetch.
+func TestWireContext_GetState_LazyReplayVoid(t *testing.T) {
+	codec := wire.DefaultCodec()
+	note := &protocolv1.GetLazyStateCompletionNotificationMessage{
+		CompletionId: 2,
+		Result: &protocolv1.GetLazyStateCompletionNotificationMessage_Void{
+			Void: &protocolv1.Void{},
+		},
+	}
+	notePayload, err := codec.Marshal(note)
+	if err != nil {
+		t.Fatalf("marshal note: %v", err)
+	}
+	replay := map[uint32]*replayEntry{
+		1: {typeCode: wire.TypeCmdGetLazyState, payload: nil},
+		2: {typeCode: wire.TypeNoteGetLazyState, payload: notePayload},
+	}
+	wctx, stream := newTestWireContextWithReplay(t, replay)
+	wctx.partialState = true
+
+	v, ok, err := wctx.GetState("missing")
+	if err != nil {
+		t.Fatalf("GetState err = %v; want nil", err)
+	}
+	if ok || v != nil {
+		t.Errorf("GetState = (%q, %v); want (nil, false)", v, ok)
+	}
+	// Second call: absent verdict cached → no fresh slot allocation, no
+	// emit. The wireContext should return absent inline.
+	v2, ok2, err2 := wctx.GetState("missing")
+	if err2 != nil || ok2 || v2 != nil {
+		t.Errorf("repeat GetState = (%q, %v, %v); want (nil, false, nil)", v2, ok2, err2)
+	}
+	if len(stream.sent) != 0 {
+		t.Errorf("absent-replay emitted %d frame(s); want 0", len(stream.sent))
+	}
+}
+
+// TestWireContext_GetState_ClearStateShortCircuits verifies a
+// session-local ClearState marks the key absent so a subsequent GetState
+// doesn't lazy-fetch even when partialState=true.
+func TestWireContext_GetState_ClearStateShortCircuits(t *testing.T) {
+	wctx, stream := newTestWireContext(t, map[string][]byte{"k": []byte("v")})
+	wctx.partialState = true
+
+	if err := wctx.ClearState("k"); err != nil {
+		t.Fatalf("ClearState: %v", err)
+	}
+	v, ok, err := wctx.GetState("k")
+	if err != nil || ok || v != nil {
+		t.Errorf("GetState after ClearState = (%q, %v, %v); want (nil, false, nil)", v, ok, err)
+	}
+	// 1 frame: the ClearState. No lazy fetch.
+	if len(stream.sent) != 1 {
+		t.Errorf("emitted %d frame(s); want 1 (ClearState only)", len(stream.sent))
+	}
+	typeCode, _, _ := wire.UnpackHeader(stream.sent[0].GetHeader())
+	if typeCode != wire.TypeCmdClearState {
+		t.Errorf("emitted frame type = 0x%04x; want TypeCmdClearState", typeCode)
+	}
+}
+
+// TestWireContext_GetState_ClearAllStateClearsPartialFlag verifies
+// ClearAllState flips partialState=false so subsequent reads return
+// absent directly without lazy fetching.
+func TestWireContext_GetState_ClearAllStateClearsPartialFlag(t *testing.T) {
+	wctx, stream := newTestWireContext(t, map[string][]byte{"k": []byte("v")})
+	wctx.partialState = true
+
+	if err := wctx.ClearAllState(); err != nil {
+		t.Fatalf("ClearAllState: %v", err)
+	}
+	if wctx.partialState {
+		t.Errorf("partialState = true after ClearAllState; want false")
+	}
+	v, ok, err := wctx.GetState("k")
+	if err != nil || ok || v != nil {
+		t.Errorf("GetState after ClearAllState = (%q, %v, %v); want (nil, false, nil)", v, ok, err)
+	}
+	if len(stream.sent) != 1 {
+		t.Errorf("emitted %d frame(s); want 1 (ClearAllState only)", len(stream.sent))
+	}
+}
+
+// TestWireContext_GetStateKeys_FreshEmits verifies a fresh GetStateKeys
+// call emits a GetLazyStateKeysCommandMessage and suspends.
+func TestWireContext_GetStateKeys_FreshEmits(t *testing.T) {
+	wctx, stream := newTestWireContext(t, nil)
+
+	keys, err := wctx.GetStateKeys()
+	if !errors.Is(err, ErrSuspended) {
+		t.Errorf("GetStateKeys err = %v; want ErrSuspended", err)
+	}
+	if keys != nil {
+		t.Errorf("GetStateKeys = %v; want nil on suspend", keys)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("emitted %d frame(s); want 1", len(stream.sent))
+	}
+	typeCode, _, _ := wire.UnpackHeader(stream.sent[0].GetHeader())
+	if typeCode != wire.TypeCmdGetLazyStateKeys {
+		t.Errorf("emitted frame type = 0x%04x; want TypeCmdGetLazyStateKeys", typeCode)
+	}
+	var cmd protocolv1.GetLazyStateKeysCommandMessage
+	if err := wctx.codec.Unmarshal(stream.sent[0].GetPayload(), &cmd); err != nil {
+		t.Fatalf("decode GetLazyStateKeysCommandMessage: %v", err)
+	}
+	if cmd.GetResultCompletionId() != 2 {
+		t.Errorf("cmd.ResultCompletionId = %d; want 2", cmd.GetResultCompletionId())
+	}
+}
+
+// TestWireContext_GetStateKeys_ReplayHit verifies a JEGetStateKeysResult
+// replay entry decodes into the returned key list without emitting.
+func TestWireContext_GetStateKeys_ReplayHit(t *testing.T) {
+	codec := wire.DefaultCodec()
+	note := &protocolv1.GetLazyStateKeysCompletionNotificationMessage{
+		CompletionId: 2,
+		StateKeys: &protocolv1.StateKeys{
+			Keys: [][]byte{[]byte("a"), []byte("b"), []byte("c")},
+		},
+	}
+	notePayload, err := codec.Marshal(note)
+	if err != nil {
+		t.Fatalf("marshal note: %v", err)
+	}
+	replay := map[uint32]*replayEntry{
+		1: {typeCode: wire.TypeCmdGetLazyStateKeys, payload: nil},
+		2: {typeCode: wire.TypeNoteGetLazyStateKeys, payload: notePayload},
+	}
+	wctx, stream := newTestWireContextWithReplay(t, replay)
+
+	keys, err := wctx.GetStateKeys()
+	if err != nil {
+		t.Fatalf("GetStateKeys err = %v; want nil", err)
+	}
+	if got, want := strings.Join(keys, ","), "a,b,c"; got != want {
+		t.Errorf("GetStateKeys = %v; want %q", keys, want)
+	}
+	if len(stream.sent) != 0 {
+		t.Errorf("replay-hit emitted %d frame(s); want 0", len(stream.sent))
 	}
 }
 

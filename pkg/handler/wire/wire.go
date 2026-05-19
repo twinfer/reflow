@@ -77,29 +77,33 @@ const (
 	TypeProposeRunDone uint16 = 0x0005
 
 	// Commands (0x0400-0x04FF).
-	TypeCmdInput           uint16 = 0x0400
-	TypeCmdOutput          uint16 = 0x0401
-	TypeCmdSetState        uint16 = 0x0403
-	TypeCmdClearState      uint16 = 0x0404
-	TypeCmdClearAllState   uint16 = 0x0405
-	TypeCmdGetPromise      uint16 = 0x0409
-	TypeCmdPeekPromise     uint16 = 0x040A
-	TypeCmdCompletePromise uint16 = 0x040B
-	TypeCmdSleep           uint16 = 0x040C
-	TypeCmdCall            uint16 = 0x040D
-	TypeCmdOneWayCall      uint16 = 0x040E
-	TypeCmdRun             uint16 = 0x0411
-	TypeCmdAwakeable       uint16 = 0x0414
-	TypeCmdSendSignal      uint16 = 0x0415
-	TypeCmdAwaitSignal     uint16 = 0x0416
+	TypeCmdInput            uint16 = 0x0400
+	TypeCmdOutput           uint16 = 0x0401
+	TypeCmdGetLazyState     uint16 = 0x0402
+	TypeCmdSetState         uint16 = 0x0403
+	TypeCmdClearState       uint16 = 0x0404
+	TypeCmdClearAllState    uint16 = 0x0405
+	TypeCmdGetLazyStateKeys uint16 = 0x0406
+	TypeCmdGetPromise       uint16 = 0x0409
+	TypeCmdPeekPromise      uint16 = 0x040A
+	TypeCmdCompletePromise  uint16 = 0x040B
+	TypeCmdSleep            uint16 = 0x040C
+	TypeCmdCall             uint16 = 0x040D
+	TypeCmdOneWayCall       uint16 = 0x040E
+	TypeCmdRun              uint16 = 0x0411
+	TypeCmdAwakeable        uint16 = 0x0414
+	TypeCmdSendSignal       uint16 = 0x0415
+	TypeCmdAwaitSignal      uint16 = 0x0416
 
 	// Notifications (0x8000-0x80FF).
-	TypeNoteGetPromise      uint16 = 0x8009
-	TypeNotePeekPromise     uint16 = 0x800A
-	TypeNoteCompletePromise uint16 = 0x800B
-	TypeNoteSleepDone       uint16 = 0x800C
-	TypeNoteCallDone        uint16 = 0x800D
-	TypeNoteRunDone         uint16 = 0x8011
+	TypeNoteGetLazyState     uint16 = 0x8002
+	TypeNoteGetLazyStateKeys uint16 = 0x8006
+	TypeNoteGetPromise       uint16 = 0x8009
+	TypeNotePeekPromise      uint16 = 0x800A
+	TypeNoteCompletePromise  uint16 = 0x800B
+	TypeNoteSleepDone        uint16 = 0x800C
+	TypeNoteCallDone         uint16 = 0x800D
+	TypeNoteRunDone          uint16 = 0x8011
 
 	// Out-of-band signal delivery (0xFBFF). The same code carries
 	// awakeable resolutions and any future numbered signals.

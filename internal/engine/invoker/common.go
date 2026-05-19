@@ -33,12 +33,20 @@ const eagerStateMaxBytes = 64 * 1024
 var errStatePreloadOverflow = errors.New("state preload overflow")
 
 // preloadEagerState reads every state row scoped to (service, object_key)
-// into an in-memory map. Returns (nil, false) when the scan completed
-// for an unkeyed service or failed mid-scan; (nil, true) when the total
-// payload exceeded eagerStateMaxBytes — wire callers set
-// StartMessage.PartialState in that case so the handler errors on a
-// cache miss rather than treating the (incomplete) snapshot as
-// authoritative.
+// into an in-memory map. Returns:
+//
+//   - (nil, false)   — unkeyed service (no per-object state).
+//   - (nil, false)   — scan failure mid-stream; logged.
+//   - (cache, false) — full snapshot fit under eagerStateMaxBytes.
+//   - (cache, true)  — overflow: cache holds the keys that fit before the
+//     limit tripped, in scan order. Wire callers set
+//     StartMessage.PartialState=true so the SDK lazy-fetches keys that
+//     fall outside the partial snapshot.
+//
+// Pre-lazy-fetch, the partial cache was discarded on overflow because
+// the SDK had no way to retrieve the missing keys. Now that the SDK can
+// emit GetLazyStateCommandMessage for any cache miss, returning what fit
+// keeps reads cheap for the keys that did make it into the snapshot.
 func preloadEagerState(
 	stateTable tables.StateTable,
 	target *enginev1.InvocationTarget,
@@ -60,11 +68,12 @@ func preloadEagerState(
 		return nil
 	})
 	if overflowed {
-		log.Info("invoker: state preload overflow; falling back to lazy",
+		log.Info("invoker: state preload overflow; partial snapshot retained, lazy fetch covers the rest",
 			"id", invocationIDString(id),
 			"limit_bytes", eagerStateMaxBytes,
+			"preloaded_keys", len(cache),
 		)
-		return nil, true
+		return cache, true
 	}
 	if err != nil {
 		log.Warn("invoker: state preload scan failed",

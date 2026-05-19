@@ -325,7 +325,9 @@ message InvocationSuspended {
 //   16-17 : ClearAllState, OneWayCall.
 //   18-19 : AwaitSignal + SignalResult.
 //   20-24 : Promise (Get+Result, Peek, Complete+CompleteResult).
-//   25+   : reserved for future entries (AttachInvocation,
+//   25-28 : Lazy state (GetState already at 7 — re-shaped as command;
+//           GetStateResult, GetStateKeys, GetStateKeysResult at 25-27).
+//   28+   : reserved for future entries (AttachInvocation,
 //           virtual-object queue ops).
 message JournalEntry {
   uint32 index = 1;
@@ -377,6 +379,18 @@ message JournalEntry {
     // same batch.
     JECompletePromise complete_promise = 23;
     JEPromiseCompleteResult promise_complete_result = 24;
+    // Two-slot lazy state read: ctx.GetState(key) journals JEGetState at
+    // slot N when the eager-preload snapshot didn't cover the key (i.e.
+    // StartMessage.partial_state=true). The apply arm reads StateTable
+    // and appends JEGetStateResult at result_completion_id (= N+1) in
+    // the same batch.
+    JEGetStateResult get_state_result = 25;
+    // Two-slot lazy state keys read: ctx.GetStateKeys() journals
+    // JEGetStateKeys at slot N; the apply arm scans the StateTable
+    // prefix and appends JEGetStateKeysResult at result_completion_id
+    // (= N+1) in the same batch.
+    JEGetStateKeys get_state_keys = 26;
+    JEGetStateKeysResult get_state_keys_result = 27;
   }
 }
 
@@ -423,10 +437,35 @@ message JECallResult {
   string failure_message = 3;
 }
 
+// JEGetState is the command for ctx.GetState's lazy fetch path. Two-slot
+// (this entry + JEGetStateResult at result_completion_id). The apply
+// arm resolves StateTable.Get(target, key) on the active invocation's
+// (service, object_key) and appends the result inline in the same batch.
 message JEGetState {
   string key = 1;
-  bytes value = 2;
-  bool present = 3;
+  uint32 result_completion_id = 2;
+}
+
+// JEGetStateResult carries the lazy fetch outcome. present=false means
+// the key was absent (handler surfaces (nil, false, nil)); present=true
+// means value is authoritative even when empty.
+message JEGetStateResult {
+  bytes value = 1;
+  bool present = 2;
+}
+
+// JEGetStateKeys is the command for ctx.GetStateKeys. Two-slot (this
+// entry + JEGetStateKeysResult at result_completion_id). The apply arm
+// scans the StateTable prefix for the active invocation's
+// (service, object_key) and appends the sorted key list inline.
+message JEGetStateKeys {
+  uint32 result_completion_id = 1;
+}
+
+// JEGetStateKeysResult carries the lazy keys-scan outcome. keys is the
+// (lexicographically ordered) list of state keys present at apply time.
+message JEGetStateKeysResult {
+  repeated string keys = 1;
 }
 
 message JESetState {

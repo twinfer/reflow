@@ -61,11 +61,20 @@ type wireContext struct {
 	// StartMessage.state_map. GetState reads from this directly; writes
 	// (SetState, ClearState, ClearAllState) update it inline to keep
 	// reads in the same session coherent with their preceding writes.
+	// Lazy fetches populate it on present-hits so repeat reads of the
+	// same key short-circuit without re-journaling.
 	stateCache map[string][]byte
+	// absentKeys tracks keys we know are absent in this session — from
+	// ClearState writes or lazy fetches that returned void. Lets repeat
+	// reads short-circuit without re-fetching. Cleared by SetState (the
+	// key is back) and by ClearAllState (replaced by the cache-empty +
+	// partialState=false invariant).
+	absentKeys map[string]bool
 	// partialState mirrors StartMessage.partial_state: when true, the
-	// preload was incomplete (e.g. state exceeded the cap) and a cache
-	// miss must surface as an error rather than "key absent" — lazy
-	// fetch isn't wired yet.
+	// preload was incomplete (state exceeded the eager cap) so cache
+	// misses must lazy-fetch from the engine. ClearAllState flips this
+	// back to false because the wipe is journaled atomically — after the
+	// session-local stateCache is emptied, the durable state matches.
 	partialState bool
 
 	// replay holds the protocolv1 frames the handler received between
@@ -194,34 +203,138 @@ func (c *wireContext) lookupReplay(slot uint32) *replayEntry {
 	return c.replay[slot]
 }
 
-// GetState serves the eager-preloaded value for key. Reads after
-// SetState / ClearState within the same session see the updated cache
-// so handlers don't double-bounce through the wire to observe their
-// own writes.
+// GetState reads durable state for key.
 //
-// Three result shapes:
-//   - (val, true, nil)   — key present in the eager snapshot.
-//   - (nil, false, nil)  — preload was complete and key is absent.
-//   - (nil, false, err)  — partialState: preload was incomplete (overflow);
-//     lazy state fetch isn't wired so a miss is unavailable, not absent.
+// Resolution order:
+//  1. stateCache hit (eager preload + session SetState + prior lazy
+//     fetch) → return inline.
+//  2. absentKeys hit (session ClearState, or prior lazy fetch returned
+//     void) → return absent inline.
+//  3. partialState=false → snapshot was complete; absent.
+//  4. partialState=true → emit JEGetState command, suspend pending
+//     JEGetStateResult on the result slot. On result-hit, populate
+//     stateCache or absentKeys so repeat reads short-circuit.
+//
+// Slot cost: 0 on cache-hit / known-absent / complete-snapshot paths;
+// 2 (JEGetState + JEGetStateResult) on lazy fetch.
 func (c *wireContext) GetState(key string) ([]byte, bool, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.stateCache == nil && !c.partialState {
-		return nil, false, nil
-	}
 	if c.stateCache != nil {
 		if v, ok := c.stateCache[key]; ok {
-			// Copy out so handler mutations don't poison the cache.
-			out := make([]byte, len(v))
-			copy(out, v)
+			out := append([]byte(nil), v...)
+			c.mu.Unlock()
 			return out, true, nil
 		}
 	}
-	if c.partialState {
-		return nil, false, ErrLazyStateUnavailable
+	if c.absentKeys[key] {
+		c.mu.Unlock()
+		return nil, false, nil
 	}
-	return nil, false, nil
+	if !c.partialState {
+		c.mu.Unlock()
+		return nil, false, nil
+	}
+	c.mu.Unlock()
+
+	cmdSlot, allocErr := c.allocSlot(2)
+	if allocErr != nil {
+		return nil, false, allocErr
+	}
+	resultSlot := cmdSlot + 1
+
+	if c.lookupReplay(cmdSlot) == nil {
+		msg := &protocolv1.GetLazyStateCommandMessage{
+			Key:                []byte(key),
+			ResultCompletionId: resultSlot,
+		}
+		payload, err := c.codec.Marshal(msg)
+		if err != nil {
+			return nil, false, fmt.Errorf("marshal GetLazyStateCommandMessage: %w", err)
+		}
+		if err := c.sink.Send(wire.FrameFor(wire.TypeCmdGetLazyState, payload)); err != nil {
+			return nil, false, err
+		}
+	}
+
+	entry := c.lookupReplay(resultSlot)
+	if entry == nil {
+		c.suspend(fmt.Sprintf("completion:%d", resultSlot))
+		return nil, false, ErrSuspended
+	}
+	if entry.typeCode != wire.TypeNoteGetLazyState {
+		return nil, false, fmt.Errorf("getstate slot %d carries unexpected frame type 0x%04x", resultSlot, entry.typeCode)
+	}
+	var note protocolv1.GetLazyStateCompletionNotificationMessage
+	if err := c.codec.Unmarshal(entry.payload, &note); err != nil {
+		return nil, false, fmt.Errorf("decode replayed GetLazyStateCompletionNotificationMessage: %w", err)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch r := note.GetResult().(type) {
+	case *protocolv1.GetLazyStateCompletionNotificationMessage_Value:
+		v := r.Value.GetContent()
+		if c.stateCache == nil {
+			c.stateCache = make(map[string][]byte)
+		}
+		c.stateCache[key] = append([]byte(nil), v...)
+		delete(c.absentKeys, key)
+		return append([]byte(nil), v...), true, nil
+	case *protocolv1.GetLazyStateCompletionNotificationMessage_Void:
+		if c.absentKeys == nil {
+			c.absentKeys = make(map[string]bool)
+		}
+		c.absentKeys[key] = true
+		return nil, false, nil
+	default:
+		return nil, false, nil
+	}
+}
+
+// GetStateKeys returns the lexicographically-sorted set of state keys
+// for the invocation's owning virtual object. Always journals a fetch
+// (2 slots: JEGetStateKeys + JEGetStateKeysResult) — the engine's apply
+// arm scans StateTable for the (service, object_key) prefix and stamps
+// the result inline, so the answer reflects every prior session write
+// that was journaled before this call.
+func (c *wireContext) GetStateKeys() ([]string, error) {
+	cmdSlot, allocErr := c.allocSlot(2)
+	if allocErr != nil {
+		return nil, allocErr
+	}
+	resultSlot := cmdSlot + 1
+
+	if c.lookupReplay(cmdSlot) == nil {
+		msg := &protocolv1.GetLazyStateKeysCommandMessage{
+			ResultCompletionId: resultSlot,
+		}
+		payload, err := c.codec.Marshal(msg)
+		if err != nil {
+			return nil, fmt.Errorf("marshal GetLazyStateKeysCommandMessage: %w", err)
+		}
+		if err := c.sink.Send(wire.FrameFor(wire.TypeCmdGetLazyStateKeys, payload)); err != nil {
+			return nil, err
+		}
+	}
+
+	entry := c.lookupReplay(resultSlot)
+	if entry == nil {
+		c.suspend(fmt.Sprintf("completion:%d", resultSlot))
+		return nil, ErrSuspended
+	}
+	if entry.typeCode != wire.TypeNoteGetLazyStateKeys {
+		return nil, fmt.Errorf("getstatekeys slot %d carries unexpected frame type 0x%04x", resultSlot, entry.typeCode)
+	}
+	var note protocolv1.GetLazyStateKeysCompletionNotificationMessage
+	if err := c.codec.Unmarshal(entry.payload, &note); err != nil {
+		return nil, fmt.Errorf("decode replayed GetLazyStateKeysCompletionNotificationMessage: %w", err)
+	}
+	src := note.GetStateKeys().GetKeys()
+	out := make([]string, len(src))
+	for i, k := range src {
+		out[i] = string(k)
+	}
+	return out, nil
 }
 
 // SetState journals a state write by emitting SetStateCommandMessage.
@@ -255,6 +368,7 @@ func (c *wireContext) SetState(key string, value []byte) error {
 		c.stateCache = make(map[string][]byte)
 	}
 	c.stateCache[key] = append([]byte(nil), value...)
+	delete(c.absentKeys, key)
 	c.mu.Unlock()
 	return nil
 }
@@ -279,6 +393,10 @@ func (c *wireContext) ClearState(key string) error {
 	}
 	c.mu.Lock()
 	delete(c.stateCache, key)
+	if c.absentKeys == nil {
+		c.absentKeys = make(map[string]bool)
+	}
+	c.absentKeys[key] = true
 	c.mu.Unlock()
 	return nil
 }
@@ -305,6 +423,13 @@ func (c *wireContext) ClearAllState() error {
 	for k := range c.stateCache {
 		delete(c.stateCache, k)
 	}
+	for k := range c.absentKeys {
+		delete(c.absentKeys, k)
+	}
+	// The durable wipe materialises in the same batch as the JEClearAllState
+	// append, so the session-local stateCache (now empty) is authoritative
+	// for any subsequent GetState — no more lazy fetches required.
+	c.partialState = false
 	c.mu.Unlock()
 	return nil
 }

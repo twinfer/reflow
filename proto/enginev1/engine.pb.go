@@ -78,7 +78,7 @@ func (x KeyLeaseStatus_State) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use KeyLeaseStatus_State.Descriptor instead.
 func (KeyLeaseStatus_State) EnumDescriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{61, 0}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{64, 0}
 }
 
 type RebalanceStep_Kind int32
@@ -130,7 +130,7 @@ func (x RebalanceStep_Kind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use RebalanceStep_Kind.Descriptor instead.
 func (RebalanceStep_Kind) EnumDescriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{80, 0}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{83, 0}
 }
 
 // InvocationId carries the partition_key inside the ID so routing never needs
@@ -1940,7 +1940,9 @@ func (x *InvocationSuspended) GetAwaitingOn() []string {
 //	16-17 : ClearAllState, OneWayCall.
 //	18-19 : AwaitSignal + SignalResult.
 //	20-24 : Promise (Get+Result, Peek, Complete+CompleteResult).
-//	25+   : reserved for future entries (AttachInvocation,
+//	25-28 : Lazy state (GetState already at 7 — re-shaped as command;
+//	        GetStateResult, GetStateKeys, GetStateKeysResult at 25-27).
+//	28+   : reserved for future entries (AttachInvocation,
 //	        virtual-object queue ops).
 type JournalEntry struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1970,6 +1972,9 @@ type JournalEntry struct {
 	//	*JournalEntry_PeekPromise
 	//	*JournalEntry_CompletePromise
 	//	*JournalEntry_PromiseCompleteResult
+	//	*JournalEntry_GetStateResult
+	//	*JournalEntry_GetStateKeys
+	//	*JournalEntry_GetStateKeysResult
 	Entry         isJournalEntry_Entry `protobuf_oneof:"entry"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2226,6 +2231,33 @@ func (x *JournalEntry) GetPromiseCompleteResult() *JEPromiseCompleteResult {
 	return nil
 }
 
+func (x *JournalEntry) GetGetStateResult() *JEGetStateResult {
+	if x != nil {
+		if x, ok := x.Entry.(*JournalEntry_GetStateResult); ok {
+			return x.GetStateResult
+		}
+	}
+	return nil
+}
+
+func (x *JournalEntry) GetGetStateKeys() *JEGetStateKeys {
+	if x != nil {
+		if x, ok := x.Entry.(*JournalEntry_GetStateKeys); ok {
+			return x.GetStateKeys
+		}
+	}
+	return nil
+}
+
+func (x *JournalEntry) GetGetStateKeysResult() *JEGetStateKeysResult {
+	if x != nil {
+		if x, ok := x.Entry.(*JournalEntry_GetStateKeysResult); ok {
+			return x.GetStateKeysResult
+		}
+	}
+	return nil
+}
+
 type isJournalEntry_Entry interface {
 	isJournalEntry_Entry()
 }
@@ -2346,6 +2378,27 @@ type JournalEntry_PromiseCompleteResult struct {
 	PromiseCompleteResult *JEPromiseCompleteResult `protobuf:"bytes,24,opt,name=promise_complete_result,json=promiseCompleteResult,proto3,oneof"`
 }
 
+type JournalEntry_GetStateResult struct {
+	// Two-slot lazy state read: ctx.GetState(key) journals JEGetState at
+	// slot N when the eager-preload snapshot didn't cover the key (i.e.
+	// StartMessage.partial_state=true). The apply arm reads StateTable
+	// and appends JEGetStateResult at result_completion_id (= N+1) in
+	// the same batch.
+	GetStateResult *JEGetStateResult `protobuf:"bytes,25,opt,name=get_state_result,json=getStateResult,proto3,oneof"`
+}
+
+type JournalEntry_GetStateKeys struct {
+	// Two-slot lazy state keys read: ctx.GetStateKeys() journals
+	// JEGetStateKeys at slot N; the apply arm scans the StateTable
+	// prefix and appends JEGetStateKeysResult at result_completion_id
+	// (= N+1) in the same batch.
+	GetStateKeys *JEGetStateKeys `protobuf:"bytes,26,opt,name=get_state_keys,json=getStateKeys,proto3,oneof"`
+}
+
+type JournalEntry_GetStateKeysResult struct {
+	GetStateKeysResult *JEGetStateKeysResult `protobuf:"bytes,27,opt,name=get_state_keys_result,json=getStateKeysResult,proto3,oneof"`
+}
+
 func (*JournalEntry_Input) isJournalEntry_Entry() {}
 
 func (*JournalEntry_Sleep) isJournalEntry_Entry() {}
@@ -2391,6 +2444,12 @@ func (*JournalEntry_PeekPromise) isJournalEntry_Entry() {}
 func (*JournalEntry_CompletePromise) isJournalEntry_Entry() {}
 
 func (*JournalEntry_PromiseCompleteResult) isJournalEntry_Entry() {}
+
+func (*JournalEntry_GetStateResult) isJournalEntry_Entry() {}
+
+func (*JournalEntry_GetStateKeys) isJournalEntry_Entry() {}
+
+func (*JournalEntry_GetStateKeysResult) isJournalEntry_Entry() {}
 
 type JEInput struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -2717,13 +2776,16 @@ func (x *JECallResult) GetFailureMessage() string {
 	return ""
 }
 
+// JEGetState is the command for ctx.GetState's lazy fetch path. Two-slot
+// (this entry + JEGetStateResult at result_completion_id). The apply
+// arm resolves StateTable.Get(target, key) on the active invocation's
+// (service, object_key) and appends the result inline in the same batch.
 type JEGetState struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
-	Value         []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
-	Present       bool                   `protobuf:"varint,3,opt,name=present,proto3" json:"present,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	Key                string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	ResultCompletionId uint32                 `protobuf:"varint,2,opt,name=result_completion_id,json=resultCompletionId,proto3" json:"result_completion_id,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *JEGetState) Reset() {
@@ -2763,18 +2825,160 @@ func (x *JEGetState) GetKey() string {
 	return ""
 }
 
-func (x *JEGetState) GetValue() []byte {
+func (x *JEGetState) GetResultCompletionId() uint32 {
+	if x != nil {
+		return x.ResultCompletionId
+	}
+	return 0
+}
+
+// JEGetStateResult carries the lazy fetch outcome. present=false means
+// the key was absent (handler surfaces (nil, false, nil)); present=true
+// means value is authoritative even when empty.
+type JEGetStateResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Value         []byte                 `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
+	Present       bool                   `protobuf:"varint,2,opt,name=present,proto3" json:"present,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JEGetStateResult) Reset() {
+	*x = JEGetStateResult{}
+	mi := &file_enginev1_engine_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JEGetStateResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JEGetStateResult) ProtoMessage() {}
+
+func (x *JEGetStateResult) ProtoReflect() protoreflect.Message {
+	mi := &file_enginev1_engine_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JEGetStateResult.ProtoReflect.Descriptor instead.
+func (*JEGetStateResult) Descriptor() ([]byte, []int) {
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *JEGetStateResult) GetValue() []byte {
 	if x != nil {
 		return x.Value
 	}
 	return nil
 }
 
-func (x *JEGetState) GetPresent() bool {
+func (x *JEGetStateResult) GetPresent() bool {
 	if x != nil {
 		return x.Present
 	}
 	return false
+}
+
+// JEGetStateKeys is the command for ctx.GetStateKeys. Two-slot (this
+// entry + JEGetStateKeysResult at result_completion_id). The apply arm
+// scans the StateTable prefix for the active invocation's
+// (service, object_key) and appends the sorted key list inline.
+type JEGetStateKeys struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	ResultCompletionId uint32                 `protobuf:"varint,1,opt,name=result_completion_id,json=resultCompletionId,proto3" json:"result_completion_id,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *JEGetStateKeys) Reset() {
+	*x = JEGetStateKeys{}
+	mi := &file_enginev1_engine_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JEGetStateKeys) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JEGetStateKeys) ProtoMessage() {}
+
+func (x *JEGetStateKeys) ProtoReflect() protoreflect.Message {
+	mi := &file_enginev1_engine_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JEGetStateKeys.ProtoReflect.Descriptor instead.
+func (*JEGetStateKeys) Descriptor() ([]byte, []int) {
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *JEGetStateKeys) GetResultCompletionId() uint32 {
+	if x != nil {
+		return x.ResultCompletionId
+	}
+	return 0
+}
+
+// JEGetStateKeysResult carries the lazy keys-scan outcome. keys is the
+// (lexicographically ordered) list of state keys present at apply time.
+type JEGetStateKeysResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Keys          []string               `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JEGetStateKeysResult) Reset() {
+	*x = JEGetStateKeysResult{}
+	mi := &file_enginev1_engine_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JEGetStateKeysResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JEGetStateKeysResult) ProtoMessage() {}
+
+func (x *JEGetStateKeysResult) ProtoReflect() protoreflect.Message {
+	mi := &file_enginev1_engine_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JEGetStateKeysResult.ProtoReflect.Descriptor instead.
+func (*JEGetStateKeysResult) Descriptor() ([]byte, []int) {
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *JEGetStateKeysResult) GetKeys() []string {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
 }
 
 type JESetState struct {
@@ -2787,7 +2991,7 @@ type JESetState struct {
 
 func (x *JESetState) Reset() {
 	*x = JESetState{}
-	mi := &file_enginev1_engine_proto_msgTypes[29]
+	mi := &file_enginev1_engine_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2799,7 +3003,7 @@ func (x *JESetState) String() string {
 func (*JESetState) ProtoMessage() {}
 
 func (x *JESetState) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[29]
+	mi := &file_enginev1_engine_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2812,7 +3016,7 @@ func (x *JESetState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JESetState.ProtoReflect.Descriptor instead.
 func (*JESetState) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{29}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *JESetState) GetKey() string {
@@ -2838,7 +3042,7 @@ type JEOutput struct {
 
 func (x *JEOutput) Reset() {
 	*x = JEOutput{}
-	mi := &file_enginev1_engine_proto_msgTypes[30]
+	mi := &file_enginev1_engine_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2850,7 +3054,7 @@ func (x *JEOutput) String() string {
 func (*JEOutput) ProtoMessage() {}
 
 func (x *JEOutput) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[30]
+	mi := &file_enginev1_engine_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2863,7 +3067,7 @@ func (x *JEOutput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JEOutput.ProtoReflect.Descriptor instead.
 func (*JEOutput) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{30}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *JEOutput) GetValue() []byte {
@@ -2894,7 +3098,7 @@ type JERun struct {
 
 func (x *JERun) Reset() {
 	*x = JERun{}
-	mi := &file_enginev1_engine_proto_msgTypes[31]
+	mi := &file_enginev1_engine_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2906,7 +3110,7 @@ func (x *JERun) String() string {
 func (*JERun) ProtoMessage() {}
 
 func (x *JERun) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[31]
+	mi := &file_enginev1_engine_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2919,7 +3123,7 @@ func (x *JERun) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JERun.ProtoReflect.Descriptor instead.
 func (*JERun) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{31}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *JERun) GetValue() []byte {
@@ -2977,7 +3181,7 @@ type RunRetryPolicy struct {
 
 func (x *RunRetryPolicy) Reset() {
 	*x = RunRetryPolicy{}
-	mi := &file_enginev1_engine_proto_msgTypes[32]
+	mi := &file_enginev1_engine_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2989,7 +3193,7 @@ func (x *RunRetryPolicy) String() string {
 func (*RunRetryPolicy) ProtoMessage() {}
 
 func (x *RunRetryPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[32]
+	mi := &file_enginev1_engine_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3002,7 +3206,7 @@ func (x *RunRetryPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunRetryPolicy.ProtoReflect.Descriptor instead.
 func (*RunRetryPolicy) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{32}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *RunRetryPolicy) GetInitialIntervalMs() uint64 {
@@ -3044,7 +3248,7 @@ type JEClearAllState struct {
 
 func (x *JEClearAllState) Reset() {
 	*x = JEClearAllState{}
-	mi := &file_enginev1_engine_proto_msgTypes[33]
+	mi := &file_enginev1_engine_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3056,7 +3260,7 @@ func (x *JEClearAllState) String() string {
 func (*JEClearAllState) ProtoMessage() {}
 
 func (x *JEClearAllState) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[33]
+	mi := &file_enginev1_engine_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3069,7 +3273,7 @@ func (x *JEClearAllState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JEClearAllState.ProtoReflect.Descriptor instead.
 func (*JEClearAllState) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{33}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{36}
 }
 
 // JEAwakeable is journaled when a handler mints an awakeable. The actual
@@ -3084,7 +3288,7 @@ type JEAwakeable struct {
 
 func (x *JEAwakeable) Reset() {
 	*x = JEAwakeable{}
-	mi := &file_enginev1_engine_proto_msgTypes[34]
+	mi := &file_enginev1_engine_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3096,7 +3300,7 @@ func (x *JEAwakeable) String() string {
 func (*JEAwakeable) ProtoMessage() {}
 
 func (x *JEAwakeable) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[34]
+	mi := &file_enginev1_engine_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3109,7 +3313,7 @@ func (x *JEAwakeable) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JEAwakeable.ProtoReflect.Descriptor instead.
 func (*JEAwakeable) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{34}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *JEAwakeable) GetAwakeableId() string {
@@ -3132,7 +3336,7 @@ type JEAwakeableResult struct {
 
 func (x *JEAwakeableResult) Reset() {
 	*x = JEAwakeableResult{}
-	mi := &file_enginev1_engine_proto_msgTypes[35]
+	mi := &file_enginev1_engine_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3144,7 +3348,7 @@ func (x *JEAwakeableResult) String() string {
 func (*JEAwakeableResult) ProtoMessage() {}
 
 func (x *JEAwakeableResult) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[35]
+	mi := &file_enginev1_engine_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3157,7 +3361,7 @@ func (x *JEAwakeableResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JEAwakeableResult.ProtoReflect.Descriptor instead.
 func (*JEAwakeableResult) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{35}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *JEAwakeableResult) GetAwakeableId() string {
@@ -3197,7 +3401,7 @@ type JESignal struct {
 
 func (x *JESignal) Reset() {
 	*x = JESignal{}
-	mi := &file_enginev1_engine_proto_msgTypes[36]
+	mi := &file_enginev1_engine_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3209,7 +3413,7 @@ func (x *JESignal) String() string {
 func (*JESignal) ProtoMessage() {}
 
 func (x *JESignal) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[36]
+	mi := &file_enginev1_engine_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3222,7 +3426,7 @@ func (x *JESignal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JESignal.ProtoReflect.Descriptor instead.
 func (*JESignal) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{36}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *JESignal) GetTarget() *InvocationTarget {
@@ -3262,7 +3466,7 @@ type JEAwaitSignal struct {
 
 func (x *JEAwaitSignal) Reset() {
 	*x = JEAwaitSignal{}
-	mi := &file_enginev1_engine_proto_msgTypes[37]
+	mi := &file_enginev1_engine_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3274,7 +3478,7 @@ func (x *JEAwaitSignal) String() string {
 func (*JEAwaitSignal) ProtoMessage() {}
 
 func (x *JEAwaitSignal) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[37]
+	mi := &file_enginev1_engine_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3287,7 +3491,7 @@ func (x *JEAwaitSignal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JEAwaitSignal.ProtoReflect.Descriptor instead.
 func (*JEAwaitSignal) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{37}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *JEAwaitSignal) GetSignalName() string {
@@ -3318,7 +3522,7 @@ type JESignalResult struct {
 
 func (x *JESignalResult) Reset() {
 	*x = JESignalResult{}
-	mi := &file_enginev1_engine_proto_msgTypes[38]
+	mi := &file_enginev1_engine_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3330,7 +3534,7 @@ func (x *JESignalResult) String() string {
 func (*JESignalResult) ProtoMessage() {}
 
 func (x *JESignalResult) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[38]
+	mi := &file_enginev1_engine_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3343,7 +3547,7 @@ func (x *JESignalResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JESignalResult.ProtoReflect.Descriptor instead.
 func (*JESignalResult) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{38}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *JESignalResult) GetSignalName() string {
@@ -3374,7 +3578,7 @@ type SignalAwaiter struct {
 
 func (x *SignalAwaiter) Reset() {
 	*x = SignalAwaiter{}
-	mi := &file_enginev1_engine_proto_msgTypes[39]
+	mi := &file_enginev1_engine_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3386,7 +3590,7 @@ func (x *SignalAwaiter) String() string {
 func (*SignalAwaiter) ProtoMessage() {}
 
 func (x *SignalAwaiter) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[39]
+	mi := &file_enginev1_engine_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3399,7 +3603,7 @@ func (x *SignalAwaiter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalAwaiter.ProtoReflect.Descriptor instead.
 func (*SignalAwaiter) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{39}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *SignalAwaiter) GetOwner() *InvocationId {
@@ -3432,7 +3636,7 @@ type SignalInboxEntry struct {
 
 func (x *SignalInboxEntry) Reset() {
 	*x = SignalInboxEntry{}
-	mi := &file_enginev1_engine_proto_msgTypes[40]
+	mi := &file_enginev1_engine_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3444,7 +3648,7 @@ func (x *SignalInboxEntry) String() string {
 func (*SignalInboxEntry) ProtoMessage() {}
 
 func (x *SignalInboxEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[40]
+	mi := &file_enginev1_engine_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3457,7 +3661,7 @@ func (x *SignalInboxEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalInboxEntry.ProtoReflect.Descriptor instead.
 func (*SignalInboxEntry) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{40}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *SignalInboxEntry) GetSignalName() string {
@@ -3503,7 +3707,7 @@ type JEGetPromise struct {
 
 func (x *JEGetPromise) Reset() {
 	*x = JEGetPromise{}
-	mi := &file_enginev1_engine_proto_msgTypes[41]
+	mi := &file_enginev1_engine_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3515,7 +3719,7 @@ func (x *JEGetPromise) String() string {
 func (*JEGetPromise) ProtoMessage() {}
 
 func (x *JEGetPromise) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[41]
+	mi := &file_enginev1_engine_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3528,7 +3732,7 @@ func (x *JEGetPromise) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JEGetPromise.ProtoReflect.Descriptor instead.
 func (*JEGetPromise) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{41}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *JEGetPromise) GetName() string {
@@ -3574,7 +3778,7 @@ type JEPromiseResult struct {
 
 func (x *JEPromiseResult) Reset() {
 	*x = JEPromiseResult{}
-	mi := &file_enginev1_engine_proto_msgTypes[42]
+	mi := &file_enginev1_engine_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3586,7 +3790,7 @@ func (x *JEPromiseResult) String() string {
 func (*JEPromiseResult) ProtoMessage() {}
 
 func (x *JEPromiseResult) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[42]
+	mi := &file_enginev1_engine_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3599,7 +3803,7 @@ func (x *JEPromiseResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JEPromiseResult.ProtoReflect.Descriptor instead.
 func (*JEPromiseResult) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{42}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *JEPromiseResult) GetName() string {
@@ -3643,7 +3847,7 @@ type JEPeekPromise struct {
 
 func (x *JEPeekPromise) Reset() {
 	*x = JEPeekPromise{}
-	mi := &file_enginev1_engine_proto_msgTypes[43]
+	mi := &file_enginev1_engine_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3655,7 +3859,7 @@ func (x *JEPeekPromise) String() string {
 func (*JEPeekPromise) ProtoMessage() {}
 
 func (x *JEPeekPromise) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[43]
+	mi := &file_enginev1_engine_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3668,7 +3872,7 @@ func (x *JEPeekPromise) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JEPeekPromise.ProtoReflect.Descriptor instead.
 func (*JEPeekPromise) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{43}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *JEPeekPromise) GetName() string {
@@ -3738,7 +3942,7 @@ type JECompletePromise struct {
 
 func (x *JECompletePromise) Reset() {
 	*x = JECompletePromise{}
-	mi := &file_enginev1_engine_proto_msgTypes[44]
+	mi := &file_enginev1_engine_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3750,7 +3954,7 @@ func (x *JECompletePromise) String() string {
 func (*JECompletePromise) ProtoMessage() {}
 
 func (x *JECompletePromise) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[44]
+	mi := &file_enginev1_engine_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3763,7 +3967,7 @@ func (x *JECompletePromise) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JECompletePromise.ProtoReflect.Descriptor instead.
 func (*JECompletePromise) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{44}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *JECompletePromise) GetName() string {
@@ -3822,7 +4026,7 @@ type JEPromiseCompleteResult struct {
 
 func (x *JEPromiseCompleteResult) Reset() {
 	*x = JEPromiseCompleteResult{}
-	mi := &file_enginev1_engine_proto_msgTypes[45]
+	mi := &file_enginev1_engine_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3834,7 +4038,7 @@ func (x *JEPromiseCompleteResult) String() string {
 func (*JEPromiseCompleteResult) ProtoMessage() {}
 
 func (x *JEPromiseCompleteResult) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[45]
+	mi := &file_enginev1_engine_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3847,7 +4051,7 @@ func (x *JEPromiseCompleteResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JEPromiseCompleteResult.ProtoReflect.Descriptor instead.
 func (*JEPromiseCompleteResult) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{45}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *JEPromiseCompleteResult) GetSucceeded() bool {
@@ -3884,7 +4088,7 @@ type PromiseValue struct {
 
 func (x *PromiseValue) Reset() {
 	*x = PromiseValue{}
-	mi := &file_enginev1_engine_proto_msgTypes[46]
+	mi := &file_enginev1_engine_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3896,7 +4100,7 @@ func (x *PromiseValue) String() string {
 func (*PromiseValue) ProtoMessage() {}
 
 func (x *PromiseValue) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[46]
+	mi := &file_enginev1_engine_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3909,7 +4113,7 @@ func (x *PromiseValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PromiseValue.ProtoReflect.Descriptor instead.
 func (*PromiseValue) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{46}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *PromiseValue) GetState() isPromiseValue_State {
@@ -3988,7 +4192,7 @@ type Pending struct {
 
 func (x *Pending) Reset() {
 	*x = Pending{}
-	mi := &file_enginev1_engine_proto_msgTypes[47]
+	mi := &file_enginev1_engine_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4000,7 +4204,7 @@ func (x *Pending) String() string {
 func (*Pending) ProtoMessage() {}
 
 func (x *Pending) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[47]
+	mi := &file_enginev1_engine_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4013,7 +4217,7 @@ func (x *Pending) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Pending.ProtoReflect.Descriptor instead.
 func (*Pending) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{47}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{50}
 }
 
 type Resolved struct {
@@ -4026,7 +4230,7 @@ type Resolved struct {
 
 func (x *Resolved) Reset() {
 	*x = Resolved{}
-	mi := &file_enginev1_engine_proto_msgTypes[48]
+	mi := &file_enginev1_engine_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4038,7 +4242,7 @@ func (x *Resolved) String() string {
 func (*Resolved) ProtoMessage() {}
 
 func (x *Resolved) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[48]
+	mi := &file_enginev1_engine_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4051,7 +4255,7 @@ func (x *Resolved) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Resolved.ProtoReflect.Descriptor instead.
 func (*Resolved) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{48}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *Resolved) GetValue() []byte {
@@ -4078,7 +4282,7 @@ type Rejected struct {
 
 func (x *Rejected) Reset() {
 	*x = Rejected{}
-	mi := &file_enginev1_engine_proto_msgTypes[49]
+	mi := &file_enginev1_engine_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4090,7 +4294,7 @@ func (x *Rejected) String() string {
 func (*Rejected) ProtoMessage() {}
 
 func (x *Rejected) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[49]
+	mi := &file_enginev1_engine_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4103,7 +4307,7 @@ func (x *Rejected) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Rejected.ProtoReflect.Descriptor instead.
 func (*Rejected) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{49}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *Rejected) GetFailureMessage() string {
@@ -4135,7 +4339,7 @@ type PromiseAwaiter struct {
 
 func (x *PromiseAwaiter) Reset() {
 	*x = PromiseAwaiter{}
-	mi := &file_enginev1_engine_proto_msgTypes[50]
+	mi := &file_enginev1_engine_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4147,7 +4351,7 @@ func (x *PromiseAwaiter) String() string {
 func (*PromiseAwaiter) ProtoMessage() {}
 
 func (x *PromiseAwaiter) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[50]
+	mi := &file_enginev1_engine_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4160,7 +4364,7 @@ func (x *PromiseAwaiter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PromiseAwaiter.ProtoReflect.Descriptor instead.
 func (*PromiseAwaiter) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{50}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *PromiseAwaiter) GetOwner() *InvocationId {
@@ -4187,7 +4391,7 @@ type JEClearState struct {
 
 func (x *JEClearState) Reset() {
 	*x = JEClearState{}
-	mi := &file_enginev1_engine_proto_msgTypes[51]
+	mi := &file_enginev1_engine_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4199,7 +4403,7 @@ func (x *JEClearState) String() string {
 func (*JEClearState) ProtoMessage() {}
 
 func (x *JEClearState) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[51]
+	mi := &file_enginev1_engine_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4212,7 +4416,7 @@ func (x *JEClearState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JEClearState.ProtoReflect.Descriptor instead.
 func (*JEClearState) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{51}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *JEClearState) GetKey() string {
@@ -4236,7 +4440,7 @@ type JEGetEagerState struct {
 
 func (x *JEGetEagerState) Reset() {
 	*x = JEGetEagerState{}
-	mi := &file_enginev1_engine_proto_msgTypes[52]
+	mi := &file_enginev1_engine_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4248,7 +4452,7 @@ func (x *JEGetEagerState) String() string {
 func (*JEGetEagerState) ProtoMessage() {}
 
 func (x *JEGetEagerState) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[52]
+	mi := &file_enginev1_engine_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4261,7 +4465,7 @@ func (x *JEGetEagerState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JEGetEagerState.ProtoReflect.Descriptor instead.
 func (*JEGetEagerState) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{52}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *JEGetEagerState) GetKey() string {
@@ -4296,7 +4500,7 @@ type TimerFired struct {
 
 func (x *TimerFired) Reset() {
 	*x = TimerFired{}
-	mi := &file_enginev1_engine_proto_msgTypes[53]
+	mi := &file_enginev1_engine_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4308,7 +4512,7 @@ func (x *TimerFired) String() string {
 func (*TimerFired) ProtoMessage() {}
 
 func (x *TimerFired) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[53]
+	mi := &file_enginev1_engine_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4321,7 +4525,7 @@ func (x *TimerFired) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimerFired.ProtoReflect.Descriptor instead.
 func (*TimerFired) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{53}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *TimerFired) GetInvocationId() *InvocationId {
@@ -4354,7 +4558,7 @@ type PurgeInvocation struct {
 
 func (x *PurgeInvocation) Reset() {
 	*x = PurgeInvocation{}
-	mi := &file_enginev1_engine_proto_msgTypes[54]
+	mi := &file_enginev1_engine_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4366,7 +4570,7 @@ func (x *PurgeInvocation) String() string {
 func (*PurgeInvocation) ProtoMessage() {}
 
 func (x *PurgeInvocation) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[54]
+	mi := &file_enginev1_engine_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4379,7 +4583,7 @@ func (x *PurgeInvocation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PurgeInvocation.ProtoReflect.Descriptor instead.
 func (*PurgeInvocation) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{54}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *PurgeInvocation) GetInvocationId() *InvocationId {
@@ -4416,7 +4620,7 @@ type InvocationStatus struct {
 
 func (x *InvocationStatus) Reset() {
 	*x = InvocationStatus{}
-	mi := &file_enginev1_engine_proto_msgTypes[55]
+	mi := &file_enginev1_engine_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4428,7 +4632,7 @@ func (x *InvocationStatus) String() string {
 func (*InvocationStatus) ProtoMessage() {}
 
 func (x *InvocationStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[55]
+	mi := &file_enginev1_engine_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4441,7 +4645,7 @@ func (x *InvocationStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InvocationStatus.ProtoReflect.Descriptor instead.
 func (*InvocationStatus) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{55}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *InvocationStatus) GetStatus() isInvocationStatus_Status {
@@ -4552,7 +4756,7 @@ type Free struct {
 
 func (x *Free) Reset() {
 	*x = Free{}
-	mi := &file_enginev1_engine_proto_msgTypes[56]
+	mi := &file_enginev1_engine_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4564,7 +4768,7 @@ func (x *Free) String() string {
 func (*Free) ProtoMessage() {}
 
 func (x *Free) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[56]
+	mi := &file_enginev1_engine_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4577,7 +4781,7 @@ func (x *Free) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Free.ProtoReflect.Descriptor instead.
 func (*Free) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{56}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{59}
 }
 
 type Scheduled struct {
@@ -4595,7 +4799,7 @@ type Scheduled struct {
 
 func (x *Scheduled) Reset() {
 	*x = Scheduled{}
-	mi := &file_enginev1_engine_proto_msgTypes[57]
+	mi := &file_enginev1_engine_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4607,7 +4811,7 @@ func (x *Scheduled) String() string {
 func (*Scheduled) ProtoMessage() {}
 
 func (x *Scheduled) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[57]
+	mi := &file_enginev1_engine_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4620,7 +4824,7 @@ func (x *Scheduled) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Scheduled.ProtoReflect.Descriptor instead.
 func (*Scheduled) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{57}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *Scheduled) GetTarget() *InvocationTarget {
@@ -4663,7 +4867,7 @@ type Invoked struct {
 
 func (x *Invoked) Reset() {
 	*x = Invoked{}
-	mi := &file_enginev1_engine_proto_msgTypes[58]
+	mi := &file_enginev1_engine_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4675,7 +4879,7 @@ func (x *Invoked) String() string {
 func (*Invoked) ProtoMessage() {}
 
 func (x *Invoked) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[58]
+	mi := &file_enginev1_engine_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4688,7 +4892,7 @@ func (x *Invoked) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Invoked.ProtoReflect.Descriptor instead.
 func (*Invoked) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{58}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *Invoked) GetTarget() *InvocationTarget {
@@ -4731,7 +4935,7 @@ type Suspended struct {
 
 func (x *Suspended) Reset() {
 	*x = Suspended{}
-	mi := &file_enginev1_engine_proto_msgTypes[59]
+	mi := &file_enginev1_engine_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4743,7 +4947,7 @@ func (x *Suspended) String() string {
 func (*Suspended) ProtoMessage() {}
 
 func (x *Suspended) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[59]
+	mi := &file_enginev1_engine_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4756,7 +4960,7 @@ func (x *Suspended) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Suspended.ProtoReflect.Descriptor instead.
 func (*Suspended) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{59}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *Suspended) GetTarget() *InvocationTarget {
@@ -4803,7 +5007,7 @@ type Completed struct {
 
 func (x *Completed) Reset() {
 	*x = Completed{}
-	mi := &file_enginev1_engine_proto_msgTypes[60]
+	mi := &file_enginev1_engine_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4815,7 +5019,7 @@ func (x *Completed) String() string {
 func (*Completed) ProtoMessage() {}
 
 func (x *Completed) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[60]
+	mi := &file_enginev1_engine_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4828,7 +5032,7 @@ func (x *Completed) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Completed.ProtoReflect.Descriptor instead.
 func (*Completed) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{60}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *Completed) GetTarget() *InvocationTarget {
@@ -4890,7 +5094,7 @@ type KeyLeaseStatus struct {
 
 func (x *KeyLeaseStatus) Reset() {
 	*x = KeyLeaseStatus{}
-	mi := &file_enginev1_engine_proto_msgTypes[61]
+	mi := &file_enginev1_engine_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4902,7 +5106,7 @@ func (x *KeyLeaseStatus) String() string {
 func (*KeyLeaseStatus) ProtoMessage() {}
 
 func (x *KeyLeaseStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[61]
+	mi := &file_enginev1_engine_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4915,7 +5119,7 @@ func (x *KeyLeaseStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KeyLeaseStatus.ProtoReflect.Descriptor instead.
 func (*KeyLeaseStatus) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{61}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *KeyLeaseStatus) GetState() KeyLeaseStatus_State {
@@ -4950,7 +5154,7 @@ type DedupEntry struct {
 
 func (x *DedupEntry) Reset() {
 	*x = DedupEntry{}
-	mi := &file_enginev1_engine_proto_msgTypes[62]
+	mi := &file_enginev1_engine_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4962,7 +5166,7 @@ func (x *DedupEntry) String() string {
 func (*DedupEntry) ProtoMessage() {}
 
 func (x *DedupEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[62]
+	mi := &file_enginev1_engine_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4975,7 +5179,7 @@ func (x *DedupEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DedupEntry.ProtoReflect.Descriptor instead.
 func (*DedupEntry) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{62}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *DedupEntry) GetSeq() uint64 {
@@ -5011,7 +5215,7 @@ type PartitionMeta struct {
 
 func (x *PartitionMeta) Reset() {
 	*x = PartitionMeta{}
-	mi := &file_enginev1_engine_proto_msgTypes[63]
+	mi := &file_enginev1_engine_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5023,7 +5227,7 @@ func (x *PartitionMeta) String() string {
 func (*PartitionMeta) ProtoMessage() {}
 
 func (x *PartitionMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[63]
+	mi := &file_enginev1_engine_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5036,7 +5240,7 @@ func (x *PartitionMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PartitionMeta.ProtoReflect.Descriptor instead.
 func (*PartitionMeta) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{63}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *PartitionMeta) GetAppliedIndex() uint64 {
@@ -5080,7 +5284,7 @@ type AwakeableEntry struct {
 
 func (x *AwakeableEntry) Reset() {
 	*x = AwakeableEntry{}
-	mi := &file_enginev1_engine_proto_msgTypes[64]
+	mi := &file_enginev1_engine_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5092,7 +5296,7 @@ func (x *AwakeableEntry) String() string {
 func (*AwakeableEntry) ProtoMessage() {}
 
 func (x *AwakeableEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[64]
+	mi := &file_enginev1_engine_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5105,7 +5309,7 @@ func (x *AwakeableEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AwakeableEntry.ProtoReflect.Descriptor instead.
 func (*AwakeableEntry) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{64}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *AwakeableEntry) GetOwner() *InvocationId {
@@ -5173,7 +5377,7 @@ type OutboxEnvelope struct {
 
 func (x *OutboxEnvelope) Reset() {
 	*x = OutboxEnvelope{}
-	mi := &file_enginev1_engine_proto_msgTypes[65]
+	mi := &file_enginev1_engine_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5185,7 +5389,7 @@ func (x *OutboxEnvelope) String() string {
 func (*OutboxEnvelope) ProtoMessage() {}
 
 func (x *OutboxEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[65]
+	mi := &file_enginev1_engine_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5198,7 +5402,7 @@ func (x *OutboxEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutboxEnvelope.ProtoReflect.Descriptor instead.
 func (*OutboxEnvelope) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{65}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *OutboxEnvelope) GetDestinationShardId() uint64 {
@@ -5328,7 +5532,7 @@ type DeliverCallResult struct {
 
 func (x *DeliverCallResult) Reset() {
 	*x = DeliverCallResult{}
-	mi := &file_enginev1_engine_proto_msgTypes[66]
+	mi := &file_enginev1_engine_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5340,7 +5544,7 @@ func (x *DeliverCallResult) String() string {
 func (*DeliverCallResult) ProtoMessage() {}
 
 func (x *DeliverCallResult) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[66]
+	mi := &file_enginev1_engine_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5353,7 +5557,7 @@ func (x *DeliverCallResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverCallResult.ProtoReflect.Descriptor instead.
 func (*DeliverCallResult) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{66}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *DeliverCallResult) GetParentId() *InvocationId {
@@ -5401,7 +5605,7 @@ type OutboxAck struct {
 
 func (x *OutboxAck) Reset() {
 	*x = OutboxAck{}
-	mi := &file_enginev1_engine_proto_msgTypes[67]
+	mi := &file_enginev1_engine_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5413,7 +5617,7 @@ func (x *OutboxAck) String() string {
 func (*OutboxAck) ProtoMessage() {}
 
 func (x *OutboxAck) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[67]
+	mi := &file_enginev1_engine_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5426,7 +5630,7 @@ func (x *OutboxAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutboxAck.ProtoReflect.Descriptor instead.
 func (*OutboxAck) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{67}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *OutboxAck) GetProducerShardId() uint64 {
@@ -5457,7 +5661,7 @@ type SignalSend struct {
 
 func (x *SignalSend) Reset() {
 	*x = SignalSend{}
-	mi := &file_enginev1_engine_proto_msgTypes[68]
+	mi := &file_enginev1_engine_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5469,7 +5673,7 @@ func (x *SignalSend) String() string {
 func (*SignalSend) ProtoMessage() {}
 
 func (x *SignalSend) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[68]
+	mi := &file_enginev1_engine_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5482,7 +5686,7 @@ func (x *SignalSend) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalSend.ProtoReflect.Descriptor instead.
 func (*SignalSend) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{68}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *SignalSend) GetTarget() *InvocationTarget {
@@ -5529,7 +5733,7 @@ type SnapshotMeta struct {
 
 func (x *SnapshotMeta) Reset() {
 	*x = SnapshotMeta{}
-	mi := &file_enginev1_engine_proto_msgTypes[69]
+	mi := &file_enginev1_engine_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5541,7 +5745,7 @@ func (x *SnapshotMeta) String() string {
 func (*SnapshotMeta) ProtoMessage() {}
 
 func (x *SnapshotMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[69]
+	mi := &file_enginev1_engine_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5554,7 +5758,7 @@ func (x *SnapshotMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotMeta.ProtoReflect.Descriptor instead.
 func (*SnapshotMeta) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{69}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *SnapshotMeta) GetShardId() uint64 {
@@ -5618,7 +5822,7 @@ type NodeHostMeta struct {
 
 func (x *NodeHostMeta) Reset() {
 	*x = NodeHostMeta{}
-	mi := &file_enginev1_engine_proto_msgTypes[70]
+	mi := &file_enginev1_engine_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5630,7 +5834,7 @@ func (x *NodeHostMeta) String() string {
 func (*NodeHostMeta) ProtoMessage() {}
 
 func (x *NodeHostMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[70]
+	mi := &file_enginev1_engine_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5643,7 +5847,7 @@ func (x *NodeHostMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeHostMeta.ProtoReflect.Descriptor instead.
 func (*NodeHostMeta) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{70}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *NodeHostMeta) GetGrpcEndpoint() string {
@@ -5694,7 +5898,7 @@ type DeploymentRecord struct {
 
 func (x *DeploymentRecord) Reset() {
 	*x = DeploymentRecord{}
-	mi := &file_enginev1_engine_proto_msgTypes[71]
+	mi := &file_enginev1_engine_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5706,7 +5910,7 @@ func (x *DeploymentRecord) String() string {
 func (*DeploymentRecord) ProtoMessage() {}
 
 func (x *DeploymentRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[71]
+	mi := &file_enginev1_engine_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5719,7 +5923,7 @@ func (x *DeploymentRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeploymentRecord.ProtoReflect.Descriptor instead.
 func (*DeploymentRecord) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{71}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *DeploymentRecord) GetId() string {
@@ -5772,7 +5976,7 @@ type DeploymentHandler struct {
 
 func (x *DeploymentHandler) Reset() {
 	*x = DeploymentHandler{}
-	mi := &file_enginev1_engine_proto_msgTypes[72]
+	mi := &file_enginev1_engine_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5784,7 +5988,7 @@ func (x *DeploymentHandler) String() string {
 func (*DeploymentHandler) ProtoMessage() {}
 
 func (x *DeploymentHandler) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[72]
+	mi := &file_enginev1_engine_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5797,7 +6001,7 @@ func (x *DeploymentHandler) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeploymentHandler.ProtoReflect.Descriptor instead.
 func (*DeploymentHandler) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{72}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *DeploymentHandler) GetService() string {
@@ -5834,7 +6038,7 @@ type RegisterDeployment struct {
 
 func (x *RegisterDeployment) Reset() {
 	*x = RegisterDeployment{}
-	mi := &file_enginev1_engine_proto_msgTypes[73]
+	mi := &file_enginev1_engine_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5846,7 +6050,7 @@ func (x *RegisterDeployment) String() string {
 func (*RegisterDeployment) ProtoMessage() {}
 
 func (x *RegisterDeployment) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[73]
+	mi := &file_enginev1_engine_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5859,7 +6063,7 @@ func (x *RegisterDeployment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterDeployment.ProtoReflect.Descriptor instead.
 func (*RegisterDeployment) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{73}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *RegisterDeployment) GetRecord() *DeploymentRecord {
@@ -5882,7 +6086,7 @@ type RegisterNode struct {
 
 func (x *RegisterNode) Reset() {
 	*x = RegisterNode{}
-	mi := &file_enginev1_engine_proto_msgTypes[74]
+	mi := &file_enginev1_engine_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5894,7 +6098,7 @@ func (x *RegisterNode) String() string {
 func (*RegisterNode) ProtoMessage() {}
 
 func (x *RegisterNode) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[74]
+	mi := &file_enginev1_engine_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5907,7 +6111,7 @@ func (x *RegisterNode) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterNode.ProtoReflect.Descriptor instead.
 func (*RegisterNode) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{74}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *RegisterNode) GetMember() *NodeMembership {
@@ -5931,7 +6135,7 @@ type UpdatePartitionTable struct {
 
 func (x *UpdatePartitionTable) Reset() {
 	*x = UpdatePartitionTable{}
-	mi := &file_enginev1_engine_proto_msgTypes[75]
+	mi := &file_enginev1_engine_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5943,7 +6147,7 @@ func (x *UpdatePartitionTable) String() string {
 func (*UpdatePartitionTable) ProtoMessage() {}
 
 func (x *UpdatePartitionTable) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[75]
+	mi := &file_enginev1_engine_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5956,7 +6160,7 @@ func (x *UpdatePartitionTable) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdatePartitionTable.ProtoReflect.Descriptor instead.
 func (*UpdatePartitionTable) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{75}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *UpdatePartitionTable) GetTable() *PartitionTable {
@@ -5983,7 +6187,7 @@ type NodeMembership struct {
 
 func (x *NodeMembership) Reset() {
 	*x = NodeMembership{}
-	mi := &file_enginev1_engine_proto_msgTypes[76]
+	mi := &file_enginev1_engine_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5995,7 +6199,7 @@ func (x *NodeMembership) String() string {
 func (*NodeMembership) ProtoMessage() {}
 
 func (x *NodeMembership) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[76]
+	mi := &file_enginev1_engine_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6008,7 +6212,7 @@ func (x *NodeMembership) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeMembership.ProtoReflect.Descriptor instead.
 func (*NodeMembership) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{76}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *NodeMembership) GetNodeId() uint64 {
@@ -6068,7 +6272,7 @@ type PartitionTable struct {
 
 func (x *PartitionTable) Reset() {
 	*x = PartitionTable{}
-	mi := &file_enginev1_engine_proto_msgTypes[77]
+	mi := &file_enginev1_engine_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6080,7 +6284,7 @@ func (x *PartitionTable) String() string {
 func (*PartitionTable) ProtoMessage() {}
 
 func (x *PartitionTable) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[77]
+	mi := &file_enginev1_engine_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6093,7 +6297,7 @@ func (x *PartitionTable) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PartitionTable.ProtoReflect.Descriptor instead.
 func (*PartitionTable) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{77}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *PartitionTable) GetShards() map[uint64]*ReplicaSet {
@@ -6135,7 +6339,7 @@ type ReplicaSet struct {
 
 func (x *ReplicaSet) Reset() {
 	*x = ReplicaSet{}
-	mi := &file_enginev1_engine_proto_msgTypes[78]
+	mi := &file_enginev1_engine_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6147,7 +6351,7 @@ func (x *ReplicaSet) String() string {
 func (*ReplicaSet) ProtoMessage() {}
 
 func (x *ReplicaSet) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[78]
+	mi := &file_enginev1_engine_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6160,7 +6364,7 @@ func (x *ReplicaSet) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplicaSet.ProtoReflect.Descriptor instead.
 func (*ReplicaSet) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{78}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *ReplicaSet) GetNodeIds() []uint64 {
@@ -6184,7 +6388,7 @@ type EvictNode struct {
 
 func (x *EvictNode) Reset() {
 	*x = EvictNode{}
-	mi := &file_enginev1_engine_proto_msgTypes[79]
+	mi := &file_enginev1_engine_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6196,7 +6400,7 @@ func (x *EvictNode) String() string {
 func (*EvictNode) ProtoMessage() {}
 
 func (x *EvictNode) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[79]
+	mi := &file_enginev1_engine_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6209,7 +6413,7 @@ func (x *EvictNode) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EvictNode.ProtoReflect.Descriptor instead.
 func (*EvictNode) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{79}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *EvictNode) GetNodeId() uint64 {
@@ -6241,7 +6445,7 @@ type RebalanceStep struct {
 
 func (x *RebalanceStep) Reset() {
 	*x = RebalanceStep{}
-	mi := &file_enginev1_engine_proto_msgTypes[80]
+	mi := &file_enginev1_engine_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6253,7 +6457,7 @@ func (x *RebalanceStep) String() string {
 func (*RebalanceStep) ProtoMessage() {}
 
 func (x *RebalanceStep) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[80]
+	mi := &file_enginev1_engine_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6266,7 +6470,7 @@ func (x *RebalanceStep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RebalanceStep.ProtoReflect.Descriptor instead.
 func (*RebalanceStep) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{80}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *RebalanceStep) GetShardId() uint64 {
@@ -6317,7 +6521,7 @@ type BeginRebalanceStep struct {
 
 func (x *BeginRebalanceStep) Reset() {
 	*x = BeginRebalanceStep{}
-	mi := &file_enginev1_engine_proto_msgTypes[81]
+	mi := &file_enginev1_engine_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6329,7 +6533,7 @@ func (x *BeginRebalanceStep) String() string {
 func (*BeginRebalanceStep) ProtoMessage() {}
 
 func (x *BeginRebalanceStep) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[81]
+	mi := &file_enginev1_engine_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6342,7 +6546,7 @@ func (x *BeginRebalanceStep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BeginRebalanceStep.ProtoReflect.Descriptor instead.
 func (*BeginRebalanceStep) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{81}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *BeginRebalanceStep) GetStep() *RebalanceStep {
@@ -6367,7 +6571,7 @@ type CompleteRebalanceStep struct {
 
 func (x *CompleteRebalanceStep) Reset() {
 	*x = CompleteRebalanceStep{}
-	mi := &file_enginev1_engine_proto_msgTypes[82]
+	mi := &file_enginev1_engine_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6379,7 +6583,7 @@ func (x *CompleteRebalanceStep) String() string {
 func (*CompleteRebalanceStep) ProtoMessage() {}
 
 func (x *CompleteRebalanceStep) ProtoReflect() protoreflect.Message {
-	mi := &file_enginev1_engine_proto_msgTypes[82]
+	mi := &file_enginev1_engine_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6392,7 +6596,7 @@ func (x *CompleteRebalanceStep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompleteRebalanceStep.ProtoReflect.Descriptor instead.
 func (*CompleteRebalanceStep) Descriptor() ([]byte, []int) {
-	return file_enginev1_engine_proto_rawDescGZIP(), []int{82}
+	return file_enginev1_engine_proto_rawDescGZIP(), []int{85}
 }
 
 func (x *CompleteRebalanceStep) GetShardId() uint64 {
@@ -6533,7 +6737,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\ffailure_code\x18\x03 \x01(\rR\vfailureCode\"6\n" +
 	"\x13InvocationSuspended\x12\x1f\n" +
 	"\vawaiting_on\x18\x01 \x03(\tR\n" +
-	"awaitingOn\"\xac\f\n" +
+	"awaitingOn\"\xa3\x0e\n" +
 	"\fJournalEntry\x12\x14\n" +
 	"\x05index\x18\x01 \x01(\rR\x05index\x121\n" +
 	"\x05input\x18\x02 \x01(\v2\x19.reflow.engine.v1.JEInputH\x00R\x05input\x121\n" +
@@ -6563,7 +6767,10 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x0epromise_result\x18\x15 \x01(\v2!.reflow.engine.v1.JEPromiseResultH\x00R\rpromiseResult\x12D\n" +
 	"\fpeek_promise\x18\x16 \x01(\v2\x1f.reflow.engine.v1.JEPeekPromiseH\x00R\vpeekPromise\x12P\n" +
 	"\x10complete_promise\x18\x17 \x01(\v2#.reflow.engine.v1.JECompletePromiseH\x00R\x0fcompletePromise\x12c\n" +
-	"\x17promise_complete_result\x18\x18 \x01(\v2).reflow.engine.v1.JEPromiseCompleteResultH\x00R\x15promiseCompleteResultB\a\n" +
+	"\x17promise_complete_result\x18\x18 \x01(\v2).reflow.engine.v1.JEPromiseCompleteResultH\x00R\x15promiseCompleteResult\x12N\n" +
+	"\x10get_state_result\x18\x19 \x01(\v2\".reflow.engine.v1.JEGetStateResultH\x00R\x0egetStateResult\x12H\n" +
+	"\x0eget_state_keys\x18\x1a \x01(\v2 .reflow.engine.v1.JEGetStateKeysH\x00R\fgetStateKeys\x12[\n" +
+	"\x15get_state_keys_result\x18\x1b \x01(\v2&.reflow.engine.v1.JEGetStateKeysResultH\x00R\x12getStateKeysResultB\a\n" +
 	"\x05entry\"\x1f\n" +
 	"\aJEInput\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\fR\x05value\"'\n" +
@@ -6585,12 +6792,18 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\n" +
 	"call_index\x18\x01 \x01(\rR\tcallIndex\x12\x16\n" +
 	"\x06result\x18\x02 \x01(\fR\x06result\x12'\n" +
-	"\x0ffailure_message\x18\x03 \x01(\tR\x0efailureMessage\"N\n" +
+	"\x0ffailure_message\x18\x03 \x01(\tR\x0efailureMessage\"P\n" +
 	"\n" +
 	"JEGetState\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value\x12\x18\n" +
-	"\apresent\x18\x03 \x01(\bR\apresent\"4\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x120\n" +
+	"\x14result_completion_id\x18\x02 \x01(\rR\x12resultCompletionId\"B\n" +
+	"\x10JEGetStateResult\x12\x14\n" +
+	"\x05value\x18\x01 \x01(\fR\x05value\x12\x18\n" +
+	"\apresent\x18\x02 \x01(\bR\apresent\"B\n" +
+	"\x0eJEGetStateKeys\x120\n" +
+	"\x14result_completion_id\x18\x01 \x01(\rR\x12resultCompletionId\"*\n" +
+	"\x14JEGetStateKeysResult\x12\x12\n" +
+	"\x04keys\x18\x01 \x03(\tR\x04keys\"4\n" +
 	"\n" +
 	"JESetState\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
@@ -6853,7 +7066,7 @@ func file_enginev1_engine_proto_rawDescGZIP() []byte {
 }
 
 var file_enginev1_engine_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_enginev1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 84)
+var file_enginev1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 87)
 var file_enginev1_engine_proto_goTypes = []any{
 	(KeyLeaseStatus_State)(0),       // 0: reflow.engine.v1.KeyLeaseStatus.State
 	(RebalanceStep_Kind)(0),         // 1: reflow.engine.v1.RebalanceStep.Kind
@@ -6886,61 +7099,64 @@ var file_enginev1_engine_proto_goTypes = []any{
 	(*JEOneWayCall)(nil),            // 28: reflow.engine.v1.JEOneWayCall
 	(*JECallResult)(nil),            // 29: reflow.engine.v1.JECallResult
 	(*JEGetState)(nil),              // 30: reflow.engine.v1.JEGetState
-	(*JESetState)(nil),              // 31: reflow.engine.v1.JESetState
-	(*JEOutput)(nil),                // 32: reflow.engine.v1.JEOutput
-	(*JERun)(nil),                   // 33: reflow.engine.v1.JERun
-	(*RunRetryPolicy)(nil),          // 34: reflow.engine.v1.RunRetryPolicy
-	(*JEClearAllState)(nil),         // 35: reflow.engine.v1.JEClearAllState
-	(*JEAwakeable)(nil),             // 36: reflow.engine.v1.JEAwakeable
-	(*JEAwakeableResult)(nil),       // 37: reflow.engine.v1.JEAwakeableResult
-	(*JESignal)(nil),                // 38: reflow.engine.v1.JESignal
-	(*JEAwaitSignal)(nil),           // 39: reflow.engine.v1.JEAwaitSignal
-	(*JESignalResult)(nil),          // 40: reflow.engine.v1.JESignalResult
-	(*SignalAwaiter)(nil),           // 41: reflow.engine.v1.SignalAwaiter
-	(*SignalInboxEntry)(nil),        // 42: reflow.engine.v1.SignalInboxEntry
-	(*JEGetPromise)(nil),            // 43: reflow.engine.v1.JEGetPromise
-	(*JEPromiseResult)(nil),         // 44: reflow.engine.v1.JEPromiseResult
-	(*JEPeekPromise)(nil),           // 45: reflow.engine.v1.JEPeekPromise
-	(*JECompletePromise)(nil),       // 46: reflow.engine.v1.JECompletePromise
-	(*JEPromiseCompleteResult)(nil), // 47: reflow.engine.v1.JEPromiseCompleteResult
-	(*PromiseValue)(nil),            // 48: reflow.engine.v1.PromiseValue
-	(*Pending)(nil),                 // 49: reflow.engine.v1.Pending
-	(*Resolved)(nil),                // 50: reflow.engine.v1.Resolved
-	(*Rejected)(nil),                // 51: reflow.engine.v1.Rejected
-	(*PromiseAwaiter)(nil),          // 52: reflow.engine.v1.PromiseAwaiter
-	(*JEClearState)(nil),            // 53: reflow.engine.v1.JEClearState
-	(*JEGetEagerState)(nil),         // 54: reflow.engine.v1.JEGetEagerState
-	(*TimerFired)(nil),              // 55: reflow.engine.v1.TimerFired
-	(*PurgeInvocation)(nil),         // 56: reflow.engine.v1.PurgeInvocation
-	(*InvocationStatus)(nil),        // 57: reflow.engine.v1.InvocationStatus
-	(*Free)(nil),                    // 58: reflow.engine.v1.Free
-	(*Scheduled)(nil),               // 59: reflow.engine.v1.Scheduled
-	(*Invoked)(nil),                 // 60: reflow.engine.v1.Invoked
-	(*Suspended)(nil),               // 61: reflow.engine.v1.Suspended
-	(*Completed)(nil),               // 62: reflow.engine.v1.Completed
-	(*KeyLeaseStatus)(nil),          // 63: reflow.engine.v1.KeyLeaseStatus
-	(*DedupEntry)(nil),              // 64: reflow.engine.v1.DedupEntry
-	(*PartitionMeta)(nil),           // 65: reflow.engine.v1.PartitionMeta
-	(*AwakeableEntry)(nil),          // 66: reflow.engine.v1.AwakeableEntry
-	(*OutboxEnvelope)(nil),          // 67: reflow.engine.v1.OutboxEnvelope
-	(*DeliverCallResult)(nil),       // 68: reflow.engine.v1.DeliverCallResult
-	(*OutboxAck)(nil),               // 69: reflow.engine.v1.OutboxAck
-	(*SignalSend)(nil),              // 70: reflow.engine.v1.SignalSend
-	(*SnapshotMeta)(nil),            // 71: reflow.engine.v1.SnapshotMeta
-	(*NodeHostMeta)(nil),            // 72: reflow.engine.v1.NodeHostMeta
-	(*DeploymentRecord)(nil),        // 73: reflow.engine.v1.DeploymentRecord
-	(*DeploymentHandler)(nil),       // 74: reflow.engine.v1.DeploymentHandler
-	(*RegisterDeployment)(nil),      // 75: reflow.engine.v1.RegisterDeployment
-	(*RegisterNode)(nil),            // 76: reflow.engine.v1.RegisterNode
-	(*UpdatePartitionTable)(nil),    // 77: reflow.engine.v1.UpdatePartitionTable
-	(*NodeMembership)(nil),          // 78: reflow.engine.v1.NodeMembership
-	(*PartitionTable)(nil),          // 79: reflow.engine.v1.PartitionTable
-	(*ReplicaSet)(nil),              // 80: reflow.engine.v1.ReplicaSet
-	(*EvictNode)(nil),               // 81: reflow.engine.v1.EvictNode
-	(*RebalanceStep)(nil),           // 82: reflow.engine.v1.RebalanceStep
-	(*BeginRebalanceStep)(nil),      // 83: reflow.engine.v1.BeginRebalanceStep
-	(*CompleteRebalanceStep)(nil),   // 84: reflow.engine.v1.CompleteRebalanceStep
-	nil,                             // 85: reflow.engine.v1.PartitionTable.ShardsEntry
+	(*JEGetStateResult)(nil),        // 31: reflow.engine.v1.JEGetStateResult
+	(*JEGetStateKeys)(nil),          // 32: reflow.engine.v1.JEGetStateKeys
+	(*JEGetStateKeysResult)(nil),    // 33: reflow.engine.v1.JEGetStateKeysResult
+	(*JESetState)(nil),              // 34: reflow.engine.v1.JESetState
+	(*JEOutput)(nil),                // 35: reflow.engine.v1.JEOutput
+	(*JERun)(nil),                   // 36: reflow.engine.v1.JERun
+	(*RunRetryPolicy)(nil),          // 37: reflow.engine.v1.RunRetryPolicy
+	(*JEClearAllState)(nil),         // 38: reflow.engine.v1.JEClearAllState
+	(*JEAwakeable)(nil),             // 39: reflow.engine.v1.JEAwakeable
+	(*JEAwakeableResult)(nil),       // 40: reflow.engine.v1.JEAwakeableResult
+	(*JESignal)(nil),                // 41: reflow.engine.v1.JESignal
+	(*JEAwaitSignal)(nil),           // 42: reflow.engine.v1.JEAwaitSignal
+	(*JESignalResult)(nil),          // 43: reflow.engine.v1.JESignalResult
+	(*SignalAwaiter)(nil),           // 44: reflow.engine.v1.SignalAwaiter
+	(*SignalInboxEntry)(nil),        // 45: reflow.engine.v1.SignalInboxEntry
+	(*JEGetPromise)(nil),            // 46: reflow.engine.v1.JEGetPromise
+	(*JEPromiseResult)(nil),         // 47: reflow.engine.v1.JEPromiseResult
+	(*JEPeekPromise)(nil),           // 48: reflow.engine.v1.JEPeekPromise
+	(*JECompletePromise)(nil),       // 49: reflow.engine.v1.JECompletePromise
+	(*JEPromiseCompleteResult)(nil), // 50: reflow.engine.v1.JEPromiseCompleteResult
+	(*PromiseValue)(nil),            // 51: reflow.engine.v1.PromiseValue
+	(*Pending)(nil),                 // 52: reflow.engine.v1.Pending
+	(*Resolved)(nil),                // 53: reflow.engine.v1.Resolved
+	(*Rejected)(nil),                // 54: reflow.engine.v1.Rejected
+	(*PromiseAwaiter)(nil),          // 55: reflow.engine.v1.PromiseAwaiter
+	(*JEClearState)(nil),            // 56: reflow.engine.v1.JEClearState
+	(*JEGetEagerState)(nil),         // 57: reflow.engine.v1.JEGetEagerState
+	(*TimerFired)(nil),              // 58: reflow.engine.v1.TimerFired
+	(*PurgeInvocation)(nil),         // 59: reflow.engine.v1.PurgeInvocation
+	(*InvocationStatus)(nil),        // 60: reflow.engine.v1.InvocationStatus
+	(*Free)(nil),                    // 61: reflow.engine.v1.Free
+	(*Scheduled)(nil),               // 62: reflow.engine.v1.Scheduled
+	(*Invoked)(nil),                 // 63: reflow.engine.v1.Invoked
+	(*Suspended)(nil),               // 64: reflow.engine.v1.Suspended
+	(*Completed)(nil),               // 65: reflow.engine.v1.Completed
+	(*KeyLeaseStatus)(nil),          // 66: reflow.engine.v1.KeyLeaseStatus
+	(*DedupEntry)(nil),              // 67: reflow.engine.v1.DedupEntry
+	(*PartitionMeta)(nil),           // 68: reflow.engine.v1.PartitionMeta
+	(*AwakeableEntry)(nil),          // 69: reflow.engine.v1.AwakeableEntry
+	(*OutboxEnvelope)(nil),          // 70: reflow.engine.v1.OutboxEnvelope
+	(*DeliverCallResult)(nil),       // 71: reflow.engine.v1.DeliverCallResult
+	(*OutboxAck)(nil),               // 72: reflow.engine.v1.OutboxAck
+	(*SignalSend)(nil),              // 73: reflow.engine.v1.SignalSend
+	(*SnapshotMeta)(nil),            // 74: reflow.engine.v1.SnapshotMeta
+	(*NodeHostMeta)(nil),            // 75: reflow.engine.v1.NodeHostMeta
+	(*DeploymentRecord)(nil),        // 76: reflow.engine.v1.DeploymentRecord
+	(*DeploymentHandler)(nil),       // 77: reflow.engine.v1.DeploymentHandler
+	(*RegisterDeployment)(nil),      // 78: reflow.engine.v1.RegisterDeployment
+	(*RegisterNode)(nil),            // 79: reflow.engine.v1.RegisterNode
+	(*UpdatePartitionTable)(nil),    // 80: reflow.engine.v1.UpdatePartitionTable
+	(*NodeMembership)(nil),          // 81: reflow.engine.v1.NodeMembership
+	(*PartitionTable)(nil),          // 82: reflow.engine.v1.PartitionTable
+	(*ReplicaSet)(nil),              // 83: reflow.engine.v1.ReplicaSet
+	(*EvictNode)(nil),               // 84: reflow.engine.v1.EvictNode
+	(*RebalanceStep)(nil),           // 85: reflow.engine.v1.RebalanceStep
+	(*BeginRebalanceStep)(nil),      // 86: reflow.engine.v1.BeginRebalanceStep
+	(*CompleteRebalanceStep)(nil),   // 87: reflow.engine.v1.CompleteRebalanceStep
+	nil,                             // 88: reflow.engine.v1.PartitionTable.ShardsEntry
 }
 var file_enginev1_engine_proto_depIdxs = []int32{
 	5,   // 0: reflow.engine.v1.Dedup.self_proposal:type_name -> reflow.engine.v1.SelfProposalDedup
@@ -6951,16 +7167,16 @@ var file_enginev1_engine_proto_depIdxs = []int32{
 	10,  // 5: reflow.engine.v1.Command.announce_leader:type_name -> reflow.engine.v1.AnnounceLeader
 	11,  // 6: reflow.engine.v1.Command.invoke:type_name -> reflow.engine.v1.InvokeCommand
 	13,  // 7: reflow.engine.v1.Command.invoker_effect:type_name -> reflow.engine.v1.InvokerEffect
-	55,  // 8: reflow.engine.v1.Command.timer_fired:type_name -> reflow.engine.v1.TimerFired
-	56,  // 9: reflow.engine.v1.Command.purge:type_name -> reflow.engine.v1.PurgeInvocation
-	76,  // 10: reflow.engine.v1.Command.register_node:type_name -> reflow.engine.v1.RegisterNode
-	77,  // 11: reflow.engine.v1.Command.update_partition_table:type_name -> reflow.engine.v1.UpdatePartitionTable
-	81,  // 12: reflow.engine.v1.Command.evict_node:type_name -> reflow.engine.v1.EvictNode
-	83,  // 13: reflow.engine.v1.Command.begin_rebalance_step:type_name -> reflow.engine.v1.BeginRebalanceStep
-	84,  // 14: reflow.engine.v1.Command.complete_rebalance_step:type_name -> reflow.engine.v1.CompleteRebalanceStep
-	68,  // 15: reflow.engine.v1.Command.deliver_call_result:type_name -> reflow.engine.v1.DeliverCallResult
-	69,  // 16: reflow.engine.v1.Command.outbox_ack:type_name -> reflow.engine.v1.OutboxAck
-	75,  // 17: reflow.engine.v1.Command.register_deployment:type_name -> reflow.engine.v1.RegisterDeployment
+	58,  // 8: reflow.engine.v1.Command.timer_fired:type_name -> reflow.engine.v1.TimerFired
+	59,  // 9: reflow.engine.v1.Command.purge:type_name -> reflow.engine.v1.PurgeInvocation
+	79,  // 10: reflow.engine.v1.Command.register_node:type_name -> reflow.engine.v1.RegisterNode
+	80,  // 11: reflow.engine.v1.Command.update_partition_table:type_name -> reflow.engine.v1.UpdatePartitionTable
+	84,  // 12: reflow.engine.v1.Command.evict_node:type_name -> reflow.engine.v1.EvictNode
+	86,  // 13: reflow.engine.v1.Command.begin_rebalance_step:type_name -> reflow.engine.v1.BeginRebalanceStep
+	87,  // 14: reflow.engine.v1.Command.complete_rebalance_step:type_name -> reflow.engine.v1.CompleteRebalanceStep
+	71,  // 15: reflow.engine.v1.Command.deliver_call_result:type_name -> reflow.engine.v1.DeliverCallResult
+	72,  // 16: reflow.engine.v1.Command.outbox_ack:type_name -> reflow.engine.v1.OutboxAck
+	78,  // 17: reflow.engine.v1.Command.register_deployment:type_name -> reflow.engine.v1.RegisterDeployment
 	18,  // 18: reflow.engine.v1.Command.promise_completion_ack:type_name -> reflow.engine.v1.PromiseCompletionAck
 	19,  // 19: reflow.engine.v1.Command.reap_workflow:type_name -> reflow.engine.v1.ReapWorkflow
 	2,   // 20: reflow.engine.v1.InvokeCommand.invocation_id:type_name -> reflow.engine.v1.InvocationId
@@ -6975,7 +7191,7 @@ var file_enginev1_engine_proto_depIdxs = []int32{
 	15,  // 29: reflow.engine.v1.InvokerEffect.awakeable_resolved:type_name -> reflow.engine.v1.AwakeableResolved
 	16,  // 30: reflow.engine.v1.InvokerEffect.signal_delivered:type_name -> reflow.engine.v1.SignalDelivered
 	17,  // 31: reflow.engine.v1.InvokerEffect.promise_completed:type_name -> reflow.engine.v1.PromiseCompleted
-	34,  // 32: reflow.engine.v1.JERunProposal.retry_policy:type_name -> reflow.engine.v1.RunRetryPolicy
+	37,  // 32: reflow.engine.v1.JERunProposal.retry_policy:type_name -> reflow.engine.v1.RunRetryPolicy
 	3,   // 33: reflow.engine.v1.SignalDelivered.target:type_name -> reflow.engine.v1.InvocationTarget
 	2,   // 34: reflow.engine.v1.PromiseCompleted.caller_id:type_name -> reflow.engine.v1.InvocationId
 	2,   // 35: reflow.engine.v1.PromiseCompletionAck.caller_id:type_name -> reflow.engine.v1.InvocationId
@@ -6986,72 +7202,75 @@ var file_enginev1_engine_proto_depIdxs = []int32{
 	27,  // 40: reflow.engine.v1.JournalEntry.call:type_name -> reflow.engine.v1.JECall
 	29,  // 41: reflow.engine.v1.JournalEntry.call_result:type_name -> reflow.engine.v1.JECallResult
 	30,  // 42: reflow.engine.v1.JournalEntry.get_state:type_name -> reflow.engine.v1.JEGetState
-	31,  // 43: reflow.engine.v1.JournalEntry.set_state:type_name -> reflow.engine.v1.JESetState
-	32,  // 44: reflow.engine.v1.JournalEntry.output:type_name -> reflow.engine.v1.JEOutput
-	33,  // 45: reflow.engine.v1.JournalEntry.run:type_name -> reflow.engine.v1.JERun
-	36,  // 46: reflow.engine.v1.JournalEntry.awakeable:type_name -> reflow.engine.v1.JEAwakeable
-	37,  // 47: reflow.engine.v1.JournalEntry.awakeable_result:type_name -> reflow.engine.v1.JEAwakeableResult
-	38,  // 48: reflow.engine.v1.JournalEntry.signal:type_name -> reflow.engine.v1.JESignal
-	53,  // 49: reflow.engine.v1.JournalEntry.clear_state:type_name -> reflow.engine.v1.JEClearState
-	54,  // 50: reflow.engine.v1.JournalEntry.get_eager_state:type_name -> reflow.engine.v1.JEGetEagerState
-	35,  // 51: reflow.engine.v1.JournalEntry.clear_all_state:type_name -> reflow.engine.v1.JEClearAllState
+	34,  // 43: reflow.engine.v1.JournalEntry.set_state:type_name -> reflow.engine.v1.JESetState
+	35,  // 44: reflow.engine.v1.JournalEntry.output:type_name -> reflow.engine.v1.JEOutput
+	36,  // 45: reflow.engine.v1.JournalEntry.run:type_name -> reflow.engine.v1.JERun
+	39,  // 46: reflow.engine.v1.JournalEntry.awakeable:type_name -> reflow.engine.v1.JEAwakeable
+	40,  // 47: reflow.engine.v1.JournalEntry.awakeable_result:type_name -> reflow.engine.v1.JEAwakeableResult
+	41,  // 48: reflow.engine.v1.JournalEntry.signal:type_name -> reflow.engine.v1.JESignal
+	56,  // 49: reflow.engine.v1.JournalEntry.clear_state:type_name -> reflow.engine.v1.JEClearState
+	57,  // 50: reflow.engine.v1.JournalEntry.get_eager_state:type_name -> reflow.engine.v1.JEGetEagerState
+	38,  // 51: reflow.engine.v1.JournalEntry.clear_all_state:type_name -> reflow.engine.v1.JEClearAllState
 	28,  // 52: reflow.engine.v1.JournalEntry.one_way_call:type_name -> reflow.engine.v1.JEOneWayCall
-	39,  // 53: reflow.engine.v1.JournalEntry.await_signal:type_name -> reflow.engine.v1.JEAwaitSignal
-	40,  // 54: reflow.engine.v1.JournalEntry.signal_result:type_name -> reflow.engine.v1.JESignalResult
-	43,  // 55: reflow.engine.v1.JournalEntry.get_promise:type_name -> reflow.engine.v1.JEGetPromise
-	44,  // 56: reflow.engine.v1.JournalEntry.promise_result:type_name -> reflow.engine.v1.JEPromiseResult
-	45,  // 57: reflow.engine.v1.JournalEntry.peek_promise:type_name -> reflow.engine.v1.JEPeekPromise
-	46,  // 58: reflow.engine.v1.JournalEntry.complete_promise:type_name -> reflow.engine.v1.JECompletePromise
-	47,  // 59: reflow.engine.v1.JournalEntry.promise_complete_result:type_name -> reflow.engine.v1.JEPromiseCompleteResult
-	3,   // 60: reflow.engine.v1.JECall.target:type_name -> reflow.engine.v1.InvocationTarget
-	3,   // 61: reflow.engine.v1.JEOneWayCall.target:type_name -> reflow.engine.v1.InvocationTarget
-	3,   // 62: reflow.engine.v1.JESignal.target:type_name -> reflow.engine.v1.InvocationTarget
-	2,   // 63: reflow.engine.v1.SignalAwaiter.owner:type_name -> reflow.engine.v1.InvocationId
-	49,  // 64: reflow.engine.v1.PromiseValue.pending:type_name -> reflow.engine.v1.Pending
-	50,  // 65: reflow.engine.v1.PromiseValue.resolved:type_name -> reflow.engine.v1.Resolved
-	51,  // 66: reflow.engine.v1.PromiseValue.rejected:type_name -> reflow.engine.v1.Rejected
-	2,   // 67: reflow.engine.v1.PromiseAwaiter.owner:type_name -> reflow.engine.v1.InvocationId
-	2,   // 68: reflow.engine.v1.TimerFired.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	2,   // 69: reflow.engine.v1.PurgeInvocation.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	58,  // 70: reflow.engine.v1.InvocationStatus.free:type_name -> reflow.engine.v1.Free
-	59,  // 71: reflow.engine.v1.InvocationStatus.scheduled:type_name -> reflow.engine.v1.Scheduled
-	60,  // 72: reflow.engine.v1.InvocationStatus.invoked:type_name -> reflow.engine.v1.Invoked
-	61,  // 73: reflow.engine.v1.InvocationStatus.suspended:type_name -> reflow.engine.v1.Suspended
-	62,  // 74: reflow.engine.v1.InvocationStatus.completed:type_name -> reflow.engine.v1.Completed
-	3,   // 75: reflow.engine.v1.Scheduled.target:type_name -> reflow.engine.v1.InvocationTarget
-	12,  // 76: reflow.engine.v1.Scheduled.parent_link:type_name -> reflow.engine.v1.ParentLink
-	3,   // 77: reflow.engine.v1.Invoked.target:type_name -> reflow.engine.v1.InvocationTarget
-	12,  // 78: reflow.engine.v1.Invoked.parent_link:type_name -> reflow.engine.v1.ParentLink
-	3,   // 79: reflow.engine.v1.Suspended.target:type_name -> reflow.engine.v1.InvocationTarget
-	12,  // 80: reflow.engine.v1.Suspended.parent_link:type_name -> reflow.engine.v1.ParentLink
-	3,   // 81: reflow.engine.v1.Completed.target:type_name -> reflow.engine.v1.InvocationTarget
-	0,   // 82: reflow.engine.v1.KeyLeaseStatus.state:type_name -> reflow.engine.v1.KeyLeaseStatus.State
-	2,   // 83: reflow.engine.v1.KeyLeaseStatus.current_invocation:type_name -> reflow.engine.v1.InvocationId
-	2,   // 84: reflow.engine.v1.KeyLeaseStatus.queue:type_name -> reflow.engine.v1.InvocationId
-	2,   // 85: reflow.engine.v1.AwakeableEntry.owner:type_name -> reflow.engine.v1.InvocationId
-	11,  // 86: reflow.engine.v1.OutboxEnvelope.invoke:type_name -> reflow.engine.v1.InvokeCommand
-	70,  // 87: reflow.engine.v1.OutboxEnvelope.signal:type_name -> reflow.engine.v1.SignalSend
-	68,  // 88: reflow.engine.v1.OutboxEnvelope.deliver_call_result:type_name -> reflow.engine.v1.DeliverCallResult
-	69,  // 89: reflow.engine.v1.OutboxEnvelope.outbox_ack:type_name -> reflow.engine.v1.OutboxAck
-	17,  // 90: reflow.engine.v1.OutboxEnvelope.promise_completion:type_name -> reflow.engine.v1.PromiseCompleted
-	18,  // 91: reflow.engine.v1.OutboxEnvelope.promise_completion_ack:type_name -> reflow.engine.v1.PromiseCompletionAck
-	2,   // 92: reflow.engine.v1.DeliverCallResult.parent_id:type_name -> reflow.engine.v1.InvocationId
-	3,   // 93: reflow.engine.v1.SignalSend.target:type_name -> reflow.engine.v1.InvocationTarget
-	74,  // 94: reflow.engine.v1.DeploymentRecord.handlers:type_name -> reflow.engine.v1.DeploymentHandler
-	73,  // 95: reflow.engine.v1.RegisterDeployment.record:type_name -> reflow.engine.v1.DeploymentRecord
-	78,  // 96: reflow.engine.v1.RegisterNode.member:type_name -> reflow.engine.v1.NodeMembership
-	79,  // 97: reflow.engine.v1.UpdatePartitionTable.table:type_name -> reflow.engine.v1.PartitionTable
-	85,  // 98: reflow.engine.v1.PartitionTable.shards:type_name -> reflow.engine.v1.PartitionTable.ShardsEntry
-	82,  // 99: reflow.engine.v1.PartitionTable.pending:type_name -> reflow.engine.v1.RebalanceStep
-	80,  // 100: reflow.engine.v1.PartitionTable.meta_replicas:type_name -> reflow.engine.v1.ReplicaSet
-	1,   // 101: reflow.engine.v1.RebalanceStep.kind:type_name -> reflow.engine.v1.RebalanceStep.Kind
-	82,  // 102: reflow.engine.v1.BeginRebalanceStep.step:type_name -> reflow.engine.v1.RebalanceStep
-	80,  // 103: reflow.engine.v1.PartitionTable.ShardsEntry.value:type_name -> reflow.engine.v1.ReplicaSet
-	104, // [104:104] is the sub-list for method output_type
-	104, // [104:104] is the sub-list for method input_type
-	104, // [104:104] is the sub-list for extension type_name
-	104, // [104:104] is the sub-list for extension extendee
-	0,   // [0:104] is the sub-list for field type_name
+	42,  // 53: reflow.engine.v1.JournalEntry.await_signal:type_name -> reflow.engine.v1.JEAwaitSignal
+	43,  // 54: reflow.engine.v1.JournalEntry.signal_result:type_name -> reflow.engine.v1.JESignalResult
+	46,  // 55: reflow.engine.v1.JournalEntry.get_promise:type_name -> reflow.engine.v1.JEGetPromise
+	47,  // 56: reflow.engine.v1.JournalEntry.promise_result:type_name -> reflow.engine.v1.JEPromiseResult
+	48,  // 57: reflow.engine.v1.JournalEntry.peek_promise:type_name -> reflow.engine.v1.JEPeekPromise
+	49,  // 58: reflow.engine.v1.JournalEntry.complete_promise:type_name -> reflow.engine.v1.JECompletePromise
+	50,  // 59: reflow.engine.v1.JournalEntry.promise_complete_result:type_name -> reflow.engine.v1.JEPromiseCompleteResult
+	31,  // 60: reflow.engine.v1.JournalEntry.get_state_result:type_name -> reflow.engine.v1.JEGetStateResult
+	32,  // 61: reflow.engine.v1.JournalEntry.get_state_keys:type_name -> reflow.engine.v1.JEGetStateKeys
+	33,  // 62: reflow.engine.v1.JournalEntry.get_state_keys_result:type_name -> reflow.engine.v1.JEGetStateKeysResult
+	3,   // 63: reflow.engine.v1.JECall.target:type_name -> reflow.engine.v1.InvocationTarget
+	3,   // 64: reflow.engine.v1.JEOneWayCall.target:type_name -> reflow.engine.v1.InvocationTarget
+	3,   // 65: reflow.engine.v1.JESignal.target:type_name -> reflow.engine.v1.InvocationTarget
+	2,   // 66: reflow.engine.v1.SignalAwaiter.owner:type_name -> reflow.engine.v1.InvocationId
+	52,  // 67: reflow.engine.v1.PromiseValue.pending:type_name -> reflow.engine.v1.Pending
+	53,  // 68: reflow.engine.v1.PromiseValue.resolved:type_name -> reflow.engine.v1.Resolved
+	54,  // 69: reflow.engine.v1.PromiseValue.rejected:type_name -> reflow.engine.v1.Rejected
+	2,   // 70: reflow.engine.v1.PromiseAwaiter.owner:type_name -> reflow.engine.v1.InvocationId
+	2,   // 71: reflow.engine.v1.TimerFired.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	2,   // 72: reflow.engine.v1.PurgeInvocation.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	61,  // 73: reflow.engine.v1.InvocationStatus.free:type_name -> reflow.engine.v1.Free
+	62,  // 74: reflow.engine.v1.InvocationStatus.scheduled:type_name -> reflow.engine.v1.Scheduled
+	63,  // 75: reflow.engine.v1.InvocationStatus.invoked:type_name -> reflow.engine.v1.Invoked
+	64,  // 76: reflow.engine.v1.InvocationStatus.suspended:type_name -> reflow.engine.v1.Suspended
+	65,  // 77: reflow.engine.v1.InvocationStatus.completed:type_name -> reflow.engine.v1.Completed
+	3,   // 78: reflow.engine.v1.Scheduled.target:type_name -> reflow.engine.v1.InvocationTarget
+	12,  // 79: reflow.engine.v1.Scheduled.parent_link:type_name -> reflow.engine.v1.ParentLink
+	3,   // 80: reflow.engine.v1.Invoked.target:type_name -> reflow.engine.v1.InvocationTarget
+	12,  // 81: reflow.engine.v1.Invoked.parent_link:type_name -> reflow.engine.v1.ParentLink
+	3,   // 82: reflow.engine.v1.Suspended.target:type_name -> reflow.engine.v1.InvocationTarget
+	12,  // 83: reflow.engine.v1.Suspended.parent_link:type_name -> reflow.engine.v1.ParentLink
+	3,   // 84: reflow.engine.v1.Completed.target:type_name -> reflow.engine.v1.InvocationTarget
+	0,   // 85: reflow.engine.v1.KeyLeaseStatus.state:type_name -> reflow.engine.v1.KeyLeaseStatus.State
+	2,   // 86: reflow.engine.v1.KeyLeaseStatus.current_invocation:type_name -> reflow.engine.v1.InvocationId
+	2,   // 87: reflow.engine.v1.KeyLeaseStatus.queue:type_name -> reflow.engine.v1.InvocationId
+	2,   // 88: reflow.engine.v1.AwakeableEntry.owner:type_name -> reflow.engine.v1.InvocationId
+	11,  // 89: reflow.engine.v1.OutboxEnvelope.invoke:type_name -> reflow.engine.v1.InvokeCommand
+	73,  // 90: reflow.engine.v1.OutboxEnvelope.signal:type_name -> reflow.engine.v1.SignalSend
+	71,  // 91: reflow.engine.v1.OutboxEnvelope.deliver_call_result:type_name -> reflow.engine.v1.DeliverCallResult
+	72,  // 92: reflow.engine.v1.OutboxEnvelope.outbox_ack:type_name -> reflow.engine.v1.OutboxAck
+	17,  // 93: reflow.engine.v1.OutboxEnvelope.promise_completion:type_name -> reflow.engine.v1.PromiseCompleted
+	18,  // 94: reflow.engine.v1.OutboxEnvelope.promise_completion_ack:type_name -> reflow.engine.v1.PromiseCompletionAck
+	2,   // 95: reflow.engine.v1.DeliverCallResult.parent_id:type_name -> reflow.engine.v1.InvocationId
+	3,   // 96: reflow.engine.v1.SignalSend.target:type_name -> reflow.engine.v1.InvocationTarget
+	77,  // 97: reflow.engine.v1.DeploymentRecord.handlers:type_name -> reflow.engine.v1.DeploymentHandler
+	76,  // 98: reflow.engine.v1.RegisterDeployment.record:type_name -> reflow.engine.v1.DeploymentRecord
+	81,  // 99: reflow.engine.v1.RegisterNode.member:type_name -> reflow.engine.v1.NodeMembership
+	82,  // 100: reflow.engine.v1.UpdatePartitionTable.table:type_name -> reflow.engine.v1.PartitionTable
+	88,  // 101: reflow.engine.v1.PartitionTable.shards:type_name -> reflow.engine.v1.PartitionTable.ShardsEntry
+	85,  // 102: reflow.engine.v1.PartitionTable.pending:type_name -> reflow.engine.v1.RebalanceStep
+	83,  // 103: reflow.engine.v1.PartitionTable.meta_replicas:type_name -> reflow.engine.v1.ReplicaSet
+	1,   // 104: reflow.engine.v1.RebalanceStep.kind:type_name -> reflow.engine.v1.RebalanceStep.Kind
+	85,  // 105: reflow.engine.v1.BeginRebalanceStep.step:type_name -> reflow.engine.v1.RebalanceStep
+	83,  // 106: reflow.engine.v1.PartitionTable.ShardsEntry.value:type_name -> reflow.engine.v1.ReplicaSet
+	107, // [107:107] is the sub-list for method output_type
+	107, // [107:107] is the sub-list for method input_type
+	107, // [107:107] is the sub-list for extension type_name
+	107, // [107:107] is the sub-list for extension extendee
+	0,   // [0:107] is the sub-list for field type_name
 }
 
 func init() { file_enginev1_engine_proto_init() }
@@ -7113,20 +7332,23 @@ func file_enginev1_engine_proto_init() {
 		(*JournalEntry_PeekPromise)(nil),
 		(*JournalEntry_CompletePromise)(nil),
 		(*JournalEntry_PromiseCompleteResult)(nil),
+		(*JournalEntry_GetStateResult)(nil),
+		(*JournalEntry_GetStateKeys)(nil),
+		(*JournalEntry_GetStateKeysResult)(nil),
 	}
-	file_enginev1_engine_proto_msgTypes[46].OneofWrappers = []any{
+	file_enginev1_engine_proto_msgTypes[49].OneofWrappers = []any{
 		(*PromiseValue_Pending)(nil),
 		(*PromiseValue_Resolved)(nil),
 		(*PromiseValue_Rejected)(nil),
 	}
-	file_enginev1_engine_proto_msgTypes[55].OneofWrappers = []any{
+	file_enginev1_engine_proto_msgTypes[58].OneofWrappers = []any{
 		(*InvocationStatus_Free)(nil),
 		(*InvocationStatus_Scheduled)(nil),
 		(*InvocationStatus_Invoked)(nil),
 		(*InvocationStatus_Suspended)(nil),
 		(*InvocationStatus_Completed)(nil),
 	}
-	file_enginev1_engine_proto_msgTypes[65].OneofWrappers = []any{
+	file_enginev1_engine_proto_msgTypes[68].OneofWrappers = []any{
 		(*OutboxEnvelope_Invoke)(nil),
 		(*OutboxEnvelope_Signal)(nil),
 		(*OutboxEnvelope_DeliverCallResult)(nil),
@@ -7140,7 +7362,7 @@ func file_enginev1_engine_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_enginev1_engine_proto_rawDesc), len(file_enginev1_engine_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   84,
+			NumMessages:   87,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

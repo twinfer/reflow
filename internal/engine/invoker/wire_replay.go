@@ -115,6 +115,51 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 		msg := &protocolv1.ClearAllStateCommandMessage{}
 		return marshalFrame(codec, wire.TypeCmdClearAllState, e.GetIndex(), msg)
 
+	case *enginev1.JournalEntry_GetState:
+		// Lazy state fetch command. result_completion_id points at the
+		// slot the JEGetStateResult will land at; the SDK's wireContext
+		// reads from the result slot to decode the answer.
+		msg := &protocolv1.GetLazyStateCommandMessage{
+			Key:                []byte(entry.GetState.GetKey()),
+			ResultCompletionId: entry.GetState.GetResultCompletionId(),
+		}
+		return marshalFrame(codec, wire.TypeCmdGetLazyState, e.GetIndex(), msg)
+
+	case *enginev1.JournalEntry_GetStateResult:
+		// completion_id matches the GetLazyStateCommandMessage's
+		// result_completion_id (= this entry's own index).
+		msg := &protocolv1.GetLazyStateCompletionNotificationMessage{
+			CompletionId: e.GetIndex(),
+		}
+		if entry.GetStateResult.GetPresent() {
+			msg.Result = &protocolv1.GetLazyStateCompletionNotificationMessage_Value{
+				Value: &protocolv1.Value{Content: entry.GetStateResult.GetValue()},
+			}
+		} else {
+			msg.Result = &protocolv1.GetLazyStateCompletionNotificationMessage_Void{
+				Void: &protocolv1.Void{},
+			}
+		}
+		return marshalFrame(codec, wire.TypeNoteGetLazyState, e.GetIndex(), msg)
+
+	case *enginev1.JournalEntry_GetStateKeys:
+		msg := &protocolv1.GetLazyStateKeysCommandMessage{
+			ResultCompletionId: entry.GetStateKeys.GetResultCompletionId(),
+		}
+		return marshalFrame(codec, wire.TypeCmdGetLazyStateKeys, e.GetIndex(), msg)
+
+	case *enginev1.JournalEntry_GetStateKeysResult:
+		src := entry.GetStateKeysResult.GetKeys()
+		keysBytes := make([][]byte, len(src))
+		for i, k := range src {
+			keysBytes[i] = []byte(k)
+		}
+		msg := &protocolv1.GetLazyStateKeysCompletionNotificationMessage{
+			CompletionId: e.GetIndex(),
+			StateKeys:    &protocolv1.StateKeys{Keys: keysBytes},
+		}
+		return marshalFrame(codec, wire.TypeNoteGetLazyStateKeys, e.GetIndex(), msg)
+
 	case *enginev1.JournalEntry_Call:
 		// Call allocates 2 slots: cmd at e.Index, result at e.Index+1.
 		// The wire ships result_completion_id pointing at the matching

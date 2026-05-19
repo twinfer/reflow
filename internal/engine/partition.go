@@ -363,6 +363,12 @@ func journalEntryKindLabel(e *enginev1.JournalEntry) string {
 		return "ClearAllState"
 	case *enginev1.JournalEntry_GetState:
 		return "GetState"
+	case *enginev1.JournalEntry_GetStateResult:
+		return "GetStateResult"
+	case *enginev1.JournalEntry_GetStateKeys:
+		return "GetStateKeys"
+	case *enginev1.JournalEntry_GetStateKeysResult:
+		return "GetStateKeysResult"
 	case *enginev1.JournalEntry_GetEagerState:
 		return "GetEagerState"
 	case *enginev1.JournalEntry_Signal:
@@ -705,6 +711,75 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 				p.cfg.Log.Warn("partition: JEClearAllState on status without target",
 					"status", fmt.Sprintf("%T", cur.GetStatus()))
 			}
+		case *enginev1.JournalEntry_GetState:
+			// Lazy state fetch. Two-slot — the SDK pre-allocated cmdSlot
+			// and resultSlot (= cmdSlot+1). Read the StateTable row and
+			// append JEGetStateResult inline so the SDK sees the answer
+			// on the next session start.
+			t := statusTarget(cur)
+			if t == nil {
+				p.cfg.Log.Warn("partition: JEGetState on status without target",
+					"status", fmt.Sprintf("%T", cur.GetStatus()))
+				break
+			}
+			key := e.GetState.GetKey()
+			resultIdx := e.GetState.GetResultCompletionId()
+			val, present, gerr := (tables.StateTable{S: batch}).Get(t, key)
+			if gerr != nil {
+				return fmt.Errorf("onInvokerEffect: state get: %w", gerr)
+			}
+			resultEntry := &enginev1.JournalEntry{
+				Index: resultIdx,
+				Entry: &enginev1.JournalEntry_GetStateResult{
+					GetStateResult: &enginev1.JEGetStateResult{
+						Value:   val,
+						Present: present,
+					},
+				},
+			}
+			if err := journal.Append(batch, id, resultEntry); err != nil {
+				return fmt.Errorf("onInvokerEffect: journal append (get_state result): %w", err)
+			}
+			// Wake the suspended session. The current session is still
+			// alive (mid-frame-pump) so StartInvocation queues a
+			// pendingRespawn; once the SDK suspends and the session
+			// exits, watchSession spawns a fresh one that replays the
+			// just-stamped result.
+			if isLeader {
+				p.cfg.Collector.Push(ActInvoke{ID: id, Target: t})
+			}
+		case *enginev1.JournalEntry_GetStateKeys:
+			t := statusTarget(cur)
+			if t == nil {
+				p.cfg.Log.Warn("partition: JEGetStateKeys on status without target",
+					"status", fmt.Sprintf("%T", cur.GetStatus()))
+				break
+			}
+			resultIdx := e.GetStateKeys.GetResultCompletionId()
+			var keysOut []string
+			if err := (tables.StateTable{S: batch}).ScanObject(t, func(k string, _ []byte) error {
+				keysOut = append(keysOut, k)
+				return nil
+			}); err != nil {
+				return fmt.Errorf("onInvokerEffect: state scan: %w", err)
+			}
+			resultEntry := &enginev1.JournalEntry{
+				Index: resultIdx,
+				Entry: &enginev1.JournalEntry_GetStateKeysResult{
+					GetStateKeysResult: &enginev1.JEGetStateKeysResult{Keys: keysOut},
+				},
+			}
+			if err := journal.Append(batch, id, resultEntry); err != nil {
+				return fmt.Errorf("onInvokerEffect: journal append (get_state_keys result): %w", err)
+			}
+			if isLeader {
+				p.cfg.Collector.Push(ActInvoke{ID: id, Target: t})
+			}
+		case *enginev1.JournalEntry_GetStateResult,
+			*enginev1.JournalEntry_GetStateKeysResult:
+			// Result entries are appended directly by the engine in the
+			// inline branches above — they never arrive via the SDK's
+			// JournalAppended effect. Defensive no-op for forward-compat.
 		case *enginev1.JournalEntry_Signal:
 			env := &enginev1.OutboxEnvelope{
 				DestinationShardId: p.cfg.Partitioner.ShardForTarget(e.Signal.GetTarget()),

@@ -56,13 +56,6 @@ type Config struct {
 	ExpectedAudience string
 }
 
-// ErrLazyStateUnavailable is returned by wireContext.GetState when the
-// engine signaled partial_state (eager preload exceeded the cap) and
-// the requested key was not in the snapshot. Lazy state fetch via
-// GetLazyStateCommandMessage isn't wired yet — handlers see this in
-// place of the eventual completion future.
-var ErrLazyStateUnavailable = errors.New("handler: state preload incomplete; lazy fetch not implemented")
-
 // Server hosts a reflow handler over HTTP/2. Routes:
 //   - /reflow.handler.v1.HandlerService/InvokeStream — bidi-streaming
 //     session over Connect.

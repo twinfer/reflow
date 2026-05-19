@@ -406,6 +406,14 @@ func (s *wireSession) driveLoop(stream handlerclient.Stream) {
 		case wire.TypeError:
 			s.handleError(f.GetPayload())
 			return
+		case wire.TypeCmdGetLazyState:
+			if !s.handleGetLazyState(f.GetPayload()) {
+				return
+			}
+		case wire.TypeCmdGetLazyStateKeys:
+			if !s.handleGetLazyStateKeys(f.GetPayload()) {
+				return
+			}
 		case wire.TypeCmdSetState:
 			if !s.handleSetState(f.GetPayload()) {
 				return
@@ -583,6 +591,59 @@ func (s *wireSession) handleClearAllState(payload []byte) bool {
 		},
 	}
 	return s.proposeJournalOrFail(entry, "JEClearAllState")
+}
+
+// handleGetLazyState decodes a GetLazyStateCommandMessage and proposes
+// JEGetState at the next free slot. Two-slot — the SDK pre-allocated
+// cmdSlot and resultSlot (= cmdSlot+1); the apply arm reads
+// StateTable.Get(target, key) and appends JEGetStateResult at
+// result_completion_id inline so the SDK sees the answer on its next
+// respawn.
+func (s *wireSession) handleGetLazyState(payload []byte) bool {
+	var cmd protocolv1.GetLazyStateCommandMessage
+	if err := s.codec.Unmarshal(payload, &cmd); err != nil {
+		s.log.Warn("invoker.wire: decode GetLazyStateCommandMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode get_lazy_state: %v", err))
+		return false
+	}
+	cmdIdx := s.allocIdx()
+	_ = s.allocIdx() // reserve result slot
+	entry := &enginev1.JournalEntry{
+		Index: cmdIdx,
+		Entry: &enginev1.JournalEntry_GetState{
+			GetState: &enginev1.JEGetState{
+				Key:                string(cmd.GetKey()),
+				ResultCompletionId: cmd.GetResultCompletionId(),
+			},
+		},
+	}
+	return s.proposeJournalOrFail(entry, "JEGetState")
+}
+
+// handleGetLazyStateKeys decodes a GetLazyStateKeysCommandMessage and
+// proposes JEGetStateKeys. Two-slot — the apply arm scans the StateTable
+// prefix for the invocation's (service, object_key) and appends
+// JEGetStateKeysResult at result_completion_id inline.
+func (s *wireSession) handleGetLazyStateKeys(payload []byte) bool {
+	var cmd protocolv1.GetLazyStateKeysCommandMessage
+	if err := s.codec.Unmarshal(payload, &cmd); err != nil {
+		s.log.Warn("invoker.wire: decode GetLazyStateKeysCommandMessage failed",
+			"id", invocationIDString(s.id), "err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: decode get_lazy_state_keys: %v", err))
+		return false
+	}
+	cmdIdx := s.allocIdx()
+	_ = s.allocIdx() // reserve result slot
+	entry := &enginev1.JournalEntry{
+		Index: cmdIdx,
+		Entry: &enginev1.JournalEntry_GetStateKeys{
+			GetStateKeys: &enginev1.JEGetStateKeys{
+				ResultCompletionId: cmd.GetResultCompletionId(),
+			},
+		},
+	}
+	return s.proposeJournalOrFail(entry, "JEGetStateKeys")
 }
 
 // handleSleep decodes a SleepCommandMessage and proposes JESleep at

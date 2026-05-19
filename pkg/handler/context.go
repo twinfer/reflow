@@ -89,7 +89,24 @@ type Context interface {
 	// GetState reads durable state for key, scoped to the invocation's
 	// owning virtual object. Present is false when key is unset; value
 	// is nil in that case.
+	//
+	// The engine eager-preloads the (service, object_key) snapshot onto
+	// StartMessage.state_map up to a 64 KiB cap; reads hit the local cache
+	// without a round-trip. When the snapshot overflowed the cap
+	// (StartMessage.partial_state=true) and the key isn't cached, GetState
+	// emits a journaled lazy fetch — 2 slots (JEGetState +
+	// JEGetStateResult) and suspends pending the engine's reply.
 	GetState(key string) (value []byte, present bool, err error)
+
+	// GetStateKeys returns the set of state keys present for the
+	// invocation's owning virtual object, in lexicographic order.
+	// Equivalent to enumerating the state snapshot eagerly preloaded onto
+	// StartMessage.state_map, but always journals a fetch (2 slots:
+	// JEGetStateKeys + JEGetStateKeysResult) so the answer is durable —
+	// concurrent writes between two GetStateKeys calls are observable.
+	//
+	// Slot cost: 2 slots.
+	GetStateKeys() ([]string, error)
 
 	// SetState writes durable state for key.
 	SetState(key string, value []byte) error

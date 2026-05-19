@@ -62,6 +62,11 @@ type wireSession struct {
 	// actually advertises for this (service, handler).
 	kind protocolv1.Kind
 
+	// eagerStateMaxBytes caps preloadEagerState; zero means
+	// "use DefaultEagerStateMaxBytes". Operator-tunable via
+	// Config.Handlers.EagerStateMaxBytes.
+	eagerStateMaxBytes uint32
+
 	// nextIdx is the next journal index the engine will assign to an
 	// inbound command frame. Slot 0 is reserved for JEInput (written by
 	// loadStartInput); state writes start at 1 and increment per
@@ -91,6 +96,7 @@ func newWireSession(
 	invocation tables.InvocationTable,
 	stateTable tables.StateTable,
 	journal *JournalReader,
+	eagerStateMaxBytes uint32,
 	log *slog.Logger,
 ) *wireSession {
 	ctx, cancel := context.WithCancel(parent)
@@ -98,22 +104,23 @@ func newWireSession(
 		codec = wire.DefaultCodec()
 	}
 	return &wireSession{
-		id:            id,
-		target:        target,
-		depID:         depID,
-		deployments:   deployments,
-		handlerLookup: handlerLookup,
-		dispatcher:    dispatcher,
-		codec:         codec,
-		proposer:      proposer,
-		invocation:    invocation,
-		stateTable:    stateTable,
-		journal:       journal,
-		log:           log,
-		ctx:           ctx,
-		cancel:        cancel,
-		done:          make(chan struct{}),
-		nextIdx:       1,
+		id:                 id,
+		target:             target,
+		depID:              depID,
+		deployments:        deployments,
+		handlerLookup:      handlerLookup,
+		dispatcher:         dispatcher,
+		codec:              codec,
+		proposer:           proposer,
+		invocation:         invocation,
+		stateTable:         stateTable,
+		journal:            journal,
+		log:                log,
+		ctx:                ctx,
+		cancel:             cancel,
+		done:               make(chan struct{}),
+		nextIdx:            1,
+		eagerStateMaxBytes: eagerStateMaxBytes,
 	}
 }
 
@@ -256,7 +263,7 @@ func (s *wireSession) sendStartAndReplay(stream handlerclient.Stream, entries []
 		MaxJournalEntries: limits.EffectiveMaxJournalEntries(s.rec),
 	}
 	start.Kind = s.kind
-	cache, overflowed := preloadEagerState(s.stateTable, s.target, s.id, s.log)
+	cache, overflowed := preloadEagerState(s.stateTable, s.target, s.id, s.eagerStateMaxBytes, s.log)
 	if len(cache) > 0 {
 		stateEntries := make([]*protocolv1.StartMessage_StateEntry, 0, len(cache))
 		for k, v := range cache {

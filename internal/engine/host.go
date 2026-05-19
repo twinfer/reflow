@@ -135,6 +135,15 @@ type HostConfig struct {
 	// node-identity keypair. nil disables signing (single-node and
 	// insecure-creds deployments).
 	HandlerSigner handlerclient.Signer
+
+	// EagerStateMaxBytes caps the eager-state snapshot the invoker ships
+	// in StartMessage.state_map. Larger object states fall back to lazy
+	// fetch (StartMessage.partial_state=true). Zero means "use
+	// invoker.DefaultEagerStateMaxBytes" (64 KiB). Operators tune via
+	// Config.Handlers.EagerStateMaxBytes when state-heavy handlers want
+	// fewer lazy round-trips, or when capping per-session memory matters
+	// more than read latency.
+	EagerStateMaxBytes uint32
 }
 
 // Peer is a static cluster member known at bootstrap. NodeHostID may be
@@ -608,14 +617,15 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 	// onBecomeLeader — their `done` channels are single-use so reusing
 	// the same instance across promotions would panic.
 	runner.invoker = invoker.New(invoker.Config{
-		JournalTable:    tables.JournalTable{S: snap.Store()},
-		InvocationTable: tables.InvocationTable{S: snap.Store()},
-		StateTable:      tables.StateTable{S: snap.Store()},
-		Proposer:        proposer,
-		Deployments:     invoker.DeploymentResolverFunc(h.resolveDeployment),
-		HandlerLookup:   h.LookupDeploymentIDByHandler,
-		WireDispatcher:  hostWireDispatcher{h: h},
-		Log:             h.log,
+		JournalTable:       tables.JournalTable{S: snap.Store()},
+		InvocationTable:    tables.InvocationTable{S: snap.Store()},
+		StateTable:         tables.StateTable{S: snap.Store()},
+		Proposer:           proposer,
+		Deployments:        invoker.DeploymentResolverFunc(h.resolveDeployment),
+		HandlerLookup:      h.LookupDeploymentIDByHandler,
+		WireDispatcher:     hostWireDispatcher{h: h},
+		EagerStateMaxBytes: h.cfg.EagerStateMaxBytes,
+		Log:                h.log,
 	})
 
 	leadership.SetCallbacks(runner.onBecomeLeader, runner.onStepDown)

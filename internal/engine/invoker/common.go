@@ -23,10 +23,12 @@ type Proposer interface {
 // context so a stuck Raft doesn't hang the handler indefinitely.
 const proposeTimeout = 5 * time.Second
 
-// eagerStateMaxBytes caps the total byte size of the eager-state
-// snapshot delivered with StartMessage. Larger object states fall back
-// to lazy fetch.
-const eagerStateMaxBytes = 64 * 1024
+// DefaultEagerStateMaxBytes is the default cap on the total byte size of
+// the eager-state snapshot delivered with StartMessage. Operators tune
+// this via Config.Handlers.EagerStateMaxBytes (zero on Invoker.Config
+// means "use this default"). Larger object states fall back to lazy
+// fetch.
+const DefaultEagerStateMaxBytes uint32 = 64 * 1024
 
 // errStatePreloadOverflow is the sentinel returned from ScanObject's
 // callback to short-circuit a too-large scan.
@@ -37,7 +39,7 @@ var errStatePreloadOverflow = errors.New("state preload overflow")
 //
 //   - (nil, false)   — unkeyed service (no per-object state).
 //   - (nil, false)   — scan failure mid-stream; logged.
-//   - (cache, false) — full snapshot fit under eagerStateMaxBytes.
+//   - (cache, false) — full snapshot fit under maxBytes.
 //   - (cache, true)  — overflow: cache holds the keys that fit before the
 //     limit tripped, in scan order. Wire callers set
 //     StartMessage.PartialState=true so the SDK lazy-fetches keys that
@@ -51,16 +53,20 @@ func preloadEagerState(
 	stateTable tables.StateTable,
 	target *enginev1.InvocationTarget,
 	id *enginev1.InvocationId,
+	maxBytes uint32,
 	log *slog.Logger,
 ) (cache map[string][]byte, overflowed bool) {
 	if target.GetObjectKey() == "" {
 		return nil, false
 	}
+	if maxBytes == 0 {
+		maxBytes = DefaultEagerStateMaxBytes
+	}
 	cache = make(map[string][]byte)
-	total := 0
+	total := uint32(0)
 	err := stateTable.ScanObject(target, func(key string, value []byte) error {
-		total += len(key) + len(value)
-		if total > eagerStateMaxBytes {
+		total += uint32(len(key) + len(value))
+		if total > maxBytes {
 			overflowed = true
 			return errStatePreloadOverflow
 		}
@@ -70,7 +76,7 @@ func preloadEagerState(
 	if overflowed {
 		log.Info("invoker: state preload overflow; partial snapshot retained, lazy fetch covers the rest",
 			"id", invocationIDString(id),
-			"limit_bytes", eagerStateMaxBytes,
+			"limit_bytes", maxBytes,
 			"preloaded_keys", len(cache),
 		)
 		return cache, true

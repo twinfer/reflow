@@ -39,6 +39,11 @@ type Config struct {
 
 	// Codec governs wire payload encoding (default protobuf).
 	Codec wire.Codec
+
+	// EagerStateMaxBytes caps the eager-state snapshot delivered with
+	// StartMessage. Zero means "use DefaultEagerStateMaxBytes" (64 KiB).
+	// Operators tune via Config.Handlers.EagerStateMaxBytes.
+	EagerStateMaxBytes uint32
 }
 
 // HandlerLookup resolves (service, handler) → deployment_id.
@@ -63,15 +68,16 @@ type sessionHandle interface {
 // single-threaded. The internal mutex protects against concurrent
 // abort/lookup operations.
 type Invoker struct {
-	journal         *JournalReader
-	invocationTable tables.InvocationTable
-	stateTable      tables.StateTable
-	proposer        Proposer
-	deployments     DeploymentResolver
-	handlerLookup   HandlerLookup
-	dispatcher      WireDispatcher
-	codec           wire.Codec
-	log             *slog.Logger
+	journal            *JournalReader
+	invocationTable    tables.InvocationTable
+	stateTable         tables.StateTable
+	proposer           Proposer
+	deployments        DeploymentResolver
+	handlerLookup      HandlerLookup
+	dispatcher         WireDispatcher
+	codec              wire.Codec
+	eagerStateMaxBytes uint32
+	log                *slog.Logger
 
 	mu       sync.Mutex
 	sessions map[string]sessionHandle
@@ -111,17 +117,18 @@ func New(cfg Config) *Invoker {
 		codec = wire.DefaultCodec()
 	}
 	return &Invoker{
-		journal:         NewJournalReader(cfg.JournalTable),
-		invocationTable: cfg.InvocationTable,
-		stateTable:      cfg.StateTable,
-		proposer:        cfg.Proposer,
-		deployments:     cfg.Deployments,
-		handlerLookup:   cfg.HandlerLookup,
-		dispatcher:      cfg.WireDispatcher,
-		codec:           codec,
-		log:             log,
-		sessions:        make(map[string]sessionHandle),
-		pendingRespawn:  make(map[string]*enginev1.InvocationTarget),
+		journal:            NewJournalReader(cfg.JournalTable),
+		invocationTable:    cfg.InvocationTable,
+		stateTable:         cfg.StateTable,
+		proposer:           cfg.Proposer,
+		deployments:        cfg.Deployments,
+		handlerLookup:      cfg.HandlerLookup,
+		dispatcher:         cfg.WireDispatcher,
+		codec:              codec,
+		eagerStateMaxBytes: cfg.EagerStateMaxBytes,
+		log:                log,
+		sessions:           make(map[string]sessionHandle),
+		pendingRespawn:     make(map[string]*enginev1.InvocationTarget),
 	}
 }
 
@@ -269,6 +276,7 @@ func (i *Invoker) installSessionLocked(id *enginev1.InvocationId, target *engine
 		i.invocationTable,
 		i.stateTable,
 		i.journal,
+		i.eagerStateMaxBytes,
 		i.log,
 	)
 	i.sessions[key] = s

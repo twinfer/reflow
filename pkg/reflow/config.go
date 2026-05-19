@@ -59,6 +59,16 @@ type HandlersConfig struct {
 	// and the resulting handlers are persisted via
 	// Command_RegisterDeployment.
 	Endpoints []HandlerEndpoint `koanf:"endpoints"`
+
+	// EagerStateMaxBytes caps the eager-state snapshot the engine ships
+	// in StartMessage.state_map. Zero means "use the engine default"
+	// (64 KiB). Raise it for state-heavy handlers that read many keys per
+	// invocation (every key that fits avoids a 2-slot lazy fetch); lower
+	// it to cap per-session wire + handler memory at the cost of more
+	// lazy round-trips. Snapshots that exceed the cap surface as
+	// StartMessage.partial_state=true and the SDK falls back to
+	// GetLazyState.
+	EagerStateMaxBytes uint32 `koanf:"eager_state_max_bytes"`
 }
 
 // HandlerEndpoint is one remote-handler URL the operator wants Run to

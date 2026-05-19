@@ -15,7 +15,7 @@ import (
 )
 
 // TestPreloadEagerState_OverflowKeepsPartialCache verifies that when
-// the scan trips eagerStateMaxBytes mid-way, the returned cache holds
+// the scan trips the configured cap mid-way, the returned cache holds
 // the rows that fit before the overflow rather than being discarded.
 // Pre-lazy-fetch the function returned (nil, true); the SDK had no
 // recourse so a single huge row poisoned the whole snapshot. With lazy
@@ -41,7 +41,7 @@ func TestPreloadEagerState_OverflowKeepsPartialCache(t *testing.T) {
 		t.Fatalf("batch commit: %v", err)
 	}
 
-	cache, overflowed := preloadEagerState(st, target, id, discardLogger())
+	cache, overflowed := preloadEagerState(st, target, id, DefaultEagerStateMaxBytes, discardLogger())
 	if !overflowed {
 		t.Fatalf("overflowed=false; want true (100 KiB across 4 rows > 64 KiB cap)")
 	}
@@ -87,7 +87,7 @@ func TestPreloadEagerState_NoOverflowFullSnapshot(t *testing.T) {
 		t.Fatalf("batch commit: %v", err)
 	}
 
-	cache, overflowed := preloadEagerState(st, target, id, discardLogger())
+	cache, overflowed := preloadEagerState(st, target, id, DefaultEagerStateMaxBytes, discardLogger())
 	if overflowed {
 		t.Errorf("overflowed=true; want false (3 tiny rows are well under the cap)")
 	}
@@ -106,6 +106,67 @@ func TestPreloadEagerState_NoOverflowFullSnapshot(t *testing.T) {
 	}
 }
 
+// TestPreloadEagerState_CustomCapHonored verifies the operator knob:
+// passing a non-zero maxBytes overrides DefaultEagerStateMaxBytes. Two
+// rows × 3 KiB total 6 KiB and fit comfortably under 64 KiB, but blow
+// a 4 KiB cap; the first row fits, the second trips overflow.
+func TestPreloadEagerState_CustomCapHonored(t *testing.T) {
+	store := storage.NewMemStore()
+	st := tables.StateTable{S: store}
+	target := &enginev1.InvocationTarget{ServiceName: "Svc", ObjectKey: "obj-cap"}
+	id := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("0123456789ABCDEF")}
+
+	row := strings.Repeat("y", 3*1024)
+	batch := store.NewBatch()
+	for _, k := range []string{"a", "b"} {
+		if err := st.Set(batch, target, k, []byte(row)); err != nil {
+			t.Fatalf("Set(%s): %v", k, err)
+		}
+	}
+	if err := batch.Commit(false); err != nil {
+		t.Fatalf("batch commit: %v", err)
+	}
+
+	cache, overflowed := preloadEagerState(st, target, id, 4*1024, discardLogger())
+	if !overflowed {
+		t.Fatalf("overflowed=false with 4 KiB cap on 6 KiB total; want true")
+	}
+	if len(cache) != 1 {
+		t.Errorf("cache size = %d; want 1 (first row fits at 3 KiB; second trips the cap)", len(cache))
+	}
+}
+
+// TestPreloadEagerState_ZeroCapUsesDefault verifies that maxBytes=0 falls
+// back to DefaultEagerStateMaxBytes — the contract the HostConfig/Invoker
+// plumbing relies on so operators don't have to repeat the default
+// everywhere.
+func TestPreloadEagerState_ZeroCapUsesDefault(t *testing.T) {
+	store := storage.NewMemStore()
+	st := tables.StateTable{S: store}
+	target := &enginev1.InvocationTarget{ServiceName: "Svc", ObjectKey: "obj-default"}
+	id := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("0123456789ABCDEF")}
+
+	// 4 × 25 KiB = 100 KiB. Default cap is 64 KiB → overflow.
+	big := strings.Repeat("x", 25*1024)
+	batch := store.NewBatch()
+	for i := range 4 {
+		if err := st.Set(batch, target, fmt.Sprintf("k%d", i), []byte(big)); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+	if err := batch.Commit(false); err != nil {
+		t.Fatalf("batch commit: %v", err)
+	}
+
+	cache, overflowed := preloadEagerState(st, target, id, 0, discardLogger())
+	if !overflowed {
+		t.Fatalf("overflowed=false with default cap; want true (100 KiB > 64 KiB default)")
+	}
+	if len(cache) >= 4 {
+		t.Errorf("cache size = %d; want fewer than 4 (default cap should have tripped)", len(cache))
+	}
+}
+
 // TestPreloadEagerState_UnkeyedReturnsNil covers the unkeyed-service
 // fast path: no object key means no per-object state, so the function
 // returns (nil, false) without scanning.
@@ -115,7 +176,7 @@ func TestPreloadEagerState_UnkeyedReturnsNil(t *testing.T) {
 	target := &enginev1.InvocationTarget{ServiceName: "Svc"} // ObjectKey empty
 	id := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("0123456789ABCDEF")}
 
-	cache, overflowed := preloadEagerState(st, target, id, discardLogger())
+	cache, overflowed := preloadEagerState(st, target, id, DefaultEagerStateMaxBytes, discardLogger())
 	if cache != nil {
 		t.Errorf("cache = %v; want nil for unkeyed service", cache)
 	}

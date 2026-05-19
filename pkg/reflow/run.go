@@ -112,6 +112,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		NumPartitionShards: numShards,
 		Metrics:            metrics,
 		HandlerSigner:      handlerSigner,
+		EagerStateMaxBytes: cfg.Handlers.EagerStateMaxBytes,
 		OnSnapshotPersisted: func(shardID uint64) {
 			ch, ok := snapshotTriggers[shardID]
 			if !ok {

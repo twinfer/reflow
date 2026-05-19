@@ -63,8 +63,8 @@ import (
 //   - any allocSlot drift between fresh / replay (cursor desync).
 func TestWireContext_ReplayDeterminism(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		initState := drawInitState(rt)
-		script := drawScript(rt)
+		initState := initStateGen.Draw(rt, "init_state")
+		script := eagerScriptGen.Draw(rt, "script")
 
 		freshCtx, freshSink := newReplayPBTWireContext(t, initState, nil)
 		freshResults := runScript(rt, freshCtx, script, "fresh")
@@ -98,7 +98,14 @@ func TestWireContext_ReplayDeterminism(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------
-// Script generators
+// Generators
+//
+// Generators are package-level values so the multi-slot PBT can reuse
+// the state-surface step gens (setStepGen / clearStepGen / ... ) inside
+// its own OneOf without redefining them. Labels passed to Draw inside
+// a Custom generator are namespaced to that generator, so the
+// fmt.Sprintf("foo_%d", i) per-step labels go away — rapid handles
+// disambiguation in its draw tree.
 // ----------------------------------------------------------------------
 
 // keyPool is intentionally small so rapid hits write / clear / read
@@ -114,57 +121,28 @@ var replayPBTValuePool = [][]byte{
 	[]byte("v1"),
 }
 
-func drawInitState(rt *rapid.T) map[string][]byte {
-	n := rapid.IntRange(0, len(replayPBTKeyPool)).Draw(rt, "init_size")
-	if n == 0 {
-		return nil
-	}
-	out := make(map[string][]byte, n)
-	// Use a random subset of the key pool without replacement.
-	keys := append([]string(nil), replayPBTKeyPool...)
-	rapid.Permutation(keys).Draw(rt, "init_perm")
-	for i := range n {
-		v := rapid.SampledFrom(replayPBTValuePool).Draw(rt, fmt.Sprintf("init_val_%d", i))
-		out[keys[i]] = append([]byte(nil), v...)
-	}
-	return out
-}
+var (
+	keyGen       = rapid.SampledFrom(replayPBTKeyPool)
+	valueGen     = rapid.SampledFrom(replayPBTValuePool)
+	initStateGen = rapid.MapOfN(keyGen, valueGen, 0, len(replayPBTKeyPool))
 
-func drawScript(rt *rapid.T) []scriptStep {
-	n := rapid.IntRange(0, 16).Draw(rt, "script_len")
-	if n == 0 {
-		return nil
-	}
-	out := make([]scriptStep, n)
-	for i := range out {
-		out[i] = drawStep(rt, i)
-	}
-	return out
-}
+	setStepGen = rapid.Custom(func(t *rapid.T) scriptStep {
+		return stepSet{key: keyGen.Draw(t, "key"), value: valueGen.Draw(t, "value")}
+	})
+	clearStepGen = rapid.Custom(func(t *rapid.T) scriptStep {
+		return stepClear{key: keyGen.Draw(t, "key")}
+	})
+	clearAllStepGen = rapid.Just[scriptStep](stepClearAll{})
+	getStepGen      = rapid.Custom(func(t *rapid.T) scriptStep {
+		return stepGet{key: keyGen.Draw(t, "key")}
+	})
+	getKeysStepGen = rapid.Just[scriptStep](stepGetKeys{})
 
-func drawStep(rt *rapid.T, i int) scriptStep {
-	kind := rapid.IntRange(0, 4).Draw(rt, fmt.Sprintf("step_kind_%d", i))
-	switch kind {
-	case 0:
-		return stepSet{
-			key:   rapid.SampledFrom(replayPBTKeyPool).Draw(rt, fmt.Sprintf("set_key_%d", i)),
-			value: rapid.SampledFrom(replayPBTValuePool).Draw(rt, fmt.Sprintf("set_val_%d", i)),
-		}
-	case 1:
-		return stepClear{
-			key: rapid.SampledFrom(replayPBTKeyPool).Draw(rt, fmt.Sprintf("clear_key_%d", i)),
-		}
-	case 2:
-		return stepClearAll{}
-	case 3:
-		return stepGet{
-			key: rapid.SampledFrom(replayPBTKeyPool).Draw(rt, fmt.Sprintf("get_key_%d", i)),
-		}
-	case 4:
-		return stepGetKeys{}
-	}
-	panic("unreachable")
-}
+	eagerStepGen = rapid.OneOf(
+		setStepGen, clearStepGen, clearAllStepGen, getStepGen, getKeysStepGen,
+	)
+	eagerScriptGen = rapid.SliceOfN(eagerStepGen, 0, 16)
+)
 
 // ----------------------------------------------------------------------
 // Script step types

@@ -58,8 +58,8 @@ import (
 // Each deserves a focused PBT rather than being bundled here.
 func TestWireContext_ReplayDeterminism_MultiSlot(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		initState := drawInitState(rt)
-		script := drawMultiSlotScript(rt)
+		initState := initStateGen.Draw(rt, "init_state")
+		script := multiSlotScriptGen.Draw(rt, "script")
 
 		engine := newSyntheticEngine(initState, wire.DefaultCodec())
 		// The engine and the SDK MUST share the same replay map by
@@ -101,68 +101,48 @@ func TestWireContext_ReplayDeterminism_MultiSlot(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------
-// Script generator (multi-slot variant)
+// Generators (multi-slot extension)
+//
+// Reuses the state-surface step gens from the Phase 1 file
+// (setStepGen / clearStepGen / clearAllStepGen / getStepGen /
+// getKeysStepGen) and adds the multi-slot ops on top via rapid.OneOf.
 // ----------------------------------------------------------------------
 
-func drawMultiSlotScript(rt *rapid.T) []scriptStep {
-	n := rapid.IntRange(0, 16).Draw(rt, "ms_script_len")
-	if n == 0 {
-		return nil
-	}
-	out := make([]scriptStep, n)
-	for i := range out {
-		out[i] = drawMultiSlotStep(rt, i)
-	}
-	return out
-}
-
-func drawMultiSlotStep(rt *rapid.T, i int) scriptStep {
-	// State-surface step kinds (0-4) reuse Phase 1's step types — their
-	// apply method on *wireContext works identically; the difference is
-	// only in which path inside wireContext fires under partialState=true.
-	// Multi-slot kinds (5-8) cover Sleep, Call, OneWayCall, Awakeable,
-	// SendSignal.
-	kind := rapid.IntRange(0, 9).Draw(rt, fmt.Sprintf("ms_step_kind_%d", i))
-	switch kind {
-	case 0:
-		return stepSet{
-			key:   rapid.SampledFrom(replayPBTKeyPool).Draw(rt, fmt.Sprintf("ms_set_key_%d", i)),
-			value: rapid.SampledFrom(replayPBTValuePool).Draw(rt, fmt.Sprintf("ms_set_val_%d", i)),
-		}
-	case 1:
-		return stepClear{
-			key: rapid.SampledFrom(replayPBTKeyPool).Draw(rt, fmt.Sprintf("ms_clear_key_%d", i)),
-		}
-	case 2:
-		return stepClearAll{}
-	case 3:
-		return stepGet{
-			key: rapid.SampledFrom(replayPBTKeyPool).Draw(rt, fmt.Sprintf("ms_get_key_%d", i)),
-		}
-	case 4:
-		return stepGetKeys{}
-	case 5:
-		return stepSleep{
-			durMs: uint64(rapid.IntRange(1, 1000).Draw(rt, fmt.Sprintf("ms_sleep_dur_%d", i))),
-		}
-	case 6:
-		return stepCall{
-			input: []byte(rapid.SampledFrom([]string{"a", "bb", "ccc"}).Draw(rt, fmt.Sprintf("ms_call_input_%d", i))),
-		}
-	case 7:
-		return stepOneWayCall{
-			input: []byte(rapid.SampledFrom([]string{"ow0", "ow1"}).Draw(rt, fmt.Sprintf("ms_owcall_input_%d", i))),
-		}
-	case 8:
-		return stepAwakeable{}
-	case 9:
+var (
+	sleepStepGen = rapid.Custom(func(t *rapid.T) scriptStep {
+		return stepSleep{durMs: uint64(rapid.IntRange(1, 1000).Draw(t, "dur_ms"))}
+	})
+	callInputGen = rapid.Map(rapid.SampledFrom([]string{"a", "bb", "ccc"}),
+		func(s string) []byte { return []byte(s) })
+	callStepGen = rapid.Custom(func(t *rapid.T) scriptStep {
+		return stepCall{input: callInputGen.Draw(t, "input")}
+	})
+	oneWayCallInputGen = rapid.Map(rapid.SampledFrom([]string{"ow0", "ow1"}),
+		func(s string) []byte { return []byte(s) })
+	oneWayCallStepGen = rapid.Custom(func(t *rapid.T) scriptStep {
+		return stepOneWayCall{input: oneWayCallInputGen.Draw(t, "input")}
+	})
+	awakeableStepGen = rapid.Just[scriptStep](stepAwakeable{})
+	signalNameGen    = rapid.SampledFrom([]string{"sig_a", "sig_b"})
+	signalPayloadGen = rapid.Map(rapid.SampledFrom([]string{"", "p0", "p1"}),
+		func(s string) []byte { return []byte(s) })
+	sendSignalStepGen = rapid.Custom(func(t *rapid.T) scriptStep {
 		return stepSendSignal{
-			name:    rapid.SampledFrom([]string{"sig_a", "sig_b"}).Draw(rt, fmt.Sprintf("ms_signal_name_%d", i)),
-			payload: []byte(rapid.SampledFrom([]string{"", "p0", "p1"}).Draw(rt, fmt.Sprintf("ms_signal_payload_%d", i))),
+			name:    signalNameGen.Draw(t, "name"),
+			payload: signalPayloadGen.Draw(t, "payload"),
 		}
-	}
-	panic("unreachable")
-}
+	})
+
+	multiSlotStepGen = rapid.OneOf(
+		// State-surface (reused from Phase 1; lazy paths exercised
+		// because the multi-slot test runs with partialState=true).
+		setStepGen, clearStepGen, clearAllStepGen, getStepGen, getKeysStepGen,
+		// Multi-slot + fire-and-forget added in Phase 2B and the
+		// Call/OneWayCall/Awakeable/SendSignal extension.
+		sleepStepGen, callStepGen, oneWayCallStepGen, awakeableStepGen, sendSignalStepGen,
+	)
+	multiSlotScriptGen = rapid.SliceOfN(multiSlotStepGen, 0, 16)
+)
 
 type stepSleep struct{ durMs uint64 }
 

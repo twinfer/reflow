@@ -7,10 +7,14 @@ import (
 	"testing"
 
 	"github.com/lni/dragonboat/v4/statemachine"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/tables"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -690,6 +694,90 @@ func TestPartition_SleepInsertsTimerAndSurvives(t *testing.T) {
 // not just on later Purge. The reap fires on transition from Invoked/
 // Suspended → Completed; the idempotent Completed → Completed replay
 // path is naturally skipped because completedTarget is nil on that arm.
+func TestPartition_CompletedOutcomeMetricClassifies(t *testing.T) {
+	// Drive three distinct terminal flows through a fresh partition and
+	// assert the InvocationsCompleted counter classifies each as
+	// success / failure / cancelled.
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "p", "state")
+	snap, err := NewSnapshotter(dir, func(path string) (storage.Store, error) {
+		return storage.OpenPebble(path, nil)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lead := &stubLeadership{}
+	lead.leader.Store(true)
+	col := &ActionCollector{}
+	reg := prometheus.NewRegistry()
+	metrics := observability.NewMetrics(reg)
+	p := NewPartition(1, 1, PartitionConfig{
+		Snapshotter: snap,
+		Leadership:  lead,
+		Collector:   col,
+		Metrics:     metrics,
+	})
+	t.Cleanup(func() { _ = p.Close() })
+
+	mustApply := func(idx uint64, cmd *enginev1.Command) {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Three invocations on the same unkeyed service, three distinct
+	// terminal outcomes.
+	for i, sub := range []struct {
+		uuid     string
+		complete *enginev1.InvocationCompleted
+		outcome  string
+	}{
+		{
+			uuid:     "aaaaaaaaaaaaaaaa",
+			complete: &enginev1.InvocationCompleted{Output: []byte("ok")},
+			outcome:  "success",
+		},
+		{
+			uuid:     "bbbbbbbbbbbbbbbb",
+			complete: &enginev1.InvocationCompleted{FailureMessage: "boom"},
+			outcome:  "failure",
+		},
+		{
+			uuid:     "cccccccccccccccc",
+			complete: &enginev1.InvocationCompleted{FailureCode: wire.CancelledCode, FailureMessage: "invocation cancelled"},
+			outcome:  "cancelled",
+		},
+	} {
+		id := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte(sub.uuid)}
+		target := &enginev1.InvocationTarget{ServiceName: "Svc"}
+		base := uint64(i*10) + 1
+		mustApply(base, &enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
+			InvocationId: id, Target: target,
+		}}})
+		mustApply(base+1, &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+			InvocationId: id,
+			Kind:         &enginev1.InvokerEffect_Completed{Completed: sub.complete},
+		}}})
+		_ = sub.outcome // outcome assertion below
+	}
+
+	for _, want := range []struct {
+		outcome string
+		count   float64
+	}{
+		{outcome: "success", count: 1},
+		{outcome: "failure", count: 1},
+		{outcome: "cancelled", count: 1},
+	} {
+		got := testutil.ToFloat64(metrics.InvocationsCompleted.WithLabelValues("Svc", want.outcome))
+		if got != want.count {
+			t.Errorf("InvocationsCompleted{service=Svc,outcome=%s} = %v; want %v",
+				want.outcome, got, want.count)
+		}
+	}
+}
+
 func TestPartition_CompleteReapsPendingTimers(t *testing.T) {
 	p, _, col := newTestPartition(t)
 

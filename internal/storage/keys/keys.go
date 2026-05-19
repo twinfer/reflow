@@ -21,7 +21,8 @@
 //	signal_awaiter/<24-byte inv_id>/<name>       -> SignalAwaiter
 //	workflow_run/<service>/<workflow_key>        -> InvocationId
 //	promise/<service>/<workflow_key>/<name>      -> PromiseValue
-//	promise_awaiter/<service>/<workflow_key>/<name> -> PromiseAwaiter
+//	promise_awaiter/<service>/<workflow_key>/<name>/<4-byte BE entry_index> -> PromiseAwaiter
+//	workflow_reap/<8-byte BE fire_at_ms>/<service>/<workflow_key> -> empty
 //
 // All multi-byte integers in keys are big-endian so lexicographic byte order
 // equals numeric order. Invocation IDs are encoded as a fixed 24-byte raw
@@ -70,6 +71,7 @@ const (
 	workflowRunPrefix    = "workflow_run/"
 	promisePrefix        = "promise/"
 	promiseAwaiterPrefix = "promise_awaiter/"
+	workflowReapPrefix   = "workflow_reap/"
 )
 
 // ErrInvalidInvocationID is returned when an InvocationId has a uuid field of
@@ -497,15 +499,38 @@ func PromisePrefixForWorkflow(service, workflowKey string) []byte {
 	return append(out, '/')
 }
 
-// PromiseAwaiterKey returns promise_awaiter/<service>/<workflow_key>/<name>.
-func PromiseAwaiterKey(service, workflowKey, name string) []byte {
-	out := make([]byte, 0, len(promiseAwaiterPrefix)+len(service)+1+len(workflowKey)+1+len(name))
+// PromiseAwaiterKey returns
+// promise_awaiter/<service>/<workflow_key>/<name>/<4-byte BE entry_index>.
+// The entry_index suffix lets multiple co-pending Promise(name).Result()
+// calls from distinct invocations each get their own row; resolution
+// prefix-scans (service, key, name) and stitches every awaiter in the same
+// batch.
+func PromiseAwaiterKey(service, workflowKey, name string, entryIndex uint32) []byte {
+	out := make([]byte, 0, len(promiseAwaiterPrefix)+len(service)+1+len(workflowKey)+1+len(name)+1+4)
 	out = append(out, promiseAwaiterPrefix...)
 	out = append(out, service...)
 	out = append(out, '/')
 	out = append(out, workflowKey...)
 	out = append(out, '/')
-	return append(out, name...)
+	out = append(out, name...)
+	out = append(out, '/')
+	var idxBuf [4]byte
+	binary.BigEndian.PutUint32(idxBuf[:], entryIndex)
+	return append(out, idxBuf[:]...)
+}
+
+// PromiseAwaiterPrefixForName returns
+// promise_awaiter/<service>/<workflow_key>/<name>/, suitable as the
+// LowerBound for a per-name scan of every awaiter slot.
+func PromiseAwaiterPrefixForName(service, workflowKey, name string) []byte {
+	out := make([]byte, 0, len(promiseAwaiterPrefix)+len(service)+1+len(workflowKey)+1+len(name)+1)
+	out = append(out, promiseAwaiterPrefix...)
+	out = append(out, service...)
+	out = append(out, '/')
+	out = append(out, workflowKey...)
+	out = append(out, '/')
+	out = append(out, name...)
+	return append(out, '/')
 }
 
 // PromiseAwaiterPrefixForWorkflow returns promise_awaiter/<service>/<workflow_key>/.
@@ -516,6 +541,48 @@ func PromiseAwaiterPrefixForWorkflow(service, workflowKey string) []byte {
 	out = append(out, '/')
 	out = append(out, workflowKey...)
 	return append(out, '/')
+}
+
+// WorkflowReapKey returns
+// workflow_reap/<8-byte BE fire_at_ms>/<service>/<workflow_key>. The
+// fire_at_ms prefix gives lexicographic ordering matching numeric order
+// so the leader's reap service drains in due-order (same shape as
+// timer/<fire_at_ms>/...).
+func WorkflowReapKey(fireAtMs uint64, service, workflowKey string) []byte {
+	out := make([]byte, 0, len(workflowReapPrefix)+8+len(service)+1+len(workflowKey))
+	out = append(out, workflowReapPrefix...)
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], fireAtMs)
+	out = append(out, buf[:]...)
+	out = append(out, service...)
+	out = append(out, '/')
+	return append(out, workflowKey...)
+}
+
+// WorkflowReapPrefix returns the workflow_reap/ namespace prefix.
+func WorkflowReapPrefix() []byte { return []byte(workflowReapPrefix) }
+
+// DecodeWorkflowReapKey extracts (fireAtMs, service, workflow_key) from
+// a workflow_reap key. Returns an error if the key shape doesn't match.
+func DecodeWorkflowReapKey(key []byte) (uint64, string, string, error) {
+	minLen := len(workflowReapPrefix) + 8 + 1 // at minimum: prefix + fire + '/'
+	if len(key) < minLen {
+		return 0, "", "", fmt.Errorf("workflow_reap key too short: len=%d", len(key))
+	}
+	body := key[len(workflowReapPrefix):]
+	fireAt := binary.BigEndian.Uint64(body[:8])
+	rest := body[8:]
+	sep := -1
+	for i, c := range rest {
+		if c == '/' {
+			sep = i
+			break
+		}
+	}
+	if sep < 0 {
+		return 0, "", "", fmt.Errorf("workflow_reap key missing service/key separator")
+	}
+	return fireAt, string(rest[:sep]), string(rest[sep+1:]), nil
 }
 
 // PrefixUpperBound returns the smallest key strictly greater than every key

@@ -128,9 +128,12 @@ type modelPromise struct {
 	failureMessage string
 }
 
-// modelPromiseAwaiter mirrors the SUT PromiseAwaiter row: which invocation
+// modelPromiseAwaiter mirrors one SUT PromiseAwaiter row: which invocation
 // is blocked on this promise, and at what journal slot it logged its
-// JEGetPromise (the result lands at entryIndex+1).
+// JEGetPromise (the result lands at entryIndex+1). The SUT keys rows by
+// (svc, workflow_key, name, entry_index), so multiple co-pending awaits
+// for the same (svc, key, name) coexist — the model mirrors that with a
+// slice per promiseKey.
 type modelPromiseAwaiter struct {
 	ownerIDHex string
 	entryIndex uint32

@@ -33,6 +33,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"sync/atomic"
 	"testing"
 
@@ -141,13 +142,13 @@ type engineMachine struct {
 	prevOutboxSeq [numShards]uint64
 
 	// Model (global across shards; classified by id.PartitionKey).
-	invs            map[string]*modelInv                // hex(uuid) -> inv
-	idemPool        map[idemKey]string                  // (svc,handler,objKey,key) -> winning idHex
-	awks            map[string]string                   // registered awakeable_id -> owner idHex
-	leases          map[leaseKey]*modelLease            // (service,object_key) -> lease state
-	workflowRuns    map[leaseKey]string                 // (service,workflow_key) -> winning idHex
-	promises        map[promiseKey]*modelPromise        // (svc,key,name) -> promise value
-	promiseAwaiters map[promiseKey]*modelPromiseAwaiter // (svc,key,name) -> pending awaiter
+	invs            map[string]*modelInv                  // hex(uuid) -> inv
+	idemPool        map[idemKey]string                    // (svc,handler,objKey,key) -> winning idHex
+	awks            map[string]string                     // registered awakeable_id -> owner idHex
+	leases          map[leaseKey]*modelLease              // (service,object_key) -> lease state
+	workflowRuns    map[leaseKey]string                   // (service,workflow_key) -> winning idHex
+	promises        map[promiseKey]*modelPromise          // (svc,key,name) -> promise value
+	promiseAwaiters map[promiseKey][]*modelPromiseAwaiter // (svc,key,name) -> pending awaiters by entry_index
 
 	// Generator pools (drawn once at init).
 	specPool    []invSpec     // paired (id, target, kind) — partition_key consistent with target
@@ -194,7 +195,7 @@ func (m *engineMachine) init(t *rapid.T) {
 	m.leases = map[leaseKey]*modelLease{}
 	m.workflowRuns = map[leaseKey]string{}
 	m.promises = map[promiseKey]*modelPromise{}
-	m.promiseAwaiters = map[promiseKey]*modelPromiseAwaiter{}
+	m.promiseAwaiters = map[promiseKey][]*modelPromiseAwaiter{}
 	m.pendingTimers = map[timerKey]pendingTimer{}
 	m.pendingOutbox = nil
 	m.tgtPool = []modelTarget{
@@ -718,6 +719,8 @@ func (m *engineMachine) PromiseGet(t *rapid.T) {
 							GetPromise: &enginev1.JEGetPromise{
 								Name:               name,
 								ResultCompletionId: resultIdx,
+								Service:            spec.tgt.service,
+								WorkflowKey:        spec.tgt.objectKey,
 							},
 						},
 					},
@@ -733,10 +736,10 @@ func (m *engineMachine) PromiseGet(t *rapid.T) {
 		cur.journalLen += 2
 	} else {
 		cur.journalLen += 1
-		m.promiseAwaiters[pk] = &modelPromiseAwaiter{
+		m.promiseAwaiters[pk] = append(m.promiseAwaiters[pk], &modelPromiseAwaiter{
 			ownerIDHex: idHex(spec.id),
 			entryIndex: idx,
-		}
+		})
 	}
 }
 
@@ -775,6 +778,8 @@ func (m *engineMachine) PromiseComplete(t *rapid.T) {
 								Name:               name,
 								Value:              value,
 								ResultCompletionId: resultIdx,
+								Service:            spec.tgt.service,
+								WorkflowKey:        spec.tgt.objectKey,
 							},
 						},
 					},
@@ -793,12 +798,16 @@ func (m *engineMachine) PromiseComplete(t *rapid.T) {
 	pv := m.promises[pk]
 	if pv == nil || pv.state == promisePending {
 		m.promises[pk] = &modelPromise{state: promiseResolved, value: value}
-		if awaiter, ok := m.promiseAwaiters[pk]; ok {
+		// Stitch every co-pending awaiter: each owner's journal grows by
+		// one (the JEPromiseResult at entry_index+1). FSM stays put — the
+		// resolver path wakes owners via ActInvoke + pendingRespawn, not
+		// transitionOnPromiseResolved.
+		for _, awaiter := range m.promiseAwaiters[pk] {
 			if owner := m.invs[awaiter.ownerIDHex]; owner != nil {
 				owner.journalLen++
 			}
-			delete(m.promiseAwaiters, pk)
 		}
+		delete(m.promiseAwaiters, pk)
 	}
 }
 
@@ -826,7 +835,7 @@ func (m *engineMachine) PromisePeek(t *rapid.T) {
 					Entry: &enginev1.JournalEntry{
 						Index: idx,
 						Entry: &enginev1.JournalEntry_PeekPromise{
-							PeekPromise: &enginev1.JEPeekPromise{Name: name},
+							PeekPromise: &enginev1.JEPeekPromise{Name: name, Service: spec.tgt.service, WorkflowKey: spec.tgt.objectKey},
 						},
 					},
 				},
@@ -881,11 +890,11 @@ func (m *engineMachine) PromiseCompletedExternal(t *rapid.T) {
 		return // ingress is a silent no-op on conflict
 	}
 	m.promises[pk] = &modelPromise{state: promiseResolved, value: value}
-	awaiter, ok := m.promiseAwaiters[pk]
-	if !ok {
-		return
-	}
-	if owner := m.invs[awaiter.ownerIDHex]; owner != nil {
+	for _, awaiter := range m.promiseAwaiters[pk] {
+		owner := m.invs[awaiter.ownerIDHex]
+		if owner == nil {
+			continue
+		}
 		owner.journalLen++
 		if owner.status == mSuspended {
 			owner.status = mInvoked
@@ -922,6 +931,72 @@ func (m *engineMachine) TimerFired(t *rapid.T) {
 	})
 	if cur.status == mSuspended {
 		cur.status = mInvoked
+	}
+}
+
+// ReapWorkflow synthesises Command.ReapWorkflow against the workflow's
+// owning shard, simulating the WorkflowReapService firing. Only fires
+// for a Completed KIND_WORKFLOW run — model + SUT both no-op
+// otherwise. On success the model wipes the workflow's promise +
+// awaiter rows and resets the run invocation to Free.
+func (m *engineMachine) ReapWorkflow(t *rapid.T) {
+	// Collect candidates: workflow_run entries whose owning invocation
+	// is currently Completed in the model.
+	type cand struct {
+		wfk    leaseKey
+		idHexs string
+	}
+	var candidates []cand
+	for wfk, idH := range m.workflowRuns {
+		inv := m.invs[idH]
+		if inv == nil || inv.status != mCompleted {
+			continue
+		}
+		candidates = append(candidates, cand{wfk: wfk, idHexs: idH})
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	// Deterministic selection by sorted workflow key + service so the
+	// shrinker can reproduce traces.
+	sortedCands := make([]cand, len(candidates))
+	copy(sortedCands, candidates)
+	sort.Slice(sortedCands, func(i, j int) bool {
+		if sortedCands[i].wfk.service != sortedCands[j].wfk.service {
+			return sortedCands[i].wfk.service < sortedCands[j].wfk.service
+		}
+		return sortedCands[i].wfk.objectKey < sortedCands[j].wfk.objectKey
+	})
+	pick := rapid.SampledFrom(sortedCands).Draw(t, "reap_candidate")
+
+	shard := m.partitioner.ShardForTarget(&enginev1.InvocationTarget{
+		ServiceName: pick.wfk.service,
+		ObjectKey:   pick.wfk.objectKey,
+	})
+	m.apply(t, shard, &enginev1.Command{
+		Kind: &enginev1.Command_ReapWorkflow{ReapWorkflow: &enginev1.ReapWorkflow{
+			Service:     pick.wfk.service,
+			WorkflowKey: pick.wfk.objectKey,
+			FireAtMs:    0, // synthetic — no matching reap row needed
+		}},
+	})
+
+	// Mirror the apply arm in the model.
+	delete(m.workflowRuns, pick.wfk)
+	for pk := range m.promises {
+		if pk.service == pick.wfk.service && pk.workflowKey == pick.wfk.objectKey {
+			delete(m.promises, pk)
+		}
+	}
+	for pk := range m.promiseAwaiters {
+		if pk.service == pick.wfk.service && pk.workflowKey == pick.wfk.objectKey {
+			delete(m.promiseAwaiters, pk)
+		}
+	}
+	if inv := m.invs[pick.idHexs]; inv != nil {
+		inv.status = mFree
+		inv.journalLen = 0
+		inv.output = nil
 	}
 }
 
@@ -1350,28 +1425,40 @@ func (m *engineMachine) Check(t *rapid.T) {
 		}
 	}
 
-	// PromiseAwaiterTable ↔ model parity. An awaiter row must match the
-	// model's recorded owner and entry_index — the latter is what stitches
-	// the result into the right journal slot on resolution.
+	// PromiseAwaiterTable ↔ model parity. Each (svc, key, name) may have
+	// multiple awaiter rows (one per concurrent Promise(name).Result()),
+	// keyed by entry_index. Scan the SUT and assert the bag of (owner,
+	// entry_index) pairs matches the model's slice.
 	for pk, want := range m.promiseAwaiters {
 		shard := m.partitioner.ShardForTarget(&enginev1.InvocationTarget{
 			ServiceName: pk.service, ObjectKey: pk.workflowKey,
 		})
-		got, err := (tables.PromiseAwaiterTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(pk.service, pk.workflowKey, pk.name)
-		if err != nil {
-			t.Fatalf("PromiseAwaiterTable.Get shard=%d %+v: %v", shard, pk, err)
+		var got []*enginev1.PromiseAwaiter
+		if err := (tables.PromiseAwaiterTable{S: m.snaps[m.sIdx(shard)].Store()}).ScanForName(pk.service, pk.workflowKey, pk.name, func(a *enginev1.PromiseAwaiter) error {
+			got = append(got, proto.Clone(a).(*enginev1.PromiseAwaiter))
+			return nil
+		}); err != nil {
+			t.Fatalf("PromiseAwaiterTable.ScanForName shard=%d %+v: %v", shard, pk, err)
 		}
-		if got == nil {
-			t.Fatalf("promise_awaiter %+v shard=%d: SUT absent, model owner=%s entry=%d",
-				pk, shard, want.ownerIDHex, want.entryIndex)
+		if len(got) != len(want) {
+			t.Fatalf("promise_awaiter %+v shard=%d: SUT has %d rows, model has %d",
+				pk, shard, len(got), len(want))
 		}
-		if idHex(got.GetOwner()) != want.ownerIDHex {
-			t.Fatalf("promise_awaiter %+v shard=%d: SUT owner=%s, model owner=%s",
-				pk, shard, idHex(got.GetOwner()), want.ownerIDHex)
+		// Build SUT bag keyed by entry_index for unordered comparison.
+		sutByIdx := map[uint32]*enginev1.PromiseAwaiter{}
+		for _, a := range got {
+			sutByIdx[a.GetEntryIndex()] = a
 		}
-		if got.GetEntryIndex() != want.entryIndex {
-			t.Fatalf("promise_awaiter %+v shard=%d: SUT entry_index=%d, model entry_index=%d",
-				pk, shard, got.GetEntryIndex(), want.entryIndex)
+		for _, w := range want {
+			a, ok := sutByIdx[w.entryIndex]
+			if !ok {
+				t.Fatalf("promise_awaiter %+v shard=%d: model entry_index=%d absent in SUT",
+					pk, shard, w.entryIndex)
+			}
+			if idHex(a.GetOwner()) != w.ownerIDHex {
+				t.Fatalf("promise_awaiter %+v shard=%d entry_index=%d: SUT owner=%s, model owner=%s",
+					pk, shard, w.entryIndex, idHex(a.GetOwner()), w.ownerIDHex)
+			}
 		}
 	}
 }

@@ -145,6 +145,8 @@ type Context interface {
 	// SendSignal is fire-and-forget: the returned error reports local
 	// failures (suspended, unkeyed target, step-budget exhausted) only.
 	// It does not block on delivery confirmation.
+	//
+	// Slot cost: 1 slot (JESignal).
 	SendSignal(target Target, signalName string, payload []byte) error
 
 	// CancelInvocation forces the active invocation for target's
@@ -156,6 +158,8 @@ type Context interface {
 	//
 	// target.Key must be non-empty (same reason as SendSignal).
 	// Cancelling an already-completed invocation is a no-op.
+	//
+	// Slot cost: 1 slot (the underlying JESignal).
 	CancelInvocation(target Target) error
 
 	// WaitSignal returns a Future that resolves when a named signal
@@ -173,6 +177,8 @@ type Context interface {
 	//     awaiter's recorded slot, then wakes the session.
 	//   - Each call is single-shot — a second WaitSignal(name) consumes
 	//     the next arrival.
+	//
+	// Slot cost: 2 slots (JEAwaitSignal + JESignalResult).
 	WaitSignal(signalName string) Future
 
 	// Promise returns a handle to a workflow-scoped named durable promise.
@@ -187,12 +193,44 @@ type Context interface {
 	// window; rows persist past the run's Completed status until the
 	// retention reaper sweeps them.
 	//
-	// Constraint (MVP): the resolving and waiting invocations must share
-	// the workflow's partition. Two invocations on the same (workflow
-	// service, key) always do; cross-partition completion (a foreign
-	// service resolving the promise) routes via the Ingress
-	// ResolveWorkflowPromise RPC.
+	// Constraint: invocations on the workflow's own (service, key) reach
+	// the promise table directly; cross-partition resolvers (a different
+	// (service, key) explicitly addressing the workflow) use
+	// WorkflowPromise(target, name) below — the apply path routes
+	// completion via OutboxEnvelope.PromiseCompletion + an ack
+	// round-trip.
+	//
+	// Slot cost per DurablePromise method (counts against
+	// DeploymentRecord.max_journal_entries; default
+	// limits.DefaultMaxJournalEntries = 10_000):
+	//   Result():                 2 slots (JEGetPromise + JEPromiseResult)
+	//   Peek():                   1 slot  (JEPeekPromise; snapshot inlined)
+	//   Resolve(v) / Reject(err): 2 slots (JECompletePromise +
+	//                                      JEPromiseCompleteResult)
+	// Promise-heavy workflows hitting the cap will surface as
+	// reflow_invocations_completed_total{outcome="step_budget_exhausted"};
+	// raise max_journal_entries on the DeploymentRecord rather than
+	// silently truncating handler logic.
 	Promise(name string) DurablePromise
+
+	// WorkflowPromise returns a handle to a workflow-scoped named
+	// promise on a *foreign* workflow — target identifies the workflow
+	// to address (target.Service + target.Key); name selects the
+	// promise. Use when a child invocation (or any caller off the
+	// workflow's own (service, key)) needs to Resolve/Reject/Peek/Result
+	// on a workflow it doesn't co-locate with. Apply-path routes the
+	// JECompletePromise cross-partition via outbox when target hashes
+	// off this caller's shard.
+	//
+	// target.Handler is ignored — promises are workflow-run-scoped, not
+	// handler-scoped. The caller itself must still be a workflow kind
+	// (KindWorkflow or KindWorkflowShared); non-workflow callers receive
+	// a *Failure on first method use, same as Promise.
+	//
+	// Slot cost: identical to Promise — see the slot-cost block on
+	// Promise above. Cross-partition Resolve/Reject incur ~1 outbox
+	// round-trip of additional latency before the ack lands.
+	WorkflowPromise(target Target, name string) DurablePromise
 }
 
 // DurablePromise is a workflow-scoped named promise. The handle is bound

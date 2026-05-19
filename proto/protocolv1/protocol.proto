@@ -299,6 +299,11 @@ message GetPromiseCommandMessage {
   string key = 1;
   uint32 result_completion_id = 11;
   string name = 12;
+  // service is the explicit promise scope. Existing Promise(name) callers
+  // set it to the calling invocation's own service; WorkflowPromise(target,
+  // name) callers set target.Service. Required: the apply path uses it +
+  // key to locate the promise row, not statusTarget(cur).
+  string service = 13;
 }
 
 // Type: 0x8009 — notification for GetPromiseCommandMessage.
@@ -324,6 +329,8 @@ message PeekPromiseCommandMessage {
     Failure failure = 4;
   }
   string name = 12;
+  // service is the explicit promise scope (see GetPromiseCommandMessage).
+  string service = 13;
 }
 
 // Type: 0x800A — notification for PeekPromiseCommandMessage. Reserved
@@ -350,6 +357,11 @@ message CompletePromiseCommandMessage {
   }
   uint32 result_completion_id = 11;
   string name = 12;
+  // service is the explicit promise scope (see GetPromiseCommandMessage).
+  // When (service, key) hashes to a different shard than the caller's
+  // partition, the apply path routes the completion via OutboxEnvelope
+  // .PromiseCompletion + .PromiseCompletionAck round-trip.
+  string service = 13;
 }
 
 // Type: 0x800B — notification for CompletePromiseCommandMessage.

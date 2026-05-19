@@ -108,6 +108,18 @@ message Command {
     // the same record so deployment_id pinning survives restarts.
     // Accepted only by shardID=0.
     RegisterDeployment register_deployment = 18;
+    // PromiseCompletionAck is the cross-partition ack of a
+    // JECompletePromise that landed on the workflow's owning shard.
+    // The resolver shard appends JEPromiseCompleteResult on the caller's
+    // journal at result_completion_id and wakes the resolver. Accepted
+    // only by shardID >= 1.
+    PromiseCompletionAck promise_completion_ack = 19;
+    // ReapWorkflow is proposed by the leader-only WorkflowReapService
+    // when a Completed workflow's retention window has elapsed. Apply
+    // arm range-deletes the workflow run's per-key state, promise rows,
+    // workflow_run row, and the invocation's inv/journal/signal_*
+    // rows. Accepted only by shardID >= 1.
+    ReapWorkflow reap_workflow = 20;
   }
 }
 
@@ -232,17 +244,55 @@ message SignalDelivered {
   bytes payload = 3;
 }
 
-// PromiseCompleted is proposed by ingress when a caller resolves or
+// PromiseCompleted is proposed by ingress (or relayed across partitions
+// via OutboxEnvelope.PromiseCompletion) when a caller resolves or
 // rejects a workflow-scoped promise. The apply arm writes a Resolved
 // or Rejected PromiseValue (if not already terminal) and wakes any
 // awaiter in the same batch. value and failure_message are mutually
 // exclusive — failure_message non-empty = reject.
+//
+// caller_id + result_completion_id are set only when the message came
+// from a cross-partition handler that journaled a JECompletePromise
+// and is awaiting an ack at result_completion_id on its own journal.
+// Direct ingress paths (ResolveWorkflowPromise) leave both zero — the
+// RPC reply already carries the succeeded/conflict signal.
 message PromiseCompleted {
   string service = 1;
   string workflow_key = 2;
   string promise_name = 3;
   bytes value = 4;
   string failure_message = 5;
+  InvocationId caller_id = 6;
+  uint32 result_completion_id = 7;
+}
+
+// PromiseCompletionAck is the cross-partition ack that informs the
+// resolver's shard whether its JECompletePromise won or hit an
+// already-completed conflict on the workflow's owning shard. Carried
+// in OutboxEnvelope.promise_completion_ack from owner shard back to
+// resolver shard. Apply path appends JEPromiseCompleteResult at
+// result_completion_id on caller_id's journal and wakes the resolver.
+message PromiseCompletionAck {
+  InvocationId caller_id = 1;
+  uint32 result_completion_id = 2;
+  bool succeeded = 3;
+  string failure_message = 4;
+}
+
+// ReapWorkflow tells the apply path to purge a Completed workflow
+// run's per-key data: state/<svc>/<key>/..., promise/<svc>/<key>/...,
+// promise_awaiter/<svc>/<key>/..., workflow_run/<svc>/<key>, the
+// invocation's inv/journal/signal_* rows, and the corresponding
+// workflow_reap row that fired this command. Proposed only by the
+// leader's WorkflowReapService when the retention window elapses;
+// idempotent (re-application finds workflow_run absent and exits).
+message ReapWorkflow {
+  string service = 1;
+  string workflow_key = 2;
+  // fire_at_ms identifies the originating workflow_reap row so the
+  // apply arm can delete it in the same batch. Echoed from the
+  // service's scan.
+  fixed64 fire_at_ms = 3;
 }
 
 message JournalEntryAppended {
@@ -500,6 +550,11 @@ message SignalInboxEntry {
 message JEGetPromise {
   string name = 1;
   uint32 result_completion_id = 2;
+  // Explicit promise scope. service + workflow_key locate the promise
+  // row + awaiter row independent of the calling invocation's own
+  // (svc, key). Required: empty values are treated as malformed.
+  string service = 3;
+  string workflow_key = 4;
 }
 
 // JEPromiseResult resolves a previously-journaled JEGetPromise. Written
@@ -522,6 +577,9 @@ message JEPeekPromise {
   bool completed = 2;
   bytes value = 3;
   string failure_message = 4;
+  // Explicit promise scope (see JEGetPromise).
+  string service = 5;
+  string workflow_key = 6;
 }
 
 // JECompletePromise is journaled by the SDK when Promise(name).Resolve
@@ -535,6 +593,13 @@ message JECompletePromise {
   bytes value = 2;
   string failure_message = 3;  // non-empty = reject; mutually exclusive with value
   uint32 result_completion_id = 4;
+  // Explicit promise scope (see JEGetPromise). When (service,
+  // workflow_key) hashes to a different shard than the resolver's
+  // partition, the apply path enqueues an OutboxEnvelope
+  // .PromiseCompletion to the owner shard and waits for a
+  // PromiseCompletionAck before journaling JEPromiseCompleteResult.
+  string service = 5;
+  string workflow_key = 6;
 }
 
 // JEPromiseCompleteResult acks a JECompletePromise. succeeded=true when
@@ -742,6 +807,13 @@ message AwakeableEntry {
 //                         delivery has been durably applied on the
 //                         receiver. The producer shard pops the
 //                         corresponding outbox row on apply.
+//   promise_completion       — cross-partition DurablePromise.Resolve/Reject
+//                              from a child invocation back to the workflow's
+//                              owning shard. Wraps PromiseCompleted.
+//   promise_completion_ack   — the round-trip companion of promise_completion;
+//                              ferried back to the resolver shard so its
+//                              JECompletePromise gets a JEPromiseCompleteResult
+//                              with succeeded/conflict semantics.
 message OutboxEnvelope {
   uint64 destination_shard_id = 3;
   oneof kind {
@@ -749,6 +821,8 @@ message OutboxEnvelope {
     SignalSend signal = 2;
     DeliverCallResult deliver_call_result = 4;
     OutboxAck outbox_ack = 5;
+    PromiseCompleted promise_completion = 6;
+    PromiseCompletionAck promise_completion_ack = 7;
   }
 }
 

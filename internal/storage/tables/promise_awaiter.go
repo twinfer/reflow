@@ -1,46 +1,57 @@
 package tables
 
 import (
-	"errors"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/keys"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// PromiseAwaiterTable maps (workflow_service, workflow_key, name) → the
-// journal slot of the JEGetPromise that's blocked on it. Written when a
-// handler calls Promise(name).Result() and the promise is still pending;
-// consulted on JECompletePromise / InvokerEffect.PromiseCompleted to
-// stitch the result into the awaiting invocation's journal at the
-// recorded slot.
-//
-// At most one row per (svc, key, name) — a second Promise(name).Result()
-// while one is pending overwrites this row. Same documented MVP
-// limitation as SignalAwaiter.
+// PromiseAwaiterTable maps (workflow_service, workflow_key, name, entry_index)
+// → the journal slot of the JEGetPromise that's blocked on it. Multiple
+// concurrent Promise(name).Result() calls from distinct invocations each
+// get their own row keyed by their entry_index, so resolution prefix-scans
+// (svc, key, name) and stitches every awaiter in the same batch.
 type PromiseAwaiterTable struct{ S storage.Reader }
 
-// Put writes the directory row.
-func (t PromiseAwaiterTable) Put(b storage.Batch, service, workflowKey, name string, entry *enginev1.PromiseAwaiter) error {
-	return putProto(b, keys.PromiseAwaiterKey(service, workflowKey, name), entry)
+// PutForSlot writes the directory row at the awaiter's entry_index. The
+// entry_index appears in both the key (so resolution can prefix-scan to
+// find all slots) and the value (so the apply arm has the journal slot
+// without re-parsing the key).
+func (t PromiseAwaiterTable) PutForSlot(b storage.Batch, service, workflowKey, name string, entry *enginev1.PromiseAwaiter) error {
+	return putProto(b, keys.PromiseAwaiterKey(service, workflowKey, name, entry.GetEntryIndex()), entry)
 }
 
-// Get returns the awaiter for (service, workflow_key, name) or
-// (nil, nil) when absent.
-func (t PromiseAwaiterTable) Get(service, workflowKey, name string) (*enginev1.PromiseAwaiter, error) {
-	var entry enginev1.PromiseAwaiter
-	if err := getProto(t.S, keys.PromiseAwaiterKey(service, workflowKey, name), &entry); err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, err
+// ScanForName invokes fn for every awaiter row at
+// (service, workflow_key, name) in entry_index order. Returning a non-nil
+// error from fn aborts the scan and is returned.
+func (t PromiseAwaiterTable) ScanForName(service, workflowKey, name string, fn func(*enginev1.PromiseAwaiter) error) error {
+	prefix := keys.PromiseAwaiterPrefixForName(service, workflowKey, name)
+	upper := keys.PrefixUpperBound(prefix)
+	if upper == nil {
+		return nil
 	}
-	return &entry, nil
+	iter, err := t.S.NewIter(prefix, upper)
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+	for ok := iter.First(); ok; ok = iter.Next() {
+		var entry enginev1.PromiseAwaiter
+		if err := proto.Unmarshal(iter.Value(), &entry); err != nil {
+			return err
+		}
+		if err := fn(&entry); err != nil {
+			return err
+		}
+	}
+	return iter.Error()
 }
 
-// Delete removes the directory row.
-func (t PromiseAwaiterTable) Delete(b storage.Batch, service, workflowKey, name string) error {
-	return b.Delete(keys.PromiseAwaiterKey(service, workflowKey, name))
+// DeleteForSlot removes the directory row at (svc, key, name, entry_index).
+func (t PromiseAwaiterTable) DeleteForSlot(b storage.Batch, service, workflowKey, name string, entryIndex uint32) error {
+	return b.Delete(keys.PromiseAwaiterKey(service, workflowKey, name, entryIndex))
 }
 
 // DeleteAllForWorkflow range-deletes every awaiter row under

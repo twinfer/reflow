@@ -1286,10 +1286,36 @@ func TestWireContext_Promise_Result_FreshEmitsAndSuspends(t *testing.T) {
 	if err := wire.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &cmd); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if cmd.GetName() != "done" || cmd.GetKey() != "k-1" || cmd.GetResultCompletionId() != 2 {
-		t.Errorf("cmd = %+v; want name=done key=k-1 result_completion_id=2", &cmd)
+	if cmd.GetName() != "done" || cmd.GetKey() != "k-1" || cmd.GetService() != "Wf" || cmd.GetResultCompletionId() != 2 {
+		t.Errorf("cmd = %+v; want name=done service=Wf key=k-1 result_completion_id=2", &cmd)
 	}
 
+	if _, err := fut.Result(); err != ErrSuspended {
+		t.Errorf("Result err = %v; want ErrSuspended", err)
+	}
+}
+
+// TestWireContext_WorkflowPromise_UsesExplicitScope asserts that
+// ctx.WorkflowPromise(target, name) populates the wire CompletePromise
+// frame's Service and Key from target — NOT from the caller's own
+// (service, key) which the apply path uses for cross-partition routing.
+func TestWireContext_WorkflowPromise_UsesExplicitScope(t *testing.T) {
+	wctx, stream := newTestWireContextWithKind(t, "Workers", "rs-key", protocolv1.Kind_KIND_WORKFLOW)
+	fut := wctx.WorkflowPromise(Target{Service: "Orders", Key: "wf-key"}, "done").Result()
+	if len(stream.sent) != 1 {
+		t.Fatalf("sent frames = %d; want 1", len(stream.sent))
+	}
+	tc, _, _ := wire.UnpackHeader(stream.sent[0].GetHeader())
+	if tc != wire.TypeCmdGetPromise {
+		t.Fatalf("frame.type = 0x%04x; want TypeCmdGetPromise", tc)
+	}
+	var cmd protocolv1.GetPromiseCommandMessage
+	if err := wire.DefaultCodec().Unmarshal(stream.sent[0].GetPayload(), &cmd); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if cmd.GetService() != "Orders" || cmd.GetKey() != "wf-key" || cmd.GetName() != "done" {
+		t.Errorf("cmd = %+v; want service=Orders key=wf-key name=done", &cmd)
+	}
 	if _, err := fut.Result(); err != ErrSuspended {
 		t.Errorf("Result err = %v; want ErrSuspended", err)
 	}

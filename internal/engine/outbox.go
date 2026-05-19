@@ -282,6 +282,21 @@ func outboxEnvelopeToCommand(env *enginev1.OutboxEnvelope) *enginev1.Command {
 		return &enginev1.Command{
 			Kind: &enginev1.Command_OutboxAck{OutboxAck: k.OutboxAck},
 		}
+	case *enginev1.OutboxEnvelope_PromiseCompletion:
+		// Cross-partition Promise.Resolve/Reject from the resolver
+		// shard. The owner shard's apply path runs the existing
+		// InvokerEffect.PromiseCompleted arm; if caller_id is set the
+		// arm emits an OutboxEnvelope.PromiseCompletionAck back to the
+		// resolver shard.
+		return &enginev1.Command{
+			Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+				Kind: &enginev1.InvokerEffect_PromiseCompleted{PromiseCompleted: k.PromiseCompletion},
+			}},
+		}
+	case *enginev1.OutboxEnvelope_PromiseCompletionAck:
+		return &enginev1.Command{
+			Kind: &enginev1.Command_PromiseCompletionAck{PromiseCompletionAck: k.PromiseCompletionAck},
+		}
 	default:
 		return nil
 	}

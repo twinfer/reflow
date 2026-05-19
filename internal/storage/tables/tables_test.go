@@ -1040,40 +1040,169 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 	})
 
-	t.Run(name+"/PromiseAwaiter_PutGetDelete", func(t *testing.T) {
+	t.Run(name+"/PromiseAwaiter_MultiSlotPutScan", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		at := tables.PromiseAwaiterTable{S: s}
+		idA := mkID(1, "aaaaaaaaaaaaaaaa")
+		idB := mkID(2, "bbbbbbbbbbbbbbbb")
+		idC := mkID(3, "cccccccccccccccc")
+
+		// Three concurrent awaiters on the same (svc, key, name), each with
+		// its own entry_index. Insertion order shuffled so the scan must
+		// rely on key ordering, not insertion order.
+		b := s.NewBatch()
+		for _, e := range []*enginev1.PromiseAwaiter{
+			{Owner: idC, EntryIndex: 30},
+			{Owner: idA, EntryIndex: 10},
+			{Owner: idB, EntryIndex: 20},
+		} {
+			if err := at.PutForSlot(b, "Wf", "k", "done", e); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Unrelated row at a different name must not show up in the scan.
+		if err := at.PutForSlot(b, "Wf", "k", "other", &enginev1.PromiseAwaiter{Owner: idA, EntryIndex: 99}); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b)
+
+		var got []*enginev1.PromiseAwaiter
+		if err := at.ScanForName("Wf", "k", "done", func(a *enginev1.PromiseAwaiter) error {
+			got = append(got, a)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("scan returned %d awaiters; want 3 (got=%+v)", len(got), got)
+		}
+		wantIdx := []uint32{10, 20, 30}
+		wantOwner := []uint64{1, 2, 3}
+		for i, a := range got {
+			if a.GetEntryIndex() != wantIdx[i] || a.GetOwner().GetPartitionKey() != wantOwner[i] {
+				t.Errorf("row %d: got entry=%d owner.pk=%d; want entry=%d owner.pk=%d",
+					i, a.GetEntryIndex(), a.GetOwner().GetPartitionKey(),
+					wantIdx[i], wantOwner[i])
+			}
+		}
+
+		// DeleteForSlot removes one row; the others survive.
+		b2 := s.NewBatch()
+		if err := at.DeleteForSlot(b2, "Wf", "k", "done", 20); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b2)
+		got = nil
+		_ = at.ScanForName("Wf", "k", "done", func(a *enginev1.PromiseAwaiter) error {
+			got = append(got, a)
+			return nil
+		})
+		if len(got) != 2 || got[0].GetEntryIndex() != 10 || got[1].GetEntryIndex() != 30 {
+			t.Errorf("after DeleteForSlot(20): got=%+v; want entries [10, 30]", got)
+		}
+	})
+
+	t.Run(name+"/PromiseAwaiter_DeleteAllForWorkflow", func(t *testing.T) {
 		s := open(t)
 		defer s.Close()
 		at := tables.PromiseAwaiterTable{S: s}
 		id := mkID(7, "0123456789abcdef")
 
-		got, err := at.Get("Wf", "k", "done")
-		if err != nil || got != nil {
-			t.Errorf("missing: got=%+v err=%v; want (nil, nil)", got, err)
-		}
-
-		entry := &enginev1.PromiseAwaiter{Owner: id, EntryIndex: 5}
 		b := s.NewBatch()
-		if err := at.Put(b, "Wf", "k", "done", entry); err != nil {
+		for _, n := range []string{"a", "b", "c"} {
+			for _, idx := range []uint32{1, 2} {
+				if err := at.PutForSlot(b, "Wf", "k1", n, &enginev1.PromiseAwaiter{Owner: id, EntryIndex: idx}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		// Survivor on a different workflow_key.
+		if err := at.PutForSlot(b, "Wf", "k2", "a", &enginev1.PromiseAwaiter{Owner: id, EntryIndex: 1}); err != nil {
 			t.Fatal(err)
 		}
 		commit(t, b)
 
-		got, err = at.Get("Wf", "k", "done")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got.GetEntryIndex() != 5 || got.GetOwner().GetPartitionKey() != 7 {
-			t.Errorf("roundtrip: %+v", got)
-		}
-
 		b2 := s.NewBatch()
-		if err := at.Delete(b2, "Wf", "k", "done"); err != nil {
+		if err := at.DeleteAllForWorkflow(b2, "Wf", "k1"); err != nil {
 			t.Fatal(err)
 		}
 		commit(t, b2)
-		got, _ = at.Get("Wf", "k", "done")
-		if got != nil {
-			t.Errorf("after delete: %+v; want nil", got)
+
+		for _, n := range []string{"a", "b", "c"} {
+			var found []*enginev1.PromiseAwaiter
+			_ = at.ScanForName("Wf", "k1", n, func(a *enginev1.PromiseAwaiter) error {
+				found = append(found, a)
+				return nil
+			})
+			if len(found) != 0 {
+				t.Errorf("name=%s survived workflow-range-delete: %+v", n, found)
+			}
+		}
+		var k2 []*enginev1.PromiseAwaiter
+		_ = at.ScanForName("Wf", "k2", "a", func(a *enginev1.PromiseAwaiter) error {
+			k2 = append(k2, a)
+			return nil
+		})
+		if len(k2) != 1 {
+			t.Errorf("k2 untouched: got %d rows; want 1", len(k2))
+		}
+	})
+
+	t.Run(name+"/WorkflowReap_PutScanDelete", func(t *testing.T) {
+		s := open(t)
+		defer s.Close()
+		rt := tables.WorkflowReapTable{S: s}
+
+		// Insert out-of-order; scan must yield in fire_at_ms order.
+		b := s.NewBatch()
+		for _, row := range []struct {
+			fire uint64
+			svc  string
+			key  string
+		}{
+			{fire: 300, svc: "Wf", key: "ord-c"},
+			{fire: 100, svc: "Wf", key: "ord-a"},
+			{fire: 200, svc: "Wf", key: "ord-b"},
+		} {
+			if err := rt.Put(b, row.fire, row.svc, row.key); err != nil {
+				t.Fatal(err)
+			}
+		}
+		commit(t, b)
+
+		var got []tables.ReapRow
+		if err := rt.ScanAll(func(r tables.ReapRow) error {
+			got = append(got, r)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("scan returned %d rows; want 3", len(got))
+		}
+		wantFires := []uint64{100, 200, 300}
+		wantKeys := []string{"ord-a", "ord-b", "ord-c"}
+		for i, r := range got {
+			if r.FireAtMs != wantFires[i] || r.WorkflowKey != wantKeys[i] {
+				t.Errorf("row %d: got fire=%d key=%s; want fire=%d key=%s",
+					i, r.FireAtMs, r.WorkflowKey, wantFires[i], wantKeys[i])
+			}
+		}
+
+		// Delete the middle one; scan returns the remaining two.
+		b2 := s.NewBatch()
+		if err := rt.Delete(b2, 200, "Wf", "ord-b"); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b2)
+		got = nil
+		_ = rt.ScanAll(func(r tables.ReapRow) error {
+			got = append(got, r)
+			return nil
+		})
+		if len(got) != 2 || got[0].FireAtMs != 100 || got[1].FireAtMs != 300 {
+			t.Errorf("after delete(200): got=%+v; want fires [100, 300]", got)
 		}
 	})
 }

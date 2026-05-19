@@ -767,6 +767,8 @@ func (s *wireSession) handleGetPromise(payload []byte) bool {
 			GetPromise: &enginev1.JEGetPromise{
 				Name:               cmd.GetName(),
 				ResultCompletionId: cmd.GetResultCompletionId(),
+				Service:            cmd.GetService(),
+				WorkflowKey:        cmd.GetKey(),
 			},
 		},
 	}
@@ -789,7 +791,9 @@ func (s *wireSession) handlePeekPromise(payload []byte) bool {
 		Index: s.allocIdx(),
 		Entry: &enginev1.JournalEntry_PeekPromise{
 			PeekPromise: &enginev1.JEPeekPromise{
-				Name: cmd.GetName(),
+				Name:        cmd.GetName(),
+				Service:     cmd.GetService(),
+				WorkflowKey: cmd.GetKey(),
 				// Apply arm fills in Completed / Value / FailureMessage.
 			},
 		},
@@ -815,6 +819,8 @@ func (s *wireSession) handleCompletePromise(payload []byte) bool {
 	jc := &enginev1.JECompletePromise{
 		Name:               cmd.GetName(),
 		ResultCompletionId: cmd.GetResultCompletionId(),
+		Service:            cmd.GetService(),
+		WorkflowKey:        cmd.GetKey(),
 	}
 	switch c := cmd.GetCompletion().(type) {
 	case *protocolv1.CompletePromiseCommandMessage_CompletionValue:

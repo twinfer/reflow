@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"github.com/lni/dragonboat/v4/statemachine"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/twinfer/reflow/internal/engine/limits"
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/storage"
@@ -300,11 +302,36 @@ func commandKindLabel(cmd *enginev1.Command) string {
 		return "DeliverCallResult"
 	case *enginev1.Command_OutboxAck:
 		return "OutboxAck"
+	case *enginev1.Command_PromiseCompletionAck:
+		return "PromiseCompletionAck"
+	case *enginev1.Command_ReapWorkflow:
+		return "ReapWorkflow"
 	case nil:
 		return "empty"
 	default:
 		return "unknown"
 	}
+}
+
+// classifyCompletionOutcome maps an InvocationCompleted to a stable
+// Prometheus label set: success, failure, cancelled, step_budget_exhausted.
+// Reserved failure codes (wire.CancelledCode = 9002, handler
+// .StepBudgetExhaustedCode = 9001) take precedence over the generic
+// failure_message classification so a cancellation isn't double-counted.
+func classifyCompletionOutcome(c *enginev1.InvocationCompleted) string {
+	if c == nil {
+		return "success"
+	}
+	switch c.GetFailureCode() {
+	case wire.CancelledCode:
+		return "cancelled"
+	case 9001:
+		return "step_budget_exhausted"
+	}
+	if c.GetFailureMessage() != "" {
+		return "failure"
+	}
+	return "success"
 }
 
 // journalEntryKindLabel returns the Prometheus label for a JournalEntry
@@ -408,6 +435,10 @@ func (p *Partition) applyCommand(
 		return p.onDeliverCallResult(batch, store, k.DeliverCallResult, now, inv, journal, isLeader)
 	case *enginev1.Command_OutboxAck:
 		return p.onOutboxAck(batch, k.OutboxAck)
+	case *enginev1.Command_PromiseCompletionAck:
+		return p.onPromiseCompletionAck(batch, k.PromiseCompletionAck, inv, journal, now, isLeader)
+	case *enginev1.Command_ReapWorkflow:
+		return p.onReapWorkflow(batch, k.ReapWorkflow, inv, journal)
 	case nil:
 		p.cfg.Log.Warn("partition: envelope has no command kind", "raft_index", raftIndex)
 		return nil
@@ -750,14 +781,26 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			// wake; on pending/absent, write a PromiseAwaiter row so a
 			// future JECompletePromise / InvokerEffect.PromiseCompleted
 			// can stitch the result.
-			t := statusTarget(cur)
-			if t == nil {
-				p.cfg.Log.Warn("partition: JEGetPromise on status without target", "status", fmt.Sprintf("%T", cur.GetStatus()))
+			//
+			// Scope is carried explicitly on JEGetPromise as (service,
+			// workflow_key) — the SDK populates them from either
+			// Context.Promise (caller's own (svc, key)) or
+			// Context.WorkflowPromise(target, name) (foreign target).
+			// Cross-partition: a GetPromise whose (svc, key) lives on
+			// another shard returns absent on the local read, so the
+			// awaiter row gets written on the wrong shard. WorkflowPromise
+			// .Result() across partitions is not supported in this step
+			// — callers should co-locate (which they always do today,
+			// since the SDK uses the caller's own (svc, key) by default).
+			svc := e.GetPromise.GetService()
+			wfKey := e.GetPromise.GetWorkflowKey()
+			if svc == "" || wfKey == "" {
+				p.cfg.Log.Warn("partition: JEGetPromise with empty scope", "service", svc, "workflow_key", wfKey)
 				break
 			}
 			name := e.GetPromise.GetName()
 			resultIdx := e.GetPromise.GetResultCompletionId()
-			pv, perr := (tables.PromiseTable{S: batch}).Get(t.GetServiceName(), t.GetObjectKey(), name)
+			pv, perr := (tables.PromiseTable{S: batch}).Get(svc, wfKey, name)
 			if perr != nil {
 				return fmt.Errorf("onInvokerEffect: promise lookup: %w", perr)
 			}
@@ -773,14 +816,14 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 					return fmt.Errorf("onInvokerEffect: journal append (promise result inline): %w", err)
 				}
 				if isLeader {
-					p.cfg.Collector.Push(ActInvoke{ID: id, Target: t})
+					p.cfg.Collector.Push(ActInvoke{ID: id, Target: statusTarget(cur)})
 				}
 			} else {
 				awaiter := &enginev1.PromiseAwaiter{
 					Owner:      id,
 					EntryIndex: entry.GetIndex(),
 				}
-				if err := (tables.PromiseAwaiterTable{S: batch}).Put(batch, t.GetServiceName(), t.GetObjectKey(), name, awaiter); err != nil {
+				if err := (tables.PromiseAwaiterTable{S: batch}).PutForSlot(batch, svc, wfKey, name, awaiter); err != nil {
 					return fmt.Errorf("onInvokerEffect: promise awaiter put: %w", err)
 				}
 			}
@@ -789,13 +832,14 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			// entry with empty fields; we mutate it to stamp the
 			// completed/value/failure snapshot and re-append (batch.Set
 			// overwrites). The SDK sees the stamped entry on replay.
-			t := statusTarget(cur)
-			if t == nil {
-				p.cfg.Log.Warn("partition: JEPeekPromise on status without target", "status", fmt.Sprintf("%T", cur.GetStatus()))
+			svc := e.PeekPromise.GetService()
+			wfKey := e.PeekPromise.GetWorkflowKey()
+			if svc == "" || wfKey == "" {
+				p.cfg.Log.Warn("partition: JEPeekPromise with empty scope", "service", svc, "workflow_key", wfKey)
 				break
 			}
 			name := e.PeekPromise.GetName()
-			pv, perr := (tables.PromiseTable{S: batch}).Get(t.GetServiceName(), t.GetObjectKey(), name)
+			pv, perr := (tables.PromiseTable{S: batch}).Get(svc, wfKey, name)
 			if perr != nil {
 				return fmt.Errorf("onInvokerEffect: peek promise lookup: %w", perr)
 			}
@@ -815,58 +859,81 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 				return fmt.Errorf("onInvokerEffect: journal append (peek stamp): %w", err)
 			}
 		case *enginev1.JournalEntry_CompletePromise:
-			// Two-slot. Write PromiseValue (if not already terminal),
-			// then append JEPromiseCompleteResult at result_completion_id
-			// reporting succeeded / already-completed. If an awaiter is
-			// pending, also append JEPromiseResult on the awaiter's
-			// journal at awaiter.entry_index+1 and wake it.
-			t := statusTarget(cur)
-			if t == nil {
-				p.cfg.Log.Warn("partition: JECompletePromise on status without target", "status", fmt.Sprintf("%T", cur.GetStatus()))
+			// Two-slot. The scope (service, workflow_key) is carried
+			// explicitly on the JE — see WorkflowPromise — so the apply
+			// path can route cross-partition when the promise's owning
+			// shard differs from the resolver's. Two paths:
+			//
+			//   destShard == p.shardID  — local apply: write
+			//     PromiseValue (if not already terminal), wake any
+			//     awaiters via applyPromiseAwaiterScan, journal the
+			//     JEPromiseCompleteResult on the resolver's journal in
+			//     the same batch.
+			//
+			//   destShard != p.shardID  — cross-partition: enqueue an
+			//     OutboxEnvelope.PromiseCompletion with caller_id +
+			//     result_completion_id; do NOT journal the
+			//     JEPromiseCompleteResult locally. The owner shard's
+			//     apply arm runs the local-style apply, then enqueues a
+			//     PromiseCompletionAck envelope back to this shard whose
+			//     apply arm appends the ack journal entry.
+			svc := e.CompletePromise.GetService()
+			wfKey := e.CompletePromise.GetWorkflowKey()
+			if svc == "" || wfKey == "" {
+				p.cfg.Log.Warn("partition: JECompletePromise with empty scope", "service", svc, "workflow_key", wfKey)
 				break
 			}
 			name := e.CompletePromise.GetName()
 			resultIdx := e.CompletePromise.GetResultCompletionId()
+			destShard := p.cfg.Partitioner.ShardForTarget(&enginev1.InvocationTarget{
+				ServiceName: svc,
+				ObjectKey:   wfKey,
+			})
+
+			if destShard != 0 && destShard != p.shardID {
+				// Cross-partition: ship to owner shard. caller_id +
+				// result_completion_id ride the envelope so the owner
+				// shard can route the ack back.
+				env := &enginev1.OutboxEnvelope{
+					DestinationShardId: destShard,
+					Kind: &enginev1.OutboxEnvelope_PromiseCompletion{
+						PromiseCompletion: &enginev1.PromiseCompleted{
+							Service:            svc,
+							WorkflowKey:        wfKey,
+							PromiseName:        name,
+							Value:              e.CompletePromise.GetValue(),
+							FailureMessage:     e.CompletePromise.GetFailureMessage(),
+							CallerId:           id,
+							ResultCompletionId: resultIdx,
+						},
+					},
+				}
+				if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {
+					return fmt.Errorf("onInvokerEffect: outbox append (promise completion): %w", err)
+				}
+				// Resolver invocation will suspend on result_completion_id
+				// per transitionOnJournalAppend; the ack path appends
+				// JEPromiseCompleteResult and wakes.
+				break
+			}
+
+			// Local apply path.
 			promiseT := tables.PromiseTable{S: batch}
-			cur_pv, cerr := promiseT.Get(t.GetServiceName(), t.GetObjectKey(), name)
+			cur_pv, cerr := promiseT.Get(svc, wfKey, name)
 			if cerr != nil {
 				return fmt.Errorf("onInvokerEffect: promise lookup (complete): %w", cerr)
 			}
 			succeeded := false
 			conflictMsg := "promise already completed"
-			var newPV *enginev1.PromiseValue
 			if cur_pv == nil || cur_pv.GetPending() != nil {
-				newPV = buildPromiseValueFromJournal(e.CompletePromise, nowMs)
-				if err := promiseT.Put(batch, t.GetServiceName(), t.GetObjectKey(), name, newPV); err != nil {
+				newPV := buildPromiseValueFromJournal(e.CompletePromise, nowMs)
+				if err := promiseT.Put(batch, svc, wfKey, name, newPV); err != nil {
 					return fmt.Errorf("onInvokerEffect: promise put: %w", err)
 				}
 				succeeded = true
 				conflictMsg = ""
-				// Wake any pending awaiter on this promise.
-				awaiterT := tables.PromiseAwaiterTable{S: batch}
-				awaiter, aerr := awaiterT.Get(t.GetServiceName(), t.GetObjectKey(), name)
-				if aerr != nil {
-					return fmt.Errorf("onInvokerEffect: promise awaiter lookup: %w", aerr)
-				}
-				if awaiter != nil {
-					awaiterResultIdx := awaiter.GetEntryIndex() + 1
-					awaiterResult := &enginev1.JournalEntry{
-						Index: awaiterResultIdx,
-						Entry: &enginev1.JournalEntry_PromiseResult{
-							PromiseResult: promiseResultFromValue(name, newPV),
-						},
-					}
-					if err := journal.Append(batch, awaiter.GetOwner(), awaiterResult); err != nil {
-						return fmt.Errorf("onInvokerEffect: journal append (promise result stitch): %w", err)
-					}
-					if err := awaiterT.Delete(batch, t.GetServiceName(), t.GetObjectKey(), name); err != nil {
-						return fmt.Errorf("onInvokerEffect: promise awaiter delete: %w", err)
-					}
-					if isLeader {
-						// Awaiter shares the workflow's (service, key)
-						// scope; reuse t as the wake target.
-						p.cfg.Collector.Push(ActInvoke{ID: awaiter.GetOwner(), Target: t})
-					}
+				if err := p.applyPromiseAwaiterScan(batch, inv, journal, svc, wfKey, name, newPV, false, isLeader, nowMs); err != nil {
+					return err
 				}
 			}
 			// Append the result entry on the resolver's journal.
@@ -884,7 +951,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			}
 			// Wake the resolver so it sees the ack on respawn.
 			if isLeader {
-				p.cfg.Collector.Push(ActInvoke{ID: id, Target: t})
+				p.cfg.Collector.Push(ActInvoke{ID: id, Target: statusTarget(cur)})
 			}
 		case *enginev1.JournalEntry_PromiseResult, *enginev1.JournalEntry_PromiseCompleteResult:
 			// Receiver-side result entries — written by the apply arm
@@ -1143,10 +1210,18 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 		cnext, cacts, cerr := p.applyTerminalCompletion(batch, id, cur, k.Completed, inv, journal, timersT, meta, isLeader, nowMs)
 		next, actions, err = cnext, cacts, cerr
 	case *enginev1.InvokerEffect_PromiseCompleted:
-		// External promise resolution from ingress. Routed by
-		// (service, workflow_key); the surrounding InvocationId is
-		// unset. Apply path: write PromiseValue (if not already
-		// terminal); wake any awaiter via the standard FSM transition.
+		// Two entry points land here:
+		//   - Ingress.ResolveWorkflowPromise: caller_id unset; conflict
+		//     is silent (the RPC reply already carries the result).
+		//   - Cross-partition OutboxEnvelope.PromiseCompletion: caller_id
+		//     is set; on apply we additionally enqueue a
+		//     PromiseCompletionAck back to the producer shard so the
+		//     resolver's JEPromiseCompleteResult lands with the right
+		//     succeeded/conflict bit.
+		// Apply path: write PromiseValue (if not already terminal); wake
+		// every pending awaiter via transitionOnPromiseResolved +
+		// ActInvoke. The helper writes each awaiter's inv.Put and pushes
+		// its actions directly.
 		pc := k.PromiseCompleted
 		svc := pc.GetService()
 		wk := pc.GetWorkflowKey()
@@ -1161,47 +1236,42 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 		if perr != nil {
 			return fmt.Errorf("onInvokerEffect: promise lookup (ingress): %w", perr)
 		}
-		if cur_pv != nil && cur_pv.GetPending() == nil {
-			// Already terminal — ingress conflict is silent; the RPC
-			// caller can re-check via Peek.
-			return nil
+		succeeded := false
+		conflictMsg := "promise already completed"
+		if cur_pv == nil || cur_pv.GetPending() != nil {
+			newPV := buildPromiseValueFromEffect(pc, nowMs)
+			if err := promiseT.Put(batch, svc, wk, name, newPV); err != nil {
+				return fmt.Errorf("onInvokerEffect: promise put (ingress): %w", err)
+			}
+			succeeded = true
+			conflictMsg = ""
+			if err := p.applyPromiseAwaiterScan(batch, inv, journal, svc, wk, name, newPV, true, isLeader, nowMs); err != nil {
+				return err
+			}
 		}
-		newPV := buildPromiseValueFromEffect(pc, nowMs)
-		if err := promiseT.Put(batch, svc, wk, name, newPV); err != nil {
-			return fmt.Errorf("onInvokerEffect: promise put (ingress): %w", err)
+		// Cross-partition: route the succeeded/conflict ack back to the
+		// resolver shard. caller_id zero indicates ingress (no ack
+		// needed; the RPC reply carries the signal).
+		if cid := pc.GetCallerId(); cid != nil && cid.GetUuid() != nil {
+			callerShard := p.cfg.Partitioner.ShardForInvocation(cid)
+			ackEnv := &enginev1.OutboxEnvelope{
+				DestinationShardId: callerShard,
+				Kind: &enginev1.OutboxEnvelope_PromiseCompletionAck{
+					PromiseCompletionAck: &enginev1.PromiseCompletionAck{
+						CallerId:           cid,
+						ResultCompletionId: pc.GetResultCompletionId(),
+						Succeeded:          succeeded,
+						FailureMessage:     conflictMsg,
+					},
+				},
+			}
+			if _, err := p.enqueueOutbox(batch, meta, ackEnv, isLeader); err != nil {
+				return fmt.Errorf("onInvokerEffect: outbox append (promise completion ack): %w", err)
+			}
 		}
-		awaiterT := tables.PromiseAwaiterTable{S: batch}
-		awaiter, aerr := awaiterT.Get(svc, wk, name)
-		if aerr != nil {
-			return fmt.Errorf("onInvokerEffect: promise awaiter lookup (ingress): %w", aerr)
-		}
-		if awaiter == nil {
-			// No one is waiting — Promise() reads will see the value on
-			// next Get/Peek. No FSM transition.
-			return nil
-		}
-		awaiterResultIdx := awaiter.GetEntryIndex() + 1
-		awaiterResult := &enginev1.JournalEntry{
-			Index: awaiterResultIdx,
-			Entry: &enginev1.JournalEntry_PromiseResult{
-				PromiseResult: promiseResultFromValue(name, newPV),
-			},
-		}
-		if err := journal.Append(batch, awaiter.GetOwner(), awaiterResult); err != nil {
-			return fmt.Errorf("onInvokerEffect: journal append (promise result ingress): %w", err)
-		}
-		if err := awaiterT.Delete(batch, svc, wk, name); err != nil {
-			return fmt.Errorf("onInvokerEffect: promise awaiter delete (ingress): %w", err)
-		}
-		// Load awaiter status and reassign id/cur for the post-switch
-		// inv.Put + actions flow. Mirrors SignalDelivered.
-		ownerID := awaiter.GetOwner()
-		ownerCur, gerr := inv.Get(ownerID)
-		if gerr != nil {
-			return fmt.Errorf("onInvokerEffect: load awaiter status: %w", gerr)
-		}
-		id, cur = ownerID, ownerCur
-		next, actions, err = transitionOnPromiseResolved(ownerID, ownerCur, awaiterResultIdx, nowMs)
+		// All awaiter state changes applied inside the helper; the
+		// post-switch inv.Put/actions loop is a no-op here.
+		return nil
 	case *enginev1.InvokerEffect_Suspended:
 		next, actions, err = transitionOnSuspend(id, cur, k.Suspended, nowMs)
 	case nil:
@@ -1268,6 +1338,15 @@ func (p *Partition) applyTerminalCompletion(
 		pl = s.Suspended.GetParentLink()
 		completedTarget = s.Suspended.GetTarget()
 	}
+	// Outcome metric: classify and emit on the leader only so cluster-
+	// wide aggregation isn't multiplied by replica count. completedTarget
+	// nil means this was an idempotent replay — already counted.
+	if isLeader && completedTarget != nil && p.cfg.Metrics != nil {
+		p.cfg.Metrics.InvocationsCompleted.WithLabelValues(
+			completedTarget.GetServiceName(),
+			classifyCompletionOutcome(completed),
+		).Inc()
+	}
 	if pl.GetParentId() != nil {
 		parentActs, perr := p.deliverCallResultToParent(batch, inv, journal, meta, pl, completed.GetOutput(), completed.GetFailureMessage(), nowMs, isLeader)
 		if perr != nil {
@@ -1299,7 +1378,116 @@ func (p *Partition) applyTerminalCompletion(
 			}
 		}
 	}
+	// Workflow retention: if this invocation IS the workflow run for its
+	// (service, object_key), schedule a retention sweep. WorkflowRunTable
+	// only carries a row for KIND_WORKFLOW Run handlers, so a hit + id
+	// match is the safe Kind discriminator without persisting Kind on
+	// InvocationStatus.
+	if completedTarget != nil && completedTarget.GetObjectKey() != "" {
+		runT := tables.WorkflowRunTable{S: batch}
+		runRow, rerr := runT.Get(completedTarget.GetServiceName(), completedTarget.GetObjectKey())
+		if rerr != nil {
+			return next, actions, fmt.Errorf("applyTerminalCompletion: workflow_run lookup: %w", rerr)
+		}
+		if runRow != nil && runRow.GetPartitionKey() == id.GetPartitionKey() && bytes.Equal(runRow.GetUuid(), id.GetUuid()) {
+			fireAt := nowMs + limits.DefaultWorkflowRetentionMs
+			if werr := (tables.WorkflowReapTable{S: batch}).Put(batch, fireAt, completedTarget.GetServiceName(), completedTarget.GetObjectKey()); werr != nil {
+				return next, actions, fmt.Errorf("applyTerminalCompletion: workflow_reap put: %w", werr)
+			}
+			if isLeader {
+				actions = append(actions, ActScheduleWorkflowReap{
+					FireAtMs:    fireAt,
+					Service:     completedTarget.GetServiceName(),
+					WorkflowKey: completedTarget.GetObjectKey(),
+				})
+			}
+		}
+	}
 	return next, actions, nil
+}
+
+// applyPromiseAwaiterScan iterates every PromiseAwaiter row at
+// (svc, workflowKey, name), stitches JEPromiseResult on each owner's
+// journal at awaiter.entry_index+1, deletes each row, and wakes each
+// owner.
+//
+// Two wake modes:
+//   - runFSM=false (JECompletePromise resolver path): the awaiter wakes
+//     via an ActInvoke pushed directly onto the collector; the next
+//     replay picks up the new journal entry. No FSM transition — the
+//     post-switch flow in onInvokerEffect runs the resolver's own
+//     transitionOnJournalAppend.
+//   - runFSM=true (InvokerEffect.PromiseCompleted ingress path): the
+//     helper runs transitionOnPromiseResolved per owner and persists
+//     the new status via inv.Put inline, pushing per-owner actions onto
+//     the collector. The caller must skip the post-switch
+//     inv.Put/actions loop (the apply arm returns nil after calling
+//     this helper in runFSM mode).
+//
+// Awaiters scope to (svc, workflow_key) so they share the workflow's
+// shard; the scan is local. The target carried in ActInvoke is the
+// workflow's (service, object_key) — owners are co-located by design.
+func (p *Partition) applyPromiseAwaiterScan(
+	batch storage.Batch,
+	inv tables.InvocationTable,
+	journal tables.JournalTable,
+	svc, workflowKey, name string,
+	newPV *enginev1.PromiseValue,
+	runFSM bool,
+	isLeader bool,
+	nowMs uint64,
+) error {
+	awaiterT := tables.PromiseAwaiterTable{S: batch}
+	var awaiters []*enginev1.PromiseAwaiter
+	if err := awaiterT.ScanForName(svc, workflowKey, name, func(a *enginev1.PromiseAwaiter) error {
+		awaiters = append(awaiters, proto.Clone(a).(*enginev1.PromiseAwaiter))
+		return nil
+	}); err != nil {
+		return fmt.Errorf("onInvokerEffect: promise awaiter scan: %w", err)
+	}
+	wakeTarget := &enginev1.InvocationTarget{ServiceName: svc, ObjectKey: workflowKey}
+	for _, a := range awaiters {
+		resultIdx := a.GetEntryIndex() + 1
+		resultEntry := &enginev1.JournalEntry{
+			Index: resultIdx,
+			Entry: &enginev1.JournalEntry_PromiseResult{
+				PromiseResult: promiseResultFromValue(name, newPV),
+			},
+		}
+		if err := journal.Append(batch, a.GetOwner(), resultEntry); err != nil {
+			return fmt.Errorf("onInvokerEffect: journal append (promise result stitch): %w", err)
+		}
+		if err := awaiterT.DeleteForSlot(batch, svc, workflowKey, name, a.GetEntryIndex()); err != nil {
+			return fmt.Errorf("onInvokerEffect: promise awaiter delete: %w", err)
+		}
+		if !runFSM {
+			if isLeader {
+				p.cfg.Collector.Push(ActInvoke{ID: a.GetOwner(), Target: wakeTarget})
+			}
+			continue
+		}
+		ownerCur, gerr := inv.Get(a.GetOwner())
+		if gerr != nil {
+			return fmt.Errorf("onInvokerEffect: load awaiter status: %w", gerr)
+		}
+		ownerNext, ownerActs, terr := transitionOnPromiseResolved(a.GetOwner(), ownerCur, resultIdx, nowMs)
+		if terr != nil {
+			p.cfg.Log.Warn("partition: invalid promise-resolved transition",
+				"owner", a.GetOwner(), "err", terr)
+			continue
+		}
+		if ownerNext != nil {
+			if err := inv.Put(batch, a.GetOwner(), ownerNext); err != nil {
+				return fmt.Errorf("onInvokerEffect: write awaiter status: %w", err)
+			}
+		}
+		if isLeader {
+			for _, act := range ownerActs {
+				p.cfg.Collector.Push(act)
+			}
+		}
+	}
+	return nil
 }
 
 // deliverCallResultToParent dispatches the callee's terminal result back
@@ -1443,6 +1631,63 @@ func (p *Partition) onOutboxAck(batch storage.Batch, ack *enginev1.OutboxAck) er
 	return nil
 }
 
+// onPromiseCompletionAck applies the cross-partition acknowledgement that
+// a JECompletePromise has landed on the workflow's owning shard. The
+// resolver invocation lives on this shard; we append
+// JEPromiseCompleteResult at the recorded result_completion_id and
+// transition (Suspended → Invoked) so it wakes.
+//
+// Idempotent on replay: if the journal slot is already populated
+// (another ack already landed), the append is a no-op overwrite; the
+// FSM transition is a no-op when the invocation is already Invoked.
+func (p *Partition) onPromiseCompletionAck(
+	batch storage.Batch,
+	ack *enginev1.PromiseCompletionAck,
+	inv tables.InvocationTable,
+	journal tables.JournalTable,
+	nowMs uint64,
+	isLeader bool,
+) error {
+	callerID := ack.GetCallerId()
+	if callerID == nil {
+		p.cfg.Log.Warn("partition: PromiseCompletionAck with nil caller_id; dropping")
+		return nil
+	}
+	cur, err := inv.Get(callerID)
+	if err != nil {
+		return fmt.Errorf("onPromiseCompletionAck: load status: %w", err)
+	}
+	resultIdx := ack.GetResultCompletionId()
+	entry := &enginev1.JournalEntry{
+		Index: resultIdx,
+		Entry: &enginev1.JournalEntry_PromiseCompleteResult{
+			PromiseCompleteResult: &enginev1.JEPromiseCompleteResult{
+				Succeeded:      ack.GetSucceeded(),
+				FailureMessage: ack.GetFailureMessage(),
+			},
+		},
+	}
+	if err := journal.Append(batch, callerID, entry); err != nil {
+		return fmt.Errorf("onPromiseCompletionAck: journal append: %w", err)
+	}
+	next, actions, terr := transitionOnJournalAppend(callerID, cur, &enginev1.JournalEntryAppended{Entry: entry}, nowMs)
+	if terr != nil {
+		p.cfg.Log.Warn("partition: invalid PromiseCompletionAck transition", "err", terr)
+		return nil
+	}
+	if next != nil {
+		if err := inv.Put(batch, callerID, next); err != nil {
+			return fmt.Errorf("onPromiseCompletionAck: write status: %w", err)
+		}
+	}
+	if isLeader {
+		for _, a := range actions {
+			p.cfg.Collector.Push(a)
+		}
+	}
+	return nil
+}
+
 // releaseKeyLease handles VO gate cleanup. When a keyed invocation
 // transitions to Completed, this fires vobjComplete on the per-key FSM
 // and writes the resulting KeyLeaseStatus back into the same Pebble
@@ -1453,6 +1698,84 @@ func (p *Partition) onOutboxAck(batch storage.Batch, ack *enginev1.OutboxAck) er
 // Idempotent on replay: the caller guards entry via cur.GetStatus() so a
 // second Completed apply pass (which finds cur already Completed) never
 // enters this function.
+
+// onReapWorkflow range-deletes every per-key row that lives past a
+// Completed workflow run: state, promise, promise_awaiter, workflow_run,
+// the run's inv/journal/signal_*, and the workflow_reap row that fired
+// this command. Idempotent: if workflow_run is absent (already reaped)
+// the apply is a no-op.
+//
+// Replicas always remove the workflow_reap row in the same batch — even
+// if the workflow_run lookup misses — so a duplicate ReapWorkflow
+// proposal from a stale leader can never re-add the row indefinitely.
+func (p *Partition) onReapWorkflow(
+	batch storage.Batch,
+	cmd *enginev1.ReapWorkflow,
+	inv tables.InvocationTable,
+	journal tables.JournalTable,
+) error {
+	svc := cmd.GetService()
+	wfKey := cmd.GetWorkflowKey()
+	if svc == "" || wfKey == "" {
+		p.cfg.Log.Warn("partition: ReapWorkflow with empty scope", "service", svc, "workflow_key", wfKey)
+		return nil
+	}
+	reapT := tables.WorkflowReapTable{S: batch}
+	// Always delete the originating reap row — even on a no-op apply.
+	if err := reapT.Delete(batch, cmd.GetFireAtMs(), svc, wfKey); err != nil {
+		return fmt.Errorf("onReapWorkflow: workflow_reap delete: %w", err)
+	}
+	runT := tables.WorkflowRunTable{S: batch}
+	invID, rerr := runT.Get(svc, wfKey)
+	if rerr != nil {
+		return fmt.Errorf("onReapWorkflow: workflow_run lookup: %w", rerr)
+	}
+	if invID == nil {
+		// Already reaped (operator-driven Purge ran first, or a duplicate
+		// ReapWorkflow proposal). No-op.
+		return nil
+	}
+	cur, gerr := inv.Get(invID)
+	if gerr != nil {
+		return fmt.Errorf("onReapWorkflow: load status: %w", gerr)
+	}
+	if cur.GetCompleted() == nil {
+		// Race with re-submit: the prior run's reap row fired but a fresh
+		// workflow run has since claimed this (service, workflow_key) and
+		// is not yet Completed. Leave its rows alone.
+		p.cfg.Log.Warn("partition: ReapWorkflow on non-Completed status; skipping",
+			"service", svc, "workflow_key", wfKey, "status", fmt.Sprintf("%T", cur.GetStatus()))
+		return nil
+	}
+	// Range-delete every per-key namespace.
+	if err := (tables.StateTable{S: batch}).ClearObject(batch, &enginev1.InvocationTarget{ServiceName: svc, ObjectKey: wfKey}); err != nil {
+		return fmt.Errorf("onReapWorkflow: state clear-object: %w", err)
+	}
+	if err := (tables.PromiseTable{S: batch}).DeleteAllForWorkflow(batch, svc, wfKey); err != nil {
+		return fmt.Errorf("onReapWorkflow: promise delete-all: %w", err)
+	}
+	if err := (tables.PromiseAwaiterTable{S: batch}).DeleteAllForWorkflow(batch, svc, wfKey); err != nil {
+		return fmt.Errorf("onReapWorkflow: promise_awaiter delete-all: %w", err)
+	}
+	if err := runT.Delete(batch, svc, wfKey); err != nil {
+		return fmt.Errorf("onReapWorkflow: workflow_run delete: %w", err)
+	}
+	// Per-invocation rows: subsume onPurge for this id.
+	if err := inv.Delete(batch, invID); err != nil {
+		return fmt.Errorf("onReapWorkflow: inv delete: %w", err)
+	}
+	if err := journal.DeletePrefix(batch, invID); err != nil {
+		return fmt.Errorf("onReapWorkflow: journal delete-prefix: %w", err)
+	}
+	if err := (tables.SignalInboxTable{S: batch}).DeleteAllForInvocation(batch, invID); err != nil {
+		return fmt.Errorf("onReapWorkflow: signal_inbox delete-all: %w", err)
+	}
+	if err := (tables.SignalAwaiterTable{S: batch}).DeleteAllForInvocation(batch, invID); err != nil {
+		return fmt.Errorf("onReapWorkflow: signal_awaiter delete-all: %w", err)
+	}
+	return nil
+}
+
 func (p *Partition) releaseKeyLease(batch storage.Batch, target *enginev1.InvocationTarget) ([]Action, error) {
 	klt := tables.KeyLeaseTable{S: batch}
 	cur, err := klt.Get(target.GetServiceName(), target.GetObjectKey())
@@ -1710,11 +2033,12 @@ func (p *Partition) onPurge(
 	// invocations on the same key, and a workflow's state must survive
 	// the run for downstream readers. Cleanup for workflow state +
 	// workflow_run + promise rows is the workflow retention reaper's job
-	// (not yet wired; see Step 3.3 in the durable-execution-go-sad doc).
+	// (onReapWorkflow apply arm, driven by WorkflowReapService — fires
+	// limits.DefaultWorkflowRetentionMs after the Completed transition).
 	// Promise rows (promise/<svc>/<key>/<name>) and awaiter rows
-	// (promise_awaiter/<svc>/<key>/<name>) follow the same retention
-	// model — the reaper sweeps them together with state when the
-	// workflow's retention window elapses.
+	// (promise_awaiter/<svc>/<key>/<name>/<entry_index>) follow the same
+	// retention model — the reaper sweeps them together with state when
+	// the workflow's retention window elapses.
 	// Timer rows are reaped on the Invoked/Suspended → Completed
 	// transition (see InvokerEffect_Completed apply arm); transitionOnPurge
 	// requires Completed, so no pending timer can survive into Purge.

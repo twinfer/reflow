@@ -267,6 +267,8 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 		msg := &protocolv1.GetPromiseCommandMessage{
 			Name:               entry.GetPromise.GetName(),
 			ResultCompletionId: entry.GetPromise.GetResultCompletionId(),
+			Service:            entry.GetPromise.GetService(),
+			Key:                entry.GetPromise.GetWorkflowKey(),
 		}
 		return marshalFrame(codec, wire.TypeCmdGetPromise, e.GetIndex(), msg)
 
@@ -293,6 +295,8 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 		msg := &protocolv1.PeekPromiseCommandMessage{
 			Name:      entry.PeekPromise.GetName(),
 			Completed: entry.PeekPromise.GetCompleted(),
+			Service:   entry.PeekPromise.GetService(),
+			Key:       entry.PeekPromise.GetWorkflowKey(),
 		}
 		if fm := entry.PeekPromise.GetFailureMessage(); fm != "" {
 			msg.Result = &protocolv1.PeekPromiseCommandMessage_Failure{
@@ -309,6 +313,8 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 		msg := &protocolv1.CompletePromiseCommandMessage{
 			Name:               entry.CompletePromise.GetName(),
 			ResultCompletionId: entry.CompletePromise.GetResultCompletionId(),
+			Service:            entry.CompletePromise.GetService(),
+			Key:                entry.CompletePromise.GetWorkflowKey(),
 		}
 		if fm := entry.CompletePromise.GetFailureMessage(); fm != "" {
 			msg.Completion = &protocolv1.CompletePromiseCommandMessage_CompletionFailure{

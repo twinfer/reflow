@@ -1536,8 +1536,13 @@ type GetPromiseCommandMessage struct {
 	Key                string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
 	ResultCompletionId uint32                 `protobuf:"varint,11,opt,name=result_completion_id,json=resultCompletionId,proto3" json:"result_completion_id,omitempty"`
 	Name               string                 `protobuf:"bytes,12,opt,name=name,proto3" json:"name,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// service is the explicit promise scope. Existing Promise(name) callers
+	// set it to the calling invocation's own service; WorkflowPromise(target,
+	// name) callers set target.Service. Required: the apply path uses it +
+	// key to locate the promise row, not statusTarget(cur).
+	Service       string `protobuf:"bytes,13,opt,name=service,proto3" json:"service,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetPromiseCommandMessage) Reset() {
@@ -1587,6 +1592,13 @@ func (x *GetPromiseCommandMessage) GetResultCompletionId() uint32 {
 func (x *GetPromiseCommandMessage) GetName() string {
 	if x != nil {
 		return x.Name
+	}
+	return ""
+}
+
+func (x *GetPromiseCommandMessage) GetService() string {
+	if x != nil {
+		return x.Service
 	}
 	return ""
 }
@@ -1698,8 +1710,10 @@ type PeekPromiseCommandMessage struct {
 	//
 	//	*PeekPromiseCommandMessage_Value
 	//	*PeekPromiseCommandMessage_Failure
-	Result        isPeekPromiseCommandMessage_Result `protobuf_oneof:"result"`
-	Name          string                             `protobuf:"bytes,12,opt,name=name,proto3" json:"name,omitempty"`
+	Result isPeekPromiseCommandMessage_Result `protobuf_oneof:"result"`
+	Name   string                             `protobuf:"bytes,12,opt,name=name,proto3" json:"name,omitempty"`
+	// service is the explicit promise scope (see GetPromiseCommandMessage).
+	Service       string `protobuf:"bytes,13,opt,name=service,proto3" json:"service,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1776,6 +1790,13 @@ func (x *PeekPromiseCommandMessage) GetFailure() *Failure {
 func (x *PeekPromiseCommandMessage) GetName() string {
 	if x != nil {
 		return x.Name
+	}
+	return ""
+}
+
+func (x *PeekPromiseCommandMessage) GetService() string {
+	if x != nil {
+		return x.Service
 	}
 	return ""
 }
@@ -1913,8 +1934,13 @@ type CompletePromiseCommandMessage struct {
 	Completion         isCompletePromiseCommandMessage_Completion `protobuf_oneof:"completion"`
 	ResultCompletionId uint32                                     `protobuf:"varint,11,opt,name=result_completion_id,json=resultCompletionId,proto3" json:"result_completion_id,omitempty"`
 	Name               string                                     `protobuf:"bytes,12,opt,name=name,proto3" json:"name,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// service is the explicit promise scope (see GetPromiseCommandMessage).
+	// When (service, key) hashes to a different shard than the caller's
+	// partition, the apply path routes the completion via OutboxEnvelope
+	// .PromiseCompletion + .PromiseCompletionAck round-trip.
+	Service       string `protobuf:"bytes,13,opt,name=service,proto3" json:"service,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CompletePromiseCommandMessage) Reset() {
@@ -1989,6 +2015,13 @@ func (x *CompletePromiseCommandMessage) GetResultCompletionId() uint32 {
 func (x *CompletePromiseCommandMessage) GetName() string {
 	if x != nil {
 		return x.Name
+	}
+	return ""
+}
+
+func (x *CompletePromiseCommandMessage) GetService() string {
+	if x != nil {
+		return x.Service
 	}
 	return ""
 }
@@ -3960,35 +3993,38 @@ const file_protocolv1_protocol_proto_rawDesc = "" +
 	"\x06result\"j\n" +
 	"\x1fGetEagerStateKeysCommandMessage\x123\n" +
 	"\x05value\x18\x0e \x01(\v2\x1d.reflow.protocol.v1.StateKeysR\x05value\x12\x12\n" +
-	"\x04name\x18\f \x01(\tR\x04name\"r\n" +
+	"\x04name\x18\f \x01(\tR\x04name\"\x8c\x01\n" +
 	"\x18GetPromiseCommandMessage\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x120\n" +
 	"\x14result_completion_id\x18\v \x01(\rR\x12resultCompletionId\x12\x12\n" +
-	"\x04name\x18\f \x01(\tR\x04name\"\xc4\x01\n" +
+	"\x04name\x18\f \x01(\tR\x04name\x12\x18\n" +
+	"\aservice\x18\r \x01(\tR\aservice\"\xc4\x01\n" +
 	"'GetPromiseCompletionNotificationMessage\x12#\n" +
 	"\rcompletion_id\x18\x01 \x01(\rR\fcompletionId\x121\n" +
 	"\x05value\x18\x05 \x01(\v2\x19.reflow.protocol.v1.ValueH\x00R\x05value\x127\n" +
 	"\afailure\x18\x06 \x01(\v2\x1b.reflow.protocol.v1.FailureH\x00R\afailureB\b\n" +
-	"\x06result\"\xd5\x01\n" +
+	"\x06result\"\xef\x01\n" +
 	"\x19PeekPromiseCommandMessage\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x1c\n" +
 	"\tcompleted\x18\x02 \x01(\bR\tcompleted\x121\n" +
 	"\x05value\x18\x03 \x01(\v2\x19.reflow.protocol.v1.ValueH\x00R\x05value\x127\n" +
 	"\afailure\x18\x04 \x01(\v2\x1b.reflow.protocol.v1.FailureH\x00R\afailure\x12\x12\n" +
-	"\x04name\x18\f \x01(\tR\x04nameB\b\n" +
+	"\x04name\x18\f \x01(\tR\x04name\x12\x18\n" +
+	"\aservice\x18\r \x01(\tR\aserviceB\b\n" +
 	"\x06result\"\xe3\x01\n" +
 	"(PeekPromiseCompletionNotificationMessage\x12#\n" +
 	"\rcompletion_id\x18\x01 \x01(\rR\fcompletionId\x12\x1c\n" +
 	"\tcompleted\x18\x02 \x01(\bR\tcompleted\x121\n" +
 	"\x05value\x18\x03 \x01(\v2\x19.reflow.protocol.v1.ValueH\x00R\x05value\x127\n" +
 	"\afailure\x18\x04 \x01(\v2\x1b.reflow.protocol.v1.FailureH\x00R\afailureB\b\n" +
-	"\x06result\"\x9b\x02\n" +
+	"\x06result\"\xb5\x02\n" +
 	"\x1dCompletePromiseCommandMessage\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12F\n" +
 	"\x10completion_value\x18\x02 \x01(\v2\x19.reflow.protocol.v1.ValueH\x00R\x0fcompletionValue\x12L\n" +
 	"\x12completion_failure\x18\x03 \x01(\v2\x1b.reflow.protocol.v1.FailureH\x00R\x11completionFailure\x120\n" +
 	"\x14result_completion_id\x18\v \x01(\rR\x12resultCompletionId\x12\x12\n" +
-	"\x04name\x18\f \x01(\tR\x04nameB\f\n" +
+	"\x04name\x18\f \x01(\tR\x04name\x12\x18\n" +
+	"\aservice\x18\r \x01(\tR\aserviceB\f\n" +
 	"\n" +
 	"completion\"\xc6\x01\n" +
 	",CompletePromiseCompletionNotificationMessage\x12#\n" +

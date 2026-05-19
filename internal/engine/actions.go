@@ -55,6 +55,18 @@ type ActDispatchOutbox struct {
 
 func (ActDispatchOutbox) isAction() {}
 
+// ActScheduleWorkflowReap hands a freshly-written workflow_reap row to
+// the leader's WorkflowReapService. The reaper fires at FireAtMs by
+// proposing Command.ReapWorkflow against the apply path, which range-
+// deletes the workflow run's per-key data.
+type ActScheduleWorkflowReap struct {
+	FireAtMs    uint64
+	Service     string
+	WorkflowKey string
+}
+
+func (ActScheduleWorkflowReap) isAction() {}
+
 // ActionCollector is a single-goroutine append-only buffer of Actions
 // produced during one Update call. It is owned by the partition's apply path
 // and is not safe for concurrent use.

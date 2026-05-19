@@ -19,6 +19,12 @@ type Metrics struct {
 	TimerFired            prometheus.Counter
 	DedupHits             prometheus.Counter
 	ListenerSecurityLevel *prometheus.GaugeVec
+	// InvocationsCompleted classifies each Completed transition by
+	// outcome: success / failure / cancelled / step_budget_exhausted.
+	// step_budget_exhausted is the operator-visible signal that a
+	// deployment is hitting MaxJournalEntries; raise the cap via
+	// DeploymentRecord.max_journal_entries.
+	InvocationsCompleted *prometheus.CounterVec
 }
 
 // NewMetrics builds reflow's collectors. Pass nil to use the default
@@ -54,5 +60,9 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name: "reflow_listener_security_level",
 			Help: "Transport security level per gRPC listener. 0=NoSecurity, 1=IntegrityOnly, 2=PrivacyAndIntegrity.",
 		}, []string{"listener", "driver"}),
+		InvocationsCompleted: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "reflow_invocations_completed_total",
+			Help: "Invocations that reached the Completed status, classified by outcome (success, failure, cancelled, step_budget_exhausted).",
+		}, []string{"service", "outcome"}),
 	}
 }

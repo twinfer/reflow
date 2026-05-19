@@ -692,16 +692,27 @@ func (c *wireContext) CancelInvocation(target Target) error {
 // or KIND_WORKFLOW_SHARED) — non-workflow callers get a *Failure on
 // first method use.
 func (c *wireContext) Promise(name string) DurablePromise {
-	return &durablePromise{ctx: c, name: name}
+	return &durablePromise{ctx: c, name: name, service: c.service, key: c.key}
 }
 
-// durablePromise binds a wireContext + promise name; each method
-// allocates its own journal slots when invoked. Concrete result types
-// are surfaced lazily so unused promise handles cost nothing in the
-// journal.
+// WorkflowPromise returns a durable-promise handle bound to the foreign
+// workflow at (target.Service, target.Key). Use when the caller is not
+// on the workflow's own (service, key); the apply path routes the
+// completion cross-partition when target hashes off this shard.
+// target.Handler is ignored — promises are workflow-run-scoped.
+func (c *wireContext) WorkflowPromise(target Target, name string) DurablePromise {
+	return &durablePromise{ctx: c, name: name, service: target.Service, key: target.Key}
+}
+
+// durablePromise binds a wireContext + promise scope (service, key) +
+// name; each method allocates its own journal slots when invoked.
+// Concrete result types are surfaced lazily so unused promise handles
+// cost nothing in the journal.
 type durablePromise struct {
-	ctx  *wireContext
-	name string
+	ctx     *wireContext
+	name    string
+	service string
+	key     string
 }
 
 // requireWorkflow returns *Failure when the surrounding invocation is
@@ -728,7 +739,8 @@ func (p *durablePromise) Result() Future {
 
 	if p.ctx.lookupReplay(cmdSlot) == nil {
 		msg := &protocolv1.GetPromiseCommandMessage{
-			Key:                p.ctx.key,
+			Service:            p.service,
+			Key:                p.key,
 			Name:               p.name,
 			ResultCompletionId: resultSlot,
 		}
@@ -774,8 +786,9 @@ func (p *durablePromise) Peek() (value []byte, completed bool, failure *Failure,
 		}
 	}
 	msg := &protocolv1.PeekPromiseCommandMessage{
-		Key:  p.ctx.key,
-		Name: p.name,
+		Service: p.service,
+		Key:     p.key,
+		Name:    p.name,
 	}
 	payload, err := p.ctx.codec.Marshal(msg)
 	if err != nil {
@@ -813,7 +826,8 @@ func (p *durablePromise) complete(value []byte, failure *Failure) error {
 
 	if p.ctx.lookupReplay(cmdSlot) == nil {
 		msg := &protocolv1.CompletePromiseCommandMessage{
-			Key:                p.ctx.key,
+			Service:            p.service,
+			Key:                p.key,
 			Name:               p.name,
 			ResultCompletionId: resultSlot,
 		}

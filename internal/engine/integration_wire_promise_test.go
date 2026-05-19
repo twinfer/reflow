@@ -81,8 +81,9 @@ func (f *fakeHandlerPromiseAwaiter) serveInvoke(t *testing.T, stream *connect.Bi
 		// Fresh run: emit GetPromise at cmd slot 1 (result slot 2),
 		// then suspend pending the resolve.
 		getCmd := &protocolv1.GetPromiseCommandMessage{
-			Name:               f.promiseName,
+			Service:            f.service,
 			Key:                sm.GetKey(),
+			Name:               f.promiseName,
 			ResultCompletionId: 2,
 		}
 		getPayload, _ := proto.Marshal(getCmd)

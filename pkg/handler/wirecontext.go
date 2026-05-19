@@ -481,10 +481,17 @@ func (c *wireContext) ClearState(key string) error {
 	}
 	c.mu.Lock()
 	delete(c.stateCache, key)
-	if c.absentKeys == nil {
-		c.absentKeys = make(map[string]bool)
+	// absentKeys only matters when partialState=true — it short-circuits
+	// a follow-up GetState from paying a 2-slot lazy fetch on a key we
+	// just cleared. With partialState=false the cache-miss path already
+	// returns absent without consulting absentKeys, so writing it just
+	// grows the map for keys whose absence is implicit anyway.
+	if c.partialState {
+		if c.absentKeys == nil {
+			c.absentKeys = make(map[string]bool)
+		}
+		c.absentKeys[key] = true
 	}
-	c.absentKeys[key] = true
 	c.mu.Unlock()
 	return nil
 }

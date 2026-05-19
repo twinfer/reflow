@@ -380,6 +380,49 @@ func TestWireContext_GetState_ClearStateShortCircuits(t *testing.T) {
 	}
 }
 
+// TestWireContext_ClearState_AbsentKeysBoundByPartialState verifies the
+// memory shape of absentKeys. The map is only useful when partialState=true
+// (it short-circuits a 2-slot lazy fetch on a key we just cleared); when
+// partialState=false the cache-miss + complete-snapshot path returns
+// absent without consulting it, so writing growth-unbounded entries is
+// pure waste. The test asserts ClearState honors the bound:
+//
+//   - partialState=true  → absentKeys[k] gets set
+//   - partialState=false → absentKeys stays nil
+//
+// Both paths must still produce the right GetState answer (absent) for
+// the cleared key.
+func TestWireContext_ClearState_AbsentKeysBoundByPartialState(t *testing.T) {
+	t.Run("partial=true writes absentKeys", func(t *testing.T) {
+		wctx, _ := newTestWireContext(t, map[string][]byte{"k": []byte("v")})
+		wctx.partialState = true
+		if err := wctx.ClearState("k"); err != nil {
+			t.Fatalf("ClearState: %v", err)
+		}
+		if !wctx.absentKeys["k"] {
+			t.Errorf("absentKeys[k] = false; want true (partialState=true)")
+		}
+		v, ok, err := wctx.GetState("k")
+		if err != nil || ok || v != nil {
+			t.Errorf("GetState after ClearState = (%q, %v, %v); want (nil, false, nil)", v, ok, err)
+		}
+	})
+	t.Run("partial=false skips absentKeys", func(t *testing.T) {
+		wctx, _ := newTestWireContext(t, map[string][]byte{"k": []byte("v")})
+		// partialState defaults false.
+		if err := wctx.ClearState("k"); err != nil {
+			t.Fatalf("ClearState: %v", err)
+		}
+		if len(wctx.absentKeys) != 0 {
+			t.Errorf("absentKeys = %v; want empty (partialState=false makes it redundant)", wctx.absentKeys)
+		}
+		v, ok, err := wctx.GetState("k")
+		if err != nil || ok || v != nil {
+			t.Errorf("GetState after ClearState = (%q, %v, %v); want (nil, false, nil)", v, ok, err)
+		}
+	})
+}
+
 // TestWireContext_GetState_ClearAllStateClearsPartialFlag verifies
 // ClearAllState flips partialState=false so subsequent reads return
 // absent directly without lazy fetching.

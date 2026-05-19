@@ -79,10 +79,32 @@ func (m *engineMachine) PromiseGet(t *rapid.T) {
 		cur.journalLen += 2
 	} else {
 		cur.journalLen += 1
-		m.promiseAwaiters[pk] = append(m.promiseAwaiters[pk], &modelPromiseAwaiter{
-			ownerIDHex: idHex(spec.id),
-			entryIndex: idx,
-		})
+		// PromiseAwaiterTable.PutForSlot keys by (svc, key, name, entry_index)
+		// — owner is in the value, not the key. Two concurrent invocations
+		// that both do Get(name) at the same entry_index (e.g. both at slot
+		// 1 right after JEInput) collide and the second overwrites the
+		// first; the originally-awaiting invocation is stranded with no row
+		// in the SUT directory. Mirror that here: dedupe by entry_index
+		// within a promiseKey, replacing on collision rather than appending.
+		awaiters := m.promiseAwaiters[pk]
+		replaced := false
+		for i, a := range awaiters {
+			if a.entryIndex == idx {
+				awaiters[i] = &modelPromiseAwaiter{
+					ownerIDHex: idHex(spec.id),
+					entryIndex: idx,
+				}
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			awaiters = append(awaiters, &modelPromiseAwaiter{
+				ownerIDHex: idHex(spec.id),
+				entryIndex: idx,
+			})
+		}
+		m.promiseAwaiters[pk] = awaiters
 	}
 }
 

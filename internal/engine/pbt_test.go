@@ -395,11 +395,21 @@ func (m *engineMachine) onActInvoke(t *rapid.T, shard uint64, a ActInvoke) {
 // Returns true if this Invoke is being dropped (idempotency or workflow-run
 // dedup).
 func (m *engineMachine) applyInvokeToModel(id *enginev1.InvocationId, tgt modelTarget, ik string, kind protocolv1.Kind) bool {
+	// Mirror the SUT's onInvoke order exactly (partition.go:475-531): the
+	// idempotency row is checked AND written before the workflow_run
+	// dedup check. So an Invoke that's dropped on workflow_run still
+	// leaves a registered idem row pointing at the dropped id. A
+	// subsequent Invoke with the same idem then dedups on idem alone —
+	// even after the workflow_run row is later reaped. Writing idem
+	// after wf_run dedup (as a prior version of this helper did) made
+	// the model miss that idem registration and diverge from the SUT
+	// when the second submission arrived post-reap.
 	if ik != "" {
 		k := idemKey{tgt.service, tgt.handler, tgt.objectKey, ik}
 		if _, ok := m.idemPool[k]; ok {
 			return true
 		}
+		m.idemPool[k] = idHex(id)
 	}
 	// Workflow single-run-per-key dedup. Only KIND_WORKFLOW (Run handlers)
 	// participate; KIND_WORKFLOW_SHARED companions and KIND_SERVICE invokes
@@ -410,24 +420,13 @@ func (m *engineMachine) applyInvokeToModel(id *enginev1.InvocationId, tgt modelT
 		if _, ok := m.workflowRuns[wfk]; ok {
 			return true
 		}
+		m.workflowRuns[wfk] = idHex(id)
 	}
 	cur := m.getOrCreate(id)
 	freshInvoke := cur.status == mFree
 	if freshInvoke {
 		cur.status = mScheduled
 		cur.target = tgt
-	}
-	if ik != "" {
-		k := idemKey{tgt.service, tgt.handler, tgt.objectKey, ik}
-		if _, exists := m.idemPool[k]; !exists {
-			m.idemPool[k] = idHex(id)
-		}
-	}
-	if kind == protocolv1.Kind_KIND_WORKFLOW && tgt.objectKey != "" {
-		wfk := leaseKey{tgt.service, tgt.objectKey}
-		if _, exists := m.workflowRuns[wfk]; !exists {
-			m.workflowRuns[wfk] = idHex(id)
-		}
 	}
 	if freshInvoke && tgt.objectKey != "" {
 		lk := leaseKey{tgt.service, tgt.objectKey}
@@ -763,8 +762,11 @@ func (m *engineMachine) ReapWorkflow(t *rapid.T) {
 		}},
 	})
 
-	// Mirror the apply arm in the model.
+	// Mirror the apply arm in the model. onReapWorkflow range-deletes
+	// every per-key namespace (state, promise, promise_awaiter,
+	// workflow_run) and the per-invocation rows for the workflow run id.
 	delete(m.workflowRuns, pick.wfk)
+	delete(m.state, pick.wfk)
 	for pk := range m.promises {
 		if pk.service == pick.wfk.service && pk.workflowKey == pick.wfk.objectKey {
 			delete(m.promises, pk)

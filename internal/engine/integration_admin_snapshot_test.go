@@ -21,7 +21,6 @@ import (
 	enginesnap "github.com/twinfer/reflow/internal/engine/snapshot"
 
 	"github.com/twinfer/reflow/internal/pki"
-	"github.com/twinfer/reflow/pkg/handler"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	"github.com/twinfer/reflow/proto/adminv1/adminv1connect"
@@ -119,7 +118,7 @@ func awaitMembership(t *testing.T, leader *nodeRig, min int, timeout time.Durati
 // TestAdminListNodes confirms the leader's admin surface returns every
 // registered node.
 func TestAdminListNodes(t *testing.T) {
-	rigs, _ := bringUpThreeNodeCluster(t, handler.NewRegistry())
+	rigs, _ := bringUpThreeNodeCluster(t)
 	defer closeAll(rigs)
 
 	leader := awaitMetadataLeaderRig(t, rigs, 15*time.Second)
@@ -153,7 +152,7 @@ func TestAdminListNodes(t *testing.T) {
 
 // TestAdminListPartitions returns the bootstrap partition table.
 func TestAdminListPartitions(t *testing.T) {
-	rigs, _ := bringUpThreeNodeCluster(t, handler.NewRegistry())
+	rigs, _ := bringUpThreeNodeCluster(t)
 	defer closeAll(rigs)
 
 	leader := awaitMetadataLeaderRig(t, rigs, 15*time.Second)
@@ -180,7 +179,7 @@ func TestAdminListPartitions(t *testing.T) {
 // TestAdminRemoveNode_LogicallyEvicts proposes EvictNode and asserts
 // the apply path marks last_seen_ms=0 and enqueues DELETE_REPLICA steps.
 func TestAdminRemoveNode_LogicallyEvicts(t *testing.T) {
-	rigs, _ := bringUpThreeNodeCluster(t, handler.NewRegistry())
+	rigs, _ := bringUpThreeNodeCluster(t)
 	defer closeAll(rigs)
 
 	leader := awaitMetadataLeaderRig(t, rigs, 15*time.Second)
@@ -240,7 +239,7 @@ func TestAdminRemoveNode_LogicallyEvicts(t *testing.T) {
 // listener wired with operator-CA mTLS and asserts that a client
 // without any cert cannot complete the handshake.
 func TestAdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
-	rigs, _ := bringUpThreeNodeCluster(t, handler.NewRegistry())
+	rigs, _ := bringUpThreeNodeCluster(t)
 	defer closeAll(rigs)
 	leader := awaitMetadataLeaderRig(t, rigs, 15*time.Second)
 
@@ -264,7 +263,7 @@ func TestAdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 		}
 	}()
 
-	mw, authCloser, err := auth.HTTPMiddleware(testTrustDomain, "", nil)
+	mw, authCloser, err := auth.HTTPMiddleware(auth.Config{TrustDomain: testTrustDomain}, nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}
@@ -355,7 +354,7 @@ func TestAdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 // through the engine.Host helper, archives it via the fs repository,
 // and confirms a non-empty Fetch round-trip.
 func TestSnapshot_PartitionExportAndArchive(t *testing.T) {
-	rigs, _ := bringUpThreeNodeCluster(t, handler.NewRegistry())
+	rigs, _ := bringUpThreeNodeCluster(t)
 	defer closeAll(rigs)
 
 	deadline := time.Now().Add(15 * time.Second)
@@ -428,7 +427,7 @@ func TestSnapshot_PartitionExportAndArchive(t *testing.T) {
 // TestAdminDeleteSnapshot puts two archives, deletes one via the admin
 // RPC, and verifies List returns only the survivor.
 func TestAdminDeleteSnapshot(t *testing.T) {
-	rigs, _ := bringUpThreeNodeCluster(t, handler.NewRegistry())
+	rigs, _ := bringUpThreeNodeCluster(t)
 	defer closeAll(rigs)
 
 	leader := awaitMetadataLeaderRig(t, rigs, 15*time.Second)
@@ -503,7 +502,7 @@ func TestAdminDeleteSnapshot(t *testing.T) {
 // gossip-driven and best-effort; the test rig doesn't publish admin
 // endpoints over gossip, so we only assert the code here.
 func TestAdminSnapshotRPCs_RejectFollower(t *testing.T) {
-	rigs, _ := bringUpThreeNodeCluster(t, handler.NewRegistry())
+	rigs, _ := bringUpThreeNodeCluster(t)
 	defer closeAll(rigs)
 
 	leader := awaitMetadataLeaderRig(t, rigs, 15*time.Second)

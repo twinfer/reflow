@@ -1,19 +1,27 @@
-// Package auth is reflow's authentication + authorization interceptor
-// layer for gRPC servers (Admin, Delivery — and Ingress in the
-// future). The model is:
+// Package auth is reflow's authentication + authorization HTTP
+// middleware layer for the Connect-based ingress, admin, and delivery
+// listeners. The model is:
 //
-//   - Extractor turns a server context (TLS peer info today; JWT
-//     metadata later) into a Principal.
-//   - The interceptor stamps Principal.Raw into a server-controlled
-//     metadata header (x-reflow-principal). Any inbound copy of that
-//     header is stripped first, so a client cannot forge identity.
-//   - grpc-go's authz package then matches the stamped header against
-//     a JSON policy. The embedded starter policy lives in
-//     starter_policy.json; operators override via Config.PolicyFile,
-//     which gets hot-reloaded by authz.FileWatcher.
+//   - An authn.AuthFunc turns each inbound *http.Request into a
+//     Principal. Today there are two authenticators: SPIFFE from the
+//     verified mTLS leaf (spiffe_authfunc.go) and Bearer JWT against
+//     one or more configured OIDC issuers (jwt_authfunc.go). mTLS
+//     wins when both are presented.
 //
-// Adding a new authentication source (JWT, OIDC) means writing one
-// more Extractor and chaining it ahead of SPIFFEExtractor. The
-// Authorizer side stays unchanged because every principal funnels
-// through the same metadata header.
+//   - The policy handler stamps Principal.Raw into the server-
+//     controlled X-Reflow-Principal header (any inbound copy is
+//     stripped first, so a client cannot forge identity) and then
+//     matches request URL.Path against a JSON allow-list policy.
+//     Denial emits a connect-coded error (CodeUnauthenticated for
+//     anonymous, CodePermissionDenied for known-but-rejected) so
+//     clients see the right error across Connect / gRPC / gRPC-Web /
+//     HTTP-JSON.
+//
+//   - The embedded starter policy lives in starter_policy.json;
+//     operators override via Config.PolicyFile, which is polled for
+//     mtime changes every FileWatcherReload (30s).
+//
+// Adding a new authentication source (e.g. PASETO, AWS SigV4) means
+// writing one more authn.AuthFunc and composing it ahead of the
+// bearer step in composeAuthFunc.
 package auth

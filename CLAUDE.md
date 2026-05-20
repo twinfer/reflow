@@ -11,15 +11,21 @@ Reflow is a **single-binary durable-execution engine for Go**, inspired by Resta
 
 ```bash
 make build        # go build ./...
-make test         # go test -race ./...   (unit + integration, no loadtest)
+make test         # gotestsum -race ./... — one line per package on PASS,
+                  # focused failure output on FAIL, plus a `DONE N tests`
+                  # summary line. Auto-installs gotestsum to $GOBIN on
+                  # first run. Unit + integration, no loadtest.
+make test-verbose # go test -race -v ./... — escape hatch for full logs.
 make vet
 make tidy
 make proto        # buf generate (regenerates proto/*/*.pb.go)
 ```
 
-Run a single test:
+Run a single test or scope to one package:
 
 ```bash
+make test-pkg PKG=./internal/engine/... RUN=TestSingleNodeReplayAcrossRestart
+# or, without make:
 go test -race -run TestSingleNodeReplayAcrossRestart ./internal/engine/...
 ```
 
@@ -29,6 +35,28 @@ Chaos / load tests are gated by the `loadtest` build tag and live in `internal/c
 go test -tags=loadtest -timeout=10m -run=TestChaos_LeaderSIGKILL -v ./internal/chaos/...
 go test -tags=loadtest -timeout=10m -run=TestLoad_SteadyState   -v ./internal/loadgen/...
 ```
+
+For Go code in this reflow, prefer the gopher-mcp MCP tools over textual search:
+
+| Goal                              | Use                                            | Not                          |
+| --------------------------------- | ---------------------------------------------- | ---------------------------- |
+| Find where a symbol is declared   | `mcp__repo__find_symbol`                       | `grep "func Foo"`            |
+| Jump from a use-site to its decl  | `mcp__repo__definition`                        | reading the file             |
+| Find every caller of a function   | `mcp__repo__references` / `callers`            | `grep -r "Foo("`             |
+| List types implementing an iface  | `mcp__repo__implementations`                   | grep + guessing              |
+| Match Go syntax (calls, asserts)  | `mcp__repo__ast_grep`                          | `grep`                       |
+| Trace which entry reaches code X  | `mcp__repo__reverse_trace`                     | reading call sites manually  |
+| Find readers/writers of a proto   | `mcp__repo__proto_field_xref`                  | `grep "FieldName"`           |
+| Resolve a `crates/...:42` comment | `mcp__repo__cite_resolve`                      | walking vendor by hand       |
+
+Grep is still the right tool for: comments, log strings, config files,
+non-Go files, and anything outside the indexed module(s).
+
+Scope: the symbol/reference tools accept `scope` (`workspace`, `workspace+direct`
+(default), or `all`). The default catches calls inside your module and its
+direct `require`s. Pass `scope: "all"` to reach into indirect deps and stdlib
+when the server has been started with `-deps all` (or `dep_index.stdlib: true`).
+
 
 `cmd/loadnode` is a subprocess harness used by chaos tests so SIGKILL exercises Pebble WAL torn-write recovery. **Production deployments use `cmd/reflowd`, not loadnode.**
 
@@ -55,7 +83,7 @@ The dependency direction is `cmd → pkg → internal → proto`. Internal packa
 - **`internal/ingress/http`** — REST-style facade at `/v1/*` (chi-based) mounted on the Connect ingress listener via `ExtraRoutes`. Each handler builds a typed `*connect.Request` from URL params + headers + body and delegates to the same in-process `*ingress.Server` Connect handlers — no business-logic duplication. Default request timeout is installed by an `ensureDeadline` middleware because `*ingress.Server` calls dragonboat `SyncRead` under the hood (rejects deadlineless contexts). Long-poll endpoints cap at 30s (vs Connect's 60s) to stay under common LB idle timeouts. Inbound HTTP headers prefixed `Reflow-Meta-` are lifted (lowercased + stripped) into `SubmitInvocationRequest.metadata` so operator middleware can pass verified webhook facts to the durable handler via `ctx.Metadata()`.
 - **`internal/ingress/eventsource`** — Watermill-backed broker triggers. One dispatcher goroutine per configured source subscribes to a topic (Kafka / NATS-JetStream / SQS / gochannel), maps each message to a `SubmitInvocationRequest`, and calls the in-process `ingress.Server` directly (no localhost RPC). Wired from `pkg/reflow/run.go` after the ingress listener is up; closed before the engine in `Host.Close`. Empty `cfg.EventSources.Sources` means the manager is never constructed.
 - **`internal/engine/handlerclient`** — engine-side wire client for handler deployments. Single transport is Connect RPC (`connectclient/`) over HTTP/2; the handler-side server lives at `pkg/sdk/server`.
-- **`internal/auth`** — single-CA mTLS with SPIFFE URI SAN role enforcement (`spiffe://<trust-domain>/node/<id>` vs `/operator/<name>`). Per-listener transport security is driven by `cfg.Delivery.Creds` / `cfg.Admin.Creds` via `pkg/reflow/creds`; multi-node insecure delivery emits a startup warning in `pkg/reflow/run.go`. The starter authz policy (`starter_policy.json`, embedded via `//go:embed`) restricts `/Admin/*` to `operator/*` with one carve-out: `/Admin/SelfJoin` is allowed for `node/*` so a freshly-provisioned joiner can register itself. The handler then enforces SPIFFE-equals-`req.node_id` so a leaked `node/7` cert can only join as node 7.
+- **`internal/auth`** — inbound auth + authz, HTTP-level middleware built on `connectrpc.com/authn` so failures emit proper Connect-coded errors (`CodeUnauthenticated` / `CodePermissionDenied`) across Connect, gRPC, gRPC-Web, and HTTP-JSON, and works uniformly for unary and streaming RPCs. Two authenticators chain in `composeAuthFunc`: (1) SPIFFE URI SAN on the verified mTLS leaf — `spiffe://<trust-domain>/node/<id>` vs `/operator/<name>`; (2) Bearer JWT verified against one or more OIDC issuers configured under `cfg.Auth.OIDC []OIDCIssuer` (lazy discovery with `cenkalti/backoff/v5`; `JWKSFile` for air-gapped). **mTLS wins when both are presented on the same request** — a leaked bearer token cannot forge a peer-verified leaf. Per-listener transport security is driven by `cfg.Delivery.Creds` / `cfg.Admin.Creds` via `pkg/reflow/creds`; multi-node insecure delivery emits a startup warning in `pkg/reflow/run.go`. The starter authz policy (`starter_policy.json`, embedded via `//go:embed`) restricts `/Admin/*` to `operator/*` with one carve-out: `/Admin/SelfJoin` is allowed for `node/*` so a freshly-provisioned joiner can register itself. The handler then enforces SPIFFE-equals-`req.node_id` so a leaked `node/7` cert can only join as node 7. JWT principals get `Kind`/`Subject` from configurable claims (default `sub` mapped to `user/<sub>`); the `/` character in subjects is sanitized to `_` so an IdP-controlled `sub` can't traverse principal-glob matching.
 - **`internal/pki`** — offline CA + leaf issuance used by `reflowd pki {init-ca|issue-cert|issue-operator}`.
 - **`internal/observability`** — `*Metrics` is a single Prometheus collector struct passed down into the partition apply path + timer service. The engine never constructs its own registry; wiring lives in `pkg/reflow`.
 
@@ -121,5 +149,6 @@ Numbers vary by machine (IO/CPU). Order-of-magnitude shifts (10× latency, peak 
 
 - Don't add Phase-marker comments. Don't write multi-paragraph docstrings on internal types — one-line `// Foo does X.` is the norm.
 - Match Restate semantics where comments cite a `crates/...:line` source; if you intentionally diverge, say so in the comment (there are several examples of "narrower than Restate" notes already).
+- **Connect interceptors must implement the full `connect.Interceptor` interface** (`WrapUnary` + `WrapStreamingClient` + `WrapStreamingHandler`), not `connect.UnaryInterceptorFunc` — the latter silently skips streaming RPCs per https://connectrpc.com/docs/go/streaming/. `internal/ingress/interceptor.go`'s `withDefaultDeadline` is the template.
 - Don't add a `Co-Authored-By` trailer to git commits.
 - Reflow still in preproduction no backwards-compt is'nt needed dont bloot the codebase

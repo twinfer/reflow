@@ -89,7 +89,7 @@ func writeTestPolicy(t *testing.T) string {
 func startTestDelivery(t *testing.T, h *stubHandler) (*Client, func()) {
 	t.Helper()
 
-	mw, mwCloser, err := auth.HTTPMiddleware("reflow.local", writeTestPolicy(t), nil)
+	mw, mwCloser, err := auth.HTTPMiddleware(auth.Config{TrustDomain: "reflow.local", PolicyFile: writeTestPolicy(t)}, nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestDeliveryClient_PolicyDenies(t *testing.T) {
 		t.Fatalf("write policy: %v", err)
 	}
 
-	mw, mwCloser, err := auth.HTTPMiddleware("reflow.local", policy, nil)
+	mw, mwCloser, err := auth.HTTPMiddleware(auth.Config{TrustDomain: "reflow.local", PolicyFile: policy}, nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}

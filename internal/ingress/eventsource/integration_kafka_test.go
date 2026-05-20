@@ -142,7 +142,7 @@ func bringUpKafkaTest(t *testing.T, svc, hname string, hf handler.Handler) *kafk
 		t.Fatalf("AutoSeed: %v", err)
 	}
 
-	mw, _, err := auth.HTTPMiddleware("reflow.local", "", nil)
+	mw, _, err := auth.HTTPMiddleware(auth.Config{TrustDomain: "reflow.local"}, nil)
 	if err != nil {
 		t.Fatalf("auth middleware: %v", err)
 	}

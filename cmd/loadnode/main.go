@@ -135,7 +135,7 @@ func run() error {
 	} else {
 		_ = iln.Close()
 	}
-	ingressMW, _, mwErr := auth.HTTPMiddleware("reflow.local", "", nil)
+	ingressMW, _, mwErr := auth.HTTPMiddleware(auth.Config{TrustDomain: "reflow.local"}, nil)
 	if mwErr != nil {
 		return fmt.Errorf("auth.HTTPMiddleware: %w", mwErr)
 	}

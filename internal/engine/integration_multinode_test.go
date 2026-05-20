@@ -24,7 +24,7 @@ type nodeRig = loadgen.InProcessNode
 // loadgen.NewCluster — see internal/loadgen/cluster.go for the actual
 // bootstrap. Kept here so the per-test call sites don't have to
 // change their pattern.
-func bringUpThreeNodeCluster(t *testing.T, handlers *handler.Registry) ([]*nodeRig, routing.Partitioner) {
+func bringUpThreeNodeCluster(t *testing.T) ([]*nodeRig, routing.Partitioner) {
 	t.Helper()
 	c := loadgen.NewCluster(t, loadgen.ClusterOptions{N: 3})
 	return asInProcess(t, c.Nodes), c.Partitioner
@@ -73,10 +73,6 @@ func awaitAnyMetadataLeader(ctx context.Context, rigs []*nodeRig) error {
 	return (&loadgen.Cluster{Nodes: asNodeSlice(rigs)}).AwaitAnyMetadataLeader(ctx)
 }
 
-func awaitAnyPartitionLeader(ctx context.Context, rigs []*nodeRig, shardID uint64) error {
-	return (&loadgen.Cluster{Nodes: asNodeSlice(rigs)}).AwaitAnyPartitionLeader(ctx, shardID)
-}
-
 func findPartitionLeader(rigs []*nodeRig, shardID uint64) *nodeRig {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -95,7 +91,7 @@ func findPartitionLeader(rigs []*nodeRig, shardID uint64) *nodeRig {
 // reachable via dragonboat gossip, every partition has a leader, and the
 // per-shard NodeHostRegistry view enumerates all 3 replicas.
 func TestMultiNode_StaticThreeNodeBootstrap(t *testing.T) {
-	rigs, _ := bringUpThreeNodeCluster(t, handler.NewRegistry())
+	rigs, _ := bringUpThreeNodeCluster(t)
 	defer closeAll(rigs)
 
 	// Verify each rig sees the same 3-replica view of every partition.
@@ -128,7 +124,7 @@ func TestMultiNode_StaticThreeNodeBootstrap(t *testing.T) {
 // publishes its reflow Delivery gRPC endpoint via gossip NodeHostMeta and
 // peers can resolve it via Host.NodeEndpoint.
 func TestMultiNode_GossipMetaCarriesGrpcEndpoint(t *testing.T) {
-	rigs, _ := bringUpThreeNodeCluster(t, handler.NewRegistry())
+	rigs, _ := bringUpThreeNodeCluster(t)
 	defer closeAll(rigs)
 
 	deadline := time.Now().Add(10 * time.Second)
@@ -163,7 +159,7 @@ func TestMultiNode_GossipMetaCarriesGrpcEndpoint(t *testing.T) {
 // the static partition table on first leader election and a SyncRead from
 // any node observes it.
 func TestMultiNode_PartitionTableLookup(t *testing.T) {
-	rigs, _ := bringUpThreeNodeCluster(t, handler.NewRegistry())
+	rigs, _ := bringUpThreeNodeCluster(t)
 	defer closeAll(rigs)
 
 	deadline := time.Now().Add(15 * time.Second)

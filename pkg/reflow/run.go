@@ -171,11 +171,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		return nil, err
 	}
 
-	mw, mwCloser, mwErr := auth.HTTPMiddleware(
-		cfg.Auth.trustDomainOrDefault(),
-		cfg.Auth.PolicyFile,
-		logger,
-	)
+	mw, mwCloser, mwErr := auth.HTTPMiddleware(buildAuthConfig(cfg.Auth), logger)
 	if mwErr != nil {
 		return bail(fmt.Errorf("reflow: auth middleware: %w", mwErr))
 	}

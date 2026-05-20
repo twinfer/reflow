@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,12 +13,15 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"connectrpc.com/authn"
+	connect "connectrpc.com/connect"
 )
 
 // PrincipalHeader is the canonical HTTP header reflow stamps with the
 // server-verified principal (e.g. "node/3", "operator/alice"). Inbound
-// values are stripped by HTTPMiddleware to prevent forgery — only the
-// server-stamped header survives into downstream handlers.
+// values are stripped by the policy handler to prevent forgery — only
+// the server-stamped header survives into downstream handlers.
 const PrincipalHeader = "X-Reflow-Principal"
 
 // FileWatcherReload is how often the policy reloader checks the policy
@@ -25,96 +29,70 @@ const PrincipalHeader = "X-Reflow-Principal"
 // installations don't spawn the watcher.
 const FileWatcherReload = 30 * time.Second
 
-// HTTPMiddleware wraps a Connect-mounted http.Handler with the same
-// principal-stamping + policy enforcement that gRPC's auth.NewServerInterceptors
-// provides for the delivery surface. The middleware:
+// HTTPMiddleware builds the inbound auth chain for the Connect-mounted
+// HTTP handler. The chain has three steps:
 //
-//  1. Extracts the SPIFFE Principal from r.TLS (or anonymous when there is
-//     no TLS state).
-//  2. Strips any inbound X-Reflow-Principal header (forgery defense).
-//  3. Stamps the server-computed Principal.Raw onto the request header
-//     and into the request context (handlers read via PrincipalFromContext).
-//  4. Matches request URL.Path against the configured Policy. A request
-//     that no allow rule matches is rejected with HTTP 403; a malformed
-//     leaf cert surfaces as HTTP 401.
+//  1. authn.Middleware runs an AuthFunc that tries SPIFFE-from-mTLS
+//     first, then Bearer-JWT (when cfg.OIDC is non-empty). Verification
+//     failures emit connect.CodeUnauthenticated.
+//  2. policyHandler reads the stamped Principal, sets the server-
+//     controlled X-Reflow-Principal header (any inbound copy is
+//     stripped first), and matches request URL.Path against the
+//     configured Policy. Denial emits connect.CodeUnauthenticated for
+//     anonymous principals or connect.CodePermissionDenied for known-
+//     but-rejected principals.
+//  3. The wrapped handler runs with the Principal attached to the
+//     request context via ContextWithPrincipal.
 //
-// The closer releases any FileWatcher goroutine the policy holds open;
-// safe to call when nil (Static policies have no resources to free).
-func HTTPMiddleware(td, policyFile string, log *slog.Logger) (mw func(http.Handler) http.Handler, closer func() error, err error) {
+// The closer releases the policy file watcher goroutine; safe to call
+// when nil (embedded-policy installations have no resources to free).
+func HTTPMiddleware(cfg Config, log *slog.Logger) (mw func(http.Handler) http.Handler, closer func() error, err error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	pol, c, perr := loadPolicy(policyFile, log)
+	pol, c, perr := loadPolicy(cfg.PolicyFile, log)
 	if perr != nil {
 		return nil, nil, perr
 	}
+	jwt, jerr := newJWTVerifier(context.Background(), cfg.OIDC, log)
+	if jerr != nil {
+		if c != nil {
+			_ = c()
+		}
+		return nil, nil, jerr
+	}
+	auth := composeAuthFunc(cfg.TrustDomain, jwt, log)
+	authnMW := authn.NewMiddleware(auth)
+	errWriter := connect.NewErrorWriter()
+	policy := policyHandler(pol, log, errWriter)
 	mw = func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			principal, perr := extractHTTPPrincipal(td, r)
-			if perr != nil {
-				log.Warn("auth: extractor rejected request",
-					"path", r.URL.Path, "err", perr)
-				http.Error(w, "auth: "+perr.Error(), http.StatusUnauthorized)
-				return
-			}
-			r.Header.Del(PrincipalHeader)
-			if !principal.IsAnonymous() {
-				r.Header.Set(PrincipalHeader, principal.Raw)
-			}
-			if !pol.Load().Allow(r.URL.Path, principal) {
-				log.Warn("auth: policy denied request",
-					"path", r.URL.Path, "principal", principal.String())
-				// 401 vs 403: anonymous principals get 401 (authenticate
-				// then retry), authenticated principals get 403 (you're
-				// known, but not allowed). Conflating them would let
-				// monitoring page on "auth-config rejects principal X"
-				// the same way as "no client cert presented".
-				if principal.IsAnonymous() {
-					http.Error(w, "auth: unauthorized", http.StatusUnauthorized)
-				} else {
-					http.Error(w, "auth: forbidden", http.StatusForbidden)
-				}
-				return
-			}
-			r = r.WithContext(ContextWithPrincipal(r.Context(), principal))
-			next.ServeHTTP(w, r)
-		})
+		return authnMW.Wrap(policy(next))
 	}
 	return mw, c, nil
 }
 
-// extractHTTPPrincipal mirrors SPIFFEExtractor.Extract for *http.Request:
-// reads the verified TLS leaf, decodes the URI SAN. Empty TLS or absent
-// peer info yields the anonymous principal with no error so non-mTLS
-// listeners are usable in tests / single-node dev.
-func extractHTTPPrincipal(td string, r *http.Request) (Principal, error) {
-	if r.TLS == nil {
-		return Principal{}, nil
+// composeAuthFunc chains the SPIFFE and Bearer authenticators per the
+// composition rules in the refactor plan: mTLS wins when both are
+// present (a leaked bearer cannot forge a peer-verified leaf). When
+// the SPIFFE step returns a non-anonymous Principal the bearer is
+// not consulted; a debug-level log notes the override.
+func composeAuthFunc(td string, jwt *jwtVerifier, log *slog.Logger) authn.AuthFunc {
+	spiffe := spiffeAuthFunc(td)
+	bearer := bearerAuthFunc(jwt)
+	return func(ctx context.Context, r *http.Request) (any, error) {
+		info, err := spiffe(ctx, r)
+		if err != nil {
+			return nil, err
+		}
+		if info != nil {
+			if _, hasBearer := authn.BearerToken(r); hasBearer {
+				log.Debug("auth: bearer token ignored — verified mTLS leaf present",
+					"path", r.URL.Path)
+			}
+			return info, nil
+		}
+		return bearer(ctx, r)
 	}
-	if len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
-		return Principal{}, nil
-	}
-	leaf := r.TLS.VerifiedChains[0][0]
-	if len(leaf.URIs) != 1 {
-		return Principal{}, fmt.Errorf("leaf must carry exactly one URI SAN; got %d", len(leaf.URIs))
-	}
-	u := leaf.URIs[0]
-	if u.Scheme != "spiffe" || u.Host == "" {
-		return Principal{}, fmt.Errorf("unrecognised URI %q", u.String())
-	}
-	if u.Host != td {
-		return Principal{}, fmt.Errorf("leaf trust domain %q; want %q", u.Host, td)
-	}
-	parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return Principal{}, fmt.Errorf("leaf URI %q does not match /<kind>/<name>", u.String())
-	}
-	return Principal{
-		Kind:    parts[0],
-		Subject: parts[1],
-		URI:     u.String(),
-		Raw:     parts[0] + "/" + parts[1],
-	}, nil
 }
 
 // Policy is a parsed allow-list of (path-glob, principal-glob) pairs. A

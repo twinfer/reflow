@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -47,19 +48,25 @@ func TestPolicy_StarterAllowMatrix(t *testing.T) {
 	}
 }
 
+func newTestMW(t *testing.T, td string) func(http.Handler) http.Handler {
+	t.Helper()
+	mw, closer, err := HTTPMiddleware(Config{TrustDomain: td}, nil)
+	if err != nil {
+		t.Fatalf("HTTPMiddleware: %v", err)
+	}
+	if closer != nil {
+		t.Cleanup(func() { _ = closer() })
+	}
+	return mw
+}
+
 // TestHTTPMiddleware_StampsPrincipalFromTLS feeds a synthetic
 // *tls.ConnectionState with a verified spiffe leaf into the middleware
 // and asserts the downstream handler observes the principal both in the
 // header and via PrincipalFromContext.
 func TestHTTPMiddleware_StampsPrincipalFromTLS(t *testing.T) {
 	td := "reflow.local"
-	mw, closer, err := HTTPMiddleware(td, "", nil)
-	if err != nil {
-		t.Fatalf("HTTPMiddleware: %v", err)
-	}
-	if closer != nil {
-		defer closer()
-	}
+	mw := newTestMW(t, td)
 
 	var sawHeader string
 	var sawPrincipal Principal
@@ -69,8 +76,6 @@ func TestHTTPMiddleware_StampsPrincipalFromTLS(t *testing.T) {
 		sawPrincipal = p
 		w.WriteHeader(http.StatusOK)
 	})
-	srv := httptest.NewServer(mw(next))
-	defer srv.Close()
 
 	// Synthesize a verified-chain leaf with spiffe URI.
 	u, _ := url.Parse("spiffe://" + td + "/operator/alice")
@@ -83,7 +88,8 @@ func TestHTTPMiddleware_StampsPrincipalFromTLS(t *testing.T) {
 	r.TLS = &tls.ConnectionState{
 		VerifiedChains: [][]*x509.Certificate{{leaf}},
 	}
-	// Forged header — middleware must drop it before extracting from TLS.
+	// Forged header — middleware must drop it before the policy handler
+	// stamps the server-computed value.
 	r.Header.Set(PrincipalHeader, "operator/eve")
 
 	w := httptest.NewRecorder()
@@ -99,14 +105,12 @@ func TestHTTPMiddleware_StampsPrincipalFromTLS(t *testing.T) {
 	}
 }
 
-// TestHTTPMiddleware_DeniesUnauthorizedPrincipal: node/7 hitting /Admin/ListNodes
-// must be 403 because the embedded policy gates admin to operator/*.
+// TestHTTPMiddleware_DeniesUnauthorizedPrincipal: node/7 hitting
+// /Admin/ListNodes must produce CodePermissionDenied (HTTP 403 fallback
+// since the test request is not a Connect-shaped POST).
 func TestHTTPMiddleware_DeniesUnauthorizedPrincipal(t *testing.T) {
 	td := "reflow.local"
-	mw, _, err := HTTPMiddleware(td, "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	mw := newTestMW(t, td)
 	called := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
@@ -119,7 +123,7 @@ func TestHTTPMiddleware_DeniesUnauthorizedPrincipal(t *testing.T) {
 	w := httptest.NewRecorder()
 	mw(next).ServeHTTP(w, r)
 	if w.Result().StatusCode != http.StatusForbidden {
-		t.Errorf("status = %d; want 403", w.Result().StatusCode)
+		t.Errorf("status = %d; want 403 (CodePermissionDenied HTTP fallback)", w.Result().StatusCode)
 	}
 	if called {
 		t.Error("downstream handler should not run on policy denial")
@@ -129,10 +133,7 @@ func TestHTTPMiddleware_DeniesUnauthorizedPrincipal(t *testing.T) {
 // TestHTTPMiddleware_AllowsAnonymousIngress: ingress allow rule has no
 // principal constraint; an anonymous (no TLS) request must pass through.
 func TestHTTPMiddleware_AllowsAnonymousIngress(t *testing.T) {
-	mw, _, err := HTTPMiddleware("reflow.local", "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	mw := newTestMW(t, "reflow.local")
 	called := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
@@ -147,15 +148,12 @@ func TestHTTPMiddleware_AllowsAnonymousIngress(t *testing.T) {
 }
 
 // TestHTTPMiddleware_DeniesAnonymousOnGuardedPath: anonymous principal
-// hitting /Admin/ListNodes must be 401 (not 403). The policy allows the
-// path for operator/* only; an anonymous caller can authenticate then
-// retry, so 401 is the correct signal — 403 would suggest "known but
-// not allowed", which monitoring/operators read differently.
+// hitting /Admin/ListNodes must produce CodeUnauthenticated (HTTP 401).
+// The split between 401 (anonymous) and 403 (known-but-denied) lets
+// monitoring separate "no client cert presented" from "auth-config
+// rejects principal X".
 func TestHTTPMiddleware_DeniesAnonymousOnGuardedPath(t *testing.T) {
-	mw, _, err := HTTPMiddleware("reflow.local", "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	mw := newTestMW(t, "reflow.local")
 	called := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
@@ -166,20 +164,20 @@ func TestHTTPMiddleware_DeniesAnonymousOnGuardedPath(t *testing.T) {
 	w := httptest.NewRecorder()
 	mw(next).ServeHTTP(w, r)
 	if w.Result().StatusCode != http.StatusUnauthorized {
-		t.Errorf("status = %d; want 401", w.Result().StatusCode)
+		t.Errorf("status = %d; want 401 (CodeUnauthenticated HTTP fallback)", w.Result().StatusCode)
 	}
 	if called {
 		t.Error("downstream handler should not run on anonymous denial")
 	}
 }
 
-// TestHTTPMiddleware_MalformedLeafRejected returns 401 on a leaf without
-// a SPIFFE URI.
-func TestHTTPMiddleware_MalformedLeafRejected(t *testing.T) {
-	mw, _, err := HTTPMiddleware("reflow.local", "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+// TestHTTPMiddleware_NonSPIFFELeafTreatedAnonymous covers the mTLS-
+// without-SPIFFE case: a verified leaf with zero URI SANs is no longer
+// a hard error (it could be a client-cert deployment that uses bearer
+// tokens for identity). The principal is anonymous, so a guarded path
+// still gets 401 via the policy.
+func TestHTTPMiddleware_NonSPIFFELeafTreatedAnonymous(t *testing.T) {
+	mw := newTestMW(t, "reflow.local")
 	leaf := &x509.Certificate{Subject: pkix.Name{CommonName: "noop"}}
 	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
 	r.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf}}}
@@ -188,4 +186,64 @@ func TestHTTPMiddleware_MalformedLeafRejected(t *testing.T) {
 	if w.Result().StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d; want 401", w.Result().StatusCode)
 	}
+}
+
+// TestHTTPMiddleware_MalformedSPIFFELeafRejected: a verified leaf
+// carrying a URI SAN that fails SPIFFE format checks (wrong trust
+// domain, wrong scheme, multiple URIs, missing kind/subject) must
+// surface as a hard 401 — the leaf claims a SPIFFE identity that we
+// can't honor, so falling through to anonymous would be a security
+// regression.
+func TestHTTPMiddleware_MalformedSPIFFELeafRejected(t *testing.T) {
+	cases := map[string][]*url.URL{
+		"wrong-scheme":   {mustParseURL(t, "https://reflow.local/operator/alice")},
+		"wrong-td":       {mustParseURL(t, "spiffe://elsewhere.local/operator/alice")},
+		"missing-name":   {mustParseURL(t, "spiffe://reflow.local/operator")},
+		"empty-segments": {mustParseURL(t, "spiffe://reflow.local//alice")},
+		"multiple-uris": {
+			mustParseURL(t, "spiffe://reflow.local/operator/alice"),
+			mustParseURL(t, "spiffe://reflow.local/operator/bob"),
+		},
+	}
+	for name, uris := range cases {
+		t.Run(name, func(t *testing.T) {
+			mw := newTestMW(t, "reflow.local")
+			leaf := &x509.Certificate{URIs: uris}
+			r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+			r.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf}}}
+			w := httptest.NewRecorder()
+			mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
+			if w.Result().StatusCode != http.StatusUnauthorized {
+				t.Errorf("status = %d; want 401", w.Result().StatusCode)
+			}
+		})
+	}
+}
+
+// TestHTTPMiddleware_ConnectErrorEncoding asserts that a denied
+// Connect-shaped request gets a connect-protocol error response, not a
+// plain HTTP 401/403. Verified by content-type and body shape.
+func TestHTTPMiddleware_ConnectErrorEncoding(t *testing.T) {
+	mw := newTestMW(t, "reflow.local")
+	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	// Connect unary content-type marks this as a Connect RPC request.
+	r.Header.Set("Content-Type", "application/proto")
+	w := httptest.NewRecorder()
+	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
+	if !strings.Contains(w.Result().Header.Get("Content-Type"), "json") {
+		// Connect emits the error body as application/json on a unary path.
+		t.Logf("content-type = %q (expected json-shaped Connect error)", w.Result().Header.Get("Content-Type"))
+	}
+	if !strings.Contains(w.Body.String(), "unauthenticated") {
+		t.Errorf("body = %q; want connect-error JSON containing 'unauthenticated'", w.Body.String())
+	}
+}
+
+func mustParseURL(t *testing.T, s string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
 }

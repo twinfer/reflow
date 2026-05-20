@@ -29,7 +29,7 @@ import (
 // guarantees the wiring isn't silently skipped.
 func testIngressMiddleware(t *testing.T) func(http.Handler) http.Handler {
 	t.Helper()
-	mw, _, err := auth.HTTPMiddleware("reflow.local", "", nil)
+	mw, _, err := auth.HTTPMiddleware(auth.Config{TrustDomain: "reflow.local"}, nil)
 	if err != nil {
 		t.Fatalf("auth.HTTPMiddleware: %v", err)
 	}

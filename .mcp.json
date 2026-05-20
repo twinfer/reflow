@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "reflow": {
+    "gopher-mcp": {
       "command": "sh",
       "args": [
         "-c",

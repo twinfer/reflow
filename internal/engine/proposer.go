@@ -64,7 +64,21 @@ func (p *RaftProposer) ProposeSelf(ctx context.Context, cmd *enginev1.Command) e
 	epoch := p.leaderEpoch.Load()
 	seq := p.nextSeq.Add(1)
 	env := buildSelfProposalEnvelope(epoch, seq, cmd)
-	return p.propose(ctx, env)
+	_, err := p.proposeWithResult(ctx, env)
+	return err
+}
+
+// ProposeSelfCAS is the compare-and-swap variant. Same proposal shape
+// as ProposeSelf but attaches Envelope.precondition (when non-nil) and
+// returns statemachine.Result.Value so CAS-aware callers can detect
+// cluster.ResultValueFailedPrecondition. Callers that don't need CAS
+// should use ProposeSelf.
+func (p *RaftProposer) ProposeSelfCAS(ctx context.Context, cmd *enginev1.Command, pre *enginev1.Precondition) (uint64, error) {
+	epoch := p.leaderEpoch.Load()
+	seq := p.nextSeq.Add(1)
+	env := buildSelfProposalEnvelope(epoch, seq, cmd)
+	env.Precondition = pre
+	return p.proposeWithResult(ctx, env)
 }
 
 // ProposeIngress appends a command from an external producer (e.g., the
@@ -77,9 +91,17 @@ func (p *RaftProposer) ProposeIngress(ctx context.Context, producerID string, se
 }
 
 func (p *RaftProposer) propose(ctx context.Context, env *enginev1.Envelope) error {
+	_, err := p.proposeWithResult(ctx, env)
+	return err
+}
+
+// proposeWithResult runs the same propose-and-retry loop as propose but
+// returns statemachine.Result.Value from the successful apply. Callers
+// that don't need the result use propose for clarity.
+func (p *RaftProposer) proposeWithResult(ctx context.Context, env *enginev1.Envelope) (uint64, error) {
 	buf, err := proto.Marshal(env)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	sess := p.nh.GetNoOPSession(p.shardID) // OnDisk SM requires NoOPSession.
 
@@ -89,21 +111,21 @@ func (p *RaftProposer) propose(ctx context.Context, env *enginev1.Envelope) erro
 		// scoped to this attempt — deferring it across the retry loop
 		// would accumulate one cancel goroutine per transient-error
 		// retry until propose returns.
-		err := p.syncProposeOnce(ctx, sess, buf)
+		val, err := p.syncProposeOnce(ctx, sess, buf)
 		if err == nil {
-			return nil
+			return val, nil
 		}
 		if errors.Is(err, dragonboat.ErrShardClosed) || errors.Is(err, dragonboat.ErrClosed) {
-			return ErrShardClosed
+			return 0, ErrShardClosed
 		}
 		if !dragonboat.IsTempError(err) {
-			return err
+			return 0, err
 		}
 		// Backoff briefly and retry with jitter to avoid replica-wide
 		// synchronization on leadership transitions.
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return 0, ctx.Err()
 		case <-time.After(retryBackoff()):
 		}
 	}
@@ -111,16 +133,20 @@ func (p *RaftProposer) propose(ctx context.Context, env *enginev1.Envelope) erro
 
 // syncProposeOnce wraps a single SyncPropose call with a per-attempt
 // 5-second deadline when the caller's ctx is unbounded. The cancel runs
-// on return so retries don't stack timer goroutines.
-func (p *RaftProposer) syncProposeOnce(ctx context.Context, sess *client.Session, buf []byte) error {
+// on return so retries don't stack timer goroutines. Returns the
+// statemachine.Result.Value from the apply.
+func (p *RaftProposer) syncProposeOnce(ctx context.Context, sess *client.Session, buf []byte) (uint64, error) {
 	callCtx := ctx
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		callCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 	}
-	_, err := p.nh.SyncPropose(callCtx, sess, buf)
-	return err
+	res, err := p.nh.SyncPropose(callCtx, sess, buf)
+	if err != nil {
+		return 0, err
+	}
+	return res.Value, nil
 }
 
 // nowMs samples the leader-side wall clock used by buildSelfProposalEnvelope

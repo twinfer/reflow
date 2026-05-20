@@ -210,6 +210,120 @@ func (t DeploymentIndexTable) Put(b storage.Batch, service, handler, id string) 
 	return b.Set(DeploymentIndexKey(service, handler), []byte(id))
 }
 
+// RevisionTable persists the per-table TableRevision singletons used as
+// CAS guards by cluster-managed config commands (UpsertEventSource,
+// DeleteEventSource, ...). Each row lives at tablerev/<table_name> in a
+// separate top-level namespace from the table data itself.
+type RevisionTable struct{ S storage.Reader }
+
+// Get returns the current revision for the named table. Returns 0 (not
+// an error) when the row is absent — that's how "fresh table" looks.
+func (t RevisionTable) Get(tableName string) (uint64, error) {
+	val, closer, err := t.S.Get(RevisionKey(tableName))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	defer closer.Close()
+	var rev enginev1.TableRevision
+	if err := proto.Unmarshal(val, &rev); err != nil {
+		return 0, err
+	}
+	return rev.GetRevision(), nil
+}
+
+// Bump reads the current revision, writes (current+1, nowMs), and
+// returns the new value. nowMs is sourced from Envelope.Header.created_at_ms
+// so the apply path stays deterministic against the proposer's wall
+// clock (mirrors the partition pattern; see internal/engine/CLAUDE.md
+// "transitions deterministic w.r.t. nowMs").
+func (t RevisionTable) Bump(b storage.Batch, tableName string, nowMs uint64) (uint64, error) {
+	cur, err := t.Get(tableName)
+	if err != nil {
+		return 0, err
+	}
+	next := cur + 1
+	buf, err := proto.Marshal(&enginev1.TableRevision{
+		Revision:    next,
+		UpdatedAtMs: nowMs,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if err := b.Set(RevisionKey(tableName), buf); err != nil {
+		return 0, err
+	}
+	return next, nil
+}
+
+// EventSourceTable persists EventSourceRecord rows keyed by name. Lives
+// on shard 0 alongside DeploymentTable. The Reconciler on every node
+// SyncRead-iterates this table on each TableNotifier wake to converge
+// the local dispatcher set.
+type EventSourceTable struct{ S storage.Reader }
+
+func (t EventSourceTable) Get(name string) (*enginev1.EventSourceRecord, error) {
+	val, closer, err := t.S.Get(EventSourceKey(name))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer closer.Close()
+	var rec enginev1.EventSourceRecord
+	if err := proto.Unmarshal(val, &rec); err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (t EventSourceTable) Put(b storage.Batch, rec *enginev1.EventSourceRecord) error {
+	if rec.GetName() == "" {
+		return errors.New("EventSourceTable.Put: empty name")
+	}
+	buf, err := proto.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return b.Set(EventSourceKey(rec.GetName()), buf)
+}
+
+// Delete removes the row for name. Delete-of-absent is a no-op (Pebble's
+// Delete tolerates missing keys); callers still bump the table revision
+// so the operator's CAS-roundtrip CLI observes progress.
+func (t EventSourceTable) Delete(b storage.Batch, name string) error {
+	if name == "" {
+		return errors.New("EventSourceTable.Delete: empty name")
+	}
+	return b.Delete(EventSourceKey(name))
+}
+
+// List returns every EventSourceRecord in lexicographic name order.
+func (t EventSourceTable) List() ([]*enginev1.EventSourceRecord, error) {
+	prefix := EventSourcePrefix()
+	upper := prefixUpperBound(prefix)
+	iter, err := t.S.NewIter(prefix, upper)
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	var out []*enginev1.EventSourceRecord
+	for ok := iter.First(); ok; ok = iter.Next() {
+		if !bytes.HasPrefix(iter.Key(), prefix) {
+			continue
+		}
+		var rec enginev1.EventSourceRecord
+		if err := proto.Unmarshal(iter.Value(), &rec); err != nil {
+			return nil, err
+		}
+		out = append(out, &rec)
+	}
+	return out, iter.Error()
+}
+
 // prefixUpperBound is a local clone of keys.PrefixUpperBound to avoid an
 // import cycle (internal/storage/keys is for the partition codec).
 func prefixUpperBound(prefix []byte) []byte {

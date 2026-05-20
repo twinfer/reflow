@@ -866,6 +866,288 @@ func (x *RegisterDeploymentResponse) GetDeploymentId() string {
 	return ""
 }
 
+// UpsertEventSourceRequest carries one EventSourceRecord plus an
+// optional CAS guard. if_table_revision_eq=0 disables CAS.
+type UpsertEventSourceRequest struct {
+	state             protoimpl.MessageState      `protogen:"open.v1"`
+	Record            *enginev1.EventSourceRecord `protobuf:"bytes,1,opt,name=record,proto3" json:"record,omitempty"`
+	IfTableRevisionEq uint64                      `protobuf:"varint,2,opt,name=if_table_revision_eq,json=ifTableRevisionEq,proto3" json:"if_table_revision_eq,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *UpsertEventSourceRequest) Reset() {
+	*x = UpsertEventSourceRequest{}
+	mi := &file_adminv1_admin_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpsertEventSourceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpsertEventSourceRequest) ProtoMessage() {}
+
+func (x *UpsertEventSourceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpsertEventSourceRequest.ProtoReflect.Descriptor instead.
+func (*UpsertEventSourceRequest) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *UpsertEventSourceRequest) GetRecord() *enginev1.EventSourceRecord {
+	if x != nil {
+		return x.Record
+	}
+	return nil
+}
+
+func (x *UpsertEventSourceRequest) GetIfTableRevisionEq() uint64 {
+	if x != nil {
+		return x.IfTableRevisionEq
+	}
+	return 0
+}
+
+type UpsertEventSourceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TableRevision uint64                 `protobuf:"varint,1,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpsertEventSourceResponse) Reset() {
+	*x = UpsertEventSourceResponse{}
+	mi := &file_adminv1_admin_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpsertEventSourceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpsertEventSourceResponse) ProtoMessage() {}
+
+func (x *UpsertEventSourceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpsertEventSourceResponse.ProtoReflect.Descriptor instead.
+func (*UpsertEventSourceResponse) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *UpsertEventSourceResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
+type DeleteEventSourceRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Name              string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	IfTableRevisionEq uint64                 `protobuf:"varint,2,opt,name=if_table_revision_eq,json=ifTableRevisionEq,proto3" json:"if_table_revision_eq,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *DeleteEventSourceRequest) Reset() {
+	*x = DeleteEventSourceRequest{}
+	mi := &file_adminv1_admin_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteEventSourceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteEventSourceRequest) ProtoMessage() {}
+
+func (x *DeleteEventSourceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteEventSourceRequest.ProtoReflect.Descriptor instead.
+func (*DeleteEventSourceRequest) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *DeleteEventSourceRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *DeleteEventSourceRequest) GetIfTableRevisionEq() uint64 {
+	if x != nil {
+		return x.IfTableRevisionEq
+	}
+	return 0
+}
+
+type DeleteEventSourceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TableRevision uint64                 `protobuf:"varint,1,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteEventSourceResponse) Reset() {
+	*x = DeleteEventSourceResponse{}
+	mi := &file_adminv1_admin_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteEventSourceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteEventSourceResponse) ProtoMessage() {}
+
+func (x *DeleteEventSourceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteEventSourceResponse.ProtoReflect.Descriptor instead.
+func (*DeleteEventSourceResponse) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *DeleteEventSourceResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
+type ListEventSourcesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListEventSourcesRequest) Reset() {
+	*x = ListEventSourcesRequest{}
+	mi := &file_adminv1_admin_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListEventSourcesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListEventSourcesRequest) ProtoMessage() {}
+
+func (x *ListEventSourcesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListEventSourcesRequest.ProtoReflect.Descriptor instead.
+func (*ListEventSourcesRequest) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{21}
+}
+
+type ListEventSourcesResponse struct {
+	state         protoimpl.MessageState        `protogen:"open.v1"`
+	Sources       []*enginev1.EventSourceRecord `protobuf:"bytes,1,rep,name=sources,proto3" json:"sources,omitempty"`
+	TableRevision uint64                        `protobuf:"varint,2,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListEventSourcesResponse) Reset() {
+	*x = ListEventSourcesResponse{}
+	mi := &file_adminv1_admin_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListEventSourcesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListEventSourcesResponse) ProtoMessage() {}
+
+func (x *ListEventSourcesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListEventSourcesResponse.ProtoReflect.Descriptor instead.
+func (*ListEventSourcesResponse) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *ListEventSourcesResponse) GetSources() []*enginev1.EventSourceRecord {
+	if x != nil {
+		return x.Sources
+	}
+	return nil
+}
+
+func (x *ListEventSourcesResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
 // LeaderHint is attached as a connect.Error detail on
 // connect.CodeUnavailable returned by mutating Admin RPCs when the
 // receiving node is not the metadata leader. Clients (joiner's SelfJoin
@@ -881,7 +1163,7 @@ type LeaderHint struct {
 
 func (x *LeaderHint) Reset() {
 	*x = LeaderHint{}
-	mi := &file_adminv1_admin_proto_msgTypes[17]
+	mi := &file_adminv1_admin_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -893,7 +1175,7 @@ func (x *LeaderHint) String() string {
 func (*LeaderHint) ProtoMessage() {}
 
 func (x *LeaderHint) ProtoReflect() protoreflect.Message {
-	mi := &file_adminv1_admin_proto_msgTypes[17]
+	mi := &file_adminv1_admin_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -906,7 +1188,7 @@ func (x *LeaderHint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaderHint.ProtoReflect.Descriptor instead.
 func (*LeaderHint) Descriptor() ([]byte, []int) {
-	return file_adminv1_admin_proto_rawDescGZIP(), []int{17}
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *LeaderHint) GetNodeId() uint64 {
@@ -973,11 +1255,25 @@ const file_adminv1_admin_proto_rawDesc = "" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12.\n" +
 	"\x13max_journal_entries\x18\x02 \x01(\rR\x11maxJournalEntries\"A\n" +
 	"\x1aRegisterDeploymentResponse\x12#\n" +
-	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\"L\n" +
+	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\"\x88\x01\n" +
+	"\x18UpsertEventSourceRequest\x12;\n" +
+	"\x06record\x18\x01 \x01(\v2#.reflow.engine.v1.EventSourceRecordR\x06record\x12/\n" +
+	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"B\n" +
+	"\x19UpsertEventSourceResponse\x12%\n" +
+	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"_\n" +
+	"\x18DeleteEventSourceRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12/\n" +
+	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"B\n" +
+	"\x19DeleteEventSourceResponse\x12%\n" +
+	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"\x19\n" +
+	"\x17ListEventSourcesRequest\"\x80\x01\n" +
+	"\x18ListEventSourcesResponse\x12=\n" +
+	"\asources\x18\x01 \x03(\v2#.reflow.engine.v1.EventSourceRecordR\asources\x12%\n" +
+	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"L\n" +
 	"\n" +
 	"LeaderHint\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12%\n" +
-	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\xc7\x06\n" +
+	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\x88\t\n" +
 	"\x05Admin\x12L\n" +
 	"\aAddNode\x12\x1f.reflow.admin.v1.AddNodeRequest\x1a .reflow.admin.v1.AddNodeResponse\x12M\n" +
 	"\bSelfJoin\x12\x1f.reflow.admin.v1.AddNodeRequest\x1a .reflow.admin.v1.AddNodeResponse\x12U\n" +
@@ -988,7 +1284,10 @@ const file_adminv1_admin_proto_rawDesc = "" +
 	"\x0eCreateSnapshot\x12&.reflow.admin.v1.CreateSnapshotRequest\x1a'.reflow.admin.v1.CreateSnapshotResponse\x12^\n" +
 	"\rListSnapshots\x12%.reflow.admin.v1.ListSnapshotsRequest\x1a&.reflow.admin.v1.ListSnapshotsResponse\x12a\n" +
 	"\x0eDeleteSnapshot\x12&.reflow.admin.v1.DeleteSnapshotRequest\x1a'.reflow.admin.v1.DeleteSnapshotResponse\x12m\n" +
-	"\x12RegisterDeployment\x12*.reflow.admin.v1.RegisterDeploymentRequest\x1a+.reflow.admin.v1.RegisterDeploymentResponseB1Z/github.com/twinfer/reflow/proto/adminv1;adminv1b\x06proto3"
+	"\x12RegisterDeployment\x12*.reflow.admin.v1.RegisterDeploymentRequest\x1a+.reflow.admin.v1.RegisterDeploymentResponse\x12j\n" +
+	"\x11UpsertEventSource\x12).reflow.admin.v1.UpsertEventSourceRequest\x1a*.reflow.admin.v1.UpsertEventSourceResponse\x12j\n" +
+	"\x11DeleteEventSource\x12).reflow.admin.v1.DeleteEventSourceRequest\x1a*.reflow.admin.v1.DeleteEventSourceResponse\x12g\n" +
+	"\x10ListEventSources\x12(.reflow.admin.v1.ListEventSourcesRequest\x1a).reflow.admin.v1.ListEventSourcesResponseB1Z/github.com/twinfer/reflow/proto/adminv1;adminv1b\x06proto3"
 
 var (
 	file_adminv1_admin_proto_rawDescOnce sync.Once
@@ -1002,7 +1301,7 @@ func file_adminv1_admin_proto_rawDescGZIP() []byte {
 	return file_adminv1_admin_proto_rawDescData
 }
 
-var file_adminv1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_adminv1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_adminv1_admin_proto_goTypes = []any{
 	(*AddNodeRequest)(nil),             // 0: reflow.admin.v1.AddNodeRequest
 	(*AddNodeResponse)(nil),            // 1: reflow.admin.v1.AddNodeResponse
@@ -1021,37 +1320,52 @@ var file_adminv1_admin_proto_goTypes = []any{
 	(*DeleteSnapshotResponse)(nil),     // 14: reflow.admin.v1.DeleteSnapshotResponse
 	(*RegisterDeploymentRequest)(nil),  // 15: reflow.admin.v1.RegisterDeploymentRequest
 	(*RegisterDeploymentResponse)(nil), // 16: reflow.admin.v1.RegisterDeploymentResponse
-	(*LeaderHint)(nil),                 // 17: reflow.admin.v1.LeaderHint
-	(*enginev1.NodeMembership)(nil),    // 18: reflow.engine.v1.NodeMembership
-	(*enginev1.PartitionTable)(nil),    // 19: reflow.engine.v1.PartitionTable
+	(*UpsertEventSourceRequest)(nil),   // 17: reflow.admin.v1.UpsertEventSourceRequest
+	(*UpsertEventSourceResponse)(nil),  // 18: reflow.admin.v1.UpsertEventSourceResponse
+	(*DeleteEventSourceRequest)(nil),   // 19: reflow.admin.v1.DeleteEventSourceRequest
+	(*DeleteEventSourceResponse)(nil),  // 20: reflow.admin.v1.DeleteEventSourceResponse
+	(*ListEventSourcesRequest)(nil),    // 21: reflow.admin.v1.ListEventSourcesRequest
+	(*ListEventSourcesResponse)(nil),   // 22: reflow.admin.v1.ListEventSourcesResponse
+	(*LeaderHint)(nil),                 // 23: reflow.admin.v1.LeaderHint
+	(*enginev1.NodeMembership)(nil),    // 24: reflow.engine.v1.NodeMembership
+	(*enginev1.PartitionTable)(nil),    // 25: reflow.engine.v1.PartitionTable
+	(*enginev1.EventSourceRecord)(nil), // 26: reflow.engine.v1.EventSourceRecord
 }
 var file_adminv1_admin_proto_depIdxs = []int32{
-	18, // 0: reflow.admin.v1.ListNodesResponse.nodes:type_name -> reflow.engine.v1.NodeMembership
-	19, // 1: reflow.admin.v1.ListPartitionsResponse.table:type_name -> reflow.engine.v1.PartitionTable
+	24, // 0: reflow.admin.v1.ListNodesResponse.nodes:type_name -> reflow.engine.v1.NodeMembership
+	25, // 1: reflow.admin.v1.ListPartitionsResponse.table:type_name -> reflow.engine.v1.PartitionTable
 	11, // 2: reflow.admin.v1.ListSnapshotsResponse.snapshots:type_name -> reflow.admin.v1.SnapshotRef
-	0,  // 3: reflow.admin.v1.Admin.AddNode:input_type -> reflow.admin.v1.AddNodeRequest
-	0,  // 4: reflow.admin.v1.Admin.SelfJoin:input_type -> reflow.admin.v1.AddNodeRequest
-	2,  // 5: reflow.admin.v1.Admin.RemoveNode:input_type -> reflow.admin.v1.RemoveNodeRequest
-	4,  // 6: reflow.admin.v1.Admin.ListNodes:input_type -> reflow.admin.v1.ListNodesRequest
-	6,  // 7: reflow.admin.v1.Admin.ListPartitions:input_type -> reflow.admin.v1.ListPartitionsRequest
-	8,  // 8: reflow.admin.v1.Admin.CreateSnapshot:input_type -> reflow.admin.v1.CreateSnapshotRequest
-	10, // 9: reflow.admin.v1.Admin.ListSnapshots:input_type -> reflow.admin.v1.ListSnapshotsRequest
-	13, // 10: reflow.admin.v1.Admin.DeleteSnapshot:input_type -> reflow.admin.v1.DeleteSnapshotRequest
-	15, // 11: reflow.admin.v1.Admin.RegisterDeployment:input_type -> reflow.admin.v1.RegisterDeploymentRequest
-	1,  // 12: reflow.admin.v1.Admin.AddNode:output_type -> reflow.admin.v1.AddNodeResponse
-	1,  // 13: reflow.admin.v1.Admin.SelfJoin:output_type -> reflow.admin.v1.AddNodeResponse
-	3,  // 14: reflow.admin.v1.Admin.RemoveNode:output_type -> reflow.admin.v1.RemoveNodeResponse
-	5,  // 15: reflow.admin.v1.Admin.ListNodes:output_type -> reflow.admin.v1.ListNodesResponse
-	7,  // 16: reflow.admin.v1.Admin.ListPartitions:output_type -> reflow.admin.v1.ListPartitionsResponse
-	9,  // 17: reflow.admin.v1.Admin.CreateSnapshot:output_type -> reflow.admin.v1.CreateSnapshotResponse
-	12, // 18: reflow.admin.v1.Admin.ListSnapshots:output_type -> reflow.admin.v1.ListSnapshotsResponse
-	14, // 19: reflow.admin.v1.Admin.DeleteSnapshot:output_type -> reflow.admin.v1.DeleteSnapshotResponse
-	16, // 20: reflow.admin.v1.Admin.RegisterDeployment:output_type -> reflow.admin.v1.RegisterDeploymentResponse
-	12, // [12:21] is the sub-list for method output_type
-	3,  // [3:12] is the sub-list for method input_type
-	3,  // [3:3] is the sub-list for extension type_name
-	3,  // [3:3] is the sub-list for extension extendee
-	0,  // [0:3] is the sub-list for field type_name
+	26, // 3: reflow.admin.v1.UpsertEventSourceRequest.record:type_name -> reflow.engine.v1.EventSourceRecord
+	26, // 4: reflow.admin.v1.ListEventSourcesResponse.sources:type_name -> reflow.engine.v1.EventSourceRecord
+	0,  // 5: reflow.admin.v1.Admin.AddNode:input_type -> reflow.admin.v1.AddNodeRequest
+	0,  // 6: reflow.admin.v1.Admin.SelfJoin:input_type -> reflow.admin.v1.AddNodeRequest
+	2,  // 7: reflow.admin.v1.Admin.RemoveNode:input_type -> reflow.admin.v1.RemoveNodeRequest
+	4,  // 8: reflow.admin.v1.Admin.ListNodes:input_type -> reflow.admin.v1.ListNodesRequest
+	6,  // 9: reflow.admin.v1.Admin.ListPartitions:input_type -> reflow.admin.v1.ListPartitionsRequest
+	8,  // 10: reflow.admin.v1.Admin.CreateSnapshot:input_type -> reflow.admin.v1.CreateSnapshotRequest
+	10, // 11: reflow.admin.v1.Admin.ListSnapshots:input_type -> reflow.admin.v1.ListSnapshotsRequest
+	13, // 12: reflow.admin.v1.Admin.DeleteSnapshot:input_type -> reflow.admin.v1.DeleteSnapshotRequest
+	15, // 13: reflow.admin.v1.Admin.RegisterDeployment:input_type -> reflow.admin.v1.RegisterDeploymentRequest
+	17, // 14: reflow.admin.v1.Admin.UpsertEventSource:input_type -> reflow.admin.v1.UpsertEventSourceRequest
+	19, // 15: reflow.admin.v1.Admin.DeleteEventSource:input_type -> reflow.admin.v1.DeleteEventSourceRequest
+	21, // 16: reflow.admin.v1.Admin.ListEventSources:input_type -> reflow.admin.v1.ListEventSourcesRequest
+	1,  // 17: reflow.admin.v1.Admin.AddNode:output_type -> reflow.admin.v1.AddNodeResponse
+	1,  // 18: reflow.admin.v1.Admin.SelfJoin:output_type -> reflow.admin.v1.AddNodeResponse
+	3,  // 19: reflow.admin.v1.Admin.RemoveNode:output_type -> reflow.admin.v1.RemoveNodeResponse
+	5,  // 20: reflow.admin.v1.Admin.ListNodes:output_type -> reflow.admin.v1.ListNodesResponse
+	7,  // 21: reflow.admin.v1.Admin.ListPartitions:output_type -> reflow.admin.v1.ListPartitionsResponse
+	9,  // 22: reflow.admin.v1.Admin.CreateSnapshot:output_type -> reflow.admin.v1.CreateSnapshotResponse
+	12, // 23: reflow.admin.v1.Admin.ListSnapshots:output_type -> reflow.admin.v1.ListSnapshotsResponse
+	14, // 24: reflow.admin.v1.Admin.DeleteSnapshot:output_type -> reflow.admin.v1.DeleteSnapshotResponse
+	16, // 25: reflow.admin.v1.Admin.RegisterDeployment:output_type -> reflow.admin.v1.RegisterDeploymentResponse
+	18, // 26: reflow.admin.v1.Admin.UpsertEventSource:output_type -> reflow.admin.v1.UpsertEventSourceResponse
+	20, // 27: reflow.admin.v1.Admin.DeleteEventSource:output_type -> reflow.admin.v1.DeleteEventSourceResponse
+	22, // 28: reflow.admin.v1.Admin.ListEventSources:output_type -> reflow.admin.v1.ListEventSourcesResponse
+	17, // [17:29] is the sub-list for method output_type
+	5,  // [5:17] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_adminv1_admin_proto_init() }
@@ -1065,7 +1379,7 @@ func file_adminv1_admin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_adminv1_admin_proto_rawDesc), len(file_adminv1_admin_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   18,
+			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

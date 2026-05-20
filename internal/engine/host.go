@@ -144,6 +144,14 @@ type HostConfig struct {
 	// fewer lazy round-trips, or when capping per-session memory matters
 	// more than read latency.
 	EagerStateMaxBytes uint32
+
+	// ClusterNotifiers carries per-table change signals fired from the
+	// shard-0 FSM apply path after batch commit. Each notifier is
+	// per-table; consumers (the eventsource Reconciler, etc.) Subscribe
+	// for the receive end. Zero value disables all notifications (the
+	// FSM no-ops on nil notifier handles). pkg/reflow wires this up
+	// before NewHost.
+	ClusterNotifiers cluster.Notifiers
 }
 
 // Peer is a static cluster member known at bootstrap. NodeHostID may be
@@ -432,6 +440,7 @@ func (h *Host) StartMetadataShard() (*MetadataRunner, error) {
 		Leadership:       leadership,
 		Log:              h.log,
 		OnPartitionTable: h.onPartitionTable,
+		Notifiers:        h.cfg.ClusterNotifiers,
 	}
 	raftCfg := config.Config{
 		ReplicaID:          h.cfg.NodeID,
@@ -522,6 +531,26 @@ func (h *Host) Membership(ctx context.Context) ([]*enginev1.NodeMembership, erro
 	out, ok := res.([]*enginev1.NodeMembership)
 	if !ok {
 		return nil, fmt.Errorf("host: Membership: unexpected lookup type %T", res)
+	}
+	return out, nil
+}
+
+// EventSources performs a linearizable read of shard 0's
+// EventSourceTable, returning every row plus the table's CAS revision.
+// Used by the admin List/Upsert/Delete RPCs and by the per-node
+// Reconciler. Returns an empty list with revision 0 before the table
+// has ever been written.
+func (h *Host) EventSources(ctx context.Context) (*cluster.EventSourceList, error) {
+	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupEventSources{})
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return &cluster.EventSourceList{}, nil
+	}
+	out, ok := res.(*cluster.EventSourceList)
+	if !ok {
+		return nil, fmt.Errorf("host: EventSources: unexpected lookup type %T", res)
 	}
 	return out, nil
 }

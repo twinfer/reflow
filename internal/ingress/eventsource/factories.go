@@ -38,3 +38,34 @@ func lookupFactory(typeName string) (Factory, error) {
 	}
 	return f, nil
 }
+
+// HasFactory reports whether a factory is registered for the given
+// backend type. Used by the admin Upsert RPC to reject a record that
+// names an unknown type at validation time (so the operator gets a
+// CodeInvalidArgument synchronously instead of a silent reconcile
+// failure on every node).
+func HasFactory(typeName string) bool {
+	factoriesMu.RLock()
+	defer factoriesMu.RUnlock()
+	_, ok := factories[typeName]
+	return ok
+}
+
+// RegisteredTypes returns the sorted list of registered factory type
+// names. Useful for operator-facing error messages enumerating valid
+// choices.
+func RegisteredTypes() []string {
+	factoriesMu.RLock()
+	defer factoriesMu.RUnlock()
+	out := make([]string, 0, len(factories))
+	for name := range factories {
+		out = append(out, name)
+	}
+	// stable order without sorting import — small list, insertion sort.
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j-1] > out[j]; j-- {
+			out[j-1], out[j] = out[j], out[j-1]
+		}
+	}
+	return out
+}

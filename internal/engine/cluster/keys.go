@@ -15,6 +15,12 @@
 //	partition_table                 -> PartitionTable singleton
 //	deployment/<deployment_id ascii> -> DeploymentRecord
 //	deployment_idx/<service>\x00<handler> -> deployment_id (ascii)
+//	eventsrc/<name>                 -> EventSourceRecord
+//	tablerev/<table_name>           -> TableRevision singleton (CAS guard
+//	                                   for cluster-managed config tables;
+//	                                   separate top-level namespace so it
+//	                                   never sits inside the data range
+//	                                   iterated by List())
 //
 // All multi-byte integers are big-endian so lexicographic byte order
 // matches numeric order — same convention as internal/storage/keys.
@@ -30,6 +36,15 @@ const (
 	partitionTabKey       = "partition_table"
 	deploymentPrefix      = "deployment/"
 	deploymentIndexPrefix = "deployment_idx/"
+	eventSourcePrefix     = "eventsrc/"
+	tableRevisionPrefix   = "tablerev/"
+)
+
+// Canonical short names for revision-tracked tables. Used as the
+// argument to RevisionKey; persisted on disk, so renaming is an
+// upgrade-incompat change.
+const (
+	RevisionTableEventSource = "eventsrc"
 )
 
 // MetaKey returns the singleton key for the metadata shard's PartitionMeta.
@@ -72,4 +87,26 @@ func DeploymentIndexKey(service, handler string) []byte {
 	out = append(out, service...)
 	out = append(out, 0x00)
 	return append(out, handler...)
+}
+
+// EventSourcePrefix returns the eventsrc/ namespace prefix. Used for
+// iteration via a forward range scan.
+func EventSourcePrefix() []byte { return []byte(eventSourcePrefix) }
+
+// EventSourceKey returns eventsrc/<name>. Name uniqueness is enforced
+// by the admin RPC validator; the apply arm trusts it.
+func EventSourceKey(name string) []byte {
+	out := make([]byte, 0, len(eventSourcePrefix)+len(name))
+	out = append(out, eventSourcePrefix...)
+	return append(out, name...)
+}
+
+// RevisionKey returns the CAS singleton key for a table identified by
+// its canonical short name (e.g. RevisionTableEventSource). Lives in a
+// separate top-level namespace from the table's own data so List/range
+// iteration over the data never observes the revision row.
+func RevisionKey(tableName string) []byte {
+	out := make([]byte, 0, len(tableRevisionPrefix)+len(tableName))
+	out = append(out, tableRevisionPrefix...)
+	return append(out, tableName...)
 }

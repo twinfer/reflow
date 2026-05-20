@@ -17,6 +17,7 @@ import (
 	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/connectserver"
 	"github.com/twinfer/reflow/internal/engine"
+	"github.com/twinfer/reflow/internal/engine/cluster"
 	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	"github.com/twinfer/reflow/internal/ingress"
@@ -99,6 +100,12 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		handlerSigner = hs
 	}
 
+	// Shard-0 TableNotifiers fan out apply-path commits to local
+	// subsystems (eventsource Reconciler etc.). Constructed before
+	// engine.NewHost so the FSM picks them up at start; their
+	// Subscribe() ends are handed to subsystem goroutines later.
+	eventSourceNotifier := cluster.NewTableNotifier()
+
 	hcfg := engine.HostConfig{
 		NodeID:             cfg.Node.ID,
 		RaftAddr:           cfg.Node.RaftAddr,
@@ -115,6 +122,9 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		Metrics:            metrics,
 		HandlerSigner:      handlerSigner,
 		EagerStateMaxBytes: cfg.Handlers.EagerStateMaxBytes,
+		ClusterNotifiers: cluster.Notifiers{
+			EventSourceTable: eventSourceNotifier,
+		},
 		OnSnapshotPersisted: func(shardID uint64) {
 			ch, ok := snapshotTriggers[shardID]
 			if !ok {
@@ -215,7 +225,8 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 
 	host, herr := finishStartup(ctx, cfg, eh, adminEnabled, shards, snapshotTriggers,
 		deliverySrv, deliveryClient, deliveryCreds, adminCreds, handlerSigner,
-		httpAuthMW, httpAuthCloser, metricsCloser, metricsRegisterer, metrics, logger)
+		httpAuthMW, httpAuthCloser, metricsCloser, metricsRegisterer, metrics,
+		eventSourceNotifier, logger)
 	if herr != nil {
 		if deliverySrv != nil {
 			_ = deliverySrv.Close()
@@ -370,6 +381,7 @@ func finishStartup(
 	metricsCloser func() error,
 	metricsRegisterer prometheus.Registerer,
 	metrics *observability.Metrics,
+	eventSourceNotifier *cluster.TableNotifier,
 	logger *slog.Logger,
 ) (*Host, error) {
 	// Joiners register themselves with shard 0 BEFORE starting any
@@ -526,7 +538,7 @@ func finishStartup(
 
 	var esManager *eventsource.Manager
 	if ingressRT != nil {
-		esManager, err = eventsource.NewManager(cfg.EventSources, ingressRT.Server(), metricsRegisterer, logger)
+		esManager, err = eventsource.New(ingressRT.Server(), metricsRegisterer, logger)
 		if err != nil {
 			_ = ingressRT.Close()
 			if snapshotCxl != nil {
@@ -553,7 +565,12 @@ func finishStartup(
 		return nil, fmt.Errorf("reflow: event_sources requires an enabled ingress listener")
 	}
 	if esManager != nil {
-		go esManager.Run(ctx)
+		reader := eventSourceReader{host: eh}
+		go func() {
+			if rerr := esManager.RunReconciler(ctx, eventSourceNotifier.Subscribe(), reader); rerr != nil && !errors.Is(rerr, context.Canceled) {
+				logger.Warn("reflow: eventsource reconcile loop exited", "err", rerr)
+			}
+		}()
 	}
 
 	// Auto-seed remote-handler deployments from config. Spawned AFTER
@@ -563,6 +580,13 @@ func finishStartup(
 	// Run caller's context — cancelling it cancels the seed loop.
 	if len(cfg.Handlers.Endpoints) > 0 {
 		go autoSeedEndpoints(ctx, srv, runner, cfg.Handlers.Endpoints, logger)
+	}
+	// Bootstrap-seed event sources from the koanf config. Runs only on
+	// the shard-0 leader and only when the EventSourceTable is empty —
+	// otherwise the file is ignored (operators manage via CLI after
+	// first run). See autoSeedEventSources.
+	if len(cfg.EventSources.Sources) > 0 {
+		go autoSeedEventSources(ctx, srv, runner, eh, cfg.EventSources.Sources, logger)
 	}
 
 	return &Host{
@@ -581,6 +605,84 @@ func finishStartup(
 		handlerSigner:  handlerSigner,
 		eventSources:   esManager,
 	}, nil
+}
+
+// eventSourceReader is the Reader adapter the Reconcile loop uses to
+// pull desired state. Converts the proto-shaped EventSourceRecord rows
+// fetched from shard 0 into the Go-shaped SourceConfig the Manager
+// already understands.
+type eventSourceReader struct {
+	host *engine.Host
+}
+
+func (r eventSourceReader) ListEventSources(ctx context.Context) ([]eventsource.SourceConfig, uint64, error) {
+	list, err := r.host.EventSources(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]eventsource.SourceConfig, 0, len(list.Sources))
+	for _, rec := range list.Sources {
+		out = append(out, eventSourceConfigFromProto(rec))
+	}
+	return out, list.TableRevision, nil
+}
+
+// autoSeedEventSources mirrors autoSeedEndpoints for the EventSourceTable.
+// On a fresh cluster (table empty) it proposes one UpsertEventSource per
+// configured source with CAS-on-zero so a racing operator-Apply at the
+// same time gets the conflict instead of silently overwriting the
+// operator's intent. Skips the seed entirely once any row exists.
+//
+// Runs as a fire-and-forget goroutine; logs warnings on per-source
+// failures and continues.
+func autoSeedEventSources(ctx context.Context, srv *admin.Server, runner *engine.MetadataRunner, host *engine.Host, sources []eventsource.SourceConfig, log *slog.Logger) {
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		if runner != nil && runner.IsLeader() {
+			break
+		}
+		if time.Now().After(deadline) {
+			log.Warn("reflow: auto-seed event sources: shard 0 leadership not reached within 2m; skipping",
+				"sources", len(sources))
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+
+	// Skip when an operator-managed table already exists. A non-zero
+	// revision is the durable marker that someone (a prior seed or an
+	// operator) wrote.
+	listCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	list, err := host.EventSources(listCtx)
+	cancel()
+	if err != nil {
+		log.Warn("reflow: auto-seed event sources: read table failed; skipping", "err", err)
+		return
+	}
+	if list.TableRevision != 0 || len(list.Sources) != 0 {
+		log.Info("reflow: auto-seed event sources: table non-empty; skipping seed",
+			"revision", list.TableRevision, "rows", len(list.Sources))
+		return
+	}
+
+	for _, sc := range sources {
+		if ctx.Err() != nil {
+			return
+		}
+		rec := eventSourceProtoFromConfig(sc)
+		seedCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := srv.AutoSeedEventSource(seedCtx, rec)
+		cancel()
+		if err != nil {
+			log.Warn("reflow: auto-seed event source failed", "name", sc.Name, "err", err)
+			continue
+		}
+		log.Info("reflow: auto-seed event source registered", "name", sc.Name)
+	}
 }
 
 // autoSeedEndpoints waits for shard 0 leadership, then issues

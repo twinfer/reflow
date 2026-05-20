@@ -43,6 +43,20 @@ type Config struct {
 	// The argument is the freshly applied table. Intended to drive
 	// ownership-based shard start/stop on the metadata-leader's host.
 	OnPartitionTable func(*enginev1.PartitionTable)
+	// Notifiers carry per-table change signals into local subsystems
+	// (event-source Reconciler, etc.). Each one fires at most once per
+	// Update batch and only when an apply arm actually touched the
+	// underlying table. Non-blocking; subscribers wake, SyncRead the
+	// table, and converge local state.
+	Notifiers Notifiers
+}
+
+// Notifiers groups the per-table TableNotifier handles the FSM signals
+// after commit. Add a new field here when migrating another subsystem
+// to shard 0; the apply arm for the new command flips it on via
+// applyResult.notify.
+type Notifiers struct {
+	EventSourceTable *TableNotifier
 }
 
 // FSM is the dragonboat IOnDiskStateMachine for shard 0. It accepts only
@@ -83,6 +97,31 @@ func (f *FSM) Open(_ <-chan struct{}) (uint64, error) {
 	return m.GetAppliedIndex(), nil
 }
 
+// Result.Value sentinels surfaced by Update. The default Value (when no
+// apply arm explicitly stamps one) is uint64(len(ent.Cmd)), preserved
+// from the original FSM contract — callers that don't read it stay
+// happy. CAS-aware proposers explicitly check for
+// ResultValueFailedPrecondition to translate apply-time CAS rejection
+// into connect.CodeFailedPrecondition.
+const (
+	// ResultValueFailedPrecondition signals that an apply arm refused to
+	// mutate state because Envelope.precondition.if_table_revision_eq
+	// did not match the current TableRevision singleton. The row is
+	// untouched; applied_index still advances; no notifiers fire.
+	ResultValueFailedPrecondition uint64 = 1
+)
+
+// applyResult is the return value of applyCommand. It carries the
+// optional freshly-applied PartitionTable (for the OnPartitionTable
+// callback) plus a bitmap-style set of TableNotifier handles the
+// caller should Bump after batch.Commit succeeds. nil means "no
+// observable side effect for callbacks" (still committed to disk —
+// the row mutation already happened against the batch).
+type applyResult struct {
+	partitionTable *enginev1.PartitionTable
+	notify         []*TableNotifier
+}
+
 // Update applies a batch of committed Raft entries.
 //
 // Same shape as engine.Partition.Update: one Pebble batch per call,
@@ -103,6 +142,19 @@ func (f *FSM) Update(entries []statemachine.Entry) ([]statemachine.Entry, error)
 	}
 
 	var newTable *enginev1.PartitionTable
+	// notifySet dedups notifier pointers across entries in this batch:
+	// multiple Upserts in one batch should still produce exactly one
+	// post-commit Bump per touched table.
+	var notifySet []*TableNotifier
+	noteOnce := func(n *TableNotifier) {
+		if n == nil {
+			return
+		}
+		if slices.Contains(notifySet, n) {
+			return
+		}
+		notifySet = append(notifySet, n)
+	}
 
 	for i, ent := range entries {
 		entries[i].Result = statemachine.Result{Value: uint64(len(ent.Cmd))}
@@ -127,7 +179,20 @@ func (f *FSM) Update(entries []statemachine.Entry) ([]statemachine.Entry, error)
 			return nil, err
 		}
 		if applied != nil {
-			newTable = applied
+			if applied.partitionTable != nil {
+				newTable = applied.partitionTable
+			}
+			for _, n := range applied.notify {
+				noteOnce(n)
+			}
+		} else if env.GetPrecondition() != nil &&
+			env.GetPrecondition().GetIfTableRevisionEq() != 0 {
+			// applyCommand returned nil because precondition failed.
+			// Surface the sentinel to the proposer; row state and
+			// notifiers remain untouched. applied_index still advances
+			// (entry was committed in Raft; the FSM just chose to no-op
+			// the user-visible effect).
+			entries[i].Result = statemachine.Result{Value: ResultValueFailedPrecondition}
 		}
 		meta.AppliedIndex = ent.Index
 	}
@@ -142,13 +207,25 @@ func (f *FSM) Update(entries []statemachine.Entry) ([]statemachine.Entry, error)
 	if newTable != nil && f.cfg.OnPartitionTable != nil {
 		f.cfg.OnPartitionTable(newTable)
 	}
+	// Notifier fan-out runs on the FSM apply goroutine, post-commit,
+	// non-blocking (TableNotifier.Bump drops when the buffer is full).
+	// Subscribers wake on their own goroutines, SyncRead, and converge.
+	for _, n := range notifySet {
+		n.Bump()
+	}
 	return entries, nil
 }
 
-// applyCommand dispatches a single envelope. Returns the freshly-applied
-// PartitionTable when the variant was UpdatePartitionTable, nil otherwise.
-// This lets Update notify the OnPartitionTable hook AFTER the batch
-// commits (so observers can read durable state).
+// applyCommand dispatches a single envelope. Returns:
+//
+//   - non-nil applyResult on success (carries the freshly-applied
+//     PartitionTable when the variant was UpdatePartitionTable, plus
+//     any per-table notifiers the apply arm wants Update to Bump
+//     after commit).
+//   - nil applyResult on no-op (unknown variants, missing required
+//     fields, precondition failure). Callers distinguish "no-op
+//     because of failed precondition" from "no-op because nothing
+//     happened" by inspecting Envelope.precondition themselves.
 //
 // All table views are bound to the in-flight batch (which satisfies
 // storage.Reader via pebble.IndexedBatch). This gives read-your-writes
@@ -164,29 +241,29 @@ func (f *FSM) applyCommand(
 	batch storage.Batch,
 	env *enginev1.Envelope,
 	raftIndex uint64,
-) (*enginev1.PartitionTable, error) {
+) (*applyResult, error) {
 	cmd := env.GetCommand()
 	switch k := cmd.GetKind().(type) {
 	case *enginev1.Command_AnnounceLeader:
 		f.cfg.Leadership.OnAnnounceLeader(k.AnnounceLeader)
-		return nil, nil
+		return &applyResult{}, nil
 	case *enginev1.Command_RegisterNode:
 		m := k.RegisterNode.GetMember()
 		if m == nil || m.GetNodeId() == 0 {
 			f.cfg.Log.Warn("cluster: RegisterNode missing member or NodeId; ignoring",
 				"raft_index", raftIndex)
-			return nil, nil
+			return &applyResult{}, nil
 		}
 		if err := (MembershipTable{S: batch}).Put(batch, m); err != nil {
 			return nil, fmt.Errorf("cluster: write membership: %w", err)
 		}
-		return nil, nil
+		return &applyResult{}, nil
 	case *enginev1.Command_UpdatePartitionTable:
 		pt := k.UpdatePartitionTable.GetTable()
 		if pt == nil {
 			f.cfg.Log.Warn("cluster: UpdatePartitionTable missing table; ignoring",
 				"raft_index", raftIndex)
-			return nil, nil
+			return &applyResult{}, nil
 		}
 		// Clone so the in-memory hook observes an isolated value.
 		// UpdatePartitionTable is a full overwrite; proposers are
@@ -198,13 +275,13 @@ func (f *FSM) applyCommand(
 		if err := (PartitionTableTable{S: batch}).Put(batch, applied); err != nil {
 			return nil, fmt.Errorf("cluster: write partition table: %w", err)
 		}
-		return applied, nil
+		return &applyResult{partitionTable: applied}, nil
 	case *enginev1.Command_RegisterDeployment:
 		rec := k.RegisterDeployment.GetRecord()
 		if rec == nil || rec.GetId() == "" {
 			f.cfg.Log.Warn("cluster: RegisterDeployment missing record or id; ignoring",
 				"raft_index", raftIndex)
-			return nil, nil
+			return &applyResult{}, nil
 		}
 		// Upsert: re-registering the same id (e.g. metadata-leader
 		// bootstrap re-runs on leader gain for an unchanged handler set)
@@ -226,7 +303,11 @@ func (f *FSM) applyCommand(
 				return nil, fmt.Errorf("cluster: write deployment index: %w", err)
 			}
 		}
-		return nil, nil
+		return &applyResult{}, nil
+	case *enginev1.Command_UpsertEventSource:
+		return f.applyUpsertEventSource(batch, env, k.UpsertEventSource, raftIndex)
+	case *enginev1.Command_DeleteEventSource:
+		return f.applyDeleteEventSource(batch, env, k.DeleteEventSource, raftIndex)
 	case *enginev1.Command_EvictNode:
 		return f.applyEvictNode(batch, k.EvictNode, raftIndex)
 	case *enginev1.Command_BeginRebalanceStep:
@@ -235,14 +316,97 @@ func (f *FSM) applyCommand(
 		return f.applyCompleteRebalanceStep(batch, k.CompleteRebalanceStep, raftIndex)
 	case nil:
 		f.cfg.Log.Warn("cluster: envelope has no command kind", "raft_index", raftIndex)
-		return nil, nil
+		return &applyResult{}, nil
 	default:
 		// Forward-compat: unknown variants log + no-op. NEVER returns error
 		// — that would halt the shard (dragonboat disk.go:113).
 		f.cfg.Log.Warn("cluster: unknown command kind; no-op",
 			"raft_index", raftIndex, "kind", fmt.Sprintf("%T", k))
+		return &applyResult{}, nil
+	}
+}
+
+// checkPrecondition returns (true, nil) when the envelope's precondition
+// is satisfied (or absent), (false, nil) when the precondition is set
+// and the current TableRevision does not match (caller should bail out
+// with a nil applyResult so Update stamps ResultValueFailedPrecondition),
+// or (false, err) on a storage error.
+func (f *FSM) checkPrecondition(batch storage.Batch, env *enginev1.Envelope, tableName string) (bool, error) {
+	pre := env.GetPrecondition()
+	if pre == nil || pre.GetIfTableRevisionEq() == 0 {
+		return true, nil
+	}
+	cur, err := (RevisionTable{S: batch}).Get(tableName)
+	if err != nil {
+		return false, err
+	}
+	return cur == pre.GetIfTableRevisionEq(), nil
+}
+
+// applyUpsertEventSource writes the EventSourceRecord and bumps the
+// table's CAS revision. Honors Envelope.precondition: on mismatch
+// returns (nil, nil) so Update stamps ResultValueFailedPrecondition.
+// Fires Notifiers.EventSourceTable post-commit via the returned slice.
+func (f *FSM) applyUpsertEventSource(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.UpsertEventSource,
+	raftIndex uint64,
+) (*applyResult, error) {
+	rec := cmd.GetRecord()
+	if rec == nil || rec.GetName() == "" {
+		f.cfg.Log.Warn("cluster: UpsertEventSource missing record or name; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableEventSource)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load eventsrc revision: %w", err)
+	}
+	if !ok {
 		return nil, nil
 	}
+	if err := (EventSourceTable{S: batch}).Put(batch, rec); err != nil {
+		return nil, fmt.Errorf("cluster: write event source: %w", err)
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableEventSource, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump eventsrc revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.EventSourceTable}}, nil
+}
+
+// applyDeleteEventSource removes the named row (no-op if absent) and
+// bumps the table revision. Same CAS semantics as Upsert. The revision
+// bump happens even on delete-of-absent so the operator's CAS-roundtrip
+// CLI observes that the proposal landed.
+func (f *FSM) applyDeleteEventSource(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.DeleteEventSource,
+	raftIndex uint64,
+) (*applyResult, error) {
+	name := cmd.GetName()
+	if name == "" {
+		f.cfg.Log.Warn("cluster: DeleteEventSource missing name; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableEventSource)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load eventsrc revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	if err := (EventSourceTable{S: batch}).Delete(batch, name); err != nil {
+		return nil, fmt.Errorf("cluster: delete event source: %w", err)
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableEventSource, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump eventsrc revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.EventSourceTable}}, nil
 }
 
 // applyEvictNode marks the named node logically dead (last_seen_ms = 0)
@@ -254,12 +418,12 @@ func (f *FSM) applyEvictNode(
 	batch storage.Batch,
 	cmd *enginev1.EvictNode,
 	raftIndex uint64,
-) (*enginev1.PartitionTable, error) {
+) (*applyResult, error) {
 	nodeID := cmd.GetNodeId()
 	if nodeID == 0 {
 		f.cfg.Log.Warn("cluster: EvictNode missing node_id; ignoring",
 			"raft_index", raftIndex)
-		return nil, nil
+		return &applyResult{}, nil
 	}
 	m, err := (MembershipTable{S: batch}).Get(nodeID)
 	if err != nil {
@@ -268,11 +432,11 @@ func (f *FSM) applyEvictNode(
 	if m == nil {
 		f.cfg.Log.Warn("cluster: EvictNode for unknown node; ignoring",
 			"raft_index", raftIndex, "node_id", nodeID)
-		return nil, nil
+		return &applyResult{}, nil
 	}
 	if m.GetLastSeenMs() == 0 {
 		// Already evicted (last_seen_ms=0 is the eviction marker).
-		return nil, nil
+		return &applyResult{}, nil
 	}
 	m.LastSeenMs = 0
 	if err := (MembershipTable{S: batch}).Put(batch, m); err != nil {
@@ -285,7 +449,7 @@ func (f *FSM) applyEvictNode(
 	}
 	if pt == nil {
 		// No partition table yet (pre-bootstrap eviction is meaningless).
-		return nil, nil
+		return &applyResult{}, nil
 	}
 	// Iterate shards in sorted order so the appended pending steps land in
 	// the same byte sequence on every replica — required for Raft Apply
@@ -323,7 +487,7 @@ func (f *FSM) applyEvictNode(
 	if err := (PartitionTableTable{S: batch}).Put(batch, pt); err != nil {
 		return nil, fmt.Errorf("cluster: write partition table: %w", err)
 	}
-	return proto.Clone(pt).(*enginev1.PartitionTable), nil
+	return &applyResult{partitionTable: proto.Clone(pt).(*enginev1.PartitionTable)}, nil
 }
 
 // applyBeginRebalanceStep appends the requested step to
@@ -333,12 +497,12 @@ func (f *FSM) applyBeginRebalanceStep(
 	batch storage.Batch,
 	cmd *enginev1.BeginRebalanceStep,
 	raftIndex uint64,
-) (*enginev1.PartitionTable, error) {
+) (*applyResult, error) {
 	step := cmd.GetStep()
 	if step == nil || step.GetStepId() == 0 {
 		f.cfg.Log.Warn("cluster: BeginRebalanceStep malformed; ignoring",
 			"raft_index", raftIndex)
-		return nil, nil
+		return &applyResult{}, nil
 	}
 	// shard_id=0 is the metadata Raft group itself — same step kinds,
 	// applied against pt.meta_replicas instead of pt.shards[shard_id]
@@ -350,19 +514,19 @@ func (f *FSM) applyBeginRebalanceStep(
 	if pt == nil {
 		f.cfg.Log.Warn("cluster: BeginRebalanceStep before partition table bootstrap; ignoring",
 			"raft_index", raftIndex)
-		return nil, nil
+		return &applyResult{}, nil
 	}
 	for _, p := range pt.GetPending() {
 		if p.GetShardId() == step.GetShardId() && p.GetStepId() == step.GetStepId() {
 			// Already present — caller retried; drop silently.
-			return nil, nil
+			return &applyResult{}, nil
 		}
 	}
 	pt.Pending = append(pt.Pending, proto.Clone(step).(*enginev1.RebalanceStep))
 	if err := (PartitionTableTable{S: batch}).Put(batch, pt); err != nil {
 		return nil, fmt.Errorf("cluster: write partition table: %w", err)
 	}
-	return proto.Clone(pt).(*enginev1.PartitionTable), nil
+	return &applyResult{partitionTable: proto.Clone(pt).(*enginev1.PartitionTable)}, nil
 }
 
 // applyCompleteRebalanceStep removes the matching pending entry and
@@ -375,20 +539,20 @@ func (f *FSM) applyCompleteRebalanceStep(
 	batch storage.Batch,
 	cmd *enginev1.CompleteRebalanceStep,
 	raftIndex uint64,
-) (*enginev1.PartitionTable, error) {
+) (*applyResult, error) {
 	shardID := cmd.GetShardId()
 	stepID := cmd.GetStepId()
 	if stepID == 0 {
 		f.cfg.Log.Warn("cluster: CompleteRebalanceStep malformed; ignoring",
 			"raft_index", raftIndex)
-		return nil, nil
+		return &applyResult{}, nil
 	}
 	pt, err := (PartitionTableTable{S: batch}).Get()
 	if err != nil {
 		return nil, fmt.Errorf("cluster: load partition table: %w", err)
 	}
 	if pt == nil {
-		return nil, nil
+		return &applyResult{}, nil
 	}
 	var matched *enginev1.RebalanceStep
 	kept := pt.Pending[:0]
@@ -401,7 +565,7 @@ func (f *FSM) applyCompleteRebalanceStep(
 	}
 	if matched == nil {
 		// Already completed on a prior apply, or never proposed; no-op.
-		return nil, nil
+		return &applyResult{}, nil
 	}
 	pt.Pending = kept
 
@@ -438,7 +602,7 @@ func (f *FSM) applyCompleteRebalanceStep(
 	if err := (PartitionTableTable{S: batch}).Put(batch, pt); err != nil {
 		return nil, fmt.Errorf("cluster: write partition table: %w", err)
 	}
-	return proto.Clone(pt).(*enginev1.PartitionTable), nil
+	return &applyResult{partitionTable: proto.Clone(pt).(*enginev1.PartitionTable)}, nil
 }
 
 // pickRebalanceTarget returns the ReplicaSet to mutate for a step with
@@ -515,7 +679,21 @@ type (
 	// to avoid pulling protocolv1 into cluster). Combines the index read with
 	// a record lookup; saves callers a second SyncRead.
 	LookupHandlerInfo struct{ Service, Handler string }
+
+	// LookupEventSources returns *EventSourceList — every
+	// EventSourceRecord on shard 0 plus the table's CAS revision in one
+	// SyncRead. The Reconciler calls this on each TableNotifier wake to
+	// converge local dispatcher state.
+	LookupEventSources struct{}
 )
+
+// EventSourceList bundles every row in EventSourceTable with the
+// table's CAS revision, atomic w.r.t. the read snapshot (single
+// IndexedBatch view).
+type EventSourceList struct {
+	Sources       []*enginev1.EventSourceRecord
+	TableRevision uint64
+}
 
 // HandlerInfo is the result of LookupHandlerInfo — the (service, handler)
 // tuple's current deployment_id plus the kind the deployment advertises
@@ -574,6 +752,16 @@ func (f *FSM) Lookup(query any) (any, error) {
 			}
 		}
 		return &HandlerInfo{DeploymentID: id, Kind: kind}, nil
+	case LookupEventSources:
+		sources, err := (EventSourceTable{S: store}).List()
+		if err != nil {
+			return nil, err
+		}
+		rev, err := (RevisionTable{S: store}).Get(RevisionTableEventSource)
+		if err != nil {
+			return nil, err
+		}
+		return &EventSourceList{Sources: sources, TableRevision: rev}, nil
 	default:
 		return nil, fmt.Errorf("cluster: unknown lookup type %T", query)
 	}

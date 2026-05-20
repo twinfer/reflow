@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	connect "connectrpc.com/connect"
@@ -21,6 +22,13 @@ type Submitter interface {
 // Dispatcher is the per-source pump. One goroutine reads from sub,
 // composes the middleware chain, and feeds SubmitInvocation. Ack/Nack
 // is driven by handle's return value.
+//
+// inflight tracks pending submitter.SubmitInvocation calls so the
+// Reconciler can drain gracefully when this source is removed or
+// reconfigured. WaitGroup increments fire from the apply-path goroutine
+// (the dispatcher's Run loop) before each SubmitInvocation call and
+// decrement on return; callers wait via Manager.stopDispatcher with a
+// bounded timeout (5s by default).
 type Dispatcher struct {
 	name        string
 	topic       string
@@ -33,6 +41,7 @@ type Dispatcher struct {
 	handle      message.HandlerFunc
 	metrics     *Metrics
 	log         *slog.Logger
+	inflight    sync.WaitGroup
 }
 
 // Run subscribes and dispatches until ctx is cancelled or the
@@ -76,9 +85,18 @@ func (d *Dispatcher) core() message.HandlerFunc {
 			Input:          msg.Payload,
 			IdempotencyKey: idem,
 		})
+		// Track this call so Reconciler-driven removal can drain
+		// in-flight work before tearing down the dispatcher. The
+		// dispatcher's own Run goroutine is the only writer of these
+		// increments; WaitGroup's standard "Add before Wait" discipline
+		// is satisfied because Wait runs on a different goroutine in
+		// Manager.stopDispatcher and only after the subscriber's
+		// channel has been closed (no more Adds possible).
+		d.inflight.Add(1)
 		start := time.Now()
 		_, err = d.submitter.SubmitInvocation(msg.Context(), req)
 		dur := time.Since(start).Seconds() * 1000
+		d.inflight.Done()
 		outcome := "success"
 		if err != nil {
 			outcome = "error"

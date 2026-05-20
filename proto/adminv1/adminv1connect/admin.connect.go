@@ -76,6 +76,12 @@ const (
 	// AdminRegisterDeploymentProcedure is the fully-qualified name of the Admin's RegisterDeployment
 	// RPC.
 	AdminRegisterDeploymentProcedure = "/reflow.admin.v1.Admin/RegisterDeployment"
+	// AdminUpsertEventSourceProcedure is the fully-qualified name of the Admin's UpsertEventSource RPC.
+	AdminUpsertEventSourceProcedure = "/reflow.admin.v1.Admin/UpsertEventSource"
+	// AdminDeleteEventSourceProcedure is the fully-qualified name of the Admin's DeleteEventSource RPC.
+	AdminDeleteEventSourceProcedure = "/reflow.admin.v1.Admin/DeleteEventSource"
+	// AdminListEventSourcesProcedure is the fully-qualified name of the Admin's ListEventSources RPC.
+	AdminListEventSourcesProcedure = "/reflow.admin.v1.Admin/ListEventSources"
 )
 
 // AdminClient is a client for the reflow.admin.v1.Admin service.
@@ -116,6 +122,20 @@ type AdminClient interface {
 	// deployment_id, and proposes Command_RegisterDeployment to shard 0.
 	// Returns the assigned id. URL must use http:// or https://.
 	RegisterDeployment(context.Context, *connect.Request[adminv1.RegisterDeploymentRequest]) (*connect.Response[adminv1.RegisterDeploymentResponse], error)
+	// UpsertEventSource inserts or replaces one row in shard 0's
+	// EventSourceTable. if_table_revision_eq=0 disables CAS; non-zero
+	// requires the table revision to match (CodeFailedPrecondition on
+	// mismatch). Returns the post-apply table revision. Leader-only.
+	UpsertEventSource(context.Context, *connect.Request[adminv1.UpsertEventSourceRequest]) (*connect.Response[adminv1.UpsertEventSourceResponse], error)
+	// DeleteEventSource removes one row from shard 0's EventSourceTable.
+	// Same CAS semantics as UpsertEventSource. Delete-of-absent succeeds
+	// (and bumps the revision). Leader-only.
+	DeleteEventSource(context.Context, *connect.Request[adminv1.DeleteEventSourceRequest]) (*connect.Response[adminv1.DeleteEventSourceResponse], error)
+	// ListEventSources returns the current EventSourceTable rows plus the
+	// table revision. Reads via SyncRead against shard 0 — any peer can
+	// serve. Operators use the returned revision as if_table_revision_eq
+	// on subsequent Upsert/Delete calls.
+	ListEventSources(context.Context, *connect.Request[adminv1.ListEventSourcesRequest]) (*connect.Response[adminv1.ListEventSourcesResponse], error)
 }
 
 // NewAdminClient constructs a client for the reflow.admin.v1.Admin service. By default, it uses the
@@ -183,6 +203,24 @@ func NewAdminClient(httpClient connect.HTTPClient, baseURL string, opts ...conne
 			connect.WithSchema(adminMethods.ByName("RegisterDeployment")),
 			connect.WithClientOptions(opts...),
 		),
+		upsertEventSource: connect.NewClient[adminv1.UpsertEventSourceRequest, adminv1.UpsertEventSourceResponse](
+			httpClient,
+			baseURL+AdminUpsertEventSourceProcedure,
+			connect.WithSchema(adminMethods.ByName("UpsertEventSource")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteEventSource: connect.NewClient[adminv1.DeleteEventSourceRequest, adminv1.DeleteEventSourceResponse](
+			httpClient,
+			baseURL+AdminDeleteEventSourceProcedure,
+			connect.WithSchema(adminMethods.ByName("DeleteEventSource")),
+			connect.WithClientOptions(opts...),
+		),
+		listEventSources: connect.NewClient[adminv1.ListEventSourcesRequest, adminv1.ListEventSourcesResponse](
+			httpClient,
+			baseURL+AdminListEventSourcesProcedure,
+			connect.WithSchema(adminMethods.ByName("ListEventSources")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -197,6 +235,9 @@ type adminClient struct {
 	listSnapshots      *connect.Client[adminv1.ListSnapshotsRequest, adminv1.ListSnapshotsResponse]
 	deleteSnapshot     *connect.Client[adminv1.DeleteSnapshotRequest, adminv1.DeleteSnapshotResponse]
 	registerDeployment *connect.Client[adminv1.RegisterDeploymentRequest, adminv1.RegisterDeploymentResponse]
+	upsertEventSource  *connect.Client[adminv1.UpsertEventSourceRequest, adminv1.UpsertEventSourceResponse]
+	deleteEventSource  *connect.Client[adminv1.DeleteEventSourceRequest, adminv1.DeleteEventSourceResponse]
+	listEventSources   *connect.Client[adminv1.ListEventSourcesRequest, adminv1.ListEventSourcesResponse]
 }
 
 // AddNode calls reflow.admin.v1.Admin.AddNode.
@@ -244,6 +285,21 @@ func (c *adminClient) RegisterDeployment(ctx context.Context, req *connect.Reque
 	return c.registerDeployment.CallUnary(ctx, req)
 }
 
+// UpsertEventSource calls reflow.admin.v1.Admin.UpsertEventSource.
+func (c *adminClient) UpsertEventSource(ctx context.Context, req *connect.Request[adminv1.UpsertEventSourceRequest]) (*connect.Response[adminv1.UpsertEventSourceResponse], error) {
+	return c.upsertEventSource.CallUnary(ctx, req)
+}
+
+// DeleteEventSource calls reflow.admin.v1.Admin.DeleteEventSource.
+func (c *adminClient) DeleteEventSource(ctx context.Context, req *connect.Request[adminv1.DeleteEventSourceRequest]) (*connect.Response[adminv1.DeleteEventSourceResponse], error) {
+	return c.deleteEventSource.CallUnary(ctx, req)
+}
+
+// ListEventSources calls reflow.admin.v1.Admin.ListEventSources.
+func (c *adminClient) ListEventSources(ctx context.Context, req *connect.Request[adminv1.ListEventSourcesRequest]) (*connect.Response[adminv1.ListEventSourcesResponse], error) {
+	return c.listEventSources.CallUnary(ctx, req)
+}
+
 // AdminHandler is an implementation of the reflow.admin.v1.Admin service.
 type AdminHandler interface {
 	// AddNode registers a new peer with shard 0 and enqueues a rebalance
@@ -282,6 +338,20 @@ type AdminHandler interface {
 	// deployment_id, and proposes Command_RegisterDeployment to shard 0.
 	// Returns the assigned id. URL must use http:// or https://.
 	RegisterDeployment(context.Context, *connect.Request[adminv1.RegisterDeploymentRequest]) (*connect.Response[adminv1.RegisterDeploymentResponse], error)
+	// UpsertEventSource inserts or replaces one row in shard 0's
+	// EventSourceTable. if_table_revision_eq=0 disables CAS; non-zero
+	// requires the table revision to match (CodeFailedPrecondition on
+	// mismatch). Returns the post-apply table revision. Leader-only.
+	UpsertEventSource(context.Context, *connect.Request[adminv1.UpsertEventSourceRequest]) (*connect.Response[adminv1.UpsertEventSourceResponse], error)
+	// DeleteEventSource removes one row from shard 0's EventSourceTable.
+	// Same CAS semantics as UpsertEventSource. Delete-of-absent succeeds
+	// (and bumps the revision). Leader-only.
+	DeleteEventSource(context.Context, *connect.Request[adminv1.DeleteEventSourceRequest]) (*connect.Response[adminv1.DeleteEventSourceResponse], error)
+	// ListEventSources returns the current EventSourceTable rows plus the
+	// table revision. Reads via SyncRead against shard 0 — any peer can
+	// serve. Operators use the returned revision as if_table_revision_eq
+	// on subsequent Upsert/Delete calls.
+	ListEventSources(context.Context, *connect.Request[adminv1.ListEventSourcesRequest]) (*connect.Response[adminv1.ListEventSourcesResponse], error)
 }
 
 // NewAdminHandler builds an HTTP handler from the service implementation. It returns the path on
@@ -345,6 +415,24 @@ func NewAdminHandler(svc AdminHandler, opts ...connect.HandlerOption) (string, h
 		connect.WithSchema(adminMethods.ByName("RegisterDeployment")),
 		connect.WithHandlerOptions(opts...),
 	)
+	adminUpsertEventSourceHandler := connect.NewUnaryHandler(
+		AdminUpsertEventSourceProcedure,
+		svc.UpsertEventSource,
+		connect.WithSchema(adminMethods.ByName("UpsertEventSource")),
+		connect.WithHandlerOptions(opts...),
+	)
+	adminDeleteEventSourceHandler := connect.NewUnaryHandler(
+		AdminDeleteEventSourceProcedure,
+		svc.DeleteEventSource,
+		connect.WithSchema(adminMethods.ByName("DeleteEventSource")),
+		connect.WithHandlerOptions(opts...),
+	)
+	adminListEventSourcesHandler := connect.NewUnaryHandler(
+		AdminListEventSourcesProcedure,
+		svc.ListEventSources,
+		connect.WithSchema(adminMethods.ByName("ListEventSources")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/reflow.admin.v1.Admin/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AdminAddNodeProcedure:
@@ -365,6 +453,12 @@ func NewAdminHandler(svc AdminHandler, opts ...connect.HandlerOption) (string, h
 			adminDeleteSnapshotHandler.ServeHTTP(w, r)
 		case AdminRegisterDeploymentProcedure:
 			adminRegisterDeploymentHandler.ServeHTTP(w, r)
+		case AdminUpsertEventSourceProcedure:
+			adminUpsertEventSourceHandler.ServeHTTP(w, r)
+		case AdminDeleteEventSourceProcedure:
+			adminDeleteEventSourceHandler.ServeHTTP(w, r)
+		case AdminListEventSourcesProcedure:
+			adminListEventSourcesHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -408,4 +502,16 @@ func (UnimplementedAdminHandler) DeleteSnapshot(context.Context, *connect.Reques
 
 func (UnimplementedAdminHandler) RegisterDeployment(context.Context, *connect.Request[adminv1.RegisterDeploymentRequest]) (*connect.Response[adminv1.RegisterDeploymentResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.admin.v1.Admin.RegisterDeployment is not implemented"))
+}
+
+func (UnimplementedAdminHandler) UpsertEventSource(context.Context, *connect.Request[adminv1.UpsertEventSourceRequest]) (*connect.Response[adminv1.UpsertEventSourceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.admin.v1.Admin.UpsertEventSource is not implemented"))
+}
+
+func (UnimplementedAdminHandler) DeleteEventSource(context.Context, *connect.Request[adminv1.DeleteEventSourceRequest]) (*connect.Response[adminv1.DeleteEventSourceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.admin.v1.Admin.DeleteEventSource is not implemented"))
+}
+
+func (UnimplementedAdminHandler) ListEventSources(context.Context, *connect.Request[adminv1.ListEventSourcesRequest]) (*connect.Response[adminv1.ListEventSourcesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.admin.v1.Admin.ListEventSources is not implemented"))
 }

@@ -49,10 +49,39 @@ message ArbitraryDedup {
   uint64 seq = 2;
 }
 
-// Envelope wraps every Raft command.
+// Envelope wraps every Raft command. precondition is optional: when set,
+// the apply path consults the FSM's table-revision singleton before
+// mutating and rejects the command (without halting the shard) when the
+// stored revision differs. See Precondition below.
 message Envelope {
   Header header = 1;
   Command command = 2;
+  Precondition precondition = 3;
+}
+
+// Precondition is the compare-and-swap gate carried by CAS-aware
+// commands. Empty (or if_table_revision_eq=0) means "no precondition";
+// any non-zero value requires the applicable table's revision singleton
+// to equal it exactly. On mismatch the FSM stamps
+// statemachine.Result.Value=1 and skips the mutation; the admin server
+// helper translates that sentinel into connect.CodeFailedPrecondition.
+//
+// One Precondition shape is shared across every CAS-aware command
+// (UpsertEventSource, DeleteEventSource, ...) because every such
+// command targets exactly one shard-0 table, and the apply arm knows
+// which table-prefix to read.
+message Precondition {
+  uint64 if_table_revision_eq = 1;
+}
+
+// TableRevision is the per-table singleton row used for CAS. Stored at
+// `<table_prefix>__rev` on shard 0. revision is monotonically
+// incremented on every successful mutation of the owning table;
+// updated_at_ms is stamped from the FSM apply path's wall clock and is
+// advisory (replays don't need to round-trip the timestamp).
+message TableRevision {
+  uint64 revision = 1;
+  fixed64 updated_at_ms = 2;
 }
 
 message Header {
@@ -73,12 +102,19 @@ message Header {
 //   16-17  : partition-shard cross-shard delivery (DeliverCallResult,
 //            OutboxAck)
 //   18     : metadata-shard RegisterDeployment
+//   19-20  : partition-shard workflow commands (PromiseCompletionAck,
+//            ReapWorkflow)
+//   21-22  : metadata-shard cluster-managed config: event sources
+//            (UpsertEventSource, DeleteEventSource)
+//   23-24  : reserved for metadata-shard cluster-managed config: webhook
+//            sources (UpsertWebhookSource, DeleteWebhookSource — PR2)
 //
 // Do not reuse a tag — the on-disk format is part of the upgrade
-// contract. New tags should start at 19 or higher unless adding to an
+// contract. New tags should start at 25 or higher unless adding to an
 // existing numbered block.
 message Command {
   reserved 12 to 15;
+  reserved 23, 24;
 
   oneof kind {
     AnnounceLeader announce_leader = 1;
@@ -120,6 +156,17 @@ message Command {
     // workflow_run row, and the invocation's inv/journal/signal_*
     // rows. Accepted only by shardID >= 1.
     ReapWorkflow reap_workflow = 20;
+    // UpsertEventSource inserts or replaces one row in shard 0's
+    // EventSourceTable. Honors Envelope.precondition.if_table_revision_eq
+    // when set. Apply arm writes the row, bumps the table revision
+    // singleton, and fires the EventSourceTable notifier so each node's
+    // local Reconciler wakes and converges. Accepted only by shardID=0.
+    UpsertEventSource upsert_event_source = 21;
+    // DeleteEventSource removes one row from shard 0's EventSourceTable.
+    // Same CAS + notifier semantics as UpsertEventSource. Delete-of-absent
+    // is a no-op (still bumps the revision so the operator's CAS-roundtrip
+    // CLI observes progress). Accepted only by shardID=0.
+    DeleteEventSource delete_event_source = 22;
   }
 }
 
@@ -1002,6 +1049,80 @@ message DeploymentHandler {
 // DeploymentTable[record.id] = record.
 message RegisterDeployment {
   DeploymentRecord record = 1;
+}
+
+// EventSourceRecord is the persisted shape of one broker→handler binding
+// in shard 0's EventSourceTable. Mirrors
+// internal/ingress/eventsource.SourceConfig 1:1; the per-node Reconciler
+// converts the proto back into SourceConfig on apply.
+//
+// Backend.settings is the untyped bag passed to the factory; broker
+// credentials live here (operators wanting credentials off-cluster use
+// the Phase-C webhook-style secret_ref pattern in a follow-up).
+message EventSourceRecord {
+  string name = 1;
+  string type = 2;
+  string topic = 3;
+  string service = 4;
+  string handler = 5;
+  EventSourceExtractor object_key = 6;
+  EventSourceExtractor idempotency = 7;
+  EventSourceRetry retry = 8;
+  EventSourceDLQ dlq = 9;
+  EventSourceBackend backend = 10;
+}
+
+// EventSourceExtractor selects how a per-message string is pulled from
+// an inbound broker message. Maps to eventsource.ExtractorConfig.
+message EventSourceExtractor {
+  string from = 1;  // uuid | const | header | json
+  string value = 2;
+}
+
+// EventSourceRetry tunes the exponential-backoff retry middleware. ms
+// intervals are int64 milliseconds; multiplier is a float64.
+message EventSourceRetry {
+  uint32 max_retries = 1;
+  int64 initial_interval_ms = 2;
+  int64 max_interval_ms = 3;
+  double multiplier = 4;
+}
+
+// EventSourceDLQ wires the PoisonQueue middleware. Empty topic disables
+// the DLQ entirely.
+message EventSourceDLQ {
+  string topic = 1;
+  EventSourceRequeuer requeuer = 2;
+}
+
+// EventSourceRequeuer configures the optional components/requeuer.
+message EventSourceRequeuer {
+  bool enabled = 1;
+  int64 delay_ms = 2;
+  uint32 max_tries = 3;
+}
+
+// EventSourceBackend is the untyped settings bag passed to the factory
+// (Kafka/NATS/SQS/...).
+message EventSourceBackend {
+  map<string, string> settings = 1;
+}
+
+// UpsertEventSource is the Command_UpsertEventSource payload. Proposed
+// by the admin UpsertEventSource RPC (or by the bootstrap-seed path on
+// shard-0 leader gain when the table is empty and a config file lists
+// sources). Apply arm CAS-checks Envelope.precondition, writes
+// EventSourceTable[record.name] = record, and bumps the table revision.
+message UpsertEventSource {
+  EventSourceRecord record = 1;
+}
+
+// DeleteEventSource is the Command_DeleteEventSource payload. Apply arm
+// CAS-checks Envelope.precondition, removes EventSourceTable[name],
+// and bumps the table revision (even when the row was absent — the
+// revision bump is the operator's signal that the proposal landed).
+message DeleteEventSource {
+  string name = 1;
 }
 
 // RegisterNode is proposed against shard 0 when a reflowd process starts

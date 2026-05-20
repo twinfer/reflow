@@ -14,6 +14,7 @@ import (
 
 	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/ingress/eventsource"
+	internalwebhook "github.com/twinfer/reflow/internal/ingress/webhook"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 )
 
@@ -46,6 +47,81 @@ type Config struct {
 	Snapshot     SnapshotConfig     `koanf:"snapshot"`
 	Handlers     HandlersConfig     `koanf:"handlers"`
 	EventSources EventSourcesConfig `koanf:"event_sources"`
+	Webhooks     WebhooksConfig     `koanf:"webhooks"`
+}
+
+// WebhooksConfig declares config-driven inbound vendor webhook
+// endpoints mounted on the existing ingress listener. Each Source
+// binds a URL path to a registered pkg/webhook.Verifier (Stripe,
+// GitHub, Slack ship built-in; operators register custom verifiers
+// via webhook.RegisterVerifier before reflow.Run). Verified facts
+// flow into SubmitInvocationRequest.metadata so the durable handler
+// sees them through ctx.Metadata(). See durable-execution-go-sad.md
+// §6.14 for the full data flow.
+type WebhooksConfig struct {
+	Sources []WebhookSource `koanf:"sources"`
+}
+
+// WebhookSource is one configured webhook binding.
+type WebhookSource struct {
+	// Path is the absolute URL path the webhook is mounted at,
+	// e.g. "/webhooks/stripe". Operators choose freely; the path
+	// must be unique within Sources.
+	Path string `koanf:"path"`
+
+	// Verifier is the registered verifier name. Built-in:
+	// "stripe", "github", "slack". Custom verifiers register via
+	// pkg/webhook.RegisterVerifier from operator main().
+	Verifier string `koanf:"verifier"`
+
+	// Secret is the shared secret passed to the verifier. Use the
+	// koanf env provider for ${env:STRIPE_WEBHOOK_SECRET}-style
+	// references — secret rotation requires restart in v1.
+	Secret string `koanf:"secret"`
+
+	// Invocation declares which handler the verified payload is
+	// dispatched to via SubmitInvocation.
+	Invocation WebhookInvocation `koanf:"invocation"`
+}
+
+// WebhookInvocation is the SubmitInvocation template applied when a
+// signature verifies. Verifier-stamped facts (webhook_vendor,
+// stripe_signed_timestamp, github_delivery, …) are merged with
+// Metadata before dispatch; verifier values win on collision so
+// operators can't override vendor-authoritative facts.
+type WebhookInvocation struct {
+	// Service is the target service name (required).
+	Service string `koanf:"service"`
+	// Handler is the target handler name (required).
+	Handler string `koanf:"handler"`
+	// ObjectKey routes to a specific virtual object. Empty for
+	// non-keyed (singleton) services.
+	ObjectKey string `koanf:"object_key"`
+	// Metadata is the static fact set merged onto verifier-stamped
+	// metadata. Typical use: tenant tags, environment labels.
+	Metadata map[string]string `koanf:"metadata"`
+}
+
+// buildWebhookSources translates the koanf-friendly public config
+// into the internal SourceConfig slice. Lives at the pkg→internal
+// boundary so internal/ingress/webhook stays free of koanf concerns.
+func buildWebhookSources(cfg WebhooksConfig) []internalwebhook.SourceConfig {
+	if len(cfg.Sources) == 0 {
+		return nil
+	}
+	out := make([]internalwebhook.SourceConfig, 0, len(cfg.Sources))
+	for _, s := range cfg.Sources {
+		out = append(out, internalwebhook.SourceConfig{
+			Path:      s.Path,
+			Verifier:  s.Verifier,
+			Secret:    []byte(s.Secret),
+			Service:   s.Invocation.Service,
+			Handler:   s.Invocation.Handler,
+			ObjectKey: s.Invocation.ObjectKey,
+			Metadata:  s.Invocation.Metadata,
+		})
+	}
+	return out
 }
 
 // HandlersConfig groups the handler-related knobs. Endpoints lists

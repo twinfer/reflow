@@ -21,6 +21,16 @@
       }
     },
     {
+      "name": "webhooks_open",
+      "request": {
+        "paths": [
+          "/webhooks/*",
+          "/webhooks/*/*",
+          "/webhooks/*/*/*"
+        ]
+      }
+    },
+    {
       "name": "delivery_node",
       "request": {
         "paths": ["/reflow.delivery.v1.Delivery/*"],

@@ -1252,6 +1252,99 @@ When operating both planes simultaneously:
 
 ---
 
+### 6.14 Webhook Ingress
+
+Reflow ships built-in inbound signature verifiers for common vendor
+webhooks. Config-driven mounting on the existing ingress listener
+means an operator can wire a Stripe / GitHub / Slack webhook by
+adding a YAML stanza — no per-vendor middleware to write.
+
+**Built-in verifiers** (`internal/ingress/webhook/factory_*.go`):
+
+| Vendor | Header | Algorithm | Replay window | Metadata stamped |
+|---|---|---|---|---|
+| Stripe | `Stripe-Signature: t=…,v1=…` | HMAC-SHA256 over `t + "." + body` | 5min (configurable per source) | `webhook_vendor`, `stripe_signed_timestamp` |
+| GitHub | `X-Hub-Signature-256: sha256=…` | HMAC-SHA256 over body | none (no signed timestamp; dedup via `X-GitHub-Delivery`) | `webhook_vendor`, `github_event`, `github_delivery`, `github_hook_target_type` |
+| Slack | `X-Slack-Signature: v0=…` + `X-Slack-Request-Timestamp` | HMAC-SHA256 over `"v0:" + ts + ":" + body` | 5min | `webhook_vendor`, `slack_signed_timestamp` |
+
+Each verifier registers at package `init()` via
+`pkg/webhook.RegisterVerifier`. Operators add custom vendors (Twilio,
+PayPal, internal HMAC schemes, …) by implementing the same
+`webhook.Verifier` interface and calling `RegisterVerifier` from their
+handler binary's `main` before `reflow.Run`.
+
+**Config shape** (`cfg.Webhooks`):
+
+```yaml
+webhooks:
+  sources:
+    - path: /webhooks/stripe
+      verifier: stripe
+      secret: ${env:STRIPE_WEBHOOK_SECRET}
+      invocation:
+        service: stripe-events
+        handler: receive
+        object_key: ""            # optional, for keyed handlers
+        metadata:                  # static facts merged into ctx.Metadata()
+          environment: prod
+    - path: /webhooks/github
+      verifier: github
+      secret: ${env:GITHUB_WEBHOOK_SECRET}
+      invocation:
+        service: github-events
+        handler: receive
+```
+
+**Request flow:**
+
+1. POST arrives on the ingress listener at the configured path.
+2. Auth middleware runs first — the starter policy's
+   `webhooks_open` rule allows `/webhooks/*` anonymously (the
+   signature *is* the auth; tighten via `cfg.Auth.PolicyFile`
+   for per-vendor IP allowlists if needed).
+3. Manager dispatches to the registered verifier:
+   - Verifier reads the body (bounded at 1 MiB via
+     `http.MaxBytesReader`), computes HMAC, compares
+     constant-time, optionally enforces replay window.
+   - On success → `VerifiedEvent{Body, Metadata}`.
+   - On failure → `*connect.Error` with `CodeUnauthenticated`,
+     surfaced as HTTP 401.
+4. Manager merges static `Invocation.Metadata` with
+   verifier-stamped facts (verifier wins on collision so an
+   operator can't override `stripe_signed_timestamp` with a stale
+   literal), builds `SubmitInvocationRequest`, dispatches to the
+   in-process `*ingress.Server`.
+5. Response: 202 Accepted with the `invocation_id_str` body on
+   successful submit; HTTP-coded error on verifier or submit
+   failure.
+
+**Why ship verifiers built-in (vs. operator-writes-everything):** the
+Stripe / GitHub / Slack schemes have well-defined, stable specs (last
+breaking changes 2019, 2020, never). One audited implementation per
+vendor is safer than every operator re-implementing HMAC with
+`crypto/hmac` and hoping they got the timing-safe compare right. The
+3-vendor scope is deliberately small — the long tail (Twilio's
+URL+params reconstruction, PayPal's cert chain, AWS SNS) is heavier
+and lower-volume, and operators with those needs can write a
+`Verifier` impl and call `RegisterVerifier` without forking.
+
+**Out of scope today:**
+
+- Secret backends beyond literal/env: vault, AWS Secrets Manager,
+  etc. Operators today resolve secrets via the koanf env provider
+  + their own secret-injection infra (CSI driver, init container).
+- Hot-reload of `cfg.Webhooks.Sources`: changing sources requires
+  a restart, same as the rest of cfg.
+- Per-source rate limiting: webhook bursts (Stripe retries,
+  GitHub app installs) can saturate ingress; today the engine's
+  generic `cfg.Ingress.HTTP.MaxBodyBytes` + tcp-level limits are
+  the only knobs.
+- Outbound webhook delivery (Reflow → external system): handler
+  code can use `net/http` directly; durable retries are the
+  handler's responsibility via the SDK's `Run` combinator.
+
+---
+
 ## 7. Key Data Flows
 
 ### 7.1 New Invocation (Happy Path)

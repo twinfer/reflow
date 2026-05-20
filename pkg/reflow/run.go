@@ -22,6 +22,7 @@ import (
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/internal/ingress/eventsource"
 	httpingress "github.com/twinfer/reflow/internal/ingress/http"
+	internalwebhook "github.com/twinfer/reflow/internal/ingress/webhook"
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/pkg/adminclient"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
@@ -300,23 +301,43 @@ func startIngressListener(
 	if multiNode && lc.SecurityLevel == credentials.NoSecurity {
 		logger.Warn("reflow: ingress is running on an insecure listener — multi-node deployments should configure cfg.Ingress.Creds")
 	}
+	// Pre-validate webhook config against the registry so a typo'd
+	// verifier name or missing field aborts startup cleanly before
+	// the listener binds (the in-closure NewManager below cannot
+	// surface errors back to the caller).
+	webhookSources := buildWebhookSources(cfg.Webhooks)
+	if err := internalwebhook.ValidateSources(webhookSources); err != nil {
+		_ = creds.CloseAll(lc)
+		return nil, nil, fmt.Errorf("reflow: webhook config: %w", err)
+	}
 	icfg := ingress.Config{
 		Addr:       cfg.Ingress.Addr,
 		TLS:        lc.ServerTLSConfig,
 		Log:        logger,
 		Middleware: mw,
 	}
-	if !cfg.Ingress.HTTP.Disabled {
-		httpCfg := httpingress.Config{
-			MaxBodyBytes: cfg.Ingress.HTTP.MaxBodyBytes,
-			MaxPollMs:    cfg.Ingress.HTTP.MaxPollMs,
-		}
-		icfg.ExtraRoutes = func(srv *ingress.Server) []connectserver.Route {
-			return []connectserver.Route{{
+	icfg.ExtraRoutes = func(srv *ingress.Server) []connectserver.Route {
+		var routes []connectserver.Route
+		if !cfg.Ingress.HTTP.Disabled {
+			httpCfg := httpingress.Config{
+				MaxBodyBytes: cfg.Ingress.HTTP.MaxBodyBytes,
+				MaxPollMs:    cfg.Ingress.HTTP.MaxPollMs,
+			}
+			routes = append(routes, connectserver.Route{
 				Path:    "/v1/",
 				Handler: mw(httpingress.NewRouter(srv, httpCfg, metrics)),
-			}}
+			})
 		}
+		// Sources are validated above; this construction is
+		// guaranteed to succeed.
+		wm, _ := internalwebhook.NewManager(webhookSources, srv, logger)
+		for _, r := range wm.Routes() {
+			routes = append(routes, connectserver.Route{
+				Path:    r.Path,
+				Handler: mw(r.Handler),
+			})
+		}
+		return routes
 	}
 	rt, err := ingress.Start(ctx, eh, icfg)
 	if err != nil {

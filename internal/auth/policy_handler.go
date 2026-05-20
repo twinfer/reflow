@@ -20,7 +20,12 @@ import (
 // all four protocols (Connect, gRPC, gRPC-Web, HTTP-JSON). Non-
 // Connect HTTP requests get a plain text body with the same status
 // codes the legacy middleware used.
-func policyHandler(pol *atomic.Pointer[Policy], log *slog.Logger, ew *connect.ErrorWriter) func(http.Handler) http.Handler {
+//
+// bearerEnabled gates the RFC 7235 WWW-Authenticate challenge on
+// anonymous 401s: emitted only when an OIDC issuer is wired, so we
+// don't mislead clients into trying bearer auth on a SPIFFE-only
+// deployment.
+func policyHandler(pol *atomic.Pointer[Policy], log *slog.Logger, ew *connect.ErrorWriter, bearerEnabled bool) func(http.Handler) http.Handler {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -34,7 +39,7 @@ func policyHandler(pol *atomic.Pointer[Policy], log *slog.Logger, ew *connect.Er
 			if !pol.Load().Allow(r.URL.Path, principal) {
 				log.Warn("auth: policy denied request",
 					"path", r.URL.Path, "principal", principal.String())
-				writeDenied(w, r, ew, principal)
+				writeDenied(w, r, ew, principal, bearerEnabled)
 				return
 			}
 			r = r.WithContext(ContextWithPrincipal(r.Context(), principal))
@@ -61,16 +66,28 @@ func principalFromAuthInfo(info any) Principal {
 // monitoring can separate "no client cert presented" from
 // "auth-config rejects principal X". For requests that aren't on a
 // Connect-aware protocol, fall back to plain HTTP status + body.
-func writeDenied(w http.ResponseWriter, r *http.Request, ew *connect.ErrorWriter, p Principal) {
+//
+// When the principal is anonymous and bearerEnabled is true, the
+// response carries an RFC 7235 WWW-Authenticate: Bearer challenge so
+// non-mTLS clients know which scheme to try. 403s (known-but-denied)
+// never get the challenge — the client already authenticated, the
+// problem is authz, not authn.
+func writeDenied(w http.ResponseWriter, r *http.Request, ew *connect.ErrorWriter, p Principal, bearerEnabled bool) {
 	var err *connect.Error
 	if p.IsAnonymous() {
 		err = connect.NewError(connect.CodeUnauthenticated, errUnauthorized)
+		if bearerEnabled {
+			err.Meta().Set("WWW-Authenticate", wwwAuthenticateBearer)
+		}
 	} else {
 		err = connect.NewError(connect.CodePermissionDenied, errForbidden)
 	}
 	if ew != nil && ew.IsSupported(r) {
 		_ = ew.Write(w, r, err)
 		return
+	}
+	if p.IsAnonymous() && bearerEnabled {
+		w.Header().Set("WWW-Authenticate", wwwAuthenticateBearer)
 	}
 	status := http.StatusForbidden
 	if p.IsAnonymous() {

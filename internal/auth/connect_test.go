@@ -239,6 +239,23 @@ func TestHTTPMiddleware_ConnectErrorEncoding(t *testing.T) {
 	}
 }
 
+// TestHTTPMiddleware_NoWWWAuthenticateWhenOIDCDisabled: when only
+// SPIFFE is wired (no OIDC issuer), the anonymous-denial 401 must NOT
+// advertise Bearer as an accepted scheme — there's no IdP-issued token
+// the client could present.
+func TestHTTPMiddleware_NoWWWAuthenticateWhenOIDCDisabled(t *testing.T) {
+	mw := newTestMW(t, "reflow.local")
+	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	w := httptest.NewRecorder()
+	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
+	if w.Result().StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%d; want 401", w.Result().StatusCode)
+	}
+	if got := w.Result().Header.Get("WWW-Authenticate"); got != "" {
+		t.Errorf("WWW-Authenticate=%q; want empty when bearer not configured", got)
+	}
+}
+
 func mustParseURL(t *testing.T, s string) *url.URL {
 	t.Helper()
 	u, err := url.Parse(s)

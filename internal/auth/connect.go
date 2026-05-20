@@ -64,7 +64,7 @@ func HTTPMiddleware(cfg Config, log *slog.Logger) (mw func(http.Handler) http.Ha
 	auth := composeAuthFunc(cfg.TrustDomain, jwt, log)
 	authnMW := authn.NewMiddleware(auth)
 	errWriter := connect.NewErrorWriter()
-	policy := policyHandler(pol, log, errWriter)
+	policy := policyHandler(pol, log, errWriter, jwt != nil)
 	mw = func(next http.Handler) http.Handler {
 		return authnMW.Wrap(policy(next))
 	}

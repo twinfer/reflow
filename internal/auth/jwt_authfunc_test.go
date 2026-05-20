@@ -602,6 +602,51 @@ func TestJWTAuthFunc_ConnectErrorEncodingOnDenial(t *testing.T) {
 	}
 }
 
+// TestJWTAuthFunc_WWWAuthenticateOnInvalidToken: a bearer-protected
+// 401 from a bad token must carry RFC 6750 §3's
+// `WWW-Authenticate: Bearer error="invalid_token"` challenge so the
+// client knows the scheme + that the token (not the scheme) is the
+// problem.
+func TestJWTAuthFunc_WWWAuthenticateOnInvalidToken(t *testing.T) {
+	kit := newJWTKit(t)
+	mw := newJWTOnlyMiddleware(t, []OIDCIssuerConfig{{
+		IssuerURL: kit.issuer,
+		Audiences: []string{"reflow"},
+	}})
+	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r.Header.Set("Authorization", "Bearer not.a.jwt")
+	w := httptest.NewRecorder()
+	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
+	if w.Result().StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%d; want 401", w.Result().StatusCode)
+	}
+	want := `Bearer error="invalid_token"`
+	if got := w.Result().Header.Get("WWW-Authenticate"); got != want {
+		t.Errorf("WWW-Authenticate=%q; want %q", got, want)
+	}
+}
+
+// TestJWTAuthFunc_WWWAuthenticateOnAnonymousDenial: anonymous request
+// to a guarded path when OIDC is configured must advertise Bearer so
+// non-mTLS clients know which scheme to try.
+func TestJWTAuthFunc_WWWAuthenticateOnAnonymousDenial(t *testing.T) {
+	kit := newJWTKit(t)
+	mw := newJWTOnlyMiddleware(t, []OIDCIssuerConfig{{
+		IssuerURL: kit.issuer,
+		Audiences: []string{"reflow"},
+	}})
+	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	// No Authorization header — anonymous.
+	w := httptest.NewRecorder()
+	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
+	if w.Result().StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%d; want 401", w.Result().StatusCode)
+	}
+	if got := w.Result().Header.Get("WWW-Authenticate"); got != "Bearer" {
+		t.Errorf("WWW-Authenticate=%q; want Bearer", got)
+	}
+}
+
 func contains(s, sub string) bool { return len(s) >= len(sub) && indexOf(s, sub) >= 0 }
 
 func indexOf(s, sub string) int {

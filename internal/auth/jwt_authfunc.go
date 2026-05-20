@@ -16,10 +16,22 @@ import (
 	"time"
 
 	"connectrpc.com/authn"
+	connect "connectrpc.com/connect"
 	"github.com/cenkalti/backoff/v5"
 	"github.com/coreos/go-oidc/v3/oidc"
 	jose "github.com/go-jose/go-jose/v4"
 )
+
+// wwwAuthenticateBearerInvalid is the RFC 6750 §3 challenge value
+// returned on a 401 when a bearer token was presented but failed
+// verification. Clients that follow the spec retry with a refreshed
+// token rather than the same bad one.
+const wwwAuthenticateBearerInvalid = `Bearer error="invalid_token"`
+
+// wwwAuthenticateBearer is the bare RFC 7235 challenge value used on
+// 401s where no credentials were presented at all but bearer is an
+// accepted scheme on this surface.
+const wwwAuthenticateBearer = "Bearer"
 
 // jwtVerifier dispatches an inbound Bearer token to the right issuer
 // entry by inspecting the unverified `iss` claim, then delegates to
@@ -325,6 +337,14 @@ func bearerAuthFunc(v *jwtVerifier) authn.AuthFunc {
 		}
 		p, err := v.verify(ctx, token)
 		if err != nil {
+			// RFC 6750 §3: a 401 from a bearer-protected resource MUST
+			// (the spec says "MUST" for error code values) carry a
+			// WWW-Authenticate challenge so the client knows which
+			// scheme to retry with and that the token, not the
+			// scheme, is the problem.
+			if cerr, ok := err.(*connect.Error); ok {
+				cerr.Meta().Set("WWW-Authenticate", wwwAuthenticateBearerInvalid)
+			}
 			return nil, err
 		}
 		return p, nil

@@ -1121,77 +1121,134 @@ encryption is not currently supported.
 
 ### 6.13 Authentication & Authorization
 
-Reflow's internal gRPC surfaces (Admin, Delivery, future SDK session) run
-under one auth model. The model is:
+Reflow's HTTP/2 surfaces (Connect ingress, REST `/v1/*`, internal
+Admin/Delivery) share one inbound auth chain built on
+`connectrpc.com/authn`. Two identity planes coexist; they serve
+different purposes and are not interchangeable.
 
-1. **Transport identity is SPIFFE-shaped, single-CA.**
-   All inter-node and operator traffic uses mTLS against a single cluster
-   CA. Each peer's leaf certificate carries exactly one URI SAN of the form
-   `spiffe://<trust-domain>/<kind>/<name>`. `kind` is `node` for a reflowd
-   peer (Delivery surface) or `operator` for a human/automation principal
-   (Admin surface). Trust domain is configurable; default `reflow.local`.
-   The TLS layer (`pkg/reflow/tls.go`) validates chain + URI
-   well-formedness only — it does **not** enforce role at the handshake.
+**Two planes, one principal model:**
 
-2. **Identity is mapped to Claims by a ClaimMapper.**
-   Inside the gRPC interceptor, `internal/auth.CertClaimMapper` reads
-   `peer.AuthInfo` → `credentials.TLSInfo` → verified leaf URI and
-   produces a `Claims{Kind, Subject, URI, Extensions}` value. The
-   `ClaimMapper` interface (Temporal-shaped) is the seam where a future
-   `JWTClaimMapper` plugs in for non-cert callers (e.g., ingress clients
-   or remote handler deployments authenticated by JWT instead of cert);
-   `AuthInfo.AuthToken` is already wired but unread today.
+| Plane | Identity primitive | Issued by | Runtime dep | Used for |
+|---|---|---|---|---|
+| SPIFFE / mTLS | `spiffe://<td>/<kind>/<name>` URI SAN on the verified leaf | Reflow's offline CA (`reflowd pki`) | none | cluster mesh + Admin/Delivery |
+| OIDC bearer | JWT with claims mapped to `Principal{Kind, Subject}` | Customer's IdP | IdP reachable | ingress + optionally Admin via `kind=operator` |
 
-3. **Authorization is declared in the proto IDL.**
-   `proto/optionsv1/options.proto` defines two custom options:
-   `required_spiffe_role` (MethodOptions) and
-   `default_required_spiffe_role` (ServiceOptions). Each service annotates
-   itself once; methods override only when they need to differ. At server
-   startup, `auth.BuildMethodPolicy` walks the proto descriptor and
-   compiles a `map[FullMethod]role`. Drift between an annotated proto
-   and missing handler enforcement is impossible — the map is the
-   enforcement.
+Both planes produce the same `auth.Principal{Kind, Subject, Raw, …}`
+shape, so the downstream policy match (`operator/*`, `node/*`) is
+identical regardless of how the principal was established.
 
-4. **Authorizer is the single decision point.**
-   `auth.ProtoPolicyAuthorizer` consults the compiled map and answers
-   `Authorize(ctx, claims, &CallTarget{APIName: fullMethod})`. The
-   default `RoleMatcher` is exact-Kind equality (`claims.Kind == required`);
-   sub-role work (`operator/readonly`) plugs in a path-prefix matcher via
-   `WithMatcher(...)`. Fail-closed on unknown methods.
+**The auth chain (`internal/auth.HTTPMiddleware`):**
 
-5. **One interceptor pair owns the chain.**
-   `auth.UnaryInterceptor` and `auth.StreamInterceptor` run
-   `ClaimMapper.GetClaims` → audit log → `Authorizer.Authorize` →
-   dispatch (or reject with `Unauthenticated` / `PermissionDenied`).
-   The successful handler sees the `Claims` on context via
-   `auth.ClaimsFromContext(ctx)`.
+1. **`authn.Middleware` runs an `AuthFunc`** that chains two
+   authenticators (`internal/auth/connect.go:composeAuthFunc`):
+   - `spiffeAuthFunc` inspects `r.TLS.VerifiedChains[0][0].URIs[0]`
+     and parses the SPIFFE URI. Verified leaf with one well-formed
+     `spiffe://<td>/<kind>/<name>` URI → `Principal{Kind, Subject}`.
+     No TLS / zero URIs → fall through. Malformed URI (wrong scheme,
+     wrong trust domain, missing segments, multiple URIs) → hard
+     `connect.CodeUnauthenticated`.
+   - `bearerAuthFunc` (active only when `cfg.Auth.OIDC` is
+     non-empty) pulls `Authorization: Bearer …`, dispatches by
+     unverified `iss` claim, then re-verifies signature + claims via
+     `github.com/coreos/go-oidc/v3`.
+   - **mTLS wins when both are present.** A leaked bearer token
+     cannot also forge a peer-verified TLS leaf. When mTLS yields a
+     non-anonymous principal, the bearer is ignored (debug-logged).
+
+2. **`policyHandler` enforces the path-glob policy** declared in
+   `starter_policy.json` (embedded default) or `cfg.Auth.PolicyFile`.
+   Denial emits Connect-coded errors via `connect.ErrorWriter`:
+   - `CodeUnauthenticated` (HTTP 401) for anonymous denials. The
+     response carries `WWW-Authenticate: Bearer` (RFC 7235) when
+     OIDC is wired, so non-mTLS clients know which scheme to try.
+   - `CodePermissionDenied` (HTTP 403) for known-but-rejected
+     principals. No `WWW-Authenticate` — they already authenticated.
+   - Bearer-token verification failures from the AuthFunc step add
+     `WWW-Authenticate: Bearer error="invalid_token"` (RFC 6750 §3)
+     so clients refresh the token rather than retrying with the
+     same bad one.
+
+3. **The wrapped handler runs** with the `Principal` attached via
+   `auth.ContextWithPrincipal`. The server-controlled
+   `X-Reflow-Principal` request header is stamped (any forged inbound
+   value is stripped first) so downstream handlers can match on a
+   trusted string without re-parsing.
 
 **Per-surface enforcement matrix:**
 
-| Surface | TLS | ClaimMapper | Authorizer policy source |
+| Surface | TLS | AuthFunc step | Policy |
 |--|--|--|--|
-| Admin | mTLS, well-formed SPIFFE URI | `CertClaimMapper` | `adminv1.Admin` service annotation: `operator` (+ `node/*` carve-out on `SelfJoin`) |
-| Delivery | mTLS, well-formed SPIFFE URI | `CertClaimMapper` | `deliveryv1.Delivery` service annotation: `node` |
-| Connect ingress (`reflow.ingress.v1`) | Optional (h2c or TLS via `cfg.Ingress.Creds`) | `auth.HTTPMiddleware` extracts SPIFFE principal when TLS leaf present; anonymous otherwise | `ingress_open` rule in `starter_policy.json` — no principal restriction; operators tighten via `cfg.Auth.PolicyFile` |
-| REST ingress (`/v1/*`) | Same listener as Connect ingress | Same middleware as Connect ingress | `ingress_rest_open` rule (paths `/v1/*` through `/v1/*/*/*/*/*`) — anonymous; per-verb tightening (e.g. require `operator/*` on `/v1/cancel/*`) belongs in the operator's policy file |
-| Engine → handler (`protocolv1`) | mTLS or h2c via `pkg/reflow/creds` driver; JWT signer rides Authorization header when `Delivery.Creds.Driver == cert-provider` | Verified on handler side via `pkg/handler.Config.RootCAs` + `AllowedSPIFFE` | Out of scope here — owned by `handlerclient`, not the auth middleware stack |
+| Admin (`reflow.admin.v1.Admin`) | mTLS (operator), or via OIDC bearer | SPIFFE → operator/node; bearer → claim-mapped principal | `admin` rule allows `operator/*`; `admin-selfjoin` rule allows `node/*` only on `/SelfJoin` (with `checkSelfJoinPrincipal` further requiring URI's `<id>` == `req.node_id`) |
+| Delivery (`reflow.delivery.v1.Delivery`) | mTLS (node) | SPIFFE only; bearer ignored (no IdP path for streaming inter-node) | `delivery` rule allows `node/*` |
+| Connect ingress (`reflow.ingress.v1`) | Optional (h2c or TLS via `cfg.Ingress.Creds`) | Either; falls through to anonymous when neither present | `ingress_open` rule has no principal constraint by default; operators tighten via `cfg.Auth.PolicyFile` |
+| REST ingress (`/v1/*`) | Same listener as Connect ingress | Same as Connect ingress | `ingress_rest_open` rule covers `/v1/*` through `/v1/*/*/*/*/*` |
+| Engine → handler (`protocolv1`) | Out of scope here — owned by `pkg/reflow/creds` driver + `pkg/handler.Config` verifying via `RootCAs` / `AllowedSPIFFE` |
 
-**Multi-language clients.** Custom proto options ride on standard
-`google.protobuf.MethodOptions/ServiceOptions`, so any buf-generated
-client can introspect the required role for any method via reflection.
-This is the multi-language equivalent of reflow's Go interceptor —
-clients can render the policy or pre-check before calling.
+**Why both planes:** dropping SPIFFE in favor of OIDC-only would break
+load-bearing pieces: (1) `Admin/SelfJoin`'s NodeID-binding gate
+requires identity bound to a key in node-X's secret store, which mTLS
+provides natively; (2) the dragonboat Raft transport and Delivery RPC
+are TCP/streaming surfaces with no header to put a bearer token on;
+(3) cluster admin must work when the IdP is unreachable, so the
+offline CA is the dependency-free credential path. Dropping OIDC in
+favor of SPIFFE-only is fine for closed deployments but limits
+ingress to either anonymous-via-policy or mTLS-only (no SaaS-friendly
+JWT path).
+
+#### 6.13.1 OIDC as an operator credential
+
+The composed AuthFunc means a single `kind=operator` claim from an
+OIDC token produces the same `Principal{Kind: "operator", Subject:
+…}` value as an offline-CA `spiffe://td/operator/…` leaf. The
+`starter_policy.json` `admin` rule matches on `operator/*` regardless
+of how the principal was established, so an OIDC-authenticated CI
+pipeline can run `reflowd cluster {add-node, snapshot create, …}`
+without ever holding an mTLS cert.
+
+Concrete example — let GitHub Actions or a similar CI run admin RPCs
+via OIDC instead of provisioning per-job certs:
+
+```yaml
+auth:
+  oidc:
+    - name: github-actions
+      issuer_url: https://token.actions.githubusercontent.com
+      audiences: [reflow]
+      principal_claim: sub                 # → repo:owner/repo:ref:…
+      kind_claim:      reflow_kind         # custom mapper claim
+      required_claims:
+        reflow_kind: operator              # only "operator"-shaped tokens
+      allowed_claims: [repository, workflow, ref]
+```
+
+A workflow that mints a GitHub OIDC token with a custom
+`reflow_kind: operator` mapper (and audience `reflow`) gets a
+`Principal{Kind: "operator", Subject: "repo_org_reflow_main_…"}` —
+matches `operator/*`, can hit `/Admin/*`. The `/` in the subject is
+sanitized to `_` to keep IdP-controlled values out of
+principal-glob traversal.
+
+When operating both planes simultaneously:
+- mTLS-presenting clients still win the composition, so a misconfigured
+  IdP can't downgrade an operator that already has a cert.
+- The 401 response on anonymous denial advertises `WWW-Authenticate:
+  Bearer` so a CI tool that has only a token (no cert) discovers the
+  scheme on the first attempt.
+- Token expiry/rotation is bounded by the IdP; if the IdP is offline,
+  `operator/*` mTLS certs still work for cluster recovery.
 
 **Out of scope today (additive later):**
 
-- JWT/OIDC `ClaimMapper` implementation (interface ships; concrete
-  implementation deferred until a specific issuer is chosen).
-- Per-tenant ingress identity story for multi-tenant SaaS (today
+- OPA / fine-grained claim-based authz (the `Claims map[string]string`
+  field stays as forward-compat plumbing only).
+- Hot-reload of OIDC config (issuer changes require a restart, same as
+  TLS material; the policy file is hot-reloaded every 30s).
+- Sub-role taxonomy (`operator/readonly`, `operator/admin`); the
+  policy-glob model can express this without code changes
+  (`operator/readonly/*`), but no policy ships with that split today.
+- Per-tenant ingress identity story for multi-tenant SaaS; today
   operators discriminate tenants via `pkg/hostmux` + per-host
-  middleware that sets `Reflow-Meta-*` headers; a first-class
-  tenant-aware claim mapper is a future option).
-- Sub-role taxonomy (`operator/readonly`, `operator/admin`); reflects
-  via the existing `WithMatcher` hook.
+  middleware that sets `Reflow-Meta-*` headers.
 
 ---
 

@@ -52,7 +52,7 @@ func TestReadReplay_PlacesBySlot(t *testing.T) {
 	}
 	src := &frameSourceFromSlice{frames: frames}
 
-	input, replay, err := readReplay(src, codec, uint32(len(frames)))
+	input, _, replay, err := readReplay(src, codec, uint32(len(frames)))
 	if err != nil {
 		t.Fatalf("readReplay: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestReadReplay_NoDecodeOnOpaquePayloads(t *testing.T) {
 	}
 	src := &frameSourceFromSlice{frames: frames}
 
-	if _, _, err := readReplay(src, codec, uint32(len(frames))); err != nil {
+	if _, _, _, err := readReplay(src, codec, uint32(len(frames))); err != nil {
 		t.Errorf("readReplay rejected opaque payloads: %v; want nil (lazy decode defers to consumers)", err)
 	}
 }

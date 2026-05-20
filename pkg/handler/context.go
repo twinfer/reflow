@@ -35,6 +35,15 @@ type Context interface {
 	// Same value on every replay; nil when no input was provided.
 	Input() []byte
 
+	// Metadata returns the caller-supplied map stamped onto the
+	// SubmitInvocationRequest. Read-only at the handler — mutations to
+	// the returned map are local. Useful for webhook adapters: an HTTP
+	// middleware verifies a vendor signature and stashes the verified
+	// facts (event id, event type, tenant) here so the durable handler
+	// routes without re-verifying. Returns an empty (non-nil) map when
+	// no metadata was supplied. Stable across replays.
+	Metadata() map[string]string
+
 	// InvocationID returns this invocation's durable identifier
 	// (partition_key + 16-byte uuid). Stable across replays.
 	InvocationID() *enginev1.InvocationId

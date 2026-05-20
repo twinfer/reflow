@@ -34,6 +34,7 @@ func transitionOnInvoke(
 					Input:       cmd.GetInput(),
 					CreatedAtMs: nowMs,
 					ParentLink:  cmd.GetParentLink(),
+					Metadata:    cmd.GetMetadata(),
 				},
 			},
 			DeploymentId: cmd.GetDeploymentId(),

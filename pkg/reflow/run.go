@@ -21,6 +21,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/internal/ingress/eventsource"
+	httpingress "github.com/twinfer/reflow/internal/ingress/http"
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/pkg/adminclient"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
@@ -217,7 +218,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 
 	host, herr := finishStartup(ctx, cfg, eh, adminEnabled, shards, snapshotTriggers,
 		deliverySrv, deliveryClient, deliveryCreds, adminCreds, handlerSigner,
-		httpAuthMW, httpAuthCloser, metricsCloser, metricsRegisterer, logger)
+		httpAuthMW, httpAuthCloser, metricsCloser, metricsRegisterer, metrics, logger)
 	if herr != nil {
 		if deliverySrv != nil {
 			_ = deliverySrv.Close()
@@ -289,6 +290,7 @@ func startIngressListener(
 	cfg Config,
 	multiNode bool,
 	mw func(http.Handler) http.Handler,
+	metrics *observability.Metrics,
 	logger *slog.Logger,
 ) (*ingress.Runtime, *creds.ListenerCreds, error) {
 	if cfg.Ingress.Disabled {
@@ -302,12 +304,25 @@ func startIngressListener(
 	if multiNode && lc.SecurityLevel == credentials.NoSecurity {
 		logger.Warn("reflow: ingress is running on an insecure listener — multi-node deployments should configure cfg.Ingress.Creds")
 	}
-	rt, err := ingress.Start(ctx, eh, ingress.Config{
+	icfg := ingress.Config{
 		Addr:       cfg.Ingress.Addr,
 		TLS:        lc.ServerTLSConfig,
 		Log:        logger,
 		Middleware: mw,
-	})
+	}
+	if !cfg.Ingress.HTTP.Disabled {
+		httpCfg := httpingress.Config{
+			MaxBodyBytes: cfg.Ingress.HTTP.MaxBodyBytes,
+			MaxPollMs:    cfg.Ingress.HTTP.MaxPollMs,
+		}
+		icfg.ExtraRoutes = func(srv *ingress.Server) []connectserver.Route {
+			return []connectserver.Route{{
+				Path:    "/v1/",
+				Handler: mw(httpingress.NewRouter(srv, httpCfg, metrics)),
+			}}
+		}
+	}
+	rt, err := ingress.Start(ctx, eh, icfg)
 	if err != nil {
 		_ = creds.CloseAll(lc)
 		return nil, nil, fmt.Errorf("reflow: ingress start: %w", err)
@@ -337,6 +352,7 @@ func finishStartup(
 	authCloser func() error,
 	metricsCloser func() error,
 	metricsRegisterer prometheus.Registerer,
+	metrics *observability.Metrics,
 	logger *slog.Logger,
 ) (*Host, error) {
 	// Joiners register themselves with shard 0 BEFORE starting any
@@ -477,7 +493,7 @@ func finishStartup(
 	}
 
 	multiNode := len(cfg.Cluster.Peers) > 1
-	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, logger)
+	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, metrics, logger)
 	if err != nil {
 		if snapshotCxl != nil {
 			snapshotCxl()

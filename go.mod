@@ -12,6 +12,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.2
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/cockroachdb/pebble/v2 v2.1.5
+	github.com/go-chi/chi/v5 v5.2.5
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/uuid v1.6.0
 	github.com/knadh/koanf/parsers/json v1.0.0
@@ -24,6 +25,8 @@ require (
 	github.com/nats-io/nats.go v1.37.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/qmuntal/stateless v1.8.0
+	github.com/testcontainers/testcontainers-go v0.42.0
+	github.com/testcontainers/testcontainers-go/modules/kafka v0.42.0
 	github.com/tidwall/gjson v1.19.0
 	gocloud.dev v0.45.0
 	golang.org/x/oauth2 v0.36.0
@@ -111,7 +114,6 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/getsentry/sentry-go v0.46.2 // indirect
-	github.com/go-chi/chi/v5 v5.2.5 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
@@ -184,8 +186,6 @@ require (
 	github.com/sony/gobreaker v1.0.0 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.6.0 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
-	github.com/testcontainers/testcontainers-go v0.42.0 // indirect
-	github.com/testcontainers/testcontainers-go/modules/kafka v0.42.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect

@@ -95,7 +95,7 @@ func runSession(
 
 	// Consume the replay phase: read known_entries frames, build the
 	// replay buffer + capture the JEInput payload as the handler input.
-	input, replay, err := readReplay(src, codec, start.GetKnownEntries())
+	input, metadata, replay, err := readReplay(src, codec, start.GetKnownEntries())
 	if err != nil {
 		return fmt.Errorf("read replay: %w", err)
 	}
@@ -113,6 +113,7 @@ func runSession(
 		start.GetPartitionKey(), start.GetMaxJournalEntries(),
 		start.GetServiceName(), start.GetHandlerName(), start.GetKey(), start.GetKind(),
 	)
+	wctx.metadata = metadata
 	wctx.partialState = start.GetPartialState()
 
 	output, runErr := runHandler(wctx, fn, input)
@@ -213,25 +214,26 @@ func readStart(src frameSource, codec wire.Codec) (*protocolv1.StartMessage, err
 // pathological case where a frame arrives without a stamped slot (slot
 // 0 collides with JEInput); in that case we synthesize a unique slot
 // past the entry count. Production engines always stamp.
-func readReplay(src frameSource, codec wire.Codec, count uint32) ([]byte, map[uint32]*replayEntry, error) {
+func readReplay(src frameSource, codec wire.Codec, count uint32) ([]byte, map[string]string, map[uint32]*replayEntry, error) {
 	replay := make(map[uint32]*replayEntry, count)
 	if count == 0 {
-		return nil, replay, nil
+		return nil, nil, replay, nil
 	}
 	var (
 		input        []byte
+		metadata     map[string]string
 		fallbackSlot uint32 = count // unique synthetic slot for legacy frames
 	)
 	for i := range count {
 		f, err := src.Recv()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return nil, nil, fmt.Errorf("replay truncated at frame %d/%d", i, count)
+				return nil, nil, nil, fmt.Errorf("replay truncated at frame %d/%d", i, count)
 			}
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if err := wire.ValidatePayload(f); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		typeCode, _, _ := wire.UnpackHeader(f.GetHeader())
 
@@ -244,18 +246,25 @@ func readReplay(src frameSource, codec wire.Codec, count uint32) ([]byte, map[ui
 		}
 		replay[slot] = &replayEntry{typeCode: typeCode, payload: f.GetPayload()}
 
-		// JEInput is the one frame we decode eagerly so ctx.Input() can
-		// hand the handler its input bytes without re-doing this per
-		// call. Single decode per session, cheap.
+		// JEInput is the one frame we decode eagerly so ctx.Input() and
+		// ctx.Metadata() can hand the handler its input + caller-supplied
+		// metadata without re-doing this per call. Single decode per
+		// session, cheap.
 		if typeCode == wire.TypeCmdInput {
 			var in protocolv1.InputCommandMessage
 			if err := codec.Unmarshal(f.GetPayload(), &in); err != nil {
-				return nil, nil, fmt.Errorf("decode replay InputCommandMessage: %w", err)
+				return nil, nil, nil, fmt.Errorf("decode replay InputCommandMessage: %w", err)
 			}
 			input = in.GetValue().GetContent()
+			if headers := in.GetHeaders(); len(headers) > 0 {
+				metadata = make(map[string]string, len(headers))
+				for _, h := range headers {
+					metadata[h.GetKey()] = h.GetValue()
+				}
+			}
 		}
 	}
-	return input, replay, nil
+	return input, metadata, replay, nil
 }
 
 // sendSuspension emits a SuspensionMessage frame and closes the

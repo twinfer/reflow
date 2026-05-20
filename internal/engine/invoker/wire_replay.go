@@ -6,6 +6,7 @@ import (
 	hexenc "encoding/hex"
 	"fmt"
 	"log/slog"
+	"sort"
 
 	"google.golang.org/protobuf/proto"
 
@@ -76,6 +77,20 @@ func translateEntry(invID *enginev1.InvocationId, e *enginev1.JournalEntry, code
 	case *enginev1.JournalEntry_Input:
 		msg := &protocolv1.InputCommandMessage{
 			Value: &protocolv1.Value{Content: entry.Input.GetValue()},
+		}
+		if md := entry.Input.GetMetadata(); len(md) > 0 {
+			// Keys are sorted so replay frame bytes are stable across
+			// runs — Go's map iteration is randomized and the engine
+			// hashes replay frames for divergence detection.
+			keys := make([]string, 0, len(md))
+			for k := range md {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			msg.Headers = make([]*protocolv1.Header, 0, len(keys))
+			for _, k := range keys {
+				msg.Headers = append(msg.Headers, &protocolv1.Header{Key: k, Value: md[k]})
+			}
 		}
 		return marshalFrame(codec, wire.TypeCmdInput, e.GetIndex(), msg)
 

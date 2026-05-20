@@ -145,6 +145,7 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 		IdempotencyKey: msg.GetIdempotencyKey(),
 		DeploymentId:   info.DeploymentID,
 		Kind:           info.Kind,
+		Metadata:       msg.GetMetadata(),
 	}}}
 	producerID := "http/" + FormatInvocationID(id)
 	if err := runner.Proposer().ProposeIngress(ctx, producerID, 1, cmd); err != nil {

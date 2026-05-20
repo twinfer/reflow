@@ -196,7 +196,10 @@ func (s *wireSession) loadJournal() ([]*enginev1.JournalEntry, bool) {
 		entry := &enginev1.JournalEntry{
 			Index: 0,
 			Entry: &enginev1.JournalEntry_Input{
-				Input: &enginev1.JEInput{Value: st.Scheduled.GetInput()},
+				Input: &enginev1.JEInput{
+					Value:    st.Scheduled.GetInput(),
+					Metadata: st.Scheduled.GetMetadata(),
+				},
 			},
 		}
 		if err := s.proposeJournal(entry); err != nil {

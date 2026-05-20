@@ -35,6 +35,14 @@ type Config struct {
 	// not by skipping the middleware. Tests that intentionally bypass
 	// auth must pass an explicit identity passthrough.
 	Middleware func(http.Handler) http.Handler
+	// ExtraRoutes builds additional connectserver.Routes mounted on the
+	// same listener as the Connect ingress. Called once after Start
+	// constructs the in-process Server, so the caller can wire handlers
+	// (notably the REST facade at /v1/*) that need *Server directly.
+	// The caller is responsible for wrapping each handler with the auth
+	// middleware (the same instance passed in Middleware); Start does
+	// not double-wrap.
+	ExtraRoutes func(srv *Server) []connectserver.Route
 }
 
 // Runtime is a started ingress server. Close it to stop the listener
@@ -65,11 +73,15 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 	path, handler := ingressv1connect.NewIngressHandler(srv,
 		connect.WithInterceptors(withDefaultDeadline(defaultLookupTimeout)),
 	)
+	routes := []connectserver.Route{{Path: path, Handler: cfg.Middleware(handler)}}
+	if cfg.ExtraRoutes != nil {
+		routes = append(routes, cfg.ExtraRoutes(srv)...)
+	}
 	cs, err := connectserver.New(ctx, connectserver.Config{
 		Addr: cfg.Addr,
 		TLS:  cfg.TLS,
 		Log:  cfg.Log,
-	}, connectserver.Route{Path: path, Handler: cfg.Middleware(handler)})
+	}, routes...)
 	if err != nil {
 		return nil, fmt.Errorf("ingress: %w", err)
 	}

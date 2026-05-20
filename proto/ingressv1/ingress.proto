@@ -84,6 +84,14 @@ message SubmitInvocationRequest {
   // against the (service, handler, object_key, idempotency_key) tuple
   // so a retried Submit returns the same invocation_id.
   string idempotency_key = 5;
+  // Opaque caller-supplied metadata, persisted with the invocation and
+  // surfaced to the handler via ctx.Metadata(). Typical use is for
+  // webhook-style adapters: an HTTP middleware verifies a vendor
+  // signature (Stripe-Signature, X-GitHub-Event, …) and stashes the
+  // verified facts here so the durable handler can route without
+  // re-verifying. The engine never interprets the values — they ride
+  // along on JEInput and reach the SDK as InputCommandMessage.headers.
+  map<string, string> metadata = 6;
 }
 
 message SubmitInvocationResponse {

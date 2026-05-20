@@ -106,7 +106,7 @@ one process with one data directory.
 ```
                          ┌─────────────────────────────────────────┐
    SDK Handlers          │              Ingress Layer               │
-   (TypeScript,   ──────▶│         HTTP/2 + gRPC gateway           │
+   (TypeScript,   ──────▶│   Connect/HTTP-2 + /v1/* REST facade     │
     Python, Go)          │     Invocation routing by partition key  │
                          └────────────────┬────────────────────────┘
                                           │
@@ -154,8 +154,8 @@ Each partition is an independent unit: one dragonboat Raft group, one Pebble ins
 |---|---|---|
 | Raft consensus + replication | `lni/dragonboat/v4` (pre-release pin) | Apache 2.0 |
 | Embedded K/V storage | `cockroachdb/pebble/v2` | Apache 2.0 |
-| gRPC (ingress, admin, delivery, sdk session) | `google.golang.org/grpc` | Apache 2.0 |
-| HTTP/2 ingress (REST gateway) | `grpc-ecosystem/grpc-gateway/v2` | BSD-3 |
+| RPC (ingress, admin, delivery, handler-wire) | `connectrpc.com/connect` over stdlib HTTP/2 | Apache 2.0 |
+| REST router (operator-facing `/v1/*` + ExtraRoutes) | `go-chi/chi/v5` | MIT |
 | Snapshot archival (filesystem + cloud blob) | `gocloud.dev/blob` | Apache 2.0 |
 | Serialization + IDL | `google.golang.org/protobuf` + `buf` v2 | BSD-3 / Apache 2.0 |
 | Authn/Authz | stdlib `crypto/tls`, custom SPIFFE URI mapper + proto-annotation authz (`internal/auth`) | — |
@@ -187,26 +187,55 @@ client-facing surface; the engine ↔ handler wire (see §6.10) is a
 separate code path, not part of ingress.
 
 **Responsibilities:**
-- Parse invocation requests (HTTP/JSON via grpc-gateway or native gRPC).
+- Parse invocation requests (Connect RPC over HTTP/2 — content-negotiates
+  Connect / gRPC / gRPC-Web / HTTP-JSON on a single port). A REST-style
+  facade at `/v1/*` (chi-based) is mounted on the same listener for
+  curl- and webhook-friendly URL shapes.
 - Determine the target partition via consistent hashing on
-  `(service_name, object_key)`.
-- Forward invocation commands to the correct Partition Processor via
-  internal gRPC (cross-node) or in-process call (co-located).
-- Return invocation ID to caller immediately (async) or stream response
-  (sync/await).
+  `(service_name, object_key)` through `Host.Partitioner`.
+- Propose invocation commands to the owning partition's leader
+  (in-process when co-located; cross-node delivery rides the Delivery
+  surface — see §6.6).
+- Return invocation ID to caller immediately (async / `/v1/send`) or
+  long-poll until completion (`/v1/call`, `/v1/attach`).
+- Propagate caller-supplied metadata end-to-end: HTTP headers prefixed
+  `Reflow-Meta-*` (REST) or the typed `SubmitInvocationRequest.metadata`
+  field (Connect) flow through `InvokeCommand.metadata` → `Scheduled.metadata`
+  → `JEInput.metadata` → `InputCommandMessage.headers` → `handler.Context.Metadata()`.
+  The engine never interprets the values. Designed for webhook adapters
+  that verify a vendor signature (Stripe, GitHub, …) in front of the
+  ingress and stash the verified facts here so the durable handler can
+  route without re-verifying.
 
 **Routing:**
 ```
 partition_id = hash(service_name + "/" + object_key) % num_partitions
 ```
 
-**gRPC surfaces hosted by reflowd (all distinct, by design):**
+**Surfaces hosted by reflowd (all distinct, by design):**
 
-| Surface | Port (default) | Auth | Purpose |
-|--|--|--|--|
-| Ingress (`reflow.ingress.v1`) | 8080 | None today (client identity model TBD) | External callers submit invocations, resolve awakeables |
-| Delivery (`reflow.delivery.v1`) | 8081 | mTLS, `spiffe://<td>/node/*` enforced by `auth.StreamInterceptor` | Cross-partition / cross-node command forwarding |
-| Admin (`reflow.admin.v1`) | 8082 | mTLS, `spiffe://<td>/operator/*` enforced by `auth.UnaryInterceptor` | Cluster ops: add/remove node, list partitions, snapshot mgmt |
+| Surface | Port (default) | Wire | Auth | Purpose |
+|--|--|--|--|--|
+| Connect ingress (`reflow.ingress.v1`) | 8080 | Connect/HTTP-2 | Anonymous via `ingress_open` policy rule; operator tightens via `cfg.Auth.PolicyFile` | Typed SDK clients submit invocations, await results, resolve awakeables/promises |
+| REST ingress (`/v1/*`) | 8080 (same listener) | HTTP/1.1+HTTP/2 + JSON envelope | Anonymous via `ingress_rest_open` policy rule | curl, webhooks, Restate-style URL ergonomics; delegates to the Connect handlers via the in-process `*ingress.Server` |
+| Delivery (`reflow.delivery.v1`) | 8081 | Connect/HTTP-2 | mTLS, `spiffe://<td>/node/*` | Cross-partition / cross-node command forwarding |
+| Admin (`reflow.admin.v1`) | 8082 | Connect/HTTP-2 | mTLS, `spiffe://<td>/operator/*` (+ `node/*` carve-out on `SelfJoin`) | Cluster ops: add/remove node, list partitions, snapshot mgmt, register-deployment |
+
+**Extension seam.** `ingress.Config.ExtraRoutes func(*Server) []connectserver.Route`
+mounts additional HTTP handlers on the Connect ingress listener without
+a second port/cert. The REST facade at `/v1/*` is the canonical caller;
+operator code (webhook adapters, custom REST endpoints) rides the same
+seam. Each `ExtraRoute` is wrapped by the same auth middleware Connect
+uses — the SPIFFE policy is the authoritative gate.
+
+**Operator infrastructure: `pkg/hostmux`.** Multi-tenant SaaS deployments
+that need per-tenant or per-vendor host-based routing wire `pkg/hostmux.Mux`
+as one of `ExtraRoutes`. Reflow never imports the package itself —
+runtime mutation of the host table is a Go function call (`Mux.Set`)
+driven by the operator's tenant manager (file watcher, control-plane
+stream, polling against a tenant DB). Reflow does not durably store
+tenant config; secrets stay in the operator's secret store, no admin
+RPC owns it.
 
 The engine ↔ handler wire (`proto/protocolv1`) is raw HTTP/2 to the
 handler-hosted endpoint, not a service hosted by reflowd. See §6.10.
@@ -1141,10 +1170,11 @@ under one auth model. The model is:
 
 | Surface | TLS | ClaimMapper | Authorizer policy source |
 |--|--|--|--|
-| Admin | mTLS, well-formed SPIFFE URI | `CertClaimMapper` | `adminv1.Admin` service annotation: `operator` |
+| Admin | mTLS, well-formed SPIFFE URI | `CertClaimMapper` | `adminv1.Admin` service annotation: `operator` (+ `node/*` carve-out on `SelfJoin`) |
 | Delivery | mTLS, well-formed SPIFFE URI | `CertClaimMapper` | `deliveryv1.Delivery` service annotation: `node` |
-| Ingress | None today | None today | None today (identity model TBD) |
-| Engine → handler (`protocolv1`) | TBD (likely mTLS) | TBD (likely cert SAN) | Out of scope here — owned by `handlerclient`, not the gRPC interceptor stack |
+| Connect ingress (`reflow.ingress.v1`) | Optional (h2c or TLS via `cfg.Ingress.Creds`) | `auth.HTTPMiddleware` extracts SPIFFE principal when TLS leaf present; anonymous otherwise | `ingress_open` rule in `starter_policy.json` — no principal restriction; operators tighten via `cfg.Auth.PolicyFile` |
+| REST ingress (`/v1/*`) | Same listener as Connect ingress | Same middleware as Connect ingress | `ingress_rest_open` rule (paths `/v1/*` through `/v1/*/*/*/*/*`) — anonymous; per-verb tightening (e.g. require `operator/*` on `/v1/cancel/*`) belongs in the operator's policy file |
+| Engine → handler (`protocolv1`) | mTLS or h2c via `pkg/reflow/creds` driver; JWT signer rides Authorization header when `Delivery.Creds.Driver == cert-provider` | Verified on handler side via `pkg/handler.Config.RootCAs` + `AllowedSPIFFE` | Out of scope here — owned by `handlerclient`, not the auth middleware stack |
 
 **Multi-language clients.** Custom proto options ride on standard
 `google.protobuf.MethodOptions/ServiceOptions`, so any buf-generated
@@ -1156,9 +1186,10 @@ clients can render the policy or pre-check before calling.
 
 - JWT/OIDC `ClaimMapper` implementation (interface ships; concrete
   implementation deferred until a specific issuer is chosen).
-- Ingress authz model (different identity story — likely workload
-  identity, not node/operator).
-- Handler-wire authz (engine ↔ handler; `handlerclient` will gain its own TLS + identity story, separate from the gRPC interceptor stack).
+- Per-tenant ingress identity story for multi-tenant SaaS (today
+  operators discriminate tenants via `pkg/hostmux` + per-host
+  middleware that sets `Reflow-Meta-*` headers; a first-class
+  tenant-aware claim mapper is a future option).
 - Sub-role taxonomy (`operator/readonly`, `operator/admin`); reflects
   via the existing `WithMatcher` hook.
 
@@ -1343,8 +1374,10 @@ with `reflowd`, have it become a durable goroutine.
   `InvokerEffect` proposals via `Proposer.ProposeSelf`. The actual
   handler runs in a separate process; the Invoker drives it over an
   HTTP/2 frame stream (see §6.10).
-- **Ingress** — gRPC + grpc-gateway in `internal/ingress/`. Awakeable
-  resolution rides the same surface.
+- **Ingress** — Connect RPC in `internal/ingress/`, content-negotiating
+  Connect / gRPC / gRPC-Web / HTTP-JSON on one HTTP/2 listener. Awakeable
+  resolution rides the same surface. REST facade at `/v1/*` mounted on
+  the same listener via `ingress.Config.ExtraRoutes` (see §6.1).
 - **Journal entry types**: `JERun`, `JEGetState` / `JESetState` /
   `JEClearState` / `JEClearAllState`, `JEGetStateKeys` /
   `JEGetEagerStateKeys`, `JEAwakeable` / `JEAwakeableResult`, `JESignal`.
@@ -1455,6 +1488,33 @@ single-node failures with no data loss, recovers when the failed node
 returns, and tolerates a planned `remove-node` of any single member.
 Chaos tests cover network partitions, leader oscillation, and concurrent
 add/remove operations.
+
+### REST ingress + caller metadata (done)
+
+- **REST facade at `/v1/*`** (`internal/ingress/http/`). Mounted on the
+  Connect ingress listener via `ingress.Config.ExtraRoutes` — same port,
+  same TLS, same auth middleware. Verbs: `call` (submit + long-poll),
+  `send` (submit-only), `attach`, `output`, `cancel`, `awakeables/.../resolve`,
+  `promises/.../resolve`, `state`. Each handler builds a typed
+  `*connect.Request[T]` and delegates to the in-process `*ingress.Server`
+  — no business-logic duplication. Long-poll capped at 30s (vs Connect's
+  60s) to stay under common LB idle timeouts. `ensureDeadline` middleware
+  installs a default request timeout because `*ingress.Server` calls
+  dragonboat `SyncRead` under the hood (rejects deadlineless contexts).
+- **Caller metadata end-to-end.** `SubmitInvocationRequest.metadata`
+  (`map<string,string>`) flows through `InvokeCommand.metadata` →
+  `Scheduled.metadata` (slot-0 transient) → `JEInput.metadata` (durable
+  in the journal) → `InputCommandMessage.headers` (sorted-by-key for
+  deterministic replay bytes) → `wireContext.metadata` →
+  `handler.Context.Metadata()`. REST surface convention: HTTP headers
+  prefixed `Reflow-Meta-*` are lifted (lowercased + stripped) into the
+  proto field, so operator HMAC-verifier middleware can stamp facts
+  the durable handler reads without re-verifying.
+- **`pkg/hostmux` operator primitive.** Trust-aware host dispatcher with
+  atomic-swappable table for runtime reconfig. Lives in `pkg/` because
+  it is operator infrastructure, not engine machinery — Reflow itself
+  does not import it. Enables multi-tenant SaaS via per-host
+  routing without Reflow owning tenant state.
 
 ### Production Hardening (in progress)
 

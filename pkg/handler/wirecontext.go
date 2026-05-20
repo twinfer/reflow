@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"sort"
 	"sync"
 	"time"
@@ -40,8 +41,12 @@ type replayEntry struct {
 // SetState / ClearState / ClearAllState / GetState / All / Any /
 // SendSignal / CancelInvocation / WaitSignal / Promise are all wired.
 type wireContext struct {
-	ctx          context.Context
-	input        []byte
+	ctx   context.Context
+	input []byte
+	// metadata is the caller-supplied map captured at submit time and
+	// replayed from JEInput.metadata. Read-only on the handler side;
+	// nil-safe via Metadata() returning a fresh empty map on absence.
+	metadata     map[string]string
 	invocationID *enginev1.InvocationId
 	partitionKey uint64
 	// service, handler, key are the addressing tuple from StartMessage.
@@ -150,6 +155,19 @@ func newWireContext(
 func (c *wireContext) Context() context.Context             { return c.ctx }
 func (c *wireContext) Input() []byte                        { return c.input }
 func (c *wireContext) InvocationID() *enginev1.InvocationId { return c.invocationID }
+
+// Metadata returns the caller-supplied (key,value) map stamped onto the
+// invocation at submit time. The returned map is owned by the caller
+// (mutation is safe but does not propagate back to the engine).
+// Returns an empty (non-nil) map when no metadata was supplied.
+func (c *wireContext) Metadata() map[string]string {
+	if c.metadata == nil {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(c.metadata))
+	maps.Copy(out, c.metadata)
+	return out
+}
 
 // allocSlot reserves span consecutive journal indices and returns the
 // first. err is non-nil in two cases:

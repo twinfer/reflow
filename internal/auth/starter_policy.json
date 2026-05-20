@@ -9,6 +9,18 @@
       }
     },
     {
+      "name": "ingress_rest_open",
+      "request": {
+        "paths": [
+          "/v1/*",
+          "/v1/*/*",
+          "/v1/*/*/*",
+          "/v1/*/*/*/*",
+          "/v1/*/*/*/*/*"
+        ]
+      }
+    },
+    {
       "name": "delivery_node",
       "request": {
         "paths": ["/reflow.delivery.v1.Delivery/*"],

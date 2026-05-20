@@ -161,6 +161,11 @@ message InvokeCommand {
   // 0 (unspecified) is tolerated; the apply path treats it as "no
   // workflow lifecycle".
   uint32 kind = 7;
+  // Opaque caller-supplied metadata persisted with the invocation. The
+  // apply arm copies this onto JEInput.metadata so the SDK can read it
+  // via ctx.Metadata() on replay. The engine itself never interprets
+  // the values.
+  map<string, string> metadata = 8;
 }
 
 // ParentLink references the parent invocation that spawned a callee via
@@ -405,6 +410,12 @@ message JournalEntry {
 
 message JEInput {
   bytes value = 1;
+  // Opaque caller-supplied metadata captured at submit time. Surfaced
+  // to the SDK as InputCommandMessage.headers on the wire; readable
+  // via ctx.Metadata() inside the handler. Stable across replays —
+  // JEInput is the slot-0 journal entry and the only place metadata
+  // is persisted.
+  map<string, string> metadata = 2;
 }
 
 message JESleep {
@@ -754,6 +765,11 @@ message Scheduled {
   // every status transition until Completed, where the apply arm consumes
   // it to journal JECallResult on the parent.
   ParentLink parent_link = 4;
+  // Caller-supplied metadata captured at submit time. Only Scheduled
+  // carries it on the status; once the invoker advances to Invoked it
+  // proposes JEInput with the same metadata into the journal, where it
+  // is the durable home for the rest of the invocation's lifetime.
+  map<string, string> metadata = 5;
 }
 
 message Invoked {

@@ -1712,6 +1712,194 @@ func (x *ListSecretsResponse) GetTableRevision() uint64 {
 	return 0
 }
 
+// TransferLPRequest initiates a cross-shard transfer for one LP. lp
+// must be in [0, LPCount); dest_shard must be a known partition shard
+// id. The request fails (FailedPrecondition) if a non-terminal
+// transfer for the same lp already exists.
+type TransferLPRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Lp            uint32                 `protobuf:"varint,1,opt,name=lp,proto3" json:"lp,omitempty"`
+	DestShard     uint64                 `protobuf:"varint,2,opt,name=dest_shard,json=destShard,proto3" json:"dest_shard,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TransferLPRequest) Reset() {
+	*x = TransferLPRequest{}
+	mi := &file_adminv1_admin_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransferLPRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransferLPRequest) ProtoMessage() {}
+
+func (x *TransferLPRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransferLPRequest.ProtoReflect.Descriptor instead.
+func (*TransferLPRequest) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *TransferLPRequest) GetLp() uint32 {
+	if x != nil {
+		return x.Lp
+	}
+	return 0
+}
+
+func (x *TransferLPRequest) GetDestShard() uint64 {
+	if x != nil {
+		return x.DestShard
+	}
+	return 0
+}
+
+type TransferLPResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TransferId    string                 `protobuf:"bytes,1,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TransferLPResponse) Reset() {
+	*x = TransferLPResponse{}
+	mi := &file_adminv1_admin_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransferLPResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransferLPResponse) ProtoMessage() {}
+
+func (x *TransferLPResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransferLPResponse.ProtoReflect.Descriptor instead.
+func (*TransferLPResponse) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *TransferLPResponse) GetTransferId() string {
+	if x != nil {
+		return x.TransferId
+	}
+	return ""
+}
+
+type ListLPTransfersRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListLPTransfersRequest) Reset() {
+	*x = ListLPTransfersRequest{}
+	mi := &file_adminv1_admin_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListLPTransfersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListLPTransfersRequest) ProtoMessage() {}
+
+func (x *ListLPTransfersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListLPTransfersRequest.ProtoReflect.Descriptor instead.
+func (*ListLPTransfersRequest) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{37}
+}
+
+type ListLPTransfersResponse struct {
+	state         protoimpl.MessageState       `protogen:"open.v1"`
+	Records       []*enginev1.LPTransferRecord `protobuf:"bytes,1,rep,name=records,proto3" json:"records,omitempty"`
+	TableRevision uint64                       `protobuf:"varint,2,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListLPTransfersResponse) Reset() {
+	*x = ListLPTransfersResponse{}
+	mi := &file_adminv1_admin_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListLPTransfersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListLPTransfersResponse) ProtoMessage() {}
+
+func (x *ListLPTransfersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListLPTransfersResponse.ProtoReflect.Descriptor instead.
+func (*ListLPTransfersResponse) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *ListLPTransfersResponse) GetRecords() []*enginev1.LPTransferRecord {
+	if x != nil {
+		return x.Records
+	}
+	return nil
+}
+
+func (x *ListLPTransfersResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
 // LeaderHint is attached as a connect.Error detail on
 // connect.CodeUnavailable returned by mutating Admin RPCs when the
 // receiving node is not the metadata leader. Clients (joiner's SelfJoin
@@ -1727,7 +1915,7 @@ type LeaderHint struct {
 
 func (x *LeaderHint) Reset() {
 	*x = LeaderHint{}
-	mi := &file_adminv1_admin_proto_msgTypes[35]
+	mi := &file_adminv1_admin_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1739,7 +1927,7 @@ func (x *LeaderHint) String() string {
 func (*LeaderHint) ProtoMessage() {}
 
 func (x *LeaderHint) ProtoReflect() protoreflect.Message {
-	mi := &file_adminv1_admin_proto_msgTypes[35]
+	mi := &file_adminv1_admin_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1752,7 +1940,7 @@ func (x *LeaderHint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaderHint.ProtoReflect.Descriptor instead.
 func (*LeaderHint) Descriptor() ([]byte, []int) {
-	return file_adminv1_admin_proto_rawDescGZIP(), []int{35}
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *LeaderHint) GetNodeId() uint64 {
@@ -1861,11 +2049,22 @@ const file_adminv1_admin_proto_rawDesc = "" +
 	"\x12ListSecretsRequest\"v\n" +
 	"\x13ListSecretsResponse\x128\n" +
 	"\arecords\x18\x01 \x03(\v2\x1e.reflow.engine.v1.SecretRecordR\arecords\x12%\n" +
+	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"B\n" +
+	"\x11TransferLPRequest\x12\x0e\n" +
+	"\x02lp\x18\x01 \x01(\rR\x02lp\x12\x1d\n" +
+	"\n" +
+	"dest_shard\x18\x02 \x01(\x04R\tdestShard\"5\n" +
+	"\x12TransferLPResponse\x12\x1f\n" +
+	"\vtransfer_id\x18\x01 \x01(\tR\n" +
+	"transferId\"\x18\n" +
+	"\x16ListLPTransfersRequest\"~\n" +
+	"\x17ListLPTransfersResponse\x12<\n" +
+	"\arecords\x18\x01 \x03(\v2\".reflow.engine.v1.LPTransferRecordR\arecords\x12%\n" +
 	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"L\n" +
 	"\n" +
 	"LeaderHint\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12%\n" +
-	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\xef\r\n" +
+	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\xac\x0f\n" +
 	"\x05Admin\x12L\n" +
 	"\aAddNode\x12\x1f.reflow.admin.v1.AddNodeRequest\x1a .reflow.admin.v1.AddNodeResponse\x12M\n" +
 	"\bSelfJoin\x12\x1f.reflow.admin.v1.AddNodeRequest\x1a .reflow.admin.v1.AddNodeResponse\x12U\n" +
@@ -1885,7 +2084,10 @@ const file_adminv1_admin_proto_rawDesc = "" +
 	"\x12ListWebhookSources\x12*.reflow.admin.v1.ListWebhookSourcesRequest\x1a+.reflow.admin.v1.ListWebhookSourcesResponse\x12[\n" +
 	"\fUpsertSecret\x12$.reflow.admin.v1.UpsertSecretRequest\x1a%.reflow.admin.v1.UpsertSecretResponse\x12[\n" +
 	"\fDeleteSecret\x12$.reflow.admin.v1.DeleteSecretRequest\x1a%.reflow.admin.v1.DeleteSecretResponse\x12X\n" +
-	"\vListSecrets\x12#.reflow.admin.v1.ListSecretsRequest\x1a$.reflow.admin.v1.ListSecretsResponseB1Z/github.com/twinfer/reflow/proto/adminv1;adminv1b\x06proto3"
+	"\vListSecrets\x12#.reflow.admin.v1.ListSecretsRequest\x1a$.reflow.admin.v1.ListSecretsResponse\x12U\n" +
+	"\n" +
+	"TransferLP\x12\".reflow.admin.v1.TransferLPRequest\x1a#.reflow.admin.v1.TransferLPResponse\x12d\n" +
+	"\x0fListLPTransfers\x12'.reflow.admin.v1.ListLPTransfersRequest\x1a(.reflow.admin.v1.ListLPTransfersResponseB1Z/github.com/twinfer/reflow/proto/adminv1;adminv1b\x06proto3"
 
 var (
 	file_adminv1_admin_proto_rawDescOnce sync.Once
@@ -1899,7 +2101,7 @@ func file_adminv1_admin_proto_rawDescGZIP() []byte {
 	return file_adminv1_admin_proto_rawDescData
 }
 
-var file_adminv1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
+var file_adminv1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
 var file_adminv1_admin_proto_goTypes = []any{
 	(*AddNodeRequest)(nil),               // 0: reflow.admin.v1.AddNodeRequest
 	(*AddNodeResponse)(nil),              // 1: reflow.admin.v1.AddNodeResponse
@@ -1936,64 +2138,74 @@ var file_adminv1_admin_proto_goTypes = []any{
 	(*DeleteSecretResponse)(nil),         // 32: reflow.admin.v1.DeleteSecretResponse
 	(*ListSecretsRequest)(nil),           // 33: reflow.admin.v1.ListSecretsRequest
 	(*ListSecretsResponse)(nil),          // 34: reflow.admin.v1.ListSecretsResponse
-	(*LeaderHint)(nil),                   // 35: reflow.admin.v1.LeaderHint
-	(*enginev1.NodeMembership)(nil),      // 36: reflow.engine.v1.NodeMembership
-	(*enginev1.PartitionTable)(nil),      // 37: reflow.engine.v1.PartitionTable
-	(*enginev1.EventSourceRecord)(nil),   // 38: reflow.engine.v1.EventSourceRecord
-	(*enginev1.WebhookSourceRecord)(nil), // 39: reflow.engine.v1.WebhookSourceRecord
-	(*enginev1.SecretRecord)(nil),        // 40: reflow.engine.v1.SecretRecord
+	(*TransferLPRequest)(nil),            // 35: reflow.admin.v1.TransferLPRequest
+	(*TransferLPResponse)(nil),           // 36: reflow.admin.v1.TransferLPResponse
+	(*ListLPTransfersRequest)(nil),       // 37: reflow.admin.v1.ListLPTransfersRequest
+	(*ListLPTransfersResponse)(nil),      // 38: reflow.admin.v1.ListLPTransfersResponse
+	(*LeaderHint)(nil),                   // 39: reflow.admin.v1.LeaderHint
+	(*enginev1.NodeMembership)(nil),      // 40: reflow.engine.v1.NodeMembership
+	(*enginev1.PartitionTable)(nil),      // 41: reflow.engine.v1.PartitionTable
+	(*enginev1.EventSourceRecord)(nil),   // 42: reflow.engine.v1.EventSourceRecord
+	(*enginev1.WebhookSourceRecord)(nil), // 43: reflow.engine.v1.WebhookSourceRecord
+	(*enginev1.SecretRecord)(nil),        // 44: reflow.engine.v1.SecretRecord
+	(*enginev1.LPTransferRecord)(nil),    // 45: reflow.engine.v1.LPTransferRecord
 }
 var file_adminv1_admin_proto_depIdxs = []int32{
-	36, // 0: reflow.admin.v1.ListNodesResponse.nodes:type_name -> reflow.engine.v1.NodeMembership
-	37, // 1: reflow.admin.v1.ListPartitionsResponse.table:type_name -> reflow.engine.v1.PartitionTable
+	40, // 0: reflow.admin.v1.ListNodesResponse.nodes:type_name -> reflow.engine.v1.NodeMembership
+	41, // 1: reflow.admin.v1.ListPartitionsResponse.table:type_name -> reflow.engine.v1.PartitionTable
 	11, // 2: reflow.admin.v1.ListSnapshotsResponse.snapshots:type_name -> reflow.admin.v1.SnapshotRef
-	38, // 3: reflow.admin.v1.UpsertEventSourceRequest.record:type_name -> reflow.engine.v1.EventSourceRecord
-	38, // 4: reflow.admin.v1.ListEventSourcesResponse.sources:type_name -> reflow.engine.v1.EventSourceRecord
-	39, // 5: reflow.admin.v1.UpsertWebhookSourceRequest.record:type_name -> reflow.engine.v1.WebhookSourceRecord
-	39, // 6: reflow.admin.v1.ListWebhookSourcesResponse.sources:type_name -> reflow.engine.v1.WebhookSourceRecord
-	40, // 7: reflow.admin.v1.UpsertSecretRequest.record:type_name -> reflow.engine.v1.SecretRecord
-	40, // 8: reflow.admin.v1.ListSecretsResponse.records:type_name -> reflow.engine.v1.SecretRecord
-	0,  // 9: reflow.admin.v1.Admin.AddNode:input_type -> reflow.admin.v1.AddNodeRequest
-	0,  // 10: reflow.admin.v1.Admin.SelfJoin:input_type -> reflow.admin.v1.AddNodeRequest
-	2,  // 11: reflow.admin.v1.Admin.RemoveNode:input_type -> reflow.admin.v1.RemoveNodeRequest
-	4,  // 12: reflow.admin.v1.Admin.ListNodes:input_type -> reflow.admin.v1.ListNodesRequest
-	6,  // 13: reflow.admin.v1.Admin.ListPartitions:input_type -> reflow.admin.v1.ListPartitionsRequest
-	8,  // 14: reflow.admin.v1.Admin.CreateSnapshot:input_type -> reflow.admin.v1.CreateSnapshotRequest
-	10, // 15: reflow.admin.v1.Admin.ListSnapshots:input_type -> reflow.admin.v1.ListSnapshotsRequest
-	13, // 16: reflow.admin.v1.Admin.DeleteSnapshot:input_type -> reflow.admin.v1.DeleteSnapshotRequest
-	15, // 17: reflow.admin.v1.Admin.RegisterDeployment:input_type -> reflow.admin.v1.RegisterDeploymentRequest
-	17, // 18: reflow.admin.v1.Admin.UpsertEventSource:input_type -> reflow.admin.v1.UpsertEventSourceRequest
-	19, // 19: reflow.admin.v1.Admin.DeleteEventSource:input_type -> reflow.admin.v1.DeleteEventSourceRequest
-	21, // 20: reflow.admin.v1.Admin.ListEventSources:input_type -> reflow.admin.v1.ListEventSourcesRequest
-	23, // 21: reflow.admin.v1.Admin.UpsertWebhookSource:input_type -> reflow.admin.v1.UpsertWebhookSourceRequest
-	25, // 22: reflow.admin.v1.Admin.DeleteWebhookSource:input_type -> reflow.admin.v1.DeleteWebhookSourceRequest
-	27, // 23: reflow.admin.v1.Admin.ListWebhookSources:input_type -> reflow.admin.v1.ListWebhookSourcesRequest
-	29, // 24: reflow.admin.v1.Admin.UpsertSecret:input_type -> reflow.admin.v1.UpsertSecretRequest
-	31, // 25: reflow.admin.v1.Admin.DeleteSecret:input_type -> reflow.admin.v1.DeleteSecretRequest
-	33, // 26: reflow.admin.v1.Admin.ListSecrets:input_type -> reflow.admin.v1.ListSecretsRequest
-	1,  // 27: reflow.admin.v1.Admin.AddNode:output_type -> reflow.admin.v1.AddNodeResponse
-	1,  // 28: reflow.admin.v1.Admin.SelfJoin:output_type -> reflow.admin.v1.AddNodeResponse
-	3,  // 29: reflow.admin.v1.Admin.RemoveNode:output_type -> reflow.admin.v1.RemoveNodeResponse
-	5,  // 30: reflow.admin.v1.Admin.ListNodes:output_type -> reflow.admin.v1.ListNodesResponse
-	7,  // 31: reflow.admin.v1.Admin.ListPartitions:output_type -> reflow.admin.v1.ListPartitionsResponse
-	9,  // 32: reflow.admin.v1.Admin.CreateSnapshot:output_type -> reflow.admin.v1.CreateSnapshotResponse
-	12, // 33: reflow.admin.v1.Admin.ListSnapshots:output_type -> reflow.admin.v1.ListSnapshotsResponse
-	14, // 34: reflow.admin.v1.Admin.DeleteSnapshot:output_type -> reflow.admin.v1.DeleteSnapshotResponse
-	16, // 35: reflow.admin.v1.Admin.RegisterDeployment:output_type -> reflow.admin.v1.RegisterDeploymentResponse
-	18, // 36: reflow.admin.v1.Admin.UpsertEventSource:output_type -> reflow.admin.v1.UpsertEventSourceResponse
-	20, // 37: reflow.admin.v1.Admin.DeleteEventSource:output_type -> reflow.admin.v1.DeleteEventSourceResponse
-	22, // 38: reflow.admin.v1.Admin.ListEventSources:output_type -> reflow.admin.v1.ListEventSourcesResponse
-	24, // 39: reflow.admin.v1.Admin.UpsertWebhookSource:output_type -> reflow.admin.v1.UpsertWebhookSourceResponse
-	26, // 40: reflow.admin.v1.Admin.DeleteWebhookSource:output_type -> reflow.admin.v1.DeleteWebhookSourceResponse
-	28, // 41: reflow.admin.v1.Admin.ListWebhookSources:output_type -> reflow.admin.v1.ListWebhookSourcesResponse
-	30, // 42: reflow.admin.v1.Admin.UpsertSecret:output_type -> reflow.admin.v1.UpsertSecretResponse
-	32, // 43: reflow.admin.v1.Admin.DeleteSecret:output_type -> reflow.admin.v1.DeleteSecretResponse
-	34, // 44: reflow.admin.v1.Admin.ListSecrets:output_type -> reflow.admin.v1.ListSecretsResponse
-	27, // [27:45] is the sub-list for method output_type
-	9,  // [9:27] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	42, // 3: reflow.admin.v1.UpsertEventSourceRequest.record:type_name -> reflow.engine.v1.EventSourceRecord
+	42, // 4: reflow.admin.v1.ListEventSourcesResponse.sources:type_name -> reflow.engine.v1.EventSourceRecord
+	43, // 5: reflow.admin.v1.UpsertWebhookSourceRequest.record:type_name -> reflow.engine.v1.WebhookSourceRecord
+	43, // 6: reflow.admin.v1.ListWebhookSourcesResponse.sources:type_name -> reflow.engine.v1.WebhookSourceRecord
+	44, // 7: reflow.admin.v1.UpsertSecretRequest.record:type_name -> reflow.engine.v1.SecretRecord
+	44, // 8: reflow.admin.v1.ListSecretsResponse.records:type_name -> reflow.engine.v1.SecretRecord
+	45, // 9: reflow.admin.v1.ListLPTransfersResponse.records:type_name -> reflow.engine.v1.LPTransferRecord
+	0,  // 10: reflow.admin.v1.Admin.AddNode:input_type -> reflow.admin.v1.AddNodeRequest
+	0,  // 11: reflow.admin.v1.Admin.SelfJoin:input_type -> reflow.admin.v1.AddNodeRequest
+	2,  // 12: reflow.admin.v1.Admin.RemoveNode:input_type -> reflow.admin.v1.RemoveNodeRequest
+	4,  // 13: reflow.admin.v1.Admin.ListNodes:input_type -> reflow.admin.v1.ListNodesRequest
+	6,  // 14: reflow.admin.v1.Admin.ListPartitions:input_type -> reflow.admin.v1.ListPartitionsRequest
+	8,  // 15: reflow.admin.v1.Admin.CreateSnapshot:input_type -> reflow.admin.v1.CreateSnapshotRequest
+	10, // 16: reflow.admin.v1.Admin.ListSnapshots:input_type -> reflow.admin.v1.ListSnapshotsRequest
+	13, // 17: reflow.admin.v1.Admin.DeleteSnapshot:input_type -> reflow.admin.v1.DeleteSnapshotRequest
+	15, // 18: reflow.admin.v1.Admin.RegisterDeployment:input_type -> reflow.admin.v1.RegisterDeploymentRequest
+	17, // 19: reflow.admin.v1.Admin.UpsertEventSource:input_type -> reflow.admin.v1.UpsertEventSourceRequest
+	19, // 20: reflow.admin.v1.Admin.DeleteEventSource:input_type -> reflow.admin.v1.DeleteEventSourceRequest
+	21, // 21: reflow.admin.v1.Admin.ListEventSources:input_type -> reflow.admin.v1.ListEventSourcesRequest
+	23, // 22: reflow.admin.v1.Admin.UpsertWebhookSource:input_type -> reflow.admin.v1.UpsertWebhookSourceRequest
+	25, // 23: reflow.admin.v1.Admin.DeleteWebhookSource:input_type -> reflow.admin.v1.DeleteWebhookSourceRequest
+	27, // 24: reflow.admin.v1.Admin.ListWebhookSources:input_type -> reflow.admin.v1.ListWebhookSourcesRequest
+	29, // 25: reflow.admin.v1.Admin.UpsertSecret:input_type -> reflow.admin.v1.UpsertSecretRequest
+	31, // 26: reflow.admin.v1.Admin.DeleteSecret:input_type -> reflow.admin.v1.DeleteSecretRequest
+	33, // 27: reflow.admin.v1.Admin.ListSecrets:input_type -> reflow.admin.v1.ListSecretsRequest
+	35, // 28: reflow.admin.v1.Admin.TransferLP:input_type -> reflow.admin.v1.TransferLPRequest
+	37, // 29: reflow.admin.v1.Admin.ListLPTransfers:input_type -> reflow.admin.v1.ListLPTransfersRequest
+	1,  // 30: reflow.admin.v1.Admin.AddNode:output_type -> reflow.admin.v1.AddNodeResponse
+	1,  // 31: reflow.admin.v1.Admin.SelfJoin:output_type -> reflow.admin.v1.AddNodeResponse
+	3,  // 32: reflow.admin.v1.Admin.RemoveNode:output_type -> reflow.admin.v1.RemoveNodeResponse
+	5,  // 33: reflow.admin.v1.Admin.ListNodes:output_type -> reflow.admin.v1.ListNodesResponse
+	7,  // 34: reflow.admin.v1.Admin.ListPartitions:output_type -> reflow.admin.v1.ListPartitionsResponse
+	9,  // 35: reflow.admin.v1.Admin.CreateSnapshot:output_type -> reflow.admin.v1.CreateSnapshotResponse
+	12, // 36: reflow.admin.v1.Admin.ListSnapshots:output_type -> reflow.admin.v1.ListSnapshotsResponse
+	14, // 37: reflow.admin.v1.Admin.DeleteSnapshot:output_type -> reflow.admin.v1.DeleteSnapshotResponse
+	16, // 38: reflow.admin.v1.Admin.RegisterDeployment:output_type -> reflow.admin.v1.RegisterDeploymentResponse
+	18, // 39: reflow.admin.v1.Admin.UpsertEventSource:output_type -> reflow.admin.v1.UpsertEventSourceResponse
+	20, // 40: reflow.admin.v1.Admin.DeleteEventSource:output_type -> reflow.admin.v1.DeleteEventSourceResponse
+	22, // 41: reflow.admin.v1.Admin.ListEventSources:output_type -> reflow.admin.v1.ListEventSourcesResponse
+	24, // 42: reflow.admin.v1.Admin.UpsertWebhookSource:output_type -> reflow.admin.v1.UpsertWebhookSourceResponse
+	26, // 43: reflow.admin.v1.Admin.DeleteWebhookSource:output_type -> reflow.admin.v1.DeleteWebhookSourceResponse
+	28, // 44: reflow.admin.v1.Admin.ListWebhookSources:output_type -> reflow.admin.v1.ListWebhookSourcesResponse
+	30, // 45: reflow.admin.v1.Admin.UpsertSecret:output_type -> reflow.admin.v1.UpsertSecretResponse
+	32, // 46: reflow.admin.v1.Admin.DeleteSecret:output_type -> reflow.admin.v1.DeleteSecretResponse
+	34, // 47: reflow.admin.v1.Admin.ListSecrets:output_type -> reflow.admin.v1.ListSecretsResponse
+	36, // 48: reflow.admin.v1.Admin.TransferLP:output_type -> reflow.admin.v1.TransferLPResponse
+	38, // 49: reflow.admin.v1.Admin.ListLPTransfers:output_type -> reflow.admin.v1.ListLPTransfersResponse
+	30, // [30:50] is the sub-list for method output_type
+	10, // [10:30] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_adminv1_admin_proto_init() }
@@ -2007,7 +2219,7 @@ func file_adminv1_admin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_adminv1_admin_proto_rawDesc), len(file_adminv1_admin_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   36,
+			NumMessages:   40,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

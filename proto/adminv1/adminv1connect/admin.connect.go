@@ -97,6 +97,10 @@ const (
 	AdminDeleteSecretProcedure = "/reflow.admin.v1.Admin/DeleteSecret"
 	// AdminListSecretsProcedure is the fully-qualified name of the Admin's ListSecrets RPC.
 	AdminListSecretsProcedure = "/reflow.admin.v1.Admin/ListSecrets"
+	// AdminTransferLPProcedure is the fully-qualified name of the Admin's TransferLP RPC.
+	AdminTransferLPProcedure = "/reflow.admin.v1.Admin/TransferLP"
+	// AdminListLPTransfersProcedure is the fully-qualified name of the Admin's ListLPTransfers RPC.
+	AdminListLPTransfersProcedure = "/reflow.admin.v1.Admin/ListLPTransfers"
 )
 
 // AdminClient is a client for the reflow.admin.v1.Admin service.
@@ -169,6 +173,16 @@ type AdminClient interface {
 	UpsertSecret(context.Context, *connect.Request[adminv1.UpsertSecretRequest]) (*connect.Response[adminv1.UpsertSecretResponse], error)
 	DeleteSecret(context.Context, *connect.Request[adminv1.DeleteSecretRequest]) (*connect.Response[adminv1.DeleteSecretResponse], error)
 	ListSecrets(context.Context, *connect.Request[adminv1.ListSecretsRequest]) (*connect.Response[adminv1.ListSecretsResponse], error)
+	// TransferLP initiates a cross-shard transfer of one logical
+	// partition. Validates inputs, mints a UUIDv4 transfer_id, and
+	// proposes Command_InitiateLPTransfer to shard 0. The lpMover on the
+	// metadata leader then drives the saga (freeze → ship → stage →
+	// flip → cleanup). Returns immediately with the transfer_id; the
+	// caller polls ListLPTransfers to observe progress. Leader-only.
+	TransferLP(context.Context, *connect.Request[adminv1.TransferLPRequest]) (*connect.Response[adminv1.TransferLPResponse], error)
+	// ListLPTransfers returns the current LPTransferTable rows plus the
+	// table revision. Reads via SyncRead against shard 0.
+	ListLPTransfers(context.Context, *connect.Request[adminv1.ListLPTransfersRequest]) (*connect.Response[adminv1.ListLPTransfersResponse], error)
 }
 
 // NewAdminClient constructs a client for the reflow.admin.v1.Admin service. By default, it uses the
@@ -290,6 +304,18 @@ func NewAdminClient(httpClient connect.HTTPClient, baseURL string, opts ...conne
 			connect.WithSchema(adminMethods.ByName("ListSecrets")),
 			connect.WithClientOptions(opts...),
 		),
+		transferLP: connect.NewClient[adminv1.TransferLPRequest, adminv1.TransferLPResponse](
+			httpClient,
+			baseURL+AdminTransferLPProcedure,
+			connect.WithSchema(adminMethods.ByName("TransferLP")),
+			connect.WithClientOptions(opts...),
+		),
+		listLPTransfers: connect.NewClient[adminv1.ListLPTransfersRequest, adminv1.ListLPTransfersResponse](
+			httpClient,
+			baseURL+AdminListLPTransfersProcedure,
+			connect.WithSchema(adminMethods.ByName("ListLPTransfers")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -313,6 +339,8 @@ type adminClient struct {
 	upsertSecret        *connect.Client[adminv1.UpsertSecretRequest, adminv1.UpsertSecretResponse]
 	deleteSecret        *connect.Client[adminv1.DeleteSecretRequest, adminv1.DeleteSecretResponse]
 	listSecrets         *connect.Client[adminv1.ListSecretsRequest, adminv1.ListSecretsResponse]
+	transferLP          *connect.Client[adminv1.TransferLPRequest, adminv1.TransferLPResponse]
+	listLPTransfers     *connect.Client[adminv1.ListLPTransfersRequest, adminv1.ListLPTransfersResponse]
 }
 
 // AddNode calls reflow.admin.v1.Admin.AddNode.
@@ -405,6 +433,16 @@ func (c *adminClient) ListSecrets(ctx context.Context, req *connect.Request[admi
 	return c.listSecrets.CallUnary(ctx, req)
 }
 
+// TransferLP calls reflow.admin.v1.Admin.TransferLP.
+func (c *adminClient) TransferLP(ctx context.Context, req *connect.Request[adminv1.TransferLPRequest]) (*connect.Response[adminv1.TransferLPResponse], error) {
+	return c.transferLP.CallUnary(ctx, req)
+}
+
+// ListLPTransfers calls reflow.admin.v1.Admin.ListLPTransfers.
+func (c *adminClient) ListLPTransfers(ctx context.Context, req *connect.Request[adminv1.ListLPTransfersRequest]) (*connect.Response[adminv1.ListLPTransfersResponse], error) {
+	return c.listLPTransfers.CallUnary(ctx, req)
+}
+
 // AdminHandler is an implementation of the reflow.admin.v1.Admin service.
 type AdminHandler interface {
 	// AddNode registers a new peer with shard 0 and enqueues a rebalance
@@ -475,6 +513,16 @@ type AdminHandler interface {
 	UpsertSecret(context.Context, *connect.Request[adminv1.UpsertSecretRequest]) (*connect.Response[adminv1.UpsertSecretResponse], error)
 	DeleteSecret(context.Context, *connect.Request[adminv1.DeleteSecretRequest]) (*connect.Response[adminv1.DeleteSecretResponse], error)
 	ListSecrets(context.Context, *connect.Request[adminv1.ListSecretsRequest]) (*connect.Response[adminv1.ListSecretsResponse], error)
+	// TransferLP initiates a cross-shard transfer of one logical
+	// partition. Validates inputs, mints a UUIDv4 transfer_id, and
+	// proposes Command_InitiateLPTransfer to shard 0. The lpMover on the
+	// metadata leader then drives the saga (freeze → ship → stage →
+	// flip → cleanup). Returns immediately with the transfer_id; the
+	// caller polls ListLPTransfers to observe progress. Leader-only.
+	TransferLP(context.Context, *connect.Request[adminv1.TransferLPRequest]) (*connect.Response[adminv1.TransferLPResponse], error)
+	// ListLPTransfers returns the current LPTransferTable rows plus the
+	// table revision. Reads via SyncRead against shard 0.
+	ListLPTransfers(context.Context, *connect.Request[adminv1.ListLPTransfersRequest]) (*connect.Response[adminv1.ListLPTransfersResponse], error)
 }
 
 // NewAdminHandler builds an HTTP handler from the service implementation. It returns the path on
@@ -592,6 +640,18 @@ func NewAdminHandler(svc AdminHandler, opts ...connect.HandlerOption) (string, h
 		connect.WithSchema(adminMethods.ByName("ListSecrets")),
 		connect.WithHandlerOptions(opts...),
 	)
+	adminTransferLPHandler := connect.NewUnaryHandler(
+		AdminTransferLPProcedure,
+		svc.TransferLP,
+		connect.WithSchema(adminMethods.ByName("TransferLP")),
+		connect.WithHandlerOptions(opts...),
+	)
+	adminListLPTransfersHandler := connect.NewUnaryHandler(
+		AdminListLPTransfersProcedure,
+		svc.ListLPTransfers,
+		connect.WithSchema(adminMethods.ByName("ListLPTransfers")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/reflow.admin.v1.Admin/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AdminAddNodeProcedure:
@@ -630,6 +690,10 @@ func NewAdminHandler(svc AdminHandler, opts ...connect.HandlerOption) (string, h
 			adminDeleteSecretHandler.ServeHTTP(w, r)
 		case AdminListSecretsProcedure:
 			adminListSecretsHandler.ServeHTTP(w, r)
+		case AdminTransferLPProcedure:
+			adminTransferLPHandler.ServeHTTP(w, r)
+		case AdminListLPTransfersProcedure:
+			adminListLPTransfersHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -709,4 +773,12 @@ func (UnimplementedAdminHandler) DeleteSecret(context.Context, *connect.Request[
 
 func (UnimplementedAdminHandler) ListSecrets(context.Context, *connect.Request[adminv1.ListSecretsRequest]) (*connect.Response[adminv1.ListSecretsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.admin.v1.Admin.ListSecrets is not implemented"))
+}
+
+func (UnimplementedAdminHandler) TransferLP(context.Context, *connect.Request[adminv1.TransferLPRequest]) (*connect.Response[adminv1.TransferLPResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.admin.v1.Admin.TransferLP is not implemented"))
+}
+
+func (UnimplementedAdminHandler) ListLPTransfers(context.Context, *connect.Request[adminv1.ListLPTransfersRequest]) (*connect.Response[adminv1.ListLPTransfersResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.admin.v1.Admin.ListLPTransfers is not implemented"))
 }

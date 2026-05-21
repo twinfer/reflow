@@ -63,6 +63,26 @@ type PartitionConfig struct {
 	OnSnapshotPersisted func()
 }
 
+// Result.Value sentinels surfaced by Update. The default Value (when no
+// apply arm explicitly stamps one) is uint64(len(ent.Cmd)), preserved
+// from the original FSM contract — callers that don't read it stay
+// happy. The LP-freeze gate stamps ResultValueLPFrozen when a transfer
+// is in progress; the leader proposer translates it back to a typed
+// rejection so callers can retry against the LP's new owner.
+const (
+	// ResultValueLPFrozen signals that an apply arm refused to mutate
+	// state because the LP belonging to this command is frozen for an
+	// in-progress cross-shard LP transfer (PR 3). The row is untouched;
+	// applied_index still advances; no actions are emitted.
+	ResultValueLPFrozen uint64 = 2
+)
+
+// errLPFrozen is the sentinel returned by LP-touching apply arms when
+// the LP is frozen for an in-progress LP transfer. Update recognizes
+// it, stamps ResultValueLPFrozen on the entry, and continues — does
+// NOT return it to dragonboat (which would halt the shard).
+var errLPFrozen = errors.New("partition: LP frozen for transfer")
+
 // Partition is the dragonboat IOnDiskStateMachine for one reflow partition.
 //
 // Important contract notes (dragonboat v4 statemachine/disk.go):
@@ -193,8 +213,21 @@ func (p *Partition) Update(entries []statemachine.Entry) ([]statemachine.Entry, 
 		if p.cfg.Metrics != nil {
 			applyStart = time.Now()
 		}
-		if err := p.applyCommand(batch, store, &env, ent.Index, meta, inv, journal, timers, isLeader); err != nil {
-			return nil, err
+		applyErr := p.applyCommand(batch, store, &env, ent.Index, meta, inv, journal, timers, isLeader)
+		if applyErr != nil {
+			if errors.Is(applyErr, errLPFrozen) {
+				// LP-freeze rejection: the apply arm short-circuited
+				// at the freeze gate before any batch mutation or
+				// action push, so no rollback is needed. Stamp the
+				// sentinel, bump applied_index, continue.
+				entries[i].Result = statemachine.Result{Value: ResultValueLPFrozen}
+				meta.AppliedIndex = ent.Index
+				if p.cfg.Metrics != nil {
+					p.cfg.Metrics.ApplyTotal.WithLabelValues(kind, leaderLabel(isLeader)).Inc()
+				}
+				continue
+			}
+			return nil, applyErr
 		}
 		if p.cfg.Metrics != nil {
 			p.cfg.Metrics.ApplyTotal.WithLabelValues(kind, leaderLabel(isLeader)).Inc()
@@ -306,6 +339,16 @@ func commandKindLabel(cmd *enginev1.Command) string {
 		return "PromiseCompletionAck"
 	case *enginev1.Command_ReapWorkflow:
 		return "ReapWorkflow"
+	case *enginev1.Command_BeginLpTransfer:
+		return "BeginLPTransfer"
+	case *enginev1.Command_ApplyLpTransferChunk:
+		return "ApplyLPTransferChunk"
+	case *enginev1.Command_CommitLpTransfer:
+		return "CommitLPTransfer"
+	case *enginev1.Command_FinishLpTransfer:
+		return "FinishLPTransfer"
+	case *enginev1.Command_AbortLpTransfer:
+		return "AbortLPTransfer"
 	case nil:
 		return "empty"
 	default:
@@ -387,6 +430,25 @@ func leaderLabel(isLeader bool) string {
 	return "false"
 }
 
+// checkLPFreeze returns errLPFrozen when partitionKey's LP is frozen
+// for an in-progress LP transfer. Callers MUST invoke this BEFORE any
+// batch mutation or action push in an LP-touching apply arm, so that
+// returning the sentinel cleanly rolls the entry back (the Update loop
+// stamps ResultValueLPFrozen and skips). Returns nil on the hot path
+// (no transfer in flight for this LP — a single point-Get against the
+// batch, bloom-filter-friendly when absent).
+func (p *Partition) checkLPFreeze(batch storage.Batch, partitionKey uint64) error {
+	lp := keys.LPFromPartitionKey(partitionKey)
+	row, err := (tables.LPFreezeTable{S: batch}).Get(lp)
+	if err != nil {
+		return fmt.Errorf("partition: lp freeze lookup: %w", err)
+	}
+	if row != nil {
+		return errLPFrozen
+	}
+	return nil
+}
+
 // enqueueOutbox allocates the next outbox seq, writes env to the
 // OutboxTable, bumps meta.next_outbox_seq, and (when leader) pushes
 // an ActDispatchOutbox so the shuffler picks it up. Returns the seq
@@ -445,6 +507,16 @@ func (p *Partition) applyCommand(
 		return p.onPromiseCompletionAck(batch, k.PromiseCompletionAck, inv, journal, now, isLeader)
 	case *enginev1.Command_ReapWorkflow:
 		return p.onReapWorkflow(batch, k.ReapWorkflow, inv, journal)
+	case *enginev1.Command_BeginLpTransfer:
+		return p.onBeginLPTransfer(batch, k.BeginLpTransfer, now, isLeader)
+	case *enginev1.Command_ApplyLpTransferChunk:
+		return p.onApplyLPTransferChunk(batch, k.ApplyLpTransferChunk, isLeader)
+	case *enginev1.Command_CommitLpTransfer:
+		return p.onCommitLPTransfer(batch, k.CommitLpTransfer)
+	case *enginev1.Command_FinishLpTransfer:
+		return p.onFinishLPTransfer(batch, k.FinishLpTransfer, isLeader)
+	case *enginev1.Command_AbortLpTransfer:
+		return p.onAbortLPTransfer(batch, k.AbortLpTransfer, isLeader)
 	case nil:
 		p.cfg.Log.Warn("partition: envelope has no command kind", "raft_index", raftIndex)
 		return nil
@@ -481,6 +553,12 @@ func (p *Partition) onInvoke(batch storage.Batch, cmd *enginev1.InvokeCommand, n
 	// (e.g., synthetic test ids); production ingress always mints
 	// id.PartitionKey == routing.PartitionKey(target.Svc, target.ObjKey).
 	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
+
+	// Freeze gate. Must run before any state write so a frozen LP
+	// rolls back cleanly via the Update loop's errLPFrozen handling.
+	if err := p.checkLPFreeze(batch, routing.PartitionKey(target.GetServiceName(), target.GetObjectKey())); err != nil {
+		return err
+	}
 
 	// Idempotency dedup. When idempotency_key is set, the first
 	// InvokeCommand that lands wins; later submissions with the same
@@ -592,6 +670,16 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 	awakeT := tables.AwakeableTable{S: batch}
 
 	id := eff.GetInvocationId()
+	// Freeze gate (id-bearing variants). SignalDelivered carries a
+	// Target instead of an id and is gated below once the active id
+	// has been resolved via KeyLeaseTable; PromiseCompleted carries
+	// neither and is routed by (service, workflow_key) — its gate
+	// runs in the PromiseCompleted arm.
+	if id != nil {
+		if err := p.checkLPFreeze(batch, id.GetPartitionKey()); err != nil {
+			return err
+		}
+	}
 	// SignalDelivered is routed by Target (not InvocationId) so its
 	// surrounding invocation_id is nil; the apply arm resolves the
 	// active id via KeyLeaseTable. For every other variant id is set
@@ -1214,6 +1302,10 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			p.cfg.Log.Warn("partition: signal delivered for unkeyed target", "service", sigTarget.GetServiceName(), "handler", sigTarget.GetHandlerName())
 			return nil
 		}
+		// Freeze gate (Target-routed variant).
+		if err := p.checkLPFreeze(batch, routing.PartitionKey(sigTarget.GetServiceName(), sigTarget.GetObjectKey())); err != nil {
+			return err
+		}
 		klt := tables.KeyLeaseTable{S: batch}
 		sigLP := keys.LPFromPartitionKey(routing.PartitionKey(sigTarget.GetServiceName(), sigTarget.GetObjectKey()))
 		lease, lerr := klt.Get(sigLP, sigTarget.GetServiceName(), sigTarget.GetObjectKey())
@@ -1328,6 +1420,10 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			p.cfg.Log.Warn("partition: PromiseCompleted with empty addressing",
 				"service", svc, "key", wk, "name", name)
 			return nil
+		}
+		// Freeze gate ((service, workflow_key)-routed variant).
+		if err := p.checkLPFreeze(batch, routing.PartitionKey(svc, wk)); err != nil {
+			return err
 		}
 		promiseT := tables.PromiseTable{S: batch}
 		lpP := keys.LPFromPartitionKey(routing.PartitionKey(svc, wk))
@@ -1693,6 +1789,9 @@ func (p *Partition) onDeliverCallResult(
 	journal tables.JournalTable,
 	isLeader bool,
 ) error {
+	if err := p.checkLPFreeze(batch, cmd.GetParentId().GetPartitionKey()); err != nil {
+		return err
+	}
 	actions, err := p.applyCallResultToParent(
 		batch, inv, journal,
 		cmd.GetParentId(), cmd.GetCallIndex(),
@@ -1753,6 +1852,9 @@ func (p *Partition) onPromiseCompletionAck(
 	if callerID == nil {
 		p.cfg.Log.Warn("partition: PromiseCompletionAck with nil caller_id; dropping")
 		return nil
+	}
+	if err := p.checkLPFreeze(batch, callerID.GetPartitionKey()); err != nil {
+		return err
 	}
 	cur, err := inv.Get(callerID)
 	if err != nil {
@@ -1820,6 +1922,9 @@ func (p *Partition) onReapWorkflow(
 	if svc == "" || wfKey == "" {
 		p.cfg.Log.Warn("partition: ReapWorkflow with empty scope", "service", svc, "workflow_key", wfKey)
 		return nil
+	}
+	if err := p.checkLPFreeze(batch, routing.PartitionKey(svc, wfKey)); err != nil {
+		return err
 	}
 	reapT := tables.WorkflowReapTable{S: batch}
 	// Always delete the originating reap row — even on a no-op apply.
@@ -2018,6 +2123,9 @@ func mintCalleeInvocationID(parent *enginev1.InvocationId, idx uint32, target *e
 
 func (p *Partition) onTimerFired(batch storage.Batch, cmd *enginev1.TimerFired, nowMs uint64, inv tables.InvocationTable, timers tables.TimerTable, isLeader bool) error {
 	id := cmd.GetInvocationId()
+	if err := p.checkLPFreeze(batch, id.GetPartitionKey()); err != nil {
+		return err
+	}
 	cur, err := inv.Get(id)
 	if err != nil {
 		return fmt.Errorf("onTimerFired: load status: %w", err)
@@ -2106,6 +2214,9 @@ func (p *Partition) onPurge(
 	journal tables.JournalTable,
 ) error {
 	id := cmd.GetInvocationId()
+	if err := p.checkLPFreeze(batch, id.GetPartitionKey()); err != nil {
+		return err
+	}
 	cur, err := inv.Get(id)
 	if err != nil {
 		return fmt.Errorf("onPurge: load status: %w", err)

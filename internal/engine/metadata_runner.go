@@ -53,6 +53,12 @@ type MetadataRunner struct {
 	// `r.leaderCancel = cancel` assignment and leave bootstrap/rebalancer
 	// goroutines with a leaderCtx nobody will cancel.
 	inflightOnLeader sync.WaitGroup
+	// leaderGoroutines tracks the long-running leader-scoped goroutines
+	// (bootstrap, rebalancer, lpMover) so onStepDown can wait for them
+	// to fully exit before returning. Without this, a goroutine doing a
+	// SyncRead against shard 0 can outlive the leader transition and
+	// race with the host's Snapshotter teardown on the next start.
+	leaderGoroutines sync.WaitGroup
 }
 
 // Snapshotter exposes the underlying snapshotter for tests.
@@ -92,9 +98,19 @@ func (r *MetadataRunner) onBecomeLeader() {
 	// outstanding leases, so a clean teardown waits for the bootstrap or
 	// rebalancer to finish its current iteration before the pebble.DB is
 	// torn down.
-	go r.bootstrap(leaderCtx)
+	r.leaderGoroutines.Go(func() {
+		r.bootstrap(leaderCtx)
+	})
 	if r.host != nil {
-		go newMetadataRebalancer(r.host, r).run(leaderCtx)
+		r.leaderGoroutines.Add(2)
+		go func() {
+			defer r.leaderGoroutines.Done()
+			newMetadataRebalancer(r.host, r).run(leaderCtx)
+		}()
+		go func() {
+			defer r.leaderGoroutines.Done()
+			newLPMover(r.host, r).run(leaderCtx)
+		}()
 	}
 }
 
@@ -115,6 +131,10 @@ func (r *MetadataRunner) onStepDown() {
 	if cancel != nil {
 		cancel()
 	}
+	// Wait for the leader-scoped goroutines to actually exit, so any
+	// SyncReads they had in flight against shard 0 finish before the
+	// next leader gain (or the host's snapshotter teardown) begins.
+	r.leaderGoroutines.Wait()
 }
 
 // bootstrap proposes the static partition table and a RegisterNode for

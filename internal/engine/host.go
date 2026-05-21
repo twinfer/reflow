@@ -617,6 +617,24 @@ func (h *Host) LPOwners(ctx context.Context) (*cluster.LPOwnersList, error) {
 	return out, nil
 }
 
+// LPTransfers SyncReads every LPTransferRecord from shard 0 plus the
+// table's CAS revision. Used by the lpMover to advance in-flight LP
+// transfer sagas one phase per tick.
+func (h *Host) LPTransfers(ctx context.Context) (*cluster.LPTransfersList, error) {
+	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupLPTransfers{})
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return &cluster.LPTransfersList{}, nil
+	}
+	out, ok := res.(*cluster.LPTransfersList)
+	if !ok {
+		return nil, fmt.Errorf("host: LPTransfers: unexpected lookup type %T", res)
+	}
+	return out, nil
+}
+
 // AwaitMetadataLeader blocks until shard 0 has a stable leader.
 func (h *Host) AwaitMetadataLeader(ctx context.Context) error {
 	tick := time.NewTicker(20 * time.Millisecond)
@@ -869,6 +887,20 @@ type RunnerView interface {
 // must treat nil as "not leader" so the sender re-resolves via gossip.
 func (h *Host) PartitionRunner(shardID uint64) RunnerView {
 	r := h.Partition(shardID)
+	if r == nil {
+		return nil
+	}
+	return r
+}
+
+// MetadataRunnerView returns the small-interface view of shard 0's
+// metadata runner used by the Delivery server. Returns nil when shard 0
+// is not hosted on this node; callers map nil to "not leader" so the
+// sender re-resolves via gossip. Distinct from MetadataRunner() — which
+// returns the concrete *MetadataRunner — so the Delivery package can
+// depend on the narrow interface only.
+func (h *Host) MetadataRunnerView() RunnerView {
+	r := h.MetadataRunner()
 	if r == nil {
 		return nil
 	}

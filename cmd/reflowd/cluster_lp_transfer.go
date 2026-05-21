@@ -1,0 +1,70 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+
+	connect "connectrpc.com/connect"
+
+	"github.com/twinfer/reflow/pkg/adminclient"
+	adminv1 "github.com/twinfer/reflow/proto/adminv1"
+	"github.com/twinfer/reflow/proto/adminv1/adminv1connect"
+)
+
+// cmdTransferLP invokes Admin/TransferLP to initiate a cross-shard LP
+// transfer. Follows the leader-redirect pattern — the call lands on
+// the metadata leader even if --admin points at a follower.
+//
+//	reflowd cluster transfer-lp --lp=N --to-shard=M [--admin=ADDR]
+func cmdTransferLP(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("transfer-lp", flag.ContinueOnError)
+	tls := registerTLSFlags(fs)
+	lp := fs.Uint("lp", 0, "logical partition id (0..4095, required)")
+	destShard := fs.Uint64("to-shard", 0, "destination partition shard id (>=1, required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *destShard == 0 {
+		return errors.New("--to-shard is required (must be a partition shard id, not 0)")
+	}
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1connect.AdminClient) error {
+		resp, err := cli.TransferLP(rctx, connect.NewRequest(&adminv1.TransferLPRequest{
+			Lp:        uint32(*lp),
+			DestShard: *destShard,
+		}))
+		if err != nil {
+			return err
+		}
+		fmt.Printf("transfer initiated: transfer_id=%s\n", resp.Msg.GetTransferId())
+		return nil
+	})
+}
+
+// cmdListLPTransfers invokes Admin/ListLPTransfers and emits the
+// returned rows as indented JSON. Read-only — any peer can answer
+// (SyncRead against shard 0).
+//
+//	reflowd cluster list-lp-transfers [--admin=ADDR]
+func cmdListLPTransfers(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("list-lp-transfers", flag.ContinueOnError)
+	tls := registerTLSFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	return tls.withClient(ctx, func(cli *adminclient.Client) error {
+		resp, err := cli.Admin.ListLPTransfers(ctx, connect.NewRequest(&adminv1.ListLPTransfersRequest{}))
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(map[string]any{
+			"table_revision": resp.Msg.GetTableRevision(),
+			"records":        resp.Msg.GetRecords(),
+		})
+	})
+}

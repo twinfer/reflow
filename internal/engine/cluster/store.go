@@ -529,6 +529,68 @@ func (t LPOwnersTable) Snapshot() (map[uint32]uint64, error) {
 	return out, nil
 }
 
+// LPTransferTable persists LPTransferRecord rows keyed by transfer_id.
+// Lives on shard 0 alongside LPOwnersTable. The lpMover goroutine on
+// the metadata leader reads the full table via List on each tick (the
+// row count is bounded by the number of in-flight transfers, typically
+// 0..few) and advances each non-terminal row by one phase per pass.
+type LPTransferTable struct{ S storage.Reader }
+
+func (t LPTransferTable) Get(transferID string) (*enginev1.LPTransferRecord, error) {
+	val, closer, err := t.S.Get(LPTransferKey(transferID))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer closer.Close()
+	var rec enginev1.LPTransferRecord
+	if err := proto.Unmarshal(val, &rec); err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (t LPTransferTable) Put(b storage.Batch, rec *enginev1.LPTransferRecord) error {
+	if rec.GetTransferId() == "" {
+		return errors.New("LPTransferTable.Put: empty transfer_id")
+	}
+	buf, err := proto.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return b.Set(LPTransferKey(rec.GetTransferId()), buf)
+}
+
+// Delete removes the row for transfer_id. Delete-of-absent is a no-op.
+func (t LPTransferTable) Delete(b storage.Batch, transferID string) error {
+	return b.Delete(LPTransferKey(transferID))
+}
+
+// List returns every LPTransferRecord in lexicographic transfer_id order.
+func (t LPTransferTable) List() ([]*enginev1.LPTransferRecord, error) {
+	prefix := LPTransferPrefix()
+	upper := prefixUpperBound(prefix)
+	iter, err := t.S.NewIter(prefix, upper)
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	var out []*enginev1.LPTransferRecord
+	for ok := iter.First(); ok; ok = iter.Next() {
+		if !bytes.HasPrefix(iter.Key(), prefix) {
+			continue
+		}
+		var rec enginev1.LPTransferRecord
+		if err := proto.Unmarshal(iter.Value(), &rec); err != nil {
+			return nil, err
+		}
+		out = append(out, &rec)
+	}
+	return out, iter.Error()
+}
+
 // prefixUpperBound is a local clone of keys.PrefixUpperBound to avoid an
 // import cycle (internal/storage/keys is for the partition codec).
 func prefixUpperBound(prefix []byte) []byte {

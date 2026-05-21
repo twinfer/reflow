@@ -168,11 +168,32 @@ message Command {
     // BulkUpsertLPOwners is used by the metadata-leader bootstrap to
     // seed the consistent-hash assignment (buraksezer/consistent +
     // xxhash, deterministic across leaders) for all 4096 LPs in one
-    // apply batch; Upsert/Delete are reserved for the future transfer
-    // protocol (PR 3). Accepted only by shardID=0.
+    // apply batch; UpsertLPOwner is the per-row arm the lpMover uses
+    // to atomically flip ownership after a transfer (PR 3); DeleteLPOwner
+    // is defensive (no current caller). Accepted only by shardID=0.
     UpsertLPOwner upsert_lp_owner = 27;
     DeleteLPOwner delete_lp_owner = 28;
     BulkUpsertLPOwners bulk_upsert_lp_owners = 29;
+    // LP transfer coordination commands. The lpMover goroutine on the
+    // shard-0 leader writes LPTransferTable rows (one per in-progress
+    // transfer) and advances each through the saga phases (INIT →
+    // FROZEN → SHIPPING → STAGED → FLIPPED → CLEANED, or ABORTING →
+    // ABORTED on failure). All three CAS via
+    // Envelope.precondition against RevisionTableLPTransfers and fire
+    // the LPTransfersTable notifier. Accepted only by shardID=0.
+    InitiateLPTransfer initiate_lp_transfer = 30;
+    UpdateLPTransferPhase update_lp_transfer_phase = 31;
+    RemoveLPTransfer remove_lp_transfer = 32;
+    // LP transfer mechanics commands. The lpMover ships these via
+    // CrossShardSender to source/dest partition shards; the apply path
+    // there installs the freeze, stages incoming rows, range-deletes the
+    // LP keyspace on source after the ownership flip, or rolls back on
+    // abort. Accepted only by shardID >= 1.
+    BeginLPTransfer begin_lp_transfer = 33;
+    ApplyLPTransferChunk apply_lp_transfer_chunk = 34;
+    CommitLPTransfer commit_lp_transfer = 35;
+    FinishLPTransfer finish_lp_transfer = 36;
+    AbortLPTransfer abort_lp_transfer = 37;
   }
 }
 
@@ -1369,5 +1390,209 @@ message BeginRebalanceStep {
 message CompleteRebalanceStep {
   uint64 shard_id = 1;
   uint64 step_id = 2;
+}
+
+// LPTransferPhase tracks the saga state of an in-progress LP transfer.
+// Each transition is itself a Raft-committed UpdateLPTransferPhase on
+// shard 0, so a metadata-leader change resumes from the last persisted
+// phase.
+enum LPTransferPhase {
+  LP_TRANSFER_PHASE_UNSPECIFIED = 0;
+  // INIT: row written by Admin/TransferLP. lpMover next sends
+  // BeginLPTransfer to the source.
+  LP_TRANSFER_PHASE_INIT = 1;
+  // SHIPPING: source has accepted the freeze and is streaming chunks
+  // to the destination. The source emits a phase=SHIPPING ack after
+  // its outbox drain completes.
+  LP_TRANSFER_PHASE_SHIPPING = 2;
+  // STAGED: destination has applied the is_final chunk. lpMover next
+  // proposes UpsertLPOwner with the recorded expected_lpowners_revision
+  // CAS.
+  LP_TRANSFER_PHASE_STAGED = 3;
+  // FLIPPED: LPOwnersTable[lp] has been atomically updated to point at
+  // the destination. lpMover next sends FinishLPTransfer to source and
+  // CommitLPTransfer to destination.
+  LP_TRANSFER_PHASE_FLIPPED = 4;
+  // CLEANED: source has range-deleted the LP keyspace and dropped its
+  // freeze row; destination has dropped its staging row. The transfer
+  // is complete; the row is kept briefly for operator visibility, then
+  // RemoveLPTransfer'd.
+  LP_TRANSFER_PHASE_CLEANED = 5;
+  // ABORTING: transfer is being rolled back (CAS conflict, stall, or
+  // operator-requested abort). lpMover fans out AbortLPTransfer to both
+  // partition sides.
+  LP_TRANSFER_PHASE_ABORTING = 6;
+  // ABORTED: both sides have rolled back. The row is kept briefly for
+  // operator visibility, then RemoveLPTransfer'd.
+  LP_TRANSFER_PHASE_ABORTED = 7;
+}
+
+// LPTransferRecord is the persisted shape of one in-progress (or
+// recently-completed) LP transfer, kept in shard 0's LPTransferTable
+// keyed by transfer_id. The lpMover ticks against this table and
+// advances each non-terminal row by composing CrossShardSender sends
+// and CAS proposals back to shard 0.
+//
+// expected_lpowners_revision is captured at InitiateLPTransfer and
+// used as the if_table_revision_eq guard on the final UpsertLPOwner
+// CAS. If the LPOwnersTable revision drifts between INIT and STAGED
+// the transfer transitions to ABORTING.
+message LPTransferRecord {
+  string transfer_id = 1;
+  uint32 lp = 2;
+  uint64 source_shard = 3;
+  uint64 dest_shard = 4;
+  LPTransferPhase phase = 5;
+  fixed64 started_at_ms = 6;
+  fixed64 last_event_ms = 7;
+  uint64 expected_lpowners_revision = 8;
+}
+
+// InitiateLPTransfer is the Command_InitiateLPTransfer payload. Apply
+// arm validates lp < LPCount, dest_shard ∈ PartitionTable.Shards,
+// rejects if any non-terminal transfer for the same lp already exists,
+// resolves source_shard from LPOwnersTable, and writes the record at
+// PHASE_INIT with the current LPOwnersTable revision captured as
+// expected_lpowners_revision.
+message InitiateLPTransfer {
+  string transfer_id = 1;
+  uint32 lp = 2;
+  uint64 dest_shard = 3;
+}
+
+// UpdateLPTransferPhase advances one LPTransferRecord one phase.
+// Proposed by the lpMover after a side-effect (cross-shard send,
+// CAS, etc.) has completed; CAS-checks
+// Envelope.precondition.if_table_revision_eq against
+// RevisionTableLPTransfers so concurrent lpMovers on leadership
+// flips never double-advance.
+message UpdateLPTransferPhase {
+  string transfer_id = 1;
+  LPTransferPhase phase = 2;
+  // expected_lpowners_revision is re-stamped on FLIPPED only (so a
+  // resumed lpMover after FLIPPED knows the revision to start any
+  // follow-on CAS against). Zero on other transitions.
+  uint64 expected_lpowners_revision = 3;
+}
+
+// RemoveLPTransfer drops a CLEANED or ABORTED row after the operator-
+// visibility grace window (~1 min). Defensive — duplicate calls are
+// no-ops.
+message RemoveLPTransfer {
+  string transfer_id = 1;
+}
+
+// TransferRow is one Pebble (key, value) pair shipped from source to
+// destination. The destination writes raw bytes via batch.Set; no
+// proto decoding happens in the staging path. namespace_hint is a
+// sanity check (the destination asserts the row's prefix matches an
+// LP-prefixed namespace for the expected lp) and surfaces in metrics.
+message TransferRow {
+  bytes key = 1;
+  bytes value = 2;
+  TransferNamespace namespace_hint = 3;
+}
+
+// TransferNamespace enumerates the LP-prefixed Pebble namespaces the
+// transfer protocol ships. NS_TIMER_PRIMARY is LP-agnostic on disk
+// (the `timer/<fire>/<id>` keyspace) but is included because every
+// timer in `timer_lp/<lp>/...` has a matching primary that must move
+// with it.
+enum TransferNamespace {
+  TRANSFER_NS_UNSPECIFIED = 0;
+  TRANSFER_NS_INV = 1;
+  TRANSFER_NS_JOURNAL = 2;
+  TRANSFER_NS_TIMER_PRIMARY = 3;
+  TRANSFER_NS_TIMER_LP = 4;
+  TRANSFER_NS_TIMER_IDX = 5;
+  TRANSFER_NS_STATE = 6;
+  TRANSFER_NS_AWAKEABLE = 7;
+  TRANSFER_NS_KEYLEASE = 8;
+  TRANSFER_NS_IDEMP = 9;
+  TRANSFER_NS_SIGNAL_INBOX = 10;
+  TRANSFER_NS_SIGNAL_AWAITER = 11;
+  TRANSFER_NS_WORKFLOW_RUN = 12;
+  TRANSFER_NS_PROMISE = 13;
+  TRANSFER_NS_PROMISE_AWAITER = 14;
+}
+
+// BeginLPTransfer is sent by the lpMover to the source partition shard.
+// Apply arm installs LPFreezeTable[lp] = {transfer_id, dest_shard,
+// frozen_at_ms} so every subsequent LP-touching command on this shard
+// returns ResultValueLPFrozen, and emits an ActStartLPTransferScan
+// action for the leader-side LPTransferSourceService.
+message BeginLPTransfer {
+  string transfer_id = 1;
+  uint32 lp = 2;
+  uint64 dest_shard = 3;
+}
+
+// ApplyLPTransferChunk is sent by the source's
+// LPTransferSourceService to the destination partition shard. Apply
+// arm validates chunk_seq == staging.next_chunk_seq (silently drops
+// duplicates, which the source uses for retry), writes each row raw
+// via batch.Set, and bumps next_chunk_seq. On is_final=true the apply
+// arm emits ActSignalLPTransferStaged so the runner routes a phase
+// ack back to shard 0.
+message ApplyLPTransferChunk {
+  string transfer_id = 1;
+  uint32 lp = 2;
+  uint64 source_shard = 3;
+  uint64 chunk_seq = 4;
+  repeated TransferRow rows = 5;
+  bool is_final = 6;
+}
+
+// CommitLPTransfer is sent by the lpMover to the destination after the
+// LPOwnersTable flip succeeds. Apply arm drops the LPStagingTable row
+// (the staged data was already written into the live LP namespaces by
+// ApplyLPTransferChunk).
+message CommitLPTransfer {
+  string transfer_id = 1;
+  uint32 lp = 2;
+}
+
+// FinishLPTransfer is sent by the lpMover to the source after the
+// LPOwnersTable flip succeeds. Apply arm walks timer_lp/<lp>/... first
+// to collect the primary `timer/<fire>/<id>` keys (the primary
+// keyspace is LP-agnostic on disk), deletes each, then DeleteRange's
+// every LP-prefixed namespace using keys.<NS>LPPrefix(lp) +
+// PrefixUpperBound. Drops the LPFreezeTable[lp] row and emits
+// ActSignalLPTransferCleaned.
+message FinishLPTransfer {
+  string transfer_id = 1;
+  uint32 lp = 2;
+}
+
+// AbortLPTransfer is sent by the lpMover to both partition sides when
+// a transfer is rolled back. Source: drops LPFreezeTable[lp] row. Dest:
+// DeleteRange's every LP-prefixed namespace (in case partial chunks
+// landed) and drops LPStagingTable[transfer_id]. Both sides emit
+// ActSignalLPTransferAbortAck.
+message AbortLPTransfer {
+  string transfer_id = 1;
+  uint32 lp = 2;
+}
+
+// LPFreezeRow is the per-partition record installed by BeginLPTransfer
+// (apply arm) and consumed by the freeze gate in partition.go before
+// every LP-touching command. Persisted under
+// `lp_freeze/<4-byte BE lp>` keys.
+message LPFreezeRow {
+  string transfer_id = 1;
+  uint64 dest_shard = 2;
+  fixed64 frozen_at_ms = 3;
+}
+
+// LPStagingRow is the per-destination-partition record used by
+// ApplyLPTransferChunk to enforce in-order chunk delivery and absorb
+// retries. Persisted under `lp_staging/<transfer_id>` keys. Dropped by
+// CommitLPTransfer / AbortLPTransfer.
+message LPStagingRow {
+  string transfer_id = 1;
+  uint32 lp = 2;
+  uint64 source_shard = 3;
+  uint64 next_chunk_seq = 4;
+  bool is_final_seen = 5;
 }
 

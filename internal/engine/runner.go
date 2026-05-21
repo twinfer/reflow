@@ -35,19 +35,21 @@ type PartitionRunner struct {
 	log     *slog.Logger
 	metrics *observability.Metrics
 
-	// timers, outbox, and workflowReap are populated by onBecomeLeader
-	// and torn down by onStepDown. dispatchActions reads them on the
-	// apply goroutine, which is the same goroutine as onBecomeLeader/
-	// onStepDown — no extra synchronisation needed.
+	// timers, outbox, workflowReap, and lpTransfer are populated by
+	// onBecomeLeader and torn down by onStepDown. dispatchActions reads
+	// them on the apply goroutine, which is the same goroutine as
+	// onBecomeLeader/onStepDown — no extra synchronisation needed.
 	timers       *TimerService
 	outbox       *OutboxService
 	workflowReap *WorkflowReapService
+	lpTransfer   *LPTransferService
 
 	mu               sync.Mutex
 	leaderCancel     context.CancelFunc
 	timerDone        chan struct{}
 	outboxDone       chan struct{}
 	workflowReapDone chan struct{}
+	lpTransferDone   chan struct{}
 	// storeRelease releases the Snapshotter lease acquired in
 	// onBecomeLeader. Held for the lifetime of the current leader scope
 	// so Host.Close → Snapshotter.Close waits until our leader-scoped
@@ -127,6 +129,34 @@ func (r *PartitionRunner) dispatchActions(actions []Action) {
 				continue
 			}
 			r.workflowReap.Push(act.FireAtMs, act.Service, act.WorkflowKey)
+		case ActStartLPTransferScan:
+			if r.lpTransfer == nil {
+				r.log.Warn("runner: ActStartLPTransferScan with no lp transfer service",
+					"shard", r.ShardID, "transfer_id", act.TransferID)
+				continue
+			}
+			r.lpTransfer.PushScan(act.TransferID, act.LP, act.DestShard)
+		case ActSignalLPTransferStaged:
+			if r.lpTransfer == nil {
+				r.log.Warn("runner: ActSignalLPTransferStaged with no lp transfer service",
+					"shard", r.ShardID, "transfer_id", act.TransferID)
+				continue
+			}
+			r.lpTransfer.PushAckStaged(act.TransferID, act.LP, act.SourceShard)
+		case ActSignalLPTransferCleaned:
+			if r.lpTransfer == nil {
+				r.log.Warn("runner: ActSignalLPTransferCleaned with no lp transfer service",
+					"shard", r.ShardID, "transfer_id", act.TransferID)
+				continue
+			}
+			r.lpTransfer.PushAckCleaned(act.TransferID)
+		case ActSignalLPTransferAbortAck:
+			if r.lpTransfer == nil {
+				r.log.Warn("runner: ActSignalLPTransferAbortAck with no lp transfer service",
+					"shard", r.ShardID, "transfer_id", act.TransferID)
+				continue
+			}
+			r.lpTransfer.PushAckAbort(act.TransferID)
 		default:
 			r.log.Warn("runner: unhandled action type", "type", a)
 		}
@@ -176,6 +206,7 @@ func (r *PartitionRunner) onBecomeLeader() {
 		r.proposer,
 		WorkflowReapServiceOptions{Log: r.log},
 	)
+	lpTransfer := NewLPTransferService(store, r.sender, r.ShardID, r.log)
 	if r.invoker != nil {
 		r.invoker.Rebind(
 			tables.JournalTable{S: store},
@@ -199,9 +230,15 @@ func (r *PartitionRunner) onBecomeLeader() {
 		r.log.Error("partition: workflow reap rebuild failed", "shard", r.ShardID, "err", err)
 		return
 	}
+	if err := lpTransfer.Rebuild(context.Background()); err != nil {
+		release()
+		r.log.Error("partition: lp transfer rebuild failed", "shard", r.ShardID, "err", err)
+		return
+	}
 	r.timers = timers
 	r.outbox = outbox
 	r.workflowReap = workflowReap
+	r.lpTransfer = lpTransfer
 
 	// Reclaim SelfProposal dedup rows from epochs we have moved past.
 	// Bounded by stale-leader churn — runs at most once per leader gain.
@@ -221,6 +258,7 @@ func (r *PartitionRunner) onBecomeLeader() {
 	timerDone := make(chan struct{})
 	outboxDone := make(chan struct{})
 	workflowReapDone := make(chan struct{})
+	lpTransferDone := make(chan struct{})
 
 	r.mu.Lock()
 	// Defensive: cancel any prior leader scope and release any prior
@@ -237,6 +275,7 @@ func (r *PartitionRunner) onBecomeLeader() {
 	r.timerDone = timerDone
 	r.outboxDone = outboxDone
 	r.workflowReapDone = workflowReapDone
+	r.lpTransferDone = lpTransferDone
 	r.storeRelease = release
 	r.mu.Unlock()
 	if priorRelease != nil {
@@ -276,6 +315,12 @@ func (r *PartitionRunner) onBecomeLeader() {
 			r.log.Error("partition: workflow reap run exited", "shard", r.ShardID, "err", err)
 		}
 	}()
+	go func() {
+		defer close(lpTransferDone)
+		if err := lpTransfer.Run(leaderCtx); err != nil && !errors.Is(err, context.Canceled) {
+			r.log.Error("partition: lp transfer run exited", "shard", r.ShardID, "err", err)
+		}
+	}()
 }
 
 // onStepDown tears down the leader-side services. Order matters:
@@ -304,11 +349,13 @@ func (r *PartitionRunner) onStepDown() {
 	timerDone := r.timerDone
 	outboxDone := r.outboxDone
 	workflowReapDone := r.workflowReapDone
+	lpTransferDone := r.lpTransferDone
 	release := r.storeRelease
 	r.leaderCancel = nil
 	r.timerDone = nil
 	r.outboxDone = nil
 	r.workflowReapDone = nil
+	r.lpTransferDone = nil
 	r.storeRelease = nil
 	r.mu.Unlock()
 
@@ -326,6 +373,9 @@ func (r *PartitionRunner) onStepDown() {
 	}
 	if workflowReapDone != nil {
 		<-workflowReapDone
+	}
+	if lpTransferDone != nil {
+		<-lpTransferDone
 	}
 	// Release the Snapshotter lease last — after every leader-scoped
 	// goroutine has stopped touching the store. Snapshotter.Close blocks

@@ -23,6 +23,9 @@
 //	                                   List/Snapshot this on each table
 //	                                   notifier wake to refresh the
 //	                                   Partitioner's atomic snapshot)
+//	lptransfer/<transfer_id ascii>  -> LPTransferRecord (in-progress LP
+//	                                   transfer saga; lpMover reads/writes
+//	                                   on the metadata leader)
 //	tablerev/<table_name>           -> TableRevision singleton (CAS guard
 //	                                   for cluster-managed config tables;
 //	                                   separate top-level namespace so it
@@ -47,6 +50,7 @@ const (
 	webhookSourcePrefix   = "webhooksrc/"
 	secretPrefix          = "secret/"
 	lpOwnerPrefix         = "lpowner/"
+	lpTransferPrefix      = "lptransfer/"
 	tableRevisionPrefix   = "tablerev/"
 )
 
@@ -58,6 +62,7 @@ const (
 	RevisionTableWebhookSource = "webhooksrc"
 	RevisionTableSecret        = "secret"
 	RevisionTableLPOwners      = "lpowners"
+	RevisionTableLPTransfers   = "lptransfers"
 )
 
 // MetaKey returns the singleton key for the metadata shard's PartitionMeta.
@@ -151,6 +156,20 @@ func LPOwnerKey(lp uint32) []byte {
 	var buf [4]byte
 	binary.BigEndian.PutUint32(buf[:], lp)
 	return append(out, buf[:]...)
+}
+
+// LPTransferPrefix returns the lptransfer/ namespace prefix. Used by
+// LPTransferTable.List for the lpMover's per-tick scan.
+func LPTransferPrefix() []byte { return []byte(lpTransferPrefix) }
+
+// LPTransferKey returns lptransfer/<transfer_id>. transfer_id is a
+// UUIDv4 string minted by Admin/TransferLP; rows sort lexicographically
+// (no scan ordering requirement — the lpMover advances each row
+// independently).
+func LPTransferKey(transferID string) []byte {
+	out := make([]byte, 0, len(lpTransferPrefix)+len(transferID))
+	out = append(out, lpTransferPrefix...)
+	return append(out, transferID...)
 }
 
 // RevisionKey returns the CAS singleton key for a table identified by

@@ -67,6 +67,50 @@ type ActScheduleWorkflowReap struct {
 
 func (ActScheduleWorkflowReap) isAction() {}
 
+// ActStartLPTransferScan is emitted by onBeginLPTransfer (source side)
+// after the freeze row is durable. The runner hands it to the leader-
+// side LPTransferSourceService, which opens a read snapshot, iterates
+// every LP-prefixed namespace, and ships chunks to the destination via
+// CrossShardSender.
+type ActStartLPTransferScan struct {
+	TransferID string
+	LP         uint32
+	DestShard  uint64
+}
+
+func (ActStartLPTransferScan) isAction() {}
+
+// ActSignalLPTransferStaged is emitted by onApplyLPTransferChunk (dest
+// side) when the is_final chunk applies. The runner enqueues an outbox
+// envelope back to shard 0 carrying UpdateLPTransferPhase{phase=STAGED}
+// so the lpMover advances the saga.
+type ActSignalLPTransferStaged struct {
+	TransferID  string
+	LP          uint32
+	SourceShard uint64
+}
+
+func (ActSignalLPTransferStaged) isAction() {}
+
+// ActSignalLPTransferCleaned is emitted by onFinishLPTransfer (source
+// side) after the LP keyspace range-delete commits. Routed via outbox
+// to shard 0 carrying UpdateLPTransferPhase{phase=CLEANED}.
+type ActSignalLPTransferCleaned struct {
+	TransferID string
+}
+
+func (ActSignalLPTransferCleaned) isAction() {}
+
+// ActSignalLPTransferAbortAck is emitted by onAbortLPTransfer on both
+// partition sides after rollback completes. Routed via outbox to
+// shard 0 so the lpMover knows both sides have cleaned up before
+// advancing to ABORTED.
+type ActSignalLPTransferAbortAck struct {
+	TransferID string
+}
+
+func (ActSignalLPTransferAbortAck) isAction() {}
+
 // ActionCollector is a single-goroutine append-only buffer of Actions
 // produced during one Update call. It is owned by the partition's apply path
 // and is not safe for concurrent use.

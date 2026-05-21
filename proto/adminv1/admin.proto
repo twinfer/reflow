@@ -99,6 +99,16 @@ service Admin {
   rpc UpsertSecret(UpsertSecretRequest) returns (UpsertSecretResponse);
   rpc DeleteSecret(DeleteSecretRequest) returns (DeleteSecretResponse);
   rpc ListSecrets(ListSecretsRequest) returns (ListSecretsResponse);
+  // TransferLP initiates a cross-shard transfer of one logical
+  // partition. Validates inputs, mints a UUIDv4 transfer_id, and
+  // proposes Command_InitiateLPTransfer to shard 0. The lpMover on the
+  // metadata leader then drives the saga (freeze → ship → stage →
+  // flip → cleanup). Returns immediately with the transfer_id; the
+  // caller polls ListLPTransfers to observe progress. Leader-only.
+  rpc TransferLP(TransferLPRequest) returns (TransferLPResponse);
+  // ListLPTransfers returns the current LPTransferTable rows plus the
+  // table revision. Reads via SyncRead against shard 0.
+  rpc ListLPTransfers(ListLPTransfersRequest) returns (ListLPTransfersResponse);
 }
 
 message AddNodeRequest {
@@ -243,6 +253,24 @@ message DeleteSecretResponse {
 message ListSecretsRequest {}
 message ListSecretsResponse {
   repeated reflow.engine.v1.SecretRecord records = 1;
+  uint64 table_revision = 2;
+}
+
+// TransferLPRequest initiates a cross-shard transfer for one LP. lp
+// must be in [0, LPCount); dest_shard must be a known partition shard
+// id. The request fails (FailedPrecondition) if a non-terminal
+// transfer for the same lp already exists.
+message TransferLPRequest {
+  uint32 lp = 1;
+  uint64 dest_shard = 2;
+}
+message TransferLPResponse {
+  string transfer_id = 1;
+}
+
+message ListLPTransfersRequest {}
+message ListLPTransfersResponse {
+  repeated reflow.engine.v1.LPTransferRecord records = 1;
   uint64 table_revision = 2;
 }
 

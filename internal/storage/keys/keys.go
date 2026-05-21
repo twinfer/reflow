@@ -33,6 +33,8 @@
 //	dedup/self/<8-byte BE leader_epoch>/<8-byte BE seq>           -> DedupEntry (shard-scoped)
 //	dedup/arbitrary/<producer_id>/<8-byte BE seq>                 -> DedupEntry (shard-scoped)
 //	workflow_reap/<8-byte BE fire_at_ms>/<service>/<workflow_key> -> empty (fire_at order)
+//	lp_freeze/<lp:4>                                              -> LPFreezeRow (PR 3 freeze gate)
+//	lp_staging/<transfer_id>                                      -> LPStagingRow (PR 3 dest staging)
 //
 // All multi-byte integers in keys are big-endian so lexicographic byte order
 // equals numeric order. Invocation IDs are encoded as a fixed 24-byte raw
@@ -92,6 +94,8 @@ const (
 	promisePrefix        = "promise/"
 	promiseAwaiterPrefix = "promise_awaiter/"
 	workflowReapPrefix   = "workflow_reap/"
+	lpFreezePrefix       = "lp_freeze/"
+	lpStagingPrefix      = "lp_staging/"
 )
 
 // ErrInvalidInvocationID is returned when an InvocationId has a uuid field of
@@ -233,7 +237,7 @@ func DecodeTimerKey(key []byte) (uint64, *enginev1.InvocationId, error) {
 }
 
 // TimerLPKey returns timer_lp/<lp:4><8-byte BE fire_at>/<24-byte id>.
-// Pair-written with TimerKey so the future LP transfer protocol can extract
+// Pair-written with TimerKey so the LP transfer protocol can extract
 // every timer in an LP via a single bounded range scan. The value mirrors
 // the primary row (4-byte BE sleep_index).
 func TimerLPKey(lp uint32, fireAtMs uint64, id *enginev1.InvocationId) ([]byte, error) {
@@ -734,6 +738,118 @@ func PrefixUpperBound(prefix []byte) []byte {
 	out[len(out)-1]++
 	return out
 }
+
+// JournalLPPrefix returns journal/<lp:4>, suitable as the LowerBound for a
+// per-LP scan of every journal entry in one logical partition. Pair with
+// PrefixUpperBound for the UpperBound.
+func JournalLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(journalPrefix)+LPLen)
+	out = append(out, journalPrefix...)
+	return appendLP(out, lp)
+}
+
+// StateLPPrefix returns state/<lp:4>, suitable as the LowerBound for a
+// per-LP scan of every state entry in one logical partition.
+func StateLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(statePrefix)+LPLen)
+	out = append(out, statePrefix...)
+	return appendLP(out, lp)
+}
+
+// AwakeableLPPrefix returns awakeable/<lp:4>.
+func AwakeableLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(awakeablePrefix)+LPLen)
+	out = append(out, awakeablePrefix...)
+	return appendLP(out, lp)
+}
+
+// KeyLeaseLPPrefix returns keylease/<lp:4>.
+func KeyLeaseLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(keyLeasePrefix)+LPLen)
+	out = append(out, keyLeasePrefix...)
+	return appendLP(out, lp)
+}
+
+// IdempotencyLPPrefix returns idempotency/<lp:4>.
+func IdempotencyLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(idempPrefix)+LPLen)
+	out = append(out, idempPrefix...)
+	return appendLP(out, lp)
+}
+
+// SignalInboxLPPrefix returns signal_inbox/<lp:4>.
+func SignalInboxLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(signalInboxPrefix)+LPLen)
+	out = append(out, signalInboxPrefix...)
+	return appendLP(out, lp)
+}
+
+// SignalAwaiterLPPrefix returns signal_awaiter/<lp:4>.
+func SignalAwaiterLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(signalAwaiterPrefix)+LPLen)
+	out = append(out, signalAwaiterPrefix...)
+	return appendLP(out, lp)
+}
+
+// WorkflowRunLPPrefix returns workflow_run/<lp:4>.
+func WorkflowRunLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(workflowRunPrefix)+LPLen)
+	out = append(out, workflowRunPrefix...)
+	return appendLP(out, lp)
+}
+
+// PromiseLPPrefix returns promise/<lp:4>.
+func PromiseLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(promisePrefix)+LPLen)
+	out = append(out, promisePrefix...)
+	return appendLP(out, lp)
+}
+
+// PromiseAwaiterLPPrefix returns promise_awaiter/<lp:4>.
+func PromiseAwaiterLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(promiseAwaiterPrefix)+LPLen)
+	out = append(out, promiseAwaiterPrefix...)
+	return appendLP(out, lp)
+}
+
+// TimerIdxLPPrefix returns timer_idx/<lp:4>.
+func TimerIdxLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(timerIdxPrefix)+LPLen)
+	out = append(out, timerIdxPrefix...)
+	return appendLP(out, lp)
+}
+
+// LPFreezeKey returns lp_freeze/<lp:4>. The LPFreezeTable is a
+// per-partition control-plane namespace populated by BeginLPTransfer's
+// apply arm; the partition apply path reads it on every LP-touching
+// command via the freeze gate. NOT in the LP-prefixed set: the row is
+// metadata ABOUT the transfer, not state belonging to the LP, and
+// never migrates with the LP.
+func LPFreezeKey(lp uint32) []byte {
+	out := make([]byte, 0, len(lpFreezePrefix)+LPLen)
+	out = append(out, lpFreezePrefix...)
+	return appendLP(out, lp)
+}
+
+// LPFreezePrefix returns the lp_freeze/ namespace prefix, used by
+// LPTransferSourceService.Rebuild to enumerate frozen LPs on leader
+// gain.
+func LPFreezePrefix() []byte { return []byte(lpFreezePrefix) }
+
+// LPStagingKey returns lp_staging/<transfer_id>. The LPStagingTable is
+// a per-destination-partition control-plane namespace used by
+// ApplyLPTransferChunk to enforce in-order chunk delivery and absorb
+// retries. Dropped by CommitLPTransfer / AbortLPTransfer.
+func LPStagingKey(transferID string) []byte {
+	out := make([]byte, 0, len(lpStagingPrefix)+len(transferID))
+	out = append(out, lpStagingPrefix...)
+	return append(out, transferID...)
+}
+
+// LPStagingPrefix returns the lp_staging/ namespace prefix, used by
+// the destination's leader-side rebuild path to enumerate in-progress
+// staging rows.
+func LPStagingPrefix() []byte { return []byte(lpStagingPrefix) }
 
 func init() {
 	if LPCount&(LPCount-1) != 0 {

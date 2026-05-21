@@ -25,6 +25,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine"
 	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
 	"github.com/twinfer/reflow/proto/deliveryv1/deliveryv1connect"
+	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
 // RunnerView is re-exported from engine so unit tests can stub the
@@ -39,6 +40,11 @@ type HostView interface {
 	// PartitionRunner returns a RunnerView for shardID, or nil when
 	// shardID is not hosted on this node.
 	PartitionRunner(shardID uint64) RunnerView
+	// MetadataRunnerView returns a RunnerView for shard 0 (the metadata
+	// Raft group), or nil when shard 0 is not hosted on this node.
+	// Used by the LP-mover ack path: partition shards send
+	// UpdateLpTransferPhase via CrossShardSender to shard 0.
+	MetadataRunnerView() RunnerView
 	// PartitionLeaderHint returns the believed leader's NodeID for
 	// shardID, sourced from dragonboat gossip. Used to populate
 	// NotLeader hints on responses.
@@ -92,17 +98,36 @@ func (s *Server) Deliver(ctx context.Context, stream *connect.BidiStream[deliver
 // unit tests can drive the per-message logic without a real stream.
 func (s *Server) handle(ctx context.Context, req *deliveryv1.DeliverRequest) *deliveryv1.DeliverResponse {
 	shardID := req.GetShardId()
-	if shardID == 0 || req.GetProducerId() == "" || req.GetCommand() == nil {
+	if req.GetProducerId() == "" || req.GetCommand() == nil {
 		return errResponse(req.GetSeq(), "delivery: malformed request")
 	}
 
-	runner := s.host.PartitionRunner(shardID)
+	var runner RunnerView
+	var isLeader bool
+	if shardID == 0 {
+		// Shard-0 inbound deliveries are allowlisted: the only
+		// expected cross-shard sender → shard-0 command today is
+		// UpdateLpTransferPhase (LP-mover ack from a partition's
+		// LPTransferService). Other shard-0 commands are
+		// node-self-proposals; rejecting them defensively prevents a
+		// compromised peer from re-running cluster ownership state
+		// changes via the delivery surface.
+		if !isAllowedShard0Inbound(req.GetCommand()) {
+			s.log.Warn("delivery: rejected unsupported shard-0 inbound command",
+				"producer", req.GetProducerId(), "kind", fmt.Sprintf("%T", req.GetCommand().GetKind()))
+			return errResponse(req.GetSeq(), "delivery: command kind not allowed on shard 0")
+		}
+		runner = s.host.MetadataRunnerView()
+	} else {
+		runner = s.host.PartitionRunner(shardID)
+	}
 	if runner == nil {
 		// Not hosted here. Fall through to the not-leader hint path; the
 		// sender will re-resolve via gossip and dial the actual leader.
 		return s.notLeaderResponse(req.GetSeq(), shardID)
 	}
-	if !runner.IsLeader() {
+	isLeader = runner.IsLeader()
+	if !isLeader {
 		return s.notLeaderResponse(req.GetSeq(), shardID)
 	}
 
@@ -118,6 +143,20 @@ func (s *Server) handle(ctx context.Context, req *deliveryv1.DeliverRequest) *de
 		return errResponse(req.GetSeq(), fmt.Sprintf("propose: %v", err))
 	}
 	return ackResponse(req.GetSeq())
+}
+
+// isAllowedShard0Inbound returns true when cmd is one of the few
+// command kinds a partition's LPTransferService legitimately sends to
+// shard 0. Anything else is rejected (defense in depth: cluster
+// ownership commands like RegisterNode / UpdatePartitionTable /
+// UpsertLPOwner must never arrive via delivery — they are
+// self-proposed by the metadata leader only).
+func isAllowedShard0Inbound(cmd *enginev1.Command) bool {
+	switch cmd.GetKind().(type) {
+	case *enginev1.Command_UpdateLpTransferPhase:
+		return true
+	}
+	return false
 }
 
 // notLeaderResponse builds a NotLeader reply, populating leader_node_id

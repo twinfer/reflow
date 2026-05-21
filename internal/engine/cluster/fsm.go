@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/storage"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -60,6 +61,7 @@ type Notifiers struct {
 	WebhookSourceTable *TableNotifier
 	SecretTable        *TableNotifier
 	LPOwnersTable      *TableNotifier
+	LPTransfersTable   *TableNotifier
 }
 
 // FSM is the dragonboat IOnDiskStateMachine for shard 0. It accepts only
@@ -325,6 +327,12 @@ func (f *FSM) applyCommand(
 		return f.applyDeleteLPOwner(batch, env, k.DeleteLpOwner, raftIndex)
 	case *enginev1.Command_BulkUpsertLpOwners:
 		return f.applyBulkUpsertLPOwners(batch, env, k.BulkUpsertLpOwners, raftIndex)
+	case *enginev1.Command_InitiateLpTransfer:
+		return f.applyInitiateLPTransfer(batch, env, k.InitiateLpTransfer, raftIndex)
+	case *enginev1.Command_UpdateLpTransferPhase:
+		return f.applyUpdateLPTransferPhase(batch, env, k.UpdateLpTransferPhase, raftIndex)
+	case *enginev1.Command_RemoveLpTransfer:
+		return f.applyRemoveLPTransfer(batch, env, k.RemoveLpTransfer, raftIndex)
 	case *enginev1.Command_EvictNode:
 		return f.applyEvictNode(batch, k.EvictNode, raftIndex)
 	case *enginev1.Command_BeginRebalanceStep:
@@ -659,6 +667,236 @@ func (f *FSM) applyBulkUpsertLPOwners(
 	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.LPOwnersTable}}, nil
 }
 
+// applyInitiateLPTransfer writes a fresh LPTransferRecord at PHASE_INIT.
+// Validates lp ∈ [0, LPCount), dest_shard ∈ PartitionTable.Shards, and
+// rejects when a non-terminal transfer for the same lp already exists.
+// Resolves source_shard from the LPOwnersTable; stamps
+// expected_lpowners_revision from the current LPOwnersTable revision so
+// the lpMover's later UpsertLpOwner CAS detects concurrent ownership
+// drift.
+//
+// CAS via Envelope.precondition against RevisionTableLPTransfers
+// (concurrent admin retries against a stale revision are rejected).
+// Fires Notifiers.LPTransfersTable post-commit so the lpMover wakes
+// immediately on the new row.
+func (f *FSM) applyInitiateLPTransfer(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.InitiateLPTransfer,
+	raftIndex uint64,
+) (*applyResult, error) {
+	if cmd.GetTransferId() == "" {
+		f.cfg.Log.Warn("cluster: InitiateLPTransfer missing transfer_id; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	if cmd.GetLp() >= keys.LPCount {
+		f.cfg.Log.Warn("cluster: InitiateLPTransfer lp out of range; ignoring",
+			"raft_index", raftIndex, "lp", cmd.GetLp(), "lp_count", keys.LPCount)
+		return &applyResult{}, nil
+	}
+	if cmd.GetDestShard() == 0 {
+		f.cfg.Log.Warn("cluster: InitiateLPTransfer zero dest_shard; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	pt, err := (PartitionTableTable{S: batch}).Get()
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load partition table: %w", err)
+	}
+	if pt == nil {
+		f.cfg.Log.Warn("cluster: InitiateLPTransfer before partition table bootstrap; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	if _, ok := pt.GetShards()[cmd.GetDestShard()]; !ok {
+		f.cfg.Log.Warn("cluster: InitiateLPTransfer unknown dest_shard; ignoring",
+			"raft_index", raftIndex, "dest_shard", cmd.GetDestShard())
+		return &applyResult{}, nil
+	}
+	owner, err := (LPOwnersTable{S: batch}).Get(cmd.GetLp())
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load lpowner: %w", err)
+	}
+	if owner == nil {
+		f.cfg.Log.Warn("cluster: InitiateLPTransfer for unseeded lp; ignoring",
+			"raft_index", raftIndex, "lp", cmd.GetLp())
+		return &applyResult{}, nil
+	}
+	if owner.GetShardId() == cmd.GetDestShard() {
+		f.cfg.Log.Warn("cluster: InitiateLPTransfer lp already on dest_shard; ignoring",
+			"raft_index", raftIndex, "lp", cmd.GetLp(), "dest_shard", cmd.GetDestShard())
+		return &applyResult{}, nil
+	}
+	// Reject if any non-terminal transfer exists for this lp. Terminal
+	// phases (CLEANED, ABORTED) are observability-only and may coexist
+	// with a fresh initiation.
+	existing, err := (LPTransferTable{S: batch}).List()
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load lp transfers: %w", err)
+	}
+	for _, rec := range existing {
+		if rec.GetLp() != cmd.GetLp() {
+			continue
+		}
+		switch rec.GetPhase() {
+		case enginev1.LPTransferPhase_LP_TRANSFER_PHASE_CLEANED,
+			enginev1.LPTransferPhase_LP_TRANSFER_PHASE_ABORTED:
+			// terminal — ignore
+		default:
+			f.cfg.Log.Warn("cluster: InitiateLPTransfer rejected, in-progress transfer for lp",
+				"raft_index", raftIndex, "lp", cmd.GetLp(),
+				"existing_transfer_id", rec.GetTransferId(), "phase", rec.GetPhase().String())
+			return &applyResult{}, nil
+		}
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableLPTransfers)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load lp transfers revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	lpownersRev, err := (RevisionTable{S: batch}).Get(RevisionTableLPOwners)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load lpowners revision: %w", err)
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	rec := &enginev1.LPTransferRecord{
+		TransferId:               cmd.GetTransferId(),
+		Lp:                       cmd.GetLp(),
+		SourceShard:              owner.GetShardId(),
+		DestShard:                cmd.GetDestShard(),
+		Phase:                    enginev1.LPTransferPhase_LP_TRANSFER_PHASE_INIT,
+		StartedAtMs:              nowMs,
+		LastEventMs:              nowMs,
+		ExpectedLpownersRevision: lpownersRev,
+	}
+	if err := (LPTransferTable{S: batch}).Put(batch, rec); err != nil {
+		return nil, fmt.Errorf("cluster: write lp transfer: %w", err)
+	}
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableLPTransfers, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump lp transfers revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.LPTransfersTable}}, nil
+}
+
+// applyUpdateLPTransferPhase advances a transfer's phase. The lpMover
+// proposes this after each side-effect (cross-shard send, CAS) lands.
+// Updates last_event_ms (stall-detection clock) and optionally
+// expected_lpowners_revision (re-stamped on FLIPPED so a resumed
+// lpMover knows the revision to verify against).
+func (f *FSM) applyUpdateLPTransferPhase(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.UpdateLPTransferPhase,
+	raftIndex uint64,
+) (*applyResult, error) {
+	if cmd.GetTransferId() == "" {
+		f.cfg.Log.Warn("cluster: UpdateLPTransferPhase missing transfer_id; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	tab := LPTransferTable{S: batch}
+	rec, err := tab.Get(cmd.GetTransferId())
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load lp transfer: %w", err)
+	}
+	if rec == nil {
+		f.cfg.Log.Warn("cluster: UpdateLPTransferPhase for unknown transfer_id; ignoring",
+			"raft_index", raftIndex, "transfer_id", cmd.GetTransferId())
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableLPTransfers)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load lp transfers revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	// Monotonic phase advance. The saga DAG is
+	//   INIT → STAGED → FLIPPED → CLEANED
+	//   (INIT|STAGED) → ABORTING → ABORTED
+	// Same-phase is an idempotent no-op (absorbs duplicate acks from
+	// retries). Invalid transitions log + drop, never error (would halt
+	// the shard).
+	if cmd.GetPhase() == rec.GetPhase() {
+		return &applyResult{}, nil
+	}
+	if !isValidLPTransferAdvance(rec.GetPhase(), cmd.GetPhase()) {
+		f.cfg.Log.Warn("cluster: UpdateLPTransferPhase invalid transition; dropping",
+			"raft_index", raftIndex, "transfer_id", cmd.GetTransferId(),
+			"from", rec.GetPhase().String(), "to", cmd.GetPhase().String())
+		return &applyResult{}, nil
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	rec.Phase = cmd.GetPhase()
+	rec.LastEventMs = nowMs
+	if cmd.GetExpectedLpownersRevision() != 0 {
+		rec.ExpectedLpownersRevision = cmd.GetExpectedLpownersRevision()
+	}
+	if err := tab.Put(batch, rec); err != nil {
+		return nil, fmt.Errorf("cluster: write lp transfer: %w", err)
+	}
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableLPTransfers, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump lp transfers revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.LPTransfersTable}}, nil
+}
+
+// isValidLPTransferAdvance reports whether (from → to) is a forward
+// advance in the LP-transfer saga DAG. Used by applyUpdateLPTransferPhase
+// to absorb duplicate / stale acks safely.
+func isValidLPTransferAdvance(from, to enginev1.LPTransferPhase) bool {
+	switch from {
+	case enginev1.LPTransferPhase_LP_TRANSFER_PHASE_UNSPECIFIED,
+		enginev1.LPTransferPhase_LP_TRANSFER_PHASE_INIT,
+		enginev1.LPTransferPhase_LP_TRANSFER_PHASE_SHIPPING:
+		return to == enginev1.LPTransferPhase_LP_TRANSFER_PHASE_SHIPPING ||
+			to == enginev1.LPTransferPhase_LP_TRANSFER_PHASE_STAGED ||
+			to == enginev1.LPTransferPhase_LP_TRANSFER_PHASE_ABORTING
+	case enginev1.LPTransferPhase_LP_TRANSFER_PHASE_STAGED:
+		return to == enginev1.LPTransferPhase_LP_TRANSFER_PHASE_FLIPPED ||
+			to == enginev1.LPTransferPhase_LP_TRANSFER_PHASE_ABORTING
+	case enginev1.LPTransferPhase_LP_TRANSFER_PHASE_FLIPPED:
+		return to == enginev1.LPTransferPhase_LP_TRANSFER_PHASE_CLEANED
+	case enginev1.LPTransferPhase_LP_TRANSFER_PHASE_ABORTING:
+		return to == enginev1.LPTransferPhase_LP_TRANSFER_PHASE_ABORTED
+	}
+	return false
+}
+
+// applyRemoveLPTransfer drops a row after the operator-visibility grace
+// window has elapsed. Delete-of-absent is a no-op (still bumps the
+// revision so the operator's CAS-roundtrip CLI observes progress).
+func (f *FSM) applyRemoveLPTransfer(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.RemoveLPTransfer,
+	raftIndex uint64,
+) (*applyResult, error) {
+	if cmd.GetTransferId() == "" {
+		f.cfg.Log.Warn("cluster: RemoveLPTransfer missing transfer_id; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableLPTransfers)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load lp transfers revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	if err := (LPTransferTable{S: batch}).Delete(batch, cmd.GetTransferId()); err != nil {
+		return nil, fmt.Errorf("cluster: delete lp transfer: %w", err)
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableLPTransfers, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump lp transfers revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.LPTransfersTable}}, nil
+}
+
 // applyEvictNode marks the named node logically dead (last_seen_ms = 0)
 // and appends a DELETE_REPLICA RebalanceStep to PartitionTable.pending
 // for every shard whose ReplicaSet still contains node_id. Idempotent:
@@ -950,6 +1188,13 @@ type (
 	// shard 0 plus the table's CAS revision in one SyncRead. The
 	// per-node routing Reconciler calls this on each TableNotifier wake.
 	LookupLPOwners struct{}
+
+	// LookupLPTransfers returns *LPTransfersList — every
+	// LPTransferRecord (in-progress + recently terminal) plus the
+	// table's CAS revision. The lpMover calls this on each tick to
+	// drive open transfers forward; the admin RPC uses it for
+	// operator-facing list.
+	LookupLPTransfers struct{}
 )
 
 // EventSourceList bundles every row in EventSourceTable with the
@@ -978,6 +1223,13 @@ type SecretList struct {
 // revision, atomic w.r.t. the read snapshot.
 type LPOwnersList struct {
 	Records       []*enginev1.LPOwnerRecord
+	TableRevision uint64
+}
+
+// LPTransfersList bundles every row in LPTransferTable with the
+// table's CAS revision.
+type LPTransfersList struct {
+	Records       []*enginev1.LPTransferRecord
 	TableRevision uint64
 }
 
@@ -1078,6 +1330,16 @@ func (f *FSM) Lookup(query any) (any, error) {
 			return nil, err
 		}
 		return &LPOwnersList{Records: records, TableRevision: rev}, nil
+	case LookupLPTransfers:
+		records, err := (LPTransferTable{S: store}).List()
+		if err != nil {
+			return nil, err
+		}
+		rev, err := (RevisionTable{S: store}).Get(RevisionTableLPTransfers)
+		if err != nil {
+			return nil, err
+		}
+		return &LPTransfersList{Records: records, TableRevision: rev}, nil
 	default:
 		return nil, fmt.Errorf("cluster: unknown lookup type %T", query)
 	}

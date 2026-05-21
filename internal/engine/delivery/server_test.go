@@ -18,8 +18,9 @@ func (r *fakeRunner) IsLeader() bool                 { return r.leader }
 func (r *fakeRunner) Proposer() *engine.RaftProposer { return r.prop }
 
 type fakeHost struct {
-	runners map[uint64]RunnerView
-	leader  map[uint64]uint64
+	runners  map[uint64]RunnerView
+	leader   map[uint64]uint64
+	metadata RunnerView
 }
 
 func (h *fakeHost) PartitionRunner(shardID uint64) RunnerView {
@@ -28,6 +29,9 @@ func (h *fakeHost) PartitionRunner(shardID uint64) RunnerView {
 		return nil
 	}
 	return r
+}
+func (h *fakeHost) MetadataRunnerView() RunnerView {
+	return h.metadata
 }
 func (h *fakeHost) PartitionLeaderHint(shardID uint64) (uint64, bool) {
 	if id, ok := h.leader[shardID]; ok {

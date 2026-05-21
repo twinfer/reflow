@@ -108,7 +108,7 @@ func dispatchPKI(args []string) error {
 // handler.
 func dispatchCluster(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: reflowd cluster {add-node|remove-node|nodes|partitions|snapshot|register-deployment|eventsources|webhooks|apply|export|get|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|upsert-webhook} [flags]")
+		return fmt.Errorf("usage: reflowd cluster {add-node|remove-node|nodes|partitions|snapshot|register-deployment|eventsources|webhooks|apply|export|get|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|upsert-webhook|transfer-lp|list-lp-transfers} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -147,6 +147,10 @@ func dispatchCluster(ctx context.Context, args []string) error {
 		return cmdDecryptSecret(ctx, rest)
 	case "upsert-webhook":
 		return cmdUpsertWebhook(ctx, rest)
+	case "transfer-lp":
+		return cmdTransferLP(ctx, rest)
+	case "list-lp-transfers":
+		return cmdListLPTransfers(ctx, rest)
 	default:
 		return fmt.Errorf("reflowd cluster: unknown subcommand %q", sub)
 	}

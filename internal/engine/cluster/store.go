@@ -324,6 +324,70 @@ func (t EventSourceTable) List() ([]*enginev1.EventSourceRecord, error) {
 	return out, iter.Error()
 }
 
+// WebhookSourceTable persists WebhookSourceRecord rows keyed by name.
+// Lives on shard 0 alongside EventSourceTable. The Reconciler on every
+// node SyncRead-iterates this table on each TableNotifier wake to
+// converge the local route-snapshot.
+type WebhookSourceTable struct{ S storage.Reader }
+
+func (t WebhookSourceTable) Get(name string) (*enginev1.WebhookSourceRecord, error) {
+	val, closer, err := t.S.Get(WebhookSourceKey(name))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer closer.Close()
+	var rec enginev1.WebhookSourceRecord
+	if err := proto.Unmarshal(val, &rec); err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (t WebhookSourceTable) Put(b storage.Batch, rec *enginev1.WebhookSourceRecord) error {
+	if rec.GetName() == "" {
+		return errors.New("WebhookSourceTable.Put: empty name")
+	}
+	buf, err := proto.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return b.Set(WebhookSourceKey(rec.GetName()), buf)
+}
+
+// Delete removes the row for name. Delete-of-absent is a no-op.
+func (t WebhookSourceTable) Delete(b storage.Batch, name string) error {
+	if name == "" {
+		return errors.New("WebhookSourceTable.Delete: empty name")
+	}
+	return b.Delete(WebhookSourceKey(name))
+}
+
+// List returns every WebhookSourceRecord in lexicographic name order.
+func (t WebhookSourceTable) List() ([]*enginev1.WebhookSourceRecord, error) {
+	prefix := WebhookSourcePrefix()
+	upper := prefixUpperBound(prefix)
+	iter, err := t.S.NewIter(prefix, upper)
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	var out []*enginev1.WebhookSourceRecord
+	for ok := iter.First(); ok; ok = iter.Next() {
+		if !bytes.HasPrefix(iter.Key(), prefix) {
+			continue
+		}
+		var rec enginev1.WebhookSourceRecord
+		if err := proto.Unmarshal(iter.Value(), &rec); err != nil {
+			return nil, err
+		}
+		out = append(out, &rec)
+	}
+	return out, iter.Error()
+}
+
 // prefixUpperBound is a local clone of keys.PrefixUpperBound to avoid an
 // import cycle (internal/storage/keys is for the partition codec).
 func prefixUpperBound(prefix []byte) []byte {

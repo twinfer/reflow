@@ -106,15 +106,14 @@ message Header {
 //            ReapWorkflow)
 //   21-22  : metadata-shard cluster-managed config: event sources
 //            (UpsertEventSource, DeleteEventSource)
-//   23-24  : reserved for metadata-shard cluster-managed config: webhook
-//            sources (UpsertWebhookSource, DeleteWebhookSource — PR2)
+//   23-24  : metadata-shard cluster-managed config: webhook sources
+//            (UpsertWebhookSource, DeleteWebhookSource)
 //
 // Do not reuse a tag — the on-disk format is part of the upgrade
 // contract. New tags should start at 25 or higher unless adding to an
 // existing numbered block.
 message Command {
   reserved 12 to 15;
-  reserved 23, 24;
 
   oneof kind {
     AnnounceLeader announce_leader = 1;
@@ -167,6 +166,15 @@ message Command {
     // is a no-op (still bumps the revision so the operator's CAS-roundtrip
     // CLI observes progress). Accepted only by shardID=0.
     DeleteEventSource delete_event_source = 22;
+    // UpsertWebhookSource / DeleteWebhookSource carry shard-0 webhook
+    // source config — mirror the event-source pair (CAS via
+    // Envelope.precondition, notifier fan-out via the WebhookSourceTable
+    // TableNotifier). Webhook secrets never appear in this command:
+    // the persisted record only references them by env-var-name or
+    // file-path; per-node Reconcilers resolve at reconcile time.
+    // Accepted only by shardID=0.
+    UpsertWebhookSource upsert_webhook_source = 23;
+    DeleteWebhookSource delete_webhook_source = 24;
   }
 }
 
@@ -1122,6 +1130,88 @@ message UpsertEventSource {
 // and bumps the table revision (even when the row was absent — the
 // revision bump is the operator's signal that the proposal landed).
 message DeleteEventSource {
+  string name = 1;
+}
+
+// WebhookSourceRecord is the persisted shape of one webhook source in
+// shard 0's WebhookSourceTable. Mirrors
+// internal/ingress/webhook.SourceConfig in field semantics, with one
+// deliberate divergence: the inline `[]byte Secret` becomes a
+// `SecretRef` indirection so the plaintext never travels through Raft
+// snapshots or commit logs. Per-node Reconcilers resolve the SecretRef
+// (os.Getenv or os.ReadFile) at reconcile time and keep the resolved
+// bytes only in process memory.
+//
+// `name` is the operator-facing key (separate from `path` so a mount
+// can be renamed in YAML without renaming the row). `path` must start
+// with `/` and is the absolute URL path the listener matches; the
+// catch-all subtree handler at /webhooks/ does the lookup.
+message WebhookSourceRecord {
+  string name = 1;
+  string path = 2;
+  string verifier = 3;
+  SecretRef secret_ref = 4;
+  string service = 5;
+  string handler = 6;
+  string object_key = 7;
+  map<string, string> metadata = 8;
+}
+
+// SecretRef points to a secret source. The plaintext secret itself is
+// never a field — Raft snapshots and commit logs would leak it.
+// Verifiers are stateless; per-node Reconcilers resolve the ref at
+// reconcile time and cache the result in process memory.
+//
+// env_var_name:     read via os.Getenv on the local node. Effectively
+//   static within a process; rotation requires a process restart.
+// file_path:        absolute path read via os.ReadFile on every reconcile
+//   (5s ticker + notifier wake). Supports hot-rotation by atomic file
+//   replacement; trailing newline is trimmed; empty body is rejected.
+// remote_encrypted: ciphertext stored at a gocloud.dev/blob URI, decrypted
+//   via Tink registry.GetKMSClient(kek_uri). AAD is bound to the row's
+//   name. Operator rotates by overwriting the blob; next reconcile picks
+//   up the new ciphertext fleet-wide.
+//
+// Exactly one oneof case is required at validate time; the FSM apply
+// arm trusts the admin RPC validator and does not re-check.
+message SecretRef {
+  oneof source {
+    string env_var_name = 1;
+    string file_path = 2;
+    RemoteEncryptedSecret remote_encrypted = 3;
+  }
+}
+
+// RemoteEncryptedSecret stores ciphertext in any gocloud.dev/blob backend
+// with the KEK held by a Tink-registered KMS. The reconciler reads the
+// blob, dispatches the KEK URI to registry.GetKMSClient, and calls
+// tink.AEAD.Decrypt(ciphertext, aad=webhook_name). Reflow ships
+// pkg/tinkkms/blob (URI prefix blobkms+) as the no-managed-KMS fallback;
+// operators import tink-go/v2/integration/{gcpkms,awskms,…} from main()
+// for cloud KMS.
+message RemoteEncryptedSecret {
+  // gocloud.dev/blob URI: s3://bucket/key, gs://..., azblob://...,
+  // file:///abs/path, mem://test/key.
+  string blob_uri = 1;
+  // Tink KMS URI: blobkms+<gocloud-uri>, aws-kms://..., gcp-kms://...,
+  // hcvault://... — dispatched by registry.GetKMSClient.
+  string kek_uri = 2;
+}
+
+// UpsertWebhookSource is the Command_UpsertWebhookSource payload.
+// Apply arm CAS-checks Envelope.precondition, writes
+// WebhookSourceTable[record.name] = record, bumps the table revision,
+// and fires the WebhookSourceTable notifier so each node's local
+// Reconciler wakes and converges.
+message UpsertWebhookSource {
+  WebhookSourceRecord record = 1;
+}
+
+// DeleteWebhookSource is the Command_DeleteWebhookSource payload. Same
+// CAS + notifier semantics as Upsert. Delete-of-absent is a no-op (the
+// revision still bumps so the operator's CAS-roundtrip CLI observes
+// progress).
+message DeleteWebhookSource {
   string name = 1;
 }
 

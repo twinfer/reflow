@@ -82,6 +82,15 @@ const (
 	AdminDeleteEventSourceProcedure = "/reflow.admin.v1.Admin/DeleteEventSource"
 	// AdminListEventSourcesProcedure is the fully-qualified name of the Admin's ListEventSources RPC.
 	AdminListEventSourcesProcedure = "/reflow.admin.v1.Admin/ListEventSources"
+	// AdminUpsertWebhookSourceProcedure is the fully-qualified name of the Admin's UpsertWebhookSource
+	// RPC.
+	AdminUpsertWebhookSourceProcedure = "/reflow.admin.v1.Admin/UpsertWebhookSource"
+	// AdminDeleteWebhookSourceProcedure is the fully-qualified name of the Admin's DeleteWebhookSource
+	// RPC.
+	AdminDeleteWebhookSourceProcedure = "/reflow.admin.v1.Admin/DeleteWebhookSource"
+	// AdminListWebhookSourcesProcedure is the fully-qualified name of the Admin's ListWebhookSources
+	// RPC.
+	AdminListWebhookSourcesProcedure = "/reflow.admin.v1.Admin/ListWebhookSources"
 )
 
 // AdminClient is a client for the reflow.admin.v1.Admin service.
@@ -136,6 +145,14 @@ type AdminClient interface {
 	// serve. Operators use the returned revision as if_table_revision_eq
 	// on subsequent Upsert/Delete calls.
 	ListEventSources(context.Context, *connect.Request[adminv1.ListEventSourcesRequest]) (*connect.Response[adminv1.ListEventSourcesResponse], error)
+	// UpsertWebhookSource / DeleteWebhookSource / ListWebhookSources mirror
+	// the event-source trio against shard 0's WebhookSourceTable. The
+	// record's SecretRef is validated for shape (exactly one of
+	// env_var_name / file_path); the plaintext secret never traverses
+	// Raft. Leader-only for mutating calls; List is SyncRead from any peer.
+	UpsertWebhookSource(context.Context, *connect.Request[adminv1.UpsertWebhookSourceRequest]) (*connect.Response[adminv1.UpsertWebhookSourceResponse], error)
+	DeleteWebhookSource(context.Context, *connect.Request[adminv1.DeleteWebhookSourceRequest]) (*connect.Response[adminv1.DeleteWebhookSourceResponse], error)
+	ListWebhookSources(context.Context, *connect.Request[adminv1.ListWebhookSourcesRequest]) (*connect.Response[adminv1.ListWebhookSourcesResponse], error)
 }
 
 // NewAdminClient constructs a client for the reflow.admin.v1.Admin service. By default, it uses the
@@ -221,23 +238,44 @@ func NewAdminClient(httpClient connect.HTTPClient, baseURL string, opts ...conne
 			connect.WithSchema(adminMethods.ByName("ListEventSources")),
 			connect.WithClientOptions(opts...),
 		),
+		upsertWebhookSource: connect.NewClient[adminv1.UpsertWebhookSourceRequest, adminv1.UpsertWebhookSourceResponse](
+			httpClient,
+			baseURL+AdminUpsertWebhookSourceProcedure,
+			connect.WithSchema(adminMethods.ByName("UpsertWebhookSource")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteWebhookSource: connect.NewClient[adminv1.DeleteWebhookSourceRequest, adminv1.DeleteWebhookSourceResponse](
+			httpClient,
+			baseURL+AdminDeleteWebhookSourceProcedure,
+			connect.WithSchema(adminMethods.ByName("DeleteWebhookSource")),
+			connect.WithClientOptions(opts...),
+		),
+		listWebhookSources: connect.NewClient[adminv1.ListWebhookSourcesRequest, adminv1.ListWebhookSourcesResponse](
+			httpClient,
+			baseURL+AdminListWebhookSourcesProcedure,
+			connect.WithSchema(adminMethods.ByName("ListWebhookSources")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // adminClient implements AdminClient.
 type adminClient struct {
-	addNode            *connect.Client[adminv1.AddNodeRequest, adminv1.AddNodeResponse]
-	selfJoin           *connect.Client[adminv1.AddNodeRequest, adminv1.AddNodeResponse]
-	removeNode         *connect.Client[adminv1.RemoveNodeRequest, adminv1.RemoveNodeResponse]
-	listNodes          *connect.Client[adminv1.ListNodesRequest, adminv1.ListNodesResponse]
-	listPartitions     *connect.Client[adminv1.ListPartitionsRequest, adminv1.ListPartitionsResponse]
-	createSnapshot     *connect.Client[adminv1.CreateSnapshotRequest, adminv1.CreateSnapshotResponse]
-	listSnapshots      *connect.Client[adminv1.ListSnapshotsRequest, adminv1.ListSnapshotsResponse]
-	deleteSnapshot     *connect.Client[adminv1.DeleteSnapshotRequest, adminv1.DeleteSnapshotResponse]
-	registerDeployment *connect.Client[adminv1.RegisterDeploymentRequest, adminv1.RegisterDeploymentResponse]
-	upsertEventSource  *connect.Client[adminv1.UpsertEventSourceRequest, adminv1.UpsertEventSourceResponse]
-	deleteEventSource  *connect.Client[adminv1.DeleteEventSourceRequest, adminv1.DeleteEventSourceResponse]
-	listEventSources   *connect.Client[adminv1.ListEventSourcesRequest, adminv1.ListEventSourcesResponse]
+	addNode             *connect.Client[adminv1.AddNodeRequest, adminv1.AddNodeResponse]
+	selfJoin            *connect.Client[adminv1.AddNodeRequest, adminv1.AddNodeResponse]
+	removeNode          *connect.Client[adminv1.RemoveNodeRequest, adminv1.RemoveNodeResponse]
+	listNodes           *connect.Client[adminv1.ListNodesRequest, adminv1.ListNodesResponse]
+	listPartitions      *connect.Client[adminv1.ListPartitionsRequest, adminv1.ListPartitionsResponse]
+	createSnapshot      *connect.Client[adminv1.CreateSnapshotRequest, adminv1.CreateSnapshotResponse]
+	listSnapshots       *connect.Client[adminv1.ListSnapshotsRequest, adminv1.ListSnapshotsResponse]
+	deleteSnapshot      *connect.Client[adminv1.DeleteSnapshotRequest, adminv1.DeleteSnapshotResponse]
+	registerDeployment  *connect.Client[adminv1.RegisterDeploymentRequest, adminv1.RegisterDeploymentResponse]
+	upsertEventSource   *connect.Client[adminv1.UpsertEventSourceRequest, adminv1.UpsertEventSourceResponse]
+	deleteEventSource   *connect.Client[adminv1.DeleteEventSourceRequest, adminv1.DeleteEventSourceResponse]
+	listEventSources    *connect.Client[adminv1.ListEventSourcesRequest, adminv1.ListEventSourcesResponse]
+	upsertWebhookSource *connect.Client[adminv1.UpsertWebhookSourceRequest, adminv1.UpsertWebhookSourceResponse]
+	deleteWebhookSource *connect.Client[adminv1.DeleteWebhookSourceRequest, adminv1.DeleteWebhookSourceResponse]
+	listWebhookSources  *connect.Client[adminv1.ListWebhookSourcesRequest, adminv1.ListWebhookSourcesResponse]
 }
 
 // AddNode calls reflow.admin.v1.Admin.AddNode.
@@ -300,6 +338,21 @@ func (c *adminClient) ListEventSources(ctx context.Context, req *connect.Request
 	return c.listEventSources.CallUnary(ctx, req)
 }
 
+// UpsertWebhookSource calls reflow.admin.v1.Admin.UpsertWebhookSource.
+func (c *adminClient) UpsertWebhookSource(ctx context.Context, req *connect.Request[adminv1.UpsertWebhookSourceRequest]) (*connect.Response[adminv1.UpsertWebhookSourceResponse], error) {
+	return c.upsertWebhookSource.CallUnary(ctx, req)
+}
+
+// DeleteWebhookSource calls reflow.admin.v1.Admin.DeleteWebhookSource.
+func (c *adminClient) DeleteWebhookSource(ctx context.Context, req *connect.Request[adminv1.DeleteWebhookSourceRequest]) (*connect.Response[adminv1.DeleteWebhookSourceResponse], error) {
+	return c.deleteWebhookSource.CallUnary(ctx, req)
+}
+
+// ListWebhookSources calls reflow.admin.v1.Admin.ListWebhookSources.
+func (c *adminClient) ListWebhookSources(ctx context.Context, req *connect.Request[adminv1.ListWebhookSourcesRequest]) (*connect.Response[adminv1.ListWebhookSourcesResponse], error) {
+	return c.listWebhookSources.CallUnary(ctx, req)
+}
+
 // AdminHandler is an implementation of the reflow.admin.v1.Admin service.
 type AdminHandler interface {
 	// AddNode registers a new peer with shard 0 and enqueues a rebalance
@@ -352,6 +405,14 @@ type AdminHandler interface {
 	// serve. Operators use the returned revision as if_table_revision_eq
 	// on subsequent Upsert/Delete calls.
 	ListEventSources(context.Context, *connect.Request[adminv1.ListEventSourcesRequest]) (*connect.Response[adminv1.ListEventSourcesResponse], error)
+	// UpsertWebhookSource / DeleteWebhookSource / ListWebhookSources mirror
+	// the event-source trio against shard 0's WebhookSourceTable. The
+	// record's SecretRef is validated for shape (exactly one of
+	// env_var_name / file_path); the plaintext secret never traverses
+	// Raft. Leader-only for mutating calls; List is SyncRead from any peer.
+	UpsertWebhookSource(context.Context, *connect.Request[adminv1.UpsertWebhookSourceRequest]) (*connect.Response[adminv1.UpsertWebhookSourceResponse], error)
+	DeleteWebhookSource(context.Context, *connect.Request[adminv1.DeleteWebhookSourceRequest]) (*connect.Response[adminv1.DeleteWebhookSourceResponse], error)
+	ListWebhookSources(context.Context, *connect.Request[adminv1.ListWebhookSourcesRequest]) (*connect.Response[adminv1.ListWebhookSourcesResponse], error)
 }
 
 // NewAdminHandler builds an HTTP handler from the service implementation. It returns the path on
@@ -433,6 +494,24 @@ func NewAdminHandler(svc AdminHandler, opts ...connect.HandlerOption) (string, h
 		connect.WithSchema(adminMethods.ByName("ListEventSources")),
 		connect.WithHandlerOptions(opts...),
 	)
+	adminUpsertWebhookSourceHandler := connect.NewUnaryHandler(
+		AdminUpsertWebhookSourceProcedure,
+		svc.UpsertWebhookSource,
+		connect.WithSchema(adminMethods.ByName("UpsertWebhookSource")),
+		connect.WithHandlerOptions(opts...),
+	)
+	adminDeleteWebhookSourceHandler := connect.NewUnaryHandler(
+		AdminDeleteWebhookSourceProcedure,
+		svc.DeleteWebhookSource,
+		connect.WithSchema(adminMethods.ByName("DeleteWebhookSource")),
+		connect.WithHandlerOptions(opts...),
+	)
+	adminListWebhookSourcesHandler := connect.NewUnaryHandler(
+		AdminListWebhookSourcesProcedure,
+		svc.ListWebhookSources,
+		connect.WithSchema(adminMethods.ByName("ListWebhookSources")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/reflow.admin.v1.Admin/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AdminAddNodeProcedure:
@@ -459,6 +538,12 @@ func NewAdminHandler(svc AdminHandler, opts ...connect.HandlerOption) (string, h
 			adminDeleteEventSourceHandler.ServeHTTP(w, r)
 		case AdminListEventSourcesProcedure:
 			adminListEventSourcesHandler.ServeHTTP(w, r)
+		case AdminUpsertWebhookSourceProcedure:
+			adminUpsertWebhookSourceHandler.ServeHTTP(w, r)
+		case AdminDeleteWebhookSourceProcedure:
+			adminDeleteWebhookSourceHandler.ServeHTTP(w, r)
+		case AdminListWebhookSourcesProcedure:
+			adminListWebhookSourcesHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -514,4 +599,16 @@ func (UnimplementedAdminHandler) DeleteEventSource(context.Context, *connect.Req
 
 func (UnimplementedAdminHandler) ListEventSources(context.Context, *connect.Request[adminv1.ListEventSourcesRequest]) (*connect.Response[adminv1.ListEventSourcesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.admin.v1.Admin.ListEventSources is not implemented"))
+}
+
+func (UnimplementedAdminHandler) UpsertWebhookSource(context.Context, *connect.Request[adminv1.UpsertWebhookSourceRequest]) (*connect.Response[adminv1.UpsertWebhookSourceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.admin.v1.Admin.UpsertWebhookSource is not implemented"))
+}
+
+func (UnimplementedAdminHandler) DeleteWebhookSource(context.Context, *connect.Request[adminv1.DeleteWebhookSourceRequest]) (*connect.Response[adminv1.DeleteWebhookSourceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.admin.v1.Admin.DeleteWebhookSource is not implemented"))
+}
+
+func (UnimplementedAdminHandler) ListWebhookSources(context.Context, *connect.Request[adminv1.ListWebhookSourcesRequest]) (*connect.Response[adminv1.ListWebhookSourcesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.admin.v1.Admin.ListWebhookSources is not implemented"))
 }

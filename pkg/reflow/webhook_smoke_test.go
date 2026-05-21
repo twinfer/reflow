@@ -34,6 +34,7 @@ func TestRun_WebhookSigVerifyAndDispatch(t *testing.T) {
 	raftAddr := freeAddr(t)
 	ingressAddr := freeAddr(t)
 	secret := "ghs_smoke_test_secret"
+	t.Setenv("REFLOW_TEST_GITHUB_SECRET", secret)
 
 	cfg := reflow.Config{
 		Node: reflow.NodeConfig{ID: 1, RaftAddr: raftAddr},
@@ -44,9 +45,10 @@ func TestRun_WebhookSigVerifyAndDispatch(t *testing.T) {
 		Metrics: reflow.MetricsConfig{Disabled: true},
 		Webhooks: reflow.WebhooksConfig{
 			Sources: []reflow.WebhookSource{{
-				Path:     "/webhooks/github",
-				Verifier: "github",
-				Secret:   secret,
+				Name:      "github-smoke",
+				Path:      "/webhooks/github",
+				Verifier:  "github",
+				SecretEnv: "REFLOW_TEST_GITHUB_SECRET",
 				Invocation: reflow.WebhookInvocation{
 					Service:  "github-events",
 					Handler:  "receive",
@@ -75,6 +77,30 @@ func TestRun_WebhookSigVerifyAndDispatch(t *testing.T) {
 	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
 
 	url := "http://" + ingressAddr + "/webhooks/github"
+
+	// Cluster-managed config: the seed loop proposes the source, the
+	// reconciler picks it up on the next notifier wake. Both run in
+	// background goroutines after Run returns. Poll until the route
+	// is live (not 404) before dispatching the subtests.
+	probeDeadline := time.Now().Add(8 * time.Second)
+	for {
+		probeReq, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+		probeReq.Header.Set("X-Hub-Signature-256", sig)
+		probeReq.Header.Set("X-GitHub-Event", "ping")
+		probeReq.Header.Set("X-GitHub-Delivery", "probe")
+		resp, err := http.DefaultClient.Do(probeReq)
+		if err == nil && resp.StatusCode != http.StatusNotFound {
+			_ = resp.Body.Close()
+			break
+		}
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		if time.Now().After(probeDeadline) {
+			t.Fatal("webhook route never became live (seed loop or reconciler stuck)")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	t.Run("valid-signature-dispatches", func(t *testing.T) {
 		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
@@ -147,9 +173,9 @@ func TestRun_WebhookConfigValidatedBeforeListen(t *testing.T) {
 		Metrics: reflow.MetricsConfig{Disabled: true},
 		Webhooks: reflow.WebhooksConfig{
 			Sources: []reflow.WebhookSource{{
-				Path:     "/webhooks/typo",
-				Verifier: "stripee", // typo
-				Secret:   "x",
+				Path:      "/webhooks/typo",
+				Verifier:  "stripee", // typo
+				SecretEnv: "REFLOW_TEST_FAKE_SECRET",
 				Invocation: reflow.WebhookInvocation{
 					Service: "s", Handler: "h",
 				},

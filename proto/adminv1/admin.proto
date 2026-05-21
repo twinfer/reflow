@@ -81,6 +81,14 @@ service Admin {
   // serve. Operators use the returned revision as if_table_revision_eq
   // on subsequent Upsert/Delete calls.
   rpc ListEventSources(ListEventSourcesRequest) returns (ListEventSourcesResponse);
+  // UpsertWebhookSource / DeleteWebhookSource / ListWebhookSources mirror
+  // the event-source trio against shard 0's WebhookSourceTable. The
+  // record's SecretRef is validated for shape (exactly one of
+  // env_var_name / file_path); the plaintext secret never traverses
+  // Raft. Leader-only for mutating calls; List is SyncRead from any peer.
+  rpc UpsertWebhookSource(UpsertWebhookSourceRequest) returns (UpsertWebhookSourceResponse);
+  rpc DeleteWebhookSource(DeleteWebhookSourceRequest) returns (DeleteWebhookSourceResponse);
+  rpc ListWebhookSources(ListWebhookSourcesRequest) returns (ListWebhookSourcesResponse);
 }
 
 message AddNodeRequest {
@@ -177,6 +185,30 @@ message DeleteEventSourceResponse {
 message ListEventSourcesRequest {}
 message ListEventSourcesResponse {
   repeated reflow.engine.v1.EventSourceRecord sources = 1;
+  uint64 table_revision = 2;
+}
+
+// UpsertWebhookSourceRequest carries one WebhookSourceRecord plus an
+// optional CAS guard. if_table_revision_eq=0 disables CAS.
+message UpsertWebhookSourceRequest {
+  reflow.engine.v1.WebhookSourceRecord record = 1;
+  uint64 if_table_revision_eq = 2;
+}
+message UpsertWebhookSourceResponse {
+  uint64 table_revision = 1;
+}
+
+message DeleteWebhookSourceRequest {
+  string name = 1;
+  uint64 if_table_revision_eq = 2;
+}
+message DeleteWebhookSourceResponse {
+  uint64 table_revision = 1;
+}
+
+message ListWebhookSourcesRequest {}
+message ListWebhookSourcesResponse {
+  repeated reflow.engine.v1.WebhookSourceRecord sources = 1;
   uint64 table_revision = 2;
 }
 

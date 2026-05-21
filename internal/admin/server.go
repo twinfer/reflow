@@ -35,6 +35,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	"github.com/twinfer/reflow/internal/ingress/eventsource"
+	"github.com/twinfer/reflow/pkg/webhook"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	"github.com/twinfer/reflow/proto/adminv1/adminv1connect"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
@@ -725,6 +726,214 @@ func validateEventSourceRecord(rec *enginev1.EventSourceRecord) error {
 	}
 	if rec.GetHandler() == "" {
 		return errors.New("handler is required")
+	}
+	return nil
+}
+
+// UpsertWebhookSource validates the record (incl. path uniqueness
+// across other rows), then proposes Command_UpsertWebhookSource with
+// the operator-supplied CAS guard. Returns the post-apply revision.
+func (s *Server) UpsertWebhookSource(ctx context.Context, req *connect.Request[adminv1.UpsertWebhookSourceRequest]) (*connect.Response[adminv1.UpsertWebhookSourceResponse], error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
+	rec := req.Msg.GetRecord()
+	if rec == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("admin: record required"))
+	}
+	if err := validateWebhookSourceRecord(rec); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	if err := s.checkWebhookPathUnique(callCtx, rec); err != nil {
+		return nil, err
+	}
+	cmd := &enginev1.Command{
+		Kind: &enginev1.Command_UpsertWebhookSource{
+			UpsertWebhookSource: &enginev1.UpsertWebhookSource{Record: rec},
+		},
+	}
+	if err := s.proposeCAS(callCtx, cmd, req.Msg.GetIfTableRevisionEq()); err != nil {
+		return nil, err
+	}
+	newRev, err := s.readWebhookSourceRevision(callCtx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("admin: read post-apply revision: %w", err))
+	}
+	return connect.NewResponse(&adminv1.UpsertWebhookSourceResponse{TableRevision: newRev}), nil
+}
+
+// DeleteWebhookSource removes the named row. CAS via if_table_revision_eq.
+func (s *Server) DeleteWebhookSource(ctx context.Context, req *connect.Request[adminv1.DeleteWebhookSourceRequest]) (*connect.Response[adminv1.DeleteWebhookSourceResponse], error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
+	name := req.Msg.GetName()
+	if name == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("admin: name required"))
+	}
+	cmd := &enginev1.Command{
+		Kind: &enginev1.Command_DeleteWebhookSource{
+			DeleteWebhookSource: &enginev1.DeleteWebhookSource{Name: name},
+		},
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	if err := s.proposeCAS(callCtx, cmd, req.Msg.GetIfTableRevisionEq()); err != nil {
+		return nil, err
+	}
+	newRev, err := s.readWebhookSourceRevision(callCtx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("admin: read post-apply revision: %w", err))
+	}
+	return connect.NewResponse(&adminv1.DeleteWebhookSourceResponse{TableRevision: newRev}), nil
+}
+
+// ListWebhookSources returns every WebhookSourceRecord plus the
+// table's current CAS revision. No leader gate.
+func (s *Server) ListWebhookSources(ctx context.Context, _ *connect.Request[adminv1.ListWebhookSourcesRequest]) (*connect.Response[adminv1.ListWebhookSourcesResponse], error) {
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	list, err := s.host.WebhookSources(callCtx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable,
+			fmt.Errorf("admin: read webhook sources: %w", err))
+	}
+	return connect.NewResponse(&adminv1.ListWebhookSourcesResponse{
+		Sources:       list.Sources,
+		TableRevision: list.TableRevision,
+	}), nil
+}
+
+// readWebhookSourceRevision is a SyncRead helper used by Upsert/Delete.
+func (s *Server) readWebhookSourceRevision(ctx context.Context) (uint64, error) {
+	list, err := s.host.WebhookSources(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return list.TableRevision, nil
+}
+
+// AutoSeedWebhookSource is the in-process bootstrap entrypoint for
+// pkg/reflow/run.go's seed loop. Same body as UpsertWebhookSource
+// minus the leader gate, pinned to if_table_revision_eq=0.
+func (s *Server) AutoSeedWebhookSource(ctx context.Context, rec *enginev1.WebhookSourceRecord) error {
+	if rec == nil {
+		return errors.New("admin: record required")
+	}
+	if err := validateWebhookSourceRecord(rec); err != nil {
+		return err
+	}
+	cmd := &enginev1.Command{
+		Kind: &enginev1.Command_UpsertWebhookSource{
+			UpsertWebhookSource: &enginev1.UpsertWebhookSource{Record: rec},
+		},
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	return s.proposeCAS(callCtx, cmd, 0)
+}
+
+// validateWebhookSourceRecord enforces shape rules; path uniqueness is
+// checked separately via checkWebhookPathUnique because it needs a
+// fresh SyncRead and is therefore expensive to inline.
+func validateWebhookSourceRecord(rec *enginev1.WebhookSourceRecord) error {
+	if rec.GetName() == "" {
+		return errors.New("name is required")
+	}
+	path := rec.GetPath()
+	if path == "" {
+		return errors.New("path is required")
+	}
+	if !strings.HasPrefix(path, "/") {
+		return fmt.Errorf("path must start with '/' (got %q)", path)
+	}
+	if rec.GetVerifier() == "" {
+		return errors.New("verifier is required")
+	}
+	if _, err := webhook.LookupVerifier(rec.GetVerifier()); err != nil {
+		return fmt.Errorf("unknown verifier %q (registered: %v)",
+			rec.GetVerifier(), webhook.RegisteredNames())
+	}
+	if rec.GetService() == "" {
+		return errors.New("service is required")
+	}
+	if rec.GetHandler() == "" {
+		return errors.New("handler is required")
+	}
+	ref := rec.GetSecretRef()
+	if ref == nil || ref.GetSource() == nil {
+		return errors.New("secret_ref is required (env_var_name, file_path, or remote_encrypted)")
+	}
+	switch src := ref.GetSource().(type) {
+	case *enginev1.SecretRef_EnvVarName:
+		if src.EnvVarName == "" {
+			return errors.New("secret_ref.env_var_name must be non-empty")
+		}
+	case *enginev1.SecretRef_FilePath:
+		if src.FilePath == "" {
+			return errors.New("secret_ref.file_path must be non-empty")
+		}
+		if !filepath.IsAbs(src.FilePath) {
+			return fmt.Errorf("secret_ref.file_path must be absolute (got %q)", src.FilePath)
+		}
+	case *enginev1.SecretRef_RemoteEncrypted:
+		re := src.RemoteEncrypted
+		if re.GetBlobUri() == "" {
+			return errors.New("secret_ref.remote_encrypted.blob_uri must be non-empty")
+		}
+		if !hasKnownBlobScheme(re.GetBlobUri()) {
+			return fmt.Errorf("secret_ref.remote_encrypted.blob_uri %q has unknown scheme (want s3://, gs://, azblob://, file://, or mem://)", re.GetBlobUri())
+		}
+		if re.GetKekUri() == "" {
+			return errors.New("secret_ref.remote_encrypted.kek_uri must be non-empty")
+		}
+		// No decrypt attempt here — coupling admin RPC availability to
+		// KMS+blob reachability is the wrong trade-off. Reconciler
+		// surfaces blob/KMS errors via reflow_webhook_kms_decrypt_*.
+	default:
+		return fmt.Errorf("secret_ref: unsupported source type %T", src)
+	}
+	return nil
+}
+
+// hasKnownBlobScheme returns true when uri starts with a gocloud.dev/blob
+// scheme that Reflow links by default. Operators registering additional
+// schemes from their main package can extend this list — keeping the
+// allowlist explicit avoids accidental acceptance of garbage URIs.
+func hasKnownBlobScheme(uri string) bool {
+	for _, p := range []string{"s3://", "gs://", "azblob://", "file://", "mem://"} {
+		if strings.HasPrefix(uri, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkWebhookPathUnique returns a CodeAlreadyExists error when some
+// other named row claims the same path. The check is best-effort: a
+// concurrent operator-Apply against the same revision can race, but the
+// CAS guard closes the window from each operator's perspective and the
+// per-node Reconciler's sort-by-name + drop-on-collision keeps local
+// state identical across nodes even if a duplicate slipped through.
+func (s *Server) checkWebhookPathUnique(ctx context.Context, rec *enginev1.WebhookSourceRecord) error {
+	list, err := s.host.WebhookSources(ctx)
+	if err != nil {
+		return connect.NewError(connect.CodeUnavailable,
+			fmt.Errorf("admin: read webhook sources: %w", err))
+	}
+	for _, existing := range list.Sources {
+		if existing.GetName() == rec.GetName() {
+			continue
+		}
+		if existing.GetPath() == rec.GetPath() {
+			return connect.NewError(connect.CodeAlreadyExists,
+				fmt.Errorf("path %q already in use by webhook %q",
+					rec.GetPath(), existing.GetName()))
+		}
 	}
 	return nil
 }

@@ -81,8 +81,8 @@ func TestManager_DispatchesVerifiedGitHubWebhook(t *testing.T) {
 	if len(routes) != 1 {
 		t.Fatalf("len(routes)=%d; want 1", len(routes))
 	}
-	if routes[0].Path != "/webhooks/github" {
-		t.Errorf("path=%q", routes[0].Path)
+	if routes[0].Path != "/webhooks/" {
+		t.Errorf("path=%q; want /webhooks/ (subtree catch-all)", routes[0].Path)
 	}
 
 	body := []byte(`{"action":"opened","number":7}`)
@@ -229,8 +229,17 @@ func TestManager_EmptySourcesReturnsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager(nil): %v", err)
 	}
-	if r := m.Routes(); r != nil {
-		t.Errorf("Routes()=%v; want nil for empty manager", r)
+	// Empty-snapshot Manager still mounts the catch-all so operators
+	// can wire ExtraRoutes unconditionally. Every request 404s.
+	routes := m.Routes()
+	if len(routes) != 1 || routes[0].Path != "/webhooks/" {
+		t.Fatalf("routes=%v; want one /webhooks/ entry", routes)
+	}
+	r := httptest.NewRequest("POST", "/webhooks/anything", nil)
+	w := httptest.NewRecorder()
+	routes[0].Handler.ServeHTTP(w, r)
+	if w.Result().StatusCode != http.StatusNotFound {
+		t.Errorf("status=%d; want 404 on empty snapshot", w.Result().StatusCode)
 	}
 	if err := m.Close(); err != nil {
 		t.Errorf("Close: %v", err)

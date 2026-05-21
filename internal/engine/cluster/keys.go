@@ -16,6 +16,7 @@
 //	deployment/<deployment_id ascii> -> DeploymentRecord
 //	deployment_idx/<service>\x00<handler> -> deployment_id (ascii)
 //	eventsrc/<name>                 -> EventSourceRecord
+//	webhooksrc/<name>               -> WebhookSourceRecord
 //	tablerev/<table_name>           -> TableRevision singleton (CAS guard
 //	                                   for cluster-managed config tables;
 //	                                   separate top-level namespace so it
@@ -37,6 +38,7 @@ const (
 	deploymentPrefix      = "deployment/"
 	deploymentIndexPrefix = "deployment_idx/"
 	eventSourcePrefix     = "eventsrc/"
+	webhookSourcePrefix   = "webhooksrc/"
 	tableRevisionPrefix   = "tablerev/"
 )
 
@@ -44,7 +46,8 @@ const (
 // argument to RevisionKey; persisted on disk, so renaming is an
 // upgrade-incompat change.
 const (
-	RevisionTableEventSource = "eventsrc"
+	RevisionTableEventSource   = "eventsrc"
+	RevisionTableWebhookSource = "webhooksrc"
 )
 
 // MetaKey returns the singleton key for the metadata shard's PartitionMeta.
@@ -98,6 +101,18 @@ func EventSourcePrefix() []byte { return []byte(eventSourcePrefix) }
 func EventSourceKey(name string) []byte {
 	out := make([]byte, 0, len(eventSourcePrefix)+len(name))
 	out = append(out, eventSourcePrefix...)
+	return append(out, name...)
+}
+
+// WebhookSourcePrefix returns the webhooksrc/ namespace prefix.
+func WebhookSourcePrefix() []byte { return []byte(webhookSourcePrefix) }
+
+// WebhookSourceKey returns webhooksrc/<name>. Name uniqueness (and
+// path uniqueness across rows) is enforced by the admin RPC validator;
+// the apply arm trusts it.
+func WebhookSourceKey(name string) []byte {
+	out := make([]byte, 0, len(webhookSourcePrefix)+len(name))
+	out = append(out, webhookSourcePrefix...)
 	return append(out, name...)
 }
 

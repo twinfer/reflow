@@ -555,6 +555,24 @@ func (h *Host) EventSources(ctx context.Context) (*cluster.EventSourceList, erro
 	return out, nil
 }
 
+// WebhookSources SyncReads every WebhookSourceRecord from shard 0 plus
+// the table's CAS revision. Symmetric to EventSources; used by the
+// admin RPCs and the per-node webhook Reconciler.
+func (h *Host) WebhookSources(ctx context.Context) (*cluster.WebhookSourceList, error) {
+	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupWebhookSources{})
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return &cluster.WebhookSourceList{}, nil
+	}
+	out, ok := res.(*cluster.WebhookSourceList)
+	if !ok {
+		return nil, fmt.Errorf("host: WebhookSources: unexpected lookup type %T", res)
+	}
+	return out, nil
+}
+
 // AwaitMetadataLeader blocks until shard 0 has a stable leader.
 func (h *Host) AwaitMetadataLeader(ctx context.Context) error {
 	tick := time.NewTicker(20 * time.Millisecond)

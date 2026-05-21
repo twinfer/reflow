@@ -108,7 +108,7 @@ func dispatchPKI(args []string) error {
 // handler.
 func dispatchCluster(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: reflowd cluster {add-node|remove-node|nodes|partitions|snapshot|register-deployment|eventsources|apply|export} [flags]")
+		return fmt.Errorf("usage: reflowd cluster {add-node|remove-node|nodes|partitions|snapshot|register-deployment|eventsources|webhooks|apply|export|get} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -127,10 +127,14 @@ func dispatchCluster(ctx context.Context, args []string) error {
 		return cmdRegisterDeployment(ctx, rest)
 	case "eventsources":
 		return cmdEventSources(ctx, rest)
+	case "webhooks":
+		return cmdWebhooks(ctx, rest)
 	case "apply":
 		return cmdApply(ctx, rest)
 	case "export":
 		return cmdExport(ctx, rest)
+	case "get":
+		return cmdGet(ctx, rest)
 	default:
 		return fmt.Errorf("reflowd cluster: unknown subcommand %q", sub)
 	}
@@ -157,6 +161,14 @@ Cluster (Connect RPC; mTLS-authenticated; --admin can be ANY node):
   cluster snapshot list         List archived snapshots.
   cluster snapshot delete       Remove an archived snapshot.
   cluster register-deployment   Register a handler deployment URL.
+  cluster eventsources list     List configured event sources.
+  cluster eventsources delete   Delete an event source by name.
+  cluster webhooks list         List configured webhook sources.
+  cluster webhooks delete       Delete a webhook source by name.
+  cluster apply -f <file>       Apply a multi-doc YAML file
+                                (kinds: EventSource, WebhookSource).
+  cluster export --kind=<k>     Dump a kind (or 'all') as multi-doc YAML.
+  cluster get <kind> <name>     Fetch one record as YAML.
 
 Run any subcommand with --help for its specific flags.
 `)

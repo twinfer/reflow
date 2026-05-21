@@ -14,7 +14,6 @@ import (
 
 	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/ingress/eventsource"
-	internalwebhook "github.com/twinfer/reflow/internal/ingress/webhook"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 )
 
@@ -62,8 +61,15 @@ type WebhooksConfig struct {
 	Sources []WebhookSource `koanf:"sources"`
 }
 
-// WebhookSource is one configured webhook binding.
+// WebhookSource is one configured webhook binding. Cluster-managed
+// (the koanf shape here is the bootstrap-seed: file → proto record on
+// shard 0 → per-node Reconciler resolves secret at reconcile time).
 type WebhookSource struct {
+	// Name is the operator-facing key (mirrors metadata.name in the
+	// kubectl-style YAML). Empty falls back to Path so the legacy
+	// koanf shape keeps working — for new configs prefer Name.
+	Name string `koanf:"name"`
+
 	// Path is the absolute URL path the webhook is mounted at,
 	// e.g. "/webhooks/stripe". Operators choose freely; the path
 	// must be unique within Sources.
@@ -74,9 +80,33 @@ type WebhookSource struct {
 	// pkg/webhook.RegisterVerifier from operator main().
 	Verifier string `koanf:"verifier"`
 
-	// Secret is the shared secret passed to the verifier. Use the
-	// koanf env provider for ${env:STRIPE_WEBHOOK_SECRET}-style
-	// references — secret rotation requires restart in v1.
+	// SecretEnv is the name of an environment variable holding the
+	// shared secret. Resolved by every node at reconcile time via
+	// os.Getenv. Static within a process — rotation through env
+	// requires a restart.
+	SecretEnv string `koanf:"secret_env"`
+
+	// SecretFile is an absolute path to a file holding the shared
+	// secret. Read by every node at reconcile time (5s ticker +
+	// notifier wake), trailing newline trimmed. Supports
+	// hot-rotation by atomic file replacement.
+	SecretFile string `koanf:"secret_file"`
+
+	// SecretBlobURI is a gocloud.dev/blob URI to a ciphertext blob;
+	// SecretKEKURI is the Tink KMS URI (e.g. blobkms+file:///…,
+	// aws-kms://…, gcp-kms://…) used to decrypt it. Decryption uses
+	// AAD = webhook name. Operators rotate by overwriting the blob;
+	// the next reconcile picks up the new ciphertext fleet-wide.
+	// Mutually exclusive with SecretEnv / SecretFile.
+	SecretBlobURI string `koanf:"secret_blob_uri"`
+	SecretKEKURI  string `koanf:"secret_kek_uri"`
+
+	// Secret is the legacy inline-plaintext field. Rejected at
+	// startup since cluster persistence would write the plaintext
+	// into Raft snapshots; operators must migrate to SecretEnv,
+	// SecretFile, or SecretBlobURI+SecretKEKURI. Kept on the struct
+	// so a koanf-loaded literal raises a clean error rather than
+	// silently parsing.
 	Secret string `koanf:"secret"`
 
 	// Invocation declares which handler the verified payload is
@@ -100,28 +130,6 @@ type WebhookInvocation struct {
 	// Metadata is the static fact set merged onto verifier-stamped
 	// metadata. Typical use: tenant tags, environment labels.
 	Metadata map[string]string `koanf:"metadata"`
-}
-
-// buildWebhookSources translates the koanf-friendly public config
-// into the internal SourceConfig slice. Lives at the pkg→internal
-// boundary so internal/ingress/webhook stays free of koanf concerns.
-func buildWebhookSources(cfg WebhooksConfig) []internalwebhook.SourceConfig {
-	if len(cfg.Sources) == 0 {
-		return nil
-	}
-	out := make([]internalwebhook.SourceConfig, 0, len(cfg.Sources))
-	for _, s := range cfg.Sources {
-		out = append(out, internalwebhook.SourceConfig{
-			Path:      s.Path,
-			Verifier:  s.Verifier,
-			Secret:    []byte(s.Secret),
-			Service:   s.Invocation.Service,
-			Handler:   s.Invocation.Handler,
-			ObjectKey: s.Invocation.ObjectKey,
-			Metadata:  s.Invocation.Metadata,
-		})
-	}
-	return out
 }
 
 // HandlersConfig groups the handler-related knobs. Endpoints lists

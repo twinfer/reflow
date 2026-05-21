@@ -1148,6 +1148,288 @@ func (x *ListEventSourcesResponse) GetTableRevision() uint64 {
 	return 0
 }
 
+// UpsertWebhookSourceRequest carries one WebhookSourceRecord plus an
+// optional CAS guard. if_table_revision_eq=0 disables CAS.
+type UpsertWebhookSourceRequest struct {
+	state             protoimpl.MessageState        `protogen:"open.v1"`
+	Record            *enginev1.WebhookSourceRecord `protobuf:"bytes,1,opt,name=record,proto3" json:"record,omitempty"`
+	IfTableRevisionEq uint64                        `protobuf:"varint,2,opt,name=if_table_revision_eq,json=ifTableRevisionEq,proto3" json:"if_table_revision_eq,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *UpsertWebhookSourceRequest) Reset() {
+	*x = UpsertWebhookSourceRequest{}
+	mi := &file_adminv1_admin_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpsertWebhookSourceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpsertWebhookSourceRequest) ProtoMessage() {}
+
+func (x *UpsertWebhookSourceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpsertWebhookSourceRequest.ProtoReflect.Descriptor instead.
+func (*UpsertWebhookSourceRequest) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *UpsertWebhookSourceRequest) GetRecord() *enginev1.WebhookSourceRecord {
+	if x != nil {
+		return x.Record
+	}
+	return nil
+}
+
+func (x *UpsertWebhookSourceRequest) GetIfTableRevisionEq() uint64 {
+	if x != nil {
+		return x.IfTableRevisionEq
+	}
+	return 0
+}
+
+type UpsertWebhookSourceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TableRevision uint64                 `protobuf:"varint,1,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpsertWebhookSourceResponse) Reset() {
+	*x = UpsertWebhookSourceResponse{}
+	mi := &file_adminv1_admin_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpsertWebhookSourceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpsertWebhookSourceResponse) ProtoMessage() {}
+
+func (x *UpsertWebhookSourceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpsertWebhookSourceResponse.ProtoReflect.Descriptor instead.
+func (*UpsertWebhookSourceResponse) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *UpsertWebhookSourceResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
+type DeleteWebhookSourceRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Name              string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	IfTableRevisionEq uint64                 `protobuf:"varint,2,opt,name=if_table_revision_eq,json=ifTableRevisionEq,proto3" json:"if_table_revision_eq,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *DeleteWebhookSourceRequest) Reset() {
+	*x = DeleteWebhookSourceRequest{}
+	mi := &file_adminv1_admin_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteWebhookSourceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteWebhookSourceRequest) ProtoMessage() {}
+
+func (x *DeleteWebhookSourceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteWebhookSourceRequest.ProtoReflect.Descriptor instead.
+func (*DeleteWebhookSourceRequest) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *DeleteWebhookSourceRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *DeleteWebhookSourceRequest) GetIfTableRevisionEq() uint64 {
+	if x != nil {
+		return x.IfTableRevisionEq
+	}
+	return 0
+}
+
+type DeleteWebhookSourceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TableRevision uint64                 `protobuf:"varint,1,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteWebhookSourceResponse) Reset() {
+	*x = DeleteWebhookSourceResponse{}
+	mi := &file_adminv1_admin_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteWebhookSourceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteWebhookSourceResponse) ProtoMessage() {}
+
+func (x *DeleteWebhookSourceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteWebhookSourceResponse.ProtoReflect.Descriptor instead.
+func (*DeleteWebhookSourceResponse) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *DeleteWebhookSourceResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
+type ListWebhookSourcesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListWebhookSourcesRequest) Reset() {
+	*x = ListWebhookSourcesRequest{}
+	mi := &file_adminv1_admin_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListWebhookSourcesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListWebhookSourcesRequest) ProtoMessage() {}
+
+func (x *ListWebhookSourcesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListWebhookSourcesRequest.ProtoReflect.Descriptor instead.
+func (*ListWebhookSourcesRequest) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{27}
+}
+
+type ListWebhookSourcesResponse struct {
+	state         protoimpl.MessageState          `protogen:"open.v1"`
+	Sources       []*enginev1.WebhookSourceRecord `protobuf:"bytes,1,rep,name=sources,proto3" json:"sources,omitempty"`
+	TableRevision uint64                          `protobuf:"varint,2,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListWebhookSourcesResponse) Reset() {
+	*x = ListWebhookSourcesResponse{}
+	mi := &file_adminv1_admin_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListWebhookSourcesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListWebhookSourcesResponse) ProtoMessage() {}
+
+func (x *ListWebhookSourcesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_adminv1_admin_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListWebhookSourcesResponse.ProtoReflect.Descriptor instead.
+func (*ListWebhookSourcesResponse) Descriptor() ([]byte, []int) {
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *ListWebhookSourcesResponse) GetSources() []*enginev1.WebhookSourceRecord {
+	if x != nil {
+		return x.Sources
+	}
+	return nil
+}
+
+func (x *ListWebhookSourcesResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
 // LeaderHint is attached as a connect.Error detail on
 // connect.CodeUnavailable returned by mutating Admin RPCs when the
 // receiving node is not the metadata leader. Clients (joiner's SelfJoin
@@ -1163,7 +1445,7 @@ type LeaderHint struct {
 
 func (x *LeaderHint) Reset() {
 	*x = LeaderHint{}
-	mi := &file_adminv1_admin_proto_msgTypes[23]
+	mi := &file_adminv1_admin_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1175,7 +1457,7 @@ func (x *LeaderHint) String() string {
 func (*LeaderHint) ProtoMessage() {}
 
 func (x *LeaderHint) ProtoReflect() protoreflect.Message {
-	mi := &file_adminv1_admin_proto_msgTypes[23]
+	mi := &file_adminv1_admin_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1188,7 +1470,7 @@ func (x *LeaderHint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaderHint.ProtoReflect.Descriptor instead.
 func (*LeaderHint) Descriptor() ([]byte, []int) {
-	return file_adminv1_admin_proto_rawDescGZIP(), []int{23}
+	return file_adminv1_admin_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *LeaderHint) GetNodeId() uint64 {
@@ -1269,11 +1551,25 @@ const file_adminv1_admin_proto_rawDesc = "" +
 	"\x17ListEventSourcesRequest\"\x80\x01\n" +
 	"\x18ListEventSourcesResponse\x12=\n" +
 	"\asources\x18\x01 \x03(\v2#.reflow.engine.v1.EventSourceRecordR\asources\x12%\n" +
+	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"\x8c\x01\n" +
+	"\x1aUpsertWebhookSourceRequest\x12=\n" +
+	"\x06record\x18\x01 \x01(\v2%.reflow.engine.v1.WebhookSourceRecordR\x06record\x12/\n" +
+	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"D\n" +
+	"\x1bUpsertWebhookSourceResponse\x12%\n" +
+	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"a\n" +
+	"\x1aDeleteWebhookSourceRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12/\n" +
+	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"D\n" +
+	"\x1bDeleteWebhookSourceResponse\x12%\n" +
+	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"\x1b\n" +
+	"\x19ListWebhookSourcesRequest\"\x84\x01\n" +
+	"\x1aListWebhookSourcesResponse\x12?\n" +
+	"\asources\x18\x01 \x03(\v2%.reflow.engine.v1.WebhookSourceRecordR\asources\x12%\n" +
 	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"L\n" +
 	"\n" +
 	"LeaderHint\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12%\n" +
-	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\x88\t\n" +
+	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\xdb\v\n" +
 	"\x05Admin\x12L\n" +
 	"\aAddNode\x12\x1f.reflow.admin.v1.AddNodeRequest\x1a .reflow.admin.v1.AddNodeResponse\x12M\n" +
 	"\bSelfJoin\x12\x1f.reflow.admin.v1.AddNodeRequest\x1a .reflow.admin.v1.AddNodeResponse\x12U\n" +
@@ -1287,7 +1583,10 @@ const file_adminv1_admin_proto_rawDesc = "" +
 	"\x12RegisterDeployment\x12*.reflow.admin.v1.RegisterDeploymentRequest\x1a+.reflow.admin.v1.RegisterDeploymentResponse\x12j\n" +
 	"\x11UpsertEventSource\x12).reflow.admin.v1.UpsertEventSourceRequest\x1a*.reflow.admin.v1.UpsertEventSourceResponse\x12j\n" +
 	"\x11DeleteEventSource\x12).reflow.admin.v1.DeleteEventSourceRequest\x1a*.reflow.admin.v1.DeleteEventSourceResponse\x12g\n" +
-	"\x10ListEventSources\x12(.reflow.admin.v1.ListEventSourcesRequest\x1a).reflow.admin.v1.ListEventSourcesResponseB1Z/github.com/twinfer/reflow/proto/adminv1;adminv1b\x06proto3"
+	"\x10ListEventSources\x12(.reflow.admin.v1.ListEventSourcesRequest\x1a).reflow.admin.v1.ListEventSourcesResponse\x12p\n" +
+	"\x13UpsertWebhookSource\x12+.reflow.admin.v1.UpsertWebhookSourceRequest\x1a,.reflow.admin.v1.UpsertWebhookSourceResponse\x12p\n" +
+	"\x13DeleteWebhookSource\x12+.reflow.admin.v1.DeleteWebhookSourceRequest\x1a,.reflow.admin.v1.DeleteWebhookSourceResponse\x12m\n" +
+	"\x12ListWebhookSources\x12*.reflow.admin.v1.ListWebhookSourcesRequest\x1a+.reflow.admin.v1.ListWebhookSourcesResponseB1Z/github.com/twinfer/reflow/proto/adminv1;adminv1b\x06proto3"
 
 var (
 	file_adminv1_admin_proto_rawDescOnce sync.Once
@@ -1301,71 +1600,86 @@ func file_adminv1_admin_proto_rawDescGZIP() []byte {
 	return file_adminv1_admin_proto_rawDescData
 }
 
-var file_adminv1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
+var file_adminv1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
 var file_adminv1_admin_proto_goTypes = []any{
-	(*AddNodeRequest)(nil),             // 0: reflow.admin.v1.AddNodeRequest
-	(*AddNodeResponse)(nil),            // 1: reflow.admin.v1.AddNodeResponse
-	(*RemoveNodeRequest)(nil),          // 2: reflow.admin.v1.RemoveNodeRequest
-	(*RemoveNodeResponse)(nil),         // 3: reflow.admin.v1.RemoveNodeResponse
-	(*ListNodesRequest)(nil),           // 4: reflow.admin.v1.ListNodesRequest
-	(*ListNodesResponse)(nil),          // 5: reflow.admin.v1.ListNodesResponse
-	(*ListPartitionsRequest)(nil),      // 6: reflow.admin.v1.ListPartitionsRequest
-	(*ListPartitionsResponse)(nil),     // 7: reflow.admin.v1.ListPartitionsResponse
-	(*CreateSnapshotRequest)(nil),      // 8: reflow.admin.v1.CreateSnapshotRequest
-	(*CreateSnapshotResponse)(nil),     // 9: reflow.admin.v1.CreateSnapshotResponse
-	(*ListSnapshotsRequest)(nil),       // 10: reflow.admin.v1.ListSnapshotsRequest
-	(*SnapshotRef)(nil),                // 11: reflow.admin.v1.SnapshotRef
-	(*ListSnapshotsResponse)(nil),      // 12: reflow.admin.v1.ListSnapshotsResponse
-	(*DeleteSnapshotRequest)(nil),      // 13: reflow.admin.v1.DeleteSnapshotRequest
-	(*DeleteSnapshotResponse)(nil),     // 14: reflow.admin.v1.DeleteSnapshotResponse
-	(*RegisterDeploymentRequest)(nil),  // 15: reflow.admin.v1.RegisterDeploymentRequest
-	(*RegisterDeploymentResponse)(nil), // 16: reflow.admin.v1.RegisterDeploymentResponse
-	(*UpsertEventSourceRequest)(nil),   // 17: reflow.admin.v1.UpsertEventSourceRequest
-	(*UpsertEventSourceResponse)(nil),  // 18: reflow.admin.v1.UpsertEventSourceResponse
-	(*DeleteEventSourceRequest)(nil),   // 19: reflow.admin.v1.DeleteEventSourceRequest
-	(*DeleteEventSourceResponse)(nil),  // 20: reflow.admin.v1.DeleteEventSourceResponse
-	(*ListEventSourcesRequest)(nil),    // 21: reflow.admin.v1.ListEventSourcesRequest
-	(*ListEventSourcesResponse)(nil),   // 22: reflow.admin.v1.ListEventSourcesResponse
-	(*LeaderHint)(nil),                 // 23: reflow.admin.v1.LeaderHint
-	(*enginev1.NodeMembership)(nil),    // 24: reflow.engine.v1.NodeMembership
-	(*enginev1.PartitionTable)(nil),    // 25: reflow.engine.v1.PartitionTable
-	(*enginev1.EventSourceRecord)(nil), // 26: reflow.engine.v1.EventSourceRecord
+	(*AddNodeRequest)(nil),               // 0: reflow.admin.v1.AddNodeRequest
+	(*AddNodeResponse)(nil),              // 1: reflow.admin.v1.AddNodeResponse
+	(*RemoveNodeRequest)(nil),            // 2: reflow.admin.v1.RemoveNodeRequest
+	(*RemoveNodeResponse)(nil),           // 3: reflow.admin.v1.RemoveNodeResponse
+	(*ListNodesRequest)(nil),             // 4: reflow.admin.v1.ListNodesRequest
+	(*ListNodesResponse)(nil),            // 5: reflow.admin.v1.ListNodesResponse
+	(*ListPartitionsRequest)(nil),        // 6: reflow.admin.v1.ListPartitionsRequest
+	(*ListPartitionsResponse)(nil),       // 7: reflow.admin.v1.ListPartitionsResponse
+	(*CreateSnapshotRequest)(nil),        // 8: reflow.admin.v1.CreateSnapshotRequest
+	(*CreateSnapshotResponse)(nil),       // 9: reflow.admin.v1.CreateSnapshotResponse
+	(*ListSnapshotsRequest)(nil),         // 10: reflow.admin.v1.ListSnapshotsRequest
+	(*SnapshotRef)(nil),                  // 11: reflow.admin.v1.SnapshotRef
+	(*ListSnapshotsResponse)(nil),        // 12: reflow.admin.v1.ListSnapshotsResponse
+	(*DeleteSnapshotRequest)(nil),        // 13: reflow.admin.v1.DeleteSnapshotRequest
+	(*DeleteSnapshotResponse)(nil),       // 14: reflow.admin.v1.DeleteSnapshotResponse
+	(*RegisterDeploymentRequest)(nil),    // 15: reflow.admin.v1.RegisterDeploymentRequest
+	(*RegisterDeploymentResponse)(nil),   // 16: reflow.admin.v1.RegisterDeploymentResponse
+	(*UpsertEventSourceRequest)(nil),     // 17: reflow.admin.v1.UpsertEventSourceRequest
+	(*UpsertEventSourceResponse)(nil),    // 18: reflow.admin.v1.UpsertEventSourceResponse
+	(*DeleteEventSourceRequest)(nil),     // 19: reflow.admin.v1.DeleteEventSourceRequest
+	(*DeleteEventSourceResponse)(nil),    // 20: reflow.admin.v1.DeleteEventSourceResponse
+	(*ListEventSourcesRequest)(nil),      // 21: reflow.admin.v1.ListEventSourcesRequest
+	(*ListEventSourcesResponse)(nil),     // 22: reflow.admin.v1.ListEventSourcesResponse
+	(*UpsertWebhookSourceRequest)(nil),   // 23: reflow.admin.v1.UpsertWebhookSourceRequest
+	(*UpsertWebhookSourceResponse)(nil),  // 24: reflow.admin.v1.UpsertWebhookSourceResponse
+	(*DeleteWebhookSourceRequest)(nil),   // 25: reflow.admin.v1.DeleteWebhookSourceRequest
+	(*DeleteWebhookSourceResponse)(nil),  // 26: reflow.admin.v1.DeleteWebhookSourceResponse
+	(*ListWebhookSourcesRequest)(nil),    // 27: reflow.admin.v1.ListWebhookSourcesRequest
+	(*ListWebhookSourcesResponse)(nil),   // 28: reflow.admin.v1.ListWebhookSourcesResponse
+	(*LeaderHint)(nil),                   // 29: reflow.admin.v1.LeaderHint
+	(*enginev1.NodeMembership)(nil),      // 30: reflow.engine.v1.NodeMembership
+	(*enginev1.PartitionTable)(nil),      // 31: reflow.engine.v1.PartitionTable
+	(*enginev1.EventSourceRecord)(nil),   // 32: reflow.engine.v1.EventSourceRecord
+	(*enginev1.WebhookSourceRecord)(nil), // 33: reflow.engine.v1.WebhookSourceRecord
 }
 var file_adminv1_admin_proto_depIdxs = []int32{
-	24, // 0: reflow.admin.v1.ListNodesResponse.nodes:type_name -> reflow.engine.v1.NodeMembership
-	25, // 1: reflow.admin.v1.ListPartitionsResponse.table:type_name -> reflow.engine.v1.PartitionTable
+	30, // 0: reflow.admin.v1.ListNodesResponse.nodes:type_name -> reflow.engine.v1.NodeMembership
+	31, // 1: reflow.admin.v1.ListPartitionsResponse.table:type_name -> reflow.engine.v1.PartitionTable
 	11, // 2: reflow.admin.v1.ListSnapshotsResponse.snapshots:type_name -> reflow.admin.v1.SnapshotRef
-	26, // 3: reflow.admin.v1.UpsertEventSourceRequest.record:type_name -> reflow.engine.v1.EventSourceRecord
-	26, // 4: reflow.admin.v1.ListEventSourcesResponse.sources:type_name -> reflow.engine.v1.EventSourceRecord
-	0,  // 5: reflow.admin.v1.Admin.AddNode:input_type -> reflow.admin.v1.AddNodeRequest
-	0,  // 6: reflow.admin.v1.Admin.SelfJoin:input_type -> reflow.admin.v1.AddNodeRequest
-	2,  // 7: reflow.admin.v1.Admin.RemoveNode:input_type -> reflow.admin.v1.RemoveNodeRequest
-	4,  // 8: reflow.admin.v1.Admin.ListNodes:input_type -> reflow.admin.v1.ListNodesRequest
-	6,  // 9: reflow.admin.v1.Admin.ListPartitions:input_type -> reflow.admin.v1.ListPartitionsRequest
-	8,  // 10: reflow.admin.v1.Admin.CreateSnapshot:input_type -> reflow.admin.v1.CreateSnapshotRequest
-	10, // 11: reflow.admin.v1.Admin.ListSnapshots:input_type -> reflow.admin.v1.ListSnapshotsRequest
-	13, // 12: reflow.admin.v1.Admin.DeleteSnapshot:input_type -> reflow.admin.v1.DeleteSnapshotRequest
-	15, // 13: reflow.admin.v1.Admin.RegisterDeployment:input_type -> reflow.admin.v1.RegisterDeploymentRequest
-	17, // 14: reflow.admin.v1.Admin.UpsertEventSource:input_type -> reflow.admin.v1.UpsertEventSourceRequest
-	19, // 15: reflow.admin.v1.Admin.DeleteEventSource:input_type -> reflow.admin.v1.DeleteEventSourceRequest
-	21, // 16: reflow.admin.v1.Admin.ListEventSources:input_type -> reflow.admin.v1.ListEventSourcesRequest
-	1,  // 17: reflow.admin.v1.Admin.AddNode:output_type -> reflow.admin.v1.AddNodeResponse
-	1,  // 18: reflow.admin.v1.Admin.SelfJoin:output_type -> reflow.admin.v1.AddNodeResponse
-	3,  // 19: reflow.admin.v1.Admin.RemoveNode:output_type -> reflow.admin.v1.RemoveNodeResponse
-	5,  // 20: reflow.admin.v1.Admin.ListNodes:output_type -> reflow.admin.v1.ListNodesResponse
-	7,  // 21: reflow.admin.v1.Admin.ListPartitions:output_type -> reflow.admin.v1.ListPartitionsResponse
-	9,  // 22: reflow.admin.v1.Admin.CreateSnapshot:output_type -> reflow.admin.v1.CreateSnapshotResponse
-	12, // 23: reflow.admin.v1.Admin.ListSnapshots:output_type -> reflow.admin.v1.ListSnapshotsResponse
-	14, // 24: reflow.admin.v1.Admin.DeleteSnapshot:output_type -> reflow.admin.v1.DeleteSnapshotResponse
-	16, // 25: reflow.admin.v1.Admin.RegisterDeployment:output_type -> reflow.admin.v1.RegisterDeploymentResponse
-	18, // 26: reflow.admin.v1.Admin.UpsertEventSource:output_type -> reflow.admin.v1.UpsertEventSourceResponse
-	20, // 27: reflow.admin.v1.Admin.DeleteEventSource:output_type -> reflow.admin.v1.DeleteEventSourceResponse
-	22, // 28: reflow.admin.v1.Admin.ListEventSources:output_type -> reflow.admin.v1.ListEventSourcesResponse
-	17, // [17:29] is the sub-list for method output_type
-	5,  // [5:17] is the sub-list for method input_type
-	5,  // [5:5] is the sub-list for extension type_name
-	5,  // [5:5] is the sub-list for extension extendee
-	0,  // [0:5] is the sub-list for field type_name
+	32, // 3: reflow.admin.v1.UpsertEventSourceRequest.record:type_name -> reflow.engine.v1.EventSourceRecord
+	32, // 4: reflow.admin.v1.ListEventSourcesResponse.sources:type_name -> reflow.engine.v1.EventSourceRecord
+	33, // 5: reflow.admin.v1.UpsertWebhookSourceRequest.record:type_name -> reflow.engine.v1.WebhookSourceRecord
+	33, // 6: reflow.admin.v1.ListWebhookSourcesResponse.sources:type_name -> reflow.engine.v1.WebhookSourceRecord
+	0,  // 7: reflow.admin.v1.Admin.AddNode:input_type -> reflow.admin.v1.AddNodeRequest
+	0,  // 8: reflow.admin.v1.Admin.SelfJoin:input_type -> reflow.admin.v1.AddNodeRequest
+	2,  // 9: reflow.admin.v1.Admin.RemoveNode:input_type -> reflow.admin.v1.RemoveNodeRequest
+	4,  // 10: reflow.admin.v1.Admin.ListNodes:input_type -> reflow.admin.v1.ListNodesRequest
+	6,  // 11: reflow.admin.v1.Admin.ListPartitions:input_type -> reflow.admin.v1.ListPartitionsRequest
+	8,  // 12: reflow.admin.v1.Admin.CreateSnapshot:input_type -> reflow.admin.v1.CreateSnapshotRequest
+	10, // 13: reflow.admin.v1.Admin.ListSnapshots:input_type -> reflow.admin.v1.ListSnapshotsRequest
+	13, // 14: reflow.admin.v1.Admin.DeleteSnapshot:input_type -> reflow.admin.v1.DeleteSnapshotRequest
+	15, // 15: reflow.admin.v1.Admin.RegisterDeployment:input_type -> reflow.admin.v1.RegisterDeploymentRequest
+	17, // 16: reflow.admin.v1.Admin.UpsertEventSource:input_type -> reflow.admin.v1.UpsertEventSourceRequest
+	19, // 17: reflow.admin.v1.Admin.DeleteEventSource:input_type -> reflow.admin.v1.DeleteEventSourceRequest
+	21, // 18: reflow.admin.v1.Admin.ListEventSources:input_type -> reflow.admin.v1.ListEventSourcesRequest
+	23, // 19: reflow.admin.v1.Admin.UpsertWebhookSource:input_type -> reflow.admin.v1.UpsertWebhookSourceRequest
+	25, // 20: reflow.admin.v1.Admin.DeleteWebhookSource:input_type -> reflow.admin.v1.DeleteWebhookSourceRequest
+	27, // 21: reflow.admin.v1.Admin.ListWebhookSources:input_type -> reflow.admin.v1.ListWebhookSourcesRequest
+	1,  // 22: reflow.admin.v1.Admin.AddNode:output_type -> reflow.admin.v1.AddNodeResponse
+	1,  // 23: reflow.admin.v1.Admin.SelfJoin:output_type -> reflow.admin.v1.AddNodeResponse
+	3,  // 24: reflow.admin.v1.Admin.RemoveNode:output_type -> reflow.admin.v1.RemoveNodeResponse
+	5,  // 25: reflow.admin.v1.Admin.ListNodes:output_type -> reflow.admin.v1.ListNodesResponse
+	7,  // 26: reflow.admin.v1.Admin.ListPartitions:output_type -> reflow.admin.v1.ListPartitionsResponse
+	9,  // 27: reflow.admin.v1.Admin.CreateSnapshot:output_type -> reflow.admin.v1.CreateSnapshotResponse
+	12, // 28: reflow.admin.v1.Admin.ListSnapshots:output_type -> reflow.admin.v1.ListSnapshotsResponse
+	14, // 29: reflow.admin.v1.Admin.DeleteSnapshot:output_type -> reflow.admin.v1.DeleteSnapshotResponse
+	16, // 30: reflow.admin.v1.Admin.RegisterDeployment:output_type -> reflow.admin.v1.RegisterDeploymentResponse
+	18, // 31: reflow.admin.v1.Admin.UpsertEventSource:output_type -> reflow.admin.v1.UpsertEventSourceResponse
+	20, // 32: reflow.admin.v1.Admin.DeleteEventSource:output_type -> reflow.admin.v1.DeleteEventSourceResponse
+	22, // 33: reflow.admin.v1.Admin.ListEventSources:output_type -> reflow.admin.v1.ListEventSourcesResponse
+	24, // 34: reflow.admin.v1.Admin.UpsertWebhookSource:output_type -> reflow.admin.v1.UpsertWebhookSourceResponse
+	26, // 35: reflow.admin.v1.Admin.DeleteWebhookSource:output_type -> reflow.admin.v1.DeleteWebhookSourceResponse
+	28, // 36: reflow.admin.v1.Admin.ListWebhookSources:output_type -> reflow.admin.v1.ListWebhookSourcesResponse
+	22, // [22:37] is the sub-list for method output_type
+	7,  // [7:22] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_adminv1_admin_proto_init() }
@@ -1379,7 +1693,7 @@ func file_adminv1_admin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_adminv1_admin_proto_rawDesc), len(file_adminv1_admin_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   24,
+			NumMessages:   30,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

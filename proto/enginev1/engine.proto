@@ -108,9 +108,11 @@ message Header {
 //            (UpsertEventSource, DeleteEventSource)
 //   23-24  : metadata-shard cluster-managed config: webhook sources
 //            (UpsertWebhookSource, DeleteWebhookSource)
+//   25-26  : metadata-shard cluster-managed config: secret store
+//            (UpsertSecret, DeleteSecret)
 //
 // Do not reuse a tag — the on-disk format is part of the upgrade
-// contract. New tags should start at 25 or higher unless adding to an
+// contract. New tags should start at 27 or higher unless adding to an
 // existing numbered block.
 message Command {
   reserved 12 to 15;
@@ -175,6 +177,15 @@ message Command {
     // Accepted only by shardID=0.
     UpsertWebhookSource upsert_webhook_source = 23;
     DeleteWebhookSource delete_webhook_source = 24;
+    // UpsertSecret / DeleteSecret carry shard-0 SecretStore records —
+    // named ciphertext + KEK pointers shared across webhook (and
+    // future) consumers. Same CAS + notifier semantics as the
+    // event-source and webhook pairs. The plaintext never appears in
+    // these commands; per-node SecretStore Reconcilers fetch the
+    // blob and decrypt via the Tink registry at reconcile time.
+    // Accepted only by shardID=0.
+    UpsertSecret upsert_secret = 25;
+    DeleteSecret delete_secret = 26;
   }
 }
 
@@ -1135,60 +1146,64 @@ message DeleteEventSource {
 
 // WebhookSourceRecord is the persisted shape of one webhook source in
 // shard 0's WebhookSourceTable. Mirrors
-// internal/ingress/webhook.SourceConfig in field semantics, with one
-// deliberate divergence: the inline `[]byte Secret` becomes a
-// `SecretRef` indirection so the plaintext never travels through Raft
-// snapshots or commit logs. Per-node Reconcilers resolve the SecretRef
-// (os.Getenv or os.ReadFile) at reconcile time and keep the resolved
-// bytes only in process memory.
+// internal/ingress/webhook.SourceConfig in field semantics.
 //
 // `name` is the operator-facing key (separate from `path` so a mount
 // can be renamed in YAML without renaming the row). `path` must start
 // with `/` and is the absolute URL path the listener matches; the
 // catch-all subtree handler at /webhooks/ does the lookup.
+//
+// `secret_name` references a row in the shard-0 SecretTable. The
+// plaintext secret itself never appears in this record (or in any
+// shard-0 row) — per-node SecretStore Reconcilers resolve the named
+// SecretRecord at reconcile time and surface the bytes via in-memory
+// Lookup. Multiple webhooks may share a secret_name (and therefore
+// share a single ciphertext+KEK).
 message WebhookSourceRecord {
   string name = 1;
   string path = 2;
   string verifier = 3;
-  SecretRef secret_ref = 4;
+  string secret_name = 4;
   string service = 5;
   string handler = 6;
   string object_key = 7;
   map<string, string> metadata = 8;
 }
 
-// SecretRef points to a secret source. The plaintext secret itself is
-// never a field — Raft snapshots and commit logs would leak it.
-// Verifiers are stateless; per-node Reconcilers resolve the ref at
-// reconcile time and cache the result in process memory.
+// SecretRecord is the persisted shape of one named secret in shard 0's
+// SecretTable. The plaintext itself is never a field — Raft snapshots
+// and commit logs would leak it. Each SecretRecord carries a pointer
+// to where the ciphertext lives (gocloud.dev/blob URI) and which KEK
+// can decrypt it (Tink KMS URI). The same record is referenced by
+// `secret_name` from WebhookSourceRecord (and future consumers:
+// event-source vendor credentials, outbound HMAC signing keys,
+// OIDC client secrets, …) so define-once, reference-many.
 //
-// env_var_name:     read via os.Getenv on the local node. Effectively
-//   static within a process; rotation requires a process restart.
-// file_path:        absolute path read via os.ReadFile on every reconcile
-//   (5s ticker + notifier wake). Supports hot-rotation by atomic file
-//   replacement; trailing newline is trimmed; empty body is rejected.
-// remote_encrypted: ciphertext stored at a gocloud.dev/blob URI, decrypted
-//   via Tink registry.GetKMSClient(kek_uri). AAD is bound to the row's
-//   name. Operator rotates by overwriting the blob; next reconcile picks
-//   up the new ciphertext fleet-wide.
+// Per-node internal/secretstore Reconcilers fetch the blob, dispatch
+// the KEK URI to registry.GetKMSClient, and call
+// tink.AEAD.Decrypt(ciphertext, aad=secret.name). AAD = secret.name
+// binds the ciphertext to the row identity, not to the consumer —
+// renaming a secret is a re-encrypt operation (by design); renaming
+// a webhook that references it is not.
 //
-// Exactly one oneof case is required at validate time; the FSM apply
-// arm trusts the admin RPC validator and does not re-check.
-message SecretRef {
+// `remote_encrypted` is the only source shape today; the oneof leaves
+// room for future shapes (e.g. inline-hybrid, vault-kv-path) without
+// disturbing existing rows.
+message SecretRecord {
+  string name = 1;
   oneof source {
-    string env_var_name = 1;
-    string file_path = 2;
-    RemoteEncryptedSecret remote_encrypted = 3;
+    RemoteEncryptedSecret remote_encrypted = 2;
   }
 }
 
 // RemoteEncryptedSecret stores ciphertext in any gocloud.dev/blob backend
-// with the KEK held by a Tink-registered KMS. The reconciler reads the
-// blob, dispatches the KEK URI to registry.GetKMSClient, and calls
-// tink.AEAD.Decrypt(ciphertext, aad=webhook_name). Reflow ships
-// pkg/tinkkms/blob (URI prefix blobkms+) as the no-managed-KMS fallback;
-// operators import tink-go/v2/integration/{gcpkms,awskms,…} from main()
-// for cloud KMS.
+// with the KEK held by a Tink-registered KMS. Reflow ships four KMS
+// providers in-binary: BlobKMS (blobkms+<gocloud-uri> — the no-managed-
+// KMS fallback), AWS KMS (aws-kms://...), GCP Cloud KMS (gcp-kms://...),
+// and HashiCorp Vault Transit (hcvault://...). The first three self-
+// register via init(); Vault is opt-in via cfg.KMS.Vault.TokenFile.
+// Operators wiring additional providers register from main() before
+// reflow.Run.
 message RemoteEncryptedSecret {
   // gocloud.dev/blob URI: s3://bucket/key, gs://..., azblob://...,
   // file:///abs/path, mem://test/key.
@@ -1196,6 +1211,25 @@ message RemoteEncryptedSecret {
   // Tink KMS URI: blobkms+<gocloud-uri>, aws-kms://..., gcp-kms://...,
   // hcvault://... — dispatched by registry.GetKMSClient.
   string kek_uri = 2;
+}
+
+// UpsertSecret is the Command_UpsertSecret payload. Apply arm CAS-
+// checks Envelope.precondition, writes SecretTable[record.name] = record,
+// bumps the table revision, and fires the SecretTable notifier so each
+// node's local SecretStore Reconciler wakes and re-resolves.
+message UpsertSecret {
+  SecretRecord record = 1;
+}
+
+// DeleteSecret is the Command_DeleteSecret payload. Same CAS + notifier
+// semantics as Upsert. Delete-of-absent is a no-op (the revision still
+// bumps). Reflow does NOT cascade-validate consumer references: deleting
+// a secret that webhook (or future) records still reference will surface
+// as a resolve failure on the next reconcile, which the consumer's
+// preserve-prev-on-error semantics handle gracefully — operators see a
+// metric and clean up by deleting the consumer rows next.
+message DeleteSecret {
+  string name = 1;
 }
 
 // UpsertWebhookSource is the Command_UpsertWebhookSource payload.

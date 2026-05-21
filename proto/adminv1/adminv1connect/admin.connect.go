@@ -91,6 +91,12 @@ const (
 	// AdminListWebhookSourcesProcedure is the fully-qualified name of the Admin's ListWebhookSources
 	// RPC.
 	AdminListWebhookSourcesProcedure = "/reflow.admin.v1.Admin/ListWebhookSources"
+	// AdminUpsertSecretProcedure is the fully-qualified name of the Admin's UpsertSecret RPC.
+	AdminUpsertSecretProcedure = "/reflow.admin.v1.Admin/UpsertSecret"
+	// AdminDeleteSecretProcedure is the fully-qualified name of the Admin's DeleteSecret RPC.
+	AdminDeleteSecretProcedure = "/reflow.admin.v1.Admin/DeleteSecret"
+	// AdminListSecretsProcedure is the fully-qualified name of the Admin's ListSecrets RPC.
+	AdminListSecretsProcedure = "/reflow.admin.v1.Admin/ListSecrets"
 )
 
 // AdminClient is a client for the reflow.admin.v1.Admin service.
@@ -147,12 +153,22 @@ type AdminClient interface {
 	ListEventSources(context.Context, *connect.Request[adminv1.ListEventSourcesRequest]) (*connect.Response[adminv1.ListEventSourcesResponse], error)
 	// UpsertWebhookSource / DeleteWebhookSource / ListWebhookSources mirror
 	// the event-source trio against shard 0's WebhookSourceTable. The
-	// record's SecretRef is validated for shape (exactly one of
-	// env_var_name / file_path); the plaintext secret never traverses
-	// Raft. Leader-only for mutating calls; List is SyncRead from any peer.
+	// record's secret_name references a row in the shard-0 SecretTable
+	// (UpsertSecret below); the webhook record carries no ciphertext or
+	// KMS material itself. Leader-only for mutating calls; List is
+	// SyncRead from any peer.
 	UpsertWebhookSource(context.Context, *connect.Request[adminv1.UpsertWebhookSourceRequest]) (*connect.Response[adminv1.UpsertWebhookSourceResponse], error)
 	DeleteWebhookSource(context.Context, *connect.Request[adminv1.DeleteWebhookSourceRequest]) (*connect.Response[adminv1.DeleteWebhookSourceResponse], error)
 	ListWebhookSources(context.Context, *connect.Request[adminv1.ListWebhookSourcesRequest]) (*connect.Response[adminv1.ListWebhookSourcesResponse], error)
+	// UpsertSecret / DeleteSecret / ListSecrets mirror the same trio
+	// against shard 0's SecretTable. Each SecretRecord references a
+	// ciphertext blob (gocloud.dev/blob URI) and a KEK (Tink KMS URI);
+	// the plaintext never traverses Raft. Per-node internal/secretstore
+	// Reconcilers fetch + decrypt at reconcile time and surface bytes via
+	// in-memory Lookup. Leader-only for mutating calls; List is SyncRead.
+	UpsertSecret(context.Context, *connect.Request[adminv1.UpsertSecretRequest]) (*connect.Response[adminv1.UpsertSecretResponse], error)
+	DeleteSecret(context.Context, *connect.Request[adminv1.DeleteSecretRequest]) (*connect.Response[adminv1.DeleteSecretResponse], error)
+	ListSecrets(context.Context, *connect.Request[adminv1.ListSecretsRequest]) (*connect.Response[adminv1.ListSecretsResponse], error)
 }
 
 // NewAdminClient constructs a client for the reflow.admin.v1.Admin service. By default, it uses the
@@ -256,6 +272,24 @@ func NewAdminClient(httpClient connect.HTTPClient, baseURL string, opts ...conne
 			connect.WithSchema(adminMethods.ByName("ListWebhookSources")),
 			connect.WithClientOptions(opts...),
 		),
+		upsertSecret: connect.NewClient[adminv1.UpsertSecretRequest, adminv1.UpsertSecretResponse](
+			httpClient,
+			baseURL+AdminUpsertSecretProcedure,
+			connect.WithSchema(adminMethods.ByName("UpsertSecret")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteSecret: connect.NewClient[adminv1.DeleteSecretRequest, adminv1.DeleteSecretResponse](
+			httpClient,
+			baseURL+AdminDeleteSecretProcedure,
+			connect.WithSchema(adminMethods.ByName("DeleteSecret")),
+			connect.WithClientOptions(opts...),
+		),
+		listSecrets: connect.NewClient[adminv1.ListSecretsRequest, adminv1.ListSecretsResponse](
+			httpClient,
+			baseURL+AdminListSecretsProcedure,
+			connect.WithSchema(adminMethods.ByName("ListSecrets")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -276,6 +310,9 @@ type adminClient struct {
 	upsertWebhookSource *connect.Client[adminv1.UpsertWebhookSourceRequest, adminv1.UpsertWebhookSourceResponse]
 	deleteWebhookSource *connect.Client[adminv1.DeleteWebhookSourceRequest, adminv1.DeleteWebhookSourceResponse]
 	listWebhookSources  *connect.Client[adminv1.ListWebhookSourcesRequest, adminv1.ListWebhookSourcesResponse]
+	upsertSecret        *connect.Client[adminv1.UpsertSecretRequest, adminv1.UpsertSecretResponse]
+	deleteSecret        *connect.Client[adminv1.DeleteSecretRequest, adminv1.DeleteSecretResponse]
+	listSecrets         *connect.Client[adminv1.ListSecretsRequest, adminv1.ListSecretsResponse]
 }
 
 // AddNode calls reflow.admin.v1.Admin.AddNode.
@@ -353,6 +390,21 @@ func (c *adminClient) ListWebhookSources(ctx context.Context, req *connect.Reque
 	return c.listWebhookSources.CallUnary(ctx, req)
 }
 
+// UpsertSecret calls reflow.admin.v1.Admin.UpsertSecret.
+func (c *adminClient) UpsertSecret(ctx context.Context, req *connect.Request[adminv1.UpsertSecretRequest]) (*connect.Response[adminv1.UpsertSecretResponse], error) {
+	return c.upsertSecret.CallUnary(ctx, req)
+}
+
+// DeleteSecret calls reflow.admin.v1.Admin.DeleteSecret.
+func (c *adminClient) DeleteSecret(ctx context.Context, req *connect.Request[adminv1.DeleteSecretRequest]) (*connect.Response[adminv1.DeleteSecretResponse], error) {
+	return c.deleteSecret.CallUnary(ctx, req)
+}
+
+// ListSecrets calls reflow.admin.v1.Admin.ListSecrets.
+func (c *adminClient) ListSecrets(ctx context.Context, req *connect.Request[adminv1.ListSecretsRequest]) (*connect.Response[adminv1.ListSecretsResponse], error) {
+	return c.listSecrets.CallUnary(ctx, req)
+}
+
 // AdminHandler is an implementation of the reflow.admin.v1.Admin service.
 type AdminHandler interface {
 	// AddNode registers a new peer with shard 0 and enqueues a rebalance
@@ -407,12 +459,22 @@ type AdminHandler interface {
 	ListEventSources(context.Context, *connect.Request[adminv1.ListEventSourcesRequest]) (*connect.Response[adminv1.ListEventSourcesResponse], error)
 	// UpsertWebhookSource / DeleteWebhookSource / ListWebhookSources mirror
 	// the event-source trio against shard 0's WebhookSourceTable. The
-	// record's SecretRef is validated for shape (exactly one of
-	// env_var_name / file_path); the plaintext secret never traverses
-	// Raft. Leader-only for mutating calls; List is SyncRead from any peer.
+	// record's secret_name references a row in the shard-0 SecretTable
+	// (UpsertSecret below); the webhook record carries no ciphertext or
+	// KMS material itself. Leader-only for mutating calls; List is
+	// SyncRead from any peer.
 	UpsertWebhookSource(context.Context, *connect.Request[adminv1.UpsertWebhookSourceRequest]) (*connect.Response[adminv1.UpsertWebhookSourceResponse], error)
 	DeleteWebhookSource(context.Context, *connect.Request[adminv1.DeleteWebhookSourceRequest]) (*connect.Response[adminv1.DeleteWebhookSourceResponse], error)
 	ListWebhookSources(context.Context, *connect.Request[adminv1.ListWebhookSourcesRequest]) (*connect.Response[adminv1.ListWebhookSourcesResponse], error)
+	// UpsertSecret / DeleteSecret / ListSecrets mirror the same trio
+	// against shard 0's SecretTable. Each SecretRecord references a
+	// ciphertext blob (gocloud.dev/blob URI) and a KEK (Tink KMS URI);
+	// the plaintext never traverses Raft. Per-node internal/secretstore
+	// Reconcilers fetch + decrypt at reconcile time and surface bytes via
+	// in-memory Lookup. Leader-only for mutating calls; List is SyncRead.
+	UpsertSecret(context.Context, *connect.Request[adminv1.UpsertSecretRequest]) (*connect.Response[adminv1.UpsertSecretResponse], error)
+	DeleteSecret(context.Context, *connect.Request[adminv1.DeleteSecretRequest]) (*connect.Response[adminv1.DeleteSecretResponse], error)
+	ListSecrets(context.Context, *connect.Request[adminv1.ListSecretsRequest]) (*connect.Response[adminv1.ListSecretsResponse], error)
 }
 
 // NewAdminHandler builds an HTTP handler from the service implementation. It returns the path on
@@ -512,6 +574,24 @@ func NewAdminHandler(svc AdminHandler, opts ...connect.HandlerOption) (string, h
 		connect.WithSchema(adminMethods.ByName("ListWebhookSources")),
 		connect.WithHandlerOptions(opts...),
 	)
+	adminUpsertSecretHandler := connect.NewUnaryHandler(
+		AdminUpsertSecretProcedure,
+		svc.UpsertSecret,
+		connect.WithSchema(adminMethods.ByName("UpsertSecret")),
+		connect.WithHandlerOptions(opts...),
+	)
+	adminDeleteSecretHandler := connect.NewUnaryHandler(
+		AdminDeleteSecretProcedure,
+		svc.DeleteSecret,
+		connect.WithSchema(adminMethods.ByName("DeleteSecret")),
+		connect.WithHandlerOptions(opts...),
+	)
+	adminListSecretsHandler := connect.NewUnaryHandler(
+		AdminListSecretsProcedure,
+		svc.ListSecrets,
+		connect.WithSchema(adminMethods.ByName("ListSecrets")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/reflow.admin.v1.Admin/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AdminAddNodeProcedure:
@@ -544,6 +624,12 @@ func NewAdminHandler(svc AdminHandler, opts ...connect.HandlerOption) (string, h
 			adminDeleteWebhookSourceHandler.ServeHTTP(w, r)
 		case AdminListWebhookSourcesProcedure:
 			adminListWebhookSourcesHandler.ServeHTTP(w, r)
+		case AdminUpsertSecretProcedure:
+			adminUpsertSecretHandler.ServeHTTP(w, r)
+		case AdminDeleteSecretProcedure:
+			adminDeleteSecretHandler.ServeHTTP(w, r)
+		case AdminListSecretsProcedure:
+			adminListSecretsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -611,4 +697,16 @@ func (UnimplementedAdminHandler) DeleteWebhookSource(context.Context, *connect.R
 
 func (UnimplementedAdminHandler) ListWebhookSources(context.Context, *connect.Request[adminv1.ListWebhookSourcesRequest]) (*connect.Response[adminv1.ListWebhookSourcesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.admin.v1.Admin.ListWebhookSources is not implemented"))
+}
+
+func (UnimplementedAdminHandler) UpsertSecret(context.Context, *connect.Request[adminv1.UpsertSecretRequest]) (*connect.Response[adminv1.UpsertSecretResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.admin.v1.Admin.UpsertSecret is not implemented"))
+}
+
+func (UnimplementedAdminHandler) DeleteSecret(context.Context, *connect.Request[adminv1.DeleteSecretRequest]) (*connect.Response[adminv1.DeleteSecretResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.admin.v1.Admin.DeleteSecret is not implemented"))
+}
+
+func (UnimplementedAdminHandler) ListSecrets(context.Context, *connect.Request[adminv1.ListSecretsRequest]) (*connect.Response[adminv1.ListSecretsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.admin.v1.Admin.ListSecrets is not implemented"))
 }

@@ -108,7 +108,7 @@ func dispatchPKI(args []string) error {
 // handler.
 func dispatchCluster(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: reflowd cluster {add-node|remove-node|nodes|partitions|snapshot|register-deployment|eventsources|webhooks|apply|export|get} [flags]")
+		return fmt.Errorf("usage: reflowd cluster {add-node|remove-node|nodes|partitions|snapshot|register-deployment|eventsources|webhooks|apply|export|get|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|upsert-webhook} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -135,6 +135,18 @@ func dispatchCluster(ctx context.Context, args []string) error {
 		return cmdExport(ctx, rest)
 	case "get":
 		return cmdGet(ctx, rest)
+	case "init-kek":
+		return cmdInitKEK(ctx, rest)
+	case "create-secret":
+		return cmdCreateSecret(ctx, rest)
+	case "delete-secret":
+		return cmdDeleteSecret(ctx, rest)
+	case "list-secrets":
+		return cmdListSecrets(ctx, rest)
+	case "decrypt-secret":
+		return cmdDecryptSecret(ctx, rest)
+	case "upsert-webhook":
+		return cmdUpsertWebhook(ctx, rest)
 	default:
 		return fmt.Errorf("reflowd cluster: unknown subcommand %q", sub)
 	}
@@ -169,6 +181,17 @@ Cluster (Connect RPC; mTLS-authenticated; --admin can be ANY node):
                                 (kinds: EventSource, WebhookSource).
   cluster export --kind=<k>     Dump a kind (or 'all') as multi-doc YAML.
   cluster get <kind> <name>     Fetch one record as YAML.
+  cluster init-kek              Create a fresh BlobKMS KEK blob.
+  cluster create-secret         Encrypt + write blob + UpsertSecret in
+                                shard 0's SecretTable in one command.
+                                Webhook (and future) records reference
+                                the resulting row by --name.
+  cluster delete-secret         Remove a SecretRecord from shard 0.
+  cluster list-secrets          List SecretRecords (no plaintext).
+  cluster decrypt-secret        Decrypt a secret blob to stdout
+                                (operator self-verification only).
+  cluster upsert-webhook        Register a webhook source referencing
+                                an existing secret by --secret=NAME.
 
 Run any subcommand with --help for its specific flags.
 `)

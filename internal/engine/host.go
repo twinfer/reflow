@@ -573,6 +573,24 @@ func (h *Host) WebhookSources(ctx context.Context) (*cluster.WebhookSourceList, 
 	return out, nil
 }
 
+// Secrets SyncReads every SecretRecord from shard 0 plus the table's
+// CAS revision. Used by the admin RPCs and the per-node SecretStore
+// Reconciler.
+func (h *Host) Secrets(ctx context.Context) (*cluster.SecretList, error) {
+	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupSecrets{})
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return &cluster.SecretList{}, nil
+	}
+	out, ok := res.(*cluster.SecretList)
+	if !ok {
+		return nil, fmt.Errorf("host: Secrets: unexpected lookup type %T", res)
+	}
+	return out, nil
+}
+
 // AwaitMetadataLeader blocks until shard 0 has a stable leader.
 func (h *Host) AwaitMetadataLeader(ctx context.Context) error {
 	tick := time.NewTicker(20 * time.Millisecond)

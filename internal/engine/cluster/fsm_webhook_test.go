@@ -59,14 +59,12 @@ func newFSMWithWebhookNotifier(t *testing.T) (*FSM, *TableNotifier) {
 
 func webhookRec(name, path string) *enginev1.WebhookSourceRecord {
 	return &enginev1.WebhookSourceRecord{
-		Name:     name,
-		Path:     path,
-		Verifier: "github",
-		SecretRef: &enginev1.SecretRef{
-			Source: &enginev1.SecretRef_EnvVarName{EnvVarName: "TEST_SECRET"},
-		},
-		Service: "svc",
-		Handler: "on",
+		Name:       name,
+		Path:       path,
+		Verifier:   "github",
+		SecretName: "test-secret",
+		Service:    "svc",
+		Handler:    "on",
 	}
 }
 
@@ -101,8 +99,8 @@ func TestCluster_UpsertWebhookSource_BumpAndNotify(t *testing.T) {
 	if got == nil || got.GetPath() != "/webhooks/github" {
 		t.Fatalf("row missing or mismatched: %+v", got)
 	}
-	if got.GetSecretRef().GetEnvVarName() != "TEST_SECRET" {
-		t.Errorf("SecretRef not persisted: %+v", got.GetSecretRef())
+	if got.GetSecretName() != "test-secret" {
+		t.Errorf("secret_name not persisted: got %q", got.GetSecretName())
 	}
 }
 

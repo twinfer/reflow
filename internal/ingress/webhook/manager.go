@@ -1,13 +1,18 @@
 // Package webhook mounts config-driven inbound vendor webhook
-// endpoints on the existing ingress listener. Cluster-managed in v2:
-// each WebhookSourceRecord lives on shard 0; per-node Manager
-// instances reconcile against a TableNotifier wake (5s ticker
-// backstop), resolve secrets via SecretRef on each pass, and
+// endpoints on the existing ingress listener. Cluster-managed: each
+// WebhookSourceRecord lives on shard 0; per-node Manager instances
+// reconcile against a TableNotifier wake (5s ticker backstop) and
 // atomically swap a fresh path→source snapshot. Inbound requests hit
 // a single stable subtree route at /webhooks/; the handler looks up
 // r.URL.Path in the live snapshot. The atomic-snapshot pattern means
 // in-flight requests keep dispatching against the secret + verifier
 // they were dispatched with — no per-request locking on the hot path.
+//
+// Secret resolution lives in internal/secretstore: WebhookSourceRecord
+// carries a `secret_name` string referencing a SecretRecord on shard 0;
+// the per-node SecretStore Resolver fetches + decrypts and surfaces
+// bytes via Lookup. The webhook Manager calls Resolver.Lookup on each
+// reconcile pass and carries the bytes into the live snapshot.
 package webhook
 
 import (
@@ -27,6 +32,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/twinfer/reflow/internal/connectserver"
+	"github.com/twinfer/reflow/internal/secretstore"
 	"github.com/twinfer/reflow/pkg/webhook"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
@@ -51,22 +57,26 @@ type Submitter interface {
 
 // SourceConfig is the resolved in-memory shape one Manager snapshot
 // holds per webhook. Production builds it inside RunReconciler from a
-// WebhookSourceRecord + a SecretRef resolution; tests build it
+// WebhookSourceRecord + a secretstore.Resolver Lookup; tests build it
 // directly.
 //
 // Name is the operator-facing key (mirrors metadata.name in the
 // kubectl-style YAML). Path is the absolute URL the listener serves;
 // uniqueness across the snapshot is enforced at Reconcile time
-// (sorted by Name, first wins on a collision).
+// (sorted by Name, first wins on a collision). SecretName is the
+// WebhookSourceRecord's reference into the SecretTable; Secret is
+// the plaintext the Resolver surfaced for that name at the time the
+// snapshot was built.
 type SourceConfig struct {
-	Name      string
-	Path      string
-	Verifier  string
-	Secret    []byte
-	Service   string
-	Handler   string
-	ObjectKey string
-	Metadata  map[string]string
+	Name       string
+	Path       string
+	Verifier   string
+	SecretName string
+	Secret     []byte
+	Service    string
+	Handler    string
+	ObjectKey  string
+	Metadata   map[string]string
 }
 
 // Reader is the seam RunReconciler uses to fetch desired state.
@@ -82,6 +92,7 @@ type Reader interface {
 // There is no per-request lock and no goroutine drain on Reconcile.
 type Manager struct {
 	submitter Submitter
+	secrets   *secretstore.Resolver
 	metrics   *Metrics
 	log       *slog.Logger
 	errWriter *connect.ErrorWriter
@@ -111,10 +122,12 @@ type snapshot struct {
 	byName map[string]*resolvedSource
 }
 
-// New constructs an empty Manager. Use Reconcile to populate the
-// snapshot; use RunReconciler for the production wake-on-notifier
-// loop, or call Reconcile directly from tests.
-func New(submitter Submitter, reg prometheus.Registerer, log *slog.Logger) (*Manager, error) {
+// New constructs an empty Manager. secrets is the shared SecretStore
+// Resolver — required in production (Reconcile uses it to look up
+// secret_name); tests that bypass Reconcile and call NewManager pass
+// nil. Use Reconcile to populate the snapshot; use RunReconciler for
+// the production wake-on-notifier loop.
+func New(submitter Submitter, secrets *secretstore.Resolver, reg prometheus.Registerer, log *slog.Logger) (*Manager, error) {
 	if submitter == nil {
 		return nil, errors.New("webhook: submitter is required")
 	}
@@ -123,6 +136,7 @@ func New(submitter Submitter, reg prometheus.Registerer, log *slog.Logger) (*Man
 	}
 	m := &Manager{
 		submitter: submitter,
+		secrets:   secrets,
 		metrics:   NewMetrics(reg),
 		log:       log,
 		errWriter: connect.NewErrorWriter(),
@@ -135,15 +149,14 @@ func New(submitter Submitter, reg prometheus.Registerer, log *slog.Logger) (*Man
 	return m, nil
 }
 
-// NewManager is the legacy static-config convenience used by the
-// existing unit-test smoke. ValidateSources runs upfront so a bad
-// static config aborts startup with a clean error; production
-// (reconcile-driven) reconciles log+drop bad rows instead so a single
-// malformed row can't take the whole snapshot offline.
+// NewManager is the test-only convenience that pre-populates a Manager
+// from a SourceConfig slice (each entry carries the resolved Secret
+// bytes directly). Skips SecretStore; ValidateSources runs upfront so
+// a bad static config aborts with a clean error.
 //
 // For an empty slice returns a Manager whose live snapshot is empty;
 // Routes() still yields the stable /webhooks/ catch-all which 404s
-// every request (operators can wire unconditionally).
+// every request.
 func NewManager(sources []SourceConfig, submitter Submitter, log *slog.Logger) (*Manager, error) {
 	if len(sources) > 0 {
 		if submitter == nil {
@@ -162,7 +175,7 @@ func NewManager(sources []SourceConfig, submitter Submitter, log *slog.Logger) (
 	// Use a fresh registry so legacy tests don't fight the default
 	// global; production callers use New + a real registerer.
 	reg := prometheus.NewRegistry()
-	m, err := New(submitter, reg, log)
+	m, err := New(submitter, nil, reg, log)
 	if err != nil {
 		return nil, err
 	}
@@ -246,8 +259,11 @@ func (m *Manager) RunReconciler(ctx context.Context, sub <-chan struct{}, reader
 	}
 }
 
-// reconcileFromReader does one ListWebhookSources + secret resolution
-// + Reconcile pass. Errors are logged + counted, never propagated.
+// reconcileFromReader does one ListWebhookSources + SecretStore
+// Lookup + Reconcile pass. Errors are logged + counted, never
+// propagated. Secret resolution is decoupled — the SecretStore
+// reconciler refreshes name→bytes on its own cadence and this
+// reconciler just reads the current snapshot.
 func (m *Manager) reconcileFromReader(ctx context.Context, reader Reader) {
 	records, rev, err := reader.ListWebhookSources(ctx)
 	if err != nil {
@@ -260,34 +276,34 @@ func (m *Manager) reconcileFromReader(ctx context.Context, reader Reader) {
 	prev := m.live.Load()
 	desired := make([]SourceConfig, 0, len(records))
 	for _, rec := range records {
-		var prevSecret []byte
-		if prev != nil {
-			if prevR, ok := prev.byName[rec.GetName()]; ok {
-				prevSecret = prevR.cfg.Secret
+		secret, ok := m.secrets.Lookup(rec.GetSecretName())
+		if !ok {
+			// Secret not yet resolved (race after secret upsert, or
+			// the secret row was deleted). Carry prev bytes if we
+			// have them so the source keeps serving; skip if first
+			// time.
+			if prev != nil {
+				if prevR, pok := prev.byName[rec.GetName()]; pok {
+					secret = prevR.cfg.Secret
+				}
 			}
-		}
-		secret, source, serr := resolveSecret(ctx, rec.GetSecretRef(), rec.GetName(), m.metrics)
-		if serr != nil {
-			m.log.Warn("webhook: resolve secret",
-				"name", rec.GetName(), "source", source, "err", serr)
-			m.metrics.SecretResolveErrors.WithLabelValues(rec.GetName(), source).Inc()
-			if prevSecret == nil {
-				// No prior bytes to carry — skip this source. The
-				// next reconcile will retry; meanwhile the previous
-				// snapshot's other entries keep serving.
+			if len(secret) == 0 {
+				m.log.Warn("webhook: secret not resolved",
+					"name", rec.GetName(), "secret_name", rec.GetSecretName())
+				m.metrics.UnresolvedSecret.WithLabelValues(rec.GetName(), rec.GetSecretName()).Inc()
 				continue
 			}
-			secret = prevSecret
 		}
 		desired = append(desired, SourceConfig{
-			Name:      rec.GetName(),
-			Path:      rec.GetPath(),
-			Verifier:  rec.GetVerifier(),
-			Secret:    secret,
-			Service:   rec.GetService(),
-			Handler:   rec.GetHandler(),
-			ObjectKey: rec.GetObjectKey(),
-			Metadata:  copyMetadata(rec.GetMetadata()),
+			Name:       rec.GetName(),
+			Path:       rec.GetPath(),
+			Verifier:   rec.GetVerifier(),
+			SecretName: rec.GetSecretName(),
+			Secret:     secret,
+			Service:    rec.GetService(),
+			Handler:    rec.GetHandler(),
+			ObjectKey:  rec.GetObjectKey(),
+			Metadata:   copyMetadata(rec.GetMetadata()),
 		})
 	}
 	if err := m.Reconcile(ctx, desired); err != nil {

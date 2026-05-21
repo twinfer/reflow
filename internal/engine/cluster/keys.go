@@ -17,6 +17,7 @@
 //	deployment_idx/<service>\x00<handler> -> deployment_id (ascii)
 //	eventsrc/<name>                 -> EventSourceRecord
 //	webhooksrc/<name>               -> WebhookSourceRecord
+//	secret/<name>                   -> SecretRecord
 //	tablerev/<table_name>           -> TableRevision singleton (CAS guard
 //	                                   for cluster-managed config tables;
 //	                                   separate top-level namespace so it
@@ -39,6 +40,7 @@ const (
 	deploymentIndexPrefix = "deployment_idx/"
 	eventSourcePrefix     = "eventsrc/"
 	webhookSourcePrefix   = "webhooksrc/"
+	secretPrefix          = "secret/"
 	tableRevisionPrefix   = "tablerev/"
 )
 
@@ -48,6 +50,7 @@ const (
 const (
 	RevisionTableEventSource   = "eventsrc"
 	RevisionTableWebhookSource = "webhooksrc"
+	RevisionTableSecret        = "secret"
 )
 
 // MetaKey returns the singleton key for the metadata shard's PartitionMeta.
@@ -113,6 +116,17 @@ func WebhookSourcePrefix() []byte { return []byte(webhookSourcePrefix) }
 func WebhookSourceKey(name string) []byte {
 	out := make([]byte, 0, len(webhookSourcePrefix)+len(name))
 	out = append(out, webhookSourcePrefix...)
+	return append(out, name...)
+}
+
+// SecretPrefix returns the secret/ namespace prefix. Used for iteration.
+func SecretPrefix() []byte { return []byte(secretPrefix) }
+
+// SecretKey returns secret/<name>. Name uniqueness is enforced by the
+// admin RPC validator; the apply arm trusts it.
+func SecretKey(name string) []byte {
+	out := make([]byte, 0, len(secretPrefix)+len(name))
+	out = append(out, secretPrefix...)
 	return append(out, name...)
 }
 

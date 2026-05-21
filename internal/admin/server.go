@@ -864,39 +864,13 @@ func validateWebhookSourceRecord(rec *enginev1.WebhookSourceRecord) error {
 	if rec.GetHandler() == "" {
 		return errors.New("handler is required")
 	}
-	ref := rec.GetSecretRef()
-	if ref == nil || ref.GetSource() == nil {
-		return errors.New("secret_ref is required (env_var_name, file_path, or remote_encrypted)")
+	if rec.GetSecretName() == "" {
+		return errors.New("secret_name is required (reference a row in the SecretTable via UpsertSecret)")
 	}
-	switch src := ref.GetSource().(type) {
-	case *enginev1.SecretRef_EnvVarName:
-		if src.EnvVarName == "" {
-			return errors.New("secret_ref.env_var_name must be non-empty")
-		}
-	case *enginev1.SecretRef_FilePath:
-		if src.FilePath == "" {
-			return errors.New("secret_ref.file_path must be non-empty")
-		}
-		if !filepath.IsAbs(src.FilePath) {
-			return fmt.Errorf("secret_ref.file_path must be absolute (got %q)", src.FilePath)
-		}
-	case *enginev1.SecretRef_RemoteEncrypted:
-		re := src.RemoteEncrypted
-		if re.GetBlobUri() == "" {
-			return errors.New("secret_ref.remote_encrypted.blob_uri must be non-empty")
-		}
-		if !hasKnownBlobScheme(re.GetBlobUri()) {
-			return fmt.Errorf("secret_ref.remote_encrypted.blob_uri %q has unknown scheme (want s3://, gs://, azblob://, file://, or mem://)", re.GetBlobUri())
-		}
-		if re.GetKekUri() == "" {
-			return errors.New("secret_ref.remote_encrypted.kek_uri must be non-empty")
-		}
-		// No decrypt attempt here — coupling admin RPC availability to
-		// KMS+blob reachability is the wrong trade-off. Reconciler
-		// surfaces blob/KMS errors via reflow_webhook_kms_decrypt_*.
-	default:
-		return fmt.Errorf("secret_ref: unsupported source type %T", src)
-	}
+	// Existence-check of the named secret is intentionally NOT done here:
+	// the admin RPC and SecretStore reconciler can race against fresh
+	// clusters where webhook upsert lands before the secret upsert.
+	// Resolve failure on next reconcile surfaces via metrics + log.
 	return nil
 }
 
@@ -934,6 +908,138 @@ func (s *Server) checkWebhookPathUnique(ctx context.Context, rec *enginev1.Webho
 				fmt.Errorf("path %q already in use by webhook %q",
 					rec.GetPath(), existing.GetName()))
 		}
+	}
+	return nil
+}
+
+// UpsertSecret validates the record then proposes Command_UpsertSecret
+// with the operator-supplied CAS guard. Returns the post-apply revision.
+func (s *Server) UpsertSecret(ctx context.Context, req *connect.Request[adminv1.UpsertSecretRequest]) (*connect.Response[adminv1.UpsertSecretResponse], error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
+	rec := req.Msg.GetRecord()
+	if rec == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("admin: record required"))
+	}
+	if err := validateSecretRecord(rec); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	cmd := &enginev1.Command{
+		Kind: &enginev1.Command_UpsertSecret{
+			UpsertSecret: &enginev1.UpsertSecret{Record: rec},
+		},
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	if err := s.proposeCAS(callCtx, cmd, req.Msg.GetIfTableRevisionEq()); err != nil {
+		return nil, err
+	}
+	newRev, err := s.readSecretRevision(callCtx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("admin: read post-apply revision: %w", err))
+	}
+	return connect.NewResponse(&adminv1.UpsertSecretResponse{TableRevision: newRev}), nil
+}
+
+// DeleteSecret removes the named row. CAS via if_table_revision_eq.
+//
+// Does NOT validate consumer references — webhook (and future) rows
+// that name this secret will fail to resolve on next reconcile and
+// preserve-prev. Operators see the metric and clean up.
+func (s *Server) DeleteSecret(ctx context.Context, req *connect.Request[adminv1.DeleteSecretRequest]) (*connect.Response[adminv1.DeleteSecretResponse], error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
+	name := req.Msg.GetName()
+	if name == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("admin: name required"))
+	}
+	cmd := &enginev1.Command{
+		Kind: &enginev1.Command_DeleteSecret{
+			DeleteSecret: &enginev1.DeleteSecret{Name: name},
+		},
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	if err := s.proposeCAS(callCtx, cmd, req.Msg.GetIfTableRevisionEq()); err != nil {
+		return nil, err
+	}
+	newRev, err := s.readSecretRevision(callCtx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("admin: read post-apply revision: %w", err))
+	}
+	return connect.NewResponse(&adminv1.DeleteSecretResponse{TableRevision: newRev}), nil
+}
+
+// ListSecrets returns every SecretRecord plus the table's current CAS
+// revision. No leader gate.
+func (s *Server) ListSecrets(ctx context.Context, _ *connect.Request[adminv1.ListSecretsRequest]) (*connect.Response[adminv1.ListSecretsResponse], error) {
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	list, err := s.host.Secrets(callCtx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable,
+			fmt.Errorf("admin: read secrets: %w", err))
+	}
+	return connect.NewResponse(&adminv1.ListSecretsResponse{
+		Records:       list.Records,
+		TableRevision: list.TableRevision,
+	}), nil
+}
+
+// readSecretRevision is a SyncRead helper used by Upsert/Delete.
+func (s *Server) readSecretRevision(ctx context.Context) (uint64, error) {
+	list, err := s.host.Secrets(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return list.TableRevision, nil
+}
+
+// AutoSeedSecret is the in-process bootstrap entrypoint mirroring
+// AutoSeedWebhookSource — pinned to if_table_revision_eq=0. Used by
+// tests; pkg/reflow has no koanf-bootstrap path for secrets.
+func (s *Server) AutoSeedSecret(ctx context.Context, rec *enginev1.SecretRecord) error {
+	if rec == nil {
+		return errors.New("admin: record required")
+	}
+	if err := validateSecretRecord(rec); err != nil {
+		return err
+	}
+	cmd := &enginev1.Command{
+		Kind: &enginev1.Command_UpsertSecret{
+			UpsertSecret: &enginev1.UpsertSecret{Record: rec},
+		},
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	return s.proposeCAS(callCtx, cmd, 0)
+}
+
+// validateSecretRecord enforces shape rules on a SecretRecord.
+// Mirror of validateWebhookSourceRecord. No decrypt attempt — coupling
+// admin RPC availability to KMS+blob reachability is the wrong
+// trade-off; the SecretStore reconciler surfaces resolve errors via
+// reflow_secretstore_decrypt_errors_total.
+func validateSecretRecord(rec *enginev1.SecretRecord) error {
+	if rec.GetName() == "" {
+		return errors.New("name is required")
+	}
+	src := rec.GetRemoteEncrypted()
+	if src == nil {
+		return errors.New("source.remote_encrypted is required")
+	}
+	if src.GetBlobUri() == "" {
+		return errors.New("remote_encrypted.blob_uri must be non-empty")
+	}
+	if !hasKnownBlobScheme(src.GetBlobUri()) {
+		return fmt.Errorf("remote_encrypted.blob_uri %q has unknown scheme (want s3://, gs://, azblob://, file://, or mem://)", src.GetBlobUri())
+	}
+	if src.GetKekUri() == "" {
+		return errors.New("remote_encrypted.kek_uri must be non-empty")
 	}
 	return nil
 }

@@ -46,90 +46,39 @@ type Config struct {
 	Snapshot     SnapshotConfig     `koanf:"snapshot"`
 	Handlers     HandlersConfig     `koanf:"handlers"`
 	EventSources EventSourcesConfig `koanf:"event_sources"`
-	Webhooks     WebhooksConfig     `koanf:"webhooks"`
+	KMS          KMSConfig          `koanf:"kms"`
 }
 
-// WebhooksConfig declares config-driven inbound vendor webhook
-// endpoints mounted on the existing ingress listener. Each Source
-// binds a URL path to a registered pkg/webhook.Verifier (Stripe,
-// GitHub, Slack ship built-in; operators register custom verifiers
-// via webhook.RegisterVerifier before reflow.Run). Verified facts
-// flow into SubmitInvocationRequest.metadata so the durable handler
-// sees them through ctx.Metadata(). See durable-execution-go-sad.md
-// §6.14 for the full data flow.
-type WebhooksConfig struct {
-	Sources []WebhookSource `koanf:"sources"`
+// KMSConfig configures the KMS providers Reflow registers in Tink's
+// process-global KMSClient registry. Four providers ship in-binary:
+//
+//   - blobkms+<gocloud-uri> — no-managed-KMS fallback (self-registered)
+//   - aws-kms://...          — AWS KMS via AWS SDK v2 credential chain
+//   - gcp-kms://...          — GCP Cloud KMS via Application Default Credentials
+//   - hcvault://...          — HashiCorp Vault Transit, opt-in via Vault config below
+//
+// AWS and GCP self-register from package init() and pick up
+// credentials from the host environment (env vars, IAM role, workload
+// identity, etc.) — no Reflow config knobs needed. Vault is opt-in
+// because it requires an explicit token; populate VaultKMSConfig.TokenFile
+// to enable it.
+type KMSConfig struct {
+	Vault VaultKMSConfig `koanf:"vault"`
 }
 
-// WebhookSource is one configured webhook binding. Cluster-managed
-// (the koanf shape here is the bootstrap-seed: file → proto record on
-// shard 0 → per-node Reconciler resolves secret at reconcile time).
-type WebhookSource struct {
-	// Name is the operator-facing key (mirrors metadata.name in the
-	// kubectl-style YAML). Empty falls back to Path so the legacy
-	// koanf shape keeps working — for new configs prefer Name.
-	Name string `koanf:"name"`
+// VaultKMSConfig configures the HashiCorp Vault Transit KMS provider.
+// Empty TokenFile disables Vault registration entirely.
+type VaultKMSConfig struct {
+	// Address optionally narrows the registered URI prefix. Empty
+	// registers the broad "hcvault://" prefix (any Vault host is
+	// accepted via the URI). Set e.g. to "vault.prod:8200" to constrain
+	// the registered prefix to "hcvault://vault.prod:8200".
+	Address string `koanf:"address"`
 
-	// Path is the absolute URL path the webhook is mounted at,
-	// e.g. "/webhooks/stripe". Operators choose freely; the path
-	// must be unique within Sources.
-	Path string `koanf:"path"`
-
-	// Verifier is the registered verifier name. Built-in:
-	// "stripe", "github", "slack". Custom verifiers register via
-	// pkg/webhook.RegisterVerifier from operator main().
-	Verifier string `koanf:"verifier"`
-
-	// SecretEnv is the name of an environment variable holding the
-	// shared secret. Resolved by every node at reconcile time via
-	// os.Getenv. Static within a process — rotation through env
-	// requires a restart.
-	SecretEnv string `koanf:"secret_env"`
-
-	// SecretFile is an absolute path to a file holding the shared
-	// secret. Read by every node at reconcile time (5s ticker +
-	// notifier wake), trailing newline trimmed. Supports
-	// hot-rotation by atomic file replacement.
-	SecretFile string `koanf:"secret_file"`
-
-	// SecretBlobURI is a gocloud.dev/blob URI to a ciphertext blob;
-	// SecretKEKURI is the Tink KMS URI (e.g. blobkms+file:///…,
-	// aws-kms://…, gcp-kms://…) used to decrypt it. Decryption uses
-	// AAD = webhook name. Operators rotate by overwriting the blob;
-	// the next reconcile picks up the new ciphertext fleet-wide.
-	// Mutually exclusive with SecretEnv / SecretFile.
-	SecretBlobURI string `koanf:"secret_blob_uri"`
-	SecretKEKURI  string `koanf:"secret_kek_uri"`
-
-	// Secret is the legacy inline-plaintext field. Rejected at
-	// startup since cluster persistence would write the plaintext
-	// into Raft snapshots; operators must migrate to SecretEnv,
-	// SecretFile, or SecretBlobURI+SecretKEKURI. Kept on the struct
-	// so a koanf-loaded literal raises a clean error rather than
-	// silently parsing.
-	Secret string `koanf:"secret"`
-
-	// Invocation declares which handler the verified payload is
-	// dispatched to via SubmitInvocation.
-	Invocation WebhookInvocation `koanf:"invocation"`
-}
-
-// WebhookInvocation is the SubmitInvocation template applied when a
-// signature verifies. Verifier-stamped facts (webhook_vendor,
-// stripe_signed_timestamp, github_delivery, …) are merged with
-// Metadata before dispatch; verifier values win on collision so
-// operators can't override vendor-authoritative facts.
-type WebhookInvocation struct {
-	// Service is the target service name (required).
-	Service string `koanf:"service"`
-	// Handler is the target handler name (required).
-	Handler string `koanf:"handler"`
-	// ObjectKey routes to a specific virtual object. Empty for
-	// non-keyed (singleton) services.
-	ObjectKey string `koanf:"object_key"`
-	// Metadata is the static fact set merged onto verifier-stamped
-	// metadata. Typical use: tenant tags, environment labels.
-	Metadata map[string]string `koanf:"metadata"`
+	// TokenFile is the path to a file holding the Vault token. Required
+	// (empty disables Vault registration). Read once at startup; token
+	// rotation requires a restart in v1.
+	TokenFile string `koanf:"token_file"`
 }
 
 // HandlersConfig groups the handler-related knobs. Endpoints lists

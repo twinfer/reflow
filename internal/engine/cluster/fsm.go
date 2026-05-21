@@ -58,6 +58,7 @@ type Config struct {
 type Notifiers struct {
 	EventSourceTable   *TableNotifier
 	WebhookSourceTable *TableNotifier
+	SecretTable        *TableNotifier
 }
 
 // FSM is the dragonboat IOnDiskStateMachine for shard 0. It accepts only
@@ -313,6 +314,10 @@ func (f *FSM) applyCommand(
 		return f.applyUpsertWebhookSource(batch, env, k.UpsertWebhookSource, raftIndex)
 	case *enginev1.Command_DeleteWebhookSource:
 		return f.applyDeleteWebhookSource(batch, env, k.DeleteWebhookSource, raftIndex)
+	case *enginev1.Command_UpsertSecret:
+		return f.applyUpsertSecret(batch, env, k.UpsertSecret, raftIndex)
+	case *enginev1.Command_DeleteSecret:
+		return f.applyDeleteSecret(batch, env, k.DeleteSecret, raftIndex)
 	case *enginev1.Command_EvictNode:
 		return f.applyEvictNode(batch, k.EvictNode, raftIndex)
 	case *enginev1.Command_BeginRebalanceStep:
@@ -475,6 +480,74 @@ func (f *FSM) applyDeleteWebhookSource(
 		return nil, fmt.Errorf("cluster: bump webhooksrc revision: %w", err)
 	}
 	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.WebhookSourceTable}}, nil
+}
+
+// applyUpsertSecret writes the SecretRecord and bumps the table
+// revision. CAS + notifier semantics mirror the event-source / webhook
+// arms.
+func (f *FSM) applyUpsertSecret(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.UpsertSecret,
+	raftIndex uint64,
+) (*applyResult, error) {
+	rec := cmd.GetRecord()
+	if rec == nil || rec.GetName() == "" {
+		f.cfg.Log.Warn("cluster: UpsertSecret missing record or name; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableSecret)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load secret revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	if err := (SecretTable{S: batch}).Put(batch, rec); err != nil {
+		return nil, fmt.Errorf("cluster: write secret: %w", err)
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableSecret, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump secret revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.SecretTable}}, nil
+}
+
+// applyDeleteSecret removes the named row (no-op if absent) and bumps
+// the table revision. Same CAS semantics as Upsert.
+//
+// Deliberately does NOT cascade-check consumer references (webhook rows
+// that name this secret): such validation requires a cross-table scan
+// on the apply path, which we want to avoid. Consumer reconcilers see
+// the missing name on next reconcile and preserve-prev or log + skip.
+func (f *FSM) applyDeleteSecret(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.DeleteSecret,
+	raftIndex uint64,
+) (*applyResult, error) {
+	name := cmd.GetName()
+	if name == "" {
+		f.cfg.Log.Warn("cluster: DeleteSecret missing name; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableSecret)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load secret revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	if err := (SecretTable{S: batch}).Delete(batch, name); err != nil {
+		return nil, fmt.Errorf("cluster: delete secret: %w", err)
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableSecret, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump secret revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.SecretTable}}, nil
 }
 
 // applyEvictNode marks the named node logically dead (last_seen_ms = 0)
@@ -758,6 +831,11 @@ type (
 	// WebhookSourceRecord on shard 0 plus the table's CAS revision in
 	// one SyncRead. The Reconciler calls this on each TableNotifier wake.
 	LookupWebhookSources struct{}
+
+	// LookupSecrets returns *SecretList — every SecretRecord on shard 0
+	// plus the table's CAS revision in one SyncRead. The SecretStore
+	// Reconciler calls this on each TableNotifier wake.
+	LookupSecrets struct{}
 )
 
 // EventSourceList bundles every row in EventSourceTable with the
@@ -772,6 +850,13 @@ type EventSourceList struct {
 // table's CAS revision, atomic w.r.t. the read snapshot.
 type WebhookSourceList struct {
 	Sources       []*enginev1.WebhookSourceRecord
+	TableRevision uint64
+}
+
+// SecretList bundles every row in SecretTable with the table's CAS
+// revision, atomic w.r.t. the read snapshot.
+type SecretList struct {
+	Records       []*enginev1.SecretRecord
 	TableRevision uint64
 }
 
@@ -852,6 +937,16 @@ func (f *FSM) Lookup(query any) (any, error) {
 			return nil, err
 		}
 		return &WebhookSourceList{Sources: sources, TableRevision: rev}, nil
+	case LookupSecrets:
+		records, err := (SecretTable{S: store}).List()
+		if err != nil {
+			return nil, err
+		}
+		rev, err := (RevisionTable{S: store}).Get(RevisionTableSecret)
+		if err != nil {
+			return nil, err
+		}
+		return &SecretList{Records: records, TableRevision: rev}, nil
 	default:
 		return nil, fmt.Errorf("cluster: unknown lookup type %T", query)
 	}

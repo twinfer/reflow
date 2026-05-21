@@ -1273,27 +1273,103 @@ PayPal, internal HMAC schemes, …) by implementing the same
 `webhook.Verifier` interface and calling `RegisterVerifier` from their
 handler binary's `main` before `reflow.Run`.
 
-**Config shape** (`cfg.Webhooks`):
+**Storage model — cluster-managed via shard 0.** Webhook sources are
+durable rows in shard 0's `WebhookSourceTable` (alongside deployments
+and event sources). Per-node `Manager` instances subscribe to a
+`TableNotifier`, pull a fresh snapshot on wake (5s ticker backstop),
+and atomically swap a path→source map (`atomic.Pointer`). One stable
+subtree route at `/webhooks/`; the handler reads `r.URL.Path` and
+looks up the live snapshot. Adding, rotating, or removing a webhook
+is an operator CLI call — `reflowd cluster webhooks list / delete`
+and `cluster apply -f <file>` (`kind: WebhookSource`) — propagated to
+every node via Raft, no cluster restart.
+
+**Config shape — operator workflow:**
 
 ```yaml
-webhooks:
-  sources:
-    - path: /webhooks/stripe
-      verifier: stripe
-      secret: ${env:STRIPE_WEBHOOK_SECRET}
-      invocation:
-        service: stripe-events
-        handler: receive
-        object_key: ""            # optional, for keyed handlers
-        metadata:                  # static facts merged into ctx.Metadata()
-          environment: prod
-    - path: /webhooks/github
-      verifier: github
-      secret: ${env:GITHUB_WEBHOOK_SECRET}
-      invocation:
-        service: github-events
-        handler: receive
+kind: WebhookSource
+metadata: { name: stripe-prod }
+spec:
+  path: /webhooks/stripe
+  verifier: stripe
+  secret_ref:
+    remote_encrypted:
+      blob_uri: s3://reflow-secrets/stripe.bin
+      kek_uri:  blobkms+s3://reflow-keys/master.key
+  invocation:
+    service: stripe-events
+    handler: receive
+    metadata: { environment: prod }
 ```
+
+There is no koanf-bootstrap path for webhooks (unlike event sources,
+which retain a bootstrap seed). Operators always go through
+`reflowd cluster upsert-webhook` or `cluster apply -f <file>`
+post-start. Secrets are a separate problem from webhook routing and
+deserve their own admin surface — bundling them in koanf would mean a
+plaintext-secret seed file by default.
+
+**Secret resolution — by reference into a separate SecretTable.**
+`WebhookSourceRecord` carries a `secret_name` string referencing a
+row in shard 0's `SecretTable`. The webhook record contains NO
+ciphertext or KMS material; the SecretTable is the single source of
+truth for all named secrets in the cluster (used by webhooks today,
+and by future consumers — event-source vendor credentials, outbound
+HMAC signing keys, OIDC client secrets — without per-consumer
+duplication).
+
+Per-node `internal/secretstore` Resolvers reconcile the SecretTable
+on the same notifier/ticker pattern as every other shard-0 table
+(5s ticker backstop). Each pass fetches ciphertext for every row
+via `gocloud.dev/blob.ReadAll`, dispatches the KEK URI through Tink's
+process-global `KMSClient` registry, decrypts with `AAD = []byte
+(secret.name)`, and atomically swaps a fresh name→bytes map. The
+webhook Manager (and future consumers) call `Resolver.Lookup(name)`
+on each reconcile pass — single `atomic.Pointer.Load`, no per-call
+KMS trip. Resolve failure preserves the previously-resolved bytes so
+a transient blob/KMS hiccup doesn't knock dependent consumers offline.
+
+AAD binds ciphertext to row identity, not to the consumer. Multiple
+webhooks may share one `secret_name`; renaming the secret is a
+re-encrypt operation, by design.
+
+Four KMS providers ship in-binary at `pkg/kms/{blob,awskms,gcpkms,
+hcvault}/` (always-linked, config-gated, matching the event-source
+backends' pattern): BlobKMS (`blobkms+<gocloud-uri>` — the
+no-managed-KMS fallback), AWS KMS (`aws-kms://...`), GCP Cloud KMS
+(`gcp-kms://...`), HashiCorp Vault Transit (`hcvault://...`). The
+first three self-register from `init()` and pick credentials up from
+the host's environment (env vars, IAM role, workload identity, etc.);
+Vault opts in via `cfg.KMS.Vault.TokenFile`. Operators wiring
+additional providers register from `main` before `reflow.Run` — Tink
+dispatches by first-supporting URI prefix.
+
+BlobKMS' on-disk shape is `boot_key(32B) || serialized_encrypted_
+keyset` — the boot key encrypts a Tink AEAD keyset that's the
+operational KEK. This enables multi-key rotation (add new key to the
+keyset, mark primary; old ciphertexts still decrypt via non-primary
+entries) and primitive swap (`aead.New(handle)` today;
+`hybrid.NewHybridEncrypt(handle)` or `keyderivation.New(handle)`
+tomorrow) without a wire change.
+
+Operator workflow:
+
+```
+reflowd cluster init-kek --blob-uri=file:///etc/reflow/kek.bin
+echo -n "ghs_xxx" | reflowd cluster create-secret \
+  --name=github-hmac --kek-uri=blobkms+file:///etc/reflow/kek.bin \
+  --blob-uri=s3://reflow-secrets/github.bin
+reflowd cluster upsert-webhook \
+  --name=github-prod --path=/webhooks/github --verifier=github \
+  --secret=github-hmac --service=svc --handler=on
+```
+
+Resolve path is hand-instrumented via
+`reflow_secretstore_decrypt_total{kek_scheme}` /
+`_errors_total{name,kek_scheme,stage}` / `_seconds` because Tink's
+`monitoring.Client` is exported but `RegisterMonitoringClient` lives
+in `tink-go/v2/internal/internalregistry` (blocked from external
+import in v2.6).
 
 **Request flow:**
 
@@ -1330,11 +1406,6 @@ and lower-volume, and operators with those needs can write a
 
 **Out of scope today:**
 
-- Secret backends beyond literal/env: vault, AWS Secrets Manager,
-  etc. Operators today resolve secrets via the koanf env provider
-  + their own secret-injection infra (CSI driver, init container).
-- Hot-reload of `cfg.Webhooks.Sources`: changing sources requires
-  a restart, same as the rest of cfg.
 - Per-source rate limiting: webhook bursts (Stripe retries,
   GitHub app installs) can saturate ingress; today the engine's
   generic `cfg.Ingress.HTTP.MaxBodyBytes` + tcp-level limits are
@@ -1342,6 +1413,16 @@ and lower-volume, and operators with those needs can write a
 - Outbound webhook delivery (Reflow → external system): handler
   code can use `net/http` directly; durable retries are the
   handler's responsibility via the SDK's `Run` combinator.
+- Asymmetric (hybrid) encryption for tenant-pushed secrets: the
+  current Tink-keyset shape accommodates `tink-go/v2/hybrid` as a
+  template-swap, but no concrete use case justifies the API
+  surface today. Lands when self-service-tenant or JWE-payload
+  vendors arrive.
+- Journal/state encryption-at-rest: sketched, not scheduled — uses
+  `tink-go/v2/keyderivation` to derive per-`object_key` AEADs
+  from a master keyset (itself encrypted by the same KEK pipeline
+  the SecretStore already uses). Pebble values today are plaintext;
+  disk-level encryption is the operator's concern.
 
 ---
 
@@ -1665,6 +1746,130 @@ add/remove operations.
   it is operator infrastructure, not engine machinery — Reflow itself
   does not import it. Enables multi-tenant SaaS via per-host
   routing without Reflow owning tenant state.
+
+### Cluster-managed app config + webhook KMS (done)
+
+Application config that used to require a koanf file + cluster
+restart is now hot-reconfigurable Raft state on shard 0. Webhook
+secrets — the most sensitive of the bunch — are encrypted at rest
+via Tink, with the ciphertext stored in `gocloud.dev/blob` and the
+KEK delivered through Tink's `KMSClient` registry. See §6.14.
+
+- **Shard 0 typed tables.** `DeploymentTable`, `EventSourceTable`,
+  `WebhookSourceTable`. Mutations go through `Command_Upsert*` /
+  `Command_Delete*` with `Envelope.precondition.if_table_revision_eq`
+  for CAS; the FSM signals CAS failure via `Result.Value =
+  ResultValueFailedPrecondition` (returning an error halts the shard,
+  per `internal/engine/CLAUDE.md`). Per-table singleton `__rev` row
+  encoded as `TableRevision{revision, updated_at_ms}`.
+- **Reconciler pattern.** Per-node subsystems subscribe to a
+  `cluster.TableNotifier` (buffered-1 non-blocking send from the
+  FSM apply goroutine, post-commit) and pull a fresh snapshot on
+  wake; 5s ticker backstop. Event-source `Manager` reconciles
+  dispatcher goroutines (per-source `sync.WaitGroup` for ≤5s graceful
+  drain on remove); webhook `Manager` reconciles a path→source map
+  via `atomic.Pointer` swap.
+- **kubectl-shaped CLI.** `reflowd cluster {eventsources,webhooks}
+  {list,delete}` plus top-level `cluster apply -f <file>` and
+  `cluster export [--kind=…]`. Multi-doc YAML with
+  `kind`/`metadata.name`/`spec`. `sigs.k8s.io/yaml` for
+  YAML→JSON→protojson so proto field additions auto-flow.
+- **Bootstrap-koanf seed path (event sources only).**
+  `cfg.EventSources.Sources` proposes with `if_table_revision_eq=0`
+  — only succeeds against an empty table. Once operator-managed,
+  the file is ignored. Webhooks have no koanf-seed path; secrets
+  would be required first and a plaintext-secret seed file is not
+  a default we want to ship.
+- **Webhook secrets via shard-0 SecretTable indirection.**
+  `WebhookSourceRecord.secret_name` references a row in shard 0's
+  `SecretTable`. The webhook record carries no ciphertext or KMS
+  material; the SecretTable is the single source of truth for all
+  named secrets (used by webhooks today; event-source vendor
+  credentials, outbound HMAC signing keys, OIDC client secrets
+  tomorrow — define-once, reference-many). `SecretRecord.source`
+  is a oneof with `remote_encrypted{blob_uri, kek_uri}` as its only
+  variant today, leaving room for future shapes (inline-hybrid,
+  vault-kv-path) without disturbing existing rows. Secrets never
+  traverse Raft. Per-node `internal/secretstore` Reconcilers
+  reconcile the SecretTable on the same notifier/ticker pattern as
+  every other shard-0 table, fetch ciphertext via
+  `gocloud.dev/blob.ReadAll`, dispatch the KEK URI through Tink's
+  process-global `KMSClient` registry, decrypt with
+  `AAD = []byte(secret.name)` (binds ciphertext to row identity, so
+  renaming a secret is a re-encrypt operation by design), and
+  atomically swap a fresh name→bytes map. Webhook Manager and
+  future consumers call `Resolver.Lookup(name)` on each reconcile
+  pass — single `atomic.Pointer.Load`, no per-call KMS trip.
+  Resolve failure preserves the previously-resolved bytes so a
+  transient blob/KMS hiccup doesn't knock dependent consumers
+  offline.
+
+### Unified secret management (done)
+
+One resolve path, one provider interface, one on-disk shape — the
+three threads landed together so the cluster has a uniform
+"ciphertext + operator-managed KEK" posture regardless of which
+consumer (webhook today; event-source creds, outbound HMAC keys,
+OIDC client secrets tomorrow) references the secret.
+
+- **Shard-0 `SecretTable` indirection.** Secrets are first-class
+  records in shard 0 (CAS-checked Upsert/Delete via
+  `Envelope.precondition.if_table_revision_eq`, per-table notifier,
+  TableRevision singleton — same shape as `EventSourceTable` and
+  `WebhookSourceTable`). `WebhookSourceRecord.secret_name`
+  references a `SecretRecord.name`; the webhook row carries no
+  ciphertext or KMS material. An earlier inline `SecretRef` shape
+  (`env_var_name`, `file_path`, `remote_encrypted`) was rejected
+  before production: env vars and file paths leaked per-node
+  deployment state that varied across the fleet; the indirection
+  table forces one uniform posture.
+- **`SecretRecord.source` oneof — `remote_encrypted` only today.**
+  `RemoteEncryptedSecret{blob_uri, kek_uri}` is the single variant;
+  the oneof shape leaves room for future shapes (inline-hybrid,
+  vault-kv-path) without disturbing existing rows.
+- **`pkg/kms/{awskms,gcpkms,hcvault,blob}/` — always-linked,
+  config-gated.** Matches the event-source backends' pattern in
+  `internal/ingress/eventsource/factory_*.go`. BlobKMS / AWS / GCP
+  self-register at `init()` and read the standard credential chain
+  (env, instance metadata, workload identity); Vault registers via
+  `cfg.KMS.Vault{Address, TokenFile}` because it needs explicit
+  address + token. Shipped binary grows ~20MB (mostly AWS SDK v2),
+  same trade-off event-source backends made.
+- **BlobKMS Tink-keyset shape.** On-disk: `boot_key(32B) ||
+  serialized_encrypted_keyset` — the boot key encrypts a Tink AEAD
+  keyset that is the operational KEK. Gives multi-key rotation
+  (add new key to the keyset, mark primary; old ciphertexts still
+  decrypt via non-primary entries), crypto-agility (swap AEAD type
+  via key template change, no proto change), and primitive-swap
+  (`aead.New(handle)` today; `hybrid.NewHybridEncrypt(handle)` or
+  `keyderivation.New(handle)` tomorrow) without touching storage.
+- **Per-node `internal/secretstore` Resolver.** Holds
+  `atomic.Pointer[map[string][]byte]` (name → resolved plaintext
+  bytes), swapped each reconcile pass. Consumers call
+  `Lookup(name)` on the hot path with no per-call work. AAD
+  binds ciphertext to row identity (`[]byte(secret.name)`), not to
+  the consumer; multiple consumers may share one secret name.
+  Resolve failure preserves the previously-resolved bytes.
+  Hand-instrumented Prometheus
+  (`reflow_secretstore_decrypt_total{kek_scheme}` /
+  `_errors_total{name,kek_scheme,stage}` / `_seconds`) because
+  Tink's `monitoring.RegisterMonitoringClient` lives in
+  `tink-go/v2/internal/internalregistry` (blocked from external
+  import in v2.6).
+- **`reflowd cluster {init-kek, create-secret, delete-secret,
+  list-secrets, decrypt-secret, upsert-webhook}`.** `init-kek`
+  generates the keyset + boot key at a `gocloud.dev/blob` URI.
+  `create-secret` reads plaintext from stdin / `--input`, encrypts
+  with the named KEK, writes ciphertext to `--blob-uri`, and
+  proposes `Admin.UpsertSecret` so the row lands in shard 0 in one
+  command. `upsert-webhook` references an existing secret by
+  `--secret=NAME`. `decrypt-secret` is operator self-verification.
+
+Sketched, not scheduled — journal/state encryption-at-rest via
+`tink-go/v2/keyderivation`. Per-`object_key` derived AEADs with an
+LRU cache for the FSM apply hot path, riding on the same keyset
+shape. Migration story is the harder half (read-handles-both-formats
+phase + background sweep) and warrants its own delivery cycle.
 
 ### Production Hardening (in progress)
 

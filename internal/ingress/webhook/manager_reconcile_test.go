@@ -9,8 +9,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -57,7 +55,12 @@ func signGitHub(secret, body []byte) string {
 
 func newMgr(t *testing.T, sub webhook.Submitter) *webhook.Manager {
 	t.Helper()
-	m, err := webhook.New(sub, prometheus.NewRegistry(), nil)
+	// SecretStore Resolver is nil here: every Reconcile call below
+	// supplies SourceConfig.Secret directly, so the Manager never
+	// needs to Lookup. The production code path goes through
+	// reconcileFromReader which does call secrets.Lookup; that path
+	// is covered by secret store + integration tests.
+	m, err := webhook.New(sub, nil, prometheus.NewRegistry(), nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -210,93 +213,9 @@ func (r *fakeReader) set(rev uint64, records ...*enginev1.WebhookSourceRecord) {
 	r.records = records
 }
 
-func TestRunReconciler_SecretRotation(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	secretPath := filepath.Join(dir, "secret")
-	if err := os.WriteFile(secretPath, []byte("rotateA"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	sub := &recSubmitter{}
-	m := newMgr(t, sub)
-	rec := &enginev1.WebhookSourceRecord{
-		Name:      "rot",
-		Path:      "/webhooks/rot",
-		Verifier:  "github",
-		SecretRef: &enginev1.SecretRef{Source: &enginev1.SecretRef_FilePath{FilePath: secretPath}},
-		Service:   "svc",
-		Handler:   "on",
-	}
-	reader := &fakeReader{}
-	reader.set(1, rec)
-	wakes := make(chan struct{}, 1)
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go func() { _ = m.RunReconciler(ctx, wakes, reader) }()
-	// Wait until the initial reconcile lands.
-	if !waitForCount(t, sub, m, "/webhooks/rot", []byte("rotateA"), 1, 2*time.Second) {
-		t.Fatal("initial dispatch never landed")
-	}
-	// Rotate file contents; trigger reconcile.
-	if err := os.WriteFile(secretPath, []byte("rotateB"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	wakes <- struct{}{}
-	// Old signature should now fail; new should pass.
-	if !waitForReject(t, m, "/webhooks/rot", []byte("rotateA"), 2*time.Second) {
-		t.Fatal("rotation didn't take effect; old signature still accepted")
-	}
-	before := sub.count()
-	if resp := postSigned(t, m, "/webhooks/rot", []byte("rotateB"), []byte(`{}`)); resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("new signature: status=%d", resp.StatusCode)
-	}
-	if sub.count() != before+1 {
-		t.Fatalf("submitter not called for new signature")
-	}
-}
-
-func TestRunReconciler_SecretReadFailurePreservesPrev(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	secretPath := filepath.Join(dir, "secret")
-	if err := os.WriteFile(secretPath, []byte("keep"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	sub := &recSubmitter{}
-	m := newMgr(t, sub)
-	rec := &enginev1.WebhookSourceRecord{
-		Name:      "keep",
-		Path:      "/webhooks/keep",
-		Verifier:  "github",
-		SecretRef: &enginev1.SecretRef{Source: &enginev1.SecretRef_FilePath{FilePath: secretPath}},
-		Service:   "svc",
-		Handler:   "on",
-	}
-	reader := &fakeReader{}
-	reader.set(1, rec)
-	wakes := make(chan struct{}, 1)
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go func() { _ = m.RunReconciler(ctx, wakes, reader) }()
-	if !waitForCount(t, sub, m, "/webhooks/keep", []byte("keep"), 1, 2*time.Second) {
-		t.Fatal("initial dispatch never landed")
-	}
-	// Make the file unreadable. On next reconcile the loop should
-	// keep the previous resolved bytes.
-	if err := os.Chmod(secretPath, 0o000); err != nil {
-		t.Skipf("chmod 0 failed (likely root/CI): %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(secretPath, 0o600) })
-	wakes <- struct{}{}
-	time.Sleep(80 * time.Millisecond) // let reconcile run
-	before := sub.count()
-	if resp := postSigned(t, m, "/webhooks/keep", []byte("keep"), []byte(`{}`)); resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("prev secret should still verify: status=%d", resp.StatusCode)
-	}
-	if sub.count() != before+1 {
-		t.Fatal("submitter not called; prev secret didn't carry through")
-	}
-}
+// Secret rotation + preserve-prev-on-error coverage lives in
+// secret_remote_encrypted_test.go — same shape, against the only
+// supported SecretRef variant (remote_encrypted).
 
 func TestRunReconciler_BadFactoryDoesNotKillSiblings(t *testing.T) {
 	t.Parallel()

@@ -6,13 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"sync"
 	"time"
 
 	connect "connectrpc.com/connect"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	tinkreg "github.com/tink-crypto/tink-go/v2/core/registry"
 	"google.golang.org/grpc/credentials"
 
 	"github.com/twinfer/reflow/internal/admin"
@@ -27,22 +25,23 @@ import (
 	httpingress "github.com/twinfer/reflow/internal/ingress/http"
 	internalwebhook "github.com/twinfer/reflow/internal/ingress/webhook"
 	"github.com/twinfer/reflow/internal/observability"
+	"github.com/twinfer/reflow/internal/secretstore"
 	"github.com/twinfer/reflow/pkg/adminclient"
+	hcvaultkms "github.com/twinfer/reflow/pkg/kms/hcvault"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
-	tinkkmsblob "github.com/twinfer/reflow/pkg/tinkkms/blob"
-	pkgwebhook "github.com/twinfer/reflow/pkg/webhook"
 	adminv1 "github.com/twinfer/reflow/proto/adminv1"
 	"github.com/twinfer/reflow/proto/adminv1/adminv1connect"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-)
 
-// tinkRegisterOnce guards process-global Tink KMSClient registration.
-// Tink's registry.RegisterKMSClient appends without dedup; calling
-// twice from sequential reflow.Run invocations (tests) would stack
-// duplicate clients. Operators registering cloud KMS (gcpkms, awskms,
-// hcvault, custom) do so from their own main() before reflow.Run —
-// Tink dispatches by first-supporting match.
-var tinkRegisterOnce sync.Once
+	// KMS providers always-linked, config-gated. Each subpackage's
+	// init() calls registry.RegisterKMSClient under a sync.Once.
+	// AWS / GCP self-register and read the standard credential chain;
+	// Vault registers via the explicit hcvaultkms.Register call below
+	// (it needs a token file). BlobKMS is the no-managed-KMS fallback.
+	_ "github.com/twinfer/reflow/pkg/kms/awskms"
+	_ "github.com/twinfer/reflow/pkg/kms/blob"
+	_ "github.com/twinfer/reflow/pkg/kms/gcpkms"
+)
 
 // Run starts a reflow node from cfg and returns a Host. The Host owns
 // goroutines and TCP listeners; call Host.Close (or cancel ctx) to shut down.
@@ -64,13 +63,14 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	logger := buildLogger(cfg.Logging)
 	slog.SetDefault(logger)
 
-	// Register the built-in BlobKMS once per process. Reflow ships it
-	// as the no-managed-KMS fallback for SecretRef.remote_encrypted;
-	// operators wiring real cloud KMS register their own client from
-	// main() before reflow.Run.
-	tinkRegisterOnce.Do(func() {
-		tinkreg.RegisterKMSClient(tinkkmsblob.New())
-	})
+	// Vault is the one KMS provider that needs explicit config (token
+	// file + optional URI prefix narrowing). Other providers (BlobKMS,
+	// AWS, GCP) self-register from their package init().
+	if cfg.KMS.Vault.TokenFile != "" {
+		if err := hcvaultkms.Register(cfg.KMS.Vault.Address, cfg.KMS.Vault.TokenFile, nil); err != nil {
+			return nil, fmt.Errorf("reflow: hcvault register: %w", err)
+		}
+	}
 
 	var metricsRegisterer prometheus.Registerer
 	var metrics *observability.Metrics
@@ -128,6 +128,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	// goroutines later.
 	eventSourceNotifier := cluster.NewTableNotifier()
 	webhookSourceNotifier := cluster.NewTableNotifier()
+	secretNotifier := cluster.NewTableNotifier()
 
 	hcfg := engine.HostConfig{
 		NodeID:             cfg.Node.ID,
@@ -148,6 +149,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		ClusterNotifiers: cluster.Notifiers{
 			EventSourceTable:   eventSourceNotifier,
 			WebhookSourceTable: webhookSourceNotifier,
+			SecretTable:        secretNotifier,
 		},
 		OnSnapshotPersisted: func(shardID uint64) {
 			ch, ok := snapshotTriggers[shardID]
@@ -250,7 +252,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	host, herr := finishStartup(ctx, cfg, eh, adminEnabled, shards, snapshotTriggers,
 		deliverySrv, deliveryClient, deliveryCreds, adminCreds, handlerSigner,
 		httpAuthMW, httpAuthCloser, metricsCloser, metricsRegisterer, metrics,
-		eventSourceNotifier, webhookSourceNotifier, logger)
+		eventSourceNotifier, webhookSourceNotifier, secretNotifier, logger)
 	if herr != nil {
 		if deliverySrv != nil {
 			_ = deliverySrv.Close()
@@ -322,29 +324,21 @@ func startIngressListener(
 	cfg Config,
 	multiNode bool,
 	mw func(http.Handler) http.Handler,
+	secrets *secretstore.Resolver,
 	metrics *observability.Metrics,
 	metricsRegisterer prometheus.Registerer,
 	logger *slog.Logger,
-) (*ingress.Runtime, *creds.ListenerCreds, *internalwebhook.Manager, []*enginev1.WebhookSourceRecord, error) {
+) (*ingress.Runtime, *creds.ListenerCreds, *internalwebhook.Manager, error) {
 	if cfg.Ingress.Disabled {
 		logger.Info("reflow: ingress disabled (cfg.ingress.disabled=true); clients must use a separate ingress fleet")
-		return nil, nil, nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	lc, err := creds.Build(cfg.Ingress.Creds, logger)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("reflow: ingress creds: %w", err)
+		return nil, nil, nil, fmt.Errorf("reflow: ingress creds: %w", err)
 	}
 	if multiNode && lc.SecurityLevel == credentials.NoSecurity {
 		logger.Warn("reflow: ingress is running on an insecure listener — multi-node deployments should configure cfg.Ingress.Creds")
-	}
-	// Pre-validate webhook config: koanf → proto round-trip catches
-	// inline-plaintext / missing-required-field / unknown-verifier
-	// before the listener binds. The proto records also feed into
-	// the seed loop below.
-	seeds, err := buildWebhookSeeds(cfg.Webhooks.Sources)
-	if err != nil {
-		_ = creds.CloseAll(lc)
-		return nil, nil, nil, nil, fmt.Errorf("reflow: webhook config: %w", err)
 	}
 	// Manager is constructed inside ExtraRoutes (needs srv as the
 	// Submitter) and captured here so finishStartup can spawn the
@@ -372,7 +366,7 @@ func startIngressListener(
 		// are configured — an empty snapshot 404s every request, so
 		// the route is harmless and gives operators a stable mount
 		// point to add sources at runtime via `cluster apply`.
-		m, merr := internalwebhook.New(srv, metricsRegisterer, logger)
+		m, merr := internalwebhook.New(srv, secrets, metricsRegisterer, logger)
 		if merr != nil {
 			// New only fails on nil submitter; srv is non-nil here.
 			logger.Error("reflow: webhook Manager init failed", "err", merr)
@@ -390,39 +384,12 @@ func startIngressListener(
 	rt, err := ingress.Start(ctx, eh, icfg)
 	if err != nil {
 		_ = creds.CloseAll(lc)
-		return nil, nil, nil, nil, fmt.Errorf("reflow: ingress start: %w", err)
+		return nil, nil, nil, fmt.Errorf("reflow: ingress start: %w", err)
 	}
 	logger.Info("reflow: ingress listening",
 		"addr", rt.Addr(),
 		"driver", string(lc.Driver))
-	return rt, lc, webhookMgr, seeds, nil
-}
-
-// buildWebhookSeeds runs the koanf→proto conversion + verifier-registry
-// check for every configured source. Returns a list of WebhookSourceRecord
-// protos suitable for autoSeedWebhookSources to propose against an empty
-// shard-0 table. Empty input returns (nil, nil).
-func buildWebhookSeeds(sources []WebhookSource) ([]*enginev1.WebhookSourceRecord, error) {
-	if len(sources) == 0 {
-		return nil, nil
-	}
-	out := make([]*enginev1.WebhookSourceRecord, 0, len(sources))
-	seen := make(map[string]string, len(sources))
-	for i, src := range sources {
-		rec, err := webhookSourceProtoFromConfig(src)
-		if err != nil {
-			return nil, fmt.Errorf("sources[%d]: %w", i, err)
-		}
-		if prior, dup := seen[rec.GetPath()]; dup {
-			return nil, fmt.Errorf("sources[%d]: duplicate path %q (previously bound to webhook %q)", i, rec.GetPath(), prior)
-		}
-		seen[rec.GetPath()] = rec.GetName()
-		if _, err := pkgwebhook.LookupVerifier(rec.GetVerifier()); err != nil {
-			return nil, fmt.Errorf("sources[%d] (path=%q): %w", i, rec.GetPath(), err)
-		}
-		out = append(out, rec)
-	}
-	return out, nil
+	return rt, lc, webhookMgr, nil
 }
 
 // finishStartup wires shard 0 + partition shards + optional snapshot
@@ -447,6 +414,7 @@ func finishStartup(
 	metrics *observability.Metrics,
 	eventSourceNotifier *cluster.TableNotifier,
 	webhookSourceNotifier *cluster.TableNotifier,
+	secretNotifier *cluster.TableNotifier,
 	logger *slog.Logger,
 ) (*Host, error) {
 	// Joiners register themselves with shard 0 BEFORE starting any
@@ -586,8 +554,19 @@ func finishStartup(
 			"driver", string(adminCreds.Driver))
 	}
 
+	// SecretStore Resolver runs alongside the ingress listener so the
+	// webhook Manager can Lookup(name) on each reconcile pass. The
+	// Resolver itself is hot-path safe — no per-call work in Lookup.
+	secrets := secretstore.New(metricsRegisterer, logger)
+	go func() {
+		reader := secretReader{host: eh}
+		if rerr := secrets.RunReconciler(ctx, secretNotifier.Subscribe(), reader); rerr != nil && !errors.Is(rerr, context.Canceled) {
+			logger.Warn("reflow: secretstore reconcile loop exited", "err", rerr)
+		}
+	}()
+
 	multiNode := len(cfg.Cluster.Peers) > 1
-	ingressRT, ingressCreds, webhookMgr, webhookSeeds, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, metrics, metricsRegisterer, logger)
+	ingressRT, ingressCreds, webhookMgr, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, secrets, metrics, metricsRegisterer, logger)
 	if err != nil {
 		if snapshotCxl != nil {
 			snapshotCxl()
@@ -658,13 +637,13 @@ func finishStartup(
 	// the shard-0 leader and only when the EventSourceTable is empty —
 	// otherwise the file is ignored (operators manage via CLI after
 	// first run). See autoSeedEventSources.
+	//
+	// Webhook sources have no koanf bootstrap path as of PR4 — secrets
+	// are operator-supplied (encrypted blobs + KEK URIs); operators
+	// register webhooks post-start via `reflowd cluster encrypt-secret
+	// --upsert-webhook ...` or `reflowd cluster apply -f <file>`.
 	if len(cfg.EventSources.Sources) > 0 {
 		go autoSeedEventSources(ctx, srv, runner, eh, cfg.EventSources.Sources, logger)
-	}
-	// Same pattern for webhook sources. webhookSeeds was pre-validated
-	// (koanf → proto round-trip) before the ingress listener bound.
-	if len(webhookSeeds) > 0 {
-		go autoSeedWebhookSources(ctx, srv, runner, eh, webhookSeeds, logger)
 	}
 
 	return &Host{
@@ -711,8 +690,7 @@ func (r eventSourceReader) ListEventSources(ctx context.Context) ([]eventsource.
 
 // webhookSourceReader is the Reader adapter the webhook reconcile loop
 // uses to pull desired state. Returns the raw proto records — secret
-// resolution happens inside the loop, not at the seam (each reconcile
-// re-resolves so file_path secrets hot-rotate).
+// bytes are looked up via the SecretStore Resolver inside the loop.
 type webhookSourceReader struct {
 	host *engine.Host
 }
@@ -727,6 +705,23 @@ func (r webhookSourceReader) ListWebhookSources(ctx context.Context) ([]*enginev
 		return nil, 0, err
 	}
 	return list.Sources, list.TableRevision, nil
+}
+
+// secretReader is the Reader adapter the SecretStore reconciler uses
+// to pull desired state. Mirrors webhookSourceReader — same SyncRead
+// timeout, same proto pass-through.
+type secretReader struct {
+	host *engine.Host
+}
+
+func (r secretReader) ListSecrets(ctx context.Context) ([]*enginev1.SecretRecord, uint64, error) {
+	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	list, err := r.host.Secrets(readCtx)
+	if err != nil {
+		return nil, 0, err
+	}
+	return list.Records, list.TableRevision, nil
 }
 
 // autoSeedEventSources mirrors autoSeedEndpoints for the EventSourceTable.
@@ -784,55 +779,6 @@ func autoSeedEventSources(ctx context.Context, srv *admin.Server, runner *engine
 			continue
 		}
 		log.Info("reflow: auto-seed event source registered", "name", sc.Name)
-	}
-}
-
-// autoSeedWebhookSources mirrors autoSeedEventSources for the
-// WebhookSourceTable. Records were validated (koanf → proto
-// conversion in startIngressListener); this function proposes them
-// with CAS-on-zero so a racing operator-Apply at the same moment
-// reproducibly conflicts instead of silently overwriting.
-func autoSeedWebhookSources(ctx context.Context, srv *admin.Server, runner *engine.MetadataRunner, host *engine.Host, seeds []*enginev1.WebhookSourceRecord, log *slog.Logger) {
-	deadline := time.Now().Add(2 * time.Minute)
-	for {
-		if runner != nil && runner.IsLeader() {
-			break
-		}
-		if time.Now().After(deadline) {
-			log.Warn("reflow: auto-seed webhook sources: shard 0 leadership not reached within 2m; skipping",
-				"sources", len(seeds))
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(200 * time.Millisecond):
-		}
-	}
-	listCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	list, err := host.WebhookSources(listCtx)
-	cancel()
-	if err != nil {
-		log.Warn("reflow: auto-seed webhook sources: read table failed; skipping", "err", err)
-		return
-	}
-	if list.TableRevision != 0 || len(list.Sources) != 0 {
-		log.Info("reflow: auto-seed webhook sources: table non-empty; skipping seed",
-			"revision", list.TableRevision, "rows", len(list.Sources))
-		return
-	}
-	for _, rec := range seeds {
-		if ctx.Err() != nil {
-			return
-		}
-		seedCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := srv.AutoSeedWebhookSource(seedCtx, rec)
-		cancel()
-		if err != nil {
-			log.Warn("reflow: auto-seed webhook source failed", "name", rec.GetName(), "err", err)
-			continue
-		}
-		log.Info("reflow: auto-seed webhook source registered", "name", rec.GetName())
 	}
 }
 

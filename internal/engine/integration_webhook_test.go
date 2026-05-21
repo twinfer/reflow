@@ -52,8 +52,8 @@ func TestIntegration_WebhookSourceTable_ApplyAndCAS(t *testing.T) {
 	// First upsert (CAS on zero).
 	rec := &enginev1.WebhookSourceRecord{
 		Name: "github-prod", Path: "/webhooks/github", Verifier: "github",
-		SecretRef: &enginev1.SecretRef{Source: &enginev1.SecretRef_EnvVarName{EnvVarName: "GH_WH"}},
-		Service:   "github-events", Handler: "OnEvent",
+		SecretName: "github-hmac",
+		Service:    "github-events", Handler: "OnEvent",
 	}
 	val, err := h.MetadataRunner().Proposer().ProposeSelfCAS(ctx,
 		upsertWebhookCmd(rec), &enginev1.Precondition{IfTableRevisionEq: 0})
@@ -77,8 +77,8 @@ func TestIntegration_WebhookSourceTable_ApplyAndCAS(t *testing.T) {
 	if got.TableRevision != 1 || len(got.Sources) != 1 || got.Sources[0].GetPath() != "/webhooks/github" {
 		t.Fatalf("post-upsert state wrong: rev=%d rows=%d", got.TableRevision, len(got.Sources))
 	}
-	if ref := got.Sources[0].GetSecretRef(); ref.GetEnvVarName() != "GH_WH" {
-		t.Errorf("SecretRef envVarName not persisted: %+v", ref)
+	if got.Sources[0].GetSecretName() != "github-hmac" {
+		t.Errorf("secret_name not persisted: got %q", got.Sources[0].GetSecretName())
 	}
 
 	// Stale CAS — table is at rev 1, propose with if=999.

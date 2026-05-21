@@ -1,10 +1,7 @@
 package blob
 
 import (
-	"crypto/rand"
 	"errors"
-	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,9 +18,9 @@ func TestSplitURI(t *testing.T) {
 		wantKey      string
 		wantErrMatch string
 	}{
-		{"blobkms+s3://bucket/master.key", "s3://bucket", "master.key", ""},
-		{"blobkms+s3://bucket/path/master.key", "s3://bucket/path", "master.key", ""},
-		{"blobkms+file:///etc/reflow/master.key", "file:///etc/reflow", "master.key", ""},
+		{"blobkms+s3://bucket/kek.bin", "s3://bucket", "kek.bin", ""},
+		{"blobkms+s3://bucket/path/kek.bin", "s3://bucket/path", "kek.bin", ""},
+		{"blobkms+file:///etc/reflow/kek.bin", "file:///etc/reflow", "kek.bin", ""},
 		{"blobkms+mem://test/k", "mem://test", "k", ""},
 		{"blobkms+gs://b/x/y/z.bin", "gs://b/x/y", "z.bin", ""},
 		// errors
@@ -61,26 +58,25 @@ func TestSupported(t *testing.T) {
 	}
 }
 
-// stageMaster writes a 32-byte master key into a fresh temp directory
-// and returns the blobkms+ URI that addresses it.
-func stageMaster(t *testing.T, bytes []byte) string {
+// stageKEK writes a fresh KEK blob via InitKEK to a temp directory and
+// returns the blobkms+ URI addressing it.
+func stageKEK(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "master.key")
-	if err := os.WriteFile(path, bytes, 0o600); err != nil {
-		t.Fatalf("write master: %v", err)
+	path := filepath.Join(dir, "kek.bin")
+	raw, err := InitKEK()
+	if err != nil {
+		t.Fatalf("InitKEK: %v", err)
 	}
-	// fileblob accepts file:///abs/path — split at last '/'.
-	return URIPrefix + "file://" + (&url.URL{Path: dir}).String() + "/master.key"
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write kek: %v", err)
+	}
+	return URIPrefix + "file://" + dir + "/kek.bin"
 }
 
 func TestRoundtrip(t *testing.T) {
 	t.Parallel()
-	mk := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, mk); err != nil {
-		t.Fatalf("rand: %v", err)
-	}
-	aead, err := New().GetAEAD(stageMaster(t, mk))
+	aead, err := New().GetAEAD(stageKEK(t))
 	if err != nil {
 		t.Fatalf("GetAEAD: %v", err)
 	}
@@ -101,9 +97,7 @@ func TestRoundtrip(t *testing.T) {
 
 func TestDecrypt_WrongAAD(t *testing.T) {
 	t.Parallel()
-	mk := make([]byte, 32)
-	_, _ = io.ReadFull(rand.Reader, mk)
-	aead, err := New().GetAEAD(stageMaster(t, mk))
+	aead, err := New().GetAEAD(stageKEK(t))
 	if err != nil {
 		t.Fatalf("GetAEAD: %v", err)
 	}
@@ -118,9 +112,7 @@ func TestDecrypt_WrongAAD(t *testing.T) {
 
 func TestDecrypt_TamperedCiphertext(t *testing.T) {
 	t.Parallel()
-	mk := make([]byte, 32)
-	_, _ = io.ReadFull(rand.Reader, mk)
-	aead, err := New().GetAEAD(stageMaster(t, mk))
+	aead, err := New().GetAEAD(stageKEK(t))
 	if err != nil {
 		t.Fatalf("GetAEAD: %v", err)
 	}
@@ -134,18 +126,41 @@ func TestDecrypt_TamperedCiphertext(t *testing.T) {
 	}
 }
 
-func TestGetAEAD_WrongLengthMaster(t *testing.T) {
+func TestGetAEAD_TooShortBlob(t *testing.T) {
 	t.Parallel()
-	uri := stageMaster(t, []byte("only sixteen by5")) // 16 bytes, not 32
+	dir := t.TempDir()
+	// Write a 16-byte blob — well under BootKeySize + an encrypted keyset.
+	if err := os.WriteFile(filepath.Join(dir, "kek.bin"), []byte("only sixteen by5"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	uri := URIPrefix + "file://" + dir + "/kek.bin"
 	if _, err := New().GetAEAD(uri); err == nil {
-		t.Fatal("want error for non-32-byte master")
+		t.Fatal("want error for too-short KEK blob")
+	}
+}
+
+func TestGetAEAD_BadKeyset(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// Write a blob with a valid 32-byte boot key but garbage where the
+	// encrypted keyset bytes should be.
+	junk := make([]byte, 32+64)
+	for i := range junk {
+		junk[i] = byte(i)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "kek.bin"), junk, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	uri := URIPrefix + "file://" + dir + "/kek.bin"
+	if _, err := New().GetAEAD(uri); err == nil {
+		t.Fatal("want error for malformed keyset bytes")
 	}
 }
 
 func TestGetAEAD_MissingBlob(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	uri := URIPrefix + "file://" + dir + "/missing.key"
+	uri := URIPrefix + "file://" + dir + "/missing.bin"
 	if _, err := New().GetAEAD(uri); err == nil {
 		t.Fatal("want error for missing blob")
 	}
@@ -164,9 +179,8 @@ func TestConstants(t *testing.T) {
 	if URIPrefix != "blobkms+" {
 		t.Errorf("URIPrefix = %q; want blobkms+", URIPrefix)
 	}
-	if MasterKeySize != 32 {
-		t.Errorf("MasterKeySize = %d; want 32", MasterKeySize)
+	if BootKeySize != 32 {
+		t.Errorf("BootKeySize = %d; want 32", BootKeySize)
 	}
-	// silence the import lint if anything below grows.
 	_ = errors.New
 }

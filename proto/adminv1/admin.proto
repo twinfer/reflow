@@ -83,12 +83,22 @@ service Admin {
   rpc ListEventSources(ListEventSourcesRequest) returns (ListEventSourcesResponse);
   // UpsertWebhookSource / DeleteWebhookSource / ListWebhookSources mirror
   // the event-source trio against shard 0's WebhookSourceTable. The
-  // record's SecretRef is validated for shape (exactly one of
-  // env_var_name / file_path); the plaintext secret never traverses
-  // Raft. Leader-only for mutating calls; List is SyncRead from any peer.
+  // record's secret_name references a row in the shard-0 SecretTable
+  // (UpsertSecret below); the webhook record carries no ciphertext or
+  // KMS material itself. Leader-only for mutating calls; List is
+  // SyncRead from any peer.
   rpc UpsertWebhookSource(UpsertWebhookSourceRequest) returns (UpsertWebhookSourceResponse);
   rpc DeleteWebhookSource(DeleteWebhookSourceRequest) returns (DeleteWebhookSourceResponse);
   rpc ListWebhookSources(ListWebhookSourcesRequest) returns (ListWebhookSourcesResponse);
+  // UpsertSecret / DeleteSecret / ListSecrets mirror the same trio
+  // against shard 0's SecretTable. Each SecretRecord references a
+  // ciphertext blob (gocloud.dev/blob URI) and a KEK (Tink KMS URI);
+  // the plaintext never traverses Raft. Per-node internal/secretstore
+  // Reconcilers fetch + decrypt at reconcile time and surface bytes via
+  // in-memory Lookup. Leader-only for mutating calls; List is SyncRead.
+  rpc UpsertSecret(UpsertSecretRequest) returns (UpsertSecretResponse);
+  rpc DeleteSecret(DeleteSecretRequest) returns (DeleteSecretResponse);
+  rpc ListSecrets(ListSecretsRequest) returns (ListSecretsResponse);
 }
 
 message AddNodeRequest {
@@ -209,6 +219,30 @@ message DeleteWebhookSourceResponse {
 message ListWebhookSourcesRequest {}
 message ListWebhookSourcesResponse {
   repeated reflow.engine.v1.WebhookSourceRecord sources = 1;
+  uint64 table_revision = 2;
+}
+
+// UpsertSecretRequest carries one SecretRecord plus an optional CAS
+// guard. if_table_revision_eq=0 disables CAS.
+message UpsertSecretRequest {
+  reflow.engine.v1.SecretRecord record = 1;
+  uint64 if_table_revision_eq = 2;
+}
+message UpsertSecretResponse {
+  uint64 table_revision = 1;
+}
+
+message DeleteSecretRequest {
+  string name = 1;
+  uint64 if_table_revision_eq = 2;
+}
+message DeleteSecretResponse {
+  uint64 table_revision = 1;
+}
+
+message ListSecretsRequest {}
+message ListSecretsResponse {
+  repeated reflow.engine.v1.SecretRecord records = 1;
   uint64 table_revision = 2;
 }
 

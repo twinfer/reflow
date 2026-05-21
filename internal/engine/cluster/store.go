@@ -388,6 +388,71 @@ func (t WebhookSourceTable) List() ([]*enginev1.WebhookSourceRecord, error) {
 	return out, iter.Error()
 }
 
+// SecretTable persists SecretRecord rows keyed by name. Lives on shard
+// 0 alongside the other cluster-managed config tables. Per-node
+// internal/secretstore Reconcilers SyncRead-iterate this table on each
+// TableNotifier wake to refresh the in-memory name→bytes resolution
+// map; the plaintext never leaves the resolving node's process memory.
+type SecretTable struct{ S storage.Reader }
+
+func (t SecretTable) Get(name string) (*enginev1.SecretRecord, error) {
+	val, closer, err := t.S.Get(SecretKey(name))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer closer.Close()
+	var rec enginev1.SecretRecord
+	if err := proto.Unmarshal(val, &rec); err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (t SecretTable) Put(b storage.Batch, rec *enginev1.SecretRecord) error {
+	if rec.GetName() == "" {
+		return errors.New("SecretTable.Put: empty name")
+	}
+	buf, err := proto.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return b.Set(SecretKey(rec.GetName()), buf)
+}
+
+// Delete removes the row for name. Delete-of-absent is a no-op.
+func (t SecretTable) Delete(b storage.Batch, name string) error {
+	if name == "" {
+		return errors.New("SecretTable.Delete: empty name")
+	}
+	return b.Delete(SecretKey(name))
+}
+
+// List returns every SecretRecord in lexicographic name order.
+func (t SecretTable) List() ([]*enginev1.SecretRecord, error) {
+	prefix := SecretPrefix()
+	upper := prefixUpperBound(prefix)
+	iter, err := t.S.NewIter(prefix, upper)
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	var out []*enginev1.SecretRecord
+	for ok := iter.First(); ok; ok = iter.Next() {
+		if !bytes.HasPrefix(iter.Key(), prefix) {
+			continue
+		}
+		var rec enginev1.SecretRecord
+		if err := proto.Unmarshal(iter.Value(), &rec); err != nil {
+			return nil, err
+		}
+		out = append(out, &rec)
+	}
+	return out, iter.Error()
+}
+
 // prefixUpperBound is a local clone of keys.PrefixUpperBound to avoid an
 // import cycle (internal/storage/keys is for the partition codec).
 func prefixUpperBound(prefix []byte) []byte {

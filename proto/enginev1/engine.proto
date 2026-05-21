@@ -161,6 +161,17 @@ message Command {
     // Accepted only by shardID=0.
     UpsertSecret upsert_secret = 25;
     DeleteSecret delete_secret = 26;
+    // UpsertLPOwner / DeleteLPOwner / BulkUpsertLPOwners carry shard-0
+    // LPOwnersTable mutations — the (lp → shard_id) routing table that
+    // Partitioner reads via per-node reconciler snapshot. Same CAS +
+    // notifier semantics as the event-source / webhook / secret pairs.
+    // BulkUpsertLPOwners is used by the metadata-leader bootstrap to seed
+    // the identity assignment (lp → (lp % NumShards) + 1) for all 4096
+    // LPs in one apply batch; Upsert/Delete are reserved for the future
+    // transfer protocol (PR 3). Accepted only by shardID=0.
+    UpsertLPOwner upsert_lp_owner = 27;
+    DeleteLPOwner delete_lp_owner = 28;
+    BulkUpsertLPOwners bulk_upsert_lp_owners = 29;
   }
 }
 
@@ -1210,6 +1221,43 @@ message UpsertWebhookSource {
 // progress).
 message DeleteWebhookSource {
   string name = 1;
+}
+
+// LPOwnerRecord is the persisted shape of one (lp → shard_id) entry in
+// shard 0's LPOwnersTable. lp is in [0, LPCount); shard_id is the
+// 1-indexed partition-shard id that currently owns the LP. The set of
+// 4096 rows is seeded at metadata-leader bootstrap with the identity
+// assignment (lp → (lp % NumPartitionShards) + 1) so day-1 routing is
+// bit-identical to the pre-PR-1 modulo. PR 3 (transfer protocol) flips
+// individual rows after data migration via UpsertLPOwner.
+message LPOwnerRecord {
+  uint32 lp = 1;
+  uint64 shard_id = 2;
+}
+
+// UpsertLPOwner is the Command_UpsertLPOwner payload. Apply arm
+// CAS-checks Envelope.precondition, writes
+// LPOwnersTable[record.lp] = record, and bumps the table revision.
+// Reserved for the future per-LP transfer protocol (PR 3) — PR 1
+// callers use BulkUpsertLPOwners for the identity seed.
+message UpsertLPOwner {
+  LPOwnerRecord record = 1;
+}
+
+// DeleteLPOwner is the Command_DeleteLPOwner payload. Defensive; not
+// used by PR 1 or PR 2. Same CAS + notifier semantics as Upsert.
+message DeleteLPOwner {
+  uint32 lp = 1;
+}
+
+// BulkUpsertLPOwners is the Command_BulkUpsertLPOwners payload. Apply arm
+// CAS-checks Envelope.precondition, writes every record in one batch,
+// and bumps the table revision exactly once. Used by the metadata-leader
+// bootstrap to seed all 4096 rows in a single Raft entry (~100 KB,
+// well under the entry-size budget). One notifier fan-out covers the
+// whole batch.
+message BulkUpsertLPOwners {
+  repeated LPOwnerRecord records = 1;
 }
 
 // RegisterNode is proposed against shard 0 when a reflowd process starts

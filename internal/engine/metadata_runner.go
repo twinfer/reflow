@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/twinfer/reflow/internal/engine/cluster"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -167,8 +168,60 @@ func (r *MetadataRunner) bootstrap(ctx context.Context) {
 		return
 	}
 
+	r.seedLPOwners(ctx, pt)
+
 	r.log.Info("metadata: bootstrap proposals committed",
 		"shard", r.ShardID, "partition_count", len(pt.Shards))
+}
+
+// seedLPOwners proposes BulkUpsertLPOwners with the identity assignment
+// (lp → (lp % NumShards) + 1) for all 4096 LPs, but only when the
+// LPOwnersTable revision is 0 (table never written). The Precondition
+// CAS mechanism treats if_table_revision_eq=0 as "no precondition", so
+// idempotency is enforced via a pre-propose read rather than a CAS gate;
+// two leaders racing to seed would both succeed and produce identical
+// state (the table contents are deterministic). Subsequent leader-gain
+// re-runs read revision > 0 and skip, preserving any PR 3 transfer
+// commits that have since modified individual rows.
+func (r *MetadataRunner) seedLPOwners(ctx context.Context, pt *enginev1.PartitionTable) {
+	numShards := uint64(len(pt.GetShards()))
+	if numShards == 0 {
+		return
+	}
+	store, release, ok := r.snapshotter.Acquire()
+	if !ok {
+		return
+	}
+	rev, err := (cluster.RevisionTable{S: store}).Get(cluster.RevisionTableLPOwners)
+	release()
+	if err != nil {
+		r.log.Warn("metadata: load lpowners revision failed; skipping seed", "err", err)
+		return
+	}
+	if rev != 0 {
+		return
+	}
+	recs := make([]*enginev1.LPOwnerRecord, 0, keys.LPCount)
+	for lp := range keys.LPCount {
+		recs = append(recs, &enginev1.LPOwnerRecord{
+			Lp:      lp,
+			ShardId: (uint64(lp) % numShards) + 1,
+		})
+	}
+	cmd := &enginev1.Command{
+		Kind: &enginev1.Command_BulkUpsertLpOwners{
+			BulkUpsertLpOwners: &enginev1.BulkUpsertLPOwners{Records: recs},
+		},
+	}
+	if err := r.proposer.ProposeSelf(ctx, cmd); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, ErrShardClosed) {
+			return
+		}
+		r.log.Warn("metadata: BulkUpsertLPOwners propose failed", "err", err)
+		return
+	}
+	r.log.Info("metadata: lpowners identity seed committed",
+		"shard", r.ShardID, "lp_count", len(recs), "num_partition_shards", numShards)
 }
 
 // buildBootstrapTable produces the PartitionTable the metadata-leader

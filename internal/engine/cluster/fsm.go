@@ -59,6 +59,7 @@ type Notifiers struct {
 	EventSourceTable   *TableNotifier
 	WebhookSourceTable *TableNotifier
 	SecretTable        *TableNotifier
+	LPOwnersTable      *TableNotifier
 }
 
 // FSM is the dragonboat IOnDiskStateMachine for shard 0. It accepts only
@@ -318,6 +319,12 @@ func (f *FSM) applyCommand(
 		return f.applyUpsertSecret(batch, env, k.UpsertSecret, raftIndex)
 	case *enginev1.Command_DeleteSecret:
 		return f.applyDeleteSecret(batch, env, k.DeleteSecret, raftIndex)
+	case *enginev1.Command_UpsertLpOwner:
+		return f.applyUpsertLPOwner(batch, env, k.UpsertLpOwner, raftIndex)
+	case *enginev1.Command_DeleteLpOwner:
+		return f.applyDeleteLPOwner(batch, env, k.DeleteLpOwner, raftIndex)
+	case *enginev1.Command_BulkUpsertLpOwners:
+		return f.applyBulkUpsertLPOwners(batch, env, k.BulkUpsertLpOwners, raftIndex)
 	case *enginev1.Command_EvictNode:
 		return f.applyEvictNode(batch, k.EvictNode, raftIndex)
 	case *enginev1.Command_BeginRebalanceStep:
@@ -548,6 +555,108 @@ func (f *FSM) applyDeleteSecret(
 		return nil, fmt.Errorf("cluster: bump secret revision: %w", err)
 	}
 	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.SecretTable}}, nil
+}
+
+// applyUpsertLPOwner writes one LPOwnerRecord and bumps the table
+// revision. CAS + notifier semantics mirror the event-source / webhook
+// / secret arms. Reserved for the future per-LP transfer protocol
+// (PR 3); PR 1's bootstrap seed uses applyBulkUpsertLPOwners instead.
+func (f *FSM) applyUpsertLPOwner(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.UpsertLPOwner,
+	raftIndex uint64,
+) (*applyResult, error) {
+	rec := cmd.GetRecord()
+	if rec == nil || rec.GetShardId() == 0 {
+		f.cfg.Log.Warn("cluster: UpsertLPOwner missing record or shard_id; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableLPOwners)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load lpowners revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	if err := (LPOwnersTable{S: batch}).Put(batch, rec); err != nil {
+		return nil, fmt.Errorf("cluster: write lpowner: %w", err)
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableLPOwners, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump lpowners revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.LPOwnersTable}}, nil
+}
+
+// applyDeleteLPOwner removes the row for lp (no-op if absent) and bumps
+// the table revision. Same CAS semantics as Upsert. Defensive; not used
+// by PR 1 or PR 2.
+func (f *FSM) applyDeleteLPOwner(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.DeleteLPOwner,
+	raftIndex uint64,
+) (*applyResult, error) {
+	ok, err := f.checkPrecondition(batch, env, RevisionTableLPOwners)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load lpowners revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	if err := (LPOwnersTable{S: batch}).Delete(batch, cmd.GetLp()); err != nil {
+		return nil, fmt.Errorf("cluster: delete lpowner: %w", err)
+	}
+	_ = raftIndex
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableLPOwners, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump lpowners revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.LPOwnersTable}}, nil
+}
+
+// applyBulkUpsertLPOwners writes every record in one batch and bumps
+// the table revision exactly once. One notifier fan-out for the whole
+// batch (subscribers will re-Snapshot the entire table on wake — there
+// is no benefit to fanning out per-row). Used by the metadata-leader
+// bootstrap to seed the identity assignment for all 4096 LPs.
+func (f *FSM) applyBulkUpsertLPOwners(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.BulkUpsertLPOwners,
+	raftIndex uint64,
+) (*applyResult, error) {
+	records := cmd.GetRecords()
+	if len(records) == 0 {
+		f.cfg.Log.Warn("cluster: BulkUpsertLPOwners empty records; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableLPOwners)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load lpowners revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	tab := LPOwnersTable{S: batch}
+	for _, rec := range records {
+		if rec == nil || rec.GetShardId() == 0 {
+			f.cfg.Log.Warn("cluster: BulkUpsertLPOwners record missing or zero shard_id; skipping",
+				"raft_index", raftIndex, "lp", rec.GetLp())
+			continue
+		}
+		if err := tab.Put(batch, rec); err != nil {
+			return nil, fmt.Errorf("cluster: write lpowner lp=%d: %w", rec.GetLp(), err)
+		}
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableLPOwners, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump lpowners revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.LPOwnersTable}}, nil
 }
 
 // applyEvictNode marks the named node logically dead (last_seen_ms = 0)
@@ -836,6 +945,11 @@ type (
 	// plus the table's CAS revision in one SyncRead. The SecretStore
 	// Reconciler calls this on each TableNotifier wake.
 	LookupSecrets struct{}
+
+	// LookupLPOwners returns *LPOwnersList — every LPOwnerRecord on
+	// shard 0 plus the table's CAS revision in one SyncRead. The
+	// per-node routing Reconciler calls this on each TableNotifier wake.
+	LookupLPOwners struct{}
 )
 
 // EventSourceList bundles every row in EventSourceTable with the
@@ -857,6 +971,13 @@ type WebhookSourceList struct {
 // revision, atomic w.r.t. the read snapshot.
 type SecretList struct {
 	Records       []*enginev1.SecretRecord
+	TableRevision uint64
+}
+
+// LPOwnersList bundles every row in LPOwnersTable with the table's CAS
+// revision, atomic w.r.t. the read snapshot.
+type LPOwnersList struct {
+	Records       []*enginev1.LPOwnerRecord
 	TableRevision uint64
 }
 
@@ -947,6 +1068,16 @@ func (f *FSM) Lookup(query any) (any, error) {
 			return nil, err
 		}
 		return &SecretList{Records: records, TableRevision: rev}, nil
+	case LookupLPOwners:
+		records, err := (LPOwnersTable{S: store}).List()
+		if err != nil {
+			return nil, err
+		}
+		rev, err := (RevisionTable{S: store}).Get(RevisionTableLPOwners)
+		if err != nil {
+			return nil, err
+		}
+		return &LPOwnersList{Records: records, TableRevision: rev}, nil
 	default:
 		return nil, fmt.Errorf("cluster: unknown lookup type %T", query)
 	}

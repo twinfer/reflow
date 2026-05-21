@@ -189,6 +189,12 @@ type Host struct {
 	nh  *dragonboat.NodeHost
 	log *slog.Logger
 
+	// partitioner is the per-Host routing singleton. Constructed once in
+	// NewHost so every value-copy returned by Partitioner() shares the
+	// same atomic LPOwners snapshot slot. The routing reconciler swaps
+	// the slot via SetLPOwnersSnapshot on each TableNotifier wake.
+	partitioner *routing.Partitioner
+
 	mu              sync.RWMutex
 	partitions      map[uint64]*PartitionRunner
 	metadataRunners map[uint64]*MetadataRunner
@@ -258,6 +264,7 @@ func NewHost(ctx context.Context, cfg HostConfig) (*Host, error) {
 	h := &Host{
 		cfg:             cfg,
 		log:             cfg.Log,
+		partitioner:     routing.NewPartitioner(cfg.NumPartitionShards),
 		partitions:      make(map[uint64]*PartitionRunner),
 		startMu:         make(map[uint64]*sync.Mutex),
 		handlerRegistry: newHandlerRegistry(cfg.HandlerSigner),
@@ -591,6 +598,25 @@ func (h *Host) Secrets(ctx context.Context) (*cluster.SecretList, error) {
 	return out, nil
 }
 
+// LPOwners SyncReads every LPOwnerRecord from shard 0 plus the table's
+// CAS revision. Used by the per-node routing Reconciler to refresh the
+// Partitioner's atomic snapshot. Returns an empty list with revision 0
+// before the metadata-leader bootstrap seed commits.
+func (h *Host) LPOwners(ctx context.Context) (*cluster.LPOwnersList, error) {
+	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupLPOwners{})
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return &cluster.LPOwnersList{}, nil
+	}
+	out, ok := res.(*cluster.LPOwnersList)
+	if !ok {
+		return nil, fmt.Errorf("host: LPOwners: unexpected lookup type %T", res)
+	}
+	return out, nil
+}
+
 // AwaitMetadataLeader blocks until shard 0 has a stable leader.
 func (h *Host) AwaitMetadataLeader(ctx context.Context) error {
 	tick := time.NewTicker(20 * time.Millisecond)
@@ -701,7 +727,7 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		Collector:   collector,
 		Log:         h.log,
 		OnActions:   runner.dispatchActions,
-		Partitioner: routing.Partitioner{NumShards: h.cfg.NumPartitionShards},
+		Partitioner: *h.partitioner,
 		Metrics:     h.cfg.Metrics,
 	}
 	if hook := h.cfg.OnSnapshotPersisted; hook != nil {
@@ -748,10 +774,19 @@ func (h *Host) Partition(shardID uint64) *PartitionRunner {
 	return h.partitions[shardID]
 }
 
-// Partitioner returns the cluster's routing partitioner. Sourced from
-// HostConfig.NumPartitionShards.
+// Partitioner returns the cluster's routing partitioner. Value-copy of
+// the per-Host singleton — every copy shares the same atomic LPOwners
+// snapshot slot, so a single SetLPOwnersSnapshot call (made by the
+// routing reconciler) is visible to every reader.
 func (h *Host) Partitioner() routing.Partitioner {
-	return routing.Partitioner{NumShards: h.cfg.NumPartitionShards}
+	return *h.partitioner
+}
+
+// PartitionerRef returns the per-Host routing partitioner singleton.
+// The routing reconciler holds this reference to call
+// SetLPOwnersSnapshot on each TableNotifier wake.
+func (h *Host) PartitionerRef() *routing.Partitioner {
+	return h.partitioner
 }
 
 // onPartitionTable reacts to a freshly-committed PartitionTable by starting

@@ -453,6 +453,82 @@ func (t SecretTable) List() ([]*enginev1.SecretRecord, error) {
 	return out, iter.Error()
 }
 
+// LPOwnersTable persists LPOwnerRecord rows keyed by lp ∈ [0, LPCount).
+// Lives on shard 0 alongside the other cluster-managed config tables.
+// Per-node routing Reconcilers SyncRead the table on each TableNotifier
+// wake to refresh the Partitioner's atomic snapshot; lookup on the
+// routing hot path is a single atomic.Pointer load with no per-call work.
+type LPOwnersTable struct{ S storage.Reader }
+
+func (t LPOwnersTable) Get(lp uint32) (*enginev1.LPOwnerRecord, error) {
+	val, closer, err := t.S.Get(LPOwnerKey(lp))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer closer.Close()
+	var rec enginev1.LPOwnerRecord
+	if err := proto.Unmarshal(val, &rec); err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (t LPOwnersTable) Put(b storage.Batch, rec *enginev1.LPOwnerRecord) error {
+	if rec.GetShardId() == 0 {
+		return errors.New("LPOwnersTable.Put: zero shard_id")
+	}
+	buf, err := proto.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return b.Set(LPOwnerKey(rec.GetLp()), buf)
+}
+
+// Delete removes the row for lp. Delete-of-absent is a no-op.
+func (t LPOwnersTable) Delete(b storage.Batch, lp uint32) error {
+	return b.Delete(LPOwnerKey(lp))
+}
+
+// List returns every LPOwnerRecord in ascending lp order.
+func (t LPOwnersTable) List() ([]*enginev1.LPOwnerRecord, error) {
+	prefix := LPOwnerPrefix()
+	upper := prefixUpperBound(prefix)
+	iter, err := t.S.NewIter(prefix, upper)
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	var out []*enginev1.LPOwnerRecord
+	for ok := iter.First(); ok; ok = iter.Next() {
+		if !bytes.HasPrefix(iter.Key(), prefix) {
+			continue
+		}
+		var rec enginev1.LPOwnerRecord
+		if err := proto.Unmarshal(iter.Value(), &rec); err != nil {
+			return nil, err
+		}
+		out = append(out, &rec)
+	}
+	return out, iter.Error()
+}
+
+// Snapshot returns the full lp → shard_id map. Used by per-node routing
+// reconcilers to swap the Partitioner's atomic snapshot in one call.
+func (t LPOwnersTable) Snapshot() (map[uint32]uint64, error) {
+	list, err := t.List()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uint32]uint64, len(list))
+	for _, rec := range list {
+		out[rec.GetLp()] = rec.GetShardId()
+	}
+	return out, nil
+}
+
 // prefixUpperBound is a local clone of keys.PrefixUpperBound to avoid an
 // import cycle (internal/storage/keys is for the partition codec).
 func prefixUpperBound(prefix []byte) []byte {

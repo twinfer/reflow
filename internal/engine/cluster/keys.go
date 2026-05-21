@@ -18,6 +18,11 @@
 //	eventsrc/<name>                 -> EventSourceRecord
 //	webhooksrc/<name>               -> WebhookSourceRecord
 //	secret/<name>                   -> SecretRecord
+//	lpowner/<4-byte BE lp>          -> LPOwnerRecord (lp → shard_id
+//	                                   routing entry; per-node reconcilers
+//	                                   List/Snapshot this on each table
+//	                                   notifier wake to refresh the
+//	                                   Partitioner's atomic snapshot)
 //	tablerev/<table_name>           -> TableRevision singleton (CAS guard
 //	                                   for cluster-managed config tables;
 //	                                   separate top-level namespace so it
@@ -41,6 +46,7 @@ const (
 	eventSourcePrefix     = "eventsrc/"
 	webhookSourcePrefix   = "webhooksrc/"
 	secretPrefix          = "secret/"
+	lpOwnerPrefix         = "lpowner/"
 	tableRevisionPrefix   = "tablerev/"
 )
 
@@ -51,6 +57,7 @@ const (
 	RevisionTableEventSource   = "eventsrc"
 	RevisionTableWebhookSource = "webhooksrc"
 	RevisionTableSecret        = "secret"
+	RevisionTableLPOwners      = "lpowners"
 )
 
 // MetaKey returns the singleton key for the metadata shard's PartitionMeta.
@@ -128,6 +135,22 @@ func SecretKey(name string) []byte {
 	out := make([]byte, 0, len(secretPrefix)+len(name))
 	out = append(out, secretPrefix...)
 	return append(out, name...)
+}
+
+// LPOwnerPrefix returns the lpowner/ namespace prefix. Used for forward
+// range iteration; rows sort in lp order because the 4-byte BE encoding
+// of lp follows the prefix.
+func LPOwnerPrefix() []byte { return []byte(lpOwnerPrefix) }
+
+// LPOwnerKey returns lpowner/<4-byte BE lp>. Big-endian so lexicographic
+// byte order matches numeric lp order — range scans iterate LPs in
+// ascending sequence.
+func LPOwnerKey(lp uint32) []byte {
+	out := make([]byte, 0, len(lpOwnerPrefix)+4)
+	out = append(out, lpOwnerPrefix...)
+	var buf [4]byte
+	binary.BigEndian.PutUint32(buf[:], lp)
+	return append(out, buf[:]...)
 }
 
 // RevisionKey returns the CAS singleton key for a table identified by

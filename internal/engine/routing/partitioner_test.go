@@ -3,6 +3,7 @@ package routing
 import (
 	"testing"
 
+	"github.com/twinfer/reflow/internal/storage/keys"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -67,5 +68,106 @@ func TestRouting_ShardForTargetMatchesShardForInvocation(t *testing.T) {
 	id := &enginev1.InvocationId{PartitionKey: PartitionKey("S", "k")}
 	if p.ShardForTarget(target) != p.ShardForInvocation(id) {
 		t.Fatalf("ShardForTarget != ShardForInvocation for same key tuple")
+	}
+}
+
+// TestRouting_SnapshotOverridesModulo confirms the LPOwners snapshot
+// wins over the modulo fallback. Crafted so the per-LP override sends
+// PartitionKey(svc,obj) to a shard that modulo would never pick.
+func TestRouting_SnapshotOverridesModulo(t *testing.T) {
+	p := NewPartitioner(3)
+	pk := PartitionKey("svc", "obj-1")
+	lp := keys.LPFromPartitionKey(pk)
+	moduloShard := (pk % 3) + 1
+	var override uint64 = 999
+	if override == moduloShard {
+		t.Fatalf("test setup: override %d collides with modulo answer", override)
+	}
+	p.SetLPOwnersSnapshot(map[uint32]uint64{lp: override})
+	if got := p.ShardForKey(pk); got != override {
+		t.Fatalf("ShardForKey = %d; want override %d", got, override)
+	}
+}
+
+// TestRouting_SnapshotMissFallsBackToModulo covers the snapshot-miss
+// path: when an LP is absent from the snapshot, ShardForKey falls
+// through to the lp-modulo fallback rather than returning a nonsense
+// value like 0 (which would route to the metadata shard). The fallback
+// formula matches the bootstrap seed exactly.
+func TestRouting_SnapshotMissFallsBackToModulo(t *testing.T) {
+	p := NewPartitioner(4)
+	pk := PartitionKey("svc", "obj-2")
+	lp := keys.LPFromPartitionKey(pk)
+	// Snapshot contains every LP except this one.
+	snap := map[uint32]uint64{}
+	for x := range keys.LPCount {
+		if x == lp {
+			continue
+		}
+		snap[x] = 1
+	}
+	p.SetLPOwnersSnapshot(snap)
+	want := (uint64(lp) % 4) + 1
+	if got := p.ShardForKey(pk); got != want {
+		t.Fatalf("ShardForKey on snapshot miss = %d; want lp-modulo %d", got, want)
+	}
+}
+
+// TestRouting_NilSnapshotFallsBackToModulo covers the pre-warmup window
+// before the reconciler has installed any snapshot. NewPartitioner sets
+// up the atomic-pointer slot but leaves it nil until the first
+// SetLPOwnersSnapshot call.
+func TestRouting_NilSnapshotFallsBackToModulo(t *testing.T) {
+	p := NewPartitioner(5)
+	pk := PartitionKey("svc", "obj-3")
+	lp := keys.LPFromPartitionKey(pk)
+	want := (uint64(lp) % 5) + 1
+	if got := p.ShardForKey(pk); got != want {
+		t.Fatalf("ShardForKey with no snapshot = %d; want lp-modulo %d", got, want)
+	}
+}
+
+// TestRouting_SnapshotSwapVisibleAcrossCopies confirms that two value
+// copies of the same singleton observe each other's snapshot swaps —
+// the property the host.Partitioner() accessor relies on.
+func TestRouting_SnapshotSwapVisibleAcrossCopies(t *testing.T) {
+	p := NewPartitioner(2)
+	a := *p
+	b := *p
+	pk := PartitionKey("svc", "obj-shared")
+	lp := keys.LPFromPartitionKey(pk)
+	p.SetLPOwnersSnapshot(map[uint32]uint64{lp: 42})
+	if got := a.ShardForKey(pk); got != 42 {
+		t.Fatalf("copy a.ShardForKey = %d; want 42 (post-swap)", got)
+	}
+	if got := b.ShardForKey(pk); got != 42 {
+		t.Fatalf("copy b.ShardForKey = %d; want 42 (post-swap)", got)
+	}
+}
+
+// TestRouting_IdentitySeedMatchesFallback is the warm-up-window
+// invariant: post-seed routing (via snapshot lookup) returns the same
+// shard as pre-seed routing (via lp-modulo fallback). This is what
+// keeps the warm-up window from routing pks to different shards than
+// the steady-state table will.
+func TestRouting_IdentitySeedMatchesFallback(t *testing.T) {
+	const numShards uint64 = 5
+	seed := make(map[uint32]uint64, keys.LPCount)
+	for lp := range keys.LPCount {
+		seed[lp] = (uint64(lp) % numShards) + 1
+	}
+	seeded := NewPartitioner(numShards)
+	seeded.SetLPOwnersSnapshot(seed)
+	unseeded := NewPartitioner(numShards) // nil snapshot → fallback path
+
+	for _, pk := range []uint64{
+		0, 1, 2, 3, 1<<31 + 7, 1<<63 + 1, 0xffff_ffff_ffff_ffff,
+		PartitionKey("svc", "alpha"),
+		PartitionKey("svc", "beta"),
+		PartitionKey("Other", ""),
+	} {
+		if s, u := seeded.ShardForKey(pk), unseeded.ShardForKey(pk); s != u {
+			t.Errorf("ShardForKey(0x%x): seeded=%d unseeded=%d; warm-up routing must match steady-state", pk, s, u)
+		}
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/cluster"
 	"github.com/twinfer/reflow/internal/engine/delivery"
+	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/internal/ingress/eventsource"
@@ -135,6 +136,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	eventSourceNotifier := cluster.NewTableNotifier()
 	webhookSourceNotifier := cluster.NewTableNotifier()
 	secretNotifier := cluster.NewTableNotifier()
+	lpOwnersNotifier := cluster.NewTableNotifier()
 
 	hcfg := engine.HostConfig{
 		NodeID:             cfg.Node.ID,
@@ -156,6 +158,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			EventSourceTable:   eventSourceNotifier,
 			WebhookSourceTable: webhookSourceNotifier,
 			SecretTable:        secretNotifier,
+			LPOwnersTable:      lpOwnersNotifier,
 		},
 		OnSnapshotPersisted: func(shardID uint64) {
 			ch, ok := snapshotTriggers[shardID]
@@ -274,6 +277,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		eventSourceNotifier:   eventSourceNotifier,
 		webhookSourceNotifier: webhookSourceNotifier,
 		secretNotifier:        secretNotifier,
+		lpOwnersNotifier:      lpOwnersNotifier,
 		logger:                logger,
 	})
 	if herr != nil {
@@ -438,6 +442,7 @@ type startupDeps struct {
 	eventSourceNotifier   *cluster.TableNotifier
 	webhookSourceNotifier *cluster.TableNotifier
 	secretNotifier        *cluster.TableNotifier
+	lpOwnersNotifier      *cluster.TableNotifier
 	logger                *slog.Logger
 }
 
@@ -463,6 +468,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	eventSourceNotifier := d.eventSourceNotifier
 	webhookSourceNotifier := d.webhookSourceNotifier
 	secretNotifier := d.secretNotifier
+	lpOwnersNotifier := d.lpOwnersNotifier
 	logger := d.logger
 	// Joiners register themselves with shard 0 BEFORE starting any
 	// local shards: dragonboat's StartOnDiskReplica(nil, join=true,...)
@@ -600,6 +606,18 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		logger.Info("reflow: admin listening", "addr", cs.Addr(),
 			"driver", string(adminCreds.Driver))
 	}
+
+	// Routing Reconciler refreshes the per-node Partitioner's atomic
+	// LPOwners snapshot. Started as soon as shard 0 is up; the first
+	// SyncRead returns empty until the metadata-leader bootstrap seed
+	// commits, at which point the Partitioner switches from modulo
+	// fallback to table-driven routing.
+	go func() {
+		reader := lpOwnersReader{host: eh}
+		if rerr := routing.RunReconciler(ctx, lpOwnersNotifier.Subscribe(), reader, eh.PartitionerRef(), logger); rerr != nil && !errors.Is(rerr, context.Canceled) {
+			logger.Warn("reflow: routing reconcile loop exited", "err", rerr)
+		}
+	}()
 
 	// SecretStore Resolver runs alongside the ingress listener so the
 	// webhook Manager can Lookup(name) on each reconcile pass. The
@@ -769,6 +787,30 @@ func (r secretReader) ListSecrets(ctx context.Context) ([]*enginev1.SecretRecord
 		return nil, 0, err
 	}
 	return list.Records, list.TableRevision, nil
+}
+
+// lpOwnersReader is the Reader adapter the routing reconciler uses to
+// pull the current lp → shard_id snapshot. SyncReads shard 0 via
+// host.LPOwners and lifts the result into the map the Partitioner stores
+// atomically.
+type lpOwnersReader struct {
+	host *engine.Host
+}
+
+func (r lpOwnersReader) SnapshotLPOwners(ctx context.Context) (map[uint32]uint64, uint64, error) {
+	// dragonboat's SyncRead rejects deadlineless contexts; pin a short
+	// timeout so the reconcile loop never blocks indefinitely.
+	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	list, err := r.host.LPOwners(readCtx)
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make(map[uint32]uint64, len(list.Records))
+	for _, rec := range list.Records {
+		out[rec.GetLp()] = rec.GetShardId()
+	}
+	return out, list.TableRevision, nil
 }
 
 // autoSeedEventSources mirrors autoSeedEndpoints for the EventSourceTable.

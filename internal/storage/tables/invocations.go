@@ -74,7 +74,45 @@ func (t InvocationTable) ScanAll(ctx context.Context, fn func(id *enginev1.Invoc
 		if !bytes.HasPrefix(key, prefix) {
 			continue
 		}
-		id, err := keys.DecodeInvocationID(key[len(prefix):])
+		// Skip the namespace prefix + 4-byte LP to reach the 24-byte id body.
+		id, err := keys.DecodeInvocationID(key[len(prefix)+keys.LPLen:])
+		if err != nil {
+			return err
+		}
+		var s enginev1.InvocationStatus
+		if err := proto.Unmarshal(iter.Value(), &s); err != nil {
+			return err
+		}
+		if _, free := s.GetStatus().(*enginev1.InvocationStatus_Free); free {
+			continue
+		}
+		if err := fn(id, &s); err != nil {
+			return err
+		}
+	}
+	return iter.Error()
+}
+
+// ScanLP iterates every invocation status whose owner partition_key reduces
+// to the given logical partition id. Bounded by a single Pebble range scan
+// over [inv/<lp:4>, inv/<lp+1:4>). Used by the future cross-shard LP
+// transfer protocol to extract one LP's invocations without touching the
+// rest of the shard.
+func (t InvocationTable) ScanLP(ctx context.Context, lp uint32, fn func(id *enginev1.InvocationId, s *enginev1.InvocationStatus) error) error {
+	lower := keys.InvocationLPPrefix(lp)
+	upper := keys.PrefixUpperBound(lower)
+	iter, err := t.S.NewIter(lower, upper)
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+	for ok := iter.First(); ok; ok = iter.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		key := iter.Key()
+		// key is inv/<lp:4><id:24>; slice off the prefix + lp to get the id body.
+		id, err := keys.DecodeInvocationID(key[len(lower):])
 		if err != nil {
 			return err
 		}

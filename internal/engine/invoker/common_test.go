@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/storage"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -30,10 +32,11 @@ func TestPreloadEagerState_OverflowKeepsPartialCache(t *testing.T) {
 	// cap. Keys are alphabetically ordered so the scan visits them in
 	// (k0, k1, k2, k3) order; the cap should trip on k2 or k3.
 	big := strings.Repeat("x", 25*1024)
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
 	batch := store.NewBatch()
 	for i := range 4 {
 		key := fmt.Sprintf("k%d", i)
-		if err := st.Set(batch, target, key, []byte(big)); err != nil {
+		if err := st.Set(batch, lp, target, key, []byte(big)); err != nil {
 			t.Fatalf("StateTable.Set(%s): %v", key, err)
 		}
 	}
@@ -77,9 +80,10 @@ func TestPreloadEagerState_NoOverflowFullSnapshot(t *testing.T) {
 		"beta":  []byte("2"),
 		"gamma": []byte("3"),
 	}
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
 	batch := store.NewBatch()
 	for k, v := range want {
-		if err := st.Set(batch, target, k, v); err != nil {
+		if err := st.Set(batch, lp, target, k, v); err != nil {
 			t.Fatalf("Set(%s): %v", k, err)
 		}
 	}
@@ -117,9 +121,10 @@ func TestPreloadEagerState_CustomCapHonored(t *testing.T) {
 	id := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("0123456789ABCDEF")}
 
 	row := strings.Repeat("y", 3*1024)
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
 	batch := store.NewBatch()
 	for _, k := range []string{"a", "b"} {
-		if err := st.Set(batch, target, k, []byte(row)); err != nil {
+		if err := st.Set(batch, lp, target, k, []byte(row)); err != nil {
 			t.Fatalf("Set(%s): %v", k, err)
 		}
 	}
@@ -148,9 +153,10 @@ func TestPreloadEagerState_ZeroCapUsesDefault(t *testing.T) {
 
 	// 4 × 25 KiB = 100 KiB. Default cap is 64 KiB → overflow.
 	big := strings.Repeat("x", 25*1024)
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
 	batch := store.NewBatch()
 	for i := range 4 {
-		if err := st.Set(batch, target, fmt.Sprintf("k%d", i), []byte(big)); err != nil {
+		if err := st.Set(batch, lp, target, fmt.Sprintf("k%d", i), []byte(big)); err != nil {
 			t.Fatalf("Set: %v", err)
 		}
 	}

@@ -16,7 +16,9 @@ import (
 
 	"github.com/twinfer/reflow/internal/admin"
 	"github.com/twinfer/reflow/internal/engine"
+	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/loadgen"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	"github.com/twinfer/reflow/pkg/handler/wire"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
@@ -233,10 +235,11 @@ func TestWireDispatch_HTTP2_Awakeable(t *testing.T) {
 	// Wait for the handler to journal its awakeable id via SetState.
 	store := pr.Snapshotter().Store()
 	st := tables.StateTable{S: store}
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
 	var awakeableID string
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		v, present, err := st.Get(target, "awk_id")
+		v, present, err := st.Get(lp, target, "awk_id")
 		if err == nil && present {
 			awakeableID = string(v)
 			break

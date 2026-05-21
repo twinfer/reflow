@@ -43,6 +43,7 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/storage"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -913,7 +914,8 @@ func (m *engineMachine) Check(t *rapid.T) {
 			ServiceName: lk.service, ObjectKey: lk.objectKey,
 		})
 		klt := tables.KeyLeaseTable{S: m.snaps[m.sIdx(shard)].Store()}
-		got, err := klt.Get(lk.service, lk.objectKey)
+		lp := keys.LPFromPartitionKey(routing.PartitionKey(lk.service, lk.objectKey))
+		got, err := klt.Get(lp, lk.service, lk.objectKey)
 		if err != nil {
 			t.Fatalf("KeyLeaseTable.Get shard=%d %+v: %v", shard, lk, err)
 		}
@@ -1054,7 +1056,8 @@ func (m *engineMachine) Check(t *rapid.T) {
 		shard := m.partitioner.ShardForTarget(&enginev1.InvocationTarget{
 			ServiceName: lk.service, ObjectKey: lk.objectKey,
 		})
-		got, err := (tables.WorkflowRunTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(lk.service, lk.objectKey)
+		lp := keys.LPFromPartitionKey(routing.PartitionKey(lk.service, lk.objectKey))
+		got, err := (tables.WorkflowRunTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(lp, lk.service, lk.objectKey)
 		if err != nil {
 			t.Fatalf("WorkflowRunTable.Get shard=%d %+v: %v", shard, lk, err)
 		}
@@ -1080,8 +1083,9 @@ func (m *engineMachine) Check(t *rapid.T) {
 			ServiceName: lk.service, ObjectKey: lk.objectKey,
 		})
 		target := &enginev1.InvocationTarget{ServiceName: lk.service, ObjectKey: lk.objectKey}
+		lp := keys.LPFromPartitionKey(routing.PartitionKey(lk.service, lk.objectKey))
 		got := map[string][]byte{}
-		if err := (tables.StateTable{S: m.snaps[m.sIdx(shard)].Store()}).ScanObject(target, func(k string, v []byte) error {
+		if err := (tables.StateTable{S: m.snaps[m.sIdx(shard)].Store()}).ScanObject(lp, target, func(k string, v []byte) error {
 			got[k] = append([]byte(nil), v...)
 			return nil
 		}); err != nil {

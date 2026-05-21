@@ -11,8 +11,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/storage"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -288,16 +290,19 @@ func TestPartition_ClearAllState_WipesAllRowsForObject(t *testing.T) {
 	otherTarget := &enginev1.InvocationTarget{ServiceName: "Counter", HandlerName: "incr", ObjectKey: "user-2"}
 
 	// Seed StateTable with rows on two objects so we can confirm only the
-	// invocation's own object is wiped.
+	// invocation's own object is wiped. LP is derived from the target
+	// tuple (matches the apply path's writes).
 	store := p.cfg.Snapshotter.Store()
 	st := tables.StateTable{S: store}
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
+	otherLP := keys.LPFromPartitionKey(routing.PartitionKey(otherTarget.GetServiceName(), otherTarget.GetObjectKey()))
 	b := store.NewBatch()
 	for _, k := range []string{"a", "b", "c"} {
-		if err := st.Set(b, target, k, []byte(k+"-val")); err != nil {
+		if err := st.Set(b, lp, target, k, []byte(k+"-val")); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := st.Set(b, otherTarget, "z", []byte("z-val")); err != nil {
+	if err := st.Set(b, otherLP, otherTarget, "z", []byte("z-val")); err != nil {
 		t.Fatal(err)
 	}
 	if err := b.Commit(true); err != nil {
@@ -344,7 +349,7 @@ func TestPartition_ClearAllState_WipesAllRowsForObject(t *testing.T) {
 
 	// All rows on the invocation's object are gone.
 	for _, k := range []string{"a", "b", "c"} {
-		_, present, err := st.Get(target, k)
+		_, present, err := st.Get(lp, target, k)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -353,7 +358,7 @@ func TestPartition_ClearAllState_WipesAllRowsForObject(t *testing.T) {
 		}
 	}
 	// Rows on a different object_key are untouched.
-	v, present, err := st.Get(otherTarget, "z")
+	v, present, err := st.Get(otherLP, otherTarget, "z")
 	if err != nil {
 		t.Fatal(err)
 	}

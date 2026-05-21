@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/twinfer/reflow/internal/engine/routing"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -64,7 +66,13 @@ func preloadEagerState(
 	}
 	cache = make(map[string][]byte)
 	total := uint32(0)
-	err := stateTable.ScanObject(target, func(key string, value []byte) error {
+	// LP for state rows is derived from (service, object_key) — matches
+	// the apply path's writes (see partition.go onInvokerEffect state
+	// branches). Using id.PartitionKey would only happen to agree when the
+	// id was minted from the same routing tuple, which is true in
+	// production but not in tests that mint synthetic ids.
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
+	err := stateTable.ScanObject(lp, target, func(key string, value []byte) error {
 		total += uint32(len(key) + len(value))
 		if total > maxBytes {
 			overflowed = true

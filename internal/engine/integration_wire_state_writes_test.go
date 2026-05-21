@@ -11,7 +11,9 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/admin"
+	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/loadgen"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	"github.com/twinfer/reflow/pkg/handler/wire"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
@@ -193,8 +195,9 @@ func TestWireDispatch_HTTP2_StateWrites(t *testing.T) {
 	// the apply path in order.
 	store := pr.Snapshotter().Store()
 	st := tables.StateTable{S: store}
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
 	count := 0
-	if err := st.ScanObject(target, func(_ string, _ []byte) error {
+	if err := st.ScanObject(lp, target, func(_ string, _ []byte) error {
 		count++
 		return nil
 	}); err != nil {
@@ -235,7 +238,7 @@ func TestWireDispatch_HTTP2_StateWrites(t *testing.T) {
 	}
 	_ = awaitCompleted(t, host, 1, id2, 10*time.Second)
 
-	value, present, err := st.Get(target, "counter")
+	value, present, err := st.Get(lp, target, "counter")
 	if err != nil {
 		t.Fatalf("StateTable.Get: %v", err)
 	}

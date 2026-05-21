@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -126,6 +127,15 @@ func (r *Registry) register(service, handler string, fn Handler, kind Kind) erro
 	}
 	if handler == "" {
 		return fmt.Errorf("sdk: Register: handler must be non-empty")
+	}
+	// '/' is the key separator we use below; allowing it in either field
+	// would let Entries() split a "foo/bar" service from a "baz" handler
+	// as ("foo", "bar/baz"), corrupting the round-trip.
+	if strings.ContainsRune(service, '/') {
+		return fmt.Errorf("sdk: Register: service %q must not contain '/'", service)
+	}
+	if strings.ContainsRune(handler, '/') {
+		return fmt.Errorf("sdk: Register: handler %q must not contain '/'", handler)
 	}
 	if fn == nil {
 		return fmt.Errorf("sdk: Register: fn must be non-nil for %s/%s", service, handler)

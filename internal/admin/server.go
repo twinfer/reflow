@@ -221,13 +221,15 @@ func (s *Server) addNodeInternal(ctx context.Context, req *adminv1.AddNodeReques
 		if replicaSetContainsID(rs.GetNodeIds(), req.GetNodeId()) {
 			return nil
 		}
+		// nextStepIDForShard filters by shardID and each shard is visited
+		// once per call, so the local pt.Pending mutation has no effect
+		// on subsequent iterations — no need to append.
 		step := &enginev1.RebalanceStep{
 			ShardId:   shardID,
 			Kind:      enginev1.RebalanceStep_PROMOTE_TO_VOTER,
 			AddNodeId: req.GetNodeId(),
 			StepId:    nextStepIDForShard(pt.GetPending(), shardID),
 		}
-		pt.Pending = append(pt.Pending, step)
 		beginCmd := &enginev1.Command{
 			Kind: &enginev1.Command_BeginRebalanceStep{
 				BeginRebalanceStep: &enginev1.BeginRebalanceStep{Step: step},

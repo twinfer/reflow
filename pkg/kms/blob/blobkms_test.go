@@ -1,7 +1,6 @@
 package blob
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -182,5 +181,4 @@ func TestConstants(t *testing.T) {
 	if BootKeySize != 32 {
 		t.Errorf("BootKeySize = %d; want 32", BootKeySize)
 	}
-	_ = errors.New
 }

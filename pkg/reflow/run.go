@@ -52,7 +52,7 @@ import (
 //	    Node:    reflow.NodeConfig{ID: 1, RaftAddr: "127.0.0.1:5410"},
 //	    Storage: reflow.StorageConfig{DataDir: "/var/lib/reflow"},
 //	}
-//	cfg.Handlers.Registry = handler.NewRegistry()
+//	cfg.Handlers.Endpoints = []reflow.HandlerEndpoint{{URL: "http://localhost:9000"}}
 //	host, err := reflow.Run(ctx, cfg)
 func Run(ctx context.Context, cfg Config) (*Host, error) {
 	if err := validate(cfg); err != nil {
@@ -65,9 +65,15 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 
 	// Vault is the one KMS provider that needs explicit config (token
 	// file + optional URI prefix narrowing). Other providers (BlobKMS,
-	// AWS, GCP) self-register from their package init().
+	// AWS, GCP) self-register from their package init(). Address is a
+	// host:port; the scheme is prepended here so the registered Tink
+	// prefix matches actual hcvault:// URIs passed to GetAEAD.
 	if cfg.KMS.Vault.TokenFile != "" {
-		if err := hcvaultkms.Register(cfg.KMS.Vault.Address, cfg.KMS.Vault.TokenFile, nil); err != nil {
+		uriPrefix := ""
+		if cfg.KMS.Vault.Address != "" {
+			uriPrefix = hcvaultkms.DefaultURIPrefix + cfg.KMS.Vault.Address
+		}
+		if err := hcvaultkms.Register(uriPrefix, cfg.KMS.Vault.TokenFile, nil); err != nil {
 			return nil, fmt.Errorf("reflow: hcvault register: %w", err)
 		}
 	}
@@ -249,10 +255,27 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		eh.SetCrossShardSender(dc)
 	}
 
-	host, herr := finishStartup(ctx, cfg, eh, adminEnabled, shards, snapshotTriggers,
-		deliverySrv, deliveryClient, deliveryCreds, adminCreds, handlerSigner,
-		httpAuthMW, httpAuthCloser, metricsCloser, metricsRegisterer, metrics,
-		eventSourceNotifier, webhookSourceNotifier, secretNotifier, logger)
+	host, herr := finishStartup(ctx, startupDeps{
+		cfg:                   cfg,
+		eh:                    eh,
+		adminEnabled:          adminEnabled,
+		shards:                shards,
+		snapshotTriggers:      snapshotTriggers,
+		deliverySrv:           deliverySrv,
+		deliveryClient:        deliveryClient,
+		deliveryCreds:         deliveryCreds,
+		adminCreds:            adminCreds,
+		handlerSigner:         handlerSigner,
+		httpAuthMW:            httpAuthMW,
+		authCloser:            httpAuthCloser,
+		metricsCloser:         metricsCloser,
+		metricsRegisterer:     metricsRegisterer,
+		metrics:               metrics,
+		eventSourceNotifier:   eventSourceNotifier,
+		webhookSourceNotifier: webhookSourceNotifier,
+		secretNotifier:        secretNotifier,
+		logger:                logger,
+	})
 	if herr != nil {
 		if deliverySrv != nil {
 			_ = deliverySrv.Close()
@@ -337,6 +360,7 @@ func startIngressListener(
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("reflow: ingress creds: %w", err)
 	}
+	recordListenerSecurity(metrics, "ingress", lc)
 	if multiNode && lc.SecurityLevel == credentials.NoSecurity {
 		logger.Warn("reflow: ingress is running on an insecure listener — multi-node deployments should configure cfg.Ingress.Creds")
 	}
@@ -392,31 +416,54 @@ func startIngressListener(
 	return rt, lc, webhookMgr, nil
 }
 
+// startupDeps bundles the resources Run hands to finishStartup. The
+// struct exists only to keep the call site readable; it's not exported
+// and has no behavior of its own.
+type startupDeps struct {
+	cfg                   Config
+	eh                    *engine.Host
+	adminEnabled          bool
+	shards                []uint64
+	snapshotTriggers      map[uint64]chan struct{}
+	deliverySrv           *connectserver.Server
+	deliveryClient        *delivery.Client
+	deliveryCreds         *creds.ListenerCreds
+	adminCreds            *creds.ListenerCreds
+	handlerSigner         *creds.Signer
+	httpAuthMW            func(http.Handler) http.Handler
+	authCloser            func() error
+	metricsCloser         func() error
+	metricsRegisterer     prometheus.Registerer
+	metrics               *observability.Metrics
+	eventSourceNotifier   *cluster.TableNotifier
+	webhookSourceNotifier *cluster.TableNotifier
+	secretNotifier        *cluster.TableNotifier
+	logger                *slog.Logger
+}
+
 // finishStartup wires shard 0 + partition shards + optional snapshot
 // producer + admin server, then packages everything into a Host. Errors
 // here are surfaced by the caller which runs the bail cleanup.
-func finishStartup(
-	ctx context.Context,
-	cfg Config,
-	eh *engine.Host,
-	adminEnabled bool,
-	shards []uint64,
-	snapshotTriggers map[uint64]chan struct{},
-	deliverySrv *connectserver.Server,
-	deliveryClient *delivery.Client,
-	deliveryCreds *creds.ListenerCreds,
-	adminCreds *creds.ListenerCreds,
-	handlerSigner *creds.Signer,
-	httpAuthMW func(http.Handler) http.Handler,
-	authCloser func() error,
-	metricsCloser func() error,
-	metricsRegisterer prometheus.Registerer,
-	metrics *observability.Metrics,
-	eventSourceNotifier *cluster.TableNotifier,
-	webhookSourceNotifier *cluster.TableNotifier,
-	secretNotifier *cluster.TableNotifier,
-	logger *slog.Logger,
-) (*Host, error) {
+func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
+	cfg := d.cfg
+	eh := d.eh
+	adminEnabled := d.adminEnabled
+	shards := d.shards
+	snapshotTriggers := d.snapshotTriggers
+	deliverySrv := d.deliverySrv
+	deliveryClient := d.deliveryClient
+	deliveryCreds := d.deliveryCreds
+	adminCreds := d.adminCreds
+	handlerSigner := d.handlerSigner
+	httpAuthMW := d.httpAuthMW
+	authCloser := d.authCloser
+	metricsCloser := d.metricsCloser
+	metricsRegisterer := d.metricsRegisterer
+	metrics := d.metrics
+	eventSourceNotifier := d.eventSourceNotifier
+	webhookSourceNotifier := d.webhookSourceNotifier
+	secretNotifier := d.secretNotifier
+	logger := d.logger
 	// Joiners register themselves with shard 0 BEFORE starting any
 	// local shards: dragonboat's StartOnDiskReplica(nil, join=true,...)
 	// will block forever if the joining ReplicaID isn't already part of

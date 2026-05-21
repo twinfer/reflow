@@ -29,7 +29,8 @@ type Metrics struct {
 	//   stage:      where in the resolve path the error occurred
 	//               (parse, blob_open, blob_fetch, kms_lookup,
 	//                kms_get_aead, decrypt)
-	//   name:       secret record name
+	// Per-name detail goes to logs to keep label cardinality bounded —
+	// fleet alerting wants aggregate by stage/scheme, not per-secret.
 	DecryptTotal   *prometheus.CounterVec
 	DecryptErrors  *prometheus.CounterVec
 	DecryptSeconds *prometheus.HistogramVec
@@ -54,16 +55,16 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		}),
 		ResolveErrors: registerOrExistingCounterVec(reg, prometheus.CounterOpts{
 			Name: "reflow_secretstore_resolve_errors_total",
-			Help: "Per-record SecretStore resolution failures. The reconciler preserves the previous resolved bytes on error rather than dropping the name.",
-		}, []string{"name", "source"}),
+			Help: "Per-source SecretStore resolution failures. The reconciler preserves the previous resolved bytes on error rather than dropping the name. Per-name detail goes to logs to keep label cardinality bounded.",
+		}, []string{"source"}),
 		DecryptTotal: registerOrExistingCounterVec(reg, prometheus.CounterOpts{
 			Name: "reflow_secretstore_decrypt_total",
 			Help: "Successful SecretStore remote_encrypted decrypts, labelled by KEK URI scheme.",
 		}, []string{"kek_scheme"}),
 		DecryptErrors: registerOrExistingCounterVec(reg, prometheus.CounterOpts{
 			Name: "reflow_secretstore_decrypt_errors_total",
-			Help: "Errors during SecretStore remote_encrypted resolution. Stage values: parse, blob_open, blob_fetch, kms_lookup, kms_get_aead, decrypt. Prev-resolved bytes preserved on error.",
-		}, []string{"name", "kek_scheme", "stage"}),
+			Help: "Errors during SecretStore remote_encrypted resolution. Stage values: parse, blob_open, blob_fetch, kms_lookup, kms_get_aead, decrypt. Per-name detail goes to logs to keep label cardinality bounded.",
+		}, []string{"kek_scheme", "stage"}),
 		DecryptSeconds: registerOrExistingHistogramVec(reg, prometheus.HistogramOpts{
 			Name:    "reflow_secretstore_decrypt_seconds",
 			Help:    "End-to-end latency of SecretStore remote_encrypted resolution: blob fetch + KMS lookup + Decrypt. Buckets cover 1ms–2s.",

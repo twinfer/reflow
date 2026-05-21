@@ -18,7 +18,6 @@ package gcpkms
 import (
 	"context"
 	"log/slog"
-	"sync"
 
 	gcpkms "github.com/tink-crypto/tink-go-gcpkms/v2/integration/gcpkms"
 	"github.com/tink-crypto/tink-go/v2/core/registry"
@@ -26,22 +25,11 @@ import (
 
 const uriPrefix = "gcp-kms://"
 
-var registerOnce sync.Once
-
-// Register installs the GCP KMS client in Tink's process-global KMS
-// registry. Idempotent via sync.Once. Called automatically from init()
-// when this package is imported.
-func Register() {
-	registerOnce.Do(func() {
-		client, err := gcpkms.NewClientWithOptions(context.Background(), uriPrefix)
-		if err != nil {
-			slog.Default().Error("gcpkms: register failed", "err", err)
-			return
-		}
-		registry.RegisterKMSClient(client)
-	})
-}
-
 func init() {
-	Register()
+	client, err := gcpkms.NewClientWithOptions(context.Background(), uriPrefix)
+	if err != nil {
+		slog.Default().Error("gcpkms: register failed", "err", err)
+		return
+	}
+	registry.RegisterKMSClient(client)
 }

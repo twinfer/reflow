@@ -111,23 +111,6 @@ func (r *Resolver) Lookup(name string) ([]byte, bool) {
 	return b, ok
 }
 
-// Names returns the set of currently-resolved names, in unspecified
-// order. Used by tests + diagnostics.
-func (r *Resolver) Names() []string {
-	if r == nil {
-		return nil
-	}
-	snap := r.live.Load()
-	if snap == nil {
-		return nil
-	}
-	out := make([]string, 0, len(*snap))
-	for k := range *snap {
-		out = append(out, k)
-	}
-	return out
-}
-
 // RunReconciler is the production-mode reconcile loop. Wakes on the
 // notifier (FSM post-commit Bump) or a 5s ticker, SyncRead's the
 // desired state, resolves each record, and atomically swaps the
@@ -197,7 +180,7 @@ func (r *Resolver) Reconcile(ctx context.Context, desired []*enginev1.SecretReco
 		if err != nil {
 			r.log.Warn("secretstore: resolve secret",
 				"name", name, "err", err)
-			r.metrics.ResolveErrors.WithLabelValues(name, sourceRemoteEncrypted).Inc()
+			r.metrics.ResolveErrors.WithLabelValues(sourceRemoteEncrypted).Inc()
 			if prev != nil {
 				if prevBytes, ok := (*prev)[name]; ok {
 					next[name] = prevBytes
@@ -227,7 +210,7 @@ func resolveRemoteEncrypted(ctx context.Context, re *enginev1.RemoteEncryptedSec
 	}()
 	bumpErr := func(stage string, err error) error {
 		if m != nil {
-			m.DecryptErrors.WithLabelValues(name, kekScheme, stage).Inc()
+			m.DecryptErrors.WithLabelValues(kekScheme, stage).Inc()
 		}
 		return err
 	}
@@ -238,7 +221,7 @@ func resolveRemoteEncrypted(ctx context.Context, re *enginev1.RemoteEncryptedSec
 	if re.GetKekUri() == "" {
 		return nil, bumpErr(stageParse, errors.New("remote_encrypted.kek_uri is empty"))
 	}
-	bucketURI, key, err := splitBlobURI(re.GetBlobUri())
+	bucketURI, key, err := tinkkmsblob.ParseGocloudURI(re.GetBlobUri())
 	if err != nil {
 		return nil, bumpErr(stageParse, err)
 	}
@@ -268,14 +251,6 @@ func resolveRemoteEncrypted(ctx context.Context, re *enginev1.RemoteEncryptedSec
 		m.DecryptTotal.WithLabelValues(kekScheme).Inc()
 	}
 	return pt, nil
-}
-
-// splitBlobURI delegates to the BlobKMS parser so blob_uri parses with
-// the same rules as the BlobKMS URI shape. blob_uri carries no
-// "blobkms+" prefix — re-add then strip, reusing the single parser.
-func splitBlobURI(uri string) (bucketURI, key string, err error) {
-	bucketURI, key, err = tinkkmsblob.SplitURI(tinkkmsblob.URIPrefix + uri)
-	return
 }
 
 // schemeOf extracts the operator-visible KMS scheme from a kek_uri

@@ -246,14 +246,3 @@ func readPolicyFile(file string) (*Policy, error) {
 // readFile is wrapped so unit tests can stub it without going through the
 // filesystem. Indirection is intentional — the file watcher polls.
 var readFile = os.ReadFile
-
-// ChainHTTP composes 0..N HTTP middlewares left-to-right (first runs
-// outermost). Used by run.go to layer auth + logging on a Connect mux.
-func ChainHTTP(h http.Handler, mws ...func(http.Handler) http.Handler) http.Handler {
-	for i := len(mws) - 1; i >= 0; i-- {
-		if mws[i] != nil {
-			h = mws[i](h)
-		}
-	}
-	return h
-}

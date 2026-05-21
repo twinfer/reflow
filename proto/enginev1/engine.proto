@@ -1,16 +1,11 @@
 // Reflow engine wire types — the Raft + on-disk Command/Envelope/Row
 // shapes that every shard applies.
 //
-//
 // All commands flow through the same dragonboat IOnDiskStateMachine
 // (Partition). The only thing distinguishing a metadata shard
 // (shardID=0) from a partition shard (shardID=1..N) at the wire level is
 // which Command variants the shard accepts — see the Command message
-// tag allocations + reservations below.
-//
-// On-disk + Raft compatibility: tag allocations in this file are part of
-// the on-disk format. Reusing a tag is an upgrade-incompat change. Add
-// new tags from the documented reservation ranges only.
+// tag allocations below.
 syntax = "proto3";
 
 package reflow.engine.v1;
@@ -92,31 +87,11 @@ message Header {
 // Command oneof. Mirrors restate CommandKind in
 // crates/wal-protocol/src/v2.rs:222-283.
 //
-// Tag assignment:
-//   1      : AnnounceLeader (every shard)
-//   2-5    : partition-shard commands (InvokeCommand, InvokerEffect,
-//            TimerFired, PurgeInvocation)
-//   6-10   : metadata-shard commands (RegisterNode, UpdatePartitionTable,
-//            EvictNode, BeginRebalanceStep, CompleteRebalanceStep)
-//   12-15  : reserved (see `reserved` directive below)
-//   16-17  : partition-shard cross-shard delivery (DeliverCallResult,
-//            OutboxAck)
-//   18     : metadata-shard RegisterDeployment
-//   19-20  : partition-shard workflow commands (PromiseCompletionAck,
-//            ReapWorkflow)
-//   21-22  : metadata-shard cluster-managed config: event sources
-//            (UpsertEventSource, DeleteEventSource)
-//   23-24  : metadata-shard cluster-managed config: webhook sources
-//            (UpsertWebhookSource, DeleteWebhookSource)
-//   25-26  : metadata-shard cluster-managed config: secret store
-//            (UpsertSecret, DeleteSecret)
-//
-// Do not reuse a tag — the on-disk format is part of the upgrade
-// contract. New tags should start at 27 or higher unless adding to an
-// existing numbered block.
+// Tags are grouped by which shards accept the variant: 1 is universal
+// (AnnounceLeader), 2-5 / 16-17 / 19-20 are partition-shard commands,
+// 6-10 / 18 / 21-26 are metadata-shard commands. Group new variants
+// under the matching block when adding.
 message Command {
-  reserved 12 to 15;
-
   oneof kind {
     AnnounceLeader announce_leader = 1;
     InvokeCommand invoke = 2;
@@ -285,11 +260,6 @@ message JERunProposal {
   bool retryable = 4;
   uint32 attempt = 5;
   RunRetryPolicy retry_policy = 6;
-  // Tag 7 (now_ms) retired: the wall-clock base for retry-timer
-  // fire_at_ms is now sourced from the surrounding Envelope.Header.
-  // created_at_ms, stamped once by the proposer for every command.
-  reserved 7;
-  reserved "now_ms";
 }
 
 // AwakeableResolved is proposed by the partition that owns the resolving
@@ -390,19 +360,14 @@ message InvocationSuspended {
 // JournalEntry. Mirrors restate journal_v2 Command+Notification flat union
 // at types/src/journal_v2/mod.rs:60-150.
 //
-// Tag assignment:
+// Tags grouped by feature area:
 //   2-9   : baseline (Input, Sleep+Result, Call+Result, Get/SetState, Output).
 //   10-14 : Run, Awakeable+Result, Signal, ClearState.
-//   15    : free (was JEGetEagerState — Reflow does not journal cache-hit
-//           eager value reads; see durable-execution-go-sad.md §6.10.3).
 //   16-17 : ClearAllState, OneWayCall.
 //   18-19 : AwaitSignal + SignalResult.
 //   20-24 : Promise (Get+Result, Peek, Complete+CompleteResult).
-//   25-28 : Lazy state (GetState already at 7 — re-shaped as command;
-//           GetStateResult, GetStateKeys, GetStateKeysResult at 25-27);
-//           JEGetEagerStateKeys at 28.
-//   29+   : reserved for future entries (AttachInvocation,
-//           virtual-object queue ops).
+//   25-28 : Lazy state (GetStateResult, GetStateKeys, GetStateKeysResult,
+//           JEGetEagerStateKeys).
 message JournalEntry {
   uint32 index = 1;
   oneof entry {
@@ -1038,8 +1003,6 @@ message NodeHostMeta {
 message DeploymentRecord {
   string id = 1;
   string url = 2;
-  reserved 3; // formerly `transport` — inferred from url scheme.
-  reserved "transport";
   // handlers enumerates every (service, handler, kind) tuple the
   // deployment claimed at discovery time. Used by the engine-side
   // routing table to map (service, handler) → deployment_id when an

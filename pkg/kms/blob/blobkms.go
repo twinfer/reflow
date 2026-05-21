@@ -43,7 +43,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"sync"
 
 	"github.com/tink-crypto/tink-go/v2/aead"
 	"github.com/tink-crypto/tink-go/v2/core/registry"
@@ -66,19 +65,8 @@ const URIPrefix = "blobkms+"
 // stored at the head of the KEK blob.
 const BootKeySize = 32
 
-var registerOnce sync.Once
-
-// Register installs the BlobKMS client in Tink's process-global KMS
-// registry. Safe to call repeatedly; the underlying RegisterKMSClient
-// is non-idempotent so sync.Once gates the call.
-func Register() {
-	registerOnce.Do(func() {
-		registry.RegisterKMSClient(New())
-	})
-}
-
 func init() {
-	Register()
+	registry.RegisterKMSClient(New())
 }
 
 // New returns a Tink KMSClient that resolves blobkms+ URIs against any
@@ -198,21 +186,35 @@ func newBootAEAD(bootKey []byte) (tink.AEAD, error) {
 // Exported so admin validation and CLI code can reuse the parser
 // without instantiating a KMSClient.
 func SplitURI(uri string) (bucketURI, key string, err error) {
-	rest := strings.TrimPrefix(uri, URIPrefix)
-	schemeEnd := strings.Index(rest, "://")
+	return ParseGocloudURI(strings.TrimPrefix(uri, URIPrefix))
+}
+
+// ParseGocloudURI splits a bare gocloud.dev/blob URI (no blobkms+
+// prefix) into bucket URL and object key using the same last-slash
+// rule as SplitURI. Callers that hold blob_uri values from secret
+// records or CLI flags use this directly instead of round-tripping
+// through SplitURI.
+//
+// Examples:
+//
+//	s3://bucket/path/kek.bin   -> s3://bucket/path, kek.bin
+//	file:///etc/reflow/kek.bin -> file:///etc/reflow, kek.bin
+//	mem://test/k               -> mem://test, k
+func ParseGocloudURI(uri string) (bucketURI, key string, err error) {
+	schemeEnd := strings.Index(uri, "://")
 	if schemeEnd < 0 {
-		return "", "", fmt.Errorf("blobkms: URI %q missing scheme://", uri)
+		return "", "", fmt.Errorf("blob URI %q missing scheme://", uri)
 	}
 	pathStart := schemeEnd + len("://")
-	slash := strings.LastIndex(rest[pathStart:], "/")
+	slash := strings.LastIndex(uri[pathStart:], "/")
 	if slash < 0 {
-		return "", "", fmt.Errorf("blobkms: URI %q missing object key (no '/' after authority)", uri)
+		return "", "", fmt.Errorf("blob URI %q missing object key (no '/' after authority)", uri)
 	}
 	cut := pathStart + slash
-	bucketURI = rest[:cut]
-	key = rest[cut+1:]
+	bucketURI = uri[:cut]
+	key = uri[cut+1:]
 	if key == "" {
-		return "", "", fmt.Errorf("blobkms: URI %q has empty object key", uri)
+		return "", "", fmt.Errorf("blob URI %q has empty object key", uri)
 	}
 	return bucketURI, key, nil
 }

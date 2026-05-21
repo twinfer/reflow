@@ -196,9 +196,15 @@ func (e *issuerEntry) getVerifier(ctx context.Context) (*oidc.IDTokenVerifier, e
 		return nil, errors.New("discovery in backoff")
 	}
 	if err := e.discoverLocked(ctx); err != nil {
-		if d := e.backoff.NextBackOff(); d != backoff.Stop {
-			e.nextRetry = time.Now().Add(d)
+		// On Stop the cenkalti backoff has exhausted MaxElapsedTime but
+		// we still want to keep throttling — discovery failures should
+		// never escalate into per-request hammering of the IdP. Floor
+		// the gap at MaxInterval so the throttle holds indefinitely.
+		d := e.backoff.NextBackOff()
+		if d == backoff.Stop {
+			d = e.backoff.MaxInterval
 		}
+		e.nextRetry = time.Now().Add(d)
 		return nil, err
 	}
 	e.backoff.Reset()

@@ -2,15 +2,17 @@
 # Durable Execution Engine in Go
 
 **Version:** 0.7 (Draft)
-**Date:** 2026-05-16
-**Status:** Single-node foundation, HTTP/2 wire protocol between engine and
-Go SDK (`pkg/sdk/server`), Virtual Objects (single-writer gate, idempotency,
-retry policy, eager state, attach RPCs), combinator futures (`Promise.all` /
-`Promise.race`), multi-node replication (mTLS admin, dynamic membership, DR
-snapshots), and auth consolidation (single-CA SPIFFE identity,
-proto-annotation authz, single Authorizer seam) implemented. Cloud snapshot
-drivers, retention, and non-Go SDKs outstanding. Open gap: OPEN-1
-(joining-node startup) — see §9.
+**Date:** 2026-05-21
+**Status:** Single-node foundation, Connect bidi wire protocol between
+engine and Go SDK (`pkg/handler`), Virtual Objects (single-writer gate,
+idempotency, retry policy, eager state, attach RPCs), combinator futures
+(`Promise.all` / `Promise.race`), multi-node replication (mTLS admin,
+dynamic membership including joiner-driven `SelfJoin`, DR snapshots),
+auth (SPIFFE mTLS for cluster mesh + OIDC bearer for ingress, embedded
+starter policy with hot reload), cluster-managed event sources /
+webhooks / secret store (shard-0 tables, per-node Reconcilers, Tink KMS
+providers: BlobKMS, AWS, GCP, Vault) all implemented. Non-Go SDKs
+outstanding.
 
 ---
 
@@ -65,7 +67,7 @@ one process with one data directory.
   servers, no required sidecars, no Kubernetes operator. Static peer
   config is enough to form a multi-node cluster.
 - **Go SDK as a first-class path.** A Go handler is a separate process
-  that hosts `pkg/sdk/server` (HTTP/2). The engine talks to it via the
+  that hosts `pkg/handler` (HTTP/2). The engine talks to it via the
   same wire protocol used for any other language. There is one path, not
   two — what works for the Go SDK works for cross-language handlers, and
   vice versa.
@@ -237,7 +239,8 @@ stream, polling against a tenant DB). Reflow does not durably store
 tenant config; secrets stay in the operator's secret store, no admin
 RPC owns it.
 
-The engine ↔ handler wire (`proto/protocolv1`) is raw HTTP/2 to the
+The engine ↔ handler wire (`proto/protocolv1` frames carried inside
+`proto/handlerv1.HandlerService/InvokeStream`) terminates at the
 handler-hosted endpoint, not a service hosted by reflowd. See §6.10.
 
 ---
@@ -339,10 +342,7 @@ proposals), and starts the leader-only services
 (`TimerService`, `OutboxService`, the Invoker's leader-side loops).
 Followers run the same FSM apply path with leader-only services idle.
 
-**Dynamic membership — partial today (see `OPEN-1` in §9):**
-
-The admin RPC, cluster FSM, and metadata rebalancer that drive
-*post-bootstrap* membership changes all exist:
+**Dynamic membership — implemented end-to-end:**
 
 ```bash
 reflowd cluster add-node    --node-id=4 --raft-addr=10.0.0.4:9091 \
@@ -352,35 +352,29 @@ reflowd cluster add-node    --node-id=4 --raft-addr=10.0.0.4:9091 \
 reflowd cluster remove-node --node-id=2
 ```
 
-- **`add-node`** (`internal/admin/server.go:AddNode`): proposes
-  `RegisterNode{Member}` to shard 0, then enqueues a
+- **Operator-driven add (`add-node`, `internal/admin/server.go:AddNode`):**
+  proposes `RegisterNode{Member}` to shard 0, then enqueues a
   `BeginRebalanceStep{Kind: PROMOTE_TO_VOTER, AddNodeId}` for every
   partition the new node should hold. The metadata rebalancer
-  (`internal/engine/metadata_rebalancer.go:227-247`) watches the pending
-  queue and on the metadata leader executes the dragonboat-side call:
-  `SyncRequestAddNonVoting`, then `SyncRequestAddReplica`. On success it
-  proposes `CompleteRebalanceStep`, which updates the persisted replica
-  set and bumps `assignment_epoch`.
-- **`remove-node`**: same path with `EvictNode` →
-  `SyncRequestDeleteReplica`. Works end-to-end today because the leaving
-  node's `reflowd` already has the live membership in its NodeHost; it
-  simply exits when dragonboat removes its replica.
-
-**The gap.** The cluster-side protocol is complete, but the *joining
-node's own startup* is not. `Host.StartMetadataShard` and
-`Host.StartPartition` both hard-code `nh.StartOnDiskReplica(initial,
-join=false, ...)`. Dragonboat's contract for a node joining an existing
-Raft group is the opposite: `StartOnDiskReplica(nil, join=true, ...)`
-after the existing leader has issued `SyncRequestAddReplica`. Reflow
-has no `join=true` code path and no `reflowd --join` flag.
-
-In practice this means: `add-node` against a live 3-node cluster
-correctly updates the membership on the existing nodes, but the new
-`reflowd` cannot itself come up against an established Raft group. The
-missing pieces are minimal — `HostConfig.JoinExisting bool` flipping
-both `StartOnDiskReplica` calls to `join=true` + `nil` initial members,
-and a corresponding `reflowd` flag / config key. Tracked as **OPEN-1**
-in §9 and as a GitHub issue (filed alongside this SAD revision).
+  (`internal/engine/metadata_rebalancer.go`) watches the pending queue
+  and on the metadata leader executes the dragonboat-side call:
+  `SyncRequestAddNonVoting`, then `SyncRequestAddReplica`. On success
+  it proposes `CompleteRebalanceStep`, which updates the persisted
+  replica set and bumps `assignment_epoch`.
+- **Joiner-driven add (`reflowd run` with `Cluster.JoinExisting=true`):**
+  `pkg/reflow/run.go:callSelfJoin` discovers the metadata leader via
+  gossip-published `NodeHostMeta.admin_endpoint` and dials the
+  leader's `Admin/SelfJoin` RPC before any local shard starts.
+  `Admin/SelfJoin` shares `addNodeInternal` with the operator path
+  but gates on a `node/<req.node_id>` SPIFFE principal so a leaked
+  cert can only self-register as its own node id. The joiner then
+  calls `nh.StartOnDiskReplica(nil, join=true, ...)` on each shard,
+  which dragonboat services via the snapshot+log catch-up path now
+  that the membership is in place.
+- **`remove-node`**: same shape with `EvictNode` →
+  `SyncRequestDeleteReplica`. The leaving node's `reflowd` already
+  has the live membership in its NodeHost and exits when dragonboat
+  removes its replica.
 
 **Failure detection.** Dragonboat's built-in gossip (memberlist/SWIM,
 enabled via `NodeHostConfig.AddressByNodeHostID = true` + `GossipConfig`)
@@ -788,19 +782,20 @@ heartbeats" was incorrect and is removed.
 
 ### 6.10 SDK Protocol
 
-Handlers run as separate Go processes that host `pkg/sdk/server`, an
+Handlers run as separate Go processes that host `pkg/handler`, a Connect
 HTTP/2 server speaking the wire protocol defined in
-`proto/protocolv1/protocol.proto`. The engine dials the handler endpoint
-per invocation and POSTs a chunked, framed body to
-`/invoke/<service>/<handler>`; the response body carries the handler →
-engine frame stream. Polyglot SDKs (TS/Python/Java/Rust/...) ride the
-same wire — there is no Go-specific fast path.
+`proto/protocolv1/protocol.proto`. The engine dials the handler's
+`HandlerService.InvokeStream` (`proto/handlerv1`) as a Connect bidi
+stream per invocation; engine→SDK and SDK→engine frames flow in opposite
+directions over the same stream. Polyglot SDKs (TS/Python/Java/Rust/...)
+ride the same wire — there is no Go-specific fast path.
 
 #### 6.10.1 Wire shape
 
-Every frame is a 64-bit big-endian header (16-bit type code | 16-bit
-flags | 32-bit payload length) followed by the protobuf payload. Type
-codes are namespaced:
+Each Connect stream message is a `protocolv1.Frame` carrying a 64-bit
+big-endian header field (16-bit type code | 16-bit flags | 32-bit
+payload length) and the protobuf payload bytes. Type codes are
+namespaced:
 
 - `0x0000..0x00FF` — core lifecycle (StartMessage, SuspensionMessage,
   EndMessage, ErrorMessage)
@@ -841,17 +836,18 @@ keeping pace with every Restate release.
 
 #### 6.10.2 Engine-side dispatch
 
-`internal/engine/handlerclient` owns the engine → handler dial: a
-keep-alive HTTP/2 client per registered deployment, one stream per
-invocation. `internal/engine/invoker/wireSession` translates between
-the HTTP/2 frame stream and the partition's `InvokerEffect` propose
-path: every command frame becomes a journal-entry propose; every
-notification frame is delivered as a completion.
+`internal/engine/handlerclient/connectclient` owns the engine → handler
+dial: a Connect `HandlerServiceClient` per registered deployment, one
+`InvokeStream` per invocation. `internal/engine/invoker/wireSession`
+translates between the Connect bidi stream and the partition's
+`InvokerEffect` propose path: every command frame becomes a
+journal-entry propose; every notification frame is delivered as a
+completion.
 
 There is no in-process fast path. `examples/embedded/main.go` shows
 running the engine and a Go handler in one binary for local dev — the
-engine still reaches the handler over a loopback HTTP/2 connection,
-identical to the production path.
+engine still reaches the handler over a loopback Connect/HTTP/2
+connection, identical to the production path.
 
 #### 6.10.3 State read journaling — deliberately partial
 
@@ -1366,10 +1362,12 @@ reflowd cluster upsert-webhook \
 
 Resolve path is hand-instrumented via
 `reflow_secretstore_decrypt_total{kek_scheme}` /
-`_errors_total{name,kek_scheme,stage}` / `_seconds` because Tink's
+`_errors_total{kek_scheme,stage}` / `_seconds` because Tink's
 `monitoring.Client` is exported but `RegisterMonitoringClient` lives
 in `tink-go/v2/internal/internalregistry` (blocked from external
-import in v2.6).
+import in v2.6). Per-secret detail is logged rather than labelled to
+keep counter cardinality bounded across operator-managed secret
+fleets.
 
 **Request flow:**
 
@@ -1543,7 +1541,7 @@ Minimum production deployment: 3 nodes (Raft quorum = 2).
 |---|---|---|---|
 | 1 | Fixed vs. dynamic partition count | Resolved | Fixed at bootstrap (default 64). Split/merge is explicitly not on the roadmap. |
 | 2 | Node discovery mechanism | Resolved | Embedded metadata Raft group (`shardID=0`) is authoritative for partition ownership; dragonboat's built-in gossip (memberlist/SWIM, no extra dependency) provides endpoint resolution and a leader hint cache. Static peer bootstrap (`--bootstrap-cluster` / `--join`). No external service required. See §6.2. |
-| 3 | In-process Go SDK vs. external SDK only | Resolved | Out-of-process only. All handlers (including Go) speak `protocolv1` over HTTP/2 to the engine — see §6.10. The Go SDK lives at `pkg/sdk` + `pkg/sdk/server`; non-Go SDKs are community-driven. |
+| 3 | In-process Go SDK vs. external SDK only | Resolved | Out-of-process only. All handlers (including Go) speak `protocolv1` framed inside Connect bidi streams (`handlerv1.HandlerService/InvokeStream`) over HTTP/2 — see §6.10. The Go SDK lives at `pkg/handler`; non-Go SDKs are community-driven. |
 | 4 | Partition count default | Resolved | 64 partitions at cluster bootstrap. |
 | 5 | Raft replication factor | Resolved | Default 3, configurable per deployment via `--replication-factor`. Three is the minimum that tolerates a single failure with quorum; >3 trades write latency for durability. Decided per deployment, no SAD-level open question remains. |
 | 6 | Pebble per-partition vs. shared | Resolved | Per-partition Pebble DB; no `partition_id` prefix in keys. |
@@ -1553,9 +1551,9 @@ Minimum production deployment: 3 nodes (Raft quorum = 2).
 | 10 | `StateStore` alternative implementations | Resolved | `internal/storage.Store` interface; `MemStore` (tests) + `PebbleStore` (production). |
 | 11 | Gossip for failure detection + soft state | Resolved | dragonboat's built-in gossip (memberlist/SWIM, vendored inside `lni/dragonboat/v4`) — zero extra dependency. Provides SWIM-based liveness, NodeHostID-stable endpoint resolution, and a `ShardView` leader hint cache. Architectural boundary unchanged: gossip is advisory, Raft (shard 0) is authoritative — eviction and partition assignment always go through a Raft proposal. Soft-state dissemination beyond the per-nodehost `Meta` blob is deferred; revisit only if observed load-hint dissemination requirements outgrow `Meta`. |
 | 12 | Object storage for snapshots | Resolved | `SnapshotRepository` interface with filesystem and cloud drivers (S3/GCS/Azure via `gocloud.dev/blob`). Always optional — default deployment is local-only. Hot state never leaves Pebble; only snapshot artifacts and their metadata go to object storage. See §6.12. |
-| 13 | Authn/authz model for internal gRPC | Resolved | Single-CA SPIFFE URI identity over mTLS; `internal/auth` package owns `ClaimMapper` + `Authorizer`; per-RPC policy declared in proto via `optionsv1` annotations. TLS layer reduced to chain + URI well-formedness; role enforcement lives entirely in `auth.UnaryInterceptor` / `auth.StreamInterceptor`. JWT/OIDC mapper is an additive future. Ingress + SDK-session authz are separate identity models, out of scope here. See §6.13. |
-| 14 | SDK transport for non-Go handlers | Resolved | The engine dials every handler over raw HTTP/2 using `protocolv1`. Same path for Go and non-Go SDKs; no transport variants. See §6.10. |
-| OPEN-1 | Joining-node startup against a live cluster | Open | The admin `AddNode` RPC, cluster FSM, and metadata rebalancer that drive cluster-side membership changes work end-to-end (`SyncRequestAddNonVoting` → catch-up → `SyncRequestAddReplica`). The gap is on the joining node's own `reflowd` startup: `Host.StartMetadataShard` and `Host.StartPartition` both hard-code `nh.StartOnDiskReplica(initial, join=false, ...)`. A new peer joining an established Raft group needs `StartOnDiskReplica(nil, join=true, ...)`. Missing pieces are minimal — a `HostConfig.JoinExisting bool` and a `reflowd --join` flag / config key. Tracked as a GitHub issue. |
+| 13 | Authn/authz model for internal gRPC | Resolved | Two authenticators chain at the HTTP layer below Connect: SPIFFE URI SAN extraction from the verified mTLS leaf (`internal/auth/spiffe_authfunc.go`) and Bearer-JWT verification against one or more OIDC issuers (`internal/auth/jwt_authfunc.go`); mTLS wins when both are presented. Authz is a path-glob policy (embedded starter policy in `internal/auth/starter_policy.json`, hot-reloaded from `cfg.Auth.PolicyFile` when set). See §6.13. |
+| 14 | SDK transport for non-Go handlers | Resolved | The engine dials every handler over Connect bidi streaming (`handlerv1.HandlerService/InvokeStream`) carrying `protocolv1` frames. Same path for Go and non-Go SDKs; no transport variants. See §6.10. |
+| OPEN-1 | Joining-node startup against a live cluster | Resolved | `HostConfig.JoinExisting bool` + `Cluster.JoinExisting` koanf key drive `nh.StartOnDiskReplica(nil, join=true, ...)`. On boot, `pkg/reflow/run.go:callSelfJoin` discovers the metadata leader via gossip-published `NodeHostMeta.admin_endpoint` and dials `Admin/SelfJoin` (SPIFFE-gated to `node/<self_id>`) before starting local shards. See §6.2 "Dynamic membership". |
 
 ---
 
@@ -1567,7 +1565,7 @@ Minimum production deployment: 3 nodes (Raft quorum = 2).
 | GC pauses causing Raft timeouts | Low | Medium | Tune `RTTMillisecond`/`HeartbeatRTT` generously; revisit if measured in load tests. timerfd integration deferred. |
 | Pebble key schema migration | Medium | Medium | Resolved: per-DB `format` key (`internal/storage/format.go`) written on first open and checked on every subsequent open; mismatches fail loud rather than silently corrupting. `VersionBarrier` retired. |
 | dragonboat API stability | Medium | Medium | Pinned to v4 pseudo-version; Pebble pinned to dragonboat's expected commit. Watch for an official v4 release. |
-| SDK protocol breaking changes | Medium | High | Tracks restate service-protocol-v4 wire format as a best-effort compat target (avoid inventing a competing one). |
+| SDK protocol breaking changes | Medium | High | Tracks restate service-protocol v7 / journal-v2 wire format as a best-effort compat target (avoid inventing a competing one). |
 | Partition rebalancing data loss | Low | Critical | Test membership changes under load; chaos test coverage in `internal/chaos/`. |
 
 ---
@@ -1596,15 +1594,15 @@ Minimum production deployment: 3 nodes (Raft quorum = 2).
 The first-class developer experience: write a Go function, register it
 with `reflowd`, have it become a durable goroutine.
 
-- **`sdk.Context`** Go API in `pkg/sdk/` (the durable-execution handle
-  exposed to handler authors) and the handler-side HTTP/2 runtime in
-  `pkg/sdk/server/` that translates between the wire and the Context
-  methods.
+- **`handler.Context`** Go API in `pkg/handler/` (the durable-execution
+  handle exposed to handler authors) and the handler-side Connect
+  HTTP/2 runtime in the same package (`pkg/handler/server.go`) that
+  translates between the wire and the Context methods.
 - **Per-partition Invoker** (`internal/engine/invoker/`) — session
   bookkeeping per active invocation, journal reader for replay,
   `InvokerEffect` proposals via `Proposer.ProposeSelf`. The actual
-  handler runs in a separate process; the Invoker drives it over an
-  HTTP/2 frame stream (see §6.10).
+  handler runs in a separate process; the Invoker drives it over a
+  Connect bidi stream (see §6.10).
 - **Ingress** — Connect RPC in `internal/ingress/`, content-negotiating
   Connect / gRPC / gRPC-Web / HTTP-JSON on one HTTP/2 listener. Awakeable
   resolution rides the same surface. REST facade at `/v1/*` mounted on

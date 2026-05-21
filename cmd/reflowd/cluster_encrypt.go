@@ -42,7 +42,7 @@ func cmdInitKEK(ctx context.Context, args []string) error {
 	if *blobURI == "" {
 		return errors.New("--blob-uri is required")
 	}
-	bucketURI, key, err := parseBlobURI(*blobURI)
+	bucketURI, key, err := tinkkmsblob.ParseGocloudURI(*blobURI)
 	if err != nil {
 		return err
 	}
@@ -218,7 +218,7 @@ func cmdDecryptSecret(ctx context.Context, args []string) error {
 		return errors.New("refusing to write plaintext to a terminal; pipe stdout or pass --allow-tty")
 	}
 
-	bucketURI, key, err := parseBlobURI(*blobURI)
+	bucketURI, key, err := tinkkmsblob.ParseGocloudURI(*blobURI)
 	if err != nil {
 		return err
 	}
@@ -320,7 +320,7 @@ func encryptToBlob(ctx context.Context, name, kekURI, blobURI string, plaintext 
 	if err != nil {
 		return fmt.Errorf("AEAD.Encrypt: %w", err)
 	}
-	bucketURI, key, err := parseBlobURI(blobURI)
+	bucketURI, key, err := tinkkmsblob.ParseGocloudURI(blobURI)
 	if err != nil {
 		return err
 	}
@@ -346,28 +346,6 @@ func readPlaintext(path string) ([]byte, error) {
 		return io.ReadAll(os.Stdin)
 	}
 	return os.ReadFile(path)
-}
-
-// parseBlobURI splits a gocloud.dev/blob URI into (bucketURI, key).
-// Mirrors the BlobKMS splitter shape — same parsing rules so operators
-// don't have to learn two URI conventions.
-func parseBlobURI(uri string) (bucketURI, key string, err error) {
-	schemeEnd := strings.Index(uri, "://")
-	if schemeEnd < 0 {
-		return "", "", fmt.Errorf("URI %q missing scheme://", uri)
-	}
-	pathStart := schemeEnd + len("://")
-	slash := strings.LastIndex(uri[pathStart:], "/")
-	if slash < 0 {
-		return "", "", fmt.Errorf("URI %q missing object key (no '/' after authority)", uri)
-	}
-	cut := pathStart + slash
-	bucketURI = uri[:cut]
-	key = uri[cut+1:]
-	if key == "" {
-		return "", "", fmt.Errorf("URI %q has empty object key", uri)
-	}
-	return bucketURI, key, nil
 }
 
 func checkRequired(flags map[string]string) error {

@@ -90,16 +90,15 @@ func (s *stripeVerifier) Verify(_ context.Context, r *http.Request, secret []byt
 	mac.Write([]byte("."))
 	mac.Write(body)
 	expected := mac.Sum(nil)
-	expectedHex := []byte(hex.EncodeToString(expected))
 	matched := false
 	for _, sig := range sigs {
+		// hex.DecodeString accepts both lowercase and uppercase hex, so
+		// the constant-time byte compare covers casing variations.
 		got, err := hex.DecodeString(sig)
 		if err != nil {
 			continue
 		}
-		// Compare against the raw bytes (constant-time) and the hex
-		// form (defense if a misbehaving client sends odd casing).
-		if hmac.Equal(expected, got) || hmac.Equal(expectedHex, []byte(strings.ToLower(sig))) {
+		if hmac.Equal(expected, got) {
 			matched = true
 			break
 		}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -312,13 +313,15 @@ func isOutboxProducer(producerID string) bool {
 // parseOutboxProducerShard extracts the sender shard id from an outbox
 // producer id of the form "outbox/p<N>". Returns (0, false) when the
 // producer id is malformed or does not carry the expected prefix.
+// Uses strconv.ParseUint (not Sscanf, which would accept trailing
+// garbage like "outbox/p123abc" as 123).
 func parseOutboxProducerShard(producerID string) (uint64, bool) {
-	if !strings.HasPrefix(producerID, OutboxProducerPrefix+"p") {
+	rest, ok := strings.CutPrefix(producerID, OutboxProducerPrefix+"p")
+	if !ok {
 		return 0, false
 	}
-	rest := strings.TrimPrefix(producerID, OutboxProducerPrefix+"p")
-	var n uint64
-	if _, err := fmt.Sscanf(rest, "%d", &n); err != nil {
+	n, err := strconv.ParseUint(rest, 10, 64)
+	if err != nil {
 		return 0, false
 	}
 	return n, true

@@ -28,7 +28,7 @@ func TestRouting_PartitionKeyDisambiguates(t *testing.T) {
 }
 
 func TestRouting_ShardForKeyOneIndexed(t *testing.T) {
-	p := Partitioner{NumShards: 3}
+	p := NewPartitioner(3)
 	// Hand-crafted partition keys that hit each shard.
 	for _, pk := range []uint64{0, 1, 2, 3, 1<<63 + 7} {
 		got := p.ShardForKey(pk)
@@ -38,32 +38,19 @@ func TestRouting_ShardForKeyOneIndexed(t *testing.T) {
 	}
 }
 
-func TestRouting_ShardForKeyFallback(t *testing.T) {
-	p := Partitioner{NumShards: 0}
+// TestRouting_ZeroPartitionerShardOne covers the zero-value escape:
+// no planner, no snapshot → defensive fallback to shard 1 so the
+// single-partition single-node deployment shape works without any
+// explicit construction.
+func TestRouting_ZeroPartitionerShardOne(t *testing.T) {
+	var p Partitioner
 	if got := p.ShardForKey(42); got != 1 {
-		t.Fatalf("zero-shard Partitioner = %d; want fallback 1", got)
-	}
-}
-
-func TestRouting_FromPartitionTable(t *testing.T) {
-	pt := &enginev1.PartitionTable{
-		Shards: map[uint64]*enginev1.ReplicaSet{
-			1: {NodeIds: []uint64{1, 2, 3}},
-			2: {NodeIds: []uint64{1, 2, 3}},
-			3: {NodeIds: []uint64{1, 2, 3}},
-		},
-	}
-	p := FromPartitionTable(pt)
-	if p.NumShards != 3 {
-		t.Fatalf("NumShards = %d; want 3", p.NumShards)
-	}
-	if got := FromPartitionTable(nil).NumShards; got != 0 {
-		t.Fatalf("FromPartitionTable(nil).NumShards = %d; want 0", got)
+		t.Fatalf("zero Partitioner ShardForKey = %d; want 1", got)
 	}
 }
 
 func TestRouting_ShardForTargetMatchesShardForInvocation(t *testing.T) {
-	p := Partitioner{NumShards: 7}
+	p := NewPartitioner(7)
 	target := &enginev1.InvocationTarget{ServiceName: "S", ObjectKey: "k"}
 	id := &enginev1.InvocationId{PartitionKey: PartitionKey("S", "k")}
 	if p.ShardForTarget(target) != p.ShardForInvocation(id) {
@@ -71,30 +58,28 @@ func TestRouting_ShardForTargetMatchesShardForInvocation(t *testing.T) {
 	}
 }
 
-// TestRouting_SnapshotOverridesModulo confirms the LPOwners snapshot
-// wins over the modulo fallback. Crafted so the per-LP override sends
-// PartitionKey(svc,obj) to a shard that modulo would never pick.
-func TestRouting_SnapshotOverridesModulo(t *testing.T) {
+// TestRouting_SnapshotOverridesPlanner confirms the LPOwners snapshot
+// wins over the planner fallback. The override (999) lies outside the
+// planner's value range [1, NumShards], so the test cannot pass via the
+// fallback path.
+func TestRouting_SnapshotOverridesPlanner(t *testing.T) {
 	p := NewPartitioner(3)
 	pk := PartitionKey("svc", "obj-1")
 	lp := keys.LPFromPartitionKey(pk)
-	moduloShard := (pk % 3) + 1
-	var override uint64 = 999
-	if override == moduloShard {
-		t.Fatalf("test setup: override %d collides with modulo answer", override)
-	}
+	const override uint64 = 999 // outside [1, 3]
 	p.SetLPOwnersSnapshot(map[uint32]uint64{lp: override})
 	if got := p.ShardForKey(pk); got != override {
 		t.Fatalf("ShardForKey = %d; want override %d", got, override)
 	}
 }
 
-// TestRouting_SnapshotMissFallsBackToModulo covers the snapshot-miss
+// TestRouting_SnapshotMissFallsBackToPlanner covers the snapshot-miss
 // path: when an LP is absent from the snapshot, ShardForKey falls
-// through to the lp-modulo fallback rather than returning a nonsense
-// value like 0 (which would route to the metadata shard). The fallback
-// formula matches the bootstrap seed exactly.
-func TestRouting_SnapshotMissFallsBackToModulo(t *testing.T) {
+// through to the consistent-hash planner rather than returning a
+// nonsense value like 0 (which would route to the metadata shard). The
+// planner answer matches the bootstrap seed exactly — same ring built
+// from the same shard ids.
+func TestRouting_SnapshotMissFallsBackToPlanner(t *testing.T) {
 	p := NewPartitioner(4)
 	pk := PartitionKey("svc", "obj-2")
 	lp := keys.LPFromPartitionKey(pk)
@@ -107,23 +92,23 @@ func TestRouting_SnapshotMissFallsBackToModulo(t *testing.T) {
 		snap[x] = 1
 	}
 	p.SetLPOwnersSnapshot(snap)
-	want := (uint64(lp) % 4) + 1
+	want := NewPlanner([]uint64{1, 2, 3, 4}).ShardForLP(lp)
 	if got := p.ShardForKey(pk); got != want {
-		t.Fatalf("ShardForKey on snapshot miss = %d; want lp-modulo %d", got, want)
+		t.Fatalf("ShardForKey on snapshot miss = %d; want planner %d", got, want)
 	}
 }
 
-// TestRouting_NilSnapshotFallsBackToModulo covers the pre-warmup window
+// TestRouting_NilSnapshotFallsBackToPlanner covers the pre-warmup window
 // before the reconciler has installed any snapshot. NewPartitioner sets
 // up the atomic-pointer slot but leaves it nil until the first
 // SetLPOwnersSnapshot call.
-func TestRouting_NilSnapshotFallsBackToModulo(t *testing.T) {
+func TestRouting_NilSnapshotFallsBackToPlanner(t *testing.T) {
 	p := NewPartitioner(5)
 	pk := PartitionKey("svc", "obj-3")
 	lp := keys.LPFromPartitionKey(pk)
-	want := (uint64(lp) % 5) + 1
+	want := NewPlanner([]uint64{1, 2, 3, 4, 5}).ShardForLP(lp)
 	if got := p.ShardForKey(pk); got != want {
-		t.Fatalf("ShardForKey with no snapshot = %d; want lp-modulo %d", got, want)
+		t.Fatalf("ShardForKey with no snapshot = %d; want planner %d", got, want)
 	}
 }
 
@@ -145,17 +130,21 @@ func TestRouting_SnapshotSwapVisibleAcrossCopies(t *testing.T) {
 	}
 }
 
-// TestRouting_IdentitySeedMatchesFallback is the warm-up-window
+// TestRouting_PlannerSeedMatchesFallback is the warm-up-window
 // invariant: post-seed routing (via snapshot lookup) returns the same
-// shard as pre-seed routing (via lp-modulo fallback). This is what
-// keeps the warm-up window from routing pks to different shards than
-// the steady-state table will.
-func TestRouting_IdentitySeedMatchesFallback(t *testing.T) {
+// shard as pre-seed routing (via planner fallback). This is what keeps
+// the warm-up window from routing pks to different shards than the
+// steady-state table will.
+//
+// Both paths must use NewPlanner with the same shard ids — that's the
+// guarantee. The Partitioner.planner field is built from 1..NumShards;
+// seedLPOwners (internal/engine/metadata_runner.go) calls NewPlanner
+// with the PartitionTable.Shards keys, which the static bootstrap also
+// emits as 1..len(peers). They line up.
+func TestRouting_PlannerSeedMatchesFallback(t *testing.T) {
 	const numShards uint64 = 5
-	seed := make(map[uint32]uint64, keys.LPCount)
-	for lp := range keys.LPCount {
-		seed[lp] = (uint64(lp) % numShards) + 1
-	}
+	shardIDs := []uint64{1, 2, 3, 4, 5}
+	seed := NewPlanner(shardIDs).PlanAll()
 	seeded := NewPartitioner(numShards)
 	seeded.SetLPOwnersSnapshot(seed)
 	unseeded := NewPartitioner(numShards) // nil snapshot → fallback path

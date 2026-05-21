@@ -1091,10 +1091,11 @@ type Command_UpsertLpOwner struct {
 	// LPOwnersTable mutations — the (lp → shard_id) routing table that
 	// Partitioner reads via per-node reconciler snapshot. Same CAS +
 	// notifier semantics as the event-source / webhook / secret pairs.
-	// BulkUpsertLPOwners is used by the metadata-leader bootstrap to seed
-	// the identity assignment (lp → (lp % NumShards) + 1) for all 4096
-	// LPs in one apply batch; Upsert/Delete are reserved for the future
-	// transfer protocol (PR 3). Accepted only by shardID=0.
+	// BulkUpsertLPOwners is used by the metadata-leader bootstrap to
+	// seed the consistent-hash assignment (buraksezer/consistent +
+	// xxhash, deterministic across leaders) for all 4096 LPs in one
+	// apply batch; Upsert/Delete are reserved for the future transfer
+	// protocol (PR 3). Accepted only by shardID=0.
 	UpsertLpOwner *UpsertLPOwner `protobuf:"bytes,27,opt,name=upsert_lp_owner,json=upsertLpOwner,proto3,oneof"`
 }
 
@@ -7358,10 +7359,11 @@ func (x *DeleteWebhookSource) GetName() string {
 // LPOwnerRecord is the persisted shape of one (lp → shard_id) entry in
 // shard 0's LPOwnersTable. lp is in [0, LPCount); shard_id is the
 // 1-indexed partition-shard id that currently owns the LP. The set of
-// 4096 rows is seeded at metadata-leader bootstrap with the identity
-// assignment (lp → (lp % NumPartitionShards) + 1) so day-1 routing is
-// bit-identical to the pre-PR-1 modulo. PR 3 (transfer protocol) flips
-// individual rows after data migration via UpsertLPOwner.
+// 4096 rows is seeded at metadata-leader bootstrap by the consistent-
+// hash planner (routing.NewPlanner; buraksezer/consistent + xxhash) —
+// deterministic across leaders, bounded-load distribution across
+// shards. PR 3 (transfer protocol) flips individual rows after data
+// migration via UpsertLPOwner.
 type LPOwnerRecord struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Lp            uint32                 `protobuf:"varint,1,opt,name=lp,proto3" json:"lp,omitempty"`
@@ -7417,8 +7419,8 @@ func (x *LPOwnerRecord) GetShardId() uint64 {
 // UpsertLPOwner is the Command_UpsertLPOwner payload. Apply arm
 // CAS-checks Envelope.precondition, writes
 // LPOwnersTable[record.lp] = record, and bumps the table revision.
-// Reserved for the future per-LP transfer protocol (PR 3) — PR 1
-// callers use BulkUpsertLPOwners for the identity seed.
+// Reserved for the future per-LP transfer protocol (PR 3) — PR 1/2
+// callers use BulkUpsertLPOwners for the consistent-hash seed.
 type UpsertLPOwner struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Record        *LPOwnerRecord         `protobuf:"bytes,1,opt,name=record,proto3" json:"record,omitempty"`

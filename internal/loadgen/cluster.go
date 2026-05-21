@@ -291,7 +291,7 @@ func NewCluster(t testing.TB, opts ClusterOptions) *Cluster {
 
 	cluster := &Cluster{
 		Nodes:       make([]Node, n),
-		Partitioner: routing.Partitioner{NumShards: uint64(n)},
+		Partitioner: *routing.NewPartitioner(uint64(n)),
 		addrs:       make([]nodeAddrs, n),
 		dataDirs:    make([]string, n),
 		opts:        opts,

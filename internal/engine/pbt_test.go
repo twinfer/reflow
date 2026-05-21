@@ -185,7 +185,7 @@ func (m *engineMachine) getOrCreate(id *enginev1.InvocationId) *modelInv {
 func (m *engineMachine) init(t *rapid.T) {
 	m.nowPtr = &atomic.Uint64{}
 	m.nowPtr.Store(1_700_000_000_000)
-	m.partitioner = routing.Partitioner{NumShards: numShards}
+	m.partitioner = *routing.NewPartitioner(numShards)
 
 	for s := uint64(1); s <= numShards; s++ {
 		m.spinPartition(t, s, false)

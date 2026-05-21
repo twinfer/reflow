@@ -1,9 +1,16 @@
 // Package routing computes the destination partition shard for a given
-// target. PR 1 made routing table-driven: every Partitioner holds a
-// shared atomic snapshot of shard 0's LPOwnersTable (lp → shard_id),
-// populated by a per-node reconciler. The modulo fallback below kicks in
-// only during the pre-warmup window (reconciler has not run yet) or when
-// the snapshot is missing a particular LP (a real bug post bootstrap-seed).
+// target. Routing is table-driven: every Partitioner holds a shared
+// atomic snapshot of shard 0's LPOwnersTable (lp → shard_id), populated
+// by a per-node reconciler. The planner fallback below kicks in only
+// during the pre-warmup window (reconciler has not run yet) or when the
+// snapshot is missing a particular LP (a real bug post bootstrap-seed).
+//
+// The fallback uses a consistent-hash ring with bounded loads (see
+// planner.go). It MUST match what the metadata-leader bootstrap seeds
+// into LPOwnersTable — that's how the warm-up window routes to the same
+// shard the steady-state table will. See seedLPOwners in
+// internal/engine/metadata_runner.go; the two paths share
+// NewPlanner+PlanAll.
 //
 // The shard ids returned here are 1-indexed: shard 0 is reserved for the
 // metadata Raft group (see internal/engine/cluster). When the cluster
@@ -20,41 +27,52 @@ import (
 
 // Partitioner maps a logical key tuple to a partition shard id.
 //
-// NumShards is the partition count (RF agnostic; routing is by shard id,
-// not by replica). It MUST be > 0 — callers are expected to read it from
-// the persisted PartitionTable size.
-//
 // lpOwners, when non-nil, holds a snapshot of shard 0's LPOwnersTable
-// (lp → shard_id). ShardForKey consults the snapshot first; the modulo
-// fallback below kicks in only when (a) lpOwners is nil (Partitioner
-// constructed without NewPartitioner, e.g. by FromPartitionTable for
-// non-Host callers), (b) the snapshot has not been populated yet
-// (pre-first-reconciler-tick warm-up), or (c) the LP is missing from
-// the snapshot (a real bug post bootstrap-seed — not logged on this
-// hot path).
+// (lp → shard_id). ShardForKey consults the snapshot first; the planner
+// fallback below kicks in only when (a) the snapshot has not been
+// populated yet (pre-first-reconciler-tick warm-up), or (b) the LP is
+// missing from the snapshot (a real bug post bootstrap-seed — not logged
+// on this hot path).
 //
-// All value-copies of a Partitioner produced by NewPartitioner share the
-// same atomic-pointer slot, so a single SetLPOwnersSnapshot call is
-// visible to every reader.
+// planner is the shared fallback ring (consistent hashing with bounded
+// loads). Built once at construction from shard ids 1..N so the
+// 4096-entry ring isn't re-allocated per call. Value-copies of a
+// Partitioner share this pointer just like they share the lpOwners
+// pointer; warm-up routing on a copy returns the same answer as on the
+// original.
+//
+// The zero Partitioner is meaningful: ShardForKey returns 1 for every
+// key, which is correct for the single-partition single-node deployment
+// shape (see internal/engine/partition.go:Partitioner doc).
 type Partitioner struct {
-	NumShards uint64
-	lpOwners  *atomic.Pointer[map[uint32]uint64]
+	lpOwners *atomic.Pointer[map[uint32]uint64]
+	planner  *Planner
 }
 
 // NewPartitioner constructs a Partitioner with a fresh atomic-pointer
-// snapshot slot. Reconcilers swap via SetLPOwnersSnapshot on the returned
-// pointer; every value-copy of *p observes the swap.
+// snapshot slot and a freshly-built consistent-hash planner over shard
+// ids 1..numShards. Reconcilers swap the LPOwners snapshot via
+// SetLPOwnersSnapshot on the returned pointer; every value-copy of *p
+// observes the swap.
+//
+// Passing numShards==0 yields a Partitioner with no planner — ShardForKey
+// returns the defensive shard-1 fallback, preserving the single-partition
+// behavior single-node deployments rely on.
 func NewPartitioner(numShards uint64) *Partitioner {
+	ids := make([]uint64, 0, numShards)
+	for i := uint64(1); i <= numShards; i++ {
+		ids = append(ids, i)
+	}
 	return &Partitioner{
-		NumShards: numShards,
-		lpOwners:  &atomic.Pointer[map[uint32]uint64]{},
+		lpOwners: &atomic.Pointer[map[uint32]uint64]{},
+		planner:  NewPlanner(ids),
 	}
 }
 
 // SetLPOwnersSnapshot atomically swaps the routing snapshot. The
 // reconciler calls this on each TableNotifier wake after a SyncRead.
 // Passing nil clears the snapshot (subsequent ShardForKey calls fall
-// back to the modulo).
+// back to the planner).
 func (p *Partitioner) SetLPOwnersSnapshot(m map[uint32]uint64) {
 	if p == nil || p.lpOwners == nil {
 		return
@@ -101,27 +119,26 @@ func PartitionKey(service, objectKey string) uint64 {
 //
 // Lookup order:
 //   - LPOwners snapshot (the authoritative route post-bootstrap-seed).
-//   - lp-modulo fallback (lp(pk) % NumShards) + 1 — covers the
-//     pre-warmup window and the snapshot-miss case. This is the SAME
-//     formula the metadata-leader bootstrap uses to seed the table, so
-//     the warm-up window routes to the same shard the post-seed table
-//     will. Non-power-of-2 NumShards diverges from the legacy
-//     pk-modulo (pk(8B) % N) ≠ (pk & 0xFFF) % N, hence the formula
-//     change vs the pre-PR-1 routing.
+//   - Planner fallback (consistent hashing with bounded loads) — covers
+//     the pre-warmup window and the snapshot-miss case. This is the SAME
+//     ring the metadata-leader bootstrap uses to seed the table, so the
+//     warm-up window routes to the same shard the post-seed table will.
 //
-// Returns 1 when NumShards is 0 — defensive only; tests guard against it.
+// Returns 1 when both the snapshot and the planner are absent — defensive
+// only; tests guard against the zero-NumShards case.
 func (p Partitioner) ShardForKey(partitionKey uint64) uint64 {
+	lp := keys.LPFromPartitionKey(partitionKey)
 	if p.lpOwners != nil {
 		if mp := p.lpOwners.Load(); mp != nil {
-			if shard, ok := (*mp)[keys.LPFromPartitionKey(partitionKey)]; ok {
+			if shard, ok := (*mp)[lp]; ok {
 				return shard
 			}
 		}
 	}
-	if p.NumShards == 0 {
-		return 1
+	if p.planner != nil {
+		return p.planner.ShardForLP(lp)
 	}
-	return (uint64(keys.LPFromPartitionKey(partitionKey)) % p.NumShards) + 1
+	return 1
 }
 
 // ShardForTarget is a convenience for callers that have an
@@ -135,18 +152,4 @@ func (p Partitioner) ShardForTarget(t *enginev1.InvocationTarget) uint64 {
 // it has an InvokeCommand or DeliverCallResult variant in hand.
 func (p Partitioner) ShardForInvocation(id *enginev1.InvocationId) uint64 {
 	return p.ShardForKey(id.GetPartitionKey())
-}
-
-// FromPartitionTable constructs a Partitioner whose NumShards matches the
-// size of the persisted PartitionTable. Returns a zero Partitioner (which
-// ShardForKey treats as "fall back to shard 1") when pt is nil or empty.
-// The returned Partitioner has no LPOwners snapshot slot; callers that
-// need the routing table should use NewPartitioner and let a reconciler
-// populate it. This constructor is retained for non-Host callers
-// (currently tests).
-func FromPartitionTable(pt *enginev1.PartitionTable) Partitioner {
-	if pt == nil {
-		return Partitioner{}
-	}
-	return Partitioner{NumShards: uint64(len(pt.GetShards()))}
 }

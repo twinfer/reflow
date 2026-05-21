@@ -67,7 +67,7 @@ func RunReconciler(
 
 // reconcileOnce performs one SnapshotLPOwners + atomic-swap pass. An
 // empty snapshot is NOT installed (it would force the Partitioner onto
-// the modulo fallback for every routing decision); transient SyncRead
+// the planner fallback for every routing decision); transient SyncRead
 // failures and pre-bootstrap-seed empty tables both leave the previous
 // snapshot in place.
 func reconcileOnce(ctx context.Context, reader LPOwnersReader, p *Partitioner, log *slog.Logger) {

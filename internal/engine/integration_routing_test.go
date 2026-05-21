@@ -13,13 +13,13 @@ import (
 )
 
 // TestIntegration_LPOwnersBootstrapSeed brings up a single-node cluster
-// and asserts the metadata-leader bootstrap proposes the identity-seed
-// BulkUpsertLPOwners. After commit:
+// and asserts the metadata-leader bootstrap proposes the consistent-hash
+// seed BulkUpsertLPOwners. After commit:
 //
 //   - LPOwnersTable revision is 1 (single batch).
-//   - All 4096 LPs are present, mapping lp → (lp % numShards) + 1
-//     where numShards is taken from the bootstrap PartitionTable size
-//     (= len(Peers) for the static-assignment path, not HostConfig.
+//   - All 4096 LPs are present, mapping lp → planner.PlanAll()[lp] where
+//     the planner is built from the bootstrap PartitionTable's shard ids
+//     (= 1..len(Peers) for the static-assignment path, not HostConfig.
 //     NumPartitionShards).
 //   - The Partitioner agrees with the seed for arbitrary partition_keys
 //     (once the reconciler runs; PR 1 wires it in pkg/reflow/run.go, so
@@ -78,23 +78,28 @@ func TestIntegration_LPOwnersBootstrapSeed(t *testing.T) {
 		// proved the commit happened.
 	}
 
-	// Recover the bootstrap PartitionTable to know numShards (driven by
-	// len(Peers) in buildBootstrapTable, not HostConfig.NumPartitionShards).
+	// Recover the bootstrap PartitionTable shard ids (driven by len(Peers)
+	// in buildBootstrapTable, not HostConfig.NumPartitionShards) so we
+	// can rebuild the same planner the metadata leader used.
 	pt, err := h.PartitionTable(ctx)
 	if err != nil {
 		t.Fatalf("h.PartitionTable: %v", err)
 	}
-	numShards := uint64(len(pt.GetShards()))
-	if numShards == 0 {
-		t.Fatalf("bootstrap PartitionTable has 0 shards; can't validate seed formula")
+	shardIDs := make([]uint64, 0, len(pt.GetShards()))
+	for id := range pt.GetShards() {
+		shardIDs = append(shardIDs, id)
 	}
+	if len(shardIDs) == 0 {
+		t.Fatalf("bootstrap PartitionTable has 0 shards; can't validate seed")
+	}
+	expectedPlan := routing.NewPlanner(shardIDs).PlanAll()
 
-	// Every row must follow the identity formula against the bootstrap
-	// numShards.
+	// Every row must match what NewPlanner(shardIDs).PlanAll() emits —
+	// same library, same Hasher, same Config, deterministic across runs.
 	for _, rec := range snap.Records {
-		want := (uint64(rec.GetLp()) % numShards) + 1
+		want := expectedPlan[rec.GetLp()]
 		if rec.GetShardId() != want {
-			t.Errorf("lp=%d: seeded=%d want=%d", rec.GetLp(), rec.GetShardId(), want)
+			t.Errorf("lp=%d: seeded=%d planner=%d", rec.GetLp(), rec.GetShardId(), want)
 		}
 	}
 
@@ -114,7 +119,7 @@ func TestIntegration_LPOwnersBootstrapSeed(t *testing.T) {
 		routing.PartitionKey("svc", "beta"),
 		routing.PartitionKey("Other", "key-1"),
 	} {
-		expected := (uint64(keys.LPFromPartitionKey(pk)) % numShards) + 1
+		expected := expectedPlan[keys.LPFromPartitionKey(pk)]
 		if r := h.Partitioner().ShardForKey(pk); r != expected {
 			t.Errorf("ShardForKey(0x%x) = %d; want %d (table-driven post-seed)", pk, r, expected)
 		}

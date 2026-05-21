@@ -621,7 +621,7 @@ func (f *FSM) applyDeleteLPOwner(
 // the table revision exactly once. One notifier fan-out for the whole
 // batch (subscribers will re-Snapshot the entire table on wake — there
 // is no benefit to fanning out per-row). Used by the metadata-leader
-// bootstrap to seed the identity assignment for all 4096 LPs.
+// bootstrap to seed the consistent-hash assignment for all 4096 LPs.
 func (f *FSM) applyBulkUpsertLPOwners(
 	batch storage.Batch,
 	env *enginev1.Envelope,

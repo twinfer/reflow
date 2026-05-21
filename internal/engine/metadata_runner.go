@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/twinfer/reflow/internal/engine/cluster"
+	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/storage/keys"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -174,18 +176,30 @@ func (r *MetadataRunner) bootstrap(ctx context.Context) {
 		"shard", r.ShardID, "partition_count", len(pt.Shards))
 }
 
-// seedLPOwners proposes BulkUpsertLPOwners with the identity assignment
-// (lp → (lp % NumShards) + 1) for all 4096 LPs, but only when the
-// LPOwnersTable revision is 0 (table never written). The Precondition
-// CAS mechanism treats if_table_revision_eq=0 as "no precondition", so
-// idempotency is enforced via a pre-propose read rather than a CAS gate;
-// two leaders racing to seed would both succeed and produce identical
-// state (the table contents are deterministic). Subsequent leader-gain
-// re-runs read revision > 0 and skip, preserving any PR 3 transfer
-// commits that have since modified individual rows.
+// seedLPOwners proposes BulkUpsertLPOwners with the consistent-hash
+// assignment for all 4096 LPs, but only when the LPOwnersTable revision
+// is 0 (table never written). The plan is computed deterministically from
+// the bootstrap PartitionTable's shard ids by routing.NewPlanner — every
+// metadata leader gets the same answer, so two leaders racing to seed
+// produce byte-identical content. Subsequent leader-gain re-runs read
+// revision > 0 and skip, preserving any PR 3 transfer commits that have
+// since modified individual rows.
+//
+// The Precondition CAS mechanism treats if_table_revision_eq=0 as "no
+// precondition", so idempotency is enforced via the pre-propose revision
+// read rather than a CAS gate.
+//
+// The planner output here MUST match what routing.Partitioner falls back
+// to during the warm-up window (NewPartitioner builds the same ring from
+// shard ids 1..N). That's how invocations submitted before the routing
+// reconciler has installed the snapshot still land on the same shard the
+// post-seed table will own.
 func (r *MetadataRunner) seedLPOwners(ctx context.Context, pt *enginev1.PartitionTable) {
-	numShards := uint64(len(pt.GetShards()))
-	if numShards == 0 {
+	shardIDs := make([]uint64, 0, len(pt.GetShards()))
+	for id := range pt.GetShards() {
+		shardIDs = append(shardIDs, id)
+	}
+	if len(shardIDs) == 0 {
 		return
 	}
 	store, release, ok := r.snapshotter.Acquire()
@@ -201,13 +215,23 @@ func (r *MetadataRunner) seedLPOwners(ctx context.Context, pt *enginev1.Partitio
 	if rev != 0 {
 		return
 	}
-	recs := make([]*enginev1.LPOwnerRecord, 0, keys.LPCount)
+	planner := routing.NewPlanner(shardIDs)
+	if planner == nil {
+		return
+	}
+	plan := planner.PlanAll()
+	recs := make([]*enginev1.LPOwnerRecord, 0, len(plan))
 	for lp := range keys.LPCount {
 		recs = append(recs, &enginev1.LPOwnerRecord{
 			Lp:      lp,
-			ShardId: (uint64(lp) % numShards) + 1,
+			ShardId: plan[lp],
 		})
 	}
+	// Sort by lp so the serialized proto bytes are stable across
+	// runs (the map iteration above does not guarantee order). Two
+	// leaders racing the seed produce identical content + identical
+	// bytes — useful for debug and not strictly required by the FSM.
+	sort.Slice(recs, func(i, j int) bool { return recs[i].Lp < recs[j].Lp })
 	cmd := &enginev1.Command{
 		Kind: &enginev1.Command_BulkUpsertLpOwners{
 			BulkUpsertLpOwners: &enginev1.BulkUpsertLPOwners{Records: recs},
@@ -220,8 +244,8 @@ func (r *MetadataRunner) seedLPOwners(ctx context.Context, pt *enginev1.Partitio
 		r.log.Warn("metadata: BulkUpsertLPOwners propose failed", "err", err)
 		return
 	}
-	r.log.Info("metadata: lpowners identity seed committed",
-		"shard", r.ShardID, "lp_count", len(recs), "num_partition_shards", numShards)
+	r.log.Info("metadata: lpowners consistent-hash seed committed",
+		"shard", r.ShardID, "lp_count", len(recs), "num_partition_shards", len(shardIDs))
 }
 
 // buildBootstrapTable produces the PartitionTable the metadata-leader

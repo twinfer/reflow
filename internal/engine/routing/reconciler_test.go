@@ -92,7 +92,7 @@ func TestReconciler_WakeOnNotifyInstallsSnapshot(t *testing.T) {
 // TestReconciler_EmptySnapshotPreservesPrevious confirms that a
 // SnapshotLPOwners returning no rows (pre-bootstrap-seed or transient
 // SyncRead glitch) does NOT clobber a previously installed snapshot —
-// the Partitioner would otherwise drop to modulo fallback on every
+// the Partitioner would otherwise drop to planner fallback on every
 // routing decision.
 func TestReconciler_EmptySnapshotPreservesPrevious(t *testing.T) {
 	p := NewPartitioner(3)

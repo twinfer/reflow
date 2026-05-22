@@ -1514,6 +1514,7 @@ enum TransferNamespace {
   TRANSFER_NS_WORKFLOW_RUN = 12;
   TRANSFER_NS_PROMISE = 13;
   TRANSFER_NS_PROMISE_AWAITER = 14;
+  TRANSFER_NS_DEDUP_ARBITRARY = 15;
 }
 
 // BeginLPTransfer is sent by the lpMover to the source partition shard.

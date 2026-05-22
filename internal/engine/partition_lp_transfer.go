@@ -274,6 +274,7 @@ func lpPrefixesForLP(lp uint32) [][]byte {
 		keys.WorkflowRunLPPrefix(lp),
 		keys.PromiseLPPrefix(lp),
 		keys.PromiseAwaiterLPPrefix(lp),
+		keys.DedupArbitraryLPPrefix(lp),
 	}
 }
 
@@ -345,6 +346,8 @@ func validateTransferRowLP(key []byte, hint enginev1.TransferNamespace, lp uint3
 		return bytes.HasPrefix(key, keys.PromiseLPPrefix(lp))
 	case enginev1.TransferNamespace_TRANSFER_NS_PROMISE_AWAITER:
 		return bytes.HasPrefix(key, keys.PromiseAwaiterLPPrefix(lp))
+	case enginev1.TransferNamespace_TRANSFER_NS_DEDUP_ARBITRARY:
+		return bytes.HasPrefix(key, keys.DedupArbitraryLPPrefix(lp))
 	default:
 		// Unknown future hint — accept; the source must be a newer binary.
 		return true

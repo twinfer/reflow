@@ -192,8 +192,12 @@ func (p *Partition) Update(entries []statemachine.Entry) ([]statemachine.Entry, 
 
 		// Dedup. SelfProposal entries from older leader epochs are rejected
 		// here (mirrors restate deduplication_table/mod.rs:90-137).
+		// Arbitrary dedup is LP-prefixed so it rides the LP-transfer scan;
+		// lpFromCommand derives the LP from the command kind so the row
+		// follows the LP across shard moves.
+		envLP := lpFromCommand(env.GetCommand())
 		if d := env.GetHeader().GetDedup(); d != nil {
-			dup, err := dedup.IsDuplicate(d)
+			dup, err := dedup.IsDuplicate(envLP, d)
 			if err != nil {
 				return nil, fmt.Errorf("partition: dedup check: %w", err)
 			}
@@ -288,7 +292,7 @@ func (p *Partition) Update(entries []statemachine.Entry) ([]statemachine.Entry, 
 					}
 				}
 			}
-			if err := dedup.Record(batch, d); err != nil {
+			if err := dedup.Record(batch, envLP, d); err != nil {
 				return nil, fmt.Errorf("partition: record dedup: %w", err)
 			}
 		}
@@ -428,6 +432,50 @@ func leaderLabel(isLeader bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// lpFromCommand returns the LP a command belongs to, for the purpose of
+// keying its arbitrary dedup row. Arbitrary dedup is LP-prefixed (so it
+// rides the LP transfer scan and follows the LP across shard moves), and
+// each command kind that carries arbitrary dedup also carries enough state
+// to derive an LP — either an InvocationId.partition_key or, for the
+// LP-transfer command family, an explicit lp field.
+//
+// The few LP-agnostic command kinds (OutboxAck, which pops a shard-internal
+// outbox row; AnnounceLeader, which uses SelfProposal dedup) key under
+// LPNoLP, the sentinel that can never collide with a real LP (real LPs are
+// < LPCount = 4096) and is therefore never range-deleted by FinishLPTransfer.
+func lpFromCommand(cmd *enginev1.Command) uint32 {
+	switch k := cmd.GetKind().(type) {
+	case *enginev1.Command_Invoke:
+		return keys.LPFromPartitionKey(k.Invoke.GetInvocationId().GetPartitionKey())
+	case *enginev1.Command_InvokerEffect:
+		return keys.LPFromPartitionKey(k.InvokerEffect.GetInvocationId().GetPartitionKey())
+	case *enginev1.Command_TimerFired:
+		return keys.LPFromPartitionKey(k.TimerFired.GetInvocationId().GetPartitionKey())
+	case *enginev1.Command_DeliverCallResult:
+		return keys.LPFromPartitionKey(k.DeliverCallResult.GetParentId().GetPartitionKey())
+	case *enginev1.Command_Purge:
+		return keys.LPFromPartitionKey(k.Purge.GetInvocationId().GetPartitionKey())
+	case *enginev1.Command_PromiseCompletionAck:
+		return keys.LPFromPartitionKey(k.PromiseCompletionAck.GetCallerId().GetPartitionKey())
+	case *enginev1.Command_ReapWorkflow:
+		return keys.LPFromPartitionKey(routing.PartitionKey(k.ReapWorkflow.GetService(), k.ReapWorkflow.GetWorkflowKey()))
+	case *enginev1.Command_BeginLpTransfer:
+		return k.BeginLpTransfer.GetLp()
+	case *enginev1.Command_ApplyLpTransferChunk:
+		return k.ApplyLpTransferChunk.GetLp()
+	case *enginev1.Command_CommitLpTransfer:
+		return k.CommitLpTransfer.GetLp()
+	case *enginev1.Command_FinishLpTransfer:
+		return k.FinishLpTransfer.GetLp()
+	case *enginev1.Command_AbortLpTransfer:
+		return k.AbortLpTransfer.GetLp()
+	default:
+		// OutboxAck (LP-agnostic shard-internal pop), AnnounceLeader
+		// (SelfProposal dedup; lp ignored), unknown future kinds.
+		return keys.LPNoLP
+	}
 }
 
 // checkLPFreeze returns errLPFrozen when partitionKey's LP is frozen

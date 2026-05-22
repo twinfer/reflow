@@ -23,6 +23,7 @@
 //	promise/<lp:4><service>/<workflow_key>/<name>                    -> PromiseValue       (svc, wf_key)
 //	promise_awaiter/<lp:4><service>/<workflow_key>/<name>/<idx:4>    -> PromiseAwaiter     (svc, wf_key)
 //	timer_lp/<lp:4><8-byte BE fire_at_ms>/<24-byte id>               -> uint32 sleep_index (id.PartitionKey)
+//	dedup/arbitrary/<lp:4><producer_id>/<8-byte BE seq>              -> DedupEntry         (command kind)
 //
 // LP-agnostic namespaces (singletons, ordering-sensitive, or shard-scoped):
 //
@@ -30,11 +31,16 @@
 //	format                                                        -> uint32 BE storage_format_version
 //	timer/<8-byte BE fire_at_ms>/<24-byte id>                     -> uint32 sleep_index (primary; fire_at order)
 //	outbox/<8-byte BE seq>                                        -> OutboxEnvelope (FIFO)
-//	dedup/self/<8-byte BE leader_epoch>/<8-byte BE seq>           -> DedupEntry (shard-scoped)
-//	dedup/arbitrary/<producer_id>/<8-byte BE seq>                 -> DedupEntry (shard-scoped)
+//	dedup/self/<8-byte BE leader_epoch>/<8-byte BE seq>           -> DedupEntry (shard-scoped to leader epoch)
 //	workflow_reap/<8-byte BE fire_at_ms>/<service>/<workflow_key> -> empty (fire_at order)
 //	lp_freeze/<lp:4>                                              -> LPFreezeRow (PR 3 freeze gate)
 //	lp_staging/<transfer_id>                                      -> LPStagingRow (PR 3 dest staging)
+//
+// dedup/arbitrary is LP-prefixed so the row rides the LP-transfer scan and
+// follows the LP across shard moves; LP-agnostic arbitrary dedups (today only
+// the OutboxAck command) key under the LPNoLP sentinel = 0xFFFF_FFFF, which
+// is never a real LP (LPCount=4096) and therefore is never range-deleted by
+// FinishLPTransfer.
 //
 // All multi-byte integers in keys are big-endian so lexicographic byte order
 // equals numeric order. Invocation IDs are encoded as a fixed 24-byte raw
@@ -73,6 +79,12 @@ const (
 	LPCount uint32 = 4096
 	// LPLen is the byte width of the encoded LP field.
 	LPLen = 4
+	// LPNoLP is the sentinel LP for arbitrary dedup rows that don't belong
+	// to any real LP — today only the OutboxAck command, which is shard-
+	// internal and LP-agnostic. The sentinel is chosen so it can never
+	// collide with a real LP (real LPs are < LPCount = 4096) and so a
+	// per-LP range scan / range-delete never touches it.
+	LPNoLP uint32 = 0xFFFF_FFFF
 
 	metaPrefix           = "meta"
 	formatPrefix         = "format"
@@ -354,18 +366,37 @@ func DedupSelfKey(leaderEpoch, seq uint64) []byte {
 	return append(out, buf[:]...)
 }
 
-// DedupArbitraryKey returns dedup/arbitrary/<producer_id>/<8-byte BE seq>.
+// DedupArbitraryKey returns dedup/arbitrary/<lp:4><producer_id>/<8-byte BE seq>.
 // Exact-match keying for the same reason as DedupSelfKey — concurrent
 // producers (e.g. loadgen goroutines) allocate seq from a shared atomic
-// counter and submit out-of-order to dragonboat. Shard-scoped (no LP prefix).
-func DedupArbitraryKey(producerID string, seq uint64) []byte {
-	out := make([]byte, 0, len(dedupArbPrefix)+len(producerID)+1+8)
+// counter and submit out-of-order to dragonboat.
+//
+// LP-prefixed: arbitrary dedup state belongs to a logical partition and rides
+// the LP-transfer scan, so a producer retry that hits the LP's new owner
+// after a transfer flip finds its dedup row already present. The caller
+// derives lp from the command kind via lpFromCommand in partition.go; for
+// the few LP-agnostic kinds (OutboxAck) pass LPNoLP.
+func DedupArbitraryKey(lp uint32, producerID string, seq uint64) []byte {
+	out := make([]byte, 0, len(dedupArbPrefix)+LPLen+len(producerID)+1+8)
 	out = append(out, dedupArbPrefix...)
+	out = appendLP(out, lp)
 	out = append(out, producerID...)
 	out = append(out, '/')
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], seq)
 	return append(out, buf[:]...)
+}
+
+// DedupArbitraryLPPrefix returns dedup/arbitrary/<lp:4>, suitable as the
+// LowerBound for a per-LP scan of every arbitrary dedup row in one logical
+// partition. Pair with PrefixUpperBound for the UpperBound. Used by the LP
+// transfer scanner to ship the LP's dedup state to the destination shard,
+// and by the partition apply path's FinishLPTransfer to range-delete the
+// rows on the source side.
+func DedupArbitraryLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(dedupArbPrefix)+LPLen)
+	out = append(out, dedupArbPrefix...)
+	return appendLP(out, lp)
 }
 
 // StatePrefix returns the state/ namespace prefix. Exported so other

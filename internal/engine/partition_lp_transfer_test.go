@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/lni/dragonboat/v4/statemachine"
@@ -203,5 +204,117 @@ func TestPartition_FinishLPTransfer_RangeDeletesLPKeyspace(t *testing.T) {
 	}
 	if freeze != nil {
 		t.Errorf("freeze row should be dropped; got %+v", freeze)
+	}
+}
+
+func TestPartition_DedupArbitrary_StagesAndFinishesWithLP(t *testing.T) {
+	// LP-prefixed arbitrary dedup rides the transfer scan: a chunk
+	// carrying dedup/arbitrary/<lp>/<producer>/<seq> lands on the
+	// destination as a plain batch.Set, and Finish range-deletes the
+	// same prefix on the source. Regression guard for PR 4.
+	p, _, col := newTestPartition(t)
+	lp := uint32(13)
+	dedupKey := keys.DedupArbitraryKey(lp, "outbox/p1", 42)
+	dedupVal := []byte{0xAA, 0xBB, 0xCC}
+
+	// 1. Apply a chunk with the dedup row.
+	chunkCmd := envelope(t, &enginev1.Command{
+		Kind: &enginev1.Command_ApplyLpTransferChunk{
+			ApplyLpTransferChunk: &enginev1.ApplyLPTransferChunk{
+				TransferId:  "txn-dedup",
+				Lp:          lp,
+				SourceShard: 1,
+				ChunkSeq:    0,
+				Rows: []*enginev1.TransferRow{
+					{Key: dedupKey, Value: dedupVal, NamespaceHint: enginev1.TransferNamespace_TRANSFER_NS_DEDUP_ARBITRARY},
+				},
+				IsFinal: true,
+			},
+		},
+	})
+	if _, err := p.Update([]statemachine.Entry{{Index: 1, Cmd: chunkCmd}}); err != nil {
+		t.Fatal(err)
+	}
+	col.Drain()
+	store := p.cfg.Snapshotter.Store()
+	got, closer, err := store.Get(dedupKey)
+	if err != nil {
+		t.Fatalf("expected dedup row staged after chunk apply: %v", err)
+	}
+	gotCopy := append([]byte(nil), got...)
+	closer.Close()
+	if !bytes.Equal(gotCopy, dedupVal) {
+		t.Errorf("staged dedup value = %v; want %v", gotCopy, dedupVal)
+	}
+
+	// 2. Freeze + finish on the same partition (treating it as the
+	// source): the dedup row should be range-deleted along with the
+	// rest of the LP keyspace.
+	beginCmd := envelope(t, &enginev1.Command{
+		Kind: &enginev1.Command_BeginLpTransfer{
+			BeginLpTransfer: &enginev1.BeginLPTransfer{
+				TransferId: "txn-dedup-finish",
+				Lp:         lp,
+				DestShard:  2,
+			},
+		},
+	})
+	finishCmd := envelope(t, &enginev1.Command{
+		Kind: &enginev1.Command_FinishLpTransfer{
+			FinishLpTransfer: &enginev1.FinishLPTransfer{
+				TransferId: "txn-dedup-finish",
+				Lp:         lp,
+			},
+		},
+	})
+	if _, err := p.Update([]statemachine.Entry{
+		{Index: 2, Cmd: beginCmd},
+		{Index: 3, Cmd: finishCmd},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, closer, err := store.Get(dedupKey); err == nil {
+		closer.Close()
+		t.Error("expected dedup-arb row to be range-deleted by FinishLPTransfer")
+	}
+
+	// 3. The LPNoLP sentinel slot must NOT be touched — Finish only
+	// walks real LP prefixes (PrefixUpperBound(real lp) can never
+	// reach the sentinel).
+	sentinelKey := keys.DedupArbitraryKey(keys.LPNoLP, "outbox/p1", 99)
+	b := store.NewBatch()
+	if err := b.Set(sentinelKey, []byte{0xFF}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Commit(true); err != nil {
+		t.Fatal(err)
+	}
+	b.Close()
+	// Re-run finish for some real lp; sentinel must survive.
+	finishCmd2 := envelope(t, &enginev1.Command{
+		Kind: &enginev1.Command_FinishLpTransfer{
+			FinishLpTransfer: &enginev1.FinishLPTransfer{
+				TransferId: "txn-sentinel-guard",
+				Lp:         lp + 1,
+			},
+		},
+	})
+	beginCmd2 := envelope(t, &enginev1.Command{
+		Kind: &enginev1.Command_BeginLpTransfer{
+			BeginLpTransfer: &enginev1.BeginLPTransfer{
+				TransferId: "txn-sentinel-guard", Lp: lp + 1, DestShard: 2,
+			},
+		},
+	})
+	if _, err := p.Update([]statemachine.Entry{
+		{Index: 4, Cmd: beginCmd2},
+		{Index: 5, Cmd: finishCmd2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, closer, err := store.Get(sentinelKey); err != nil {
+		t.Error("sentinel-LP dedup row must NOT be deleted by Finish on a real LP")
+	} else {
+		closer.Close()
 	}
 }

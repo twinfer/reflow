@@ -418,8 +418,8 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		d1 := &enginev1.Dedup{Kind: &enginev1.Dedup_SelfProposal{
 			SelfProposal: &enginev1.SelfProposalDedup{LeaderEpoch: 1, Seq: 5},
 		}}
-		// First time: not duplicate.
-		dup, err := dt.IsDuplicate(d1)
+		// First time: not duplicate. Self dedup ignores lp.
+		dup, err := dt.IsDuplicate(testLP, d1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -428,14 +428,19 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 		// Record.
 		b := s.NewBatch()
-		if err := dt.Record(b, d1); err != nil {
+		if err := dt.Record(b, testLP, d1); err != nil {
 			t.Fatal(err)
 		}
 		commit(t, b)
 		// Same Dedup is now a duplicate.
-		dup, _ = dt.IsDuplicate(d1)
+		dup, _ = dt.IsDuplicate(testLP, d1)
 		if !dup {
 			t.Fatal("second IsDuplicate should be true")
+		}
+		// Self dedup ignores lp — a different lp still sees the dup.
+		dup, _ = dt.IsDuplicate(testLP+1, d1)
+		if !dup {
+			t.Fatal("self dedup must be shard-scoped (lp-independent)")
 		}
 		// Exact-match keying: a lower-seq propose in the same epoch is a
 		// FRESH entry, not a duplicate. The old high-water-mark scheme
@@ -445,7 +450,7 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		dLower := &enginev1.Dedup{Kind: &enginev1.Dedup_SelfProposal{
 			SelfProposal: &enginev1.SelfProposalDedup{LeaderEpoch: 1, Seq: 3},
 		}}
-		dup, _ = dt.IsDuplicate(dLower)
+		dup, _ = dt.IsDuplicate(testLP, dLower)
 		if dup {
 			t.Fatal("lower-seq must not be dup under exact-match keying")
 		}
@@ -453,7 +458,7 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		dHigher := &enginev1.Dedup{Kind: &enginev1.Dedup_SelfProposal{
 			SelfProposal: &enginev1.SelfProposalDedup{LeaderEpoch: 1, Seq: 6},
 		}}
-		dup, _ = dt.IsDuplicate(dHigher)
+		dup, _ = dt.IsDuplicate(testLP, dHigher)
 		if dup {
 			t.Fatal("higher seq should not be dup")
 		}
@@ -461,7 +466,7 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		dEpoch2 := &enginev1.Dedup{Kind: &enginev1.Dedup_SelfProposal{
 			SelfProposal: &enginev1.SelfProposalDedup{LeaderEpoch: 2, Seq: 1},
 		}}
-		dup, _ = dt.IsDuplicate(dEpoch2)
+		dup, _ = dt.IsDuplicate(testLP, dEpoch2)
 		if dup {
 			t.Fatal("different epoch must not be dup")
 		}
@@ -474,16 +479,47 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		d := &enginev1.Dedup{Kind: &enginev1.Dedup_Arbitrary{
 			Arbitrary: &enginev1.ArbitraryDedup{ProducerId: "client-x", Seq: 10},
 		}}
-		dup, _ := dt.IsDuplicate(d)
+		dup, _ := dt.IsDuplicate(testLP, d)
 		if dup {
 			t.Fatal("first should not be dup")
 		}
 		b := s.NewBatch()
-		_ = dt.Record(b, d)
+		_ = dt.Record(b, testLP, d)
 		commit(t, b)
-		dup, _ = dt.IsDuplicate(d)
+		dup, _ = dt.IsDuplicate(testLP, d)
 		if !dup {
 			t.Fatal("second should be dup")
+		}
+	})
+
+	t.Run(name+"/Dedup_ArbitraryLPPartitions", func(t *testing.T) {
+		// Arbitrary dedup is LP-prefixed: the same (producer, seq) under
+		// two different LPs occupies two distinct rows, so recording at
+		// LP A must not flag a fresh propose at LP B as duplicate.
+		// Regression guard for the LP-prefix refactor.
+		s := open(t)
+		defer s.Close()
+		dt := tables.DedupTable{S: s}
+		d := &enginev1.Dedup{Kind: &enginev1.Dedup_Arbitrary{
+			Arbitrary: &enginev1.ArbitraryDedup{ProducerId: "outbox/p1", Seq: 42},
+		}}
+		// Record under LP 7.
+		b := s.NewBatch()
+		if err := dt.Record(b, 7, d); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, b)
+		if dup, _ := dt.IsDuplicate(7, d); !dup {
+			t.Fatal("LP 7: second must be dup")
+		}
+		// Same (producer, seq) under LP 8 — a different logical partition
+		// — must NOT be dup.
+		if dup, _ := dt.IsDuplicate(8, d); dup {
+			t.Fatal("LP 8 must not see LP 7's row as dup")
+		}
+		// The LPNoLP sentinel is also a distinct slot.
+		if dup, _ := dt.IsDuplicate(keys.LPNoLP, d); dup {
+			t.Fatal("LPNoLP must not see LP 7's row as dup")
 		}
 	})
 
@@ -495,7 +531,7 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		// an arbitrary row that GC must NOT touch.
 		rec := func(d *enginev1.Dedup) {
 			b := s.NewBatch()
-			if err := dt.Record(b, d); err != nil {
+			if err := dt.Record(b, testLP, d); err != nil {
 				t.Fatal(err)
 			}
 			commit(t, b)
@@ -520,16 +556,16 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 		commit(t, b)
 
-		if dup, _ := dt.IsDuplicate(mk(1)); dup {
+		if dup, _ := dt.IsDuplicate(testLP, mk(1)); dup {
 			t.Error("epoch=1 should be GC'd")
 		}
-		if dup, _ := dt.IsDuplicate(mk(2)); dup {
+		if dup, _ := dt.IsDuplicate(testLP, mk(2)); dup {
 			t.Error("epoch=2 should be GC'd")
 		}
-		if dup, _ := dt.IsDuplicate(mk(3)); !dup {
+		if dup, _ := dt.IsDuplicate(testLP, mk(3)); !dup {
 			t.Error("epoch=3 must survive GC below=3")
 		}
-		if dup, _ := dt.IsDuplicate(arb); !dup {
+		if dup, _ := dt.IsDuplicate(testLP, arb); !dup {
 			t.Error("Arbitrary dedup must not be touched by Self GC")
 		}
 
@@ -539,7 +575,7 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 			t.Fatal(err)
 		}
 		commit(t, b)
-		if dup, _ := dt.IsDuplicate(mk(3)); !dup {
+		if dup, _ := dt.IsDuplicate(testLP, mk(3)); !dup {
 			t.Error("GC(0) must not delete anything")
 		}
 	})
@@ -549,12 +585,12 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		defer s.Close()
 		dt := tables.DedupTable{S: s}
 		// nil Dedup: not duplicate.
-		dup, err := dt.IsDuplicate(nil)
+		dup, err := dt.IsDuplicate(testLP, nil)
 		if err != nil || dup {
 			t.Errorf("nil dedup: dup=%v err=%v", dup, err)
 		}
 		// Empty (kind unset): also not duplicate.
-		dup, err = dt.IsDuplicate(&enginev1.Dedup{})
+		dup, err = dt.IsDuplicate(testLP, &enginev1.Dedup{})
 		if err != nil || dup {
 			t.Errorf("empty dedup: dup=%v err=%v", dup, err)
 		}

@@ -310,13 +310,32 @@ func TestDedupKeys(t *testing.T) {
 	if bytes.Equal(selfA0, selfA1) {
 		t.Errorf("dedup self keys at different seq must differ")
 	}
-	arb := DedupArbitraryKey("client-x", 0)
+	arb := DedupArbitraryKey(7, "client-x", 0)
 	if !bytes.HasPrefix(arb, []byte("dedup/arbitrary/")) {
 		t.Errorf("bad arbitrary prefix: %q", arb)
 	}
-	arb1 := DedupArbitraryKey("client-x", 1)
+	// LP is encoded as 4 BE bytes immediately after dedup/arbitrary/.
+	wantLPPrefix := append([]byte("dedup/arbitrary/"), 0, 0, 0, 7)
+	if !bytes.HasPrefix(arb, wantLPPrefix) {
+		t.Errorf("arbitrary key %q missing 4-byte BE LP=7 prefix", arb)
+	}
+	arb1 := DedupArbitraryKey(7, "client-x", 1)
 	if bytes.Equal(arb, arb1) {
 		t.Errorf("dedup arbitrary keys at different seq must differ")
+	}
+	// Same (producer, seq) under a different LP is a distinct key — this
+	// is the load-bearing invariant for the LP-prefix refactor (PR 4).
+	arbLP8 := DedupArbitraryKey(8, "client-x", 0)
+	if bytes.Equal(arb, arbLP8) {
+		t.Errorf("arbitrary keys at different lp must differ")
+	}
+	// The per-LP scan prefix is dedup/arbitrary/<lp:4>.
+	lpPrefix := DedupArbitraryLPPrefix(7)
+	if !bytes.HasPrefix(arb, lpPrefix) {
+		t.Errorf("arb key %q not under DedupArbitraryLPPrefix(7) %q", arb, lpPrefix)
+	}
+	if bytes.HasPrefix(arbLP8, lpPrefix) {
+		t.Errorf("LP-8 key must not be under LP-7 prefix")
 	}
 	// Self and arbitrary share the dedup/ prefix; ensure they remain in
 	// distinct ranges (no key in one can be a prefix of a key in the other).

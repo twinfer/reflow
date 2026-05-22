@@ -331,6 +331,7 @@ func (sc *lpScanner) run(ctx context.Context) error {
 		{enginev1.TransferNamespace_TRANSFER_NS_WORKFLOW_RUN, keys.WorkflowRunLPPrefix(sc.lp)},
 		{enginev1.TransferNamespace_TRANSFER_NS_PROMISE, keys.PromiseLPPrefix(sc.lp)},
 		{enginev1.TransferNamespace_TRANSFER_NS_PROMISE_AWAITER, keys.PromiseAwaiterLPPrefix(sc.lp)},
+		{enginev1.TransferNamespace_TRANSFER_NS_DEDUP_ARBITRARY, keys.DedupArbitraryLPPrefix(sc.lp)},
 	}
 	for _, ns := range namespaces {
 		if err := sc.scanNamespace(ctx, ns.hint, ns.prefix); err != nil {

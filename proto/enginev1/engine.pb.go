@@ -141,6 +141,7 @@ const (
 	TransferNamespace_TRANSFER_NS_WORKFLOW_RUN    TransferNamespace = 12
 	TransferNamespace_TRANSFER_NS_PROMISE         TransferNamespace = 13
 	TransferNamespace_TRANSFER_NS_PROMISE_AWAITER TransferNamespace = 14
+	TransferNamespace_TRANSFER_NS_DEDUP_ARBITRARY TransferNamespace = 15
 )
 
 // Enum value maps for TransferNamespace.
@@ -161,6 +162,7 @@ var (
 		12: "TRANSFER_NS_WORKFLOW_RUN",
 		13: "TRANSFER_NS_PROMISE",
 		14: "TRANSFER_NS_PROMISE_AWAITER",
+		15: "TRANSFER_NS_DEDUP_ARBITRARY",
 	}
 	TransferNamespace_value = map[string]int32{
 		"TRANSFER_NS_UNSPECIFIED":     0,
@@ -178,6 +180,7 @@ var (
 		"TRANSFER_NS_WORKFLOW_RUN":    12,
 		"TRANSFER_NS_PROMISE":         13,
 		"TRANSFER_NS_PROMISE_AWAITER": 14,
+		"TRANSFER_NS_DEDUP_ARBITRARY": 15,
 	}
 )
 
@@ -9876,7 +9879,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x19LP_TRANSFER_PHASE_FLIPPED\x10\x04\x12\x1d\n" +
 	"\x19LP_TRANSFER_PHASE_CLEANED\x10\x05\x12\x1e\n" +
 	"\x1aLP_TRANSFER_PHASE_ABORTING\x10\x06\x12\x1d\n" +
-	"\x19LP_TRANSFER_PHASE_ABORTED\x10\a*\xab\x03\n" +
+	"\x19LP_TRANSFER_PHASE_ABORTED\x10\a*\xcc\x03\n" +
 	"\x11TransferNamespace\x12\x1b\n" +
 	"\x17TRANSFER_NS_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fTRANSFER_NS_INV\x10\x01\x12\x17\n" +
@@ -9893,7 +9896,8 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x1aTRANSFER_NS_SIGNAL_AWAITER\x10\v\x12\x1c\n" +
 	"\x18TRANSFER_NS_WORKFLOW_RUN\x10\f\x12\x17\n" +
 	"\x13TRANSFER_NS_PROMISE\x10\r\x12\x1f\n" +
-	"\x1bTRANSFER_NS_PROMISE_AWAITER\x10\x0eB3Z1github.com/twinfer/reflow/proto/enginev1;enginev1b\x06proto3"
+	"\x1bTRANSFER_NS_PROMISE_AWAITER\x10\x0e\x12\x1f\n" +
+	"\x1bTRANSFER_NS_DEDUP_ARBITRARY\x10\x0fB3Z1github.com/twinfer/reflow/proto/enginev1;enginev1b\x06proto3"
 
 var (
 	file_enginev1_engine_proto_rawDescOnce sync.Once

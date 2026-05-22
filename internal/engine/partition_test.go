@@ -214,6 +214,124 @@ func TestPartition_DedupRejectsDuplicate(t *testing.T) {
 	}
 }
 
+func TestLPFromCommand(t *testing.T) {
+	// PartitionKey 0x1234_0000_0000_0007 → LP 7 (LPCount=4096 so LP = pk & 0xFFF).
+	const pkLP7 uint64 = 0x1234_0000_0000_0007
+	const wantLP7 uint32 = 7
+	id := &enginev1.InvocationId{PartitionKey: pkLP7, Uuid: []byte("0123456789abcdef")}
+
+	// ReapWorkflow uses (service, workflow_key) → routing.PartitionKey → LP.
+	reapSvc, reapKey := "Svc", "wfA"
+	reapLP := keys.LPFromPartitionKey(routing.PartitionKey(reapSvc, reapKey))
+
+	cases := []struct {
+		name string
+		cmd  *enginev1.Command
+		want uint32
+	}{
+		{
+			"Invoke",
+			&enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
+				InvocationId: id, Target: &enginev1.InvocationTarget{ServiceName: "S"},
+			}}},
+			wantLP7,
+		},
+		{
+			"InvokerEffect",
+			&enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+				InvocationId: id,
+			}}},
+			wantLP7,
+		},
+		{
+			"TimerFired",
+			&enginev1.Command{Kind: &enginev1.Command_TimerFired{TimerFired: &enginev1.TimerFired{
+				InvocationId: id,
+			}}},
+			wantLP7,
+		},
+		{
+			"DeliverCallResult",
+			&enginev1.Command{Kind: &enginev1.Command_DeliverCallResult{DeliverCallResult: &enginev1.DeliverCallResult{
+				ParentId: id,
+			}}},
+			wantLP7,
+		},
+		{
+			"Purge",
+			&enginev1.Command{Kind: &enginev1.Command_Purge{Purge: &enginev1.PurgeInvocation{
+				InvocationId: id,
+			}}},
+			wantLP7,
+		},
+		{
+			"PromiseCompletionAck",
+			&enginev1.Command{Kind: &enginev1.Command_PromiseCompletionAck{PromiseCompletionAck: &enginev1.PromiseCompletionAck{
+				CallerId: id,
+			}}},
+			wantLP7,
+		},
+		{
+			"ReapWorkflow",
+			&enginev1.Command{Kind: &enginev1.Command_ReapWorkflow{ReapWorkflow: &enginev1.ReapWorkflow{
+				Service: reapSvc, WorkflowKey: reapKey,
+			}}},
+			reapLP,
+		},
+		{
+			"BeginLPTransfer",
+			&enginev1.Command{Kind: &enginev1.Command_BeginLpTransfer{BeginLpTransfer: &enginev1.BeginLPTransfer{
+				Lp: 42,
+			}}},
+			42,
+		},
+		{
+			"ApplyLPTransferChunk",
+			&enginev1.Command{Kind: &enginev1.Command_ApplyLpTransferChunk{ApplyLpTransferChunk: &enginev1.ApplyLPTransferChunk{
+				Lp: 100,
+			}}},
+			100,
+		},
+		{
+			"CommitLPTransfer",
+			&enginev1.Command{Kind: &enginev1.Command_CommitLpTransfer{CommitLpTransfer: &enginev1.CommitLPTransfer{Lp: 7}}},
+			7,
+		},
+		{
+			"FinishLPTransfer",
+			&enginev1.Command{Kind: &enginev1.Command_FinishLpTransfer{FinishLpTransfer: &enginev1.FinishLPTransfer{Lp: 7}}},
+			7,
+		},
+		{
+			"AbortLPTransfer",
+			&enginev1.Command{Kind: &enginev1.Command_AbortLpTransfer{AbortLpTransfer: &enginev1.AbortLPTransfer{Lp: 7}}},
+			7,
+		},
+		{
+			// OutboxAck is LP-agnostic; dedup row keys under the sentinel.
+			"OutboxAck",
+			&enginev1.Command{Kind: &enginev1.Command_OutboxAck{OutboxAck: &enginev1.OutboxAck{
+				ProducerShardId: 1, ProducerSeq: 1,
+			}}},
+			keys.LPNoLP,
+		},
+		{
+			"AnnounceLeader_NoArbitraryDedup",
+			&enginev1.Command{Kind: &enginev1.Command_AnnounceLeader{AnnounceLeader: &enginev1.AnnounceLeader{}}},
+			keys.LPNoLP,
+		},
+		{"NilCommand", nil, keys.LPNoLP},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := lpFromCommand(tc.cmd)
+			if got != tc.want {
+				t.Errorf("lpFromCommand = %d; want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPartition_IdempotencyKey_FirstInvokeWinsSecondDropped(t *testing.T) {
 	p, _, col := newTestPartition(t)
 

@@ -147,6 +147,37 @@ Invariants: all passed.
 
 Numbers vary by machine (IO/CPU). Order-of-magnitude shifts (10× latency, peak L0 in the dozens, write-amp > 5) are the actual regression signal; a 20% drift on percentiles is noise. Bump the reference block on any major refactor that touches the apply or invoker paths.
 
+### Containerized perf baseline
+
+`TestE2EPerf_SteadyState` in `internal/e2e/perf/` is the e2e-tier counterpart — same workload shape (50qps × 20s, concurrency 16) against a real 3-node `reflow/reflowd:e2e` cluster + a `cmd/loadhandler` sidecar over a docker user-defined network. Exercises engine→handler RPC, ingress/admin Connect, real TCP raft. No Pebble metrics (the sampler reaches into `*loadgen.InProcessNode` internals).
+
+Run:
+
+```bash
+go test -tags=e2e -timeout=10m -count=1 -run=TestE2EPerf_SteadyState -v ./internal/e2e/perf/...
+```
+
+Reference (commit `bfddbdf+1`, 2026-05-22, Darwin/arm64 laptop, Docker Desktop 29.1.2):
+
+```
+- Issued: 1050
+- Completed: 1050
+- Failed: 0
+- InFlightAtEnd: 0
+- Duration: 20s
+
+Latency (end-to-end, µs)
+- p50:  28_271
+- p90:  48_031
+- p99:  49_855
+- p999: 60_543
+- max:  79_167
+
+Invariants: all passed.
+```
+
+Note: the containerized run is faster end-to-end than the in-proc reference above on this machine — that's a stale in-proc reference taken under heavier laptop load, not a "containers are faster than in-proc" claim. Recalibrate both baselines together when one drifts so the comparison stays meaningful.
+
 ## Conventions worth knowing before editing
 
 - **`NumPartitionShards` is the routing modulus** and is independent of peer count and replication factor. A 3-node deployment can host any number of shards; don't equate the two.

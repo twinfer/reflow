@@ -42,10 +42,10 @@ test-pkg: tools
 	$(GOBIN)/gotestsum --format pkgname-and-test-fails -- -race $(if $(RUN),-run $(RUN),) $(PKG)
 
 # test-e2e runs the containerized chaos / eventsource / kms / snapshot
-# suites under internal/e2e/... behind the `e2e` build tag. Requires a
-# working Docker daemon; individual tests Skip when Docker is absent.
-# Override the reflowd image with REFLOW_E2E_IMAGE=... (CI prebuild) to
-# skip the in-test image build.
+# / perf suites under internal/e2e/... behind the `e2e` build tag.
+# Requires a working Docker daemon; individual tests Skip when Docker
+# is absent. Override the reflowd image with REFLOW_E2E_IMAGE=...
+# (CI prebuild) to skip the in-test image build.
 test-e2e:
 	go test -tags=e2e -timeout=30m ./internal/e2e/...
 

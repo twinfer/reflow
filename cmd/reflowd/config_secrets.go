@@ -73,7 +73,7 @@ func cmdInitKEK(ctx context.Context, args []string) error {
 
 // cmdCreateSecret reads plaintext from stdin (or --input), encrypts it
 // under the KEK at --kek-uri with AAD=--name, writes the ciphertext to
-// --blob-uri, and then proposes Admin.UpsertSecret so every node's
+// --blob-uri, and then proposes Config.UpsertSecret so every node's
 // SecretStore Resolver picks the new ciphertext up on the next
 // reconcile.
 //
@@ -249,9 +249,9 @@ func cmdDecryptSecret(ctx context.Context, args []string) error {
 	return nil
 }
 
-// cmdUpsertWebhook proposes Admin.UpsertWebhookSource for a webhook
+// cmdUpsertWebhook proposes Config.UpsertWebhookSource for a webhook
 // record that references an existing SecretRecord by name. The secret
-// itself is created separately via `cluster create-secret`.
+// itself is created separately via `config create-secret`.
 func cmdUpsertWebhook(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("upsert-webhook", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)

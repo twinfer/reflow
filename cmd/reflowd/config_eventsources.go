@@ -14,7 +14,7 @@ import (
 	configv1 "github.com/twinfer/reflow/proto/configv1"
 )
 
-// cmdEventSources routes `reflowd cluster eventsources <subcmd>`.
+// cmdEventSources routes `reflowd config eventsources <subcmd>`.
 //
 // list   — SyncRead's the EventSourceTable and prints rows as JSON.
 //
@@ -26,7 +26,7 @@ import (
 //	(or accepts: their delete proposal landed in either case).
 func cmdEventSources(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: reflowd cluster eventsources {list|delete} [flags]")
+		return errors.New("usage: reflowd config eventsources {list|delete} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]

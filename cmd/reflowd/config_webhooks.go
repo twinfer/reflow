@@ -14,12 +14,12 @@ import (
 	configv1 "github.com/twinfer/reflow/proto/configv1"
 )
 
-// cmdWebhooks routes `reflowd cluster webhooks <subcmd>`. Mirrors
+// cmdWebhooks routes `reflowd config webhooks <subcmd>`. Mirrors
 // cmdEventSources — list reads from any peer (SyncRead), delete is
 // leader-only with a CAS round-trip.
 func cmdWebhooks(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: reflowd cluster webhooks {list|delete} [flags]")
+		return errors.New("usage: reflowd config webhooks {list|delete} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]

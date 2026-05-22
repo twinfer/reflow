@@ -1,9 +1,14 @@
-// Command reflowd is the production reflow binary. It exposes three
+// Command reflowd is the production reflow binary. It exposes four
 // top-level subcommands:
 //
 //	reflowd run                 # start the engine
 //	reflowd pki <subcmd>        # offline CA + leaf issuance
-//	reflowd cluster <subcmd>    # mTLS-authenticated admin RPCs
+//	reflowd cluster <subcmd>    # mTLS-authenticated ClusterCtl RPCs
+//	                            # (fleet ops: membership, partitions,
+//	                            # snapshots, LP transfers)
+//	reflowd config <subcmd>     # mTLS-authenticated Config RPCs
+//	                            # (app config: deployments, event
+//	                            # sources, webhooks, secrets)
 //
 // PKI subcommands (no cluster contact needed):
 //
@@ -16,10 +21,10 @@
 // spiffe://<trust-domain>/operator/<name>) that the reflow TLS layer
 // matches against the listener's expected role.
 //
-// Cluster subcommands (mTLS-authenticated against the Admin Connect
-// port). --admin may point at ANY cluster node — mutating commands
-// follow the LeaderHint detail attached to connect.CodeUnavailable to
-// redirect to the metadata leader automatically:
+// Cluster and config subcommands talk to the admin Connect listener via
+// mTLS. --admin may point at ANY cluster node — mutating commands follow
+// the LeaderHint detail attached to connect.CodeUnavailable to redirect
+// to the metadata leader automatically:
 //
 //	reflowd cluster add-node            --admin=ANY:PORT --node-id=N --raft-addr=... --gossip-addr=... --grpc-endpoint=... [--node-host-id=ID]
 //	reflowd cluster remove-node         --admin=ANY:PORT --node-id=N
@@ -28,9 +33,26 @@
 //	reflowd cluster snapshot create     --admin=ANY:PORT --shard=N
 //	reflowd cluster snapshot list       --admin=ANY:PORT --shard=N
 //	reflowd cluster snapshot delete     --admin=ANY:PORT --shard=N --index=I
-//	reflowd cluster register-deployment --admin=ANY:PORT --url=http://HANDLER:PORT
+//	reflowd cluster transfer-lp         --admin=ANY:PORT --lp=N --to-shard=M
+//	reflowd cluster list-lp-transfers   --admin=ANY:PORT
 //
-// Cluster subcommands need the operator TLS flags (or matching env vars):
+//	reflowd config register-deployment  --admin=ANY:PORT --url=http://HANDLER:PORT
+//	reflowd config eventsources list    --admin=ANY:PORT
+//	reflowd config eventsources delete  --admin=ANY:PORT --name=NAME
+//	reflowd config webhooks list        --admin=ANY:PORT
+//	reflowd config webhooks delete      --admin=ANY:PORT --name=NAME
+//	reflowd config apply -f <file>      --admin=ANY:PORT
+//	reflowd config export --kind=K      --admin=ANY:PORT
+//	reflowd config get <kind> <name>    --admin=ANY:PORT
+//	reflowd config init-kek             --blob-uri=...
+//	reflowd config create-secret        --admin=ANY:PORT --name=N --kek-uri=... --blob-uri=...
+//	reflowd config delete-secret        --admin=ANY:PORT --name=N
+//	reflowd config list-secrets         --admin=ANY:PORT
+//	reflowd config decrypt-secret       --name=N --kek-uri=... --blob-uri=...
+//	reflowd config upsert-webhook       --admin=ANY:PORT --name=N --path=... --verifier=... --secret=N --service=... --handler=...
+//
+// Cluster and config subcommands need the operator TLS flags (or
+// matching env vars):
 //
 //	--client-cert   $REFLOW_CLIENT_CERT
 //	--client-key    $REFLOW_CLIENT_KEY
@@ -71,6 +93,8 @@ func main() {
 		err = dispatchPKI(args)
 	case "cluster":
 		err = dispatchCluster(ctx, args)
+	case "config":
+		err = dispatchConfig(ctx, args)
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 		return
@@ -104,11 +128,13 @@ func dispatchPKI(args []string) error {
 	}
 }
 
-// dispatchCluster routes "reflowd cluster <subcmd> ..." to the right
-// handler.
+// dispatchCluster routes "reflowd cluster <subcmd> ..." to the
+// ClusterCtl-service handlers (fleet ops: membership, partitions,
+// snapshots, LP transfers). App-config subcommands moved to
+// `reflowd config`.
 func dispatchCluster(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: reflowd cluster {add-node|remove-node|nodes|partitions|snapshot|register-deployment|eventsources|webhooks|apply|export|get|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|upsert-webhook|transfer-lp|list-lp-transfers} [flags]")
+		return fmt.Errorf("usage: reflowd cluster {add-node|remove-node|nodes|partitions|snapshot|transfer-lp|list-lp-transfers} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -123,30 +149,6 @@ func dispatchCluster(ctx context.Context, args []string) error {
 		return cmdPartitions(ctx, rest)
 	case "snapshot":
 		return cmdSnapshot(ctx, rest)
-	case "register-deployment":
-		return cmdRegisterDeployment(ctx, rest)
-	case "eventsources":
-		return cmdEventSources(ctx, rest)
-	case "webhooks":
-		return cmdWebhooks(ctx, rest)
-	case "apply":
-		return cmdApply(ctx, rest)
-	case "export":
-		return cmdExport(ctx, rest)
-	case "get":
-		return cmdGet(ctx, rest)
-	case "init-kek":
-		return cmdInitKEK(ctx, rest)
-	case "create-secret":
-		return cmdCreateSecret(ctx, rest)
-	case "delete-secret":
-		return cmdDeleteSecret(ctx, rest)
-	case "list-secrets":
-		return cmdListSecrets(ctx, rest)
-	case "decrypt-secret":
-		return cmdDecryptSecret(ctx, rest)
-	case "upsert-webhook":
-		return cmdUpsertWebhook(ctx, rest)
 	case "transfer-lp":
 		return cmdTransferLP(ctx, rest)
 	case "list-lp-transfers":
@@ -168,7 +170,7 @@ PKI (offline, no cluster contact):
   pki issue-cert         Issue a node leaf cert.
   pki issue-operator     Issue an operator client cert.
 
-Cluster (Connect RPC; mTLS-authenticated; --admin can be ANY node):
+Cluster (ClusterCtl RPCs; fleet ops; --admin can be ANY node):
   cluster add-node              Register a new peer and start rebalance.
   cluster remove-node           Mark a peer evicted.
   cluster nodes list            List current membership.
@@ -176,25 +178,29 @@ Cluster (Connect RPC; mTLS-authenticated; --admin can be ANY node):
   cluster snapshot create       Trigger an exported snapshot of one shard.
   cluster snapshot list         List archived snapshots.
   cluster snapshot delete       Remove an archived snapshot.
-  cluster register-deployment   Register a handler deployment URL.
-  cluster eventsources list     List configured event sources.
-  cluster eventsources delete   Delete an event source by name.
-  cluster webhooks list         List configured webhook sources.
-  cluster webhooks delete       Delete a webhook source by name.
-  cluster apply -f <file>       Apply a multi-doc YAML file
+  cluster transfer-lp           Move one LP to a different partition shard.
+  cluster list-lp-transfers     List in-flight LP transfer records.
+
+Config (Config RPCs; app config; --admin can be ANY node):
+  config register-deployment    Register a handler deployment URL.
+  config eventsources list      List configured event sources.
+  config eventsources delete    Delete an event source by name.
+  config webhooks list          List configured webhook sources.
+  config webhooks delete        Delete a webhook source by name.
+  config apply -f <file>        Apply a multi-doc YAML file
                                 (kinds: EventSource, WebhookSource).
-  cluster export --kind=<k>     Dump a kind (or 'all') as multi-doc YAML.
-  cluster get <kind> <name>     Fetch one record as YAML.
-  cluster init-kek              Create a fresh BlobKMS KEK blob.
-  cluster create-secret         Encrypt + write blob + UpsertSecret in
+  config export --kind=<k>      Dump a kind (or 'all') as multi-doc YAML.
+  config get <kind> <name>      Fetch one record as YAML.
+  config init-kek               Create a fresh BlobKMS KEK blob.
+  config create-secret          Encrypt + write blob + UpsertSecret in
                                 shard 0's SecretTable in one command.
                                 Webhook (and future) records reference
                                 the resulting row by --name.
-  cluster delete-secret         Remove a SecretRecord from shard 0.
-  cluster list-secrets          List SecretRecords (no plaintext).
-  cluster decrypt-secret        Decrypt a secret blob to stdout
+  config delete-secret          Remove a SecretRecord from shard 0.
+  config list-secrets           List SecretRecords (no plaintext).
+  config decrypt-secret         Decrypt a secret blob to stdout
                                 (operator self-verification only).
-  cluster upsert-webhook        Register a webhook source referencing
+  config upsert-webhook         Register a webhook source referencing
                                 an existing secret by --secret=NAME.
 
 Run any subcommand with --help for its specific flags.

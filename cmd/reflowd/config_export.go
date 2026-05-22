@@ -20,7 +20,7 @@ import (
 )
 
 // cmdExport dumps the configured cluster-managed tables as a multi-doc
-// YAML stream on stdout. Round-trip safe with `cluster apply -f`:
+// YAML stream on stdout. Round-trip safe with `config apply -f`:
 // the table-revision field is read fresh by apply.
 //
 // --kind selects one of:

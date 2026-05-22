@@ -130,7 +130,7 @@ func aeadFromBytes(raw []byte) (tink.AEAD, error) {
 
 // InitKEK builds a fresh KEK blob: a random boot key concatenated with
 // a freshly-generated AES-256-GCM keyset encrypted by that boot key.
-// Operators call this once per cluster via `reflowd cluster init-kek`.
+// Operators call this once per cluster via `reflowd config init-kek`.
 func InitKEK() ([]byte, error) {
 	bootKey := make([]byte, BootKeySize)
 	if _, err := io.ReadFull(rand.Reader, bootKey); err != nil {

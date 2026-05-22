@@ -33,15 +33,14 @@ type resourceMetadata struct {
 }
 
 // cmdApply reads a multi-doc YAML file (or stdin when -f -) and
-// dispatches each document to the matching admin RPC. CAS revisions
+// dispatches each document to the matching Config RPC. CAS revisions
 // are pulled fresh from the server immediately before each Upsert so
 // applying the same file twice in a row succeeds without manual
 // revision tracking — the second apply just no-ops on equal-shape rows
 // (per Reconcile's sourceConfigsEqual check) but still bumps the
 // revision because the FSM bumps unconditionally on Upsert.
 //
-// Only EventSource resources are recognized in PR1; the dispatch
-// switch is the seam for Phase C (WebhookSource).
+// Supported kinds: EventSource, WebhookSource.
 func cmdApply(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)

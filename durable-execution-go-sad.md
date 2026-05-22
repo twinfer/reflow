@@ -1276,8 +1276,8 @@ and event sources). Per-node `Manager` instances subscribe to a
 and atomically swap a path→source map (`atomic.Pointer`). One stable
 subtree route at `/webhooks/`; the handler reads `r.URL.Path` and
 looks up the live snapshot. Adding, rotating, or removing a webhook
-is an operator CLI call — `reflowd cluster webhooks list / delete`
-and `cluster apply -f <file>` (`kind: WebhookSource`) — propagated to
+is an operator CLI call — `reflowd config webhooks list / delete`
+and `reflowd config apply -f <file>` (`kind: WebhookSource`) — propagated to
 every node via Raft, no cluster restart.
 
 **Config shape — operator workflow:**
@@ -1300,7 +1300,7 @@ spec:
 
 There is no koanf-bootstrap path for webhooks (unlike event sources,
 which retain a bootstrap seed). Operators always go through
-`reflowd cluster upsert-webhook` or `cluster apply -f <file>`
+`reflowd config upsert-webhook` or `reflowd config apply -f <file>`
 post-start. Secrets are a separate problem from webhook routing and
 deserve their own admin surface — bundling them in koanf would mean a
 plaintext-secret seed file by default.
@@ -1351,11 +1351,11 @@ tomorrow) without a wire change.
 Operator workflow:
 
 ```
-reflowd cluster init-kek --blob-uri=file:///etc/reflow/kek.bin
-echo -n "ghs_xxx" | reflowd cluster create-secret \
+reflowd config init-kek --blob-uri=file:///etc/reflow/kek.bin
+echo -n "ghs_xxx" | reflowd config create-secret \
   --name=github-hmac --kek-uri=blobkms+file:///etc/reflow/kek.bin \
   --blob-uri=s3://reflow-secrets/github.bin
-reflowd cluster upsert-webhook \
+reflowd config upsert-webhook \
   --name=github-prod --path=/webhooks/github --verifier=github \
   --secret=github-hmac --service=svc --handler=on
 ```

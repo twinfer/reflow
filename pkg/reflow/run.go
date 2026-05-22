@@ -723,8 +723,9 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	//
 	// Webhook sources have no koanf bootstrap path as of PR4 — secrets
 	// are operator-supplied (encrypted blobs + KEK URIs); operators
-	// register webhooks post-start via `reflowd cluster encrypt-secret
-	// --upsert-webhook ...` or `reflowd cluster apply -f <file>`.
+	// register webhooks post-start via `reflowd config create-secret`
+	// + `reflowd config upsert-webhook ...`, or `reflowd config apply
+	// -f <file>`.
 	if len(cfg.EventSources.Sources) > 0 {
 		go autoSeedEventSources(ctx, configSrv, runner, eh, cfg.EventSources.Sources, logger)
 	}

@@ -15,14 +15,14 @@ import (
 )
 
 // cmdGet fetches a single cluster-managed record and prints it in the
-// same kubectl-style YAML envelope `cluster export` uses. Symmetric to
-// export's emit shape so `cluster get <kind> <name> | cluster apply -f -`
+// same kubectl-style YAML envelope `config export` uses. Symmetric to
+// export's emit shape so `config get <kind> <name> | config apply -f -`
 // round-trips.
 //
 // Usage:
 //
-//	reflowd cluster get <kind> <name>     positional form
-//	reflowd cluster get --kind=<k> --name=<n>
+//	reflowd config get <kind> <name>     positional form
+//	reflowd config get --kind=<k> --name=<n>
 //
 // kind is case-insensitive in the positional form to match `kubectl
 // get <kind>` ergonomics ("eventsource" → EventSource).
@@ -45,7 +45,7 @@ func cmdGet(ctx context.Context, args []string) error {
 		name = rest[0]
 	}
 	if kind == "" || name == "" {
-		return errors.New("usage: reflowd cluster get <kind> <name>")
+		return errors.New("usage: reflowd config get <kind> <name>")
 	}
 	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
 		switch kind {

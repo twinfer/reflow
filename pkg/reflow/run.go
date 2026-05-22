@@ -166,7 +166,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		Rebalance: rebalance.Config{
 			Mode:                       cfg.Rebalance.Mode,
 			MaxConcurrentTransfers:     cfg.Rebalance.MaxConcurrentTransfers,
-			MinSecondsBetweenTransfers: cfg.Rebalance.MinSecondsBetweenTransfers,
+			MinSecondsBetweenTransfers: *cfg.Rebalance.MinSecondsBetweenTransfers,
 			SkewEngagePct:              cfg.Rebalance.SkewEngagePct,
 			SkewDisengagePct:           cfg.Rebalance.SkewDisengagePct,
 		},
@@ -591,7 +591,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		Rebalance: rebalance.Config{
 			Mode:                       cfg.Rebalance.Mode,
 			MaxConcurrentTransfers:     cfg.Rebalance.MaxConcurrentTransfers,
-			MinSecondsBetweenTransfers: cfg.Rebalance.MinSecondsBetweenTransfers,
+			MinSecondsBetweenTransfers: *cfg.Rebalance.MinSecondsBetweenTransfers,
 			SkewEngagePct:              cfg.Rebalance.SkewEngagePct,
 			SkewDisengagePct:           cfg.Rebalance.SkewDisengagePct,
 		},
@@ -1009,8 +1009,12 @@ func withDefaults(cfg Config) Config {
 	if cfg.Rebalance.MaxConcurrentTransfers == 0 {
 		cfg.Rebalance.MaxConcurrentTransfers = 1
 	}
-	if cfg.Rebalance.MinSecondsBetweenTransfers == 0 {
-		cfg.Rebalance.MinSecondsBetweenTransfers = 60
+	if cfg.Rebalance.MinSecondsBetweenTransfers == nil {
+		// Production default. Operators who want no cooldown set the
+		// key to an explicit 0 in YAML / env, which decodes into a
+		// non-nil pointer to 0 and skips this branch.
+		def := uint32(60)
+		cfg.Rebalance.MinSecondsBetweenTransfers = &def
 	}
 	if cfg.Rebalance.SkewEngagePct == 0 {
 		cfg.Rebalance.SkewEngagePct = 15

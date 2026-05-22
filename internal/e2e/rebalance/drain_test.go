@@ -47,15 +47,9 @@ func TestE2EBalance_DrainShardRebalances(t *testing.T) {
 		N:         3,
 		NumShards: 3,
 		ExtraEnv: map[string]string{
-			"REFLOW_REBALANCE_MODE":                     "auto",
-			"REFLOW_REBALANCE_MAX_CONCURRENT_TRANSFERS": "8",
-			// Workaround: pkg/reflow.withDefaults replaces a 0-valued
-			// MinSecondsBetweenTransfers with the production default
-			// (60s), because koanf can't distinguish "unset" from
-			// "explicit zero" for primitive types. Set to 1 to actually
-			// let the balancer propose more than one transfer per
-			// minute during the test window.
-			"REFLOW_REBALANCE_MIN_SECONDS_BETWEEN_TRANSFERS": "1",
+			"REFLOW_REBALANCE_MODE":                          "auto",
+			"REFLOW_REBALANCE_MAX_CONCURRENT_TRANSFERS":      "8",
+			"REFLOW_REBALANCE_MIN_SECONDS_BETWEEN_TRANSFERS": "0",
 			"REFLOW_REBALANCE_SKEW_ENGAGE_PCT":               "5",
 			"REFLOW_REBALANCE_SKEW_DISENGAGE_PCT":            "1",
 		},

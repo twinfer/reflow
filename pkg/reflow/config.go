@@ -301,8 +301,12 @@ type RebalanceConfig struct {
 	MaxConcurrentTransfers uint32 `koanf:"max_concurrent_transfers"`
 	// MinSecondsBetweenTransfers is the minimum gap between two new
 	// transfer initiations, measured against the most recent
-	// LPTransferRecord.started_at_ms. Zero defaults to 60.
-	MinSecondsBetweenTransfers uint32 `koanf:"min_seconds_between_transfers"`
+	// LPTransferRecord.started_at_ms. Pointer so an explicit 0
+	// (operator wants no cooldown) is distinguishable from "unset" —
+	// koanf decodes a present `min_seconds_between_transfers: 0`
+	// into a non-nil pointer to 0, an absent key leaves the field
+	// nil and withDefaults fills 60.
+	MinSecondsBetweenTransfers *uint32 `koanf:"min_seconds_between_transfers"`
 	// SkewEngagePct is the mis-placement percentage (0..100) above
 	// which the rebalancer engages and starts proposing moves. Zero
 	// defaults to 15. Skew is computed as

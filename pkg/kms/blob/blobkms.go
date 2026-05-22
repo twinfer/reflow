@@ -190,29 +190,42 @@ func SplitURI(uri string) (bucketURI, key string, err error) {
 }
 
 // ParseGocloudURI splits a bare gocloud.dev/blob URI (no blobkms+
-// prefix) into bucket URL and object key using the same last-slash
-// rule as SplitURI. Callers that hold blob_uri values from secret
-// records or CLI flags use this directly instead of round-tripping
-// through SplitURI.
+// prefix) into bucket URL and object key using the last-slash rule.
+// A query string (used by gocloud to carry per-bucket options like
+// s3's `endpoint=...&region=...`) is split off before the slash
+// search and re-attached to the bucket URI, so endpoint-override
+// shapes parse correctly.
 //
 // Examples:
 //
-//	s3://bucket/path/kek.bin   -> s3://bucket/path, kek.bin
-//	file:///etc/reflow/kek.bin -> file:///etc/reflow, kek.bin
-//	mem://test/k               -> mem://test, k
+//	s3://bucket/path/kek.bin               -> s3://bucket/path, kek.bin
+//	s3://bucket/kek.bin?endpoint=…&region=… -> s3://bucket?endpoint=…&region=…, kek.bin
+//	file:///etc/reflow/kek.bin             -> file:///etc/reflow, kek.bin
+//	mem://test/k                           -> mem://test, k
 func ParseGocloudURI(uri string) (bucketURI, key string, err error) {
 	schemeEnd := strings.Index(uri, "://")
 	if schemeEnd < 0 {
 		return "", "", fmt.Errorf("blob URI %q missing scheme://", uri)
 	}
 	pathStart := schemeEnd + len("://")
-	slash := strings.LastIndex(uri[pathStart:], "/")
+
+	// Separate the path from the query string before searching for
+	// the bucket/key boundary — otherwise an encoded `/` (e.g. inside
+	// an `endpoint=http://...` parameter value) would split at the
+	// wrong place, even after URL-encoding.
+	rest := uri[pathStart:]
+	var queryPart string
+	if q := strings.Index(rest, "?"); q >= 0 {
+		queryPart = rest[q:] // includes leading "?"
+		rest = rest[:q]
+	}
+
+	slash := strings.LastIndex(rest, "/")
 	if slash < 0 {
 		return "", "", fmt.Errorf("blob URI %q missing object key (no '/' after authority)", uri)
 	}
-	cut := pathStart + slash
-	bucketURI = uri[:cut]
-	key = uri[cut+1:]
+	bucketURI = uri[:pathStart+slash] + queryPart
+	key = rest[slash+1:]
 	if key == "" {
 		return "", "", fmt.Errorf("blob URI %q has empty object key", uri)
 	}

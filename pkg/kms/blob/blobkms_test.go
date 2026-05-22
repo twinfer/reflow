@@ -22,6 +22,21 @@ func TestSplitURI(t *testing.T) {
 		{"blobkms+file:///etc/reflow/kek.bin", "file:///etc/reflow", "kek.bin", ""},
 		{"blobkms+mem://test/k", "mem://test", "k", ""},
 		{"blobkms+gs://b/x/y/z.bin", "gs://b/x/y", "z.bin", ""},
+		// Query-string-carrying URI (endpoint overrides, etc.). The
+		// query attaches to the bucket URI; the slash-split happens
+		// against the path portion only.
+		{
+			"blobkms+s3://bucket/kek.bin?endpoint=http%3A%2F%2Fminio%3A9000&region=us-east-1",
+			"s3://bucket?endpoint=http%3A%2F%2Fminio%3A9000&region=us-east-1",
+			"kek.bin",
+			"",
+		},
+		{
+			"blobkms+s3://bucket/path/kek.bin?endpoint=http%3A%2F%2Flocalhost%3A9000",
+			"s3://bucket/path?endpoint=http%3A%2F%2Flocalhost%3A9000",
+			"kek.bin",
+			"",
+		},
 		// errors
 		{"blobkms+s3://bucket/", "", "", "empty object key"},
 		{"blobkms+nopath", "", "", "missing scheme"},

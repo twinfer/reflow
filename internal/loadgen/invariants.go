@@ -24,8 +24,8 @@ type Violation struct {
 // have missed completions if Duration expired, but the engine
 // continues processing in the background — AwaitCompletion gives
 // the journal time to settle before the harness reports failures.
-func AwaitCompletion(ctx context.Context, c *Cluster, issued []IssuedInvocation, timeout time.Duration) []Violation {
-	if len(issued) == 0 || c == nil || len(c.Nodes) == 0 {
+func AwaitCompletion(ctx context.Context, c WorkloadCluster, issued []IssuedInvocation, timeout time.Duration) []Violation {
+	if len(issued) == 0 || c == nil {
 		return nil
 	}
 	live := c.AnyLiveNode()

@@ -11,14 +11,31 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/pkg/handler"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
+// WorkloadCluster is the cluster surface the workload + invariant
+// helpers consume. *Cluster (in-proc) and *internal/e2e.ContainerCluster
+// both satisfy it. Kept minimal so a fresh implementation only needs
+// a way to pick a live node to submit/poll against.
+type WorkloadCluster interface {
+	// AnyLiveNode returns any non-killed node, or nil when every node
+	// has been torn down.
+	AnyLiveNode() Node
+}
+
 // WorkloadConfig configures the invoke-and-complete workload.
 type WorkloadConfig struct {
-	// Cluster is the live cluster the workload drives.
-	Cluster *Cluster
+	// Cluster picks the live node each submit and poll routes through.
+	Cluster WorkloadCluster
+	// Partitioner is the modulus the workload uses to derive the
+	// shard owning each invocation (only for IssuedInvocation.ShardID,
+	// which feeds invariant diagnostics). For in-proc clusters this
+	// is `(*loadgen.Cluster).Partitioner`; for the e2e tier it's a
+	// fresh routing.NewPartitioner sized for the cluster.
+	Partitioner routing.Partitioner
 	// Service / Handler are registered with handler.Registry by the
 	// caller before NewCluster; the workload will fan invocations
 	// out to (Service, Handler) using random object keys so that
@@ -155,7 +172,7 @@ func (cfg WorkloadConfig) Run(ctx context.Context, sampler *Sampler) (WorkloadSt
 		}
 	}()
 
-	partitioner := cfg.Cluster.Partitioner
+	partitioner := cfg.Partitioner
 	for {
 		if err := limiter.Wait(runCtx); err != nil {
 			break

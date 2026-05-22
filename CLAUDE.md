@@ -29,11 +29,21 @@ make test-pkg PKG=./internal/engine/... RUN=TestSingleNodeReplayAcrossRestart
 go test -race -run TestSingleNodeReplayAcrossRestart ./internal/engine/...
 ```
 
-Chaos / load tests are gated by the `loadtest` build tag and live in `internal/chaos/` and `internal/loadgen/`. They are not part of `make test`:
+Two parallel test tiers run on top of the unit + engine-integration baseline:
 
 ```bash
-go test -tags=loadtest -timeout=10m -run=TestChaos_LeaderSIGKILL -v ./internal/chaos/...
-go test -tags=loadtest -timeout=10m -run=TestLoad_SteadyState   -v ./internal/loadgen/...
+# In-proc perf baseline (loadtest tag). One test: TestLoad_SteadyState
+# in internal/loadgen/. Use this for percentile-regression checks
+# against the reference numbers in this file.
+go test -tags=loadtest -timeout=10m -run=TestLoad_SteadyState -v ./internal/loadgen/...
+
+# Containerized chaos suite (e2e tag) in internal/e2e/chaos/.
+# Requires Docker. Lifecycle chaos via Docker ContainerKill / Start;
+# network chaos via per-source Toxiproxy sidecars. Replaces the
+# legacy in-proc internal/chaos/ + cmd/loadnode/ subprocess harness.
+make test-e2e
+# or scoped:
+go test -tags=e2e -timeout=10m -run=TestChaos_LeaderSIGKILL -v ./internal/e2e/chaos/...
 ```
 
 For Go code in this reflow, prefer the gopher-mcp MCP tools over textual search:
@@ -58,7 +68,7 @@ direct `require`s. Pass `scope: "all"` to reach into indirect deps and stdlib
 when the server has been started with `-deps all` (or `dep_index.stdlib: true`).
 
 
-`cmd/loadnode` is a subprocess harness used by chaos tests so SIGKILL exercises Pebble WAL torn-write recovery. **Production deployments use `cmd/reflowd`, not loadnode.**
+`cmd/loadhandler` is a minimal HTTP/2 echo handler used as a sidecar by the containerized chaos suite — registered against the cluster via `Config.RegisterDeployment` over the admin Connect RPC. **Production deployments use `cmd/reflowd`, not `cmd/loadhandler`.**
 
 ## Architecture map
 
@@ -70,7 +80,7 @@ The dependency direction is `cmd → pkg → internal → proto`. Internal packa
   - `reflowd cluster {add-node|remove-node|nodes list|partitions list|snapshot {create|list|delete}|transfer-lp|list-lp-transfers}` — mTLS-authenticated RPCs against the admin Connect port, dispatched to the `reflow.clusterctl.v1.ClusterCtl` service (fleet ops: membership, partitions, snapshots, LP transfers).
   - `reflowd config {register-deployment|list-deployments|describe-deployment|delete-deployment|eventsources {list|delete}|webhooks {list|delete}|apply|export|get|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|upsert-webhook}` — same admin listener, dispatched to the `reflow.config.v1.Config` service (app config: deployments, event sources, webhooks, secrets). DeploymentTable carries a CAS revision (`RevisionTableDeployment`); `delete-deployment` requires `--force` because in-flight invocations resolve their pinned deployment per stream-open and a delete can break them.
   - A single mTLS listener hosts both services. `--admin` may point at any cluster node — mutating commands follow `LeaderHint` connect.Error details (attached by each server's `requireLeader`) to redirect to the metadata leader. The redirect helper lives at `pkg/reflowclient.CallWithLeaderRedirect`. Naming mirrors Restate (`cluster-ctrl` = cluster admin; `admin` is the developer/app-config surface), with `admin` flipped to `config` to avoid the overloaded word.
-- **`cmd/loadnode`** — test-only subprocess wrapper for chaos.
+- **`cmd/loadhandler`** — test-only HTTP/2 echo handler sidecar used by `internal/e2e/chaos/` to give the cluster a deployment that survives `ContainerKill` of any reflowd node.
 
 - **`pkg/reflow`** — the **stable public API**. `reflow.Run(ctx, cfg) → *Host`. `Config` uses koanf tags (snake_case so the env provider maps `REFLOW_INGRESS_GRPC_ADDR → ingress.grpc_addr`). `pkg/reflow/config` builds `Config` from any `koanf.Provider` — secret backends plug in as additional providers, no inline templating.
 - **`pkg/handler`** — the handler-facing surface: `Handler`, `Registry`, `Context`, `Future`, `Target`, `Failure`. `Context` is the durable-execution handle: every method (`Sleep`, `Run`, `Call`, `OneWayCall`, awakeables, state, …) is journaled. `Context.Metadata() map[string]string` returns caller-stamped metadata captured at submit time (see the metadata path in §`internal/ingress/http`). Determinism rule (non-negotiable): handlers must reach non-determinism (time, RNG, I/O) only through `Context`, never via `time.Now`/`rand`/`net/http` directly. `*Failure` returned from a handler is terminal and persisted; any other error is transient and retried.
@@ -99,7 +109,8 @@ The dependency direction is `cmd → pkg → internal → proto`. Internal packa
 - **Unit tests** sit next to the code under test (`xxx_test.go`, package `xxx`).
 - **Engine integration tests** live in `internal/engine/integration_*_test.go` under `package engine_test`. They use the `internal/loadgen` cluster bootstrap (so `loadgen` is imported from non-loadtest builds — keep its non-`//go:build loadtest` files free of test-only dependencies the production import path can't satisfy).
 - **`internal/engine/pbt_test.go`** is property-based with `pgregory.net/rapid`.
-- **Chaos / load tests** are `//go:build loadtest` only and excluded from `make test`. The harness uses `loadgen.HelloHandler` and bufconn-backed Raft transport so per-pair links can be `Cut`/`Heal`ed in-test without real ports.
+- **Perf baseline** is `TestLoad_SteadyState` in `internal/loadgen/`, gated by `//go:build loadtest`. In-proc cluster, 50qps for 20s; reference numbers in §Performance baseline below.
+- **Chaos tests** live in `internal/e2e/chaos/` behind `//go:build e2e`. The harness brings up a real `reflow/reflowd:e2e` image cluster via testcontainers, registers a `cmd/loadhandler` sidecar via the admin RPC, and injects faults two ways: lifecycle (Docker `ContainerKill` / `ContainerStart` — `ContainerNode.Kill` / `.Restart`) for kill+restart scenarios, and network (per-source Toxiproxy sidecars exposing per-pair `Cut`/`Heal` — `ContainerCluster.Tx`) for partition scenarios. `TestChaos_LeaderSIGKILL` is the canonical real-SIGKILL Pebble torn-WAL recovery test that the in-proc harness structurally cannot exercise.
 
 ## Performance baseline
 

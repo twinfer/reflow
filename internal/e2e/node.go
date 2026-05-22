@@ -35,7 +35,12 @@ type ContainerNode struct {
 	mu         sync.Mutex
 	container  testcontainers.Container
 	ingressCli *ingressclient.Client
+	// terminated is true after Close — the container has been removed
+	// from the docker daemon and cannot be restarted. killed is true
+	// between Kill and the next successful Restart — the container
+	// exists but its main process is dead, so AnyLiveNode skips it.
 	terminated bool
+	killed     bool
 }
 
 // SubmitInvocation routes through Ingress.SubmitInvocation on this node;
@@ -117,6 +122,31 @@ func (n *ContainerNode) AdminEndpoint() string { return n.adminEndpoint }
 // for insecure clusters).
 func (n *ContainerNode) AdminURLForTest() string { return n.adminURLForTest }
 
+// IsTerminated reports whether Close has fully removed this node from
+// the daemon. After Close the node is unrecoverable; chaos primitives
+// SKIP terminated nodes in AnyLiveNode.
+func (n *ContainerNode) IsTerminated() bool {
+	if n == nil {
+		return true
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.terminated
+}
+
+// IsLive reports whether the node currently has a running process.
+// Returns false after Kill (until a successful Restart) and after
+// Close (permanently). Used by ContainerCluster.AnyLiveNode to skip
+// dead containers without renumbering the Nodes slice.
+func (n *ContainerNode) IsLive() bool {
+	if n == nil {
+		return false
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return !n.terminated && !n.killed
+}
+
 // Close gracefully stops + removes the container. Idempotent.
 func (n *ContainerNode) Close() {
 	if n == nil {
@@ -142,6 +172,11 @@ func (n *ContainerNode) Close() {
 // with SIGKILL — bypasses any in-container graceful shutdown so the
 // reflowd process exits without flushing the Pebble WAL. This is the
 // chaos primitive the in-process Node cannot match.
+//
+// The container itself is NOT removed; the writable layer (including
+// the Pebble + dragonboat data dir at /home/nonroot/reflow) persists
+// so Restart can bring the node back from its on-disk state. To fully
+// tear the container down, call Close.
 func (n *ContainerNode) Kill() {
 	if n == nil {
 		return
@@ -163,6 +198,54 @@ func (n *ContainerNode) Kill() {
 	}
 	_, _ = cli.ContainerKill(ctx, n.container.GetContainerID(),
 		dockerclient.ContainerKillOptions{Signal: "SIGKILL"})
+	n.killed = true
+}
+
+// Restart re-starts a previously-killed container. The data dir
+// (/home/nonroot/reflow) survives the kill+start cycle because it
+// lives inside the container's writable layer and `docker start`
+// reuses it. After Start succeeds the host-mapped ingress + admin
+// ports may have changed (Docker re-binds on restart), so the
+// internal URLs are refreshed and the ingress client is recreated
+// lazily on next use.
+//
+// Returns nil + restarts a never-killed node (no-op safe). Returns
+// an error when the container has been fully terminated via Close
+// (testcontainers won't restart a removed container).
+func (n *ContainerNode) Restart(ctx context.Context) error {
+	if n == nil {
+		return fmt.Errorf("e2e: Restart on nil node")
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.terminated {
+		return fmt.Errorf("e2e: Restart after Close")
+	}
+	if !n.killed {
+		return nil
+	}
+	if err := n.container.Start(ctx); err != nil {
+		return fmt.Errorf("e2e: Restart node %d: %w", n.nodeID, err)
+	}
+	// Port mappings can change across kill+start. Re-resolve so the
+	// next SubmitInvocation / DescribeInvocation dial lands on the
+	// fresh host-mapped port.
+	host, err := n.container.Host(ctx)
+	if err != nil {
+		return fmt.Errorf("e2e: Restart node %d: host: %w", n.nodeID, err)
+	}
+	ingMap, err := n.container.MappedPort(ctx, ingressPort+"/tcp")
+	if err != nil {
+		return fmt.Errorf("e2e: Restart node %d: mapped ingress port: %w", n.nodeID, err)
+	}
+	admMap, err := n.container.MappedPort(ctx, adminPort+"/tcp")
+	if err != nil {
+		return fmt.Errorf("e2e: Restart node %d: mapped admin port: %w", n.nodeID, err)
+	}
+	n.ingressURL = "http://" + net.JoinHostPort(host, ingMap.Port())
+	n.adminURLForTest = "http://" + net.JoinHostPort(host, admMap.Port())
+	n.killed = false
+	return nil
 }
 
 // ingress returns the ingress client, dialing on first use. Cached for

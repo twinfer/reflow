@@ -19,6 +19,9 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/twinfer/reflow/internal/engine/routing"
+	"github.com/twinfer/reflow/internal/loadgen"
 )
 
 // Internal container ports — every reflowd container listens on these.
@@ -48,6 +51,12 @@ type ContainerCluster struct {
 	// the per-pair partition primitives that replace bufconn's
 	// PartitionMatrix.
 	Tx *Toxiproxy
+
+	// Partitioner matches the cluster's shard modulus and is what
+	// loadgen.WorkloadConfig uses to derive each invocation's
+	// IssuedInvocation.ShardID. Construction mirrors loadgen.Cluster
+	// (routing.NewPartitioner(NumPartitionShards)).
+	Partitioner routing.Partitioner
 }
 
 // NewContainerCluster brings up an insecure reflowd cluster with N
@@ -119,7 +128,12 @@ func NewContainerCluster(t *testing.T, opts ContainerClusterOptions) *ContainerC
 	}
 	wg.Wait()
 
-	cluster := &ContainerCluster{Net: nw, Nodes: nodes, Tx: tx}
+	cluster := &ContainerCluster{
+		Net:         nw,
+		Nodes:       nodes,
+		Tx:          tx,
+		Partitioner: *routing.NewPartitioner(opts.NumShards),
+	}
 	t.Cleanup(cluster.Close)
 	if firstErr != nil {
 		t.Fatalf("e2e: cluster bring-up: %v", firstErr)
@@ -146,6 +160,86 @@ func (c *ContainerCluster) Close() {
 	for _, n := range c.Nodes {
 		n.Close()
 	}
+}
+
+// AnyLiveNode returns the first non-terminated node, or nil when
+// every node has been killed. Satisfies loadgen.WorkloadCluster so
+// loadgen.WorkloadConfig / loadgen.AwaitCompletion can drive this
+// cluster without forking the workload runner.
+func (c *ContainerCluster) AnyLiveNode() loadgen.Node {
+	if c == nil {
+		return nil
+	}
+	for _, n := range c.Nodes {
+		if n == nil || !n.IsLive() {
+			continue
+		}
+		return n
+	}
+	return nil
+}
+
+// FindPartitionLeader returns the node currently reported as leader
+// of `shardID`, or nil. Polls every live node — leadership can rotate
+// at any time, so the caller should treat the result as a hint.
+// shardID == 0 is the metadata shard and is NOT discoverable via
+// ingress.ListPartitions (that endpoint enumerates Host.Partitions()
+// which excludes shard 0); callers wanting the metadata leader must
+// use the admin/discovery RPC instead.
+func (c *ContainerCluster) FindPartitionLeader(ctx context.Context, shardID uint64) *ContainerNode {
+	if c == nil {
+		return nil
+	}
+	for _, n := range c.Nodes {
+		if n == nil || !n.IsLive() {
+			continue
+		}
+		pctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		parts, err := n.ListPartitions(pctx)
+		cancel()
+		if err != nil {
+			continue
+		}
+		for _, p := range parts {
+			if p.ShardID == shardID && p.IsLeader {
+				return n
+			}
+		}
+	}
+	return nil
+}
+
+// AwaitPartitionLeader is FindPartitionLeader with a polling deadline.
+// Returns the elected leader or nil on timeout.
+func (c *ContainerCluster) AwaitPartitionLeader(ctx context.Context, shardID uint64, timeout time.Duration) *ContainerNode {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if n := c.FindPartitionLeader(ctx, shardID); n != nil {
+			return n
+		}
+		select {
+		case <-time.After(250 * time.Millisecond):
+		case <-ctx.Done():
+			return nil
+		}
+	}
+	return nil
+}
+
+// PeerIDs returns the cluster's node IDs in slot order. Convenience
+// for chaos primitives keyed by NodeID (the Toxiproxy Cut/Heal API).
+func (c *ContainerCluster) PeerIDs() []uint64 {
+	if c == nil {
+		return nil
+	}
+	out := make([]uint64, 0, len(c.Nodes))
+	for _, n := range c.Nodes {
+		if n == nil {
+			continue
+		}
+		out = append(out, n.NodeID())
+	}
+	return out
 }
 
 // AwaitAnyPartitionLeader polls ListPartitions across every node until

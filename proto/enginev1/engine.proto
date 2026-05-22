@@ -203,6 +203,15 @@ message Command {
     CommitLPTransfer commit_lp_transfer = 35;
     FinishLPTransfer finish_lp_transfer = 36;
     AbortLPTransfer abort_lp_transfer = 37;
+    // SetRebalanceDrain marks a partition shard as drained (drain=true)
+    // or undrained (drain=false) in shard 0's RebalanceDrainTable. The
+    // autonomous rebalancer subtracts drained shards from the planner's
+    // input set, naturally moving every LP owned by the drained shard
+    // off via the same Command_InitiateLPTransfer path the manual
+    // `reflowd cluster transfer-lp` CLI uses. Honors
+    // Envelope.precondition.if_table_revision_eq when set; bumps
+    // RevisionTableRebalanceDrain on apply. Accepted only by shardID=0.
+    SetRebalanceDrain set_rebalance_drain = 39;
   }
 }
 
@@ -1502,6 +1511,25 @@ message UpdateLPTransferPhase {
 // no-ops.
 message RemoveLPTransfer {
   string transfer_id = 1;
+}
+
+// SetRebalanceDrain is the Command_SetRebalanceDrain payload. Single
+// command shape covers both add and remove via the drain bool — keeps
+// the wire format compact and the apply arm symmetric. shard_id is the
+// partition shard id (≥ 1); shard 0 is the metadata group and is never
+// drained via this command.
+message SetRebalanceDrain {
+  uint64 shard_id = 1;
+  bool drain = 2;
+}
+
+// RebalanceDrainRecord is the on-disk row persisted under
+// rebalance_drain/<8-byte BE shard_id> by the SetRebalanceDrain apply
+// arm. added_at_ms is sourced from Envelope.header.created_at_ms so the
+// row's timestamp is deterministic across replicas.
+message RebalanceDrainRecord {
+  uint64 shard_id = 1;
+  fixed64 added_at_ms = 2;
 }
 
 // TransferRow is one Pebble (key, value) pair shipped from source to

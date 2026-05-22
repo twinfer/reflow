@@ -30,6 +30,7 @@ import (
 
 	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/engine"
+	"github.com/twinfer/reflow/internal/engine/rebalance"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
 	"github.com/twinfer/reflow/proto/clusterctlv1/clusterctlv1connect"
@@ -48,6 +49,7 @@ type Server struct {
 
 	scratchDir       string
 	adminCallTimeout time.Duration
+	rebalance        rebalance.Config
 }
 
 // Config groups the constructor inputs.
@@ -58,6 +60,11 @@ type Config struct {
 	Source     snapshot.Source
 	Log        *slog.Logger
 	ScratchDir string
+	// Rebalance is the autonomous LP rebalancer's configuration. The
+	// RebalanceAdvise RPC uses these knobs to compute the same
+	// Decision the in-process Balancer would. Zero value renders
+	// Advise as "mode=off" with no-op proposals.
+	Rebalance rebalance.Config
 }
 
 // NewServer constructs the ClusterCtl server. Repo and Source are
@@ -84,6 +91,7 @@ func NewServer(cfg Config) (*Server, error) {
 		log:              cfg.Log,
 		scratchDir:       cfg.ScratchDir,
 		adminCallTimeout: 30 * time.Second,
+		rebalance:        cfg.Rebalance,
 	}, nil
 }
 

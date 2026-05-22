@@ -959,6 +959,335 @@ func (x *ListLPTransfersResponse) GetTableRevision() uint64 {
 	return 0
 }
 
+// RebalanceMove describes one prospective LP→shard transfer in
+// RebalanceAdviseResponse. Same shape as routing.LPMove on the engine
+// side.
+type RebalanceMove struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Lp            uint32                 `protobuf:"varint,1,opt,name=lp,proto3" json:"lp,omitempty"`
+	FromShard     uint64                 `protobuf:"varint,2,opt,name=from_shard,json=fromShard,proto3" json:"from_shard,omitempty"`
+	ToShard       uint64                 `protobuf:"varint,3,opt,name=to_shard,json=toShard,proto3" json:"to_shard,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RebalanceMove) Reset() {
+	*x = RebalanceMove{}
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RebalanceMove) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RebalanceMove) ProtoMessage() {}
+
+func (x *RebalanceMove) ProtoReflect() protoreflect.Message {
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RebalanceMove.ProtoReflect.Descriptor instead.
+func (*RebalanceMove) Descriptor() ([]byte, []int) {
+	return file_clusterctlv1_clusterctl_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *RebalanceMove) GetLp() uint32 {
+	if x != nil {
+		return x.Lp
+	}
+	return 0
+}
+
+func (x *RebalanceMove) GetFromShard() uint64 {
+	if x != nil {
+		return x.FromShard
+	}
+	return 0
+}
+
+func (x *RebalanceMove) GetToShard() uint64 {
+	if x != nil {
+		return x.ToShard
+	}
+	return 0
+}
+
+// RebalanceAdviseRequest carries no parameters; the rebalancer's
+// configuration is server-side.
+type RebalanceAdviseRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RebalanceAdviseRequest) Reset() {
+	*x = RebalanceAdviseRequest{}
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RebalanceAdviseRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RebalanceAdviseRequest) ProtoMessage() {}
+
+func (x *RebalanceAdviseRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RebalanceAdviseRequest.ProtoReflect.Descriptor instead.
+func (*RebalanceAdviseRequest) Descriptor() ([]byte, []int) {
+	return file_clusterctlv1_clusterctl_proto_rawDescGZIP(), []int{20}
+}
+
+type RebalanceAdviseResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// mode is the running mode: "off", "advisory", or "auto".
+	Mode string `protobuf:"bytes,1,opt,name=mode,proto3" json:"mode,omitempty"`
+	// engaged reports whether the rebalancer would consider the cluster
+	// "engaged" right now — i.e., whether skew_pct ≥ engage_pct. The
+	// server-side advice path evaluates without hysteresis carry-over;
+	// operators get the fresh-view answer.
+	Engaged bool `protobuf:"varint,2,opt,name=engaged,proto3" json:"engaged,omitempty"`
+	// skew_pct is the mis-placement percentage on a 0..100 scale.
+	SkewPct float64 `protobuf:"fixed64,3,opt,name=skew_pct,json=skewPct,proto3" json:"skew_pct,omitempty"`
+	// in_flight is the count of non-terminal LP transfers right now.
+	InFlight uint32 `protobuf:"varint,4,opt,name=in_flight,json=inFlight,proto3" json:"in_flight,omitempty"`
+	// skipped_reason is non-empty when would_transfer is empty;
+	// explains which gate fired (skew_below_engage, cooldown,
+	// at_capacity, no_moves, no_live_shards, no_planner).
+	SkippedReason string `protobuf:"bytes,5,opt,name=skipped_reason,json=skippedReason,proto3" json:"skipped_reason,omitempty"`
+	// drained_shards lists the shard ids currently in the
+	// RebalanceDrainTable.
+	DrainedShards []uint64 `protobuf:"varint,6,rep,packed,name=drained_shards,json=drainedShards,proto3" json:"drained_shards,omitempty"`
+	// lps_per_shard maps shard_id → owned-LP count from the
+	// LPOwnersTable snapshot the advisor observed.
+	LpsPerShard map[uint64]uint32 `protobuf:"bytes,7,rep,name=lps_per_shard,json=lpsPerShard,proto3" json:"lps_per_shard,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	// would_transfer is the move set the rebalancer would actuate on
+	// this tick (up to max_concurrent − in_flight elements). In auto
+	// mode the balancer has likely already proposed these; in advisory
+	// mode the list is the planner's intent.
+	WouldTransfer []*RebalanceMove `protobuf:"bytes,8,rep,name=would_transfer,json=wouldTransfer,proto3" json:"would_transfer,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RebalanceAdviseResponse) Reset() {
+	*x = RebalanceAdviseResponse{}
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RebalanceAdviseResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RebalanceAdviseResponse) ProtoMessage() {}
+
+func (x *RebalanceAdviseResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RebalanceAdviseResponse.ProtoReflect.Descriptor instead.
+func (*RebalanceAdviseResponse) Descriptor() ([]byte, []int) {
+	return file_clusterctlv1_clusterctl_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *RebalanceAdviseResponse) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *RebalanceAdviseResponse) GetEngaged() bool {
+	if x != nil {
+		return x.Engaged
+	}
+	return false
+}
+
+func (x *RebalanceAdviseResponse) GetSkewPct() float64 {
+	if x != nil {
+		return x.SkewPct
+	}
+	return 0
+}
+
+func (x *RebalanceAdviseResponse) GetInFlight() uint32 {
+	if x != nil {
+		return x.InFlight
+	}
+	return 0
+}
+
+func (x *RebalanceAdviseResponse) GetSkippedReason() string {
+	if x != nil {
+		return x.SkippedReason
+	}
+	return ""
+}
+
+func (x *RebalanceAdviseResponse) GetDrainedShards() []uint64 {
+	if x != nil {
+		return x.DrainedShards
+	}
+	return nil
+}
+
+func (x *RebalanceAdviseResponse) GetLpsPerShard() map[uint64]uint32 {
+	if x != nil {
+		return x.LpsPerShard
+	}
+	return nil
+}
+
+func (x *RebalanceAdviseResponse) GetWouldTransfer() []*RebalanceMove {
+	if x != nil {
+		return x.WouldTransfer
+	}
+	return nil
+}
+
+// RebalanceDrainRequest sets or clears a drain marker for one
+// partition shard.
+type RebalanceDrainRequest struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	ShardId uint64                 `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
+	Drain   bool                   `protobuf:"varint,2,opt,name=drain,proto3" json:"drain,omitempty"`
+	// if_table_revision_eq, when non-zero, gates the apply on the
+	// current RebalanceDrainTable revision matching this value (CAS).
+	IfTableRevisionEq uint64 `protobuf:"varint,3,opt,name=if_table_revision_eq,json=ifTableRevisionEq,proto3" json:"if_table_revision_eq,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *RebalanceDrainRequest) Reset() {
+	*x = RebalanceDrainRequest{}
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RebalanceDrainRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RebalanceDrainRequest) ProtoMessage() {}
+
+func (x *RebalanceDrainRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RebalanceDrainRequest.ProtoReflect.Descriptor instead.
+func (*RebalanceDrainRequest) Descriptor() ([]byte, []int) {
+	return file_clusterctlv1_clusterctl_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *RebalanceDrainRequest) GetShardId() uint64 {
+	if x != nil {
+		return x.ShardId
+	}
+	return 0
+}
+
+func (x *RebalanceDrainRequest) GetDrain() bool {
+	if x != nil {
+		return x.Drain
+	}
+	return false
+}
+
+func (x *RebalanceDrainRequest) GetIfTableRevisionEq() uint64 {
+	if x != nil {
+		return x.IfTableRevisionEq
+	}
+	return 0
+}
+
+type RebalanceDrainResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// table_revision is the post-apply RebalanceDrainTable revision so
+	// callers can chain CAS roundtrips.
+	TableRevision uint64 `protobuf:"varint,1,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RebalanceDrainResponse) Reset() {
+	*x = RebalanceDrainResponse{}
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RebalanceDrainResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RebalanceDrainResponse) ProtoMessage() {}
+
+func (x *RebalanceDrainResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RebalanceDrainResponse.ProtoReflect.Descriptor instead.
+func (*RebalanceDrainResponse) Descriptor() ([]byte, []int) {
+	return file_clusterctlv1_clusterctl_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *RebalanceDrainResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
 // LeaderHint is attached as a connect.Error detail on
 // connect.CodeUnavailable returned by mutating ClusterCtl RPCs when
 // the receiving node is not the metadata leader. Clients (joiner's
@@ -974,7 +1303,7 @@ type LeaderHint struct {
 
 func (x *LeaderHint) Reset() {
 	*x = LeaderHint{}
-	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[19]
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -986,7 +1315,7 @@ func (x *LeaderHint) String() string {
 func (*LeaderHint) ProtoMessage() {}
 
 func (x *LeaderHint) ProtoReflect() protoreflect.Message {
-	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[19]
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -999,7 +1328,7 @@ func (x *LeaderHint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaderHint.ProtoReflect.Descriptor instead.
 func (*LeaderHint) Descriptor() ([]byte, []int) {
-	return file_clusterctlv1_clusterctl_proto_rawDescGZIP(), []int{19}
+	return file_clusterctlv1_clusterctl_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *LeaderHint) GetNodeId() uint64 {
@@ -1072,11 +1401,35 @@ const file_clusterctlv1_clusterctl_proto_rawDesc = "" +
 	"\x16ListLPTransfersRequest\"~\n" +
 	"\x17ListLPTransfersResponse\x12<\n" +
 	"\arecords\x18\x01 \x03(\v2\".reflow.engine.v1.LPTransferRecordR\arecords\x12%\n" +
-	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"L\n" +
+	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"Y\n" +
+	"\rRebalanceMove\x12\x0e\n" +
+	"\x02lp\x18\x01 \x01(\rR\x02lp\x12\x1d\n" +
+	"\n" +
+	"from_shard\x18\x02 \x01(\x04R\tfromShard\x12\x19\n" +
+	"\bto_shard\x18\x03 \x01(\x04R\atoShard\"\x18\n" +
+	"\x16RebalanceAdviseRequest\"\xbd\x03\n" +
+	"\x17RebalanceAdviseResponse\x12\x12\n" +
+	"\x04mode\x18\x01 \x01(\tR\x04mode\x12\x18\n" +
+	"\aengaged\x18\x02 \x01(\bR\aengaged\x12\x19\n" +
+	"\bskew_pct\x18\x03 \x01(\x01R\askewPct\x12\x1b\n" +
+	"\tin_flight\x18\x04 \x01(\rR\binFlight\x12%\n" +
+	"\x0eskipped_reason\x18\x05 \x01(\tR\rskippedReason\x12%\n" +
+	"\x0edrained_shards\x18\x06 \x03(\x04R\rdrainedShards\x12b\n" +
+	"\rlps_per_shard\x18\a \x03(\v2>.reflow.clusterctl.v1.RebalanceAdviseResponse.LpsPerShardEntryR\vlpsPerShard\x12J\n" +
+	"\x0ewould_transfer\x18\b \x03(\v2#.reflow.clusterctl.v1.RebalanceMoveR\rwouldTransfer\x1a>\n" +
+	"\x10LpsPerShardEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\x04R\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\rR\x05value:\x028\x01\"y\n" +
+	"\x15RebalanceDrainRequest\x12\x19\n" +
+	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x12\x14\n" +
+	"\x05drain\x18\x02 \x01(\bR\x05drain\x12/\n" +
+	"\x14if_table_revision_eq\x18\x03 \x01(\x04R\x11ifTableRevisionEq\"?\n" +
+	"\x16RebalanceDrainResponse\x12%\n" +
+	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"L\n" +
 	"\n" +
 	"LeaderHint\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12%\n" +
-	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\xfe\a\n" +
+	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\xdb\t\n" +
 	"\n" +
 	"ClusterCtl\x12V\n" +
 	"\aAddNode\x12$.reflow.clusterctl.v1.AddNodeRequest\x1a%.reflow.clusterctl.v1.AddNodeResponse\x12W\n" +
@@ -1090,7 +1443,9 @@ const file_clusterctlv1_clusterctl_proto_rawDesc = "" +
 	"\x0eDeleteSnapshot\x12+.reflow.clusterctl.v1.DeleteSnapshotRequest\x1a,.reflow.clusterctl.v1.DeleteSnapshotResponse\x12_\n" +
 	"\n" +
 	"TransferLP\x12'.reflow.clusterctl.v1.TransferLPRequest\x1a(.reflow.clusterctl.v1.TransferLPResponse\x12n\n" +
-	"\x0fListLPTransfers\x12,.reflow.clusterctl.v1.ListLPTransfersRequest\x1a-.reflow.clusterctl.v1.ListLPTransfersResponseB;Z9github.com/twinfer/reflow/proto/clusterctlv1;clusterctlv1b\x06proto3"
+	"\x0fListLPTransfers\x12,.reflow.clusterctl.v1.ListLPTransfersRequest\x1a-.reflow.clusterctl.v1.ListLPTransfersResponse\x12n\n" +
+	"\x0fRebalanceAdvise\x12,.reflow.clusterctl.v1.RebalanceAdviseRequest\x1a-.reflow.clusterctl.v1.RebalanceAdviseResponse\x12k\n" +
+	"\x0eRebalanceDrain\x12+.reflow.clusterctl.v1.RebalanceDrainRequest\x1a,.reflow.clusterctl.v1.RebalanceDrainResponseB;Z9github.com/twinfer/reflow/proto/clusterctlv1;clusterctlv1b\x06proto3"
 
 var (
 	file_clusterctlv1_clusterctl_proto_rawDescOnce sync.Once
@@ -1104,7 +1459,7 @@ func file_clusterctlv1_clusterctl_proto_rawDescGZIP() []byte {
 	return file_clusterctlv1_clusterctl_proto_rawDescData
 }
 
-var file_clusterctlv1_clusterctl_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_clusterctlv1_clusterctl_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_clusterctlv1_clusterctl_proto_goTypes = []any{
 	(*AddNodeRequest)(nil),            // 0: reflow.clusterctl.v1.AddNodeRequest
 	(*AddNodeResponse)(nil),           // 1: reflow.clusterctl.v1.AddNodeResponse
@@ -1125,41 +1480,53 @@ var file_clusterctlv1_clusterctl_proto_goTypes = []any{
 	(*TransferLPResponse)(nil),        // 16: reflow.clusterctl.v1.TransferLPResponse
 	(*ListLPTransfersRequest)(nil),    // 17: reflow.clusterctl.v1.ListLPTransfersRequest
 	(*ListLPTransfersResponse)(nil),   // 18: reflow.clusterctl.v1.ListLPTransfersResponse
-	(*LeaderHint)(nil),                // 19: reflow.clusterctl.v1.LeaderHint
-	(*enginev1.NodeMembership)(nil),   // 20: reflow.engine.v1.NodeMembership
-	(*enginev1.PartitionTable)(nil),   // 21: reflow.engine.v1.PartitionTable
-	(*enginev1.LPTransferRecord)(nil), // 22: reflow.engine.v1.LPTransferRecord
+	(*RebalanceMove)(nil),             // 19: reflow.clusterctl.v1.RebalanceMove
+	(*RebalanceAdviseRequest)(nil),    // 20: reflow.clusterctl.v1.RebalanceAdviseRequest
+	(*RebalanceAdviseResponse)(nil),   // 21: reflow.clusterctl.v1.RebalanceAdviseResponse
+	(*RebalanceDrainRequest)(nil),     // 22: reflow.clusterctl.v1.RebalanceDrainRequest
+	(*RebalanceDrainResponse)(nil),    // 23: reflow.clusterctl.v1.RebalanceDrainResponse
+	(*LeaderHint)(nil),                // 24: reflow.clusterctl.v1.LeaderHint
+	nil,                               // 25: reflow.clusterctl.v1.RebalanceAdviseResponse.LpsPerShardEntry
+	(*enginev1.NodeMembership)(nil),   // 26: reflow.engine.v1.NodeMembership
+	(*enginev1.PartitionTable)(nil),   // 27: reflow.engine.v1.PartitionTable
+	(*enginev1.LPTransferRecord)(nil), // 28: reflow.engine.v1.LPTransferRecord
 }
 var file_clusterctlv1_clusterctl_proto_depIdxs = []int32{
-	20, // 0: reflow.clusterctl.v1.ListNodesResponse.nodes:type_name -> reflow.engine.v1.NodeMembership
-	21, // 1: reflow.clusterctl.v1.ListPartitionsResponse.table:type_name -> reflow.engine.v1.PartitionTable
+	26, // 0: reflow.clusterctl.v1.ListNodesResponse.nodes:type_name -> reflow.engine.v1.NodeMembership
+	27, // 1: reflow.clusterctl.v1.ListPartitionsResponse.table:type_name -> reflow.engine.v1.PartitionTable
 	11, // 2: reflow.clusterctl.v1.ListSnapshotsResponse.snapshots:type_name -> reflow.clusterctl.v1.SnapshotRef
-	22, // 3: reflow.clusterctl.v1.ListLPTransfersResponse.records:type_name -> reflow.engine.v1.LPTransferRecord
-	0,  // 4: reflow.clusterctl.v1.ClusterCtl.AddNode:input_type -> reflow.clusterctl.v1.AddNodeRequest
-	0,  // 5: reflow.clusterctl.v1.ClusterCtl.SelfJoin:input_type -> reflow.clusterctl.v1.AddNodeRequest
-	2,  // 6: reflow.clusterctl.v1.ClusterCtl.RemoveNode:input_type -> reflow.clusterctl.v1.RemoveNodeRequest
-	4,  // 7: reflow.clusterctl.v1.ClusterCtl.ListNodes:input_type -> reflow.clusterctl.v1.ListNodesRequest
-	6,  // 8: reflow.clusterctl.v1.ClusterCtl.ListPartitions:input_type -> reflow.clusterctl.v1.ListPartitionsRequest
-	8,  // 9: reflow.clusterctl.v1.ClusterCtl.CreateSnapshot:input_type -> reflow.clusterctl.v1.CreateSnapshotRequest
-	10, // 10: reflow.clusterctl.v1.ClusterCtl.ListSnapshots:input_type -> reflow.clusterctl.v1.ListSnapshotsRequest
-	13, // 11: reflow.clusterctl.v1.ClusterCtl.DeleteSnapshot:input_type -> reflow.clusterctl.v1.DeleteSnapshotRequest
-	15, // 12: reflow.clusterctl.v1.ClusterCtl.TransferLP:input_type -> reflow.clusterctl.v1.TransferLPRequest
-	17, // 13: reflow.clusterctl.v1.ClusterCtl.ListLPTransfers:input_type -> reflow.clusterctl.v1.ListLPTransfersRequest
-	1,  // 14: reflow.clusterctl.v1.ClusterCtl.AddNode:output_type -> reflow.clusterctl.v1.AddNodeResponse
-	1,  // 15: reflow.clusterctl.v1.ClusterCtl.SelfJoin:output_type -> reflow.clusterctl.v1.AddNodeResponse
-	3,  // 16: reflow.clusterctl.v1.ClusterCtl.RemoveNode:output_type -> reflow.clusterctl.v1.RemoveNodeResponse
-	5,  // 17: reflow.clusterctl.v1.ClusterCtl.ListNodes:output_type -> reflow.clusterctl.v1.ListNodesResponse
-	7,  // 18: reflow.clusterctl.v1.ClusterCtl.ListPartitions:output_type -> reflow.clusterctl.v1.ListPartitionsResponse
-	9,  // 19: reflow.clusterctl.v1.ClusterCtl.CreateSnapshot:output_type -> reflow.clusterctl.v1.CreateSnapshotResponse
-	12, // 20: reflow.clusterctl.v1.ClusterCtl.ListSnapshots:output_type -> reflow.clusterctl.v1.ListSnapshotsResponse
-	14, // 21: reflow.clusterctl.v1.ClusterCtl.DeleteSnapshot:output_type -> reflow.clusterctl.v1.DeleteSnapshotResponse
-	16, // 22: reflow.clusterctl.v1.ClusterCtl.TransferLP:output_type -> reflow.clusterctl.v1.TransferLPResponse
-	18, // 23: reflow.clusterctl.v1.ClusterCtl.ListLPTransfers:output_type -> reflow.clusterctl.v1.ListLPTransfersResponse
-	14, // [14:24] is the sub-list for method output_type
-	4,  // [4:14] is the sub-list for method input_type
-	4,  // [4:4] is the sub-list for extension type_name
-	4,  // [4:4] is the sub-list for extension extendee
-	0,  // [0:4] is the sub-list for field type_name
+	28, // 3: reflow.clusterctl.v1.ListLPTransfersResponse.records:type_name -> reflow.engine.v1.LPTransferRecord
+	25, // 4: reflow.clusterctl.v1.RebalanceAdviseResponse.lps_per_shard:type_name -> reflow.clusterctl.v1.RebalanceAdviseResponse.LpsPerShardEntry
+	19, // 5: reflow.clusterctl.v1.RebalanceAdviseResponse.would_transfer:type_name -> reflow.clusterctl.v1.RebalanceMove
+	0,  // 6: reflow.clusterctl.v1.ClusterCtl.AddNode:input_type -> reflow.clusterctl.v1.AddNodeRequest
+	0,  // 7: reflow.clusterctl.v1.ClusterCtl.SelfJoin:input_type -> reflow.clusterctl.v1.AddNodeRequest
+	2,  // 8: reflow.clusterctl.v1.ClusterCtl.RemoveNode:input_type -> reflow.clusterctl.v1.RemoveNodeRequest
+	4,  // 9: reflow.clusterctl.v1.ClusterCtl.ListNodes:input_type -> reflow.clusterctl.v1.ListNodesRequest
+	6,  // 10: reflow.clusterctl.v1.ClusterCtl.ListPartitions:input_type -> reflow.clusterctl.v1.ListPartitionsRequest
+	8,  // 11: reflow.clusterctl.v1.ClusterCtl.CreateSnapshot:input_type -> reflow.clusterctl.v1.CreateSnapshotRequest
+	10, // 12: reflow.clusterctl.v1.ClusterCtl.ListSnapshots:input_type -> reflow.clusterctl.v1.ListSnapshotsRequest
+	13, // 13: reflow.clusterctl.v1.ClusterCtl.DeleteSnapshot:input_type -> reflow.clusterctl.v1.DeleteSnapshotRequest
+	15, // 14: reflow.clusterctl.v1.ClusterCtl.TransferLP:input_type -> reflow.clusterctl.v1.TransferLPRequest
+	17, // 15: reflow.clusterctl.v1.ClusterCtl.ListLPTransfers:input_type -> reflow.clusterctl.v1.ListLPTransfersRequest
+	20, // 16: reflow.clusterctl.v1.ClusterCtl.RebalanceAdvise:input_type -> reflow.clusterctl.v1.RebalanceAdviseRequest
+	22, // 17: reflow.clusterctl.v1.ClusterCtl.RebalanceDrain:input_type -> reflow.clusterctl.v1.RebalanceDrainRequest
+	1,  // 18: reflow.clusterctl.v1.ClusterCtl.AddNode:output_type -> reflow.clusterctl.v1.AddNodeResponse
+	1,  // 19: reflow.clusterctl.v1.ClusterCtl.SelfJoin:output_type -> reflow.clusterctl.v1.AddNodeResponse
+	3,  // 20: reflow.clusterctl.v1.ClusterCtl.RemoveNode:output_type -> reflow.clusterctl.v1.RemoveNodeResponse
+	5,  // 21: reflow.clusterctl.v1.ClusterCtl.ListNodes:output_type -> reflow.clusterctl.v1.ListNodesResponse
+	7,  // 22: reflow.clusterctl.v1.ClusterCtl.ListPartitions:output_type -> reflow.clusterctl.v1.ListPartitionsResponse
+	9,  // 23: reflow.clusterctl.v1.ClusterCtl.CreateSnapshot:output_type -> reflow.clusterctl.v1.CreateSnapshotResponse
+	12, // 24: reflow.clusterctl.v1.ClusterCtl.ListSnapshots:output_type -> reflow.clusterctl.v1.ListSnapshotsResponse
+	14, // 25: reflow.clusterctl.v1.ClusterCtl.DeleteSnapshot:output_type -> reflow.clusterctl.v1.DeleteSnapshotResponse
+	16, // 26: reflow.clusterctl.v1.ClusterCtl.TransferLP:output_type -> reflow.clusterctl.v1.TransferLPResponse
+	18, // 27: reflow.clusterctl.v1.ClusterCtl.ListLPTransfers:output_type -> reflow.clusterctl.v1.ListLPTransfersResponse
+	21, // 28: reflow.clusterctl.v1.ClusterCtl.RebalanceAdvise:output_type -> reflow.clusterctl.v1.RebalanceAdviseResponse
+	23, // 29: reflow.clusterctl.v1.ClusterCtl.RebalanceDrain:output_type -> reflow.clusterctl.v1.RebalanceDrainResponse
+	18, // [18:30] is the sub-list for method output_type
+	6,  // [6:18] is the sub-list for method input_type
+	6,  // [6:6] is the sub-list for extension type_name
+	6,  // [6:6] is the sub-list for extension extendee
+	0,  // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_clusterctlv1_clusterctl_proto_init() }
@@ -1173,7 +1540,7 @@ func file_clusterctlv1_clusterctl_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_clusterctlv1_clusterctl_proto_rawDesc), len(file_clusterctlv1_clusterctl_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   20,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

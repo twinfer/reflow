@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/twinfer/reflow/internal/engine/cluster"
+	"github.com/twinfer/reflow/internal/engine/rebalance"
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/storage/keys"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -111,6 +112,25 @@ func (r *MetadataRunner) onBecomeLeader() {
 			defer r.leaderGoroutines.Done()
 			newLPMover(r.host, r).run(leaderCtx)
 		}()
+		// Autonomous LP rebalancer (PR 5.0). Started only when
+		// Mode != "off". Shares leaderCtx + leaderGoroutines so
+		// onStepDown's Wait() drains the loop cleanly before the
+		// snapshotter teardown. The drain-table notifier is taken from
+		// ClusterNotifiers; nil-safe because TableNotifier.Subscribe
+		// returns nil on a nil receiver and select-on-nil is a no-op.
+		if r.host.cfg.Rebalance.Mode != "" && r.host.cfg.Rebalance.Mode != rebalance.ModeOff {
+			r.leaderGoroutines.Go(func() {
+				bal := rebalance.New(
+					r.host.cfg.Rebalance,
+					r.host,
+					r.proposer,
+					r.host.cfg.ClusterNotifiers.RebalanceDrainTable.Subscribe(),
+					r.host.cfg.Metrics,
+					r.log,
+				)
+				bal.Run(leaderCtx)
+			})
+		}
 	}
 }
 

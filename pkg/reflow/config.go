@@ -47,6 +47,7 @@ type Config struct {
 	Handlers     HandlersConfig     `koanf:"handlers"`
 	EventSources EventSourcesConfig `koanf:"event_sources"`
 	KMS          KMSConfig          `koanf:"kms"`
+	Rebalance    RebalanceConfig    `koanf:"rebalance"`
 }
 
 // KMSConfig configures the KMS providers Reflow registers in Tink's
@@ -260,6 +261,71 @@ type SnapshotConfig struct {
 	// archiving. Empty falls back to $TMPDIR/reflow-snapshot-scratch.
 	ScratchDir string `koanf:"scratch_dir"`
 }
+
+// RebalanceConfig configures the autonomous LP rebalancer. Lives on the
+// metadata-shard (shard 0) leader; one node in the cluster runs the loop
+// at a time, naturally chosen by the Raft leader election that already
+// drives metadataRebalancer and lpMover.
+//
+// Mode is the master switch:
+//
+//   - "off"      — control loop not started; no observation, no decisions.
+//   - "advisory" — loop runs, emits metrics, logs candidate moves with
+//     outcome=would_transfer, but never proposes a transfer.
+//     Use this to validate the planner against production-
+//     shaped traffic before flipping to "auto".
+//   - "auto"     — full automation. Candidate moves above SkewEngagePct
+//     are proposed through the same Command_InitiateLPTransfer
+//     path the manual `reflowd cluster transfer-lp` CLI uses,
+//     so they show up in ListLPTransfers with no extra
+//     plumbing.
+//
+// Triggers in this version are limited to:
+//   - membership change (NodeRegistry update reshapes the planner's
+//     input shard set)
+//   - operator-requested drain (RebalanceDrainTable on shard 0; drained
+//     shards are subtracted from the planner's input)
+//
+// Load-based triggers (per-shard QPS, p99) and capacity circuit breakers
+// (Pebble L0, write amp) are out of scope for PR 5.0.
+//
+// Defaults are conservative — basically "do one move a minute, never
+// engage unless seriously skewed."
+type RebalanceConfig struct {
+	// Mode is "off" (default), "advisory", or "auto". Anything else is
+	// treated as "off" with a startup warning.
+	Mode string `koanf:"mode"`
+	// MaxConcurrentTransfers caps the count of non-terminal rows in
+	// LPTransferTable the rebalancer is willing to maintain. Zero
+	// defaults to 1.
+	MaxConcurrentTransfers uint32 `koanf:"max_concurrent_transfers"`
+	// MinSecondsBetweenTransfers is the minimum gap between two new
+	// transfer initiations, measured against the most recent
+	// LPTransferRecord.started_at_ms. Zero defaults to 60.
+	MinSecondsBetweenTransfers uint32 `koanf:"min_seconds_between_transfers"`
+	// SkewEngagePct is the mis-placement percentage (0..100) above
+	// which the rebalancer engages and starts proposing moves. Zero
+	// defaults to 15. Skew is computed as
+	//
+	//   len(routing.Diff(current, desired)) / total_LPs * 100
+	//
+	// — the fraction of LPs whose current shard != the planner's
+	// desired shard.
+	SkewEngagePct uint32 `koanf:"skew_engage_pct"`
+	// SkewDisengagePct is the threshold below which the rebalancer
+	// disengages once engaged. Must be < SkewEngagePct; the gap is
+	// the hysteresis band. Zero defaults to 8.
+	SkewDisengagePct uint32 `koanf:"skew_disengage_pct"`
+}
+
+// RebalanceMode constants match the koanf-decoded string values for
+// RebalanceConfig.Mode. Exported so callers and tests can compare
+// without bare strings.
+const (
+	RebalanceModeOff      = "off"
+	RebalanceModeAdvisory = "advisory"
+	RebalanceModeAuto     = "auto"
+)
 
 // DefaultTrustDomain is the SPIFFE trust domain used when
 // AuthConfig.TrustDomain is empty.

@@ -22,6 +22,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine/cluster"
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/engine/invoker"
+	"github.com/twinfer/reflow/internal/engine/rebalance"
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/storage"
@@ -152,6 +153,13 @@ type HostConfig struct {
 	// FSM no-ops on nil notifier handles). pkg/reflow wires this up
 	// before NewHost.
 	ClusterNotifiers cluster.Notifiers
+
+	// Rebalance configures the autonomous LP rebalancer started on
+	// metadata-shard leadership. Zero value (Mode unset) disables the
+	// loop entirely; the runner skips the goroutine spawn in
+	// onBecomeLeader. pkg/reflow.withDefaults defaults Mode to "off",
+	// so the production default is also disabled.
+	Rebalance rebalance.Config
 }
 
 // Peer is a static cluster member known at bootstrap. NodeHostID may be
@@ -670,6 +678,25 @@ func (h *Host) LPTransfers(ctx context.Context) (*cluster.LPTransfersList, error
 	out, ok := res.(*cluster.LPTransfersList)
 	if !ok {
 		return nil, fmt.Errorf("host: LPTransfers: unexpected lookup type %T", res)
+	}
+	return out, nil
+}
+
+// RebalanceDrains SyncReads every RebalanceDrainRecord from shard 0
+// plus the table's CAS revision. Used by the autonomous rebalancer's
+// advisor on each tick to subtract drained shards from the planner's
+// input set, and by the operator-facing RebalanceAdvise RPC.
+func (h *Host) RebalanceDrains(ctx context.Context) (*cluster.RebalanceDrainList, error) {
+	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupRebalanceDrains{})
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return &cluster.RebalanceDrainList{}, nil
+	}
+	out, ok := res.(*cluster.RebalanceDrainList)
+	if !ok {
+		return nil, fmt.Errorf("host: RebalanceDrains: unexpected lookup type %T", res)
 	}
 	return out, nil
 }

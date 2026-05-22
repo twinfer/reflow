@@ -26,7 +26,9 @@ import (
 	"github.com/lni/dragonboat/v4/config"
 
 	"github.com/twinfer/reflow/internal/engine"
+	"github.com/twinfer/reflow/internal/engine/cluster"
 	"github.com/twinfer/reflow/internal/engine/delivery"
+	"github.com/twinfer/reflow/internal/engine/rebalance"
 	"github.com/twinfer/reflow/internal/engine/routing"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -222,6 +224,12 @@ type ClusterOptions struct {
 	// one Ingress gRPC address per node. Allocated up front by the
 	// test so the cluster knows where to dial each subprocess.
 	SubprocessIngressAddrs []string
+
+	// Rebalance forwards to engine.HostConfig.Rebalance on every
+	// in-process node. Zero value disables the autonomous LP
+	// rebalancer entirely (production default). Tests that exercise
+	// auto-rebalance fill this in with Mode="auto" and tight knobs.
+	Rebalance rebalance.Config
 }
 
 // nodeAddrs captures the three TCP endpoints a node binds at
@@ -511,6 +519,8 @@ func (c *Cluster) bringUpNode(t testing.TB, idx int) error {
 		PebbleOptions:        c.opts.PebbleOptions,
 		OnSnapshotPersisted:  c.opts.OnSnapshotPersisted,
 		RaftTransportFactory: c.opts.RaftTransportFactory,
+		Rebalance:            c.opts.Rebalance,
+		ClusterNotifiers:     cluster.Notifiers{RebalanceDrainTable: cluster.NewTableNotifier()},
 	})
 	if err != nil {
 		return fmt.Errorf("NewHost: %w", err)

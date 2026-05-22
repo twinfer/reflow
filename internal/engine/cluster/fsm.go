@@ -57,11 +57,12 @@ type Config struct {
 // to shard 0; the apply arm for the new command flips it on via
 // applyResult.notify.
 type Notifiers struct {
-	EventSourceTable   *TableNotifier
-	WebhookSourceTable *TableNotifier
-	SecretTable        *TableNotifier
-	LPOwnersTable      *TableNotifier
-	LPTransfersTable   *TableNotifier
+	EventSourceTable    *TableNotifier
+	WebhookSourceTable  *TableNotifier
+	SecretTable         *TableNotifier
+	LPOwnersTable       *TableNotifier
+	LPTransfersTable    *TableNotifier
+	RebalanceDrainTable *TableNotifier
 }
 
 // FSM is the dragonboat IOnDiskStateMachine for shard 0. It accepts only
@@ -315,6 +316,8 @@ func (f *FSM) applyCommand(
 		return f.applyBeginRebalanceStep(batch, k.BeginRebalanceStep, raftIndex)
 	case *enginev1.Command_CompleteRebalanceStep:
 		return f.applyCompleteRebalanceStep(batch, k.CompleteRebalanceStep, raftIndex)
+	case *enginev1.Command_SetRebalanceDrain:
+		return f.applySetRebalanceDrain(batch, env, k.SetRebalanceDrain, raftIndex)
 	case nil:
 		f.cfg.Log.Warn("cluster: envelope has no command kind", "raft_index", raftIndex)
 		return &applyResult{}, nil
@@ -1176,6 +1179,57 @@ func (f *FSM) applyCompleteRebalanceStep(
 	return &applyResult{partitionTable: proto.Clone(pt).(*enginev1.PartitionTable)}, nil
 }
 
+// applySetRebalanceDrain writes (drain=true) or removes (drain=false) a
+// RebalanceDrainRecord row for the given shard_id and bumps the table
+// revision. CAS via Envelope.precondition against
+// RevisionTableRebalanceDrain. Fires Notifiers.RebalanceDrainTable
+// post-commit so the autonomous rebalancer wakes immediately on the
+// change. shard_id == 0 is rejected (shard 0 is the metadata group and
+// is never an LP owner).
+//
+// Both add and remove bump the revision even when the underlying row
+// is already in the requested state — the bump is what makes a CAS
+// roundtrip observable for the operator CLI.
+func (f *FSM) applySetRebalanceDrain(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.SetRebalanceDrain,
+	raftIndex uint64,
+) (*applyResult, error) {
+	shardID := cmd.GetShardId()
+	if shardID == 0 {
+		f.cfg.Log.Warn("cluster: SetRebalanceDrain zero shard_id; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableRebalanceDrain)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load rebalance_drain revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	tab := RebalanceDrainTable{S: batch}
+	if cmd.GetDrain() {
+		rec := &enginev1.RebalanceDrainRecord{
+			ShardId:   shardID,
+			AddedAtMs: nowMs,
+		}
+		if err := tab.Put(batch, rec); err != nil {
+			return nil, fmt.Errorf("cluster: write rebalance_drain: %w", err)
+		}
+	} else {
+		if err := tab.Delete(batch, shardID); err != nil {
+			return nil, fmt.Errorf("cluster: delete rebalance_drain: %w", err)
+		}
+	}
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableRebalanceDrain, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump rebalance_drain revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.RebalanceDrainTable}}, nil
+}
+
 // pickRebalanceTarget returns the ReplicaSet to mutate for a step with
 // the given shardID, plus a setter that lazily inserts a fresh ReplicaSet
 // at that location (used when promoting into an empty set).
@@ -1285,6 +1339,12 @@ type (
 	// drive open transfers forward; the admin RPC uses it for
 	// operator-facing list.
 	LookupLPTransfers struct{}
+
+	// LookupRebalanceDrains returns *RebalanceDrainList — every
+	// RebalanceDrainRecord plus the table's CAS revision. The
+	// autonomous rebalancer's advisor calls this on each tick to
+	// subtract drained shards from the planner's input.
+	LookupRebalanceDrains struct{}
 )
 
 // DeploymentList bundles every row in DeploymentTable with the table's
@@ -1327,6 +1387,13 @@ type LPOwnersList struct {
 // table's CAS revision.
 type LPTransfersList struct {
 	Records       []*enginev1.LPTransferRecord
+	TableRevision uint64
+}
+
+// RebalanceDrainList bundles every row in RebalanceDrainTable with the
+// table's CAS revision, atomic w.r.t. the read snapshot.
+type RebalanceDrainList struct {
+	Records       []*enginev1.RebalanceDrainRecord
 	TableRevision uint64
 }
 
@@ -1447,6 +1514,16 @@ func (f *FSM) Lookup(query any) (any, error) {
 			return nil, err
 		}
 		return &LPTransfersList{Records: records, TableRevision: rev}, nil
+	case LookupRebalanceDrains:
+		records, err := (RebalanceDrainTable{S: store}).List()
+		if err != nil {
+			return nil, err
+		}
+		rev, err := (RevisionTable{S: store}).Get(RevisionTableRebalanceDrain)
+		if err != nil {
+			return nil, err
+		}
+		return &RebalanceDrainList{Records: records, TableRevision: rev}, nil
 	default:
 		return nil, fmt.Errorf("cluster: unknown lookup type %T", query)
 	}

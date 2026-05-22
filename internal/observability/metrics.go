@@ -30,6 +30,32 @@ type Metrics struct {
 	// 4xx / 5xx). Route is the chi template, never the raw path, so
 	// cardinality stays bounded.
 	IngressRESTRequests *prometheus.CounterVec
+	// RebalanceMode is a one-shot gauge stamped at rebalancer start.
+	// 0 = off, 1 = advisory, 2 = auto. When the loop never starts
+	// (Mode=off) the gauge is set to 0 so dashboards can distinguish
+	// "disabled" from "missing data."
+	RebalanceMode prometheus.Gauge
+	// RebalanceEngaged is 1 when hysteresis is currently active
+	// (skew_pct > engage and not yet < disengage), 0 otherwise.
+	RebalanceEngaged prometheus.Gauge
+	// RebalanceSkewPct is the mis-placement percentage (0..100) the
+	// rebalancer observed on its most recent tick.
+	RebalanceSkewPct prometheus.Gauge
+	// RebalanceLPsPerShard is the per-shard LP count from the current
+	// LPOwnersTable snapshot. Surfaces hot spots without forcing the
+	// trigger metric to encode severity.
+	RebalanceLPsPerShard *prometheus.GaugeVec
+	// RebalancePendingTransfers is the count of non-terminal rows in
+	// LPTransferTable on the most recent tick.
+	RebalancePendingTransfers prometheus.Gauge
+	// RebalanceDrainedShards is the count of shards currently in the
+	// RebalanceDrainTable.
+	RebalanceDrainedShards prometheus.Gauge
+	// RebalanceDecisions counts every decision the rebalancer emits.
+	// outcome ∈ {transferred, would_transfer, skipped, engaged,
+	// disengaged}. reason carries the cause for skip-style outcomes
+	// (skew_below_engage, cooldown, at_capacity, no_moves, no_planner).
+	RebalanceDecisions *prometheus.CounterVec
 }
 
 // NewMetrics builds reflow's collectors. Pass nil to use the default
@@ -73,5 +99,33 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name: "reflow_ingress_rest_requests_total",
 			Help: "HTTP requests served by the /v1/* REST ingress facade, labeled by chi route template, method, and status class.",
 		}, []string{"route", "method", "status"}),
+		RebalanceMode: f.NewGauge(prometheus.GaugeOpts{
+			Name: "reflow_rebalance_mode",
+			Help: "Autonomous LP rebalancer mode. 0=off, 1=advisory, 2=auto. Stamped once at start.",
+		}),
+		RebalanceEngaged: f.NewGauge(prometheus.GaugeOpts{
+			Name: "reflow_rebalance_engaged",
+			Help: "1 when the rebalancer's hysteresis band has it engaged, 0 otherwise.",
+		}),
+		RebalanceSkewPct: f.NewGauge(prometheus.GaugeOpts{
+			Name: "reflow_rebalance_skew_pct",
+			Help: "Mis-placement percentage observed by the rebalancer on the most recent tick.",
+		}),
+		RebalanceLPsPerShard: f.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "reflow_rebalance_lps_per_shard",
+			Help: "Number of LPs currently owned by each partition shard.",
+		}, []string{"shard"}),
+		RebalancePendingTransfers: f.NewGauge(prometheus.GaugeOpts{
+			Name: "reflow_rebalance_pending_transfers",
+			Help: "Count of non-terminal LP transfers on the most recent rebalancer tick.",
+		}),
+		RebalanceDrainedShards: f.NewGauge(prometheus.GaugeOpts{
+			Name: "reflow_rebalance_drained_shards",
+			Help: "Count of shards in the RebalanceDrainTable on the most recent rebalancer tick.",
+		}),
+		RebalanceDecisions: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "reflow_rebalance_decisions_total",
+			Help: "Rebalancer decisions, classified by outcome and reason.",
+		}, []string{"outcome", "reason"}),
 	}
 }

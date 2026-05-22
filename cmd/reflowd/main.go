@@ -35,6 +35,8 @@
 //	reflowd cluster snapshot delete     --admin=ANY:PORT --shard=N --index=I
 //	reflowd cluster transfer-lp         --admin=ANY:PORT --lp=N --to-shard=M
 //	reflowd cluster list-lp-transfers   --admin=ANY:PORT
+//	reflowd cluster rebalance-advise    --admin=ANY:PORT
+//	reflowd cluster rebalance-drain     --admin=ANY:PORT --shard=N [--stop]
 //
 //	reflowd config register-deployment  --admin=ANY:PORT --url=http://HANDLER:PORT
 //	reflowd config list-deployments     --admin=ANY:PORT
@@ -156,6 +158,10 @@ func dispatchCluster(ctx context.Context, args []string) error {
 		return cmdTransferLP(ctx, rest)
 	case "list-lp-transfers":
 		return cmdListLPTransfers(ctx, rest)
+	case "rebalance-advise":
+		return cmdRebalanceAdvise(ctx, rest)
+	case "rebalance-drain":
+		return cmdRebalanceDrain(ctx, rest)
 	default:
 		return fmt.Errorf("reflowd cluster: unknown subcommand %q", sub)
 	}
@@ -183,6 +189,10 @@ Cluster (ClusterCtl RPCs; fleet ops; --admin can be ANY node):
   cluster snapshot delete       Remove an archived snapshot.
   cluster transfer-lp           Move one LP to a different partition shard.
   cluster list-lp-transfers     List in-flight LP transfer records.
+  cluster rebalance-advise      Dump the autonomous rebalancer's intent
+                                (skew, drained shards, would-transfer set).
+  cluster rebalance-drain       Mark a partition shard drained (or undrain
+                                via --stop).
 
 Config (Config RPCs; app config; --admin can be ANY node):
   config register-deployment    Register a handler deployment URL.

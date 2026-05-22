@@ -78,6 +78,18 @@ service ClusterCtl {
   // ListLPTransfers returns the current LPTransferTable rows plus the
   // table revision. Reads via SyncRead against shard 0.
   rpc ListLPTransfers(ListLPTransfersRequest) returns (ListLPTransfersResponse);
+  // RebalanceAdvise returns the autonomous rebalancer's view of the
+  // cluster as of the call: current skew, drained shards, per-shard LP
+  // counts, and (in `would_transfer`) the moves the rebalancer would
+  // propose right now under hysteresis-free evaluation. Read-only —
+  // any peer can answer; SyncReads route to the local shard-0 replica.
+  rpc RebalanceAdvise(RebalanceAdviseRequest) returns (RebalanceAdviseResponse);
+  // RebalanceDrain adds or removes a partition shard from the
+  // RebalanceDrainTable. drain=true marks the shard drained (its LPs
+  // get re-planned off); drain=false un-drains. Idempotent. CAS via
+  // if_table_revision_eq; mismatch returns FailedPrecondition.
+  // Leader-only.
+  rpc RebalanceDrain(RebalanceDrainRequest) returns (RebalanceDrainResponse);
 }
 
 message AddNodeRequest {
@@ -154,6 +166,62 @@ message ListLPTransfersRequest {}
 message ListLPTransfersResponse {
   repeated reflow.engine.v1.LPTransferRecord records = 1;
   uint64 table_revision = 2;
+}
+
+// RebalanceMove describes one prospective LP→shard transfer in
+// RebalanceAdviseResponse. Same shape as routing.LPMove on the engine
+// side.
+message RebalanceMove {
+  uint32 lp = 1;
+  uint64 from_shard = 2;
+  uint64 to_shard = 3;
+}
+
+// RebalanceAdviseRequest carries no parameters; the rebalancer's
+// configuration is server-side.
+message RebalanceAdviseRequest {}
+message RebalanceAdviseResponse {
+  // mode is the running mode: "off", "advisory", or "auto".
+  string mode = 1;
+  // engaged reports whether the rebalancer would consider the cluster
+  // "engaged" right now — i.e., whether skew_pct ≥ engage_pct. The
+  // server-side advice path evaluates without hysteresis carry-over;
+  // operators get the fresh-view answer.
+  bool engaged = 2;
+  // skew_pct is the mis-placement percentage on a 0..100 scale.
+  double skew_pct = 3;
+  // in_flight is the count of non-terminal LP transfers right now.
+  uint32 in_flight = 4;
+  // skipped_reason is non-empty when would_transfer is empty;
+  // explains which gate fired (skew_below_engage, cooldown,
+  // at_capacity, no_moves, no_live_shards, no_planner).
+  string skipped_reason = 5;
+  // drained_shards lists the shard ids currently in the
+  // RebalanceDrainTable.
+  repeated uint64 drained_shards = 6;
+  // lps_per_shard maps shard_id → owned-LP count from the
+  // LPOwnersTable snapshot the advisor observed.
+  map<uint64, uint32> lps_per_shard = 7;
+  // would_transfer is the move set the rebalancer would actuate on
+  // this tick (up to max_concurrent − in_flight elements). In auto
+  // mode the balancer has likely already proposed these; in advisory
+  // mode the list is the planner's intent.
+  repeated RebalanceMove would_transfer = 8;
+}
+
+// RebalanceDrainRequest sets or clears a drain marker for one
+// partition shard.
+message RebalanceDrainRequest {
+  uint64 shard_id = 1;
+  bool drain = 2;
+  // if_table_revision_eq, when non-zero, gates the apply on the
+  // current RebalanceDrainTable revision matching this value (CAS).
+  uint64 if_table_revision_eq = 3;
+}
+message RebalanceDrainResponse {
+  // table_revision is the post-apply RebalanceDrainTable revision so
+  // callers can chain CAS roundtrips.
+  uint64 table_revision = 1;
 }
 
 // LeaderHint is attached as a connect.Error detail on

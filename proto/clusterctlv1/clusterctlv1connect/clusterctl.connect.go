@@ -89,6 +89,12 @@ const (
 	// ClusterCtlListLPTransfersProcedure is the fully-qualified name of the ClusterCtl's
 	// ListLPTransfers RPC.
 	ClusterCtlListLPTransfersProcedure = "/reflow.clusterctl.v1.ClusterCtl/ListLPTransfers"
+	// ClusterCtlRebalanceAdviseProcedure is the fully-qualified name of the ClusterCtl's
+	// RebalanceAdvise RPC.
+	ClusterCtlRebalanceAdviseProcedure = "/reflow.clusterctl.v1.ClusterCtl/RebalanceAdvise"
+	// ClusterCtlRebalanceDrainProcedure is the fully-qualified name of the ClusterCtl's RebalanceDrain
+	// RPC.
+	ClusterCtlRebalanceDrainProcedure = "/reflow.clusterctl.v1.ClusterCtl/RebalanceDrain"
 )
 
 // ClusterCtlClient is a client for the reflow.clusterctl.v1.ClusterCtl service.
@@ -133,6 +139,18 @@ type ClusterCtlClient interface {
 	// ListLPTransfers returns the current LPTransferTable rows plus the
 	// table revision. Reads via SyncRead against shard 0.
 	ListLPTransfers(context.Context, *connect.Request[clusterctlv1.ListLPTransfersRequest]) (*connect.Response[clusterctlv1.ListLPTransfersResponse], error)
+	// RebalanceAdvise returns the autonomous rebalancer's view of the
+	// cluster as of the call: current skew, drained shards, per-shard LP
+	// counts, and (in `would_transfer`) the moves the rebalancer would
+	// propose right now under hysteresis-free evaluation. Read-only —
+	// any peer can answer; SyncReads route to the local shard-0 replica.
+	RebalanceAdvise(context.Context, *connect.Request[clusterctlv1.RebalanceAdviseRequest]) (*connect.Response[clusterctlv1.RebalanceAdviseResponse], error)
+	// RebalanceDrain adds or removes a partition shard from the
+	// RebalanceDrainTable. drain=true marks the shard drained (its LPs
+	// get re-planned off); drain=false un-drains. Idempotent. CAS via
+	// if_table_revision_eq; mismatch returns FailedPrecondition.
+	// Leader-only.
+	RebalanceDrain(context.Context, *connect.Request[clusterctlv1.RebalanceDrainRequest]) (*connect.Response[clusterctlv1.RebalanceDrainResponse], error)
 }
 
 // NewClusterCtlClient constructs a client for the reflow.clusterctl.v1.ClusterCtl service. By
@@ -206,6 +224,18 @@ func NewClusterCtlClient(httpClient connect.HTTPClient, baseURL string, opts ...
 			connect.WithSchema(clusterCtlMethods.ByName("ListLPTransfers")),
 			connect.WithClientOptions(opts...),
 		),
+		rebalanceAdvise: connect.NewClient[clusterctlv1.RebalanceAdviseRequest, clusterctlv1.RebalanceAdviseResponse](
+			httpClient,
+			baseURL+ClusterCtlRebalanceAdviseProcedure,
+			connect.WithSchema(clusterCtlMethods.ByName("RebalanceAdvise")),
+			connect.WithClientOptions(opts...),
+		),
+		rebalanceDrain: connect.NewClient[clusterctlv1.RebalanceDrainRequest, clusterctlv1.RebalanceDrainResponse](
+			httpClient,
+			baseURL+ClusterCtlRebalanceDrainProcedure,
+			connect.WithSchema(clusterCtlMethods.ByName("RebalanceDrain")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -221,6 +251,8 @@ type clusterCtlClient struct {
 	deleteSnapshot  *connect.Client[clusterctlv1.DeleteSnapshotRequest, clusterctlv1.DeleteSnapshotResponse]
 	transferLP      *connect.Client[clusterctlv1.TransferLPRequest, clusterctlv1.TransferLPResponse]
 	listLPTransfers *connect.Client[clusterctlv1.ListLPTransfersRequest, clusterctlv1.ListLPTransfersResponse]
+	rebalanceAdvise *connect.Client[clusterctlv1.RebalanceAdviseRequest, clusterctlv1.RebalanceAdviseResponse]
+	rebalanceDrain  *connect.Client[clusterctlv1.RebalanceDrainRequest, clusterctlv1.RebalanceDrainResponse]
 }
 
 // AddNode calls reflow.clusterctl.v1.ClusterCtl.AddNode.
@@ -273,6 +305,16 @@ func (c *clusterCtlClient) ListLPTransfers(ctx context.Context, req *connect.Req
 	return c.listLPTransfers.CallUnary(ctx, req)
 }
 
+// RebalanceAdvise calls reflow.clusterctl.v1.ClusterCtl.RebalanceAdvise.
+func (c *clusterCtlClient) RebalanceAdvise(ctx context.Context, req *connect.Request[clusterctlv1.RebalanceAdviseRequest]) (*connect.Response[clusterctlv1.RebalanceAdviseResponse], error) {
+	return c.rebalanceAdvise.CallUnary(ctx, req)
+}
+
+// RebalanceDrain calls reflow.clusterctl.v1.ClusterCtl.RebalanceDrain.
+func (c *clusterCtlClient) RebalanceDrain(ctx context.Context, req *connect.Request[clusterctlv1.RebalanceDrainRequest]) (*connect.Response[clusterctlv1.RebalanceDrainResponse], error) {
+	return c.rebalanceDrain.CallUnary(ctx, req)
+}
+
 // ClusterCtlHandler is an implementation of the reflow.clusterctl.v1.ClusterCtl service.
 type ClusterCtlHandler interface {
 	// AddNode registers a new peer with shard 0 and enqueues a rebalance
@@ -315,6 +357,18 @@ type ClusterCtlHandler interface {
 	// ListLPTransfers returns the current LPTransferTable rows plus the
 	// table revision. Reads via SyncRead against shard 0.
 	ListLPTransfers(context.Context, *connect.Request[clusterctlv1.ListLPTransfersRequest]) (*connect.Response[clusterctlv1.ListLPTransfersResponse], error)
+	// RebalanceAdvise returns the autonomous rebalancer's view of the
+	// cluster as of the call: current skew, drained shards, per-shard LP
+	// counts, and (in `would_transfer`) the moves the rebalancer would
+	// propose right now under hysteresis-free evaluation. Read-only —
+	// any peer can answer; SyncReads route to the local shard-0 replica.
+	RebalanceAdvise(context.Context, *connect.Request[clusterctlv1.RebalanceAdviseRequest]) (*connect.Response[clusterctlv1.RebalanceAdviseResponse], error)
+	// RebalanceDrain adds or removes a partition shard from the
+	// RebalanceDrainTable. drain=true marks the shard drained (its LPs
+	// get re-planned off); drain=false un-drains. Idempotent. CAS via
+	// if_table_revision_eq; mismatch returns FailedPrecondition.
+	// Leader-only.
+	RebalanceDrain(context.Context, *connect.Request[clusterctlv1.RebalanceDrainRequest]) (*connect.Response[clusterctlv1.RebalanceDrainResponse], error)
 }
 
 // NewClusterCtlHandler builds an HTTP handler from the service implementation. It returns the path
@@ -384,6 +438,18 @@ func NewClusterCtlHandler(svc ClusterCtlHandler, opts ...connect.HandlerOption) 
 		connect.WithSchema(clusterCtlMethods.ByName("ListLPTransfers")),
 		connect.WithHandlerOptions(opts...),
 	)
+	clusterCtlRebalanceAdviseHandler := connect.NewUnaryHandler(
+		ClusterCtlRebalanceAdviseProcedure,
+		svc.RebalanceAdvise,
+		connect.WithSchema(clusterCtlMethods.ByName("RebalanceAdvise")),
+		connect.WithHandlerOptions(opts...),
+	)
+	clusterCtlRebalanceDrainHandler := connect.NewUnaryHandler(
+		ClusterCtlRebalanceDrainProcedure,
+		svc.RebalanceDrain,
+		connect.WithSchema(clusterCtlMethods.ByName("RebalanceDrain")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/reflow.clusterctl.v1.ClusterCtl/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ClusterCtlAddNodeProcedure:
@@ -406,6 +472,10 @@ func NewClusterCtlHandler(svc ClusterCtlHandler, opts ...connect.HandlerOption) 
 			clusterCtlTransferLPHandler.ServeHTTP(w, r)
 		case ClusterCtlListLPTransfersProcedure:
 			clusterCtlListLPTransfersHandler.ServeHTTP(w, r)
+		case ClusterCtlRebalanceAdviseProcedure:
+			clusterCtlRebalanceAdviseHandler.ServeHTTP(w, r)
+		case ClusterCtlRebalanceDrainProcedure:
+			clusterCtlRebalanceDrainHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -453,4 +523,12 @@ func (UnimplementedClusterCtlHandler) TransferLP(context.Context, *connect.Reque
 
 func (UnimplementedClusterCtlHandler) ListLPTransfers(context.Context, *connect.Request[clusterctlv1.ListLPTransfersRequest]) (*connect.Response[clusterctlv1.ListLPTransfersResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.ListLPTransfers is not implemented"))
+}
+
+func (UnimplementedClusterCtlHandler) RebalanceAdvise(context.Context, *connect.Request[clusterctlv1.RebalanceAdviseRequest]) (*connect.Response[clusterctlv1.RebalanceAdviseResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.RebalanceAdvise is not implemented"))
+}
+
+func (UnimplementedClusterCtlHandler) RebalanceDrain(context.Context, *connect.Request[clusterctlv1.RebalanceDrainRequest]) (*connect.Response[clusterctlv1.RebalanceDrainResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.RebalanceDrain is not implemented"))
 }

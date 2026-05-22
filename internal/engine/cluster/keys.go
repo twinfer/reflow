@@ -26,6 +26,11 @@
 //	lptransfer/<transfer_id ascii>  -> LPTransferRecord (in-progress LP
 //	                                   transfer saga; lpMover reads/writes
 //	                                   on the metadata leader)
+//	rebalance_drain/<8-byte BE shard_id> -> RebalanceDrainRecord
+//	                                   (operator-requested drains;
+//	                                   autonomous rebalancer subtracts
+//	                                   drained shards from the planner's
+//	                                   input set)
 //	tablerev/<table_name>           -> TableRevision singleton (CAS guard
 //	                                   for cluster-managed config tables;
 //	                                   separate top-level namespace so it
@@ -51,6 +56,7 @@ const (
 	secretPrefix          = "secret/"
 	lpOwnerPrefix         = "lpowner/"
 	lpTransferPrefix      = "lptransfer/"
+	rebalanceDrainPrefix  = "rebalance_drain/"
 	tableRevisionPrefix   = "tablerev/"
 )
 
@@ -58,12 +64,13 @@ const (
 // argument to RevisionKey; persisted on disk, so renaming is an
 // upgrade-incompat change.
 const (
-	RevisionTableDeployment    = "deployment"
-	RevisionTableEventSource   = "eventsrc"
-	RevisionTableWebhookSource = "webhooksrc"
-	RevisionTableSecret        = "secret"
-	RevisionTableLPOwners      = "lpowners"
-	RevisionTableLPTransfers   = "lptransfers"
+	RevisionTableDeployment     = "deployment"
+	RevisionTableEventSource    = "eventsrc"
+	RevisionTableWebhookSource  = "webhooksrc"
+	RevisionTableSecret         = "secret"
+	RevisionTableLPOwners       = "lpowners"
+	RevisionTableLPTransfers    = "lptransfers"
+	RevisionTableRebalanceDrain = "rebalance_drain"
 )
 
 // MetaKey returns the singleton key for the metadata shard's PartitionMeta.
@@ -171,6 +178,21 @@ func LPTransferKey(transferID string) []byte {
 	out := make([]byte, 0, len(lpTransferPrefix)+len(transferID))
 	out = append(out, lpTransferPrefix...)
 	return append(out, transferID...)
+}
+
+// RebalanceDrainPrefix returns the rebalance_drain/ namespace prefix.
+// Used for forward range iteration; rows sort in shard_id order because
+// the 8-byte BE encoding of shard_id follows the prefix.
+func RebalanceDrainPrefix() []byte { return []byte(rebalanceDrainPrefix) }
+
+// RebalanceDrainKey returns rebalance_drain/<8-byte BE shard_id>.
+// Big-endian so lexicographic byte order matches numeric shard order.
+func RebalanceDrainKey(shardID uint64) []byte {
+	out := make([]byte, 0, len(rebalanceDrainPrefix)+8)
+	out = append(out, rebalanceDrainPrefix...)
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], shardID)
+	return append(out, buf[:]...)
 }
 
 // RevisionKey returns the CAS singleton key for a table identified by

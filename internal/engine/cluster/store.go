@@ -614,6 +614,68 @@ func (t LPTransferTable) List() ([]*enginev1.LPTransferRecord, error) {
 	return out, iter.Error()
 }
 
+// RebalanceDrainTable persists RebalanceDrainRecord rows keyed by
+// shard_id. Lives on shard 0 alongside the other cluster-managed config
+// tables. The autonomous rebalancer's advisor reads the full table on
+// each tick (count is bounded by operator drain actions, typically
+// 0..few) and subtracts drained shards from the planner's input set.
+type RebalanceDrainTable struct{ S storage.Reader }
+
+func (t RebalanceDrainTable) Get(shardID uint64) (*enginev1.RebalanceDrainRecord, error) {
+	val, closer, err := t.S.Get(RebalanceDrainKey(shardID))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer closer.Close()
+	var rec enginev1.RebalanceDrainRecord
+	if err := proto.Unmarshal(val, &rec); err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (t RebalanceDrainTable) Put(b storage.Batch, rec *enginev1.RebalanceDrainRecord) error {
+	if rec.GetShardId() == 0 {
+		return errors.New("RebalanceDrainTable.Put: zero shard_id")
+	}
+	buf, err := proto.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return b.Set(RebalanceDrainKey(rec.GetShardId()), buf)
+}
+
+// Delete removes the row for shard_id. Delete-of-absent is a no-op.
+func (t RebalanceDrainTable) Delete(b storage.Batch, shardID uint64) error {
+	return b.Delete(RebalanceDrainKey(shardID))
+}
+
+// List returns every RebalanceDrainRecord in ascending shard_id order.
+func (t RebalanceDrainTable) List() ([]*enginev1.RebalanceDrainRecord, error) {
+	prefix := RebalanceDrainPrefix()
+	upper := prefixUpperBound(prefix)
+	iter, err := t.S.NewIter(prefix, upper)
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	var out []*enginev1.RebalanceDrainRecord
+	for ok := iter.First(); ok; ok = iter.Next() {
+		if !bytes.HasPrefix(iter.Key(), prefix) {
+			continue
+		}
+		var rec enginev1.RebalanceDrainRecord
+		if err := proto.Unmarshal(iter.Value(), &rec); err != nil {
+			return nil, err
+		}
+		out = append(out, &rec)
+	}
+	return out, iter.Error()
+}
+
 // prefixUpperBound is a local clone of keys.PrefixUpperBound to avoid an
 // import cycle (internal/storage/keys is for the partition codec).
 func prefixUpperBound(prefix []byte) []byte {

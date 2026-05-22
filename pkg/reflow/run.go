@@ -20,6 +20,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/cluster"
 	"github.com/twinfer/reflow/internal/engine/delivery"
+	"github.com/twinfer/reflow/internal/engine/rebalance"
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	"github.com/twinfer/reflow/internal/ingress"
@@ -137,6 +138,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	webhookSourceNotifier := cluster.NewTableNotifier()
 	secretNotifier := cluster.NewTableNotifier()
 	lpOwnersNotifier := cluster.NewTableNotifier()
+	rebalanceDrainNotifier := cluster.NewTableNotifier()
 
 	hcfg := engine.HostConfig{
 		NodeID:             cfg.Node.ID,
@@ -155,10 +157,18 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		HandlerSigner:      handlerSigner,
 		EagerStateMaxBytes: cfg.Handlers.EagerStateMaxBytes,
 		ClusterNotifiers: cluster.Notifiers{
-			EventSourceTable:   eventSourceNotifier,
-			WebhookSourceTable: webhookSourceNotifier,
-			SecretTable:        secretNotifier,
-			LPOwnersTable:      lpOwnersNotifier,
+			EventSourceTable:    eventSourceNotifier,
+			WebhookSourceTable:  webhookSourceNotifier,
+			SecretTable:         secretNotifier,
+			LPOwnersTable:       lpOwnersNotifier,
+			RebalanceDrainTable: rebalanceDrainNotifier,
+		},
+		Rebalance: rebalance.Config{
+			Mode:                       cfg.Rebalance.Mode,
+			MaxConcurrentTransfers:     cfg.Rebalance.MaxConcurrentTransfers,
+			MinSecondsBetweenTransfers: cfg.Rebalance.MinSecondsBetweenTransfers,
+			SkewEngagePct:              cfg.Rebalance.SkewEngagePct,
+			SkewDisengagePct:           cfg.Rebalance.SkewDisengagePct,
 		},
 		OnSnapshotPersisted: func(shardID uint64) {
 			ch, ok := snapshotTriggers[shardID]
@@ -569,6 +579,13 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		Source:     &engine.HostSnapshotSource{Host: eh},
 		Log:        logger,
 		ScratchDir: cfg.Snapshot.ScratchDir,
+		Rebalance: rebalance.Config{
+			Mode:                       cfg.Rebalance.Mode,
+			MaxConcurrentTransfers:     cfg.Rebalance.MaxConcurrentTransfers,
+			MinSecondsBetweenTransfers: cfg.Rebalance.MinSecondsBetweenTransfers,
+			SkewEngagePct:              cfg.Rebalance.SkewEngagePct,
+			SkewDisengagePct:           cfg.Rebalance.SkewDisengagePct,
+		},
 	})
 	if cErr != nil {
 		if snapshotCxl != nil {
@@ -976,6 +993,21 @@ func withDefaults(cfg Config) Config {
 	// so `reflow.Run` works out of the box.
 	if !cfg.Ingress.Disabled && cfg.Ingress.Addr == "" {
 		cfg.Ingress.Addr = ":8080"
+	}
+	if cfg.Rebalance.Mode == "" {
+		cfg.Rebalance.Mode = RebalanceModeOff
+	}
+	if cfg.Rebalance.MaxConcurrentTransfers == 0 {
+		cfg.Rebalance.MaxConcurrentTransfers = 1
+	}
+	if cfg.Rebalance.MinSecondsBetweenTransfers == 0 {
+		cfg.Rebalance.MinSecondsBetweenTransfers = 60
+	}
+	if cfg.Rebalance.SkewEngagePct == 0 {
+		cfg.Rebalance.SkewEngagePct = 15
+	}
+	if cfg.Rebalance.SkewDisengagePct == 0 {
+		cfg.Rebalance.SkewDisengagePct = 8
 	}
 	return cfg
 }

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/admin"
+	"github.com/twinfer/reflow/internal/config"
 	"github.com/twinfer/reflow/internal/loadgen"
 	"github.com/twinfer/reflow/pkg/handler"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -57,9 +57,9 @@ func TestSDKServer_E2E_HTTP2(t *testing.T) {
 	leaderRig := findMetadataLeader(t, cluster)
 	host := leaderRig.Host
 
-	asrv, err := admin.NewServer(admin.Config{Host: host, Runner: host.MetadataRunner()})
+	asrv, err := config.NewServer(config.Config{Host: host, Runner: host.MetadataRunner()})
 	if err != nil {
-		t.Fatalf("admin.NewServer: %v", err)
+		t.Fatalf("config.NewServer: %v", err)
 	}
 
 	regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)

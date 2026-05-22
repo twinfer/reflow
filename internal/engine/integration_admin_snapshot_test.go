@@ -14,16 +14,16 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/admin"
 	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflow/internal/clusterctl"
 	"github.com/twinfer/reflow/internal/connectserver"
 	"github.com/twinfer/reflow/internal/engine"
 	enginesnap "github.com/twinfer/reflow/internal/engine/snapshot"
 
 	"github.com/twinfer/reflow/internal/pki"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
-	adminv1 "github.com/twinfer/reflow/proto/adminv1"
-	"github.com/twinfer/reflow/proto/adminv1/adminv1connect"
+	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
+	"github.com/twinfer/reflow/proto/clusterctlv1/clusterctlv1connect"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	"gocloud.dev/blob"
 )
@@ -52,12 +52,12 @@ func (a *adminRig) close() {
 // caring about authentication.
 func startAdminInsecure(t *testing.T, r *nodeRig) *adminRig {
 	t.Helper()
-	srv, err := admin.NewServer(admin.Config{
+	srv, err := clusterctl.NewServer(clusterctl.Config{
 		Host:   r.Host,
 		Runner: r.Host.MetadataRunner(),
 	})
 	if err != nil {
-		t.Fatalf("admin.NewServer: %v", err)
+		t.Fatalf("clusterctl.NewServer: %v", err)
 	}
 	path, h := srv.NewHandler()
 	cs, err := connectserver.New(context.Background(), connectserver.Config{
@@ -71,13 +71,13 @@ func startAdminInsecure(t *testing.T, r *nodeRig) *adminRig {
 
 // dialInsecureAdmin opens an h2c Connect client to addr and returns the
 // typed client + a cleanup.
-func dialInsecureAdmin(t *testing.T, addr string) (adminv1connect.AdminClient, func()) {
+func dialInsecureAdmin(t *testing.T, addr string) (clusterctlv1connect.ClusterCtlClient, func()) {
 	t.Helper()
 	tr := &http.Transport{Protocols: new(http.Protocols)}
 	tr.Protocols.SetUnencryptedHTTP2(true)
 	tr.Protocols.SetHTTP1(false)
 	hc := &http.Client{Transport: tr}
-	cli := adminv1connect.NewAdminClient(hc, "http://"+addr)
+	cli := clusterctlv1connect.NewClusterCtlClient(hc, "http://"+addr)
 	return cli, func() { tr.CloseIdleConnections() }
 }
 
@@ -132,7 +132,7 @@ func TestAdminListNodes(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	resp, err := cli.ListNodes(ctx, connect.NewRequest(&adminv1.ListNodesRequest{}))
+	resp, err := cli.ListNodes(ctx, connect.NewRequest(&clusterctlv1.ListNodesRequest{}))
 	if err != nil {
 		t.Fatalf("ListNodes: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestAdminListPartitions(t *testing.T) {
 	defer cancel()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := cli.ListPartitions(ctx, connect.NewRequest(&adminv1.ListPartitionsRequest{}))
+		resp, err := cli.ListPartitions(ctx, connect.NewRequest(&clusterctlv1.ListPartitionsRequest{}))
 		if err == nil && resp.Msg.GetTable() != nil && len(resp.Msg.GetTable().GetShards()) == 3 {
 			return
 		}
@@ -203,7 +203,7 @@ func TestAdminRemoveNode_LogicallyEvicts(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := cli.RemoveNode(ctx, connect.NewRequest(&adminv1.RemoveNodeRequest{NodeId: victim})); err != nil {
+	if _, err := cli.RemoveNode(ctx, connect.NewRequest(&clusterctlv1.RemoveNodeRequest{NodeId: victim})); err != nil {
 		t.Fatalf("RemoveNode: %v", err)
 	}
 
@@ -246,7 +246,7 @@ func TestAdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	dir := t.TempDir()
 	tlsSpec, opCert, opKey, caFile := writeAdminTLSFixtures(t, dir)
 
-	srv, err := admin.NewServer(admin.Config{
+	srv, err := clusterctl.NewServer(clusterctl.Config{
 		Host:   leader.Host,
 		Runner: leader.Host.MetadataRunner(),
 	})
@@ -312,10 +312,10 @@ func TestAdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	badTr.Protocols.SetHTTP2(true)
 	badTr.Protocols.SetHTTP1(false)
 	defer badTr.CloseIdleConnections()
-	badCli := adminv1connect.NewAdminClient(&http.Client{Transport: badTr}, "https://"+cs.Addr())
+	badCli := clusterctlv1connect.NewClusterCtlClient(&http.Client{Transport: badTr}, "https://"+cs.Addr())
 	badCtx, badCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer badCancel()
-	if _, err := badCli.ListNodes(badCtx, connect.NewRequest(&adminv1.ListNodesRequest{})); err == nil {
+	if _, err := badCli.ListNodes(badCtx, connect.NewRequest(&clusterctlv1.ListNodesRequest{})); err == nil {
 		t.Fatal("expected ListNodes to fail when client presents no cert; got nil")
 	}
 
@@ -342,10 +342,10 @@ func TestAdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	tr.Protocols.SetHTTP2(true)
 	tr.Protocols.SetHTTP1(false)
 	defer tr.CloseIdleConnections()
-	cli := adminv1connect.NewAdminClient(&http.Client{Transport: tr}, "https://"+cs.Addr())
+	cli := clusterctlv1connect.NewClusterCtlClient(&http.Client{Transport: tr}, "https://"+cs.Addr())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := cli.ListNodes(ctx, connect.NewRequest(&adminv1.ListNodesRequest{})); err != nil {
+	if _, err := cli.ListNodes(ctx, connect.NewRequest(&clusterctlv1.ListNodesRequest{})); err != nil {
 		t.Fatalf("operator-authenticated ListNodes failed: %v", err)
 	}
 }
@@ -453,13 +453,13 @@ func TestAdminDeleteSnapshot(t *testing.T) {
 		t.Fatalf("SaveDir 200: %v", err)
 	}
 
-	srv, err := admin.NewServer(admin.Config{
+	srv, err := clusterctl.NewServer(clusterctl.Config{
 		Host:   leader.Host,
 		Runner: leader.Host.MetadataRunner(),
 		Repo:   repo,
 	})
 	if err != nil {
-		t.Fatalf("admin.NewServer: %v", err)
+		t.Fatalf("clusterctl.NewServer: %v", err)
 	}
 	path, h := srv.NewHandler()
 	cs, err := connectserver.New(context.Background(), connectserver.Config{
@@ -473,13 +473,13 @@ func TestAdminDeleteSnapshot(t *testing.T) {
 	cli, done := dialInsecureAdmin(t, cs.Addr())
 	defer done()
 
-	if _, err := cli.DeleteSnapshot(ctx, connect.NewRequest(&adminv1.DeleteSnapshotRequest{
+	if _, err := cli.DeleteSnapshot(ctx, connect.NewRequest(&clusterctlv1.DeleteSnapshotRequest{
 		ShardId: 1, Index: 100,
 	})); err != nil {
 		t.Fatalf("DeleteSnapshot: %v", err)
 	}
 
-	resp, err := cli.ListSnapshots(ctx, connect.NewRequest(&adminv1.ListSnapshotsRequest{ShardId: 1}))
+	resp, err := cli.ListSnapshots(ctx, connect.NewRequest(&clusterctlv1.ListSnapshotsRequest{ShardId: 1}))
 	if err != nil {
 		t.Fatalf("ListSnapshots: %v", err)
 	}
@@ -488,7 +488,7 @@ func TestAdminDeleteSnapshot(t *testing.T) {
 		t.Fatalf("after delete: %+v; want only index=200", got)
 	}
 
-	if _, err := cli.DeleteSnapshot(ctx, connect.NewRequest(&adminv1.DeleteSnapshotRequest{
+	if _, err := cli.DeleteSnapshot(ctx, connect.NewRequest(&clusterctlv1.DeleteSnapshotRequest{
 		ShardId: 1, Index: 100,
 	})); err != nil {
 		t.Fatalf("second DeleteSnapshot: %v", err)
@@ -497,7 +497,7 @@ func TestAdminDeleteSnapshot(t *testing.T) {
 
 // TestAdminSnapshotRPCs_RejectFollower verifies CreateSnapshot and
 // DeleteSnapshot reject a non-leader caller with CodeUnavailable so
-// pkg/adminclient.CallWithLeaderRedirect can chase the leader the same
+// pkg/reflowclient.CallWithLeaderRedirect can chase the leader the same
 // way it does for the other mutating RPCs. The LeaderHint *detail* is
 // gossip-driven and best-effort; the test rig doesn't publish admin
 // endpoints over gossip, so we only assert the code here.
@@ -541,10 +541,10 @@ func TestAdminSnapshotRPCs_RejectFollower(t *testing.T) {
 		}
 	}
 
-	_, cErr := cli.CreateSnapshot(ctx, connect.NewRequest(&adminv1.CreateSnapshotRequest{ShardId: 1}))
+	_, cErr := cli.CreateSnapshot(ctx, connect.NewRequest(&clusterctlv1.CreateSnapshotRequest{ShardId: 1}))
 	expectUnavailable("CreateSnapshot", cErr)
 
-	_, dErr := cli.DeleteSnapshot(ctx, connect.NewRequest(&adminv1.DeleteSnapshotRequest{
+	_, dErr := cli.DeleteSnapshot(ctx, connect.NewRequest(&clusterctlv1.DeleteSnapshotRequest{
 		ShardId: 1, Index: 1,
 	}))
 	expectUnavailable("DeleteSnapshot", dErr)

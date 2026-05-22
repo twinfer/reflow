@@ -123,8 +123,8 @@ func newJWTOnlyMiddleware(t *testing.T, cfgs []OIDCIssuerConfig) func(http.Handl
 }
 
 // jwtFriendlyPolicy writes a permissive policy that allows the
-// principal kind "user/*" through /reflow.admin.v1.Admin/ListNodes so
-// the JWT path can return 200.
+// principal kind "user/*" through /reflow.clusterctl.v1.ClusterCtl/ListNodes
+// so the JWT path can return 200.
 func jwtFriendlyPolicy(t *testing.T) string {
 	t.Helper()
 	body := `{
@@ -134,9 +134,9 @@ func jwtFriendlyPolicy(t *testing.T) string {
 	      "request": {"paths": ["/reflow.ingress.v1.Ingress/*"]}
 	    },
 	    {
-	      "name": "admin-user",
+	      "name": "clusterctl-user",
 	      "request": {
-	        "paths": ["/reflow.admin.v1.Admin/*"],
+	        "paths": ["/reflow.clusterctl.v1.ClusterCtl/*"],
 	        "headers": [{"key": "x-reflow-principal", "values": ["user/*", "operator/*"]}]
 	      }
 	    }
@@ -186,7 +186,7 @@ func TestJWTAuthFunc_ValidTokenStampsPrincipal(t *testing.T) {
 
 	var got Principal
 	token := kit.mint(t, kit.defaultClaims())
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	mw(captureNext(&got)).ServeHTTP(w, r)
@@ -209,7 +209,7 @@ func TestJWTAuthFunc_ExpiredTokenRejected(t *testing.T) {
 	}})
 	claims := kit.defaultClaims()
 	claims["exp"] = time.Now().Add(-1 * time.Minute).Unix()
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.Header.Set("Authorization", "Bearer "+kit.mint(t, claims))
 	w := httptest.NewRecorder()
 	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
@@ -226,7 +226,7 @@ func TestJWTAuthFunc_WrongAudienceRejected(t *testing.T) {
 	}})
 	claims := kit.defaultClaims()
 	claims["aud"] = []string{"other-service"}
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.Header.Set("Authorization", "Bearer "+kit.mint(t, claims))
 	w := httptest.NewRecorder()
 	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
@@ -243,7 +243,7 @@ func TestJWTAuthFunc_WrongIssuerRejected(t *testing.T) {
 	}})
 	claims := kit.defaultClaims()
 	claims["iss"] = "https://other-issuer.example.com"
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.Header.Set("Authorization", "Bearer "+kit.mint(t, claims))
 	w := httptest.NewRecorder()
 	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
@@ -259,7 +259,7 @@ func TestJWTAuthFunc_MissingPrincipalClaimRejected(t *testing.T) {
 		Audiences:      []string{"reflow"},
 		PrincipalClaim: "email", // not present in the minted token
 	}})
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.Header.Set("Authorization", "Bearer "+kit.mint(t, kit.defaultClaims()))
 	w := httptest.NewRecorder()
 	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
@@ -281,7 +281,7 @@ func TestJWTAuthFunc_JWKSFileStaticPath(t *testing.T) {
 		PrincipalKind:  "user",
 	}})
 	var got Principal
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.Header.Set("Authorization", "Bearer "+kit.mint(t, kit.defaultClaims()))
 	w := httptest.NewRecorder()
 	mw(captureNext(&got)).ServeHTTP(w, r)
@@ -303,7 +303,7 @@ func TestJWTAuthFunc_MultiIssuerRoutedByIssClaim(t *testing.T) {
 
 	for _, kit := range []*jwtTestKit{a, b} {
 		var got Principal
-		r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+		r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 		r.Header.Set("Authorization", "Bearer "+kit.mint(t, kit.defaultClaims()))
 		w := httptest.NewRecorder()
 		mw(captureNext(&got)).ServeHTTP(w, r)
@@ -329,7 +329,7 @@ func TestJWTAuthFunc_MTLSWinsOverBearer(t *testing.T) {
 	// user/alice. mTLS must win — Principal.Kind = operator.
 	u, _ := url.Parse("spiffe://reflow.local/operator/alice")
 	leaf := &x509.Certificate{Subject: pkix.Name{CommonName: "alice"}, URIs: []*url.URL{u}}
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf}}}
 	r.Header.Set("Authorization", "Bearer "+kit.mint(t, kit.defaultClaims()))
 
@@ -353,7 +353,7 @@ func TestJWTAuthFunc_RequiredClaimMismatch(t *testing.T) {
 	}})
 	claims := kit.defaultClaims()
 	claims["tenant"] = "globex"
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.Header.Set("Authorization", "Bearer "+kit.mint(t, claims))
 	w := httptest.NewRecorder()
 	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
@@ -375,7 +375,7 @@ func TestJWTAuthFunc_AllowedClaimsCopied(t *testing.T) {
 	claims["tenant"] = "acme"
 	claims["email"] = "alice@example.com"
 	claims["leaked"] = "secret"
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.Header.Set("Authorization", "Bearer "+kit.mint(t, claims))
 	var got Principal
 	w := httptest.NewRecorder()
@@ -402,7 +402,7 @@ func TestJWTAuthFunc_KindClaimOverride(t *testing.T) {
 	}})
 	claims := kit.defaultClaims()
 	claims["role"] = "operator"
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.Header.Set("Authorization", "Bearer "+kit.mint(t, claims))
 	var got Principal
 	w := httptest.NewRecorder()
@@ -425,7 +425,7 @@ func TestJWTAuthFunc_SubjectSanitized(t *testing.T) {
 	}})
 	claims := kit.defaultClaims()
 	claims["sub"] = "auth0|provider/evil"
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.Header.Set("Authorization", "Bearer "+kit.mint(t, claims))
 	var got Principal
 	w := httptest.NewRecorder()
@@ -451,7 +451,7 @@ func TestJWTAuthFunc_UnknownIssuerRejected(t *testing.T) {
 		Audiences: []string{"reflow"},
 	}})
 	// Mint a token from "other" issuer that isn't configured.
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.Header.Set("Authorization", "Bearer "+other.mint(t, other.defaultClaims()))
 	w := httptest.NewRecorder()
 	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
@@ -466,7 +466,7 @@ func TestJWTAuthFunc_MalformedTokenRejected(t *testing.T) {
 		IssuerURL: kit.issuer,
 		Audiences: []string{"reflow"},
 	}})
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.Header.Set("Authorization", "Bearer not.a.jwt")
 	w := httptest.NewRecorder()
 	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
@@ -591,7 +591,7 @@ func TestJWTAuthFunc_ConnectErrorEncodingOnDenial(t *testing.T) {
 		IssuerURL: kit.issuer,
 		Audiences: []string{"reflow"},
 	}})
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.Header.Set("Authorization", "Bearer not.a.jwt")
 	r.Header.Set("Content-Type", "application/proto")
 	w := httptest.NewRecorder()
@@ -613,7 +613,7 @@ func TestJWTAuthFunc_WWWAuthenticateOnInvalidToken(t *testing.T) {
 		IssuerURL: kit.issuer,
 		Audiences: []string{"reflow"},
 	}})
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.Header.Set("Authorization", "Bearer not.a.jwt")
 	w := httptest.NewRecorder()
 	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
@@ -635,7 +635,7 @@ func TestJWTAuthFunc_WWWAuthenticateOnAnonymousDenial(t *testing.T) {
 		IssuerURL: kit.issuer,
 		Audiences: []string{"reflow"},
 	}})
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	// No Authorization header — anonymous.
 	w := httptest.NewRecorder()
 	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)

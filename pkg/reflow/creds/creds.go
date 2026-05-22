@@ -89,7 +89,7 @@ type ListenerCreds struct {
 	// only drivers.
 	ServerTLSConfig *tls.Config
 	// ClientTLSConfig is the *tls.Config for dial-out HTTP/2 clients
-	// (pkg/adminclient, pkg/ingressclient, internal/engine/delivery
+	// (pkg/reflowclient, pkg/ingressclient, internal/engine/delivery
 	// Client). Mirror of ServerTLSConfig's client side. Nil for
 	// insecure / PerRPC-only.
 	ClientTLSConfig *tls.Config

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/admin"
+	"github.com/twinfer/reflow/internal/config"
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/loadgen"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -47,9 +47,9 @@ func TestWireDispatch_HTTP2_PromiseXshard_Conflict(t *testing.T) {
 	leader := findMetadataLeader(t, cluster)
 	host := leader.Host
 
-	srv, err := admin.NewServer(admin.Config{Host: host, Runner: host.MetadataRunner()})
+	srv, err := config.NewServer(config.Config{Host: host, Runner: host.MetadataRunner()})
 	if err != nil {
-		t.Fatalf("admin.NewServer: %v", err)
+		t.Fatalf("config.NewServer: %v", err)
 	}
 	regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer regCancel()

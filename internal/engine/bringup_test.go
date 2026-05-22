@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/admin"
 	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflow/internal/config"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/pkg/handler"
@@ -143,9 +143,9 @@ func registerDeploymentURL(t *testing.T, h *engine.Host, url string) {
 // budget=0 → engine default.
 func registerDeploymentURLWithBudget(t *testing.T, h *engine.Host, url string, budget uint32) {
 	t.Helper()
-	asrv, err := admin.NewServer(admin.Config{Host: h, Runner: h.MetadataRunner()})
+	asrv, err := config.NewServer(config.Config{Host: h, Runner: h.MetadataRunner()})
 	if err != nil {
-		t.Fatalf("admin.NewServer: %v", err)
+		t.Fatalf("config.NewServer: %v", err)
 	}
 	regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer regCancel()

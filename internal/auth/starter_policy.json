@@ -40,20 +40,29 @@
       }
     },
     {
-      "name": "admin_operator",
+      "name": "clusterctl_operator",
       "request": {
-        "paths": ["/reflow.admin.v1.Admin/*"],
+        "paths": ["/reflow.clusterctl.v1.ClusterCtl/*"],
         "headers": [
           { "key": "x-reflow-principal", "values": ["operator/*"] }
         ]
       }
     },
     {
-      "name": "admin_node_selfjoin",
+      "name": "clusterctl_node_selfjoin",
       "request": {
-        "paths": ["/reflow.admin.v1.Admin/SelfJoin"],
+        "paths": ["/reflow.clusterctl.v1.ClusterCtl/SelfJoin"],
         "headers": [
           { "key": "x-reflow-principal", "values": ["node/*"] }
+        ]
+      }
+    },
+    {
+      "name": "config_operator",
+      "request": {
+        "paths": ["/reflow.config.v1.Config/*"],
+        "headers": [
+          { "key": "x-reflow-principal", "values": ["operator/*"] }
         ]
       }
     }

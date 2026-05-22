@@ -24,8 +24,8 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
 
-	"github.com/twinfer/reflow/internal/admin"
 	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflow/internal/config"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/internal/ingress/eventsource"
@@ -132,9 +132,9 @@ func bringUpKafkaTest(t *testing.T, svc, hname string, hf handler.Handler) *kafk
 	go func() { _ = hsrv.Serve(ln) }()
 	t.Cleanup(func() { _ = hsrv.Shutdown(); _ = ln.Close() })
 
-	asrv, err := admin.NewServer(admin.Config{Host: h, Runner: h.MetadataRunner()})
+	asrv, err := config.NewServer(config.Config{Host: h, Runner: h.MetadataRunner()})
 	if err != nil {
-		t.Fatalf("admin.NewServer: %v", err)
+		t.Fatalf("config.NewServer: %v", err)
 	}
 	regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer regCancel()

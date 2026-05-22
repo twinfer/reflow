@@ -31,11 +31,14 @@ func TestPolicy_StarterAllowMatrix(t *testing.T) {
 	}{
 		{"ingress-anonymous-open", "/reflow.ingress.v1.Ingress/SubmitInvocation", anon, true},
 		{"ingress-operator-also-allowed", "/reflow.ingress.v1.Ingress/SubmitInvocation", operator, true},
-		{"admin-operator", "/reflow.admin.v1.Admin/ListNodes", operator, true},
-		{"admin-node-denied", "/reflow.admin.v1.Admin/ListNodes", node, false},
-		{"admin-anonymous-denied", "/reflow.admin.v1.Admin/ListNodes", anon, false},
-		{"admin-selfjoin-node-allowed", "/reflow.admin.v1.Admin/SelfJoin", node, true},
-		{"admin-selfjoin-operator-also-allowed", "/reflow.admin.v1.Admin/SelfJoin", operator, true},
+		{"clusterctl-operator", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", operator, true},
+		{"clusterctl-node-denied", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", node, false},
+		{"clusterctl-anonymous-denied", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", anon, false},
+		{"clusterctl-selfjoin-node-allowed", "/reflow.clusterctl.v1.ClusterCtl/SelfJoin", node, true},
+		{"clusterctl-selfjoin-operator-also-allowed", "/reflow.clusterctl.v1.ClusterCtl/SelfJoin", operator, true},
+		{"config-operator", "/reflow.config.v1.Config/ListSecrets", operator, true},
+		{"config-node-denied", "/reflow.config.v1.Config/ListSecrets", node, false},
+		{"config-anonymous-denied", "/reflow.config.v1.Config/ListSecrets", anon, false},
 		{"delivery-node", "/reflow.delivery.v1.Delivery/Deliver", node, true},
 		{"delivery-operator-denied", "/reflow.delivery.v1.Delivery/Deliver", operator, false},
 	}
@@ -84,7 +87,7 @@ func TestHTTPMiddleware_StampsPrincipalFromTLS(t *testing.T) {
 		URIs:    []*url.URL{u},
 	}
 
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.TLS = &tls.ConnectionState{
 		VerifiedChains: [][]*x509.Certificate{{leaf}},
 	}
@@ -106,7 +109,7 @@ func TestHTTPMiddleware_StampsPrincipalFromTLS(t *testing.T) {
 }
 
 // TestHTTPMiddleware_DeniesUnauthorizedPrincipal: node/7 hitting
-// /Admin/ListNodes must produce CodePermissionDenied (HTTP 403 fallback
+// /ClusterCtl/ListNodes must produce CodePermissionDenied (HTTP 403 fallback
 // since the test request is not a Connect-shaped POST).
 func TestHTTPMiddleware_DeniesUnauthorizedPrincipal(t *testing.T) {
 	td := "reflow.local"
@@ -118,7 +121,7 @@ func TestHTTPMiddleware_DeniesUnauthorizedPrincipal(t *testing.T) {
 	})
 	u, _ := url.Parse("spiffe://" + td + "/node/7")
 	leaf := &x509.Certificate{URIs: []*url.URL{u}}
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf}}}
 	w := httptest.NewRecorder()
 	mw(next).ServeHTTP(w, r)
@@ -148,7 +151,7 @@ func TestHTTPMiddleware_AllowsAnonymousIngress(t *testing.T) {
 }
 
 // TestHTTPMiddleware_DeniesAnonymousOnGuardedPath: anonymous principal
-// hitting /Admin/ListNodes must produce CodeUnauthenticated (HTTP 401).
+// hitting /ClusterCtl/ListNodes must produce CodeUnauthenticated (HTTP 401).
 // The split between 401 (anonymous) and 403 (known-but-denied) lets
 // monitoring separate "no client cert presented" from "auth-config
 // rejects principal X".
@@ -159,7 +162,7 @@ func TestHTTPMiddleware_DeniesAnonymousOnGuardedPath(t *testing.T) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	})
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	// No TLS, no leaf — caller is anonymous.
 	w := httptest.NewRecorder()
 	mw(next).ServeHTTP(w, r)
@@ -179,7 +182,7 @@ func TestHTTPMiddleware_DeniesAnonymousOnGuardedPath(t *testing.T) {
 func TestHTTPMiddleware_NonSPIFFELeafTreatedAnonymous(t *testing.T) {
 	mw := newTestMW(t, "reflow.local")
 	leaf := &x509.Certificate{Subject: pkix.Name{CommonName: "noop"}}
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf}}}
 	w := httptest.NewRecorder()
 	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
@@ -209,7 +212,7 @@ func TestHTTPMiddleware_MalformedSPIFFELeafRejected(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			mw := newTestMW(t, "reflow.local")
 			leaf := &x509.Certificate{URIs: uris}
-			r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+			r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 			r.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf}}}
 			w := httptest.NewRecorder()
 			mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
@@ -225,7 +228,7 @@ func TestHTTPMiddleware_MalformedSPIFFELeafRejected(t *testing.T) {
 // plain HTTP 401/403. Verified by content-type and body shape.
 func TestHTTPMiddleware_ConnectErrorEncoding(t *testing.T) {
 	mw := newTestMW(t, "reflow.local")
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	// Connect unary content-type marks this as a Connect RPC request.
 	r.Header.Set("Content-Type", "application/proto")
 	w := httptest.NewRecorder()
@@ -245,7 +248,7 @@ func TestHTTPMiddleware_ConnectErrorEncoding(t *testing.T) {
 // the client could present.
 func TestHTTPMiddleware_NoWWWAuthenticateWhenOIDCDisabled(t *testing.T) {
 	mw := newTestMW(t, "reflow.local")
-	r := httptest.NewRequest("POST", "/reflow.admin.v1.Admin/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	w := httptest.NewRecorder()
 	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
 	if w.Result().StatusCode != http.StatusUnauthorized {

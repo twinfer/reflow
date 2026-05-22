@@ -29,9 +29,9 @@ import (
 // leader's admin port via gossip-discovered endpoint) requires admin
 // listeners + mTLS to exercise the SPIFFE authorization check, which
 // loadgen.NewCluster does not currently wire up. The SPIFFE check
-// itself is unit-tested in internal/admin/selfjoin_test.go
+// itself is unit-tested in internal/clusterctl/selfjoin_test.go
 // (TestCheckSelfJoinPrincipal_*); the redirect plumbing is
-// unit-tested in pkg/adminclient/redirect_test.go
+// unit-tested in pkg/reflowclient/redirect_test.go
 // (TestCallWithLeaderRedirect_*).
 //
 // The test proves the joiner is a real cluster member on every shard:
@@ -351,8 +351,8 @@ func awaitPartitionMembership(ctx context.Context, host *engine.Host, newID uint
 }
 
 // nextStepID returns one greater than the max step_id already pending
-// for shardID — mirrors the admin AddNode helper that lives in
-// internal/admin/server.go.
+// for shardID — mirrors the ClusterCtl AddNode helper that lives in
+// internal/clusterctl/server.go.
 func nextStepID(pending []*enginev1.RebalanceStep, shardID uint64) uint64 {
 	var highest uint64
 	for _, p := range pending {

@@ -10,9 +10,8 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	adminv1 "github.com/twinfer/reflow/proto/adminv1"
-
-	"github.com/twinfer/reflow/pkg/adminclient"
+	"github.com/twinfer/reflow/pkg/reflowclient"
+	configv1 "github.com/twinfer/reflow/proto/configv1"
 )
 
 // cmdGet fetches a single cluster-managed record and prints it in the
@@ -48,7 +47,7 @@ func cmdGet(ctx context.Context, args []string) error {
 	if kind == "" || name == "" {
 		return errors.New("usage: reflowd cluster get <kind> <name>")
 	}
-	return tls.withClient(ctx, func(cli *adminclient.Client) error {
+	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
 		switch kind {
 		case "EventSource":
 			return getEventSource(ctx, cli, name)
@@ -71,8 +70,8 @@ func normalizeKind(s string) string {
 	}
 }
 
-func getEventSource(ctx context.Context, cli *adminclient.Client, name string) error {
-	resp, err := cli.Admin.ListEventSources(ctx, connect.NewRequest(&adminv1.ListEventSourcesRequest{}))
+func getEventSource(ctx context.Context, cli *reflowclient.Client, name string) error {
+	resp, err := cli.Config.ListEventSources(ctx, connect.NewRequest(&configv1.ListEventSourcesRequest{}))
 	if err != nil {
 		return err
 	}
@@ -84,8 +83,8 @@ func getEventSource(ctx context.Context, cli *adminclient.Client, name string) e
 	return fmt.Errorf("EventSource %q: not found", name)
 }
 
-func getWebhookSource(ctx context.Context, cli *adminclient.Client, name string) error {
-	resp, err := cli.Admin.ListWebhookSources(ctx, connect.NewRequest(&adminv1.ListWebhookSourcesRequest{}))
+func getWebhookSource(ctx context.Context, cli *reflowclient.Client, name string) error {
+	resp, err := cli.Config.ListWebhookSources(ctx, connect.NewRequest(&configv1.ListWebhookSourcesRequest{}))
 	if err != nil {
 		return err
 	}

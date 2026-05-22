@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/admin"
 	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflow/internal/config"
 	"github.com/twinfer/reflow/internal/connectserver"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/ingress"
@@ -70,9 +70,9 @@ func bringUp(t *testing.T, reg *handler.Registry) string {
 			_ = ln.Close()
 		})
 
-		asrv, err := admin.NewServer(admin.Config{Host: h, Runner: h.MetadataRunner()})
+		asrv, err := config.NewServer(config.Config{Host: h, Runner: h.MetadataRunner()})
 		if err != nil {
-			t.Fatalf("admin.NewServer: %v", err)
+			t.Fatalf("config.NewServer: %v", err)
 		}
 		regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer regCancel()
@@ -384,9 +384,9 @@ func bringUpWithConfig(t *testing.T, reg *handler.Registry, cfg httpingress.Conf
 			_ = srv.Shutdown()
 			_ = ln.Close()
 		})
-		asrv, err := admin.NewServer(admin.Config{Host: h, Runner: h.MetadataRunner()})
+		asrv, err := config.NewServer(config.Config{Host: h, Runner: h.MetadataRunner()})
 		if err != nil {
-			t.Fatalf("admin.NewServer: %v", err)
+			t.Fatalf("config.NewServer: %v", err)
 		}
 		regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer regCancel()

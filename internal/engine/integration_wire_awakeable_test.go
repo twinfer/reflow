@@ -14,7 +14,7 @@ import (
 	connect "connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/twinfer/reflow/internal/admin"
+	"github.com/twinfer/reflow/internal/config"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/loadgen"
@@ -193,12 +193,12 @@ func TestWireDispatch_HTTP2_Awakeable(t *testing.T) {
 	leaderRig := findMetadataLeader(t, cluster)
 	host := leaderRig.Host
 
-	srv, err := admin.NewServer(admin.Config{
+	srv, err := config.NewServer(config.Config{
 		Host:   host,
 		Runner: host.MetadataRunner(),
 	})
 	if err != nil {
-		t.Fatalf("admin.NewServer: %v", err)
+		t.Fatalf("config.NewServer: %v", err)
 	}
 
 	regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)

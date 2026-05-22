@@ -10,10 +10,8 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	adminv1 "github.com/twinfer/reflow/proto/adminv1"
-	"github.com/twinfer/reflow/proto/adminv1/adminv1connect"
-
-	"github.com/twinfer/reflow/pkg/adminclient"
+	"github.com/twinfer/reflow/pkg/reflowclient"
+	configv1 "github.com/twinfer/reflow/proto/configv1"
 )
 
 // cmdEventSources routes `reflowd cluster eventsources <subcmd>`.
@@ -48,8 +46,8 @@ func cmdEventSourcesList(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return tls.withClient(ctx, func(cli *adminclient.Client) error {
-		resp, err := cli.Admin.ListEventSources(ctx, connect.NewRequest(&adminv1.ListEventSourcesRequest{}))
+	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
+		resp, err := cli.Config.ListEventSources(ctx, connect.NewRequest(&configv1.ListEventSourcesRequest{}))
 		if err != nil {
 			return err
 		}
@@ -72,16 +70,16 @@ func cmdEventSourcesDelete(ctx context.Context, args []string) error {
 	if *name == "" {
 		return errors.New("--name is required")
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1connect.AdminClient) error {
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
 		// Read-then-write CAS round-trip: ListEventSources echoes the
 		// current table revision; Delete passes it so a concurrent
 		// operator-edit reproducibly conflicts. Same-shard linearizability
 		// guarantees this is consistent on the leader.
-		list, err := cli.ListEventSources(rctx, connect.NewRequest(&adminv1.ListEventSourcesRequest{}))
+		list, err := cli.Config.ListEventSources(rctx, connect.NewRequest(&configv1.ListEventSourcesRequest{}))
 		if err != nil {
 			return fmt.Errorf("read revision: %w", err)
 		}
-		resp, err := cli.DeleteEventSource(rctx, connect.NewRequest(&adminv1.DeleteEventSourceRequest{
+		resp, err := cli.Config.DeleteEventSource(rctx, connect.NewRequest(&configv1.DeleteEventSourceRequest{
 			Name:              *name,
 			IfTableRevisionEq: list.Msg.GetTableRevision(),
 		}))

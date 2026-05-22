@@ -21,9 +21,8 @@ import (
 	tinkkmsblob "github.com/twinfer/reflow/pkg/kms/blob"
 	_ "github.com/twinfer/reflow/pkg/kms/gcpkms"
 
-	"github.com/twinfer/reflow/pkg/adminclient"
-	adminv1 "github.com/twinfer/reflow/proto/adminv1"
-	"github.com/twinfer/reflow/proto/adminv1/adminv1connect"
+	"github.com/twinfer/reflow/pkg/reflowclient"
+	configv1 "github.com/twinfer/reflow/proto/configv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -119,12 +118,12 @@ func cmdCreateSecret(ctx context.Context, args []string) error {
 			},
 		},
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1connect.AdminClient) error {
-		list, err := cli.ListSecrets(rctx, connect.NewRequest(&adminv1.ListSecretsRequest{}))
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+		list, err := cli.Config.ListSecrets(rctx, connect.NewRequest(&configv1.ListSecretsRequest{}))
 		if err != nil {
 			return fmt.Errorf("read revision: %w", err)
 		}
-		resp, err := cli.UpsertSecret(rctx, connect.NewRequest(&adminv1.UpsertSecretRequest{
+		resp, err := cli.Config.UpsertSecret(rctx, connect.NewRequest(&configv1.UpsertSecretRequest{
 			Record:            rec,
 			IfTableRevisionEq: list.Msg.GetTableRevision(),
 		}))
@@ -152,12 +151,12 @@ func cmdDeleteSecret(ctx context.Context, args []string) error {
 	if *name == "" {
 		return errors.New("--name is required")
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1connect.AdminClient) error {
-		list, err := cli.ListSecrets(rctx, connect.NewRequest(&adminv1.ListSecretsRequest{}))
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+		list, err := cli.Config.ListSecrets(rctx, connect.NewRequest(&configv1.ListSecretsRequest{}))
 		if err != nil {
 			return fmt.Errorf("read revision: %w", err)
 		}
-		resp, err := cli.DeleteSecret(rctx, connect.NewRequest(&adminv1.DeleteSecretRequest{
+		resp, err := cli.Config.DeleteSecret(rctx, connect.NewRequest(&configv1.DeleteSecretRequest{
 			Name:              *name,
 			IfTableRevisionEq: list.Msg.GetTableRevision(),
 		}))
@@ -179,8 +178,8 @@ func cmdListSecrets(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return tls.withClient(ctx, func(cli *adminclient.Client) error {
-		resp, err := cli.Admin.ListSecrets(ctx, connect.NewRequest(&adminv1.ListSecretsRequest{}))
+	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
+		resp, err := cli.Config.ListSecrets(ctx, connect.NewRequest(&configv1.ListSecretsRequest{}))
 		if err != nil {
 			return err
 		}
@@ -285,12 +284,12 @@ func cmdUpsertWebhook(ctx context.Context, args []string) error {
 		Handler:    *handler,
 		ObjectKey:  *objectKey,
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1connect.AdminClient) error {
-		list, err := cli.ListWebhookSources(rctx, connect.NewRequest(&adminv1.ListWebhookSourcesRequest{}))
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+		list, err := cli.Config.ListWebhookSources(rctx, connect.NewRequest(&configv1.ListWebhookSourcesRequest{}))
 		if err != nil {
 			return fmt.Errorf("read revision: %w", err)
 		}
-		resp, err := cli.UpsertWebhookSource(rctx, connect.NewRequest(&adminv1.UpsertWebhookSourceRequest{
+		resp, err := cli.Config.UpsertWebhookSource(rctx, connect.NewRequest(&configv1.UpsertWebhookSourceRequest{
 			Record:            rec,
 			IfTableRevisionEq: list.Msg.GetTableRevision(),
 		}))

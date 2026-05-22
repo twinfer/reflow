@@ -1,9 +1,15 @@
-// Package adminclient is the Connect-based admin client shared by the
-// `reflowd cluster ...` CLI, the SelfJoin path in pkg/reflow/run.go, and
-// integration tests. Thin wrapper over the generated
-// adminv1connect.AdminClient with credential handling + connection
+// Package reflowclient is the Connect-based admin-port client shared
+// by the `reflowd cluster` / `reflowd config` CLIs, the SelfJoin path
+// in pkg/reflow/run.go, and integration tests. Thin wrapper over the
+// generated clusterctlv1connect.ClusterCtlClient and
+// configv1connect.ConfigClient with credential handling + connection
 // cleanup.
-package adminclient
+//
+// Both services live on the same admin listener today, so one Dial
+// yields one transport hosting both typed sub-clients. A future split
+// onto separate ports would change DialOptions but not the Client
+// shape — the Cluster + Config fields are stable.
+package reflowclient
 
 import (
 	"context"
@@ -15,7 +21,8 @@ import (
 	"strings"
 
 	"github.com/twinfer/reflow/pkg/reflow/creds"
-	"github.com/twinfer/reflow/proto/adminv1/adminv1connect"
+	"github.com/twinfer/reflow/proto/clusterctlv1/clusterctlv1connect"
+	"github.com/twinfer/reflow/proto/configv1/configv1connect"
 )
 
 // DialOptions configures Dial. Addr is host:port of the admin endpoint
@@ -26,10 +33,12 @@ type DialOptions struct {
 	Creds creds.Spec
 }
 
-// Client is the typed Connect admin client plus the underlying
-// transport so the caller can Close cleanly.
+// Client wraps both typed sub-clients (Cluster + Config) over a single
+// HTTP/2 transport plus credential lifecycle.
 type Client struct {
-	Admin   adminv1connect.AdminClient
+	Cluster clusterctlv1connect.ClusterCtlClient
+	Config  configv1connect.ConfigClient
+
 	addr    string
 	baseURL string
 	tr      *http.Transport
@@ -39,17 +48,17 @@ type Client struct {
 var _ io.Closer = (*Client)(nil)
 
 // Dial builds an HTTP/2 transport from opts.Creds and constructs the
-// Connect client. Insecure (zero spec) → h2c; TLS / tls_certprovider →
-// HTTPS over HTTP/2 with the spec's tls.Config. Connection setup is
-// lazy — the first RPC the caller issues is what surfaces an
-// unreachable address.
+// two Connect sub-clients. Insecure (zero spec) → h2c; TLS /
+// tls_certprovider → HTTPS over HTTP/2 with the spec's tls.Config.
+// Connection setup is lazy — the first RPC the caller issues is what
+// surfaces an unreachable address.
 func Dial(_ context.Context, opts DialOptions) (*Client, error) {
 	if opts.Addr == "" {
-		return nil, errors.New("adminclient: Addr required")
+		return nil, errors.New("reflowclient: Addr required")
 	}
 	lc, err := creds.Build(opts.Creds, nil)
 	if err != nil {
-		return nil, fmt.Errorf("adminclient: creds: %w", err)
+		return nil, fmt.Errorf("reflowclient: creds: %w", err)
 	}
 	tr := &http.Transport{Protocols: new(http.Protocols)}
 	var baseURL string
@@ -68,9 +77,10 @@ func Dial(_ context.Context, opts DialOptions) (*Client, error) {
 		baseURL = "https://" + opts.Addr
 	}
 	hc := &http.Client{Transport: tr}
-	cli := adminv1connect.NewAdminClient(hc, strings.TrimRight(baseURL, "/"))
+	trimmed := strings.TrimRight(baseURL, "/")
 	return &Client{
-		Admin:   cli,
+		Cluster: clusterctlv1connect.NewClusterCtlClient(hc, trimmed),
+		Config:  configv1connect.NewConfigClient(hc, trimmed),
 		addr:    opts.Addr,
 		baseURL: baseURL,
 		tr:      tr,
@@ -95,6 +105,6 @@ func (c *Client) Close() error {
 // Addr returns the dialed server address.
 func (c *Client) Addr() string { return c.addr }
 
-// BaseURL returns the base URL the Connect client points at (with the
+// BaseURL returns the base URL the Connect clients point at (with the
 // http:// or https:// scheme prefix derived from opts.Creds).
 func (c *Client) BaseURL() string { return c.baseURL }

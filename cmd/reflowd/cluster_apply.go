@@ -14,8 +14,8 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"sigs.k8s.io/yaml"
 
-	adminv1 "github.com/twinfer/reflow/proto/adminv1"
-	"github.com/twinfer/reflow/proto/adminv1/adminv1connect"
+	"github.com/twinfer/reflow/pkg/reflowclient"
+	configv1 "github.com/twinfer/reflow/proto/configv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -63,7 +63,7 @@ func cmdApply(ctx context.Context, args []string) error {
 	if len(docs) == 0 {
 		return errors.New("apply: no resources in input")
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1connect.AdminClient) error {
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
 		for i, doc := range docs {
 			if err := applyOneDoc(rctx, cli, doc); err != nil {
 				return fmt.Errorf("doc[%d] kind=%q name=%q: %w",
@@ -74,7 +74,7 @@ func cmdApply(ctx context.Context, args []string) error {
 	})
 }
 
-func applyOneDoc(ctx context.Context, cli adminv1connect.AdminClient, doc resourceDoc) error {
+func applyOneDoc(ctx context.Context, cli *reflowclient.Client, doc resourceDoc) error {
 	switch doc.Kind {
 	case "EventSource":
 		return applyEventSource(ctx, cli, doc)
@@ -87,7 +87,7 @@ func applyOneDoc(ctx context.Context, cli adminv1connect.AdminClient, doc resour
 	}
 }
 
-func applyWebhookSource(ctx context.Context, cli adminv1connect.AdminClient, doc resourceDoc) error {
+func applyWebhookSource(ctx context.Context, cli *reflowclient.Client, doc resourceDoc) error {
 	if doc.Metadata.Name == "" {
 		return errors.New("metadata.name is required")
 	}
@@ -96,11 +96,11 @@ func applyWebhookSource(ctx context.Context, cli adminv1connect.AdminClient, doc
 		return err
 	}
 	rec.Name = doc.Metadata.Name
-	list, err := cli.ListWebhookSources(ctx, connect.NewRequest(&adminv1.ListWebhookSourcesRequest{}))
+	list, err := cli.Config.ListWebhookSources(ctx, connect.NewRequest(&configv1.ListWebhookSourcesRequest{}))
 	if err != nil {
 		return fmt.Errorf("read revision: %w", err)
 	}
-	resp, err := cli.UpsertWebhookSource(ctx, connect.NewRequest(&adminv1.UpsertWebhookSourceRequest{
+	resp, err := cli.Config.UpsertWebhookSource(ctx, connect.NewRequest(&configv1.UpsertWebhookSourceRequest{
 		Record:            rec,
 		IfTableRevisionEq: list.Msg.GetTableRevision(),
 	}))
@@ -131,7 +131,7 @@ func decodeWebhookSourceSpec(spec map[string]any) (*enginev1.WebhookSourceRecord
 	return &rec, nil
 }
 
-func applyEventSource(ctx context.Context, cli adminv1connect.AdminClient, doc resourceDoc) error {
+func applyEventSource(ctx context.Context, cli *reflowclient.Client, doc resourceDoc) error {
 	if doc.Metadata.Name == "" {
 		return errors.New("metadata.name is required")
 	}
@@ -146,11 +146,11 @@ func applyEventSource(ctx context.Context, cli adminv1connect.AdminClient, doc r
 	// Fetch the current revision so the CAS guard is fresh. A separate
 	// operator editing the same table between our read and write will
 	// reproducibly conflict.
-	list, err := cli.ListEventSources(ctx, connect.NewRequest(&adminv1.ListEventSourcesRequest{}))
+	list, err := cli.Config.ListEventSources(ctx, connect.NewRequest(&configv1.ListEventSourcesRequest{}))
 	if err != nil {
 		return fmt.Errorf("read revision: %w", err)
 	}
-	resp, err := cli.UpsertEventSource(ctx, connect.NewRequest(&adminv1.UpsertEventSourceRequest{
+	resp, err := cli.Config.UpsertEventSource(ctx, connect.NewRequest(&configv1.UpsertEventSourceRequest{
 		Record:            rec,
 		IfTableRevisionEq: list.Msg.GetTableRevision(),
 	}))

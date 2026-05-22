@@ -10,10 +10,8 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	adminv1 "github.com/twinfer/reflow/proto/adminv1"
-	"github.com/twinfer/reflow/proto/adminv1/adminv1connect"
-
-	"github.com/twinfer/reflow/pkg/adminclient"
+	"github.com/twinfer/reflow/pkg/reflowclient"
+	configv1 "github.com/twinfer/reflow/proto/configv1"
 )
 
 // cmdWebhooks routes `reflowd cluster webhooks <subcmd>`. Mirrors
@@ -41,8 +39,8 @@ func cmdWebhooksList(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return tls.withClient(ctx, func(cli *adminclient.Client) error {
-		resp, err := cli.Admin.ListWebhookSources(ctx, connect.NewRequest(&adminv1.ListWebhookSourcesRequest{}))
+	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
+		resp, err := cli.Config.ListWebhookSources(ctx, connect.NewRequest(&configv1.ListWebhookSourcesRequest{}))
 		if err != nil {
 			return err
 		}
@@ -65,12 +63,12 @@ func cmdWebhooksDelete(ctx context.Context, args []string) error {
 	if *name == "" {
 		return errors.New("--name is required")
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli adminv1connect.AdminClient) error {
-		list, err := cli.ListWebhookSources(rctx, connect.NewRequest(&adminv1.ListWebhookSourcesRequest{}))
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+		list, err := cli.Config.ListWebhookSources(rctx, connect.NewRequest(&configv1.ListWebhookSourcesRequest{}))
 		if err != nil {
 			return fmt.Errorf("read revision: %w", err)
 		}
-		resp, err := cli.DeleteWebhookSource(rctx, connect.NewRequest(&adminv1.DeleteWebhookSourceRequest{
+		resp, err := cli.Config.DeleteWebhookSource(rctx, connect.NewRequest(&configv1.DeleteWebhookSourceRequest{
 			Name:              *name,
 			IfTableRevisionEq: list.Msg.GetTableRevision(),
 		}))

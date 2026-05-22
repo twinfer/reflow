@@ -1,0 +1,167 @@
+// Reflow ClusterCtl service — the cluster-operator surface.
+//
+// ClusterCtl owns the *physical* cluster operations: node membership,
+// partition topology, DR snapshots, and LP routing transfers. It is
+// the cluster-admin counterpart to reflow.config.v1.Config (which owns
+// app config — handler deployments, event sources, webhooks, secrets).
+// The naming mirrors Restate, where `cluster-ctrl` is the
+// cluster-administrator surface and `admin` is the app-config surface.
+//
+// Every reflowd process hosts a ClusterCtl Connect RPC server on a
+// dedicated port (typically :8082). The server is mTLS-protected; the
+// caller's SPIFFE URI SAN identifies its role
+// (`spiffe://<trust-domain>/operator/<name>` for operators). The
+// `reflowd cluster ...` CLI is the canonical client. SelfJoin has a
+// narrower carve-out: it accepts a `node/*` SPIFFE principal, but only
+// when the principal's NodeID equals req.node_id (defense in depth
+// behind the path-based authz rule).
+//
+// Authorization lives in internal/auth (the shared starter authz policy
+// consumed by both the gRPC delivery interceptor and the Connect HTTP
+// middleware). The starter policy restricts
+// /reflow.clusterctl.v1.ClusterCtl/* to principals matching
+// "operator/*", with the SelfJoin carve-out described above.
+//
+// Mutating RPCs (AddNode, RemoveNode, TransferLP, CreateSnapshot,
+// DeleteSnapshot) translate to shard-0 Raft proposals; the apply arms
+// in the metadata FSM and the metadata-leader rebalancer drive the
+// rest. Read RPCs (ListNodes, ListPartitions, ListSnapshots,
+// ListLPTransfers) issue a SyncRead against shard 0 or the local
+// SnapshotRepository.
+
+syntax = "proto3";
+
+package reflow.clusterctl.v1;
+
+import "enginev1/engine.proto";
+
+option go_package = "github.com/twinfer/reflow/proto/clusterctlv1;clusterctlv1";
+
+service ClusterCtl {
+  // AddNode registers a new peer with shard 0 and enqueues a rebalance
+  // sequence to give the new node a non-voting replica of every
+  // existing partition shard. The non-voting replica is promoted to a
+  // voter after dragonboat reports catch-up.
+  rpc AddNode(AddNodeRequest) returns (AddNodeResponse);
+  // SelfJoin is AddNode initiated by the joiner itself. Authorized when
+  // the caller's SPIFFE identity is spiffe://<td>/node/<req.node_id>;
+  // any other principal is rejected. Same payload and FSM effect as
+  // AddNode — the two methods exist as distinct authorization paths
+  // so the gRPC authz policy can gate them by role (operator/* vs
+  // node/<id>). Idempotent: the underlying RegisterNode +
+  // BeginRebalanceStep apply arms upsert/dedup.
+  rpc SelfJoin(AddNodeRequest) returns (AddNodeResponse);
+  // RemoveNode marks a peer as evicted in shard 0. The rebalancer
+  // observes and walks the dragonboat membership-change sequence
+  // (DELETE_REPLICA for every shard the node hosted).
+  rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse);
+  // ListNodes returns the current NodeMembership records from shard 0.
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  // ListPartitions returns the current PartitionTable from shard 0.
+  rpc ListPartitions(ListPartitionsRequest) returns (ListPartitionsResponse);
+  // CreateSnapshot kicks off an Exported snapshot of the requested
+  // partition shard and archives the result via the local
+  // SnapshotRepository. Returns the snapshot index.
+  rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
+  // ListSnapshots enumerates archived snapshots for a partition shard.
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
+  // DeleteSnapshot removes a single archived snapshot. Idempotent —
+  // returns OK when the snapshot is already absent.
+  rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
+  // TransferLP initiates a cross-shard transfer of one logical
+  // partition. Validates inputs, mints a UUIDv4 transfer_id, and
+  // proposes Command_InitiateLPTransfer to shard 0. The lpMover on the
+  // metadata leader then drives the saga (freeze → ship → stage →
+  // flip → cleanup). Returns immediately with the transfer_id; the
+  // caller polls ListLPTransfers to observe progress. Leader-only.
+  rpc TransferLP(TransferLPRequest) returns (TransferLPResponse);
+  // ListLPTransfers returns the current LPTransferTable rows plus the
+  // table revision. Reads via SyncRead against shard 0.
+  rpc ListLPTransfers(ListLPTransfersRequest) returns (ListLPTransfersResponse);
+}
+
+message AddNodeRequest {
+  uint64 node_id = 1;
+  string raft_addr = 2;
+  string gossip_addr = 3;
+  string grpc_endpoint = 4;
+  string node_host_id = 5;
+}
+message AddNodeResponse {
+  // assignment_epoch after the new node was registered. The caller can
+  // poll ListPartitions until shards converge.
+  uint64 assignment_epoch = 1;
+}
+
+message RemoveNodeRequest {
+  uint64 node_id = 1;
+}
+message RemoveNodeResponse {
+  uint64 assignment_epoch = 1;
+}
+
+message ListNodesRequest {}
+message ListNodesResponse {
+  repeated reflow.engine.v1.NodeMembership nodes = 1;
+}
+
+message ListPartitionsRequest {}
+message ListPartitionsResponse {
+  reflow.engine.v1.PartitionTable table = 1;
+}
+
+message CreateSnapshotRequest {
+  uint64 shard_id = 1;
+}
+message CreateSnapshotResponse {
+  uint64 shard_id = 1;
+  uint64 index = 2;
+  int64 size_bytes = 3;
+}
+
+message ListSnapshotsRequest {
+  uint64 shard_id = 1;
+}
+message SnapshotRef {
+  uint64 shard_id = 1;
+  uint64 index = 2;
+  int64 size_bytes = 3;
+  int64 created_at_unix_ms = 4;
+}
+message ListSnapshotsResponse {
+  repeated SnapshotRef snapshots = 1;
+}
+
+message DeleteSnapshotRequest {
+  uint64 shard_id = 1;
+  uint64 index = 2;
+}
+message DeleteSnapshotResponse {}
+
+// TransferLPRequest initiates a cross-shard transfer for one LP. lp
+// must be in [0, LPCount); dest_shard must be a known partition shard
+// id. The request fails (FailedPrecondition) if a non-terminal
+// transfer for the same lp already exists.
+message TransferLPRequest {
+  uint32 lp = 1;
+  uint64 dest_shard = 2;
+}
+message TransferLPResponse {
+  string transfer_id = 1;
+}
+
+message ListLPTransfersRequest {}
+message ListLPTransfersResponse {
+  repeated reflow.engine.v1.LPTransferRecord records = 1;
+  uint64 table_revision = 2;
+}
+
+// LeaderHint is attached as a connect.Error detail on
+// connect.CodeUnavailable returned by mutating ClusterCtl RPCs when
+// the receiving node is not the metadata leader. Clients (joiner's
+// SelfJoin caller and the `reflowd cluster ...` CLI) extract it, dial
+// admin_endpoint, retry.
+message LeaderHint {
+  uint64 node_id = 1;
+  string admin_endpoint = 2;
+}

@@ -13,8 +13,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc/credentials"
 
-	"github.com/twinfer/reflow/internal/admin"
 	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflow/internal/clusterctl"
+	"github.com/twinfer/reflow/internal/config"
 	"github.com/twinfer/reflow/internal/connectserver"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/cluster"
@@ -27,11 +28,10 @@ import (
 	internalwebhook "github.com/twinfer/reflow/internal/ingress/webhook"
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/secretstore"
-	"github.com/twinfer/reflow/pkg/adminclient"
 	hcvaultkms "github.com/twinfer/reflow/pkg/kms/hcvault"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
-	adminv1 "github.com/twinfer/reflow/proto/adminv1"
-	"github.com/twinfer/reflow/proto/adminv1/adminv1connect"
+	"github.com/twinfer/reflow/pkg/reflowclient"
+	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 
 	// KMS providers always-linked, config-gated. Each subpackage's
@@ -558,41 +558,59 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		}
 	}
 
-	// Build the in-process admin.Server unconditionally — it's the engine
-	// proposer + snapshot/deployment glue that autoSeedEndpoints needs,
-	// even when no external listener is configured. The gRPC listener
-	// only goes up when adminEnabled.
-	adminCfg := admin.Config{
+	// Build the in-process ClusterCtl + Config servers unconditionally —
+	// the Config server is the engine proposer + deployment glue that
+	// autoSeedEndpoints needs, even when no external listener is
+	// configured. The Connect listeners only go up when adminEnabled.
+	clusterSrv, cErr := clusterctl.NewServer(clusterctl.Config{
 		Host:       eh,
 		Runner:     runner,
 		Repo:       snapshotRepoIface,
 		Source:     &engine.HostSnapshotSource{Host: eh},
 		Log:        logger,
 		ScratchDir: cfg.Snapshot.ScratchDir,
-	}
-	// Avoid the typed-nil interface trap: only assign the Signer field
-	// when the underlying *creds.Signer is non-nil.
-	if handlerSigner != nil {
-		adminCfg.Signer = handlerSigner
-	}
-	srv, sErr := admin.NewServer(adminCfg)
-	if sErr != nil {
+	})
+	if cErr != nil {
 		if snapshotCxl != nil {
 			snapshotCxl()
 		}
 		if snapshotRepo != nil {
 			_ = snapshotRepo.Close()
 		}
-		return nil, fmt.Errorf("reflow: admin server: %w", sErr)
+		return nil, fmt.Errorf("reflow: clusterctl server: %w", cErr)
+	}
+	configCfg := config.Config{
+		Host:   eh,
+		Runner: runner,
+		Log:    logger,
+	}
+	// Avoid the typed-nil interface trap: only assign the Signer field
+	// when the underlying *creds.Signer is non-nil.
+	if handlerSigner != nil {
+		configCfg.Signer = handlerSigner
+	}
+	configSrv, cfErr := config.NewServer(configCfg)
+	if cfErr != nil {
+		if snapshotCxl != nil {
+			snapshotCxl()
+		}
+		if snapshotRepo != nil {
+			_ = snapshotRepo.Close()
+		}
+		return nil, fmt.Errorf("reflow: config server: %w", cfErr)
 	}
 
 	if adminEnabled {
-		path, h := srv.NewHandler()
+		clusterPath, clusterH := clusterSrv.NewHandler()
+		configPath, configH := configSrv.NewHandler()
 		cs, lErr := connectserver.New(ctx, connectserver.Config{
 			Addr: cfg.Admin.Addr,
 			TLS:  adminCreds.ServerTLSConfig,
 			Log:  logger,
-		}, connectserver.Route{Path: path, Handler: httpAuthMW(h)})
+		},
+			connectserver.Route{Path: clusterPath, Handler: httpAuthMW(clusterH)},
+			connectserver.Route{Path: configPath, Handler: httpAuthMW(configH)},
+		)
 		if lErr != nil {
 			if snapshotCxl != nil {
 				snapshotCxl()
@@ -696,7 +714,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	// the seed loop is logged and the next endpoint is tried; ctx is the
 	// Run caller's context — cancelling it cancels the seed loop.
 	if len(cfg.Handlers.Endpoints) > 0 {
-		go autoSeedEndpoints(ctx, srv, runner, cfg.Handlers.Endpoints, logger)
+		go autoSeedEndpoints(ctx, configSrv, runner, cfg.Handlers.Endpoints, logger)
 	}
 	// Bootstrap-seed event sources from the koanf config. Runs only on
 	// the shard-0 leader and only when the EventSourceTable is empty —
@@ -708,7 +726,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	// register webhooks post-start via `reflowd cluster encrypt-secret
 	// --upsert-webhook ...` or `reflowd cluster apply -f <file>`.
 	if len(cfg.EventSources.Sources) > 0 {
-		go autoSeedEventSources(ctx, srv, runner, eh, cfg.EventSources.Sources, logger)
+		go autoSeedEventSources(ctx, configSrv, runner, eh, cfg.EventSources.Sources, logger)
 	}
 
 	return &Host{
@@ -821,7 +839,7 @@ func (r lpOwnersReader) SnapshotLPOwners(ctx context.Context) (map[uint32]uint64
 //
 // Runs as a fire-and-forget goroutine; logs warnings on per-source
 // failures and continues.
-func autoSeedEventSources(ctx context.Context, srv *admin.Server, runner *engine.MetadataRunner, host *engine.Host, sources []eventsource.SourceConfig, log *slog.Logger) {
+func autoSeedEventSources(ctx context.Context, srv *config.Server, runner *engine.MetadataRunner, host *engine.Host, sources []eventsource.SourceConfig, log *slog.Logger) {
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
 		if runner != nil && runner.IsLeader() {
@@ -880,7 +898,7 @@ func autoSeedEventSources(ctx context.Context, srv *admin.Server, runner *engine
 // seeding and unset the field for subsequent boots.
 //
 // Runs as a fire-and-forget goroutine; logs each outcome at INFO / WARN.
-func autoSeedEndpoints(ctx context.Context, srv *admin.Server, runner *engine.MetadataRunner, endpoints []HandlerEndpoint, log *slog.Logger) {
+func autoSeedEndpoints(ctx context.Context, srv *config.Server, runner *engine.MetadataRunner, endpoints []HandlerEndpoint, log *slog.Logger) {
 	// Wait for shard 0 leadership before registering. The poll cadence
 	// is 200ms — fast enough to feel snappy in tests, slow enough that
 	// a non-leader node doesn't spin a CPU. Bound the wait so a stuck
@@ -1012,7 +1030,7 @@ func startMetricsServer(cfg MetricsConfig, log *slog.Logger) func() error {
 // gossip view was stale by one heartbeat); the outer retry here handles
 // transient cluster-wide Unavailable conditions during cold start.
 func callSelfJoin(ctx context.Context, cfg Config, host *engine.Host, log *slog.Logger) error {
-	req := &adminv1.AddNodeRequest{
+	req := &clusterctlv1.AddNodeRequest{
 		NodeId:       cfg.Node.ID,
 		RaftAddr:     cfg.Node.RaftAddr,
 		GossipAddr:   cfg.Node.GossipAdvAddr,
@@ -1040,11 +1058,11 @@ func callSelfJoin(ctx context.Context, cfg Config, host *engine.Host, log *slog.
 		}
 		log.Info("SelfJoin: dialing metadata leader", "addr", leaderAddr,
 			"node_id", req.NodeId, "attempt", attempt+1)
-		err = adminclient.CallWithLeaderRedirect(ctx, adminclient.DialOptions{
+		err = reflowclient.CallWithLeaderRedirect(ctx, reflowclient.DialOptions{
 			Addr:  leaderAddr,
 			Creds: cfg.Admin.Creds,
-		}, 3, func(rctx context.Context, cli adminv1connect.AdminClient) error {
-			_, e := cli.SelfJoin(rctx, connect.NewRequest(req))
+		}, 3, func(rctx context.Context, cli *reflowclient.Client) error {
+			_, e := cli.Cluster.SelfJoin(rctx, connect.NewRequest(req))
 			return e
 		})
 		if err == nil {

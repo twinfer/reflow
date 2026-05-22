@@ -14,10 +14,9 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"sigs.k8s.io/yaml"
 
-	adminv1 "github.com/twinfer/reflow/proto/adminv1"
+	"github.com/twinfer/reflow/pkg/reflowclient"
+	configv1 "github.com/twinfer/reflow/proto/configv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-
-	"github.com/twinfer/reflow/pkg/adminclient"
 )
 
 // cmdExport dumps the configured cluster-managed tables as a multi-doc
@@ -37,7 +36,7 @@ func cmdExport(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return tls.withClient(ctx, func(cli *adminclient.Client) error {
+	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
 		switch *kind {
 		case "EventSource":
 			return exportEventSources(ctx, cli, os.Stdout)
@@ -55,14 +54,14 @@ func cmdExport(ctx context.Context, args []string) error {
 // single multi-doc YAML stream. Each kind's exporter is responsible for
 // its own per-row separator; the stream-level separator between kinds
 // is inserted here when both kinds contributed at least one row.
-func exportAllKinds(ctx context.Context, cli *adminclient.Client, w io.Writer) error {
+func exportAllKinds(ctx context.Context, cli *reflowclient.Client, w io.Writer) error {
 	// Buffer per-kind output so we can decide whether to write a
 	// separator between kinds (don't emit "---\n" if the prior kind
 	// was empty).
 	wrote := false
 	exporters := []struct {
 		name string
-		run  func(context.Context, *adminclient.Client, io.Writer) error
+		run  func(context.Context, *reflowclient.Client, io.Writer) error
 	}{
 		{"EventSource", exportEventSources},
 		{"WebhookSource", exportWebhookSources},
@@ -109,8 +108,8 @@ func (c *captureWriter) Write(p []byte) (int, error) {
 }
 func (c *captureWriter) bytes() []byte { return c.buf }
 
-func exportEventSources(ctx context.Context, cli *adminclient.Client, w io.Writer) error {
-	resp, err := cli.Admin.ListEventSources(ctx, connect.NewRequest(&adminv1.ListEventSourcesRequest{}))
+func exportEventSources(ctx context.Context, cli *reflowclient.Client, w io.Writer) error {
+	resp, err := cli.Config.ListEventSources(ctx, connect.NewRequest(&configv1.ListEventSourcesRequest{}))
 	if err != nil {
 		return err
 	}
@@ -132,8 +131,8 @@ func exportEventSources(ctx context.Context, cli *adminclient.Client, w io.Write
 	return nil
 }
 
-func exportWebhookSources(ctx context.Context, cli *adminclient.Client, w io.Writer) error {
-	resp, err := cli.Admin.ListWebhookSources(ctx, connect.NewRequest(&adminv1.ListWebhookSourcesRequest{}))
+func exportWebhookSources(ctx context.Context, cli *reflowclient.Client, w io.Writer) error {
+	resp, err := cli.Config.ListWebhookSources(ctx, connect.NewRequest(&configv1.ListWebhookSourcesRequest{}))
 	if err != nil {
 		return err
 	}

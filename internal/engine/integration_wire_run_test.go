@@ -9,7 +9,7 @@ import (
 	connect "connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/twinfer/reflow/internal/admin"
+	"github.com/twinfer/reflow/internal/config"
 	"github.com/twinfer/reflow/internal/loadgen"
 	"github.com/twinfer/reflow/pkg/handler/wire"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
@@ -127,12 +127,12 @@ func TestWireDispatch_HTTP2_Run(t *testing.T) {
 	leaderRig := findMetadataLeader(t, cluster)
 	host := leaderRig.Host
 
-	srv, err := admin.NewServer(admin.Config{
+	srv, err := config.NewServer(config.Config{
 		Host:   host,
 		Runner: host.MetadataRunner(),
 	})
 	if err != nil {
-		t.Fatalf("admin.NewServer: %v", err)
+		t.Fatalf("config.NewServer: %v", err)
 	}
 
 	regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)

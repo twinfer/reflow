@@ -22,14 +22,20 @@ import (
 )
 
 const (
-	reflowdImageRepo = "reflow/reflowd"
-	reflowdImageTag  = "e2e"
+	reflowdImageRepo     = "reflow/reflowd"
+	reflowdImageTag      = "e2e"
+	loadhandlerImageRepo = "reflow/loadhandler"
+	loadhandlerImageTag  = "e2e"
 )
 
 var (
 	reflowdImageOnce sync.Once
 	reflowdImageRef  string
 	reflowdImageErr  error
+
+	loadhandlerImageOnce sync.Once
+	loadhandlerImageRef  string
+	loadhandlerImageErr  error
 )
 
 // ReflowdImage returns a Docker image reference for the reflowd binary
@@ -56,6 +62,29 @@ func ReflowdImage(t testing.TB) string {
 }
 
 func buildReflowdImage() (string, error) {
+	return buildImage("Dockerfile.reflowd", reflowdImageRepo, reflowdImageTag)
+}
+
+// LoadhandlerImage returns the Docker image reference for the sidecar
+// handler under test. Same shape as ReflowdImage: cached behind
+// sync.Once, REFLOW_E2E_LOADHANDLER_IMAGE overrides the build.
+func LoadhandlerImage(t testing.TB) string {
+	t.Helper()
+	if env := os.Getenv("REFLOW_E2E_LOADHANDLER_IMAGE"); env != "" {
+		return env
+	}
+	loadhandlerImageOnce.Do(func() {
+		loadhandlerImageRef, loadhandlerImageErr = buildImage(
+			"Dockerfile.loadhandler", loadhandlerImageRepo, loadhandlerImageTag,
+		)
+	})
+	if loadhandlerImageErr != nil {
+		t.Skipf("e2e: loadhandler image build failed: %v", loadhandlerImageErr)
+	}
+	return loadhandlerImageRef
+}
+
+func buildImage(dockerfile, repo, tag string) (string, error) {
 	root, err := repoRoot()
 	if err != nil {
 		return "", err
@@ -71,17 +100,17 @@ func buildReflowdImage() (string, error) {
 	req := testcontainers.ContainerRequest{
 		FromDockerfile: testcontainers.FromDockerfile{
 			Context:    root,
-			Dockerfile: "Dockerfile.reflowd",
-			Repo:       reflowdImageRepo,
-			Tag:        reflowdImageTag,
+			Dockerfile: dockerfile,
+			Repo:       repo,
+			Tag:        tag,
 			KeepImage:  true,
 		},
 	}
-	tag, err := provider.BuildImage(ctx, &req)
+	out, err := provider.BuildImage(ctx, &req)
 	if err != nil {
-		return "", fmt.Errorf("build reflowd image: %w", err)
+		return "", fmt.Errorf("build %s: %w", dockerfile, err)
 	}
-	return tag, nil
+	return out, nil
 }
 
 // repoRoot walks up from this file's directory to the one containing

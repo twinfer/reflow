@@ -155,7 +155,6 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		JoinExisting:       cfg.Cluster.JoinExisting,
 		NumPartitionShards: numShards,
 		Metrics:            metrics,
-		HandlerSigner:      handlerSigner,
 		EagerStateMaxBytes: cfg.Handlers.EagerStateMaxBytes,
 		ClusterNotifiers: cluster.Notifiers{
 			EventSourceTable:    eventSourceNotifier,
@@ -181,6 +180,15 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			default:
 			}
 		},
+	}
+	// Assign HandlerSigner only when non-nil so a nil *creds.Signer
+	// (insecure delivery) leaves the interface field nil. Otherwise
+	// connectclient's `if c.signer != nil` would see a non-nil interface
+	// wrapping a nil concrete pointer and call Sign on a nil receiver
+	// — surfaces as "reflow/creds: nil Signer" on the first
+	// engine→handler dispatch.
+	if handlerSigner != nil {
+		hcfg.HandlerSigner = handlerSigner
 	}
 	eh, err := engine.NewHost(ctx, hcfg)
 	if err != nil {

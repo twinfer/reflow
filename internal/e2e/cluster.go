@@ -14,6 +14,7 @@ import (
 	"text/template"
 	"time"
 
+	mobycontainer "github.com/moby/moby/api/types/container"
 	mobynet "github.com/moby/moby/api/types/network"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/network"
@@ -35,11 +36,18 @@ const (
 // ContainerCluster owns the docker network and the per-node reflowd
 // containers. Test code interacts with it the same way it does with
 // loadgen.Cluster today: pick a node, submit invocations, poll results.
-// Chaos primitives (Cut/Heal, KillNode) are stub for PR 3 — they land
-// with the Toxiproxy + lifecycle-chaos PRs later in the sequence.
+// Lifecycle chaos (KillNode) is rooted on ContainerNode.Kill; network
+// chaos primitives live on the optional Tx handle (non-nil only when
+// the cluster was started with WithToxiproxy=true).
 type ContainerCluster struct {
 	Net   *testcontainers.DockerNetwork
 	Nodes []*ContainerNode
+
+	// Tx is the per-cluster Toxiproxy handle when opts.WithToxiproxy
+	// is true; nil otherwise. Exposes Cut / Heal / CutDir / HealDir,
+	// the per-pair partition primitives that replace bufconn's
+	// PartitionMatrix.
+	Tx *Toxiproxy
 }
 
 // NewContainerCluster brings up an insecure reflowd cluster with N
@@ -63,11 +71,24 @@ func NewContainerCluster(t *testing.T, opts ContainerClusterOptions) *ContainerC
 	}
 
 	nw := newDockerNetwork(t)
-	cfgPath := writeClusterConfigYAML(t, opts.N, opts.NumShards)
+	cfgPath := writeClusterConfigYAML(t, opts.N, opts.NumShards, opts.WithToxiproxy)
 	policyPath := writePermissivePolicy(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+
+	// Toxiproxy sidecars first when enabled — they must be listening
+	// before reflowd containers start, because dragonboat's first
+	// gossip+raft exchange races to dial advertised RaftAddresses, and
+	// those addresses already point at the sidecars via ExtraHosts.
+	var tx *Toxiproxy
+	if opts.WithToxiproxy {
+		t1, err := startToxiproxy(t, ctx, nw, opts.N)
+		if err != nil {
+			t.Fatalf("e2e: start toxiproxy sidecars: %v", err)
+		}
+		tx = t1
+	}
 
 	// Bring nodes up in parallel — boot is dominated by dragonboat
 	// gossip rendezvous, which can't make progress until enough peers
@@ -84,7 +105,7 @@ func NewContainerCluster(t *testing.T, opts ContainerClusterOptions) *ContainerC
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			n, err := startReflowdContainer(ctx, t, image, nw, cfgPath, policyPath, nodeID)
+			n, err := startReflowdContainer(ctx, t, image, nw, cfgPath, policyPath, nodeID, opts.WithToxiproxy)
 			startMu.Lock()
 			defer startMu.Unlock()
 			if err != nil {
@@ -98,7 +119,7 @@ func NewContainerCluster(t *testing.T, opts ContainerClusterOptions) *ContainerC
 	}
 	wg.Wait()
 
-	cluster := &ContainerCluster{Net: nw, Nodes: nodes}
+	cluster := &ContainerCluster{Net: nw, Nodes: nodes, Tx: tx}
 	t.Cleanup(cluster.Close)
 	if firstErr != nil {
 		t.Fatalf("e2e: cluster bring-up: %v", firstErr)
@@ -169,11 +190,24 @@ func (c *ContainerCluster) AwaitAnyPartitionLeader(ctx context.Context, timeout 
 // ingress port becomes reachable (basic engine-boot signal); deeper
 // readiness (raft leader, deployment registered) is asserted at the
 // cluster level via AwaitAnyMetadataLeader.
-func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *testcontainers.DockerNetwork, cfgPath, policyPath string, nodeID uint64) (*ContainerNode, error) {
+//
+// When `withToxiproxy` is true the advertised raft address points at
+// the per-node sidecar (peer-target-N:targetRaftPort(N)); ExtraHosts
+// entries route every peer-target-* hostname to this node's sidecar
+// IP so dragonboat's outbound raft dials land on tox-from-N's
+// per-target proxies.
+func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *testcontainers.DockerNetwork, cfgPath, policyPath string, nodeID uint64, withToxiproxy bool) (*ContainerNode, error) {
 	t.Helper()
 	alias := fmt.Sprintf("reflowd-node%d", nodeID)
 	ip := nodeIP(nodeID)
-	raftAdvertised := fmt.Sprintf("%s:%s", alias, raftPort)
+	raftAdvertisedDefault := fmt.Sprintf("%s:%s", alias, raftPort)
+	raftAdv := raftAdvertisedDefault
+	if withToxiproxy {
+		// Sidecar mode: publish a target-keyed hostname + per-node port
+		// so other reflowd containers route their outbound raft dial
+		// through their own tox-from-* sidecar (see toxiproxy.go).
+		raftAdv = raftAdvertisedThrough(nodeID)
+	}
 	adminAdvertised := fmt.Sprintf("%s:%s", alias, adminPort)
 
 	req := testcontainers.ContainerRequest{
@@ -184,7 +218,7 @@ func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *
 			"REFLOW_CONFIG":                    "/etc/reflowd/config.yaml",
 			"REFLOW_NODE_ID":                   fmt.Sprintf("%d", nodeID),
 			"REFLOW_NODE_RAFT_ADDR":            fmt.Sprintf("0.0.0.0:%s", raftPort),
-			"REFLOW_NODE_RAFT_ADVERTISED_ADDR": raftAdvertised,
+			"REFLOW_NODE_RAFT_ADVERTISED_ADDR": raftAdv,
 			// Gossip uses a fixed IP because dragonboat's memberlist
 			// rejects hostnames in AdvertiseAddress
 			// (config.isValidAdvertiseAddress). Bind to all interfaces
@@ -240,6 +274,16 @@ func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *
 			ep.IPAMConfig = &mobynet.EndpointIPAMConfig{IPv4Address: parsedIP}
 		}
 	}
+	// In toxiproxy mode, redirect every peer-target-* hostname this
+	// container might dial (raft advertised hosts are peer-target-*)
+	// to this node's sidecar IP. The sidecar's per-target proxies
+	// then forward to the actual reflowd-node-* listener.
+	if withToxiproxy {
+		hosts := peerExtraHosts(nodeID)
+		gcr.HostConfigModifier = func(hc *mobycontainer.HostConfig) {
+			hc.ExtraHosts = append(hc.ExtraHosts, hosts...)
+		}
+	}
 
 	c, err := testcontainers.GenericContainer(ctx, gcr)
 	if err != nil {
@@ -250,7 +294,7 @@ func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *
 	adminURL := resolveHostMapped(t, ctx, c, adminPort+"/tcp")
 	return &ContainerNode{
 		nodeID:          nodeID,
-		raftAddr:        raftAdvertised,
+		raftAddr:        raftAdv,
 		adminEndpoint:   adminAdvertised,
 		ingressURL:      ingressURL,
 		adminURLForTest: adminURL,
@@ -261,8 +305,11 @@ func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *
 // writeClusterConfigYAML writes the cluster-wide YAML config to a fresh
 // path under t.TempDir() and returns the path. Same file is mounted
 // into every node — per-node deltas (NODE_ID, advertised addrs) layer
-// on top via REFLOW_* env vars.
-func writeClusterConfigYAML(t *testing.T, n int, numShards uint64) string {
+// on top via REFLOW_* env vars. When `withToxiproxy` is true the peer
+// raft_addr field uses the per-target hostname (peer-target-N) that
+// ExtraHosts routes via the local sidecar; matches what each node
+// publishes via REFLOW_NODE_RAFT_ADVERTISED_ADDR.
+func writeClusterConfigYAML(t *testing.T, n int, numShards uint64, withToxiproxy bool) string {
 	t.Helper()
 	type peer struct {
 		NodeID uint64
@@ -279,9 +326,13 @@ func writeClusterConfigYAML(t *testing.T, n int, numShards uint64) string {
 	}
 	for i := 0; i < n; i++ {
 		id := uint64(i + 1)
+		raft := fmt.Sprintf("reflowd-node%d:%s", id, raftPort)
+		if withToxiproxy {
+			raft = raftAdvertisedThrough(id)
+		}
 		data.Peers = append(data.Peers, peer{
 			NodeID: id,
-			Raft:   fmt.Sprintf("reflowd-node%d:%s", id, raftPort),
+			Raft:   raft,
 			Gossip: fmt.Sprintf("%s:%s", nodeIP(id), gossipPort),
 		})
 	}

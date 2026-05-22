@@ -6,6 +6,7 @@ require (
 	connectrpc.com/authn v0.2.0
 	connectrpc.com/connect v1.19.2
 	github.com/HdrHistogram/hdrhistogram-go v1.2.0
+	github.com/Shopify/toxiproxy/v2 v2.12.0
 	github.com/ThreeDotsLabs/watermill v1.5.2
 	github.com/ThreeDotsLabs/watermill-aws v1.0.1
 	github.com/ThreeDotsLabs/watermill-kafka/v3 v3.1.2
@@ -27,6 +28,8 @@ require (
 	github.com/knadh/koanf/providers/file v1.2.1
 	github.com/knadh/koanf/v2 v2.3.4
 	github.com/lni/dragonboat/v4 v4.0.0-20250723143628-076c7f6497dc
+	github.com/moby/moby/api v1.54.1
+	github.com/moby/moby/client v0.4.0
 	github.com/nats-io/nats.go v1.37.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/qmuntal/stateless v1.8.0
@@ -175,8 +178,6 @@ require (
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/go-archive v0.2.0 // indirect
-	github.com/moby/moby/api v1.54.1 // indirect
-	github.com/moby/moby/client v0.4.0 // indirect
 	github.com/moby/patternmatcher v0.6.1 // indirect
 	github.com/moby/sys/sequential v0.6.0 // indirect
 	github.com/moby/sys/user v0.4.0 // indirect

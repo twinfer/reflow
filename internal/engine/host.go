@@ -134,14 +134,6 @@ type HostConfig struct {
 	// the full Peers set via initialMembers().
 	JoinExisting bool
 
-	// RaftTransportFactory, when non-nil, overrides dragonboat's built-in
-	// TCP raft transport via NodeHostConfig.Expert.TransportFactory. The
-	// production path leaves this nil and uses TCP. The chaos harness
-	// supplies an in-memory bufconn-backed factory plus a shared
-	// PartitionMatrix so tests can Cut/Heal per-pair raft links mid-run
-	// without real ports or reimplementing dragonboat's TCP framing.
-	RaftTransportFactory config.TransportFactory
-
 	// HandlerSigner, when non-nil, stamps every engine→handler HTTP/2
 	// request with an Authorization: Bearer JWT minted by the engine's
 	// node-identity keypair. nil disables signing (single-node and
@@ -308,9 +300,6 @@ func NewHost(ctx context.Context, cfg HostConfig) (*Host, error) {
 		if err := applyMultiNodeConfig(&nhConfig, &cfg); err != nil {
 			return nil, err
 		}
-	}
-	if cfg.RaftTransportFactory != nil {
-		nhConfig.Expert.TransportFactory = cfg.RaftTransportFactory
 	}
 	nh, err := dragonboat.NewNodeHost(nhConfig)
 	if err != nil {

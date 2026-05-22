@@ -45,7 +45,7 @@ type ContainerNode struct {
 
 // SubmitInvocation routes through Ingress.SubmitInvocation on this node;
 // the server mints the invocation id and forwards to the destination
-// shard via its Partitioner. Mirrors loadgen.SubprocessNode.SubmitInvocation.
+// shard via its Partitioner.
 func (n *ContainerNode) SubmitInvocation(ctx context.Context, service, handler, objectKey string, input []byte) (*enginev1.InvocationId, error) {
 	cli, err := n.ingress()
 	if err != nil {
@@ -80,7 +80,7 @@ func (n *ContainerNode) DescribeInvocation(ctx context.Context, id *enginev1.Inv
 
 // ListPartitions queries Ingress.ListPartitions and projects the proto
 // into the loadgen-local PartitionInfo shape so chaos primitives that
-// previously consumed *loadgen.SubprocessNode work unchanged.
+// drive the loadgen.Node surface work unchanged.
 func (n *ContainerNode) ListPartitions(ctx context.Context) ([]loadgen.PartitionInfo, error) {
 	cli, err := n.ingress()
 	if err != nil {

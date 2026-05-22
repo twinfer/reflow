@@ -31,7 +31,7 @@ func bringUpThreeNodeCluster(t *testing.T) ([]*nodeRig, routing.Partitioner) {
 }
 
 // asInProcess narrows []loadgen.Node to []*loadgen.InProcessNode.
-// Engine integration tests never set SubprocessNodes, so the
+// Engine integration tests only use the in-process cluster, so the
 // assertion always succeeds; a mismatch is a programming error and
 // fails the test loudly.
 func asInProcess(t *testing.T, nodes []loadgen.Node) []*nodeRig {

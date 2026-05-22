@@ -143,6 +143,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	hcfg := engine.HostConfig{
 		NodeID:             cfg.Node.ID,
 		RaftAddr:           cfg.Node.RaftAddr,
+		RaftAdvertisedAddr: cfg.Node.RaftAdvertisedAddr,
 		DataDir:            cfg.Storage.DataDir,
 		Log:                logger,
 		EnableMetrics:      !cfg.Metrics.Disabled,

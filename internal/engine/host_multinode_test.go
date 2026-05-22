@@ -225,3 +225,92 @@ func TestInitialMembers_FromPeers(t *testing.T) {
 		}
 	}
 }
+
+// TestRaftBindAndAdvertise exercises the bind-vs-advertise resolver
+// directly. RaftAdvertisedAddr being empty preserves today's combined
+// behavior (advertise == RaftAddr, no ListenAddress override); a
+// non-empty override flips the gossiped value and pins the listener at
+// RaftAddr — the shape the e2e harness needs for Toxiproxy fronting.
+func TestRaftBindAndAdvertise(t *testing.T) {
+	tests := []struct {
+		name               string
+		bind               string
+		advertised         string
+		wantAdvertise      string
+		wantListenOverride string
+	}{
+		{
+			name:               "empty advertised falls back to bind",
+			bind:               "127.0.0.1:9001",
+			advertised:         "",
+			wantAdvertise:      "127.0.0.1:9001",
+			wantListenOverride: "",
+		},
+		{
+			name:               "advertised equal to bind clears override",
+			bind:               "127.0.0.1:9001",
+			advertised:         "127.0.0.1:9001",
+			wantAdvertise:      "127.0.0.1:9001",
+			wantListenOverride: "",
+		},
+		{
+			name:               "advertised differs splits bind from advertise",
+			bind:               "0.0.0.0:9001",
+			advertised:         "toxiproxy:21001",
+			wantAdvertise:      "toxiproxy:21001",
+			wantListenOverride: "0.0.0.0:9001",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := HostConfig{RaftAddr: tc.bind, RaftAdvertisedAddr: tc.advertised}
+			adv, lo := raftBindAndAdvertise(&cfg)
+			if adv != tc.wantAdvertise {
+				t.Errorf("advertise = %q; want %q", adv, tc.wantAdvertise)
+			}
+			if lo != tc.wantListenOverride {
+				t.Errorf("listenOverride = %q; want %q", lo, tc.wantListenOverride)
+			}
+		})
+	}
+}
+
+// TestApplyMultiNodeConfig_AdvertisedAddr_GossipMeta confirms that
+// when a node sets RaftAdvertisedAddr, the value flows through Peers
+// (each peer's RaftAddr is what other peers see and is propagated by
+// dragonboat's NodeHostRegistry). The advertise/bind split itself is
+// covered by TestRaftBindAndAdvertise; this test is the integration with
+// the gossip-meta packing code so a regression in either path surfaces.
+func TestApplyMultiNodeConfig_AdvertisedAddr_GossipMeta(t *testing.T) {
+	cfg := HostConfig{
+		NodeID:             2,
+		RaftAddr:           "0.0.0.0:9001",
+		RaftAdvertisedAddr: "toxiproxy:21002",
+		GossipBindAddr:     "0.0.0.0:9002",
+		GossipAdvAddr:      "reflowd-node2:9002",
+		GrpcEndpoint:       "toxiproxy:21012",
+		Peers: []Peer{
+			{NodeID: 1, RaftAddr: "toxiproxy:21001", GossipAddr: "reflowd-node1:9002"},
+			{NodeID: 2, RaftAddr: "toxiproxy:21002", GossipAddr: "reflowd-node2:9002"},
+			{NodeID: 3, RaftAddr: "toxiproxy:21003", GossipAddr: "reflowd-node3:9002"},
+		},
+	}
+	var nh config.NodeHostConfig
+	if err := applyMultiNodeConfig(&nh, &cfg); err != nil {
+		t.Fatalf("applyMultiNodeConfig: %v", err)
+	}
+	// applyMultiNodeConfig itself doesn't touch RaftAddress/ListenAddress
+	// (NewHost handles those); the contract it owns is the gossip Meta
+	// blob and Seed list, both of which should be unaffected by the
+	// advertised-addr split.
+	if nh.Gossip.AdvertiseAddress != "reflowd-node2:9002" {
+		t.Errorf("Gossip.AdvertiseAddress = %q; want reflowd-node2:9002", nh.Gossip.AdvertiseAddress)
+	}
+	var meta enginev1.NodeHostMeta
+	if err := proto.Unmarshal(nh.Gossip.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal Meta: %v", err)
+	}
+	if meta.GetGrpcEndpoint() != "toxiproxy:21012" {
+		t.Errorf("Meta.GrpcEndpoint = %q; want toxiproxy:21012", meta.GetGrpcEndpoint())
+	}
+}

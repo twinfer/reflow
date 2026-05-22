@@ -37,9 +37,20 @@ import (
 type HostConfig struct {
 	// NodeID identifies this node in the cluster. Must be > 0.
 	NodeID uint64
-	// RaftAddr is the address dragonboat advertises for inter-node Raft
-	// traffic (host:port). For single-node tests use a localhost port.
+	// RaftAddr is the bind address dragonboat listens on for inter-node
+	// Raft traffic (host:port). For single-node tests use a localhost
+	// port. When RaftAdvertisedAddr is empty (the production default),
+	// RaftAddr also serves as the address gossiped to peers — dragonboat
+	// treats them as the same in its NodeHostConfig.RaftAddress.
 	RaftAddr string
+	// RaftAdvertisedAddr, when non-empty, is the address gossiped to
+	// peers (dragonboat's NodeHostConfig.RaftAddress). RaftAddr then
+	// drops to a pure bind via NodeHostConfig.ListenAddress. Mirrors
+	// GossipBindAddr/GossipAdvAddr below — needed when the node sits
+	// behind NAT, a load balancer, or (in the e2e chaos harness) a
+	// Toxiproxy listener. Empty preserves today's combined bind+advertise
+	// behavior.
+	RaftAdvertisedAddr string
 	// DataDir holds per-partition state and dragonboat's own state.
 	// Layout: <DataDir>/raft/, <DataDir>/p{shardID}/state/.
 	DataDir string
@@ -264,9 +275,15 @@ func NewHost(ctx context.Context, cfg HostConfig) (*Host, error) {
 
 	// Normalize solo deployments to a 1-peer cluster so metadata-shard
 	// bootstrap, initialMembers, and the runner's peer-iteration logic
-	// all see one uniform shape (no len(Peers) == 0 short-circuits).
+	// all see one uniform shape (no len(Peers) == 0 short-circuits). The
+	// self-peer carries the advertised address (what other peers would
+	// dial); when RaftAdvertisedAddr is empty it falls back to RaftAddr.
 	if len(cfg.Peers) == 0 {
-		cfg.Peers = []Peer{{NodeID: cfg.NodeID, RaftAddr: cfg.RaftAddr}}
+		adv := cfg.RaftAdvertisedAddr
+		if adv == "" {
+			adv = cfg.RaftAddr
+		}
+		cfg.Peers = []Peer{{NodeID: cfg.NodeID, RaftAddr: adv}}
 	}
 
 	h := &Host{
@@ -278,9 +295,11 @@ func NewHost(ctx context.Context, cfg HostConfig) (*Host, error) {
 		handlerRegistry: newHandlerRegistry(cfg.HandlerSigner),
 	}
 
+	advertisedRaft, listenOverride := raftBindAndAdvertise(&cfg)
 	nhConfig := config.NodeHostConfig{
 		NodeHostDir:       filepath.Join(cfg.DataDir, "raft"),
-		RaftAddress:       cfg.RaftAddr,
+		RaftAddress:       advertisedRaft,
+		ListenAddress:     listenOverride,
 		RTTMillisecond:    cfg.RTTMillisecond,
 		EnableMetrics:     cfg.EnableMetrics,
 		RaftEventListener: &raftEventListener{host: h},
@@ -375,6 +394,24 @@ func findPeer(peers []Peer, nodeID uint64) *Peer {
 		}
 	}
 	return nil
+}
+
+// raftBindAndAdvertise resolves the bind/advertise split for the Raft
+// transport. The advertise value is what dragonboat publishes via gossip
+// (NodeHostConfig.RaftAddress); the listenOverride is the bind address
+// (NodeHostConfig.ListenAddress) and is only set when it differs from the
+// advertise — leaving ListenAddress empty makes dragonboat listen on
+// RaftAddress, preserving today's combined behavior when
+// RaftAdvertisedAddr is unset.
+func raftBindAndAdvertise(cfg *HostConfig) (advertise, listenOverride string) {
+	advertise = cfg.RaftAdvertisedAddr
+	if advertise == "" {
+		advertise = cfg.RaftAddr
+	}
+	if advertise != cfg.RaftAddr {
+		listenOverride = cfg.RaftAddr
+	}
+	return advertise, listenOverride
 }
 
 // NodeHost returns the underlying dragonboat NodeHost. Exposed for tests and

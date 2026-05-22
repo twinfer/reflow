@@ -375,9 +375,16 @@ type NodeConfig struct {
 	// ID is the replica ID for this node. Must be > 0. In single-node
 	// deployments use 1.
 	ID uint64 `koanf:"id"`
-	// RaftAddr is the host:port dragonboat advertises for inter-node Raft
-	// traffic. For single-node use a localhost port.
+	// RaftAddr is the host:port dragonboat binds to for inter-node Raft
+	// traffic. For single-node use a localhost port. When
+	// RaftAdvertisedAddr is empty, RaftAddr also serves as the address
+	// gossiped to peers (today's combined-bind-and-advertise behavior).
 	RaftAddr string `koanf:"raft_addr"`
+	// RaftAdvertisedAddr, when non-empty, is the address gossiped to
+	// peers; bind stays at RaftAddr. Required when the node sits behind
+	// NAT, a load balancer, or (in the e2e harness) a Toxiproxy listener.
+	// Empty preserves combined bind+advertise behavior.
+	RaftAdvertisedAddr string `koanf:"raft_advertised_addr"`
 	// GossipBindAddr is the address dragonboat's gossip layer binds to
 	// (host:port). Required when Cluster.Peers is non-empty.
 	GossipBindAddr string `koanf:"gossip_bind_addr"`

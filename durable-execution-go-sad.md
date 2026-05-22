@@ -1,18 +1,22 @@
 # Solution Architecture Document
 # Durable Execution Engine in Go
 
-**Version:** 0.7 (Draft)
-**Date:** 2026-05-21
+**Version:** 0.8 (Draft)
+**Date:** 2026-05-22
 **Status:** Single-node foundation, Connect bidi wire protocol between
 engine and Go SDK (`pkg/handler`), Virtual Objects (single-writer gate,
 idempotency, retry policy, eager state, attach RPCs), combinator futures
 (`Promise.all` / `Promise.race`), multi-node replication (mTLS admin,
 dynamic membership including joiner-driven `SelfJoin`, DR snapshots),
 auth (SPIFFE mTLS for cluster mesh + OIDC bearer for ingress, embedded
-starter policy with hot reload), cluster-managed event sources /
-webhooks / secret store (shard-0 tables, per-node Reconcilers, Tink KMS
-providers: BlobKMS, AWS, GCP, Vault) all implemented. Non-Go SDKs
-outstanding.
+starter policy with hot reload), cluster-managed app config (shard-0
+tables for deployments, event sources, webhooks, secrets — Connect-RPC
+admin surface split into `ClusterCtl` for fleet ops + `Config` for app
+config, kubectl-shaped `reflowd config apply / get / export` CLI),
+two-layer routing (4096 logical partitions over N shards, consistent-hash
+planner, six-phase cross-shard LP transfer saga, autonomous LP rebalancer
+with `off | advisory | auto` modes + operator drain) all implemented.
+Non-Go SDKs outstanding.
 
 ---
 
@@ -221,7 +225,8 @@ partition_id = hash(service_name + "/" + object_key) % num_partitions
 | Connect ingress (`reflow.ingress.v1`) | 8080 | Connect/HTTP-2 | Anonymous via `ingress_open` policy rule; operator tightens via `cfg.Auth.PolicyFile` | Typed SDK clients submit invocations, await results, resolve awakeables/promises |
 | REST ingress (`/v1/*`) | 8080 (same listener) | HTTP/1.1+HTTP/2 + JSON envelope | Anonymous via `ingress_rest_open` policy rule | curl, webhooks, Restate-style URL ergonomics; delegates to the Connect handlers via the in-process `*ingress.Server` |
 | Delivery (`reflow.delivery.v1`) | 8081 | Connect/HTTP-2 | mTLS, `spiffe://<td>/node/*` | Cross-partition / cross-node command forwarding |
-| Admin (`reflow.admin.v1`) | 8082 | Connect/HTTP-2 | mTLS, `spiffe://<td>/operator/*` (+ `node/*` carve-out on `SelfJoin`) | Cluster ops: add/remove node, list partitions, snapshot mgmt, register-deployment |
+| ClusterCtl (`reflow.clusterctl.v1`) | 8082 (shared) | Connect/HTTP-2 | mTLS, `spiffe://<td>/operator/*` (+ `node/*` carve-out on `SelfJoin`) | Fleet ops: add/remove node, list partitions, snapshot mgmt, LP transfers + autonomous rebalancer drain |
+| Config (`reflow.config.v1`) | 8082 (same listener as ClusterCtl) | Connect/HTTP-2 | mTLS, `spiffe://<td>/operator/*` | App config: deployments, event sources, webhooks, secrets — every kubectl-shaped admin operation operators run between deploys |
 
 **Extension seam.** `ingress.Config.ExtraRoutes func(*Server) []connectserver.Route`
 mounts additional HTTP handlers on the Connect ingress listener without
@@ -310,8 +315,9 @@ Each node, in order (`pkg/reflow/run.go:Run`):
    (`internal/engine/host.go:applyMultiNodeConfig`). The NodeHost is up,
    gossip is running, but no shards have started.
 4. Build the Delivery surface (`pkg/reflow/run.go:96-187`): mTLS server
-   creds (cluster CA + node leaf), gRPC server with
-   `auth.StreamInterceptor`, `delivery.Client` for outbound, and
+   creds (cluster CA + node leaf), Connect handler hosted on an h2c
+   `net/http` server wrapped by `internal/auth.HTTPMiddleware`,
+   `delivery.Client` for outbound, and
    `Host.SetCrossShardSender(client)` so partitions started below get a
    Sender.
 5. `Host.StartMetadataShard()` opens `${DataDir}/meta/state`, builds the
@@ -328,8 +334,13 @@ Each node, in order (`pkg/reflow/run.go:Run`):
    (`host.go:508`).
 7. Optionally build the snapshot producer (`snapshot.FSRepository` +
    `RunProducer` goroutine per shard).
-8. Optionally build the Admin surface: mTLS server creds, gRPC server
-   with `auth.UnaryInterceptor`, `adminv1.RegisterAdminServer`.
+8. Optionally build the admin Connect surface: mTLS server creds,
+   one HTTP/2 listener hosting both `reflow.clusterctl.v1.ClusterCtl`
+   (fleet ops) and `reflow.config.v1.Config` (app config). Auth runs
+   at the HTTP/Connect layer via `internal/auth.HTTPMiddleware`
+   (SPIFFE + OIDC chain). The naming mirrors Restate's
+   `cluster-ctrl` vs `admin` split, with `admin` flipped to `config`
+   to avoid the overloaded word.
 
 After `Run` returns, the cluster forms organically. Each NodeHost has
 the full member list; once `floor(N/2)+1` of them can reach each other
@@ -352,7 +363,7 @@ reflowd cluster add-node    --node-id=4 --raft-addr=10.0.0.4:9091 \
 reflowd cluster remove-node --node-id=2
 ```
 
-- **Operator-driven add (`add-node`, `internal/admin/server.go:AddNode`):**
+- **Operator-driven add (`add-node`, `internal/clusterctl/server.go:AddNode`):**
   proposes `RegisterNode{Member}` to shard 0, then enqueues a
   `BeginRebalanceStep{Kind: PROMOTE_TO_VOTER, AddNodeId}` for every
   partition the new node should hold. The metadata rebalancer
@@ -364,8 +375,8 @@ reflowd cluster remove-node --node-id=2
 - **Joiner-driven add (`reflowd run` with `Cluster.JoinExisting=true`):**
   `pkg/reflow/run.go:callSelfJoin` discovers the metadata leader via
   gossip-published `NodeHostMeta.admin_endpoint` and dials the
-  leader's `Admin/SelfJoin` RPC before any local shard starts.
-  `Admin/SelfJoin` shares `addNodeInternal` with the operator path
+  leader's `ClusterCtl/SelfJoin` RPC before any local shard starts.
+  `ClusterCtl/SelfJoin` shares `addNodeInternal` with the operator path
   but gates on a `node/<req.node_id>` SPIFFE principal so a leaked
   cert can only self-register as its own node id. The joiner then
   calls `nh.StartOnDiskReplica(nil, join=true, ...)` on each shard,
@@ -378,11 +389,12 @@ reflowd cluster remove-node --node-id=2
 
 **Failure detection.** Dragonboat's built-in gossip (memberlist/SWIM,
 enabled via `NodeHostConfig.AddressByNodeHostID = true` + `GossipConfig`)
-runs SWIM probes between every NodeHost. Each observer turns `K`
-consecutive failed probes against node `X` into a `RemoveNode` proposal
-to shard `0`; the metadata leader, seeing reports above the eviction
-threshold, commits the membership change. Eviction is a
-strongly-consistent decision driven by an eventually-consistent signal.
+runs SWIM probes between every NodeHost. The metadata leader's
+`metadataRebalancer.failureLoop` polls the gossip `NodeHostRegistry`
+every second; after `missThreshold` consecutive unreadable observations
+of a peer's `NodeHostMeta`, it proposes `EvictNode` to shard 0. Eviction
+is a strongly-consistent Raft decision driven by an
+eventually-consistent gossip signal.
 
 **Discovery & endpoint resolution.** Two complementary sources:
 
@@ -400,27 +412,31 @@ strongly-consistent decision driven by an eventually-consistent signal.
   decouples node identity from raft addresses (k8s IP churn no longer
   requires a shard-0 proposal).
 
-**Partition count.** Fixed at cluster bootstrap (default 64). Partition
-shards are the unit of scalability; rebalancing reassigns shards across
-nodes without renaming partition_keys.
+**Partition shard count vs. LP count — two layers.** Reflow's routing
+is two-layer: a fixed pool of **4096 logical partitions (LPs)** maps to
+**N partition shards** (default `len(cfg.Cluster.Shards)` falling back to
+1 single-node). Ingress hashes `(service, object_key)` to an LP; shard 0's
+`LPOwnersTable` maps each LP to a shard id. `N` is a hard design invariant
+at cluster bootstrap; the LP layer is what gets re-balanced across shards
+without ever renaming a partition key. See "Two-layer routing (LP → shard)"
+below.
 
-*Rationale (see §9 rows 1 & 4).* Constant `N` keeps routing fully
-deterministic forever: `shard = PartitionKey % N` agrees across stale
-nodes, ingress clients holding old `InvocationId`s, and the metadata-shard
-FSM, with no epoch number or `(N, key)` tuple to carry. It also avoids the
-split/merge protocol (atomic key-range move across two Pebble DBs + two
-dragonboat groups + two leader log positions while in-flight invocations,
-timers, and outbox rows are live) — a class of bugs we explicitly opt out
-of. The unit of scale-out is moving a shard between nodes via the rebalancer,
-not changing `N`. The trade is a hard ceiling on horizontal
-scale (~`N` busy leaders) and permanent hot-key skew if a single
-`(service, object_key)` becomes dominant; both are acceptable inside the
-target envelope. Online resize of `N` is therefore **not supported** —
-`Host.Partitioner()` reads `cfg.NumPartitionShards` at boot and never
-recomputes the modulus from the metadata shard. *Shard reassignment*
-across nodes (the rebalancer's job) is independent of this and remains in
-scope: nodes still react to `PartitionTable` updates by starting /
-stopping local Raft replicas as ownership shifts.
+*Rationale (see §9 rows 1 & 4).* Constant `N` keeps shard ownership
+deterministic forever: a shard id agreed by stale nodes and current
+leaders, with no epoch number or `(N, key)` tuple in the routing equation.
+The LP layer absorbs hot-spot rebalancing — when a `(service, object_key)`
+gets busy, the operator (or the autonomous rebalancer) moves the *LP*
+to a less-loaded shard via the cross-shard transfer saga, not via a
+split/merge of `N`. The split/merge protocol (atomic key-range move across
+two Pebble DBs + two dragonboat groups while in-flight invocations are
+live) is a class of bugs we explicitly opt out of.
+
+Online resize of `N` is **not supported** — `Host.Partitioner()` reads
+`cfg.NumPartitionShards` at boot and never recomputes it. Shard
+reassignment across nodes (the rebalancer's job) is independent: nodes
+still react to `PartitionTable` updates by starting / stopping local
+Raft replicas as ownership shifts. LP reassignment across shards (the
+autonomous rebalancer's job) is the new third primitive.
 
 **Hard boundary the design enforces:** the metadata Raft group is the only
 authoritative source of partition ownership. No node ever processes a
@@ -430,6 +446,132 @@ on its `dragonboat` shard before any side effects can escape. Gossip can
 never override this — it only feeds advisory signals (liveness reports,
 leader hints, endpoint resolution) and Raft proposals are the only path
 to authoritative state changes.
+
+#### 6.2.1 Two-layer routing (LP → shard)
+
+Reflow routes through two layers, not one:
+
+```
+ingress request
+  ↓
+hash(service, object_key) % 4096       → logical partition (LP)
+  ↓ LPOwnersTable[lp]                  (shard 0, atomic snapshot per node)
+shard_id ∈ [1, N]                      → dragonboat group on the owning node
+```
+
+The LP layer is the unit of online rebalancing; the shard layer is the
+fixed unit of replication. Hot-spot relief is "move an LP between
+shards" — never "split a shard."
+
+**Components:**
+
+- **`routing.Partitioner`** (`internal/engine/routing/partitioner.go`)
+  is the per-Host singleton hot-path. Holds an
+  `atomic.Pointer[map[uint32]uint64]` LP→shard snapshot;
+  `ShardForKey(partitionKey) uint64` is a single atomic load + map
+  lookup. A per-node routing reconciler swaps the snapshot on each
+  `cluster.TableNotifier` wake.
+- **`routing.Planner`** (`internal/engine/routing/planner.go`) wraps
+  `buraksezer/consistent` (consistent hash with bounded loads, Google
+  2017 paper) over the active shard ids. `NewPlanner(shardIDs).PlanAll()`
+  returns the desired `map[lp]shard_id` deterministically across
+  replicas (xxhash is platform-neutral; constructor sorts shard ids
+  before building the ring). `routing.Diff(current, desired)` returns
+  the move set in LP-ascending order — used by both the
+  metadata-leader bootstrap seed and the autonomous rebalancer.
+- **`cluster.LPOwnersTable`** on shard 0 (`internal/engine/cluster/store.go`)
+  is the authoritative LP→shard mapping (4096 rows, one per LP).
+  Bootstrapped from the planner's `PlanAll()` output; mutated only via
+  the LP transfer protocol below.
+
+**Cross-shard LP transfer protocol** (`internal/engine/lp_transfer_*.go`,
+`internal/engine/metadata_lpmover.go`). Six-phase saga coordinated by the
+`lpMover` goroutine on the metadata-shard leader:
+
+```
+INIT → SHIPPING → STAGED → FLIPPED → CLEANED         (happy path)
+INIT|SHIPPING|STAGED → ABORTING → ABORTED             (abort branch — never from FLIPPED)
+```
+
+1. **`InitiateLPTransfer`** (proposed by `ClusterCtl/TransferLP` or the
+   autonomous rebalancer): writes `LPTransferRecord{INIT}` to shard 0.
+   Stamps `expected_lpowners_revision` so the eventual `UpsertLPOwner`
+   CAS can detect concurrent ownership drift.
+2. **`BeginLPTransfer`** → source partition: installs
+   `lp_freeze/<lp>` row. Every subsequent LP-touching apply arm checks
+   the freeze gate via `partition.checkLPFreeze` and returns
+   `errLPFrozen` to the proposer, who retries elsewhere.
+3. **`ApplyLPTransferChunk`** (one per ~256 KiB batch, ridden by the
+   leader's `LPTransferSourceService` over the existing
+   `CrossShardSender` RPC): destination writes raw bytes via
+   `batch.Set` into the live LP namespaces; `LPStagingTable` tracks
+   chunk_seq for in-order delivery + duplicate absorption.
+4. **`STAGED`** ack returns to shard 0 once `is_final=true` chunk
+   applies on destination.
+5. **`UpsertLPOwner`** on shard 0 (CAS against
+   `expected_lpowners_revision`) atomically flips the routing row.
+   This is the point of no return — `isValidLPTransferAdvance` rejects
+   `FLIPPED → ABORTING`.
+6. **`CommitLPTransfer`** → destination: drops the staging marker.
+   **`FinishLPTransfer`** → source: range-deletes every LP-prefixed
+   namespace, walks `timer_lp/<lp>/...` first to collect primary
+   `timer/<fire>/<id>` keys (the primary keyspace is LP-agnostic so the
+   secondary index drives the cleanup). Phase advances to CLEANED.
+7. **`RemoveLPTransfer`** after a grace window so an operator polling
+   `ListLPTransfers` sees the row before it disappears.
+
+**Autonomous LP rebalancer** (`internal/engine/rebalance/`). Leader-only
+goroutine spawned by `MetadataRunner.onBecomeLeader` alongside the
+membership-handling `metadataRebalancer` and the saga-executing
+`lpMover`. Subscribes to the `RebalanceDrainTable` notifier with a 30s
+backstop ticker.
+
+Modes (`cfg.Rebalance.Mode`, default `off`):
+
+| Mode | Goroutine | Observes | Emits metrics | Logs decisions | Proposes |
+|------|-----------|----------|---------------|----------------|----------|
+| `off` | not started | — | mode gauge=0 | — | — |
+| `advisory` | running | yes | all | yes (`would_transfer`) | **no** |
+| `auto` | running | yes | all | yes | yes (rate-limited) |
+
+Each tick:
+
+1. SyncRead `PartitionTable`, `LPOwnersTable`, `RebalanceDrainTable`,
+   `LPTransferTable` from shard 0.
+2. Compute the live shard set = active partition shards − drained.
+3. `desired := routing.NewPlanner(live).PlanAll()`.
+4. `moves := routing.Diff(current, desired)` (LP-ascending,
+   deterministic so two leaders racing across a step-down produce the
+   same intent).
+5. **Skew metric** = mis-placement fraction = `len(moves) /
+   len(desired) × 100`. The planner output is fixed for a given shard
+   set, so each completed transfer monotonically decreases the
+   numerator.
+6. **Hysteresis**: engaged iff (prior engaged AND skew > disengage_pct)
+   or (prior not engaged AND skew ≥ engage_pct). Defaults: 15% engage,
+   8% disengage.
+7. **Rate limit**: cap proposals at `max_concurrent_transfers −
+   in_flight`; gate by `min_seconds_between_transfers` cooldown
+   against `max(started_at_ms)` across all `LPTransferRecord` rows.
+8. **Advisory**: log each candidate move and increment
+   `reflow_rebalance_decisions_total{outcome=would_transfer}` — never
+   propose.
+9. **Auto**: propose `Command_InitiateLPTransfer` for the first
+   `capacity` moves. Same path manual `reflowd cluster transfer-lp`
+   takes, so autonomous transfers appear in `ListLPTransfers` with no
+   extra plumbing.
+
+**Triggers in this version** are limited to membership change
+(`PartitionTable` reshapes the planner's input) and operator-requested
+drain. Drained shards live in shard 0's `RebalanceDrainTable`
+(CAS-revisioned, cluster-managed, runtime-mutable via
+`ClusterCtl/RebalanceDrain`). Load-based triggers (per-shard QPS / p99)
+and capacity circuit breakers (Pebble L0, write-amp) are explicitly
+deferred — durable-execution workloads are bursty enough that reactive
+moves on rolling-window load fire mid-burst; capacity is better as a
+*destination gate* than a *trigger*. SST shipping via Pebble
+`IngestAndExcise` is also deferred until measurement shows row-by-row
+is the bottleneck.
 
 ---
 
@@ -665,42 +807,119 @@ therefore critical to back up.
 
 ### 6.7 Pebble Key Schema
 
-Each partition owns its own Pebble DB at `${DataDir}/p{shardID}/state/`, so
-keys do NOT carry a partition_id prefix — isolation is at the DB level.
-Dragonboat keeps its own state under `${DataDir}/raft/`.
+Each partition shard owns its own Pebble DB at
+`${DataDir}/p{shardID}/state/`; shard 0 (metadata) lives at
+`${DataDir}/meta/state/`. Keys do NOT carry a shard_id prefix —
+isolation is at the DB level. Dragonboat keeps its own state under
+`${DataDir}/raft/`.
+
+`InvocationId` is the canonical 24-byte raw form (8-byte BE
+`partition_key` + 16-byte uuid), mirroring restate
+`types/src/identifiers.rs:456-461`. All multi-byte integers in keys are
+big-endian so lexicographic byte order equals numeric order.
+
+**LP-prefixing.** Most partition-shard rows live under
+`<namespace>/<4-byte BE lp>/...` where `lp = LPFromPartitionKey(pk) =
+pk mod 4096`. The LP prefix makes the entire LP keyspace a contiguous
+byte range — the cross-shard LP transfer protocol (§6.2, "Two-layer
+routing") scans + ships these ranges and `FinishLPTransfer` range-
+deletes them on the source. Rows that are intrinsically LP-agnostic
+(timer primary keyed by fire time, outbox keyed by per-shard sequence,
+workflow-reap due-time index) keep their original shape.
+
+#### Partition shards (1..N), `${DataDir}/p{shardID}/state/`
 
 ```
-Namespace       Key structure                                    Value
-─────────────────────────────────────────────────────────────────────────────
-meta            meta                                             PartitionMeta (proto)
+Namespace            Key structure                                          Value
+──────────────────────────────────────────────────────────────────────────────────
+meta                 meta                                                   PartitionMeta
+format_version       format_version                                         uint32 (storage format marker)
 
-inv/            inv/<24-byte invocation_id>                      InvocationStatus (proto)
+inv/                 inv/<lp:4>/<id:24>                                     InvocationStatus
+journal/             journal/<lp:4>/<id:24>/<idx:4>                         JournalEntry
 
-journal/        journal/<24-byte invocation_id>/<4-byte BE idx>  JournalEntry (proto)
+timer/               timer/<fire_at_ms:8>/<id:24>                           uint32 sleep_index   (LP-agnostic primary)
+timer_lp/            timer_lp/<lp:4>/<fire_at_ms:8>/<id:24>                 (empty)              (secondary index — rides LP transfer scan)
+timer_idx/           timer_idx/<lp:4>/<id:24>/<fire_at_ms:8>                (empty)              (secondary index — fast per-invocation cancel)
 
-timer/          timer/<8-byte BE fire_at_ms>/<24-byte id>        uint32 sleep_index
+state/               state/<lp:4>/<service>/<obj_key>/<state_key>           VObject K/V state
+keylease/            keylease/<lp:4>/<service>/<obj_key>                    KeyLeaseStatus
+idemp/               idemp/<lp:4>/<service>/<handler>/<obj_key>/<key>       IdempotencyRow
 
-state/          state/<service>/<obj_key>/<state_key>            Virtual Object K/V state
+awakeable/           awakeable/<lp:4>/<id>                                  AwakeableState
+signal_inbox/        signal_inbox/<lp:4>/<id:24>/<name>                     SignalInboxRow
+signal_awaiter/      signal_awaiter/<lp:4>/<id:24>/<name>                   uint32 entry_index
 
-dedup/self/     dedup/self/<8-byte BE leader_epoch>              DedupEntry (proto)
-dedup/arb/      dedup/arbitrary/<producer_id>                    DedupEntry (proto)
+workflow_run/        workflow_run/<lp:4>/<service>/<wf_key>                 WorkflowRunRecord
+promise/             promise/<lp:4>/<service>/<wf_key>/<name>               PromiseValue
+promise_awaiter/     promise_awaiter/<lp:4>/<service>/<wf_key>/<name>/<i:4> awaiter handle
+workflow_reap/       workflow_reap/<fire_at_ms:8>/<service>/<wf_key>        (empty)              (LP-agnostic due-time index)
+
+dedup/self/          dedup/self/<leader_epoch:8>/<seq:8>                    DedupEntry           (GC'd per leader epoch)
+dedup/arbitrary/     dedup/arbitrary/<lp:4>/<producer_id>/<seq:8>           DedupEntry           (LP-prefixed since PR 4 of the routing rollout — rides the LP transfer)
+
+outbox/              outbox/<seq:8>                                         OutboxRow            (LP-agnostic; per-shard send sequence)
+
+lp_freeze/           lp_freeze/<lp:4>                                       LPFreezeRow          (set by BeginLPTransfer; gates LP-touching apply arms)
+lp_staging/          lp_staging/<transfer_id>                               LPStagingRow         (destination-side; tracks in-order chunk delivery)
 ```
-
-`InvocationId` is the canonical 24-byte raw form (8-byte BE partition_key +
-16-byte uuid), which mirrors restate `types/src/identifiers.rs:456-461`.
-All multi-byte integers in keys are big-endian so lexicographic byte order
-equals numeric order.
 
 **Key design decisions:**
-- One Pebble DB per partition removes the need for a partition_id prefix and
-  simplifies snapshot / checkpoint isolation.
-- Timer keys sort by `(fire_at_ms, invocation_id)`, so `TimerTable.ScanDue`
-  is a bounded prefix scan.
-- Journal entries use a monotonic `command_index` per invocation, distinct
-  from the Raft log index, so log truncation doesn't leave gaps in the
-  journal index space.
-- The dedup table is namespaced by producer kind (`self` vs `arbitrary`) so
-  the two sequence spaces never collide.
+
+- **One Pebble DB per shard.** Removes the need for a shard_id key
+  prefix and simplifies snapshot / checkpoint isolation.
+- **LP-prefixed namespaces.** The 4-byte BE LP prefix gives the LP
+  transfer's source-side scan and destination-side range-delete an
+  O(prefix-scan) shape per namespace. Adding a new namespace touches
+  four sites in lockstep — `keys.go` doc + `<NS>LPPrefix` helper,
+  `internal/engine/lp_transfer_source.go` namespace list,
+  `internal/engine/partition_lp_transfer.go`'s `lpPrefixesForLP` and
+  `validateTransferRowLP`.
+- **Timer primary is LP-agnostic.** `timer/<fire>/<id>` sorts by
+  `(fire_at_ms, id)` so `TimerTable.ScanDue` is a bounded prefix scan
+  ordered by due time. `timer_lp/` is the LP-prefixed secondary index
+  used by the LP transfer scan; `timer_idx/` is the per-invocation
+  cancel index. The three views stay consistent because the apply arm
+  writes all three together inside one batch.
+- **Dedup namespacing.** `dedup/self/` is shard-scoped per leader
+  epoch (GC'd by `GCSelfBelowEpoch` on leader gain); `dedup/arbitrary/`
+  is LP-keyed and rides the LP transfer scan so a producer retry after
+  an LP flip finds its row already present on the new owner. LP-
+  agnostic kinds (today only `OutboxAck`) key under `keys.LPNoLP =
+  0xFFFF_FFFF`, a sentinel that is never a real LP (real LPs are
+  < 4096) and is therefore never range-deleted by `FinishLPTransfer`.
+- **Journal indices** are monotonic per invocation, distinct from the
+  Raft log index, so log truncation doesn't leave gaps in the journal
+  index space.
+
+#### Metadata shard (shard 0), `${DataDir}/meta/state/`
+
+The cluster manager FSM stores everything routing- and config-related.
+Each cluster-managed table has a paired `tablerev/<name>` singleton used
+by `Envelope.precondition.if_table_revision_eq` for CAS — the FSM signals
+mismatch via `Result.Value = ResultValueFailedPrecondition` (returning an
+error would halt the shard, per `internal/engine/CLAUDE.md`).
+
+```
+Namespace            Key structure                       Value
+─────────────────────────────────────────────────────────────────────────
+meta                 meta                                PartitionMeta (reuses partition proto; only applied_index + latest_announced_epoch populated)
+node/                node/<node_id:8>                    NodeMembership
+partition_table      partition_table                     PartitionTable singleton
+
+deployment/          deployment/<deployment_id>          DeploymentRecord
+deployment_idx/      deployment_idx/<service>\0<handler> deployment_id (ascii) — (service, handler) → current owner
+
+eventsrc/            eventsrc/<name>                     EventSourceRecord
+webhooksrc/          webhooksrc/<name>                   WebhookSourceRecord
+secret/              secret/<name>                       SecretRecord (carries pointer fields only — blob_uri + kek_uri; plaintext never traverses Raft)
+
+lpowner/             lpowner/<lp:4>                      LPOwnerRecord  (the LP → shard_id routing table)
+lptransfer/          lptransfer/<transfer_id>            LPTransferRecord (in-flight LP transfer saga)
+rebalance_drain/     rebalance_drain/<shard_id:8>        RebalanceDrainRecord (operator-requested shard drains)
+
+tablerev/            tablerev/<table_name>               TableRevision (CAS singleton per cluster-managed table)
+```
 
 ---
 
@@ -1126,8 +1345,8 @@ different purposes and are not interchangeable.
 
 | Plane | Identity primitive | Issued by | Runtime dep | Used for |
 |---|---|---|---|---|
-| SPIFFE / mTLS | `spiffe://<td>/<kind>/<name>` URI SAN on the verified leaf | Reflow's offline CA (`reflowd pki`) | none | cluster mesh + Admin/Delivery |
-| OIDC bearer | JWT with claims mapped to `Principal{Kind, Subject}` | Customer's IdP | IdP reachable | ingress + optionally Admin via `kind=operator` |
+| SPIFFE / mTLS | `spiffe://<td>/<kind>/<name>` URI SAN on the verified leaf | Reflow's offline CA (`reflowd pki`) | none | cluster mesh + ClusterCtl/Config/Delivery |
+| OIDC bearer | JWT with claims mapped to `Principal{Kind, Subject}` | Customer's IdP | IdP reachable | ingress + optionally ClusterCtl/Config via `kind=operator` |
 
 Both planes produce the same `auth.Principal{Kind, Subject, Raw, …}`
 shape, so the downstream policy match (`operator/*`, `node/*`) is
@@ -1174,14 +1393,15 @@ identical regardless of how the principal was established.
 
 | Surface | TLS | AuthFunc step | Policy |
 |--|--|--|--|
-| Admin (`reflow.admin.v1.Admin`) | mTLS (operator), or via OIDC bearer | SPIFFE → operator/node; bearer → claim-mapped principal | `admin` rule allows `operator/*`; `admin-selfjoin` rule allows `node/*` only on `/SelfJoin` (with `checkSelfJoinPrincipal` further requiring URI's `<id>` == `req.node_id`) |
+| ClusterCtl (`reflow.clusterctl.v1.ClusterCtl`) | mTLS (operator), or via OIDC bearer | SPIFFE → operator/node; bearer → claim-mapped principal | `clusterctl` rule allows `operator/*`; SelfJoin carve-out allows `node/*` (with `checkSelfJoinPrincipal` further requiring URI's `<id>` == `req.node_id`) |
+| Config (`reflow.config.v1.Config`) | mTLS (operator), or via OIDC bearer | SPIFFE → operator; bearer → claim-mapped principal | `config` rule allows `operator/*` |
 | Delivery (`reflow.delivery.v1.Delivery`) | mTLS (node) | SPIFFE only; bearer ignored (no IdP path for streaming inter-node) | `delivery` rule allows `node/*` |
 | Connect ingress (`reflow.ingress.v1`) | Optional (h2c or TLS via `cfg.Ingress.Creds`) | Either; falls through to anonymous when neither present | `ingress_open` rule has no principal constraint by default; operators tighten via `cfg.Auth.PolicyFile` |
 | REST ingress (`/v1/*`) | Same listener as Connect ingress | Same as Connect ingress | `ingress_rest_open` rule covers `/v1/*` through `/v1/*/*/*/*/*` |
 | Engine → handler (`protocolv1`) | Out of scope here — owned by `pkg/reflow/creds` driver + `pkg/handler.Config` verifying via `RootCAs` / `AllowedSPIFFE` |
 
 **Why both planes:** dropping SPIFFE in favor of OIDC-only would break
-load-bearing pieces: (1) `Admin/SelfJoin`'s NodeID-binding gate
+load-bearing pieces: (1) `ClusterCtl/SelfJoin`'s NodeID-binding gate
 requires identity bound to a key in node-X's secret store, which mTLS
 provides natively; (2) the dragonboat Raft transport and Delivery RPC
 are TCP/streaming surfaces with no header to put a bearer token on;
@@ -1196,10 +1416,10 @@ JWT path).
 The composed AuthFunc means a single `kind=operator` claim from an
 OIDC token produces the same `Principal{Kind: "operator", Subject:
 …}` value as an offline-CA `spiffe://td/operator/…` leaf. The
-`starter_policy.json` `admin` rule matches on `operator/*` regardless
-of how the principal was established, so an OIDC-authenticated CI
-pipeline can run `reflowd cluster {add-node, snapshot create, …}`
-without ever holding an mTLS cert.
+`starter_policy.json` `clusterctl` and `config` rules both match on
+`operator/*` regardless of how the principal was established, so an
+OIDC-authenticated CI pipeline can run any `reflowd cluster ...` or
+`reflowd config ...` subcommand without ever holding an mTLS cert.
 
 Concrete example — let GitHub Actions or a similar CI run admin RPCs
 via OIDC instead of provisioning per-job certs:
@@ -1220,7 +1440,8 @@ auth:
 A workflow that mints a GitHub OIDC token with a custom
 `reflow_kind: operator` mapper (and audience `reflow`) gets a
 `Principal{Kind: "operator", Subject: "repo_org_reflow_main_…"}` —
-matches `operator/*`, can hit `/Admin/*`. The `/` in the subject is
+matches `operator/*`, can hit `/reflow.clusterctl.v1.ClusterCtl/*`
+and `/reflow.config.v1.Config/*`. The `/` in the subject is
 sanitized to `_` to keep IdP-controlled values out of
 principal-glob traversal.
 
@@ -1539,13 +1760,13 @@ Minimum production deployment: 3 nodes (Raft quorum = 2).
 
 | # | Question | Impact | Notes |
 |---|---|---|---|
-| 1 | Fixed vs. dynamic partition count | Resolved | Fixed at bootstrap (default 64). Split/merge is explicitly not on the roadmap. |
+| 1 | Fixed vs. dynamic partition shard count | Resolved | Partition shard count is fixed at cluster bootstrap (no built-in default — operators pick `len(cfg.Cluster.Shards)`, single-node falls back to 1). Split/merge of `N` is explicitly not on the roadmap; the two-layer routing (4096 LPs over N shards) absorbs rebalancing via LP transfers instead. See §6.2. |
 | 2 | Node discovery mechanism | Resolved | Embedded metadata Raft group (`shardID=0`) is authoritative for partition ownership; dragonboat's built-in gossip (memberlist/SWIM, no extra dependency) provides endpoint resolution and a leader hint cache. Static peer bootstrap (`--bootstrap-cluster` / `--join`). No external service required. See §6.2. |
 | 3 | In-process Go SDK vs. external SDK only | Resolved | Out-of-process only. All handlers (including Go) speak `protocolv1` framed inside Connect bidi streams (`handlerv1.HandlerService/InvokeStream`) over HTTP/2 — see §6.10. The Go SDK lives at `pkg/handler`; non-Go SDKs are community-driven. |
-| 4 | Partition count default | Resolved | 64 partitions at cluster bootstrap. |
+| 4 | Partition count default | Resolved | LP routing modulus is fixed at 4096 logical partitions (`keys.LPCount`). Shard count has no built-in default; operators set `cfg.Cluster.Shards` (single-node falls back to 1). |
 | 5 | Raft replication factor | Resolved | Default 3, configurable per deployment via `--replication-factor`. Three is the minimum that tolerates a single failure with quorum; >3 trades write latency for durability. Decided per deployment, no SAD-level open question remains. |
 | 6 | Pebble per-partition vs. shared | Resolved | Per-partition Pebble DB; no `partition_id` prefix in keys. |
-| 7 | Exactly-once for non-idempotent external calls | Resolved | Idempotency keys propagate through `Invoke` via the `Dedup` field on `Envelope` (`enginev1/engine.proto`). The dedup table (`dedup/self` for self-proposals, `dedup/arb` for external producers like ingress) is consulted on every apply; duplicates are dropped before state mutation. See `internal/storage/tables/dedup.go` and `internal/storage/tables/idempotency.go`. |
+| 7 | Exactly-once for non-idempotent external calls | Resolved | Idempotency keys propagate through `Invoke` via the `Dedup` field on `Envelope` (`enginev1/engine.proto`). The dedup table (`dedup/self/<epoch>/<seq>` for self-proposals, `dedup/arbitrary/<lp:4>/<producer>/<seq>` for external producers like ingress — LP-prefixed so the row rides the LP-transfer scan and a producer retry after an LP flip still finds its row on the new owner) is consulted on every apply; duplicates are dropped before state mutation. See `internal/storage/tables/dedup.go` and `internal/storage/tables/idempotency.go`. |
 | 8 | SDK protocol versioning | Resolved | Wire protocol (`protocolv1`) tracks restate service-protocol v7 / journal-v2 as a *best-effort* compat target, not bug-for-bug. Negotiated at RegisterDeployment via `discoveryv1.DiscoveryResponse.protocol_version`. |
 | 9 | timerfd vs `time.Timer` | Resolved | `time.Timer`; revisit only with measured latency requirements. |
 | 10 | `StateStore` alternative implementations | Resolved | `internal/storage.Store` interface; `MemStore` (tests) + `PebbleStore` (production). |
@@ -1553,7 +1774,7 @@ Minimum production deployment: 3 nodes (Raft quorum = 2).
 | 12 | Object storage for snapshots | Resolved | `SnapshotRepository` interface with filesystem and cloud drivers (S3/GCS/Azure via `gocloud.dev/blob`). Always optional — default deployment is local-only. Hot state never leaves Pebble; only snapshot artifacts and their metadata go to object storage. See §6.12. |
 | 13 | Authn/authz model for internal gRPC | Resolved | Two authenticators chain at the HTTP layer below Connect: SPIFFE URI SAN extraction from the verified mTLS leaf (`internal/auth/spiffe_authfunc.go`) and Bearer-JWT verification against one or more OIDC issuers (`internal/auth/jwt_authfunc.go`); mTLS wins when both are presented. Authz is a path-glob policy (embedded starter policy in `internal/auth/starter_policy.json`, hot-reloaded from `cfg.Auth.PolicyFile` when set). See §6.13. |
 | 14 | SDK transport for non-Go handlers | Resolved | The engine dials every handler over Connect bidi streaming (`handlerv1.HandlerService/InvokeStream`) carrying `protocolv1` frames. Same path for Go and non-Go SDKs; no transport variants. See §6.10. |
-| OPEN-1 | Joining-node startup against a live cluster | Resolved | `HostConfig.JoinExisting bool` + `Cluster.JoinExisting` koanf key drive `nh.StartOnDiskReplica(nil, join=true, ...)`. On boot, `pkg/reflow/run.go:callSelfJoin` discovers the metadata leader via gossip-published `NodeHostMeta.admin_endpoint` and dials `Admin/SelfJoin` (SPIFFE-gated to `node/<self_id>`) before starting local shards. See §6.2 "Dynamic membership". |
+| OPEN-1 | Joining-node startup against a live cluster | Resolved | `HostConfig.JoinExisting bool` + `Cluster.JoinExisting` koanf key drive `nh.StartOnDiskReplica(nil, join=true, ...)`. On boot, `pkg/reflow/run.go:callSelfJoin` discovers the metadata leader via gossip-published `NodeHostMeta.admin_endpoint` and dials `ClusterCtl/SelfJoin` (SPIFFE-gated to `node/<self_id>`) before starting local shards. See §6.2 "Dynamic membership". |
 
 ---
 
@@ -1657,11 +1878,17 @@ membership, partition table, assignment epoch; founder/joiner bootstrap via
 `--bootstrap-cluster` / `--join`.
 
 **Dynamic membership + failure detection + DR snapshots + mTLS admin.**
-Dragonboat gossip (memberlist/SWIM) drives K-of-N liveness; SWIM observers
-turn missed probes into `RemoveNode` proposals to shard 0. The cluster
-admin CLI lives in `reflowd cluster` (`add-node`, `remove-node`,
-`partitions list`, `partition move`). `SnapshotRepository` filesystem driver
-wired. Admin Connect RPC server (`adminv1`) protected by mTLS.
+Dragonboat gossip (memberlist/SWIM) drives K-of-N liveness; the metadata
+leader's `metadataRebalancer.failureLoop` turns missed gossip observations
+into `EvictNode` proposals to shard 0. The cluster admin CLI lives in
+`reflowd cluster` (`add-node`, `remove-node`, `nodes list`,
+`partitions list`, `snapshot {create,list,delete}`).
+`SnapshotRepository` filesystem driver wired. Admin Connect surface is
+two services on one mTLS-protected listener: `reflow.clusterctl.v1.ClusterCtl`
+(fleet ops) and `reflow.config.v1.Config` (app config — deployments,
+event sources, webhooks, secrets). The split mirrors Restate's
+`cluster-ctrl` vs `admin` naming, with `admin` flipped to `config` to
+avoid the overloaded word.
 
 **Storage format version marker.** Per-Pebble-DB `uint32` marker
 (`internal/storage/format.go`). Refuses to open a DB written by a binary
@@ -1672,16 +1899,20 @@ with a different `StorageFormatVersion`. Replaced the earlier
 into one cluster CA; role moved into the SPIFFE URI SAN
 (`spiffe://<td>/<kind>/<name>`). TLS verifier checks chain + URI prefix.
 
-**Proto-annotation authz interceptor.** `proto/optionsv1` defines
-`required_spiffe_role` (method) and `default_required_spiffe_role`
-(service). Admin service annotated `operator`. `AuditInterceptor` +
-`AuthzInterceptor` enforce against the compiled descriptor map.
-
-**Authorizer + ClaimMapper consolidation.** Two-shaped authz across Admin
-and Delivery collapsed into one Temporal-shaped `Authorizer` + `ClaimMapper`
-seam in `internal/auth`. TLS layer reduced to URI well-formedness; role
-enforcement lives entirely in `auth.UnaryInterceptor` /
-`auth.StreamInterceptor`. Delivery service annotated `node`. See §6.13.
+**Path-glob authz at the HTTP/Connect layer.** Auth runs as
+`internal/auth.HTTPMiddleware` chained below Connect's protocol dispatch
+(works uniformly for unary and streaming RPCs across Connect / gRPC /
+gRPC-Web / HTTP-JSON, unlike the older `connect.UnaryInterceptorFunc`
+which silently skipped streaming). Two authenticators chain in
+`composeAuthFunc`: SPIFFE URI SAN extraction from the verified mTLS leaf
+and Bearer-JWT verification against one or more OIDC issuers; mTLS wins
+when both are presented. The embedded starter policy
+(`internal/auth/starter_policy.json`, hot-reloaded from
+`cfg.Auth.PolicyFile`) is path-glob: `clusterctl` and `config` rules
+gate `/reflow.clusterctl.v1.ClusterCtl/*` and
+`/reflow.config.v1.Config/*` to `operator/*`; `delivery` gates
+`/reflow.delivery.v1.Delivery/*` to `node/*`; ingress paths default to
+anonymous. See §6.13.
 
 - **Embedded metadata Raft group** (`shardID = 0`) hosted by the same
   `NodeHost` as partition shards. Holds node list, partition table,
@@ -1767,9 +1998,9 @@ KEK delivered through Tink's `KMSClient` registry. See §6.14.
   dispatcher goroutines (per-source `sync.WaitGroup` for ≤5s graceful
   drain on remove); webhook `Manager` reconciles a path→source map
   via `atomic.Pointer` swap.
-- **kubectl-shaped CLI.** `reflowd cluster {eventsources,webhooks}
-  {list,delete}` plus top-level `cluster apply -f <file>` and
-  `cluster export [--kind=…]`. Multi-doc YAML with
+- **kubectl-shaped CLI.** `reflowd config {eventsources,webhooks}
+  {list,delete}` plus top-level `config apply -f <file>` and
+  `config export [--kind=…]`. Multi-doc YAML with
   `kind`/`metadata.name`/`spec`. `sigs.k8s.io/yaml` for
   YAML→JSON→protojson so proto field additions auto-flow.
 - **Bootstrap-koanf seed path (event sources only).**
@@ -1854,20 +2085,86 @@ OIDC client secrets tomorrow) references the secret.
   Tink's `monitoring.RegisterMonitoringClient` lives in
   `tink-go/v2/internal/internalregistry` (blocked from external
   import in v2.6).
-- **`reflowd cluster {init-kek, create-secret, delete-secret,
+- **`reflowd config {init-kek, create-secret, delete-secret,
   list-secrets, decrypt-secret, upsert-webhook}`.** `init-kek`
   generates the keyset + boot key at a `gocloud.dev/blob` URI.
   `create-secret` reads plaintext from stdin / `--input`, encrypts
-  with the named KEK, writes ciphertext to `--blob-uri`, and
-  proposes `Admin.UpsertSecret` so the row lands in shard 0 in one
-  command. `upsert-webhook` references an existing secret by
-  `--secret=NAME`. `decrypt-secret` is operator self-verification.
+  with the named KEK, writes ciphertext to `--blob-uri`, and proposes
+  `Config.UpsertSecret` so the row lands in shard 0 in one command.
+  `upsert-webhook` references an existing secret by `--secret=NAME`.
+  `decrypt-secret` is operator self-verification.
 
 Sketched, not scheduled — journal/state encryption-at-rest via
 `tink-go/v2/keyderivation`. Per-`object_key` derived AEADs with an
 LRU cache for the FSM apply hot path, riding on the same keyset
 shape. Migration story is the harder half (read-handles-both-formats
 phase + background sweep) and warrants its own delivery cycle.
+
+### Two-layer routing (LP → shard) (done)
+
+Decouples the routing modulus from the replication unit so hot-spot
+relief can happen online without ever changing the number of partition
+shards. Five PRs landed in lockstep — each kept routing correct end-to-
+end so the rollout could be paused at any commit. See §6.2.1 for the
+full design.
+
+- **PR 1 — table-driven Partitioner + LPOwnersTable (commit `71d7797`).**
+  Replaced the implicit `hash % N` partition map with an explicit
+  shard-0 `LPOwnersTable` (4096 rows, one per LP) read through a
+  per-Host `atomic.Pointer` snapshot. Identity-seeded so the rollout
+  was wire-compatible at this checkpoint.
+- **PR 2 — consistent-hash planner (commit `6f83ad4`).** Swapped the
+  identity seed for `buraksezer/consistent` + `xxhash` in
+  `internal/engine/routing/planner.go`. Deterministic across replicas
+  (xxhash is platform-neutral; constructor sorts shard ids). Exposes
+  `Diff(current, desired) []LPMove` as the seam PR 3 + 5 consume.
+- **PR 3 — cross-shard LP transfer protocol (commit `1f81c1d`).**
+  Six-phase saga (INIT → SHIPPING → STAGED → FLIPPED → CLEANED, abort
+  branch → ABORTING → ABORTED) coordinated by the `lpMover` goroutine
+  on the metadata leader. Source-side `LPTransferSourceService` scans
+  LP-prefixed namespaces + the `timer_lp/` secondary index, ships ~256
+  KiB chunks via `CrossShardSender` to the destination's apply path.
+  Apply-path freeze gate (`partition.go:checkLPFreeze`) gates every
+  LP-touching arm; monotonic phase check on shard 0 absorbs duplicate
+  acks; `FLIPPED → ABORTING` is rejected because the `LPOwnersTable`
+  flip is the point of no return.
+- **PR 4 — LP-prefix dedup/arbitrary (commit `164543d`).**
+  `dedup/arbitrary/*` became `dedup/arbitrary/<lp:4>/<producer>/<seq>`
+  and rides the LP-transfer scan as
+  `TRANSFER_NS_DEDUP_ARBITRARY=15`. Closes the residual hazard from
+  PR 3: external producer retries (or slow third-shard outbox retries)
+  after an LP flip now find their dedup row on the new owner. The
+  LP is derived from the command kind via `partition.lpFromCommand`;
+  LP-agnostic commands (today only `OutboxAck`) key under
+  `keys.LPNoLP = 0xFFFF_FFFF`, a sentinel that's never a real LP
+  (real LPs are < 4096) and therefore never range-deleted by
+  `FinishLPTransfer`.
+- **PR 5.0 — autonomous LP rebalancer (commit `6d22e87`).**
+  Leader-only goroutine in `internal/engine/rebalance/` plugged into
+  `MetadataRunner.onBecomeLeader` alongside the membership-handling
+  `metadataRebalancer` and the saga-executing `lpMover`. Three modes:
+  `off` (default), `advisory` (observes + emits metrics + logs
+  `would_transfer`, never proposes), `auto` (proposes
+  `Command_InitiateLPTransfer` — the same path
+  `reflowd cluster transfer-lp` takes — so autonomous transfers
+  appear in `ListLPTransfers` with no extra plumbing). Triggers in
+  PR 5.0: membership change + operator-requested drain. Drained
+  shards live in shard 0's new `RebalanceDrainTable`
+  (CAS-revisioned, cluster-managed, runtime-mutable via
+  `ClusterCtl/RebalanceDrain`); the advisor subtracts them from the
+  planner's input set. Skew metric is mis-placement fraction
+  (`len(routing.Diff(current, desired)) / total_LPs`); hysteresis
+  engage 15% / disengage 8%; defaults are conservative (1 concurrent
+  transfer, 60s cooldown). Eight new metrics under
+  `reflow_rebalance_*`. CLI: `reflowd cluster rebalance-advise`
+  (read-only) + `reflowd cluster rebalance-drain --shard=N [--stop]`.
+
+**Deferred to PR 5.1+:** SST shipping via Pebble `IngestAndExcise`,
+capacity circuit breakers (Pebble L0, write-amp — should *gate
+destinations*, not *trigger* moves), load-based triggers (QPS, p99 —
+bursty workloads make rolling-window load a noisy signal that fires
+mid-burst), soft drain with grace seconds, `RebalancePause/Resume`
+RPCs (`Mode=off` already covers operator pause).
 
 ### Production Hardening (in progress)
 

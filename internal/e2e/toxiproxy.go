@@ -286,9 +286,10 @@ func (t *Toxiproxy) Isolate(node uint64, peers []uint64) error {
 	return firstErr
 }
 
-// HealAll re-enables every proxy in the topology. Convenience for
-// tests that want to drop their chaos and let the cluster converge
-// before the next phase.
+// HealAll re-enables every proxy in the topology AND removes every
+// chaos_* toxic the helpers below installed. Convenience for tests
+// that want to drop their chaos and let the cluster converge before
+// the next phase.
 func (t *Toxiproxy) HealAll() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -296,6 +297,114 @@ func (t *Toxiproxy) HealAll() error {
 	for _, p := range t.proxies {
 		if err := p.Enable(); err != nil && firstErr == nil {
 			firstErr = err
+		}
+		if err := clearChaosToxics(p); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// Latency injects one-way delay (with optional jitter) on packets the
+// `from` node sends to `to`. Replaces any existing `chaos_latency` toxic
+// on the proxy. Both stream directions are independent — call twice
+// (or use LatencyBoth) to slow both halves of a link.
+//
+// Toxiproxy spec: `latency` toxic attributes are `latency` (ms) and
+// `jitter` (ms); see https://github.com/Shopify/toxiproxy#latency.
+func (t *Toxiproxy) Latency(from, to uint64, latency, jitter time.Duration) error {
+	p, err := t.lookup(from, to)
+	if err != nil {
+		return err
+	}
+	return replaceToxic(p, "chaos_latency", "latency", "upstream", toxiclient.Attributes{
+		"latency": int(latency / time.Millisecond),
+		"jitter":  int(jitter / time.Millisecond),
+	})
+}
+
+// LatencyBoth applies Latency in both directions between a and b. Useful
+// for symmetric "slow link" scenarios.
+func (t *Toxiproxy) LatencyBoth(a, b uint64, latency, jitter time.Duration) error {
+	if a == b {
+		return nil
+	}
+	if err := t.Latency(a, b, latency, jitter); err != nil {
+		return err
+	}
+	return t.Latency(b, a, latency, jitter)
+}
+
+// Bandwidth throttles the from→to direction to `rateKBps` kilobytes per
+// second. Replaces any existing `chaos_bandwidth` toxic.
+//
+// Toxiproxy spec: `bandwidth` toxic attribute is `rate` (KB/s); see
+// https://github.com/Shopify/toxiproxy#bandwidth.
+func (t *Toxiproxy) Bandwidth(from, to uint64, rateKBps int) error {
+	p, err := t.lookup(from, to)
+	if err != nil {
+		return err
+	}
+	return replaceToxic(p, "chaos_bandwidth", "bandwidth", "upstream", toxiclient.Attributes{
+		"rate": rateKBps,
+	})
+}
+
+// SlowClose delays TCP socket close on the from→to proxy by `delay`,
+// emulating buggy peers that linger after a FIN. Replaces any existing
+// `chaos_slow_close` toxic.
+//
+// Toxiproxy spec: `slow_close` toxic attribute is `delay` (ms); see
+// https://github.com/Shopify/toxiproxy#slow_close.
+func (t *Toxiproxy) SlowClose(from, to uint64, delay time.Duration) error {
+	p, err := t.lookup(from, to)
+	if err != nil {
+		return err
+	}
+	return replaceToxic(p, "chaos_slow_close", "slow_close", "upstream", toxiclient.Attributes{
+		"delay": int(delay / time.Millisecond),
+	})
+}
+
+// ClearToxics removes every chaos_* toxic from the from→to proxy. Leaves
+// the proxy enabled state untouched (use Heal to also re-enable a cut).
+func (t *Toxiproxy) ClearToxics(from, to uint64) error {
+	p, err := t.lookup(from, to)
+	if err != nil {
+		return err
+	}
+	return clearChaosToxics(p)
+}
+
+// replaceToxic deletes any existing toxic with `name` then re-adds it
+// with the given parameters. Toxiproxy rejects AddToxic when a toxic
+// of the same name already exists, so this idempotent variant is what
+// tests want when iterating chaos intensity.
+func replaceToxic(p *toxiclient.Proxy, name, kind, stream string, attrs toxiclient.Attributes) error {
+	_ = p.RemoveToxic(name) // best-effort: 404 when absent
+	_, err := p.AddToxic(name, kind, stream, 1.0, attrs)
+	if err != nil {
+		return fmt.Errorf("AddToxic %s (%s): %w", name, kind, err)
+	}
+	return nil
+}
+
+// clearChaosToxics removes every chaos_* toxic from one proxy. Used by
+// both ClearToxics and HealAll. The `chaos_` prefix is the convention
+// every helper above stamps so we never touch toxics installed by
+// external code.
+func clearChaosToxics(p *toxiclient.Proxy) error {
+	toxics, err := p.Toxics()
+	if err != nil {
+		return fmt.Errorf("list toxics on %s: %w", p.Name, err)
+	}
+	var firstErr error
+	for _, tx := range toxics {
+		if len(tx.Name) < 6 || tx.Name[:6] != "chaos_" {
+			continue
+		}
+		if err := p.RemoveToxic(tx.Name); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("remove %s: %w", tx.Name, err)
 		}
 	}
 	return firstErr

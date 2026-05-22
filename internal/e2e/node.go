@@ -39,8 +39,13 @@ type ContainerNode struct {
 	// from the docker daemon and cannot be restarted. killed is true
 	// between Kill and the next successful Restart — the container
 	// exists but its main process is dead, so AnyLiveNode skips it.
+	// paused is true between Pause and Unpause — the kernel has frozen
+	// the cgroup but the process is intact, so the data dir is still
+	// consistent on resume and chaos primitives that need a "node is
+	// alive but not responding" shape can synthesize it here.
 	terminated bool
 	killed     bool
+	paused     bool
 }
 
 // SubmitInvocation routes through Ingress.SubmitInvocation on this node;
@@ -135,16 +140,17 @@ func (n *ContainerNode) IsTerminated() bool {
 }
 
 // IsLive reports whether the node currently has a running process.
-// Returns false after Kill (until a successful Restart) and after
-// Close (permanently). Used by ContainerCluster.AnyLiveNode to skip
-// dead containers without renumbering the Nodes slice.
+// Returns false after Kill (until a successful Restart), after Pause
+// (until a successful Unpause), and after Close (permanently). Used
+// by ContainerCluster.AnyLiveNode to skip dead containers without
+// renumbering the Nodes slice.
 func (n *ContainerNode) IsLive() bool {
 	if n == nil {
 		return false
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return !n.terminated && !n.killed
+	return !n.terminated && !n.killed && !n.paused
 }
 
 // Close gracefully stops + removes the container. Idempotent.
@@ -245,6 +251,72 @@ func (n *ContainerNode) Restart(ctx context.Context) error {
 	n.ingressURL = "http://" + net.JoinHostPort(host, ingMap.Port())
 	n.adminURLForTest = "http://" + net.JoinHostPort(host, admMap.Port())
 	n.killed = false
+	return nil
+}
+
+// Pause freezes the container's cgroup via Docker API ContainerPause —
+// every process inside the container is suspended by SIGSTOP-style
+// kernel freezing. The Pebble + dragonboat data dir is left fully
+// consistent (no writes are mid-flight in user-space when the freeze
+// lands), so Unpause resumes from the exact prior state. Idempotent
+// when already paused; refuses when terminated.
+//
+// While paused the node is not Live: peers' raft heartbeats time out
+// and a re-election proceeds. This is the durable analog of a
+// "frozen process" — useful for testing the suspect path that
+// dragonboat takes when a peer goes unreachable without dying.
+func (n *ContainerNode) Pause(ctx context.Context) error {
+	if n == nil {
+		return fmt.Errorf("e2e: Pause on nil node")
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.terminated {
+		return fmt.Errorf("e2e: Pause after Close")
+	}
+	if n.killed {
+		return fmt.Errorf("e2e: Pause on killed node")
+	}
+	if n.paused {
+		return nil
+	}
+	cli, err := testcontainers.NewDockerClientWithOpts(ctx)
+	if err != nil {
+		return fmt.Errorf("e2e: Pause node %d: docker client: %w", n.nodeID, err)
+	}
+	if _, err := cli.ContainerPause(ctx, n.container.GetContainerID(),
+		dockerclient.ContainerPauseOptions{}); err != nil {
+		return fmt.Errorf("e2e: Pause node %d: %w", n.nodeID, err)
+	}
+	n.paused = true
+	return nil
+}
+
+// Unpause resumes a previously-paused container. Port mappings are
+// preserved across pause+unpause (Docker does NOT re-bind), so the
+// cached ingress / admin URLs are still valid; the ingress client
+// stays attached. Idempotent when not paused.
+func (n *ContainerNode) Unpause(ctx context.Context) error {
+	if n == nil {
+		return fmt.Errorf("e2e: Unpause on nil node")
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.terminated {
+		return fmt.Errorf("e2e: Unpause after Close")
+	}
+	if !n.paused {
+		return nil
+	}
+	cli, err := testcontainers.NewDockerClientWithOpts(ctx)
+	if err != nil {
+		return fmt.Errorf("e2e: Unpause node %d: docker client: %w", n.nodeID, err)
+	}
+	if _, err := cli.ContainerUnpause(ctx, n.container.GetContainerID(),
+		dockerclient.ContainerUnpauseOptions{}); err != nil {
+		return fmt.Errorf("e2e: Unpause node %d: %w", n.nodeID, err)
+	}
+	n.paused = false
 	return nil
 }
 

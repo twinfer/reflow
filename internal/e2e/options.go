@@ -20,4 +20,11 @@ type ContainerClusterOptions struct {
 	// unordered or ordered pair. The bufconn PartitionMatrix this
 	// replaces was symmetric per-pair; this preserves that semantic.
 	WithToxiproxy bool
+
+	// ExtraEnv is merged into every reflowd container's environment on
+	// top of the defaults the harness sets (REFLOW_NODE_ID, addrs,
+	// auth-policy file). Keys win against the harness defaults so a
+	// test can override anything; intended use is REFLOW_REBALANCE_*
+	// or other subsystem knobs that aren't surfaced by a typed option.
+	ExtraEnv map[string]string
 }

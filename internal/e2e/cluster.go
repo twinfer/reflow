@@ -114,7 +114,7 @@ func NewContainerCluster(t *testing.T, opts ContainerClusterOptions) *ContainerC
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			n, err := startReflowdContainer(ctx, t, image, nw, cfgPath, policyPath, nodeID, opts.WithToxiproxy)
+			n, err := startReflowdContainer(ctx, t, image, nw, cfgPath, policyPath, nodeID, opts.WithToxiproxy, opts.ExtraEnv)
 			startMu.Lock()
 			defer startMu.Unlock()
 			if err != nil {
@@ -290,7 +290,7 @@ func (c *ContainerCluster) AwaitAnyPartitionLeader(ctx context.Context, timeout 
 // entries route every peer-target-* hostname to this node's sidecar
 // IP so dragonboat's outbound raft dials land on tox-from-N's
 // per-target proxies.
-func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *testcontainers.DockerNetwork, cfgPath, policyPath string, nodeID uint64, withToxiproxy bool) (*ContainerNode, error) {
+func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *testcontainers.DockerNetwork, cfgPath, policyPath string, nodeID uint64, withToxiproxy bool, extraEnv map[string]string) (*ContainerNode, error) {
 	t.Helper()
 	alias := fmt.Sprintf("reflowd-node%d", nodeID)
 	ip := nodeIP(nodeID)
@@ -343,6 +343,12 @@ func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *
 		},
 		WaitingFor: wait.ForListeningPort(ingressPort + "/tcp").
 			WithStartupTimeout(2 * time.Minute),
+	}
+	// Per-test ExtraEnv overrides win against harness defaults. Used to
+	// inject REFLOW_REBALANCE_* knobs and similar subsystem toggles
+	// that aren't surfaced by a typed ContainerClusterOptions field.
+	for k, v := range extraEnv {
+		req.Env[k] = v
 	}
 	// Stream reflowd container output to t.Logf when REFLOW_E2E_LOGS=1.
 	// Surfaces dragonboat / engine logs needed to debug bring-up failures

@@ -1,6 +1,6 @@
 MAKEFLAGS += --no-print-directory
 
-.PHONY: proto build test test-verbose test-pkg vet tidy tools
+.PHONY: proto build test test-verbose test-pkg test-e2e vet tidy tools
 
 GOBIN := $(shell go env GOPATH)/bin
 
@@ -40,6 +40,14 @@ test-verbose:
 RUN ?=
 test-pkg: tools
 	$(GOBIN)/gotestsum --format pkgname-and-test-fails -- -race $(if $(RUN),-run $(RUN),) $(PKG)
+
+# test-e2e runs the containerized chaos / eventsource / kms / snapshot
+# suites under internal/e2e/... behind the `e2e` build tag. Requires a
+# working Docker daemon; individual tests Skip when Docker is absent.
+# Override the reflowd image with REFLOW_E2E_IMAGE=... (CI prebuild) to
+# skip the in-test image build.
+test-e2e:
+	go test -tags=e2e -timeout=30m ./internal/e2e/...
 
 vet:
 	go vet ./...

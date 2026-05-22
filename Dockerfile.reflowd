@@ -1,0 +1,41 @@
+# Multi-stage build of cmd/reflowd for the e2e chaos harness.
+# Stage 1 compiles the binary; stage 2 ships a distroless static image
+# containing only the binary and its CA bundle.
+#
+# Built and consumed by internal/e2e/image.go (FromDockerfile +
+# DockerProvider.BuildImage). Not used by production deployments.
+#
+# Avoids BuildKit-only syntax (`# syntax=` directive, RUN --mount cache
+# mounts) so the classic Docker builder testcontainers-go invokes by
+# default works out of the box. Docker's layer cache still amortizes
+# `go mod download` because that step has its own layer keyed off
+# go.mod / go.sum content.
+
+FROM golang:1.26-alpine AS builder
+
+WORKDIR /src
+
+# Module download is its own layer so source edits don't bust the cache.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Pebble v2 is pure Go; CGO_ENABLED=0 + netgo gives us a fully static
+# binary suitable for the distroless runtime stage.
+RUN CGO_ENABLED=0 GOOS=linux \
+    go build -tags=netgo -trimpath -ldflags="-s -w" \
+        -o /out/reflowd ./cmd/reflowd
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=builder /out/reflowd /reflowd
+
+# Distroless nonroot is UID 65532; /home/nonroot is the canonical
+# writable location for that user. Chaos tests that need persistence
+# across SIGKILL bind-mount a host dir on top via testcontainers
+# Mounts — REFLOW_STORAGE_DATA_DIR overrides this default anyway.
+ENV REFLOW_STORAGE_DATA_DIR=/home/nonroot/reflow
+
+ENTRYPOINT ["/reflowd"]
+CMD ["run"]

@@ -1,0 +1,26 @@
+# Anything not needed by `go build ./cmd/reflowd` is excluded from the
+# Docker build context to keep image builds fast.
+
+.git
+.gitignore
+.dockerignore
+
+# Per-developer state.
+.claude/
+.idea/
+.vscode/
+
+# External reference checkouts kept locally; not part of reflow build.
+restate/
+
+# Local artifacts.
+data/
+tmp/
+bin/
+dist/
+*.log
+reflowd
+
+# Docs and planning.
+*.md
+durable-execution-go-sad.md

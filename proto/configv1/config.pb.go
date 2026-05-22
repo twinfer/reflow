@@ -151,6 +151,291 @@ func (x *RegisterDeploymentResponse) GetDeploymentId() string {
 	return ""
 }
 
+type ListDeploymentsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDeploymentsRequest) Reset() {
+	*x = ListDeploymentsRequest{}
+	mi := &file_configv1_config_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDeploymentsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDeploymentsRequest) ProtoMessage() {}
+
+func (x *ListDeploymentsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDeploymentsRequest.ProtoReflect.Descriptor instead.
+func (*ListDeploymentsRequest) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{2}
+}
+
+type ListDeploymentsResponse struct {
+	state         protoimpl.MessageState       `protogen:"open.v1"`
+	Deployments   []*enginev1.DeploymentRecord `protobuf:"bytes,1,rep,name=deployments,proto3" json:"deployments,omitempty"`
+	TableRevision uint64                       `protobuf:"varint,2,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDeploymentsResponse) Reset() {
+	*x = ListDeploymentsResponse{}
+	mi := &file_configv1_config_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDeploymentsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDeploymentsResponse) ProtoMessage() {}
+
+func (x *ListDeploymentsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDeploymentsResponse.ProtoReflect.Descriptor instead.
+func (*ListDeploymentsResponse) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ListDeploymentsResponse) GetDeployments() []*enginev1.DeploymentRecord {
+	if x != nil {
+		return x.Deployments
+	}
+	return nil
+}
+
+func (x *ListDeploymentsResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
+type DescribeDeploymentRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DeploymentId  string                 `protobuf:"bytes,1,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DescribeDeploymentRequest) Reset() {
+	*x = DescribeDeploymentRequest{}
+	mi := &file_configv1_config_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DescribeDeploymentRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DescribeDeploymentRequest) ProtoMessage() {}
+
+func (x *DescribeDeploymentRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DescribeDeploymentRequest.ProtoReflect.Descriptor instead.
+func (*DescribeDeploymentRequest) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *DescribeDeploymentRequest) GetDeploymentId() string {
+	if x != nil {
+		return x.DeploymentId
+	}
+	return ""
+}
+
+type DescribeDeploymentResponse struct {
+	state         protoimpl.MessageState     `protogen:"open.v1"`
+	Deployment    *enginev1.DeploymentRecord `protobuf:"bytes,1,opt,name=deployment,proto3" json:"deployment,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DescribeDeploymentResponse) Reset() {
+	*x = DescribeDeploymentResponse{}
+	mi := &file_configv1_config_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DescribeDeploymentResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DescribeDeploymentResponse) ProtoMessage() {}
+
+func (x *DescribeDeploymentResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DescribeDeploymentResponse.ProtoReflect.Descriptor instead.
+func (*DescribeDeploymentResponse) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *DescribeDeploymentResponse) GetDeployment() *enginev1.DeploymentRecord {
+	if x != nil {
+		return x.Deployment
+	}
+	return nil
+}
+
+// DeleteDeploymentRequest names one deployment by id. force must be
+// true to confirm the operator accepts that in-flight invocations
+// referencing this deployment may break. if_table_revision_eq=0
+// disables CAS; non-zero requires the deployment table revision to
+// match (CodeFailedPrecondition on mismatch).
+type DeleteDeploymentRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	DeploymentId      string                 `protobuf:"bytes,1,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
+	Force             bool                   `protobuf:"varint,2,opt,name=force,proto3" json:"force,omitempty"`
+	IfTableRevisionEq uint64                 `protobuf:"varint,3,opt,name=if_table_revision_eq,json=ifTableRevisionEq,proto3" json:"if_table_revision_eq,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *DeleteDeploymentRequest) Reset() {
+	*x = DeleteDeploymentRequest{}
+	mi := &file_configv1_config_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteDeploymentRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteDeploymentRequest) ProtoMessage() {}
+
+func (x *DeleteDeploymentRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteDeploymentRequest.ProtoReflect.Descriptor instead.
+func (*DeleteDeploymentRequest) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *DeleteDeploymentRequest) GetDeploymentId() string {
+	if x != nil {
+		return x.DeploymentId
+	}
+	return ""
+}
+
+func (x *DeleteDeploymentRequest) GetForce() bool {
+	if x != nil {
+		return x.Force
+	}
+	return false
+}
+
+func (x *DeleteDeploymentRequest) GetIfTableRevisionEq() uint64 {
+	if x != nil {
+		return x.IfTableRevisionEq
+	}
+	return 0
+}
+
+type DeleteDeploymentResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TableRevision uint64                 `protobuf:"varint,1,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteDeploymentResponse) Reset() {
+	*x = DeleteDeploymentResponse{}
+	mi := &file_configv1_config_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteDeploymentResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteDeploymentResponse) ProtoMessage() {}
+
+func (x *DeleteDeploymentResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteDeploymentResponse.ProtoReflect.Descriptor instead.
+func (*DeleteDeploymentResponse) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *DeleteDeploymentResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
 // UpsertEventSourceRequest carries one EventSourceRecord plus an
 // optional CAS guard. if_table_revision_eq=0 disables CAS.
 type UpsertEventSourceRequest struct {
@@ -163,7 +448,7 @@ type UpsertEventSourceRequest struct {
 
 func (x *UpsertEventSourceRequest) Reset() {
 	*x = UpsertEventSourceRequest{}
-	mi := &file_configv1_config_proto_msgTypes[2]
+	mi := &file_configv1_config_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -175,7 +460,7 @@ func (x *UpsertEventSourceRequest) String() string {
 func (*UpsertEventSourceRequest) ProtoMessage() {}
 
 func (x *UpsertEventSourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[2]
+	mi := &file_configv1_config_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -188,7 +473,7 @@ func (x *UpsertEventSourceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertEventSourceRequest.ProtoReflect.Descriptor instead.
 func (*UpsertEventSourceRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{2}
+	return file_configv1_config_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *UpsertEventSourceRequest) GetRecord() *enginev1.EventSourceRecord {
@@ -214,7 +499,7 @@ type UpsertEventSourceResponse struct {
 
 func (x *UpsertEventSourceResponse) Reset() {
 	*x = UpsertEventSourceResponse{}
-	mi := &file_configv1_config_proto_msgTypes[3]
+	mi := &file_configv1_config_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -226,7 +511,7 @@ func (x *UpsertEventSourceResponse) String() string {
 func (*UpsertEventSourceResponse) ProtoMessage() {}
 
 func (x *UpsertEventSourceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[3]
+	mi := &file_configv1_config_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -239,7 +524,7 @@ func (x *UpsertEventSourceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertEventSourceResponse.ProtoReflect.Descriptor instead.
 func (*UpsertEventSourceResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{3}
+	return file_configv1_config_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *UpsertEventSourceResponse) GetTableRevision() uint64 {
@@ -259,7 +544,7 @@ type DeleteEventSourceRequest struct {
 
 func (x *DeleteEventSourceRequest) Reset() {
 	*x = DeleteEventSourceRequest{}
-	mi := &file_configv1_config_proto_msgTypes[4]
+	mi := &file_configv1_config_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -271,7 +556,7 @@ func (x *DeleteEventSourceRequest) String() string {
 func (*DeleteEventSourceRequest) ProtoMessage() {}
 
 func (x *DeleteEventSourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[4]
+	mi := &file_configv1_config_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -284,7 +569,7 @@ func (x *DeleteEventSourceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteEventSourceRequest.ProtoReflect.Descriptor instead.
 func (*DeleteEventSourceRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{4}
+	return file_configv1_config_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *DeleteEventSourceRequest) GetName() string {
@@ -310,7 +595,7 @@ type DeleteEventSourceResponse struct {
 
 func (x *DeleteEventSourceResponse) Reset() {
 	*x = DeleteEventSourceResponse{}
-	mi := &file_configv1_config_proto_msgTypes[5]
+	mi := &file_configv1_config_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -322,7 +607,7 @@ func (x *DeleteEventSourceResponse) String() string {
 func (*DeleteEventSourceResponse) ProtoMessage() {}
 
 func (x *DeleteEventSourceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[5]
+	mi := &file_configv1_config_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -335,7 +620,7 @@ func (x *DeleteEventSourceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteEventSourceResponse.ProtoReflect.Descriptor instead.
 func (*DeleteEventSourceResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{5}
+	return file_configv1_config_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *DeleteEventSourceResponse) GetTableRevision() uint64 {
@@ -353,7 +638,7 @@ type ListEventSourcesRequest struct {
 
 func (x *ListEventSourcesRequest) Reset() {
 	*x = ListEventSourcesRequest{}
-	mi := &file_configv1_config_proto_msgTypes[6]
+	mi := &file_configv1_config_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -365,7 +650,7 @@ func (x *ListEventSourcesRequest) String() string {
 func (*ListEventSourcesRequest) ProtoMessage() {}
 
 func (x *ListEventSourcesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[6]
+	mi := &file_configv1_config_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -378,7 +663,7 @@ func (x *ListEventSourcesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListEventSourcesRequest.ProtoReflect.Descriptor instead.
 func (*ListEventSourcesRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{6}
+	return file_configv1_config_proto_rawDescGZIP(), []int{12}
 }
 
 type ListEventSourcesResponse struct {
@@ -391,7 +676,7 @@ type ListEventSourcesResponse struct {
 
 func (x *ListEventSourcesResponse) Reset() {
 	*x = ListEventSourcesResponse{}
-	mi := &file_configv1_config_proto_msgTypes[7]
+	mi := &file_configv1_config_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -403,7 +688,7 @@ func (x *ListEventSourcesResponse) String() string {
 func (*ListEventSourcesResponse) ProtoMessage() {}
 
 func (x *ListEventSourcesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[7]
+	mi := &file_configv1_config_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -416,7 +701,7 @@ func (x *ListEventSourcesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListEventSourcesResponse.ProtoReflect.Descriptor instead.
 func (*ListEventSourcesResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{7}
+	return file_configv1_config_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ListEventSourcesResponse) GetSources() []*enginev1.EventSourceRecord {
@@ -445,7 +730,7 @@ type UpsertWebhookSourceRequest struct {
 
 func (x *UpsertWebhookSourceRequest) Reset() {
 	*x = UpsertWebhookSourceRequest{}
-	mi := &file_configv1_config_proto_msgTypes[8]
+	mi := &file_configv1_config_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -457,7 +742,7 @@ func (x *UpsertWebhookSourceRequest) String() string {
 func (*UpsertWebhookSourceRequest) ProtoMessage() {}
 
 func (x *UpsertWebhookSourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[8]
+	mi := &file_configv1_config_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -470,7 +755,7 @@ func (x *UpsertWebhookSourceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertWebhookSourceRequest.ProtoReflect.Descriptor instead.
 func (*UpsertWebhookSourceRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{8}
+	return file_configv1_config_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *UpsertWebhookSourceRequest) GetRecord() *enginev1.WebhookSourceRecord {
@@ -496,7 +781,7 @@ type UpsertWebhookSourceResponse struct {
 
 func (x *UpsertWebhookSourceResponse) Reset() {
 	*x = UpsertWebhookSourceResponse{}
-	mi := &file_configv1_config_proto_msgTypes[9]
+	mi := &file_configv1_config_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -508,7 +793,7 @@ func (x *UpsertWebhookSourceResponse) String() string {
 func (*UpsertWebhookSourceResponse) ProtoMessage() {}
 
 func (x *UpsertWebhookSourceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[9]
+	mi := &file_configv1_config_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -521,7 +806,7 @@ func (x *UpsertWebhookSourceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertWebhookSourceResponse.ProtoReflect.Descriptor instead.
 func (*UpsertWebhookSourceResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{9}
+	return file_configv1_config_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *UpsertWebhookSourceResponse) GetTableRevision() uint64 {
@@ -541,7 +826,7 @@ type DeleteWebhookSourceRequest struct {
 
 func (x *DeleteWebhookSourceRequest) Reset() {
 	*x = DeleteWebhookSourceRequest{}
-	mi := &file_configv1_config_proto_msgTypes[10]
+	mi := &file_configv1_config_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -553,7 +838,7 @@ func (x *DeleteWebhookSourceRequest) String() string {
 func (*DeleteWebhookSourceRequest) ProtoMessage() {}
 
 func (x *DeleteWebhookSourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[10]
+	mi := &file_configv1_config_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -566,7 +851,7 @@ func (x *DeleteWebhookSourceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteWebhookSourceRequest.ProtoReflect.Descriptor instead.
 func (*DeleteWebhookSourceRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{10}
+	return file_configv1_config_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *DeleteWebhookSourceRequest) GetName() string {
@@ -592,7 +877,7 @@ type DeleteWebhookSourceResponse struct {
 
 func (x *DeleteWebhookSourceResponse) Reset() {
 	*x = DeleteWebhookSourceResponse{}
-	mi := &file_configv1_config_proto_msgTypes[11]
+	mi := &file_configv1_config_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -604,7 +889,7 @@ func (x *DeleteWebhookSourceResponse) String() string {
 func (*DeleteWebhookSourceResponse) ProtoMessage() {}
 
 func (x *DeleteWebhookSourceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[11]
+	mi := &file_configv1_config_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -617,7 +902,7 @@ func (x *DeleteWebhookSourceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteWebhookSourceResponse.ProtoReflect.Descriptor instead.
 func (*DeleteWebhookSourceResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{11}
+	return file_configv1_config_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *DeleteWebhookSourceResponse) GetTableRevision() uint64 {
@@ -635,7 +920,7 @@ type ListWebhookSourcesRequest struct {
 
 func (x *ListWebhookSourcesRequest) Reset() {
 	*x = ListWebhookSourcesRequest{}
-	mi := &file_configv1_config_proto_msgTypes[12]
+	mi := &file_configv1_config_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -647,7 +932,7 @@ func (x *ListWebhookSourcesRequest) String() string {
 func (*ListWebhookSourcesRequest) ProtoMessage() {}
 
 func (x *ListWebhookSourcesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[12]
+	mi := &file_configv1_config_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -660,7 +945,7 @@ func (x *ListWebhookSourcesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWebhookSourcesRequest.ProtoReflect.Descriptor instead.
 func (*ListWebhookSourcesRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{12}
+	return file_configv1_config_proto_rawDescGZIP(), []int{18}
 }
 
 type ListWebhookSourcesResponse struct {
@@ -673,7 +958,7 @@ type ListWebhookSourcesResponse struct {
 
 func (x *ListWebhookSourcesResponse) Reset() {
 	*x = ListWebhookSourcesResponse{}
-	mi := &file_configv1_config_proto_msgTypes[13]
+	mi := &file_configv1_config_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -685,7 +970,7 @@ func (x *ListWebhookSourcesResponse) String() string {
 func (*ListWebhookSourcesResponse) ProtoMessage() {}
 
 func (x *ListWebhookSourcesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[13]
+	mi := &file_configv1_config_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -698,7 +983,7 @@ func (x *ListWebhookSourcesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWebhookSourcesResponse.ProtoReflect.Descriptor instead.
 func (*ListWebhookSourcesResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{13}
+	return file_configv1_config_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ListWebhookSourcesResponse) GetSources() []*enginev1.WebhookSourceRecord {
@@ -727,7 +1012,7 @@ type UpsertSecretRequest struct {
 
 func (x *UpsertSecretRequest) Reset() {
 	*x = UpsertSecretRequest{}
-	mi := &file_configv1_config_proto_msgTypes[14]
+	mi := &file_configv1_config_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -739,7 +1024,7 @@ func (x *UpsertSecretRequest) String() string {
 func (*UpsertSecretRequest) ProtoMessage() {}
 
 func (x *UpsertSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[14]
+	mi := &file_configv1_config_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -752,7 +1037,7 @@ func (x *UpsertSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertSecretRequest.ProtoReflect.Descriptor instead.
 func (*UpsertSecretRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{14}
+	return file_configv1_config_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *UpsertSecretRequest) GetRecord() *enginev1.SecretRecord {
@@ -778,7 +1063,7 @@ type UpsertSecretResponse struct {
 
 func (x *UpsertSecretResponse) Reset() {
 	*x = UpsertSecretResponse{}
-	mi := &file_configv1_config_proto_msgTypes[15]
+	mi := &file_configv1_config_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -790,7 +1075,7 @@ func (x *UpsertSecretResponse) String() string {
 func (*UpsertSecretResponse) ProtoMessage() {}
 
 func (x *UpsertSecretResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[15]
+	mi := &file_configv1_config_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -803,7 +1088,7 @@ func (x *UpsertSecretResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertSecretResponse.ProtoReflect.Descriptor instead.
 func (*UpsertSecretResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{15}
+	return file_configv1_config_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *UpsertSecretResponse) GetTableRevision() uint64 {
@@ -823,7 +1108,7 @@ type DeleteSecretRequest struct {
 
 func (x *DeleteSecretRequest) Reset() {
 	*x = DeleteSecretRequest{}
-	mi := &file_configv1_config_proto_msgTypes[16]
+	mi := &file_configv1_config_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -835,7 +1120,7 @@ func (x *DeleteSecretRequest) String() string {
 func (*DeleteSecretRequest) ProtoMessage() {}
 
 func (x *DeleteSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[16]
+	mi := &file_configv1_config_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -848,7 +1133,7 @@ func (x *DeleteSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSecretRequest.ProtoReflect.Descriptor instead.
 func (*DeleteSecretRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{16}
+	return file_configv1_config_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *DeleteSecretRequest) GetName() string {
@@ -874,7 +1159,7 @@ type DeleteSecretResponse struct {
 
 func (x *DeleteSecretResponse) Reset() {
 	*x = DeleteSecretResponse{}
-	mi := &file_configv1_config_proto_msgTypes[17]
+	mi := &file_configv1_config_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -886,7 +1171,7 @@ func (x *DeleteSecretResponse) String() string {
 func (*DeleteSecretResponse) ProtoMessage() {}
 
 func (x *DeleteSecretResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[17]
+	mi := &file_configv1_config_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -899,7 +1184,7 @@ func (x *DeleteSecretResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSecretResponse.ProtoReflect.Descriptor instead.
 func (*DeleteSecretResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{17}
+	return file_configv1_config_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *DeleteSecretResponse) GetTableRevision() uint64 {
@@ -917,7 +1202,7 @@ type ListSecretsRequest struct {
 
 func (x *ListSecretsRequest) Reset() {
 	*x = ListSecretsRequest{}
-	mi := &file_configv1_config_proto_msgTypes[18]
+	mi := &file_configv1_config_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -929,7 +1214,7 @@ func (x *ListSecretsRequest) String() string {
 func (*ListSecretsRequest) ProtoMessage() {}
 
 func (x *ListSecretsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[18]
+	mi := &file_configv1_config_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -942,7 +1227,7 @@ func (x *ListSecretsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSecretsRequest.ProtoReflect.Descriptor instead.
 func (*ListSecretsRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{18}
+	return file_configv1_config_proto_rawDescGZIP(), []int{24}
 }
 
 type ListSecretsResponse struct {
@@ -955,7 +1240,7 @@ type ListSecretsResponse struct {
 
 func (x *ListSecretsResponse) Reset() {
 	*x = ListSecretsResponse{}
-	mi := &file_configv1_config_proto_msgTypes[19]
+	mi := &file_configv1_config_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -967,7 +1252,7 @@ func (x *ListSecretsResponse) String() string {
 func (*ListSecretsResponse) ProtoMessage() {}
 
 func (x *ListSecretsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[19]
+	mi := &file_configv1_config_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -980,7 +1265,7 @@ func (x *ListSecretsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSecretsResponse.ProtoReflect.Descriptor instead.
 func (*ListSecretsResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{19}
+	return file_configv1_config_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ListSecretsResponse) GetRecords() []*enginev1.SecretRecord {
@@ -1012,7 +1297,7 @@ type LeaderHint struct {
 
 func (x *LeaderHint) Reset() {
 	*x = LeaderHint{}
-	mi := &file_configv1_config_proto_msgTypes[20]
+	mi := &file_configv1_config_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1024,7 +1309,7 @@ func (x *LeaderHint) String() string {
 func (*LeaderHint) ProtoMessage() {}
 
 func (x *LeaderHint) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[20]
+	mi := &file_configv1_config_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1037,7 +1322,7 @@ func (x *LeaderHint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaderHint.ProtoReflect.Descriptor instead.
 func (*LeaderHint) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{20}
+	return file_configv1_config_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *LeaderHint) GetNodeId() uint64 {
@@ -1063,7 +1348,23 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12.\n" +
 	"\x13max_journal_entries\x18\x02 \x01(\rR\x11maxJournalEntries\"A\n" +
 	"\x1aRegisterDeploymentResponse\x12#\n" +
-	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\"\x88\x01\n" +
+	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\"\x18\n" +
+	"\x16ListDeploymentsRequest\"\x86\x01\n" +
+	"\x17ListDeploymentsResponse\x12D\n" +
+	"\vdeployments\x18\x01 \x03(\v2\".reflow.engine.v1.DeploymentRecordR\vdeployments\x12%\n" +
+	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"@\n" +
+	"\x19DescribeDeploymentRequest\x12#\n" +
+	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\"`\n" +
+	"\x1aDescribeDeploymentResponse\x12B\n" +
+	"\n" +
+	"deployment\x18\x01 \x01(\v2\".reflow.engine.v1.DeploymentRecordR\n" +
+	"deployment\"\x85\x01\n" +
+	"\x17DeleteDeploymentRequest\x12#\n" +
+	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\x12\x14\n" +
+	"\x05force\x18\x02 \x01(\bR\x05force\x12/\n" +
+	"\x14if_table_revision_eq\x18\x03 \x01(\x04R\x11ifTableRevisionEq\"A\n" +
+	"\x18DeleteDeploymentResponse\x12%\n" +
+	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"\x88\x01\n" +
 	"\x18UpsertEventSourceRequest\x12;\n" +
 	"\x06record\x18\x01 \x01(\v2#.reflow.engine.v1.EventSourceRecordR\x06record\x12/\n" +
 	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"B\n" +
@@ -1109,9 +1410,13 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\n" +
 	"LeaderHint\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12%\n" +
-	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\xb3\b\n" +
+	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\xf7\n" +
+	"\n" +
 	"\x06Config\x12o\n" +
-	"\x12RegisterDeployment\x12+.reflow.config.v1.RegisterDeploymentRequest\x1a,.reflow.config.v1.RegisterDeploymentResponse\x12l\n" +
+	"\x12RegisterDeployment\x12+.reflow.config.v1.RegisterDeploymentRequest\x1a,.reflow.config.v1.RegisterDeploymentResponse\x12f\n" +
+	"\x0fListDeployments\x12(.reflow.config.v1.ListDeploymentsRequest\x1a).reflow.config.v1.ListDeploymentsResponse\x12o\n" +
+	"\x12DescribeDeployment\x12+.reflow.config.v1.DescribeDeploymentRequest\x1a,.reflow.config.v1.DescribeDeploymentResponse\x12i\n" +
+	"\x10DeleteDeployment\x12).reflow.config.v1.DeleteDeploymentRequest\x1a*.reflow.config.v1.DeleteDeploymentResponse\x12l\n" +
 	"\x11UpsertEventSource\x12*.reflow.config.v1.UpsertEventSourceRequest\x1a+.reflow.config.v1.UpsertEventSourceResponse\x12l\n" +
 	"\x11DeleteEventSource\x12*.reflow.config.v1.DeleteEventSourceRequest\x1a+.reflow.config.v1.DeleteEventSourceResponse\x12i\n" +
 	"\x10ListEventSources\x12).reflow.config.v1.ListEventSourcesRequest\x1a*.reflow.config.v1.ListEventSourcesResponse\x12r\n" +
@@ -1134,65 +1439,80 @@ func file_configv1_config_proto_rawDescGZIP() []byte {
 	return file_configv1_config_proto_rawDescData
 }
 
-var file_configv1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_configv1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
 var file_configv1_config_proto_goTypes = []any{
 	(*RegisterDeploymentRequest)(nil),    // 0: reflow.config.v1.RegisterDeploymentRequest
 	(*RegisterDeploymentResponse)(nil),   // 1: reflow.config.v1.RegisterDeploymentResponse
-	(*UpsertEventSourceRequest)(nil),     // 2: reflow.config.v1.UpsertEventSourceRequest
-	(*UpsertEventSourceResponse)(nil),    // 3: reflow.config.v1.UpsertEventSourceResponse
-	(*DeleteEventSourceRequest)(nil),     // 4: reflow.config.v1.DeleteEventSourceRequest
-	(*DeleteEventSourceResponse)(nil),    // 5: reflow.config.v1.DeleteEventSourceResponse
-	(*ListEventSourcesRequest)(nil),      // 6: reflow.config.v1.ListEventSourcesRequest
-	(*ListEventSourcesResponse)(nil),     // 7: reflow.config.v1.ListEventSourcesResponse
-	(*UpsertWebhookSourceRequest)(nil),   // 8: reflow.config.v1.UpsertWebhookSourceRequest
-	(*UpsertWebhookSourceResponse)(nil),  // 9: reflow.config.v1.UpsertWebhookSourceResponse
-	(*DeleteWebhookSourceRequest)(nil),   // 10: reflow.config.v1.DeleteWebhookSourceRequest
-	(*DeleteWebhookSourceResponse)(nil),  // 11: reflow.config.v1.DeleteWebhookSourceResponse
-	(*ListWebhookSourcesRequest)(nil),    // 12: reflow.config.v1.ListWebhookSourcesRequest
-	(*ListWebhookSourcesResponse)(nil),   // 13: reflow.config.v1.ListWebhookSourcesResponse
-	(*UpsertSecretRequest)(nil),          // 14: reflow.config.v1.UpsertSecretRequest
-	(*UpsertSecretResponse)(nil),         // 15: reflow.config.v1.UpsertSecretResponse
-	(*DeleteSecretRequest)(nil),          // 16: reflow.config.v1.DeleteSecretRequest
-	(*DeleteSecretResponse)(nil),         // 17: reflow.config.v1.DeleteSecretResponse
-	(*ListSecretsRequest)(nil),           // 18: reflow.config.v1.ListSecretsRequest
-	(*ListSecretsResponse)(nil),          // 19: reflow.config.v1.ListSecretsResponse
-	(*LeaderHint)(nil),                   // 20: reflow.config.v1.LeaderHint
-	(*enginev1.EventSourceRecord)(nil),   // 21: reflow.engine.v1.EventSourceRecord
-	(*enginev1.WebhookSourceRecord)(nil), // 22: reflow.engine.v1.WebhookSourceRecord
-	(*enginev1.SecretRecord)(nil),        // 23: reflow.engine.v1.SecretRecord
+	(*ListDeploymentsRequest)(nil),       // 2: reflow.config.v1.ListDeploymentsRequest
+	(*ListDeploymentsResponse)(nil),      // 3: reflow.config.v1.ListDeploymentsResponse
+	(*DescribeDeploymentRequest)(nil),    // 4: reflow.config.v1.DescribeDeploymentRequest
+	(*DescribeDeploymentResponse)(nil),   // 5: reflow.config.v1.DescribeDeploymentResponse
+	(*DeleteDeploymentRequest)(nil),      // 6: reflow.config.v1.DeleteDeploymentRequest
+	(*DeleteDeploymentResponse)(nil),     // 7: reflow.config.v1.DeleteDeploymentResponse
+	(*UpsertEventSourceRequest)(nil),     // 8: reflow.config.v1.UpsertEventSourceRequest
+	(*UpsertEventSourceResponse)(nil),    // 9: reflow.config.v1.UpsertEventSourceResponse
+	(*DeleteEventSourceRequest)(nil),     // 10: reflow.config.v1.DeleteEventSourceRequest
+	(*DeleteEventSourceResponse)(nil),    // 11: reflow.config.v1.DeleteEventSourceResponse
+	(*ListEventSourcesRequest)(nil),      // 12: reflow.config.v1.ListEventSourcesRequest
+	(*ListEventSourcesResponse)(nil),     // 13: reflow.config.v1.ListEventSourcesResponse
+	(*UpsertWebhookSourceRequest)(nil),   // 14: reflow.config.v1.UpsertWebhookSourceRequest
+	(*UpsertWebhookSourceResponse)(nil),  // 15: reflow.config.v1.UpsertWebhookSourceResponse
+	(*DeleteWebhookSourceRequest)(nil),   // 16: reflow.config.v1.DeleteWebhookSourceRequest
+	(*DeleteWebhookSourceResponse)(nil),  // 17: reflow.config.v1.DeleteWebhookSourceResponse
+	(*ListWebhookSourcesRequest)(nil),    // 18: reflow.config.v1.ListWebhookSourcesRequest
+	(*ListWebhookSourcesResponse)(nil),   // 19: reflow.config.v1.ListWebhookSourcesResponse
+	(*UpsertSecretRequest)(nil),          // 20: reflow.config.v1.UpsertSecretRequest
+	(*UpsertSecretResponse)(nil),         // 21: reflow.config.v1.UpsertSecretResponse
+	(*DeleteSecretRequest)(nil),          // 22: reflow.config.v1.DeleteSecretRequest
+	(*DeleteSecretResponse)(nil),         // 23: reflow.config.v1.DeleteSecretResponse
+	(*ListSecretsRequest)(nil),           // 24: reflow.config.v1.ListSecretsRequest
+	(*ListSecretsResponse)(nil),          // 25: reflow.config.v1.ListSecretsResponse
+	(*LeaderHint)(nil),                   // 26: reflow.config.v1.LeaderHint
+	(*enginev1.DeploymentRecord)(nil),    // 27: reflow.engine.v1.DeploymentRecord
+	(*enginev1.EventSourceRecord)(nil),   // 28: reflow.engine.v1.EventSourceRecord
+	(*enginev1.WebhookSourceRecord)(nil), // 29: reflow.engine.v1.WebhookSourceRecord
+	(*enginev1.SecretRecord)(nil),        // 30: reflow.engine.v1.SecretRecord
 }
 var file_configv1_config_proto_depIdxs = []int32{
-	21, // 0: reflow.config.v1.UpsertEventSourceRequest.record:type_name -> reflow.engine.v1.EventSourceRecord
-	21, // 1: reflow.config.v1.ListEventSourcesResponse.sources:type_name -> reflow.engine.v1.EventSourceRecord
-	22, // 2: reflow.config.v1.UpsertWebhookSourceRequest.record:type_name -> reflow.engine.v1.WebhookSourceRecord
-	22, // 3: reflow.config.v1.ListWebhookSourcesResponse.sources:type_name -> reflow.engine.v1.WebhookSourceRecord
-	23, // 4: reflow.config.v1.UpsertSecretRequest.record:type_name -> reflow.engine.v1.SecretRecord
-	23, // 5: reflow.config.v1.ListSecretsResponse.records:type_name -> reflow.engine.v1.SecretRecord
-	0,  // 6: reflow.config.v1.Config.RegisterDeployment:input_type -> reflow.config.v1.RegisterDeploymentRequest
-	2,  // 7: reflow.config.v1.Config.UpsertEventSource:input_type -> reflow.config.v1.UpsertEventSourceRequest
-	4,  // 8: reflow.config.v1.Config.DeleteEventSource:input_type -> reflow.config.v1.DeleteEventSourceRequest
-	6,  // 9: reflow.config.v1.Config.ListEventSources:input_type -> reflow.config.v1.ListEventSourcesRequest
-	8,  // 10: reflow.config.v1.Config.UpsertWebhookSource:input_type -> reflow.config.v1.UpsertWebhookSourceRequest
-	10, // 11: reflow.config.v1.Config.DeleteWebhookSource:input_type -> reflow.config.v1.DeleteWebhookSourceRequest
-	12, // 12: reflow.config.v1.Config.ListWebhookSources:input_type -> reflow.config.v1.ListWebhookSourcesRequest
-	14, // 13: reflow.config.v1.Config.UpsertSecret:input_type -> reflow.config.v1.UpsertSecretRequest
-	16, // 14: reflow.config.v1.Config.DeleteSecret:input_type -> reflow.config.v1.DeleteSecretRequest
-	18, // 15: reflow.config.v1.Config.ListSecrets:input_type -> reflow.config.v1.ListSecretsRequest
-	1,  // 16: reflow.config.v1.Config.RegisterDeployment:output_type -> reflow.config.v1.RegisterDeploymentResponse
-	3,  // 17: reflow.config.v1.Config.UpsertEventSource:output_type -> reflow.config.v1.UpsertEventSourceResponse
-	5,  // 18: reflow.config.v1.Config.DeleteEventSource:output_type -> reflow.config.v1.DeleteEventSourceResponse
-	7,  // 19: reflow.config.v1.Config.ListEventSources:output_type -> reflow.config.v1.ListEventSourcesResponse
-	9,  // 20: reflow.config.v1.Config.UpsertWebhookSource:output_type -> reflow.config.v1.UpsertWebhookSourceResponse
-	11, // 21: reflow.config.v1.Config.DeleteWebhookSource:output_type -> reflow.config.v1.DeleteWebhookSourceResponse
-	13, // 22: reflow.config.v1.Config.ListWebhookSources:output_type -> reflow.config.v1.ListWebhookSourcesResponse
-	15, // 23: reflow.config.v1.Config.UpsertSecret:output_type -> reflow.config.v1.UpsertSecretResponse
-	17, // 24: reflow.config.v1.Config.DeleteSecret:output_type -> reflow.config.v1.DeleteSecretResponse
-	19, // 25: reflow.config.v1.Config.ListSecrets:output_type -> reflow.config.v1.ListSecretsResponse
-	16, // [16:26] is the sub-list for method output_type
-	6,  // [6:16] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	27, // 0: reflow.config.v1.ListDeploymentsResponse.deployments:type_name -> reflow.engine.v1.DeploymentRecord
+	27, // 1: reflow.config.v1.DescribeDeploymentResponse.deployment:type_name -> reflow.engine.v1.DeploymentRecord
+	28, // 2: reflow.config.v1.UpsertEventSourceRequest.record:type_name -> reflow.engine.v1.EventSourceRecord
+	28, // 3: reflow.config.v1.ListEventSourcesResponse.sources:type_name -> reflow.engine.v1.EventSourceRecord
+	29, // 4: reflow.config.v1.UpsertWebhookSourceRequest.record:type_name -> reflow.engine.v1.WebhookSourceRecord
+	29, // 5: reflow.config.v1.ListWebhookSourcesResponse.sources:type_name -> reflow.engine.v1.WebhookSourceRecord
+	30, // 6: reflow.config.v1.UpsertSecretRequest.record:type_name -> reflow.engine.v1.SecretRecord
+	30, // 7: reflow.config.v1.ListSecretsResponse.records:type_name -> reflow.engine.v1.SecretRecord
+	0,  // 8: reflow.config.v1.Config.RegisterDeployment:input_type -> reflow.config.v1.RegisterDeploymentRequest
+	2,  // 9: reflow.config.v1.Config.ListDeployments:input_type -> reflow.config.v1.ListDeploymentsRequest
+	4,  // 10: reflow.config.v1.Config.DescribeDeployment:input_type -> reflow.config.v1.DescribeDeploymentRequest
+	6,  // 11: reflow.config.v1.Config.DeleteDeployment:input_type -> reflow.config.v1.DeleteDeploymentRequest
+	8,  // 12: reflow.config.v1.Config.UpsertEventSource:input_type -> reflow.config.v1.UpsertEventSourceRequest
+	10, // 13: reflow.config.v1.Config.DeleteEventSource:input_type -> reflow.config.v1.DeleteEventSourceRequest
+	12, // 14: reflow.config.v1.Config.ListEventSources:input_type -> reflow.config.v1.ListEventSourcesRequest
+	14, // 15: reflow.config.v1.Config.UpsertWebhookSource:input_type -> reflow.config.v1.UpsertWebhookSourceRequest
+	16, // 16: reflow.config.v1.Config.DeleteWebhookSource:input_type -> reflow.config.v1.DeleteWebhookSourceRequest
+	18, // 17: reflow.config.v1.Config.ListWebhookSources:input_type -> reflow.config.v1.ListWebhookSourcesRequest
+	20, // 18: reflow.config.v1.Config.UpsertSecret:input_type -> reflow.config.v1.UpsertSecretRequest
+	22, // 19: reflow.config.v1.Config.DeleteSecret:input_type -> reflow.config.v1.DeleteSecretRequest
+	24, // 20: reflow.config.v1.Config.ListSecrets:input_type -> reflow.config.v1.ListSecretsRequest
+	1,  // 21: reflow.config.v1.Config.RegisterDeployment:output_type -> reflow.config.v1.RegisterDeploymentResponse
+	3,  // 22: reflow.config.v1.Config.ListDeployments:output_type -> reflow.config.v1.ListDeploymentsResponse
+	5,  // 23: reflow.config.v1.Config.DescribeDeployment:output_type -> reflow.config.v1.DescribeDeploymentResponse
+	7,  // 24: reflow.config.v1.Config.DeleteDeployment:output_type -> reflow.config.v1.DeleteDeploymentResponse
+	9,  // 25: reflow.config.v1.Config.UpsertEventSource:output_type -> reflow.config.v1.UpsertEventSourceResponse
+	11, // 26: reflow.config.v1.Config.DeleteEventSource:output_type -> reflow.config.v1.DeleteEventSourceResponse
+	13, // 27: reflow.config.v1.Config.ListEventSources:output_type -> reflow.config.v1.ListEventSourcesResponse
+	15, // 28: reflow.config.v1.Config.UpsertWebhookSource:output_type -> reflow.config.v1.UpsertWebhookSourceResponse
+	17, // 29: reflow.config.v1.Config.DeleteWebhookSource:output_type -> reflow.config.v1.DeleteWebhookSourceResponse
+	19, // 30: reflow.config.v1.Config.ListWebhookSources:output_type -> reflow.config.v1.ListWebhookSourcesResponse
+	21, // 31: reflow.config.v1.Config.UpsertSecret:output_type -> reflow.config.v1.UpsertSecretResponse
+	23, // 32: reflow.config.v1.Config.DeleteSecret:output_type -> reflow.config.v1.DeleteSecretResponse
+	25, // 33: reflow.config.v1.Config.ListSecrets:output_type -> reflow.config.v1.ListSecretsResponse
+	21, // [21:34] is the sub-list for method output_type
+	8,  // [8:21] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_configv1_config_proto_init() }
@@ -1206,7 +1526,7 @@ func file_configv1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_configv1_config_proto_rawDesc), len(file_configv1_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   21,
+			NumMessages:   27,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -42,6 +42,27 @@ service Config {
   // https://.
   rpc RegisterDeployment(RegisterDeploymentRequest) returns (RegisterDeploymentResponse);
 
+  // ListDeployments returns every DeploymentRecord in shard 0 plus the
+  // deployment table revision. Reads via SyncRead — any peer can
+  // serve. Operators use the returned revision as if_table_revision_eq
+  // on subsequent Delete calls.
+  rpc ListDeployments(ListDeploymentsRequest) returns (ListDeploymentsResponse);
+
+  // DescribeDeployment returns one DeploymentRecord by id, or
+  // CodeNotFound. Reads via SyncRead.
+  rpc DescribeDeployment(DescribeDeploymentRequest) returns (DescribeDeploymentResponse);
+
+  // DeleteDeployment removes one DeploymentRecord from shard 0 and
+  // evicts any (service, handler) → id index entries that pointed to
+  // it. Leader-only. force must be true; without it the server returns
+  // CodeFailedPrecondition because deleting a deployment is destructive
+  // — in-flight invocations resolve their deployment record per
+  // stream-open, and a delete breaks any open or replaying invocation
+  // pinned to this id. force is the operator's "yes I accept the
+  // risk" acknowledgement; reflow does not currently scan partitions
+  // for active references.
+  rpc DeleteDeployment(DeleteDeploymentRequest) returns (DeleteDeploymentResponse);
+
   // UpsertEventSource inserts or replaces one row in shard 0's
   // EventSourceTable. if_table_revision_eq=0 disables CAS; non-zero
   // requires the table revision to match (CodeFailedPrecondition on
@@ -92,6 +113,33 @@ message RegisterDeploymentRequest {
 
 message RegisterDeploymentResponse {
   string deployment_id = 1;
+}
+
+message ListDeploymentsRequest {}
+message ListDeploymentsResponse {
+  repeated reflow.engine.v1.DeploymentRecord deployments = 1;
+  uint64 table_revision = 2;
+}
+
+message DescribeDeploymentRequest {
+  string deployment_id = 1;
+}
+message DescribeDeploymentResponse {
+  reflow.engine.v1.DeploymentRecord deployment = 1;
+}
+
+// DeleteDeploymentRequest names one deployment by id. force must be
+// true to confirm the operator accepts that in-flight invocations
+// referencing this deployment may break. if_table_revision_eq=0
+// disables CAS; non-zero requires the deployment table revision to
+// match (CodeFailedPrecondition on mismatch).
+message DeleteDeploymentRequest {
+  string deployment_id = 1;
+  bool force = 2;
+  uint64 if_table_revision_eq = 3;
+}
+message DeleteDeploymentResponse {
+  uint64 table_revision = 1;
 }
 
 // UpsertEventSourceRequest carries one EventSourceRecord plus an

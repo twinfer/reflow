@@ -58,6 +58,7 @@ const (
 // argument to RevisionKey; persisted on disk, so renaming is an
 // upgrade-incompat change.
 const (
+	RevisionTableDeployment    = "deployment"
 	RevisionTableEventSource   = "eventsrc"
 	RevisionTableWebhookSource = "webhooksrc"
 	RevisionTableSecret        = "secret"

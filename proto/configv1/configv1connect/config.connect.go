@@ -63,6 +63,13 @@ const (
 	// ConfigRegisterDeploymentProcedure is the fully-qualified name of the Config's RegisterDeployment
 	// RPC.
 	ConfigRegisterDeploymentProcedure = "/reflow.config.v1.Config/RegisterDeployment"
+	// ConfigListDeploymentsProcedure is the fully-qualified name of the Config's ListDeployments RPC.
+	ConfigListDeploymentsProcedure = "/reflow.config.v1.Config/ListDeployments"
+	// ConfigDescribeDeploymentProcedure is the fully-qualified name of the Config's DescribeDeployment
+	// RPC.
+	ConfigDescribeDeploymentProcedure = "/reflow.config.v1.Config/DescribeDeployment"
+	// ConfigDeleteDeploymentProcedure is the fully-qualified name of the Config's DeleteDeployment RPC.
+	ConfigDeleteDeploymentProcedure = "/reflow.config.v1.Config/DeleteDeployment"
 	// ConfigUpsertEventSourceProcedure is the fully-qualified name of the Config's UpsertEventSource
 	// RPC.
 	ConfigUpsertEventSourceProcedure = "/reflow.config.v1.Config/UpsertEventSource"
@@ -97,6 +104,24 @@ type ConfigClient interface {
 	// shard 0. Returns the assigned id. URL must use http:// or
 	// https://.
 	RegisterDeployment(context.Context, *connect.Request[configv1.RegisterDeploymentRequest]) (*connect.Response[configv1.RegisterDeploymentResponse], error)
+	// ListDeployments returns every DeploymentRecord in shard 0 plus the
+	// deployment table revision. Reads via SyncRead — any peer can
+	// serve. Operators use the returned revision as if_table_revision_eq
+	// on subsequent Delete calls.
+	ListDeployments(context.Context, *connect.Request[configv1.ListDeploymentsRequest]) (*connect.Response[configv1.ListDeploymentsResponse], error)
+	// DescribeDeployment returns one DeploymentRecord by id, or
+	// CodeNotFound. Reads via SyncRead.
+	DescribeDeployment(context.Context, *connect.Request[configv1.DescribeDeploymentRequest]) (*connect.Response[configv1.DescribeDeploymentResponse], error)
+	// DeleteDeployment removes one DeploymentRecord from shard 0 and
+	// evicts any (service, handler) → id index entries that pointed to
+	// it. Leader-only. force must be true; without it the server returns
+	// CodeFailedPrecondition because deleting a deployment is destructive
+	// — in-flight invocations resolve their deployment record per
+	// stream-open, and a delete breaks any open or replaying invocation
+	// pinned to this id. force is the operator's "yes I accept the
+	// risk" acknowledgement; reflow does not currently scan partitions
+	// for active references.
+	DeleteDeployment(context.Context, *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error)
 	// UpsertEventSource inserts or replaces one row in shard 0's
 	// EventSourceTable. if_table_revision_eq=0 disables CAS; non-zero
 	// requires the table revision to match (CodeFailedPrecondition on
@@ -147,6 +172,24 @@ func NewConfigClient(httpClient connect.HTTPClient, baseURL string, opts ...conn
 			httpClient,
 			baseURL+ConfigRegisterDeploymentProcedure,
 			connect.WithSchema(configMethods.ByName("RegisterDeployment")),
+			connect.WithClientOptions(opts...),
+		),
+		listDeployments: connect.NewClient[configv1.ListDeploymentsRequest, configv1.ListDeploymentsResponse](
+			httpClient,
+			baseURL+ConfigListDeploymentsProcedure,
+			connect.WithSchema(configMethods.ByName("ListDeployments")),
+			connect.WithClientOptions(opts...),
+		),
+		describeDeployment: connect.NewClient[configv1.DescribeDeploymentRequest, configv1.DescribeDeploymentResponse](
+			httpClient,
+			baseURL+ConfigDescribeDeploymentProcedure,
+			connect.WithSchema(configMethods.ByName("DescribeDeployment")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteDeployment: connect.NewClient[configv1.DeleteDeploymentRequest, configv1.DeleteDeploymentResponse](
+			httpClient,
+			baseURL+ConfigDeleteDeploymentProcedure,
+			connect.WithSchema(configMethods.ByName("DeleteDeployment")),
 			connect.WithClientOptions(opts...),
 		),
 		upsertEventSource: connect.NewClient[configv1.UpsertEventSourceRequest, configv1.UpsertEventSourceResponse](
@@ -209,6 +252,9 @@ func NewConfigClient(httpClient connect.HTTPClient, baseURL string, opts ...conn
 // configClient implements ConfigClient.
 type configClient struct {
 	registerDeployment  *connect.Client[configv1.RegisterDeploymentRequest, configv1.RegisterDeploymentResponse]
+	listDeployments     *connect.Client[configv1.ListDeploymentsRequest, configv1.ListDeploymentsResponse]
+	describeDeployment  *connect.Client[configv1.DescribeDeploymentRequest, configv1.DescribeDeploymentResponse]
+	deleteDeployment    *connect.Client[configv1.DeleteDeploymentRequest, configv1.DeleteDeploymentResponse]
 	upsertEventSource   *connect.Client[configv1.UpsertEventSourceRequest, configv1.UpsertEventSourceResponse]
 	deleteEventSource   *connect.Client[configv1.DeleteEventSourceRequest, configv1.DeleteEventSourceResponse]
 	listEventSources    *connect.Client[configv1.ListEventSourcesRequest, configv1.ListEventSourcesResponse]
@@ -223,6 +269,21 @@ type configClient struct {
 // RegisterDeployment calls reflow.config.v1.Config.RegisterDeployment.
 func (c *configClient) RegisterDeployment(ctx context.Context, req *connect.Request[configv1.RegisterDeploymentRequest]) (*connect.Response[configv1.RegisterDeploymentResponse], error) {
 	return c.registerDeployment.CallUnary(ctx, req)
+}
+
+// ListDeployments calls reflow.config.v1.Config.ListDeployments.
+func (c *configClient) ListDeployments(ctx context.Context, req *connect.Request[configv1.ListDeploymentsRequest]) (*connect.Response[configv1.ListDeploymentsResponse], error) {
+	return c.listDeployments.CallUnary(ctx, req)
+}
+
+// DescribeDeployment calls reflow.config.v1.Config.DescribeDeployment.
+func (c *configClient) DescribeDeployment(ctx context.Context, req *connect.Request[configv1.DescribeDeploymentRequest]) (*connect.Response[configv1.DescribeDeploymentResponse], error) {
+	return c.describeDeployment.CallUnary(ctx, req)
+}
+
+// DeleteDeployment calls reflow.config.v1.Config.DeleteDeployment.
+func (c *configClient) DeleteDeployment(ctx context.Context, req *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error) {
+	return c.deleteDeployment.CallUnary(ctx, req)
 }
 
 // UpsertEventSource calls reflow.config.v1.Config.UpsertEventSource.
@@ -279,6 +340,24 @@ type ConfigHandler interface {
 	// shard 0. Returns the assigned id. URL must use http:// or
 	// https://.
 	RegisterDeployment(context.Context, *connect.Request[configv1.RegisterDeploymentRequest]) (*connect.Response[configv1.RegisterDeploymentResponse], error)
+	// ListDeployments returns every DeploymentRecord in shard 0 plus the
+	// deployment table revision. Reads via SyncRead — any peer can
+	// serve. Operators use the returned revision as if_table_revision_eq
+	// on subsequent Delete calls.
+	ListDeployments(context.Context, *connect.Request[configv1.ListDeploymentsRequest]) (*connect.Response[configv1.ListDeploymentsResponse], error)
+	// DescribeDeployment returns one DeploymentRecord by id, or
+	// CodeNotFound. Reads via SyncRead.
+	DescribeDeployment(context.Context, *connect.Request[configv1.DescribeDeploymentRequest]) (*connect.Response[configv1.DescribeDeploymentResponse], error)
+	// DeleteDeployment removes one DeploymentRecord from shard 0 and
+	// evicts any (service, handler) → id index entries that pointed to
+	// it. Leader-only. force must be true; without it the server returns
+	// CodeFailedPrecondition because deleting a deployment is destructive
+	// — in-flight invocations resolve their deployment record per
+	// stream-open, and a delete breaks any open or replaying invocation
+	// pinned to this id. force is the operator's "yes I accept the
+	// risk" acknowledgement; reflow does not currently scan partitions
+	// for active references.
+	DeleteDeployment(context.Context, *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error)
 	// UpsertEventSource inserts or replaces one row in shard 0's
 	// EventSourceTable. if_table_revision_eq=0 disables CAS; non-zero
 	// requires the table revision to match (CodeFailedPrecondition on
@@ -325,6 +404,24 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 		ConfigRegisterDeploymentProcedure,
 		svc.RegisterDeployment,
 		connect.WithSchema(configMethods.ByName("RegisterDeployment")),
+		connect.WithHandlerOptions(opts...),
+	)
+	configListDeploymentsHandler := connect.NewUnaryHandler(
+		ConfigListDeploymentsProcedure,
+		svc.ListDeployments,
+		connect.WithSchema(configMethods.ByName("ListDeployments")),
+		connect.WithHandlerOptions(opts...),
+	)
+	configDescribeDeploymentHandler := connect.NewUnaryHandler(
+		ConfigDescribeDeploymentProcedure,
+		svc.DescribeDeployment,
+		connect.WithSchema(configMethods.ByName("DescribeDeployment")),
+		connect.WithHandlerOptions(opts...),
+	)
+	configDeleteDeploymentHandler := connect.NewUnaryHandler(
+		ConfigDeleteDeploymentProcedure,
+		svc.DeleteDeployment,
+		connect.WithSchema(configMethods.ByName("DeleteDeployment")),
 		connect.WithHandlerOptions(opts...),
 	)
 	configUpsertEventSourceHandler := connect.NewUnaryHandler(
@@ -385,6 +482,12 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 		switch r.URL.Path {
 		case ConfigRegisterDeploymentProcedure:
 			configRegisterDeploymentHandler.ServeHTTP(w, r)
+		case ConfigListDeploymentsProcedure:
+			configListDeploymentsHandler.ServeHTTP(w, r)
+		case ConfigDescribeDeploymentProcedure:
+			configDescribeDeploymentHandler.ServeHTTP(w, r)
+		case ConfigDeleteDeploymentProcedure:
+			configDeleteDeploymentHandler.ServeHTTP(w, r)
 		case ConfigUpsertEventSourceProcedure:
 			configUpsertEventSourceHandler.ServeHTTP(w, r)
 		case ConfigDeleteEventSourceProcedure:
@@ -414,6 +517,18 @@ type UnimplementedConfigHandler struct{}
 
 func (UnimplementedConfigHandler) RegisterDeployment(context.Context, *connect.Request[configv1.RegisterDeploymentRequest]) (*connect.Response[configv1.RegisterDeploymentResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.RegisterDeployment is not implemented"))
+}
+
+func (UnimplementedConfigHandler) ListDeployments(context.Context, *connect.Request[configv1.ListDeploymentsRequest]) (*connect.Response[configv1.ListDeploymentsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.ListDeployments is not implemented"))
+}
+
+func (UnimplementedConfigHandler) DescribeDeployment(context.Context, *connect.Request[configv1.DescribeDeploymentRequest]) (*connect.Response[configv1.DescribeDeploymentResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DescribeDeployment is not implemented"))
+}
+
+func (UnimplementedConfigHandler) DeleteDeployment(context.Context, *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DeleteDeployment is not implemented"))
 }
 
 func (UnimplementedConfigHandler) UpsertEventSource(context.Context, *connect.Request[configv1.UpsertEventSourceRequest]) (*connect.Response[configv1.UpsertEventSourceResponse], error) {

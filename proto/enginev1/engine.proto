@@ -116,10 +116,19 @@ message Command {
     OutboxAck outbox_ack = 17;
     // RegisterDeployment registers a Deployment (a (url, handlers[])
     // bundle) into shard 0's DeploymentTable. Proposed by the
-    // operator-facing admin RegisterDeployment RPC; replays route to
+    // operator-facing Config RegisterDeployment RPC; replays route to
     // the same record so deployment_id pinning survives restarts.
-    // Accepted only by shardID=0.
+    // Honors Envelope.precondition.if_table_revision_eq when set; the
+    // bootstrap-seed path leaves it zero (CAS off). Bumps
+    // RevisionTableDeployment on apply. Accepted only by shardID=0.
     RegisterDeployment register_deployment = 18;
+    // DeleteDeployment removes one DeploymentTable row and evicts any
+    // DeploymentIndexTable (service, handler) → id entries that
+    // pointed to this id. Same CAS + revision-bump semantics as the
+    // Upsert/Delete pair on other tables; safety (the "is this
+    // deployment in use" check) lives in the server's force gate, not
+    // here. Accepted only by shardID=0.
+    DeleteDeployment delete_deployment = 38;
     // PromiseCompletionAck is the cross-partition ack of a
     // JECompletePromise that landed on the workflow's owning shard.
     // The resolver shard appends JEPromiseCompleteResult on the caller's
@@ -1059,11 +1068,24 @@ message DeploymentHandler {
 }
 
 // RegisterDeployment is the Command_RegisterDeployment payload. Proposed
-// by the admin RegisterDeployment RPC after a successful discovery probe
-// against the handler URL. Apply arm writes
-// DeploymentTable[record.id] = record.
+// by the Config RegisterDeployment RPC after a successful discovery
+// probe against the handler URL. Apply arm CAS-checks
+// Envelope.precondition, writes DeploymentTable[record.id] = record,
+// maintains DeploymentIndexTable per (service, handler), and bumps
+// RevisionTableDeployment.
 message RegisterDeployment {
   DeploymentRecord record = 1;
+}
+
+// DeleteDeployment is the Command_DeleteDeployment payload. Apply arm
+// CAS-checks Envelope.precondition, loads the existing record (so it
+// can enumerate the (service, handler) entries to evict), removes the
+// DeploymentTable row, evicts DeploymentIndexTable rows that still
+// pointed to this id, and bumps RevisionTableDeployment. Delete-of-
+// absent still bumps the revision (the operator-visible "proposal
+// landed" signal).
+message DeleteDeployment {
+  string id = 1;
 }
 
 // EventSourceRecord is the persisted shape of one broker→handler binding

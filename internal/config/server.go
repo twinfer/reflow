@@ -209,6 +209,91 @@ func (s *Server) registerDeployment(ctx context.Context, req *configv1.RegisterD
 	return &configv1.RegisterDeploymentResponse{DeploymentId: deploymentID}, nil
 }
 
+// ListDeployments returns every DeploymentRecord on shard 0 plus the
+// deployment table's CAS revision. SyncRead — any peer can serve.
+func (s *Server) ListDeployments(ctx context.Context, _ *connect.Request[configv1.ListDeploymentsRequest]) (*connect.Response[configv1.ListDeploymentsResponse], error) {
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	list, err := s.host.Deployments(callCtx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable,
+			fmt.Errorf("config: read deployments: %w", err))
+	}
+	return connect.NewResponse(&configv1.ListDeploymentsResponse{
+		Deployments:   list.Records,
+		TableRevision: list.TableRevision,
+	}), nil
+}
+
+// DescribeDeployment returns one DeploymentRecord by id. CodeNotFound
+// when no deployment claims the id.
+func (s *Server) DescribeDeployment(ctx context.Context, req *connect.Request[configv1.DescribeDeploymentRequest]) (*connect.Response[configv1.DescribeDeploymentResponse], error) {
+	id := req.Msg.GetDeploymentId()
+	if id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("config: deployment_id required"))
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	rec, err := s.host.Deployment(callCtx, id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable,
+			fmt.Errorf("config: read deployment %q: %w", id, err))
+	}
+	if rec == nil {
+		return nil, connect.NewError(connect.CodeNotFound,
+			fmt.Errorf("config: deployment %q not found", id))
+	}
+	return connect.NewResponse(&configv1.DescribeDeploymentResponse{Deployment: rec}), nil
+}
+
+// DeleteDeployment removes one DeploymentRecord and evicts any
+// (service, handler) → id index entries that pointed to it. Refuses
+// without force=true — deletion may break in-flight invocations
+// pinned to this deployment; force is the operator's acknowledgement
+// of the risk.
+func (s *Server) DeleteDeployment(ctx context.Context, req *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
+	id := req.Msg.GetDeploymentId()
+	if id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("config: deployment_id required"))
+	}
+	if !req.Msg.GetForce() {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("config: refusing to delete deployment %q without force=true; "+
+				"in-flight invocations resolving this deployment will break", id))
+	}
+	cmd := &enginev1.Command{
+		Kind: &enginev1.Command_DeleteDeployment{
+			DeleteDeployment: &enginev1.DeleteDeployment{Id: id},
+		},
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	if err := s.proposeCAS(callCtx, cmd, req.Msg.GetIfTableRevisionEq()); err != nil {
+		return nil, err
+	}
+	newRev, err := s.readDeploymentRevision(callCtx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("config: read post-apply revision: %w", err))
+	}
+	return connect.NewResponse(&configv1.DeleteDeploymentResponse{TableRevision: newRev}), nil
+}
+
+// readDeploymentRevision is a SyncRead helper used by Delete to echo
+// the post-apply revision back to the operator.
+func (s *Server) readDeploymentRevision(ctx context.Context) (uint64, error) {
+	list, err := s.host.Deployments(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return list.TableRevision, nil
+}
+
 // AutoSeed is the in-process registration path used by pkg/reflow's
 // autoSeedEndpoints and by engine integration tests. Same body as
 // RegisterDeployment minus the leader gate (callers wait for

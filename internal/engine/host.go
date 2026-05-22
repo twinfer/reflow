@@ -542,6 +542,45 @@ func (h *Host) Membership(ctx context.Context) ([]*enginev1.NodeMembership, erro
 	return out, nil
 }
 
+// Deployment SyncReads the named DeploymentRecord from shard 0. Returns
+// (nil, nil) when no deployment claims the id. Used by the Config
+// DescribeDeployment RPC; the invoker path uses resolveDeployment for
+// its retry-on-leader-race semantics.
+func (h *Host) Deployment(ctx context.Context, id string) (*enginev1.DeploymentRecord, error) {
+	if id == "" {
+		return nil, nil
+	}
+	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupDeployment{ID: id})
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return nil, nil
+	}
+	out, ok := res.(*enginev1.DeploymentRecord)
+	if !ok {
+		return nil, fmt.Errorf("host: Deployment: unexpected lookup type %T", res)
+	}
+	return out, nil
+}
+
+// Deployments SyncReads every DeploymentRecord from shard 0 plus the
+// table's CAS revision. Used by the Config ListDeployments RPC.
+func (h *Host) Deployments(ctx context.Context) (*cluster.DeploymentList, error) {
+	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupDeploymentList{})
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return &cluster.DeploymentList{}, nil
+	}
+	out, ok := res.(*cluster.DeploymentList)
+	if !ok {
+		return nil, fmt.Errorf("host: Deployments: unexpected lookup type %T", res)
+	}
+	return out, nil
+}
+
 // EventSources performs a linearizable read of shard 0's
 // EventSourceTable, returning every row plus the table's CAS revision.
 // Used by the admin List/Upsert/Delete RPCs and by the per-node

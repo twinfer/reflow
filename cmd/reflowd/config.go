@@ -17,13 +17,19 @@ import (
 // hosted on the same admin Connect listener as ClusterCtl.
 func dispatchConfig(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: reflowd config {register-deployment|eventsources|webhooks|apply|export|get|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|upsert-webhook} [flags]")
+		return fmt.Errorf("usage: reflowd config {register-deployment|list-deployments|describe-deployment|delete-deployment|eventsources|webhooks|apply|export|get|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|upsert-webhook} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]
 	switch sub {
 	case "register-deployment":
 		return cmdRegisterDeployment(ctx, rest)
+	case "list-deployments":
+		return cmdListDeployments(ctx, rest)
+	case "describe-deployment":
+		return cmdDescribeDeployment(ctx, rest)
+	case "delete-deployment":
+		return cmdDeleteDeployment(ctx, rest)
 	case "eventsources":
 		return cmdEventSources(ctx, rest)
 	case "webhooks":

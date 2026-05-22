@@ -154,6 +154,19 @@ func (t DeploymentTable) Put(b storage.Batch, rec *enginev1.DeploymentRecord) er
 	return b.Set(DeploymentKey(rec.GetId()), buf)
 }
 
+// Delete removes the deployment row for id. Delete-of-absent is a
+// no-op (Pebble tolerates missing keys); the apply-arm still bumps the
+// table revision so a CAS-roundtripping CLI sees forward progress.
+// Callers must also Delete any (service, handler) → id entries in
+// DeploymentIndexTable that pointed to this id — see
+// applyDeleteDeployment in fsm.go.
+func (t DeploymentTable) Delete(b storage.Batch, id string) error {
+	if id == "" {
+		return errors.New("DeploymentTable.Delete: empty id")
+	}
+	return b.Delete(DeploymentKey(id))
+}
+
 // List returns every DeploymentRecord row in lexicographic id order.
 func (t DeploymentTable) List() ([]*enginev1.DeploymentRecord, error) {
 	prefix := DeploymentPrefix()
@@ -208,6 +221,16 @@ func (t DeploymentIndexTable) Put(b storage.Batch, service, handler, id string) 
 		return errors.New("DeploymentIndexTable.Put: empty deployment id")
 	}
 	return b.Set(DeploymentIndexKey(service, handler), []byte(id))
+}
+
+// Delete removes the (service, handler) → id mapping. No-op when the
+// row is absent. Used by applyDeleteDeployment to evict stale routes
+// after a deployment is removed.
+func (t DeploymentIndexTable) Delete(b storage.Batch, service, handler string) error {
+	if service == "" || handler == "" {
+		return errors.New("DeploymentIndexTable.Delete: empty service or handler")
+	}
+	return b.Delete(DeploymentIndexKey(service, handler))
 }
 
 // RevisionTable persists the per-table TableRevision singletons used as

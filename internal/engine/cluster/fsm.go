@@ -282,33 +282,9 @@ func (f *FSM) applyCommand(
 		}
 		return &applyResult{partitionTable: applied}, nil
 	case *enginev1.Command_RegisterDeployment:
-		rec := k.RegisterDeployment.GetRecord()
-		if rec == nil || rec.GetId() == "" {
-			f.cfg.Log.Warn("cluster: RegisterDeployment missing record or id; ignoring",
-				"raft_index", raftIndex)
-			return &applyResult{}, nil
-		}
-		// Upsert: re-registering the same id (e.g. metadata-leader
-		// bootstrap re-runs on leader gain for an unchanged handler set)
-		// just overwrites the row. Operators registering a remote
-		// deployment with a new url should mint a fresh id, not reuse.
-		if err := (DeploymentTable{S: batch}).Put(batch, rec); err != nil {
-			return nil, fmt.Errorf("cluster: write deployment: %w", err)
-		}
-		// Maintain the (service, handler) → id index so ingress can
-		// resolve an unpinned invocation to a deployment in O(1).
-		// Newer registrations overwrite older ones; pinned invocations
-		// continue to find their deployment via DeploymentTable.Get directly.
-		idx := DeploymentIndexTable{S: batch}
-		for _, h := range rec.GetHandlers() {
-			if h.GetService() == "" || h.GetHandler() == "" {
-				continue
-			}
-			if err := idx.Put(batch, h.GetService(), h.GetHandler(), rec.GetId()); err != nil {
-				return nil, fmt.Errorf("cluster: write deployment index: %w", err)
-			}
-		}
-		return &applyResult{}, nil
+		return f.applyRegisterDeployment(batch, env, k.RegisterDeployment, raftIndex)
+	case *enginev1.Command_DeleteDeployment:
+		return f.applyDeleteDeployment(batch, env, k.DeleteDeployment, raftIndex)
 	case *enginev1.Command_UpsertEventSource:
 		return f.applyUpsertEventSource(batch, env, k.UpsertEventSource, raftIndex)
 	case *enginev1.Command_DeleteEventSource:
@@ -366,6 +342,113 @@ func (f *FSM) checkPrecondition(batch storage.Batch, env *enginev1.Envelope, tab
 		return false, err
 	}
 	return cur == pre.GetIfTableRevisionEq(), nil
+}
+
+// applyRegisterDeployment writes the DeploymentRecord and maintains the
+// (service, handler) → id index, then bumps RevisionTableDeployment.
+// Honors Envelope.precondition (CAS off when if_table_revision_eq=0).
+// Idempotent re-registers (e.g. metadata-leader bootstrap re-runs on
+// leader gain for an unchanged handler set) just overwrite the row.
+// Operators registering a remote deployment at a new URL should mint a
+// fresh id, not reuse.
+func (f *FSM) applyRegisterDeployment(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.RegisterDeployment,
+	raftIndex uint64,
+) (*applyResult, error) {
+	rec := cmd.GetRecord()
+	if rec == nil || rec.GetId() == "" {
+		f.cfg.Log.Warn("cluster: RegisterDeployment missing record or id; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableDeployment)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load deployment revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	if err := (DeploymentTable{S: batch}).Put(batch, rec); err != nil {
+		return nil, fmt.Errorf("cluster: write deployment: %w", err)
+	}
+	// Maintain the (service, handler) → id index so ingress can resolve
+	// an unpinned invocation to a deployment in O(1). Newer registrations
+	// overwrite older ones; pinned invocations still find their record
+	// via DeploymentTable.Get directly.
+	idx := DeploymentIndexTable{S: batch}
+	for _, h := range rec.GetHandlers() {
+		if h.GetService() == "" || h.GetHandler() == "" {
+			continue
+		}
+		if err := idx.Put(batch, h.GetService(), h.GetHandler(), rec.GetId()); err != nil {
+			return nil, fmt.Errorf("cluster: write deployment index: %w", err)
+		}
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableDeployment, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump deployment revision: %w", err)
+	}
+	return &applyResult{}, nil
+}
+
+// applyDeleteDeployment removes the named DeploymentRecord and evicts
+// any DeploymentIndexTable rows that still point to this id. Other
+// deployments may have taken over a (service, handler) since this row
+// was written, so we only delete index entries whose current value
+// matches the deleted id.
+func (f *FSM) applyDeleteDeployment(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.DeleteDeployment,
+	raftIndex uint64,
+) (*applyResult, error) {
+	id := cmd.GetId()
+	if id == "" {
+		f.cfg.Log.Warn("cluster: DeleteDeployment missing id; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableDeployment)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load deployment revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	// Load first so we can find the (service, handler) pairs to evict
+	// from the index. Read-your-writes against the in-flight batch.
+	rec, err := (DeploymentTable{S: batch}).Get(id)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load deployment for delete: %w", err)
+	}
+	if err := (DeploymentTable{S: batch}).Delete(batch, id); err != nil {
+		return nil, fmt.Errorf("cluster: delete deployment: %w", err)
+	}
+	if rec != nil {
+		idx := DeploymentIndexTable{S: batch}
+		for _, h := range rec.GetHandlers() {
+			if h.GetService() == "" || h.GetHandler() == "" {
+				continue
+			}
+			cur, err := idx.Get(h.GetService(), h.GetHandler())
+			if err != nil {
+				return nil, fmt.Errorf("cluster: load deployment index: %w", err)
+			}
+			if cur != id {
+				continue
+			}
+			if err := idx.Delete(batch, h.GetService(), h.GetHandler()); err != nil {
+				return nil, fmt.Errorf("cluster: delete deployment index: %w", err)
+			}
+		}
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableDeployment, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump deployment revision: %w", err)
+	}
+	return &applyResult{}, nil
 }
 
 // applyUpsertEventSource writes the EventSourceRecord and bumps the
@@ -1156,6 +1239,13 @@ type (
 	// id (lex byte order).
 	LookupDeployments struct{}
 
+	// LookupDeploymentList returns *DeploymentList — every
+	// DeploymentRecord on shard 0 plus RevisionTableDeployment, atomic
+	// w.r.t. the read snapshot. Used by the Config ListDeployments RPC
+	// so operator CAS-roundtrip flows pick up the revision in the same
+	// SyncRead that produced the list.
+	LookupDeploymentList struct{}
+
 	// LookupDeploymentByHandler returns the deployment_id (string) that
 	// (service, handler) currently routes to, or "" if no deployment
 	// claims that handler. Resolves via the (service, handler) → id
@@ -1196,6 +1286,13 @@ type (
 	// operator-facing list.
 	LookupLPTransfers struct{}
 )
+
+// DeploymentList bundles every row in DeploymentTable with the table's
+// CAS revision, atomic w.r.t. the read snapshot.
+type DeploymentList struct {
+	Records       []*enginev1.DeploymentRecord
+	TableRevision uint64
+}
 
 // EventSourceList bundles every row in EventSourceTable with the
 // table's CAS revision, atomic w.r.t. the read snapshot (single
@@ -1290,6 +1387,16 @@ func (f *FSM) Lookup(query any) (any, error) {
 			}
 		}
 		return &HandlerInfo{DeploymentID: id, Kind: kind}, nil
+	case LookupDeploymentList:
+		records, err := (DeploymentTable{S: store}).List()
+		if err != nil {
+			return nil, err
+		}
+		rev, err := (RevisionTable{S: store}).Get(RevisionTableDeployment)
+		if err != nil {
+			return nil, err
+		}
+		return &DeploymentList{Records: records, TableRevision: rev}, nil
 	case LookupEventSources:
 		sources, err := (EventSourceTable{S: store}).List()
 		if err != nil {

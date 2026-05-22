@@ -37,6 +37,9 @@
 //	reflowd cluster list-lp-transfers   --admin=ANY:PORT
 //
 //	reflowd config register-deployment  --admin=ANY:PORT --url=http://HANDLER:PORT
+//	reflowd config list-deployments     --admin=ANY:PORT
+//	reflowd config describe-deployment  --admin=ANY:PORT --id=DEPLOYMENT_ID
+//	reflowd config delete-deployment    --admin=ANY:PORT --id=DEPLOYMENT_ID --force
 //	reflowd config eventsources list    --admin=ANY:PORT
 //	reflowd config eventsources delete  --admin=ANY:PORT --name=NAME
 //	reflowd config webhooks list        --admin=ANY:PORT
@@ -183,6 +186,9 @@ Cluster (ClusterCtl RPCs; fleet ops; --admin can be ANY node):
 
 Config (Config RPCs; app config; --admin can be ANY node):
   config register-deployment    Register a handler deployment URL.
+  config list-deployments       List every DeploymentRecord.
+  config describe-deployment    Describe one DeploymentRecord by id.
+  config delete-deployment      Delete a DeploymentRecord (requires --force).
   config eventsources list      List configured event sources.
   config eventsources delete    Delete an event source by name.
   config webhooks list          List configured webhook sources.

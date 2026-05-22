@@ -23,7 +23,41 @@ import (
 // VisibilityTimeout on the SQS side.
 
 func init() {
-	RegisterFactory("sqs", newSQSFactory())
+	RegisterFactory("sqs", newSQSFactory(), sqsValidator)
+}
+
+// sqsValidator enforces AWS's SQS queue-name rules at upsert time.
+// Standard queue names are ≤80 chars over [A-Za-z0-9_-]. FIFO queues
+// are the same set + a literal `.fifo` suffix; we strip that suffix
+// before validating the rest. AWS would reject a malformed name at
+// runtime, but doing it here surfaces CodeInvalidArgument
+// synchronously to the operator.
+func sqsValidator(topic string, _ BackendConfig) error {
+	name := topic
+	const fifoSuffix = ".fifo"
+	if len(name) > len(fifoSuffix) && name[len(name)-len(fifoSuffix):] == fifoSuffix {
+		name = name[:len(name)-len(fifoSuffix)]
+	}
+	if len(topic) == 0 {
+		// generic non-empty check catches this; defensive guard.
+		return nil
+	}
+	if len(topic) > 80 {
+		return fmt.Errorf("sqs: queue name %q is %d chars; max 80 (incl. .fifo suffix)", topic, len(topic))
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+		default:
+			return fmt.Errorf("sqs: queue name %q contains illegal char %q at index %d "+
+				"(allowed: A-Z a-z 0-9 _ -; .fifo suffix permitted)",
+				topic, string(r), i)
+		}
+	}
+	return nil
 }
 
 func newSQSFactory() Factory {

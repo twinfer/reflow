@@ -501,6 +501,13 @@ func validateEventSourceRecord(rec *enginev1.EventSourceRecord) error {
 	if rec.GetHandler() == "" {
 		return errors.New("handler is required")
 	}
+	backend := eventsource.BackendConfig{}
+	if b := rec.GetBackend(); b != nil {
+		backend.Settings = b.GetSettings()
+	}
+	if err := eventsource.Validate(rec.GetType(), rec.GetTopic(), backend); err != nil {
+		return err
+	}
 	return nil
 }
 

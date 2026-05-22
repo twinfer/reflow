@@ -18,7 +18,30 @@ import (
 //   marshaler_partition_key   metadata key whose value is used as the kafka partition key on DLQ publish
 
 func init() {
-	RegisterFactory("kafka", newKafkaFactory())
+	RegisterFactory("kafka", newKafkaFactory(), kafkaValidator)
+}
+
+// kafkaValidator enforces Kafka's topic-name rules at upsert time.
+// Kafka rejects topics longer than 249 chars or containing chars
+// outside [A-Za-z0-9._-]; the broker would surface that as a runtime
+// error, but doing the check at the admin RPC means operators see
+// CodeInvalidArgument before the record is committed.
+func kafkaValidator(topic string, _ BackendConfig) error {
+	if len(topic) > 249 {
+		return fmt.Errorf("kafka: topic %q is %d chars; max 249", topic, len(topic))
+	}
+	for i, r := range topic {
+		switch {
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '-':
+		default:
+			return fmt.Errorf("kafka: topic %q contains illegal char %q at index %d "+
+				"(allowed: A-Z a-z 0-9 . _ -)", topic, string(r), i)
+		}
+	}
+	return nil
 }
 
 func newKafkaFactory() Factory {

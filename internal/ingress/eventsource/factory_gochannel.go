@@ -16,7 +16,10 @@ import (
 // instance for cross-source DLQ delivery.
 
 func init() {
-	RegisterFactory("gochannel", newGoChannelFactory())
+	// nil validator — the in-memory broker imposes no naming rules and
+	// the tests using it deliberately pass weird names to exercise
+	// edge cases.
+	RegisterFactory("gochannel", newGoChannelFactory(), nil)
 }
 
 var (

@@ -11,11 +11,14 @@ import (
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflow/pkg/reflowclient"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
+	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// cmdTenants routes `reflowd config tenants <subcmd>`.
+// cmdTenants routes `reflowd cluster tenants <subcmd>`. Tenants are a
+// platform-admin concern hosted on the ClusterCtl service alongside
+// membership/partitions/snapshots; tenant-scoped app config lives on
+// the Config service (`reflowd config ...`).
 //
 // create — pre-allocates a fresh tenant_id via a read-then-CAS
 //
@@ -34,7 +37,7 @@ import (
 // list / describe — SyncRead; any node can serve.
 func cmdTenants(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: reflowd config tenants {create|update|delete|list|describe} [flags]")
+		return errors.New("usage: reflowd cluster tenants {create|update|delete|list|describe} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -70,7 +73,7 @@ func cmdTenantsCreate(ctx context.Context, args []string) error {
 		MaxConcurrentInvocations: uint32(*maxConcurrent),
 	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
-		resp, err := cli.Config.UpsertTenant(rctx, connect.NewRequest(&configv1.UpsertTenantRequest{
+		resp, err := cli.Cluster.UpsertTenant(rctx, connect.NewRequest(&clusterctlv1.UpsertTenantRequest{
 			Record: rec,
 		}))
 		if err != nil {
@@ -102,7 +105,7 @@ func cmdTenantsUpdate(ctx context.Context, args []string) error {
 		MaxConcurrentInvocations: uint32(*maxConcurrent),
 	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
-		resp, err := cli.Config.UpsertTenant(rctx, connect.NewRequest(&configv1.UpsertTenantRequest{
+		resp, err := cli.Cluster.UpsertTenant(rctx, connect.NewRequest(&clusterctlv1.UpsertTenantRequest{
 			Record: rec,
 		}))
 		if err != nil {
@@ -127,7 +130,7 @@ func cmdTenantsDelete(ctx context.Context, args []string) error {
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
 		// Resolve name→id and pull the table_revision in one SyncRead so
 		// the CAS guard matches.
-		list, err := cli.Config.ListTenants(rctx, connect.NewRequest(&configv1.ListTenantsRequest{}))
+		list, err := cli.Cluster.ListTenants(rctx, connect.NewRequest(&clusterctlv1.ListTenantsRequest{}))
 		if err != nil {
 			return fmt.Errorf("read revision: %w", err)
 		}
@@ -141,7 +144,7 @@ func cmdTenantsDelete(ctx context.Context, args []string) error {
 		if id == 0 {
 			return fmt.Errorf("tenant %q not found", *name)
 		}
-		resp, err := cli.Config.DeleteTenant(rctx, connect.NewRequest(&configv1.DeleteTenantRequest{
+		resp, err := cli.Cluster.DeleteTenant(rctx, connect.NewRequest(&clusterctlv1.DeleteTenantRequest{
 			TenantId:          id,
 			IfTableRevisionEq: list.Msg.GetTableRevision(),
 		}))
@@ -161,7 +164,7 @@ func cmdTenantsList(ctx context.Context, args []string) error {
 		return err
 	}
 	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
-		resp, err := cli.Config.ListTenants(ctx, connect.NewRequest(&configv1.ListTenantsRequest{}))
+		resp, err := cli.Cluster.ListTenants(ctx, connect.NewRequest(&clusterctlv1.ListTenantsRequest{}))
 		if err != nil {
 			return err
 		}
@@ -185,7 +188,7 @@ func cmdTenantsDescribe(ctx context.Context, args []string) error {
 		return errors.New("--id is required (0 is the default-tenant sentinel)")
 	}
 	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
-		resp, err := cli.Config.DescribeTenant(ctx, connect.NewRequest(&configv1.DescribeTenantRequest{
+		resp, err := cli.Cluster.DescribeTenant(ctx, connect.NewRequest(&clusterctlv1.DescribeTenantRequest{
 			TenantId: uint32(*id),
 		}))
 		if err != nil {

@@ -139,7 +139,7 @@ func dispatchPKI(args []string) error {
 // `reflowd config`.
 func dispatchCluster(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: reflowd cluster {add-node|remove-node|nodes|partitions|snapshot|transfer-lp|list-lp-transfers} [flags]")
+		return fmt.Errorf("usage: reflowd cluster {add-node|remove-node|nodes|partitions|snapshot|transfer-lp|list-lp-transfers|tenants} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -162,6 +162,8 @@ func dispatchCluster(ctx context.Context, args []string) error {
 		return cmdRebalanceAdvise(ctx, rest)
 	case "rebalance-drain":
 		return cmdRebalanceDrain(ctx, rest)
+	case "tenants":
+		return cmdTenants(ctx, rest)
 	default:
 		return fmt.Errorf("reflowd cluster: unknown subcommand %q", sub)
 	}
@@ -193,6 +195,11 @@ Cluster (ClusterCtl RPCs; fleet ops; --admin can be ANY node):
                                 (skew, drained shards, would-transfer set).
   cluster rebalance-drain       Mark a partition shard drained (or undrain
                                 via --stop).
+  cluster tenants create        Create a tenant (--name, --max-concurrent).
+  cluster tenants update        Update a tenant's quotas by name.
+  cluster tenants delete        Delete a tenant by name.
+  cluster tenants list          List every TenantRecord.
+  cluster tenants describe      Describe one TenantRecord by --id.
 
 Config (Config RPCs; app config; --admin can be ANY node):
   config register-deployment    Register a handler deployment URL.

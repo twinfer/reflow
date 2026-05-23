@@ -93,14 +93,6 @@ const (
 	ConfigDeleteSecretProcedure = "/reflow.config.v1.Config/DeleteSecret"
 	// ConfigListSecretsProcedure is the fully-qualified name of the Config's ListSecrets RPC.
 	ConfigListSecretsProcedure = "/reflow.config.v1.Config/ListSecrets"
-	// ConfigUpsertTenantProcedure is the fully-qualified name of the Config's UpsertTenant RPC.
-	ConfigUpsertTenantProcedure = "/reflow.config.v1.Config/UpsertTenant"
-	// ConfigDeleteTenantProcedure is the fully-qualified name of the Config's DeleteTenant RPC.
-	ConfigDeleteTenantProcedure = "/reflow.config.v1.Config/DeleteTenant"
-	// ConfigListTenantsProcedure is the fully-qualified name of the Config's ListTenants RPC.
-	ConfigListTenantsProcedure = "/reflow.config.v1.Config/ListTenants"
-	// ConfigDescribeTenantProcedure is the fully-qualified name of the Config's DescribeTenant RPC.
-	ConfigDescribeTenantProcedure = "/reflow.config.v1.Config/DescribeTenant"
 )
 
 // ConfigClient is a client for the reflow.config.v1.Config service.
@@ -163,29 +155,6 @@ type ConfigClient interface {
 	UpsertSecret(context.Context, *connect.Request[configv1.UpsertSecretRequest]) (*connect.Response[configv1.UpsertSecretResponse], error)
 	DeleteSecret(context.Context, *connect.Request[configv1.DeleteSecretRequest]) (*connect.Response[configv1.DeleteSecretResponse], error)
 	ListSecrets(context.Context, *connect.Request[configv1.ListSecretsRequest]) (*connect.Response[configv1.ListSecretsResponse], error)
-	// UpsertTenant inserts or replaces one row in shard 0's TenantTable.
-	// The server pre-allocates record.id by reading the current
-	// TenantList: if a row with record.name already exists, it reuses
-	// that id (update path); otherwise it allocates max(existing.id)+1
-	// (create path). On create, the assigned id is returned in
-	// UpsertTenantResponse.tenant_id. CAS via if_table_revision_eq
-	// (caller must pass the revision they read in the same
-	// ListTenants call so a racing operator's concurrent edit
-	// reproducibly conflicts). Leader-only.
-	UpsertTenant(context.Context, *connect.Request[configv1.UpsertTenantRequest]) (*connect.Response[configv1.UpsertTenantResponse], error)
-	// DeleteTenant removes one row from shard 0's TenantTable by id.
-	// Same CAS semantics as UpsertTenant. Delete-of-absent succeeds
-	// (and bumps the revision so the operator's CLI sees the proposal
-	// landed). Does NOT cascade-delete the tenant's data (invocations,
-	// journal entries, DEK record) — operators clean up via a follow-up
-	// TenantDEK delete + per-tenant range-delete pass. Leader-only.
-	DeleteTenant(context.Context, *connect.Request[configv1.DeleteTenantRequest]) (*connect.Response[configv1.DeleteTenantResponse], error)
-	// ListTenants returns every TenantRecord plus the table's CAS
-	// revision in one SyncRead. Reads from any peer.
-	ListTenants(context.Context, *connect.Request[configv1.ListTenantsRequest]) (*connect.Response[configv1.ListTenantsResponse], error)
-	// DescribeTenant returns one TenantRecord by id, or CodeNotFound.
-	// Reads via SyncRead.
-	DescribeTenant(context.Context, *connect.Request[configv1.DescribeTenantRequest]) (*connect.Response[configv1.DescribeTenantResponse], error)
 }
 
 // NewConfigClient constructs a client for the reflow.config.v1.Config service. By default, it uses
@@ -277,30 +246,6 @@ func NewConfigClient(httpClient connect.HTTPClient, baseURL string, opts ...conn
 			connect.WithSchema(configMethods.ByName("ListSecrets")),
 			connect.WithClientOptions(opts...),
 		),
-		upsertTenant: connect.NewClient[configv1.UpsertTenantRequest, configv1.UpsertTenantResponse](
-			httpClient,
-			baseURL+ConfigUpsertTenantProcedure,
-			connect.WithSchema(configMethods.ByName("UpsertTenant")),
-			connect.WithClientOptions(opts...),
-		),
-		deleteTenant: connect.NewClient[configv1.DeleteTenantRequest, configv1.DeleteTenantResponse](
-			httpClient,
-			baseURL+ConfigDeleteTenantProcedure,
-			connect.WithSchema(configMethods.ByName("DeleteTenant")),
-			connect.WithClientOptions(opts...),
-		),
-		listTenants: connect.NewClient[configv1.ListTenantsRequest, configv1.ListTenantsResponse](
-			httpClient,
-			baseURL+ConfigListTenantsProcedure,
-			connect.WithSchema(configMethods.ByName("ListTenants")),
-			connect.WithClientOptions(opts...),
-		),
-		describeTenant: connect.NewClient[configv1.DescribeTenantRequest, configv1.DescribeTenantResponse](
-			httpClient,
-			baseURL+ConfigDescribeTenantProcedure,
-			connect.WithSchema(configMethods.ByName("DescribeTenant")),
-			connect.WithClientOptions(opts...),
-		),
 	}
 }
 
@@ -319,10 +264,6 @@ type configClient struct {
 	upsertSecret        *connect.Client[configv1.UpsertSecretRequest, configv1.UpsertSecretResponse]
 	deleteSecret        *connect.Client[configv1.DeleteSecretRequest, configv1.DeleteSecretResponse]
 	listSecrets         *connect.Client[configv1.ListSecretsRequest, configv1.ListSecretsResponse]
-	upsertTenant        *connect.Client[configv1.UpsertTenantRequest, configv1.UpsertTenantResponse]
-	deleteTenant        *connect.Client[configv1.DeleteTenantRequest, configv1.DeleteTenantResponse]
-	listTenants         *connect.Client[configv1.ListTenantsRequest, configv1.ListTenantsResponse]
-	describeTenant      *connect.Client[configv1.DescribeTenantRequest, configv1.DescribeTenantResponse]
 }
 
 // RegisterDeployment calls reflow.config.v1.Config.RegisterDeployment.
@@ -390,26 +331,6 @@ func (c *configClient) ListSecrets(ctx context.Context, req *connect.Request[con
 	return c.listSecrets.CallUnary(ctx, req)
 }
 
-// UpsertTenant calls reflow.config.v1.Config.UpsertTenant.
-func (c *configClient) UpsertTenant(ctx context.Context, req *connect.Request[configv1.UpsertTenantRequest]) (*connect.Response[configv1.UpsertTenantResponse], error) {
-	return c.upsertTenant.CallUnary(ctx, req)
-}
-
-// DeleteTenant calls reflow.config.v1.Config.DeleteTenant.
-func (c *configClient) DeleteTenant(ctx context.Context, req *connect.Request[configv1.DeleteTenantRequest]) (*connect.Response[configv1.DeleteTenantResponse], error) {
-	return c.deleteTenant.CallUnary(ctx, req)
-}
-
-// ListTenants calls reflow.config.v1.Config.ListTenants.
-func (c *configClient) ListTenants(ctx context.Context, req *connect.Request[configv1.ListTenantsRequest]) (*connect.Response[configv1.ListTenantsResponse], error) {
-	return c.listTenants.CallUnary(ctx, req)
-}
-
-// DescribeTenant calls reflow.config.v1.Config.DescribeTenant.
-func (c *configClient) DescribeTenant(ctx context.Context, req *connect.Request[configv1.DescribeTenantRequest]) (*connect.Response[configv1.DescribeTenantResponse], error) {
-	return c.describeTenant.CallUnary(ctx, req)
-}
-
 // ConfigHandler is an implementation of the reflow.config.v1.Config service.
 type ConfigHandler interface {
 	// RegisterDeployment introduces a new handler deployment to the
@@ -470,29 +391,6 @@ type ConfigHandler interface {
 	UpsertSecret(context.Context, *connect.Request[configv1.UpsertSecretRequest]) (*connect.Response[configv1.UpsertSecretResponse], error)
 	DeleteSecret(context.Context, *connect.Request[configv1.DeleteSecretRequest]) (*connect.Response[configv1.DeleteSecretResponse], error)
 	ListSecrets(context.Context, *connect.Request[configv1.ListSecretsRequest]) (*connect.Response[configv1.ListSecretsResponse], error)
-	// UpsertTenant inserts or replaces one row in shard 0's TenantTable.
-	// The server pre-allocates record.id by reading the current
-	// TenantList: if a row with record.name already exists, it reuses
-	// that id (update path); otherwise it allocates max(existing.id)+1
-	// (create path). On create, the assigned id is returned in
-	// UpsertTenantResponse.tenant_id. CAS via if_table_revision_eq
-	// (caller must pass the revision they read in the same
-	// ListTenants call so a racing operator's concurrent edit
-	// reproducibly conflicts). Leader-only.
-	UpsertTenant(context.Context, *connect.Request[configv1.UpsertTenantRequest]) (*connect.Response[configv1.UpsertTenantResponse], error)
-	// DeleteTenant removes one row from shard 0's TenantTable by id.
-	// Same CAS semantics as UpsertTenant. Delete-of-absent succeeds
-	// (and bumps the revision so the operator's CLI sees the proposal
-	// landed). Does NOT cascade-delete the tenant's data (invocations,
-	// journal entries, DEK record) — operators clean up via a follow-up
-	// TenantDEK delete + per-tenant range-delete pass. Leader-only.
-	DeleteTenant(context.Context, *connect.Request[configv1.DeleteTenantRequest]) (*connect.Response[configv1.DeleteTenantResponse], error)
-	// ListTenants returns every TenantRecord plus the table's CAS
-	// revision in one SyncRead. Reads from any peer.
-	ListTenants(context.Context, *connect.Request[configv1.ListTenantsRequest]) (*connect.Response[configv1.ListTenantsResponse], error)
-	// DescribeTenant returns one TenantRecord by id, or CodeNotFound.
-	// Reads via SyncRead.
-	DescribeTenant(context.Context, *connect.Request[configv1.DescribeTenantRequest]) (*connect.Response[configv1.DescribeTenantResponse], error)
 }
 
 // NewConfigHandler builds an HTTP handler from the service implementation. It returns the path on
@@ -580,30 +478,6 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 		connect.WithSchema(configMethods.ByName("ListSecrets")),
 		connect.WithHandlerOptions(opts...),
 	)
-	configUpsertTenantHandler := connect.NewUnaryHandler(
-		ConfigUpsertTenantProcedure,
-		svc.UpsertTenant,
-		connect.WithSchema(configMethods.ByName("UpsertTenant")),
-		connect.WithHandlerOptions(opts...),
-	)
-	configDeleteTenantHandler := connect.NewUnaryHandler(
-		ConfigDeleteTenantProcedure,
-		svc.DeleteTenant,
-		connect.WithSchema(configMethods.ByName("DeleteTenant")),
-		connect.WithHandlerOptions(opts...),
-	)
-	configListTenantsHandler := connect.NewUnaryHandler(
-		ConfigListTenantsProcedure,
-		svc.ListTenants,
-		connect.WithSchema(configMethods.ByName("ListTenants")),
-		connect.WithHandlerOptions(opts...),
-	)
-	configDescribeTenantHandler := connect.NewUnaryHandler(
-		ConfigDescribeTenantProcedure,
-		svc.DescribeTenant,
-		connect.WithSchema(configMethods.ByName("DescribeTenant")),
-		connect.WithHandlerOptions(opts...),
-	)
 	return "/reflow.config.v1.Config/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ConfigRegisterDeploymentProcedure:
@@ -632,14 +506,6 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 			configDeleteSecretHandler.ServeHTTP(w, r)
 		case ConfigListSecretsProcedure:
 			configListSecretsHandler.ServeHTTP(w, r)
-		case ConfigUpsertTenantProcedure:
-			configUpsertTenantHandler.ServeHTTP(w, r)
-		case ConfigDeleteTenantProcedure:
-			configDeleteTenantHandler.ServeHTTP(w, r)
-		case ConfigListTenantsProcedure:
-			configListTenantsHandler.ServeHTTP(w, r)
-		case ConfigDescribeTenantProcedure:
-			configDescribeTenantHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -699,20 +565,4 @@ func (UnimplementedConfigHandler) DeleteSecret(context.Context, *connect.Request
 
 func (UnimplementedConfigHandler) ListSecrets(context.Context, *connect.Request[configv1.ListSecretsRequest]) (*connect.Response[configv1.ListSecretsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.ListSecrets is not implemented"))
-}
-
-func (UnimplementedConfigHandler) UpsertTenant(context.Context, *connect.Request[configv1.UpsertTenantRequest]) (*connect.Response[configv1.UpsertTenantResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.UpsertTenant is not implemented"))
-}
-
-func (UnimplementedConfigHandler) DeleteTenant(context.Context, *connect.Request[configv1.DeleteTenantRequest]) (*connect.Response[configv1.DeleteTenantResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DeleteTenant is not implemented"))
-}
-
-func (UnimplementedConfigHandler) ListTenants(context.Context, *connect.Request[configv1.ListTenantsRequest]) (*connect.Response[configv1.ListTenantsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.ListTenants is not implemented"))
-}
-
-func (UnimplementedConfigHandler) DescribeTenant(context.Context, *connect.Request[configv1.DescribeTenantRequest]) (*connect.Response[configv1.DescribeTenantResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DescribeTenant is not implemented"))
 }

@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/twinfer/reflow/pkg/reflowclient"
+	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
 	configv1 "github.com/twinfer/reflow/proto/configv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -89,10 +90,11 @@ func applyOneDoc(ctx context.Context, cli *reflowclient.Client, doc resourceDoc)
 }
 
 // applyTenant decodes a Tenant doc and round-trips through
-// Config.UpsertTenant. metadata.name is the canonical key; the spec
-// carries quotas + per-tenant OIDC issuers. The server resolves
-// create-vs-update by name, so applying the same file twice in a row
-// is idempotent (the second apply reuses the existing id).
+// ClusterCtl.UpsertTenant (tenants live on the platform-admin
+// surface). metadata.name is the canonical key; the spec carries
+// quotas + per-tenant OIDC issuers. The server resolves create-vs-
+// update by name, so applying the same file twice in a row is
+// idempotent (the second apply reuses the existing id).
 func applyTenant(ctx context.Context, cli *reflowclient.Client, doc resourceDoc) error {
 	if doc.Metadata.Name == "" {
 		return errors.New("metadata.name is required")
@@ -102,7 +104,7 @@ func applyTenant(ctx context.Context, cli *reflowclient.Client, doc resourceDoc)
 		return err
 	}
 	rec.Name = doc.Metadata.Name
-	resp, err := cli.Config.UpsertTenant(ctx, connect.NewRequest(&configv1.UpsertTenantRequest{
+	resp, err := cli.Cluster.UpsertTenant(ctx, connect.NewRequest(&clusterctlv1.UpsertTenantRequest{
 		Record: rec,
 	}))
 	if err != nil {

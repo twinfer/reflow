@@ -1,6 +1,10 @@
 package auth
 
-import "context"
+import (
+	"context"
+	"strconv"
+	"strings"
+)
 
 // Principal is the server-trusted identity of a caller, materialized by
 // an authentication step (mTLS-leaf SPIFFE URI or verified Bearer JWT)
@@ -53,4 +57,34 @@ func ContextWithPrincipal(ctx context.Context, p Principal) context.Context {
 func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 	p, ok := ctx.Value(principalCtxKey{}).(Principal)
 	return p, ok
+}
+
+// TenantIDFromPrincipal extracts the numeric tenant id from p. Returns
+// 0 (the default-tenant sentinel) when the principal does not carry a
+// tenant assignment — anonymous traffic, operator/* (platform admins
+// do not act on behalf of a tenant), node/* (cluster mesh), and
+// pre-tenancy user/* principals all fall back to tenant 0. Recognized
+// shapes:
+//
+//   - Kind == "tenant" and Subject parses as uint32 → that id.
+//
+// Anything else returns 0; the engine treats tenant 0 as "no tenant
+// scoping," which is the safe default for single-tenant deployments
+// and the operator surface.
+func TenantIDFromPrincipal(p Principal) uint32 {
+	if p.Kind != "tenant" {
+		return 0
+	}
+	// Subject may carry a `/`-sanitized prefix from the JWT
+	// principal-claim path (see jwt_authfunc); the tenant id is the
+	// leading numeric segment.
+	subj := p.Subject
+	if i := strings.IndexByte(subj, '/'); i >= 0 {
+		subj = subj[:i]
+	}
+	id, err := strconv.ParseUint(subj, 10, 32)
+	if err != nil {
+		return 0
+	}
+	return uint32(id)
 }

@@ -39,6 +39,7 @@ func transitionOnInvoke(
 			},
 			DeploymentId: cmd.GetDeploymentId(),
 			Kind:         cmd.GetKind(),
+			TenantId:     cmd.GetTenantId(),
 		}
 		return next, []Action{ActInvoke{ID: id, Target: cmd.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Scheduled, *enginev1.InvocationStatus_Invoked:
@@ -90,6 +91,7 @@ func transitionOnJournalAppend(
 				},
 				DeploymentId: cur.GetDeploymentId(),
 				Kind:         cur.GetKind(),
+				TenantId:     cur.GetTenantId(),
 			}, nil, nil
 		}
 		return cur, nil, nil
@@ -106,6 +108,7 @@ func transitionOnJournalAppend(
 			},
 			DeploymentId: cur.GetDeploymentId(),
 			Kind:         cur.GetKind(),
+			TenantId:     cur.GetTenantId(),
 		}, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	default:
 		return cur, nil, fmt.Errorf("%w: JournalAppend from %T", ErrInvalidTransition, cur.GetStatus())
@@ -166,6 +169,7 @@ func transitionOnComplete(
 		},
 		DeploymentId: cur.GetDeploymentId(),
 		Kind:         cur.GetKind(),
+		TenantId:     cur.GetTenantId(),
 	}, nil, nil
 }
 
@@ -194,6 +198,7 @@ func transitionOnSuspend(
 			},
 			DeploymentId: cur.GetDeploymentId(),
 			Kind:         cur.GetKind(),
+			TenantId:     cur.GetTenantId(),
 		}, nil, nil
 	case *enginev1.InvocationStatus_Suspended:
 		return cur, nil, nil
@@ -237,6 +242,7 @@ func transitionOnTimerFired(
 			},
 			DeploymentId: cur.GetDeploymentId(),
 			Kind:         cur.GetKind(),
+			TenantId:     cur.GetTenantId(),
 		}, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Invoked:
 		return cur, []Action{ActInvoke{ID: id, Target: s.Invoked.GetTarget()}}, nil
@@ -287,6 +293,7 @@ func transitionOnAwakeableResolved(
 			},
 			DeploymentId: cur.GetDeploymentId(),
 			Kind:         cur.GetKind(),
+			TenantId:     cur.GetTenantId(),
 		}
 		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Invoked:
@@ -332,6 +339,7 @@ func transitionOnSignalDelivered(
 			},
 			DeploymentId: cur.GetDeploymentId(),
 			Kind:         cur.GetKind(),
+			TenantId:     cur.GetTenantId(),
 		}
 		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Invoked:
@@ -377,6 +385,7 @@ func transitionOnCallResultDelivered(
 			},
 			DeploymentId: cur.GetDeploymentId(),
 			Kind:         cur.GetKind(),
+			TenantId:     cur.GetTenantId(),
 		}
 		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Invoked:
@@ -411,6 +420,7 @@ func transitionOnPromiseResolved(
 			},
 			DeploymentId: cur.GetDeploymentId(),
 			Kind:         cur.GetKind(),
+			TenantId:     cur.GetTenantId(),
 		}
 		return next, []Action{ActInvoke{ID: id, Target: s.Suspended.GetTarget()}}, nil
 	case *enginev1.InvocationStatus_Invoked:

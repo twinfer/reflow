@@ -797,6 +797,11 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 						ParentId:  id,
 						CallIndex: entry.GetIndex(),
 					},
+					// Inherit the parent's tenant; the callee runs under the
+					// same tenant scope as the caller. Per-tenant OIDC /
+					// quota / encryption decisions on the receiver apply
+					// uniformly to caller and callee.
+					TenantId: cur.GetTenantId(),
 				}},
 			}
 			if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {
@@ -814,6 +819,8 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 					Target:         e.OneWayCall.GetTarget(),
 					Input:          e.OneWayCall.GetInput(),
 					IdempotencyKey: e.OneWayCall.GetIdempotencyKey(),
+					// Same tenant-inheritance rationale as JECall.
+					TenantId: cur.GetTenantId(),
 				}},
 			}
 			if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {

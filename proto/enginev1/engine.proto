@@ -82,6 +82,13 @@ message TableRevision {
 message Header {
   Dedup dedup = 1;
   fixed64 created_at_ms = 2;
+  // tenant_id scopes the command to its owning tenant. 0 is the
+  // default-tenant sentinel (anonymous traffic, internal probes,
+  // single-tenant deployments). Set on inbound commands at the
+  // ingress boundary from auth.Principal; copied onto outbound
+  // OutboxEnvelopes by the partition so cross-shard hops carry the
+  // tenant through to the receiving shard.
+  uint32 tenant_id = 3;
 }
 
 // Command oneof. Mirrors restate CommandKind in
@@ -270,6 +277,12 @@ message InvokeCommand {
   // via ctx.Metadata() on replay. The engine itself never interprets
   // the values.
   map<string, string> metadata = 8;
+  // tenant_id is captured at submit time from the caller's auth
+  // principal (see internal/auth.TenantIDFromPrincipal). The apply
+  // arm copies it onto Scheduled; the invoker copies it onto the
+  // slot-0 JEInput so the durable journal carries the tenant. 0 is
+  // the default-tenant sentinel.
+  uint32 tenant_id = 9;
 }
 
 // ParentLink references the parent invocation that spawned a callee via
@@ -510,6 +523,13 @@ message JEInput {
   // JEInput is the slot-0 journal entry and the only place metadata
   // is persisted.
   map<string, string> metadata = 2;
+  // tenant_id is the durable journal-side home for the invocation's
+  // tenant assignment. Copied from InvocationStatus.tenant_id by the
+  // invoker on first activation; reread from the journal on every
+  // replay so consumers that only have the journal (snapshot replay,
+  // out-of-band tooling) can recover the tenant without joining
+  // against the status row. 0 is the default-tenant sentinel.
+  uint32 tenant_id = 3;
 }
 
 message JESleep {
@@ -847,6 +867,14 @@ message InvocationStatus {
   // Free→Scheduled transition like deployment_id; lifecycle code (purge,
   // workflow retention reaper) consults it to decide what to clean up.
   uint32 kind = 7;
+  // tenant_id pins this invocation to its owning tenant. Stamped once
+  // on the Free→Scheduled transition (from InvokeCommand.tenant_id) and
+  // preserved across every subsequent transition. Consulted by the
+  // invoker (stamped onto slot-0 JEInput) and by the outbox path
+  // (stamped onto outbound OutboxEnvelope.Header on cross-shard Calls
+  // so the receiving shard's apply path stays tenant-scoped). 0 is the
+  // default-tenant sentinel.
+  uint32 tenant_id = 8;
 }
 
 message Free {}

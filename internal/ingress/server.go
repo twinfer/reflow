@@ -18,6 +18,7 @@ import (
 
 	connect "connectrpc.com/connect"
 
+	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/routing"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -138,6 +139,15 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("mint invocation id: %w", err))
 	}
 
+	// Tenant scoping: the principal attached by the auth middleware
+	// carries either a tenant/<id> Kind (per-tenant OIDC, future PR 5)
+	// or one of operator/node/user/anonymous (all fall back to the
+	// default-tenant sentinel = 0).
+	var tenantID uint32
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		tenantID = auth.TenantIDFromPrincipal(p)
+	}
+
 	cmd := &enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
 		InvocationId:   id,
 		Target:         target,
@@ -146,6 +156,7 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 		DeploymentId:   info.DeploymentID,
 		Kind:           info.Kind,
 		Metadata:       msg.GetMetadata(),
+		TenantId:       tenantID,
 	}}}
 	producerID := "http/" + FormatInvocationID(id)
 	if err := runner.Proposer().ProposeIngress(ctx, producerID, 1, cmd); err != nil {

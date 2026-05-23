@@ -199,6 +199,7 @@ func (s *wireSession) loadJournal() ([]*enginev1.JournalEntry, bool) {
 				Input: &enginev1.JEInput{
 					Value:    st.Scheduled.GetInput(),
 					Metadata: st.Scheduled.GetMetadata(),
+					TenantId: status.GetTenantId(),
 				},
 			},
 		}

@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"bytes"
 	"fmt"
 
 	"github.com/twinfer/reflow/internal/storage"
@@ -47,23 +46,24 @@ func (p *Partition) onBeginLPTransfer(
 	return nil
 }
 
-// onApplyLPTransferChunk applies one chunk's TransferRows verbatim into
-// the destination's Pebble batch and updates the LPStagingTable row.
-// Validates chunk_seq monotonically — duplicates (seq < next_chunk_seq)
-// and gaps (seq > next_chunk_seq) are dropped with a warning, leaving
-// the source to retry. On is_final=true emits ActSignalLPTransferStaged
-// so the runner routes phase=STAGED back to shard 0.
+// onApplyLPTransferSST is the dest-side arm for SST-based LP transfer
+// shipping. Validates sst_seq == staging.next_sst_seq, resolves each
+// TransferSSTRef.relative_path against `<dataDir>.lpstage_in/<transfer_id>/`,
+// and calls pebble.DB.Ingest for the path set. On is_final=true emits
+// ActSignalLPTransferStaged so the runner routes phase=STAGED back to
+// shard 0.
 //
-// Each row is written raw via batch.Set; the namespace_hint is a
-// defensive sanity check (matches the row's key prefix) and surfaces
-// any source-side bug that ships foreign-LP rows.
-func (p *Partition) onApplyLPTransferChunk(
+// Pending wire-up in a follow-up PR: actual Ingest needs the delivery
+// upload RPC to land the files on the dest's disk first. The validation
+// + LPStagingRow update path lives here so this arm can be unit-tested
+// against pre-staged files independently.
+func (p *Partition) onApplyLPTransferSST(
 	batch storage.Batch,
-	cmd *enginev1.ApplyLPTransferChunk,
+	cmd *enginev1.ApplyLPTransferSST,
 	isLeader bool,
 ) error {
 	if cmd.GetTransferId() == "" || cmd.GetLp() >= keys.LPCount {
-		p.cfg.Log.Warn("partition: ApplyLPTransferChunk malformed; ignoring",
+		p.cfg.Log.Warn("partition: ApplyLPTransferSST malformed; ignoring",
 			"transfer_id", cmd.GetTransferId(),
 			"lp", cmd.GetLp())
 		return nil
@@ -71,49 +71,37 @@ func (p *Partition) onApplyLPTransferChunk(
 	stagingT := tables.LPStagingTable{S: batch}
 	row, err := stagingT.Get(cmd.GetTransferId())
 	if err != nil {
-		return fmt.Errorf("onApplyLPTransferChunk: load staging: %w", err)
+		return fmt.Errorf("onApplyLPTransferSST: load staging: %w", err)
 	}
 	expectedSeq := uint64(0)
 	if row != nil {
-		expectedSeq = row.GetNextChunkSeq()
+		expectedSeq = row.GetNextSstSeq()
 		if row.GetIsFinalSeen() {
-			// Final chunk already applied — duplicate, drop.
-			p.cfg.Log.Debug("partition: ApplyLPTransferChunk after final; dropping",
+			// Final SST already applied — duplicate, drop.
+			p.cfg.Log.Debug("partition: ApplyLPTransferSST after final; dropping",
 				"transfer_id", cmd.GetTransferId(),
-				"chunk_seq", cmd.GetChunkSeq())
+				"sst_seq", cmd.GetSstSeq())
 			return nil
 		}
 	}
-	if cmd.GetChunkSeq() != expectedSeq {
-		p.cfg.Log.Warn("partition: ApplyLPTransferChunk out of order; dropping",
+	if cmd.GetSstSeq() != expectedSeq {
+		p.cfg.Log.Warn("partition: ApplyLPTransferSST out of order; dropping",
 			"transfer_id", cmd.GetTransferId(),
-			"got_seq", cmd.GetChunkSeq(),
+			"got_seq", cmd.GetSstSeq(),
 			"expected_seq", expectedSeq)
 		return nil
 	}
-	// Write rows verbatim. The source is trusted (cross-shard delivery
-	// over mTLS Connect; node-to-node SPIFFE auth) and the rows already
-	// passed the source's encoding; namespace_hint is a sanity check
-	// on the receiver to surface source-side bugs early.
-	expectedLP := cmd.GetLp()
-	for _, tr := range cmd.GetRows() {
-		k := tr.GetKey()
-		if len(k) == 0 {
-			p.cfg.Log.Warn("partition: ApplyLPTransferChunk row missing key; skipping",
-				"transfer_id", cmd.GetTransferId())
-			continue
-		}
-		if !validateTransferRowLP(k, tr.GetNamespaceHint(), expectedLP) {
-			p.cfg.Log.Warn("partition: ApplyLPTransferChunk row LP mismatch; dropping row",
-				"transfer_id", cmd.GetTransferId(),
-				"namespace_hint", tr.GetNamespaceHint().String(),
-				"expected_lp", expectedLP)
-			continue
-		}
-		if err := batch.Set(k, tr.GetValue()); err != nil {
-			return fmt.Errorf("onApplyLPTransferChunk: write row: %w", err)
-		}
-	}
+	// TODO(SST shipping PR 2): resolve cmd.GetSsts() relative_path values
+	// against <dataDir>.lpstage_in/<transfer_id>/ and call
+	// pebbleStore.IngestSSTs(ctx, paths). The Ingest call cannot happen on
+	// the apply path's batch (Ingest is a top-level DB operation); the
+	// LPStagingRow bookkeeping below + the ActSignalLPTransferStaged push
+	// are the apply-path's share of the work.
+	p.cfg.Log.Warn("partition: ApplyLPTransferSST Ingest not yet wired; bookkeeping only",
+		"transfer_id", cmd.GetTransferId(),
+		"sst_seq", cmd.GetSstSeq(),
+		"ssts", len(cmd.GetSsts()))
+
 	if row == nil {
 		row = &enginev1.LPStagingRow{
 			TransferId:  cmd.GetTransferId(),
@@ -121,12 +109,12 @@ func (p *Partition) onApplyLPTransferChunk(
 			SourceShard: cmd.GetSourceShard(),
 		}
 	}
-	row.NextChunkSeq = cmd.GetChunkSeq() + 1
+	row.NextSstSeq = cmd.GetSstSeq() + 1
 	if cmd.GetIsFinal() {
 		row.IsFinalSeen = true
 	}
 	if err := stagingT.Put(batch, row); err != nil {
-		return fmt.Errorf("onApplyLPTransferChunk: write staging: %w", err)
+		return fmt.Errorf("onApplyLPTransferSST: write staging: %w", err)
 	}
 	if isLeader && cmd.GetIsFinal() {
 		p.cfg.Collector.Push(ActSignalLPTransferStaged{
@@ -304,52 +292,4 @@ func deleteLPTimers(batch storage.Batch, lp uint32) error {
 		}
 	}
 	return iter.Error()
-}
-
-// validateTransferRowLP checks that a row's key starts with a prefix
-// matching its namespace_hint, scoped to the expected lp. A
-// mismatch indicates a source-side bug shipping foreign-LP rows;
-// returning false drops the row with a warning. Returns true for
-// UNSPECIFIED + TIMER_PRIMARY (which is LP-agnostic).
-func validateTransferRowLP(key []byte, hint enginev1.TransferNamespace, lp uint32) bool {
-	switch hint {
-	case enginev1.TransferNamespace_TRANSFER_NS_UNSPECIFIED:
-		// No hint — trust the source's encoding.
-		return true
-	case enginev1.TransferNamespace_TRANSFER_NS_TIMER_PRIMARY:
-		// timer/<fire>/<id> — not LP-prefixed. Verify only the
-		// namespace, not the LP.
-		return bytes.HasPrefix(key, keys.TimerPrefix())
-	case enginev1.TransferNamespace_TRANSFER_NS_INV:
-		return bytes.HasPrefix(key, keys.InvocationLPPrefix(lp))
-	case enginev1.TransferNamespace_TRANSFER_NS_JOURNAL:
-		return bytes.HasPrefix(key, keys.JournalLPPrefix(lp))
-	case enginev1.TransferNamespace_TRANSFER_NS_TIMER_LP:
-		return bytes.HasPrefix(key, keys.TimerLPPrefixForLP(lp))
-	case enginev1.TransferNamespace_TRANSFER_NS_TIMER_IDX:
-		return bytes.HasPrefix(key, keys.TimerIdxLPPrefix(lp))
-	case enginev1.TransferNamespace_TRANSFER_NS_STATE:
-		return bytes.HasPrefix(key, keys.StateLPPrefix(lp))
-	case enginev1.TransferNamespace_TRANSFER_NS_AWAKEABLE:
-		return bytes.HasPrefix(key, keys.AwakeableLPPrefix(lp))
-	case enginev1.TransferNamespace_TRANSFER_NS_KEYLEASE:
-		return bytes.HasPrefix(key, keys.KeyLeaseLPPrefix(lp))
-	case enginev1.TransferNamespace_TRANSFER_NS_IDEMP:
-		return bytes.HasPrefix(key, keys.IdempotencyLPPrefix(lp))
-	case enginev1.TransferNamespace_TRANSFER_NS_SIGNAL_INBOX:
-		return bytes.HasPrefix(key, keys.SignalInboxLPPrefix(lp))
-	case enginev1.TransferNamespace_TRANSFER_NS_SIGNAL_AWAITER:
-		return bytes.HasPrefix(key, keys.SignalAwaiterLPPrefix(lp))
-	case enginev1.TransferNamespace_TRANSFER_NS_WORKFLOW_RUN:
-		return bytes.HasPrefix(key, keys.WorkflowRunLPPrefix(lp))
-	case enginev1.TransferNamespace_TRANSFER_NS_PROMISE:
-		return bytes.HasPrefix(key, keys.PromiseLPPrefix(lp))
-	case enginev1.TransferNamespace_TRANSFER_NS_PROMISE_AWAITER:
-		return bytes.HasPrefix(key, keys.PromiseAwaiterLPPrefix(lp))
-	case enginev1.TransferNamespace_TRANSFER_NS_DEDUP_ARBITRARY:
-		return bytes.HasPrefix(key, keys.DedupArbitraryLPPrefix(lp))
-	default:
-		// Unknown future hint — accept; the source must be a newer binary.
-		return true
-	}
 }

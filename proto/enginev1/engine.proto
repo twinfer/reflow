@@ -199,7 +199,7 @@ message Command {
     // LP keyspace on source after the ownership flip, or rolls back on
     // abort. Accepted only by shardID >= 1.
     BeginLPTransfer begin_lp_transfer = 33;
-    ApplyLPTransferChunk apply_lp_transfer_chunk = 34;
+    ApplyLPTransferSST apply_lp_transfer_sst = 34;
     CommitLPTransfer commit_lp_transfer = 35;
     FinishLPTransfer finish_lp_transfer = 36;
     AbortLPTransfer abort_lp_transfer = 37;
@@ -1532,41 +1532,6 @@ message RebalanceDrainRecord {
   fixed64 added_at_ms = 2;
 }
 
-// TransferRow is one Pebble (key, value) pair shipped from source to
-// destination. The destination writes raw bytes via batch.Set; no
-// proto decoding happens in the staging path. namespace_hint is a
-// sanity check (the destination asserts the row's prefix matches an
-// LP-prefixed namespace for the expected lp) and surfaces in metrics.
-message TransferRow {
-  bytes key = 1;
-  bytes value = 2;
-  TransferNamespace namespace_hint = 3;
-}
-
-// TransferNamespace enumerates the LP-prefixed Pebble namespaces the
-// transfer protocol ships. NS_TIMER_PRIMARY is LP-agnostic on disk
-// (the `timer/<fire>/<id>` keyspace) but is included because every
-// timer in `timer_lp/<lp>/...` has a matching primary that must move
-// with it.
-enum TransferNamespace {
-  TRANSFER_NS_UNSPECIFIED = 0;
-  TRANSFER_NS_INV = 1;
-  TRANSFER_NS_JOURNAL = 2;
-  TRANSFER_NS_TIMER_PRIMARY = 3;
-  TRANSFER_NS_TIMER_LP = 4;
-  TRANSFER_NS_TIMER_IDX = 5;
-  TRANSFER_NS_STATE = 6;
-  TRANSFER_NS_AWAKEABLE = 7;
-  TRANSFER_NS_KEYLEASE = 8;
-  TRANSFER_NS_IDEMP = 9;
-  TRANSFER_NS_SIGNAL_INBOX = 10;
-  TRANSFER_NS_SIGNAL_AWAITER = 11;
-  TRANSFER_NS_WORKFLOW_RUN = 12;
-  TRANSFER_NS_PROMISE = 13;
-  TRANSFER_NS_PROMISE_AWAITER = 14;
-  TRANSFER_NS_DEDUP_ARBITRARY = 15;
-}
-
 // BeginLPTransfer is sent by the lpMover to the source partition shard.
 // Apply arm installs LPFreezeTable[lp] = {transfer_id, dest_shard,
 // frozen_at_ms} so every subsequent LP-touching command on this shard
@@ -1578,26 +1543,49 @@ message BeginLPTransfer {
   uint64 dest_shard = 3;
 }
 
-// ApplyLPTransferChunk is sent by the source's
-// LPTransferSourceService to the destination partition shard. Apply
-// arm validates chunk_seq == staging.next_chunk_seq (silently drops
-// duplicates, which the source uses for retry), writes each row raw
-// via batch.Set, and bumps next_chunk_seq. On is_final=true the apply
+// ApplyLPTransferSST is sent by the source's LPTransferSourceService
+// to the destination partition shard, AFTER the source has uploaded
+// the referenced SST files over the delivery listener's
+// UploadLPTransferSST RPC. Apply arm validates
+// sst_seq == staging.next_sst_seq (silently drops duplicates, which
+// the source uses for retry — source Rebuild always restarts at 0),
+// resolves each TransferSSTRef.relative_path against
+// `<dataDir>.lpstage_in/<transfer_id>/`, calls pebble.DB.Ingest with
+// the path set, and bumps next_sst_seq. On is_final=true the apply
 // arm emits ActSignalLPTransferStaged so the runner routes a phase
 // ack back to shard 0.
-message ApplyLPTransferChunk {
+//
+// The dest's LP keyspace is empty before the LPOwnersTable flip, so
+// plain Ingest (not IngestAndExcise) suffices: there is no existing
+// data to atomically replace.
+message ApplyLPTransferSST {
   string transfer_id = 1;
   uint32 lp = 2;
   uint64 source_shard = 3;
-  uint64 chunk_seq = 4;
-  repeated TransferRow rows = 5;
+  uint64 sst_seq = 4;
+  repeated TransferSSTRef ssts = 5;
   bool is_final = 6;
+}
+
+// TransferSSTRef is one SST file the dest must Ingest. relative_path
+// is rooted at `<dataDir>.lpstage_in/<transfer_id>/` on the dest;
+// absolute resolution is the dest's responsibility (source-supplied
+// absolute paths would be a confused-deputy risk). smallest_user_key
+// and largest_user_key let the dest do a cheap bounds sanity check
+// before opening the file; size_bytes and sha256_hex are observability
+// + integrity belts.
+message TransferSSTRef {
+  string relative_path = 1;
+  uint64 size_bytes = 2;
+  string sha256_hex = 3;
+  bytes smallest_user_key = 4;
+  bytes largest_user_key = 5;
 }
 
 // CommitLPTransfer is sent by the lpMover to the destination after the
 // LPOwnersTable flip succeeds. Apply arm drops the LPStagingTable row
-// (the staged data was already written into the live LP namespaces by
-// ApplyLPTransferChunk).
+// (the staged data was already ingested into the live LP namespaces
+// by ApplyLPTransferSST).
 message CommitLPTransfer {
   string transfer_id = 1;
   uint32 lp = 2;
@@ -1636,14 +1624,14 @@ message LPFreezeRow {
 }
 
 // LPStagingRow is the per-destination-partition record used by
-// ApplyLPTransferChunk to enforce in-order chunk delivery and absorb
+// ApplyLPTransferSST to enforce in-order SST delivery and absorb
 // retries. Persisted under `lp_staging/<transfer_id>` keys. Dropped by
 // CommitLPTransfer / AbortLPTransfer.
 message LPStagingRow {
   string transfer_id = 1;
   uint32 lp = 2;
   uint64 source_shard = 3;
-  uint64 next_chunk_seq = 4;
+  uint64 next_sst_seq = 4;
   bool is_final_seen = 5;
 }
 

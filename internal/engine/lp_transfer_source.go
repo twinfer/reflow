@@ -8,20 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"google.golang.org/protobuf/proto"
-
 	"github.com/twinfer/reflow/internal/storage"
-	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
-
-// lpTransferChunkBytes is the target proto-marshalled size at which the
-// source-scan flushes a chunk. 256 KiB sits comfortably inside the
-// Connect / dragonboat per-message budget and gives ~5 chunks per
-// medium-sized LP at typical workload density. Not exact: the cutover
-// happens AFTER the row crossing the threshold is packed in.
-const lpTransferChunkBytes = 256 * 1024
 
 // lpTransferAckProducer is the constant-prefix producerID stamped on
 // shard-0 phase-ack proposals. The full producerID is composed as
@@ -273,185 +263,36 @@ func (s *LPTransferService) sendAck(ctx context.Context, transferID string, phas
 	return s.sender.Send(sendCtx, 0, producerID, 0, cmd)
 }
 
+// runScan ships the LP's data to the destination as SST files via the
+// upload RPC, then proposes a single ApplyLPTransferSST command on the
+// dest shard so the apply arm Ingests the files.
+//
+// Pending wire-up in a follow-up PR: this stub builds the SSTs (via
+// buildLPSSTs) so the source-side disk path is exercised, but does NOT
+// upload them or propose the command — those need
+// Client.UploadLPTransferSST + the dest's apply arm, both stubbed in
+// this PR. The freeze gate on source and the LPStagingTable on dest
+// keep the saga safe in the meantime; the lpMover's stall detection
+// will transition stuck transfers to ABORTING after lpMoverStallTimeout.
 func (s *LPTransferService) runScan(ctx context.Context, job lpTransferJob) error {
 	if s.sender == nil {
 		return errors.New("lp transfer scan: no CrossShardSender configured")
 	}
-	scanner := lpScanner{
-		store:      s.store,
-		log:        s.log,
-		transferID: job.transferID,
-		lp:         job.lp,
-		destShard:  job.destShard,
-		sourceID:   s.shardID,
-		sender:     s.sender,
+	pstore, ok := s.store.(*storage.PebbleStore)
+	if !ok {
+		return errors.New("lp transfer scan: store is not *PebbleStore (SST shipping requires Pebble)")
 	}
-	return scanner.run(ctx)
-}
-
-// lpScanner walks every LP-prefixed namespace under lp, packs rows
-// into chunks, and ships each via CrossShardSender. Stateless across
-// runs — a re-enqueued scan starts from chunk_seq=0; the dest's
-// LPStagingTable.next_chunk_seq dedups any chunks the previous attempt
-// already landed.
-type lpScanner struct {
-	store      storage.Store
-	log        *slog.Logger
-	transferID string
-	lp         uint32
-	destShard  uint64
-	sourceID   uint64
-	sender     CrossShardSender
-
-	chunkSeq    uint64
-	currentRows []*enginev1.TransferRow
-	currentSize int
-}
-
-func (sc *lpScanner) run(ctx context.Context) error {
-	// LP-prefixed namespaces (lower-bound prefix + matching
-	// TransferNamespace hint). Order matters only for the size budget;
-	// the receiver's apply arm writes rows raw via batch.Set so the
-	// destination's Pebble store sees the same effective state once all
-	// chunks land.
-	namespaces := []struct {
-		hint   enginev1.TransferNamespace
-		prefix []byte
-	}{
-		{enginev1.TransferNamespace_TRANSFER_NS_INV, keys.InvocationLPPrefix(sc.lp)},
-		{enginev1.TransferNamespace_TRANSFER_NS_JOURNAL, keys.JournalLPPrefix(sc.lp)},
-		{enginev1.TransferNamespace_TRANSFER_NS_TIMER_IDX, keys.TimerIdxLPPrefix(sc.lp)},
-		{enginev1.TransferNamespace_TRANSFER_NS_TIMER_LP, keys.TimerLPPrefixForLP(sc.lp)},
-		{enginev1.TransferNamespace_TRANSFER_NS_STATE, keys.StateLPPrefix(sc.lp)},
-		{enginev1.TransferNamespace_TRANSFER_NS_AWAKEABLE, keys.AwakeableLPPrefix(sc.lp)},
-		{enginev1.TransferNamespace_TRANSFER_NS_KEYLEASE, keys.KeyLeaseLPPrefix(sc.lp)},
-		{enginev1.TransferNamespace_TRANSFER_NS_IDEMP, keys.IdempotencyLPPrefix(sc.lp)},
-		{enginev1.TransferNamespace_TRANSFER_NS_SIGNAL_INBOX, keys.SignalInboxLPPrefix(sc.lp)},
-		{enginev1.TransferNamespace_TRANSFER_NS_SIGNAL_AWAITER, keys.SignalAwaiterLPPrefix(sc.lp)},
-		{enginev1.TransferNamespace_TRANSFER_NS_WORKFLOW_RUN, keys.WorkflowRunLPPrefix(sc.lp)},
-		{enginev1.TransferNamespace_TRANSFER_NS_PROMISE, keys.PromiseLPPrefix(sc.lp)},
-		{enginev1.TransferNamespace_TRANSFER_NS_PROMISE_AWAITER, keys.PromiseAwaiterLPPrefix(sc.lp)},
-		{enginev1.TransferNamespace_TRANSFER_NS_DEDUP_ARBITRARY, keys.DedupArbitraryLPPrefix(sc.lp)},
-	}
-	for _, ns := range namespaces {
-		if err := sc.scanNamespace(ctx, ns.hint, ns.prefix); err != nil {
-			return err
-		}
-	}
-	// Walk timer_lp/<lp>/... a second time, this time to extract the
-	// LP-agnostic primary `timer/<fire>/<id>` rows. Done after the main
-	// scan because we need the secondary index to enumerate the primary
-	// keys (the primary namespace is shared across LPs).
-	if err := sc.scanLPTimers(ctx); err != nil {
-		return err
-	}
-	// Final flush carries is_final=true. Always send a final chunk,
-	// even if empty, so the dest knows the LP is fully shipped.
-	return sc.flush(ctx, true)
-}
-
-func (sc *lpScanner) scanNamespace(ctx context.Context, hint enginev1.TransferNamespace, prefix []byte) error {
-	upper := keys.PrefixUpperBound(prefix)
-	iter, err := sc.store.NewIter(prefix, upper)
+	// outDir is per-transfer so retries don't collide; the host-level
+	// startup cleanup reaps orphans whose transfer_id is absent from
+	// LPFreezeTable.
+	outDir := fmt.Sprintf("%s.lpstage_out/%s", pstore.DataDir(), job.transferID)
+	refs, err := buildLPSSTs(ctx, pstore, job.lp, outDir)
 	if err != nil {
-		return fmt.Errorf("lp scan: open iter for %q: %w", prefix, err)
+		return fmt.Errorf("lp scan: build SSTs: %w", err)
 	}
-	defer iter.Close()
-	for ok := iter.First(); ok; ok = iter.Next() {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		k := append([]byte(nil), iter.Key()...)
-		v := append([]byte(nil), iter.Value()...)
-		sc.appendRow(k, v, hint)
-		if sc.currentSize >= lpTransferChunkBytes {
-			if err := sc.flush(ctx, false); err != nil {
-				return err
-			}
-		}
-	}
-	return iter.Error()
-}
-
-func (sc *lpScanner) scanLPTimers(ctx context.Context) error {
-	lower := keys.TimerLPPrefixForLP(sc.lp)
-	upper := keys.PrefixUpperBound(lower)
-	iter, err := sc.store.NewIter(lower, upper)
-	if err != nil {
-		return fmt.Errorf("lp scan timers: open iter: %w", err)
-	}
-	defer iter.Close()
-	for ok := iter.First(); ok; ok = iter.Next() {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		_, fireAt, id, derr := keys.DecodeTimerLPKey(iter.Key())
-		if derr != nil {
-			return fmt.Errorf("lp scan timers: decode key: %w", derr)
-		}
-		primaryKey, perr := keys.TimerKey(fireAt, id)
-		if perr != nil {
-			return fmt.Errorf("lp scan timers: encode primary key: %w", perr)
-		}
-		val, closer, gerr := sc.store.Get(primaryKey)
-		if gerr != nil {
-			if errors.Is(gerr, storage.ErrNotFound) {
-				// timer_lp without a matching primary — log + skip.
-				sc.log.Warn("lp scan timers: orphan timer_lp row; skipping",
-					"transfer_id", sc.transferID, "lp", sc.lp,
-					"fire_at_ms", fireAt)
-				continue
-			}
-			return fmt.Errorf("lp scan timers: get primary: %w", gerr)
-		}
-		v := append([]byte(nil), val...)
-		closer.Close()
-		sc.appendRow(primaryKey, v, enginev1.TransferNamespace_TRANSFER_NS_TIMER_PRIMARY)
-		if sc.currentSize >= lpTransferChunkBytes {
-			if err := sc.flush(ctx, false); err != nil {
-				return err
-			}
-		}
-	}
-	return iter.Error()
-}
-
-func (sc *lpScanner) appendRow(k, v []byte, hint enginev1.TransferNamespace) {
-	row := &enginev1.TransferRow{Key: k, Value: v, NamespaceHint: hint}
-	sc.currentRows = append(sc.currentRows, row)
-	sc.currentSize += len(k) + len(v)
-}
-
-func (sc *lpScanner) flush(ctx context.Context, isFinal bool) error {
-	cmd := &enginev1.Command{
-		Kind: &enginev1.Command_ApplyLpTransferChunk{
-			ApplyLpTransferChunk: &enginev1.ApplyLPTransferChunk{
-				TransferId:  sc.transferID,
-				Lp:          sc.lp,
-				SourceShard: sc.sourceID,
-				ChunkSeq:    sc.chunkSeq,
-				Rows:        sc.currentRows,
-				IsFinal:     isFinal,
-			},
-		},
-	}
-	producerID := fmt.Sprintf("lptransfer/%s/%d", sc.transferID, sc.sourceID)
-	sendCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if err := sc.sender.Send(sendCtx, sc.destShard, producerID, sc.chunkSeq, cmd); err != nil {
-		return fmt.Errorf("lp scan: ship chunk %d (final=%t): %w", sc.chunkSeq, isFinal, err)
-	}
-	if sc.log != nil {
-		sz := proto.Size(cmd)
-		sc.log.Debug("lp scan: shipped chunk",
-			"transfer_id", sc.transferID, "lp", sc.lp,
-			"chunk_seq", sc.chunkSeq, "rows", len(sc.currentRows),
-			"bytes", sz, "is_final", isFinal)
-	}
-	sc.chunkSeq++
-	sc.currentRows = nil
-	sc.currentSize = 0
-	return nil
+	s.log.Warn("lp transfer scan: SST upload + propose not yet implemented in this PR; built local SSTs only",
+		"transfer_id", job.transferID, "lp", job.lp, "ssts", len(refs))
+	return errors.New("lp transfer scan: SST shipping wire pending follow-up PR")
 }
 
 func lpJobKindLabel(k lpJobKind) string {

@@ -79,36 +79,30 @@ func TestPartition_LPFreeze_RejectsInvoke(t *testing.T) {
 	}
 }
 
-func TestPartition_ApplyLPTransferChunk_StagesRows(t *testing.T) {
+// TestPartition_ApplyLPTransferSST_BookkeepingOnFinal exercises the
+// dest-side apply arm's bookkeeping path: LPStagingRow created, seq
+// bumped, is_final_seen flipped, ActSignalLPTransferStaged emitted.
+// The actual Ingest call is stubbed in this PR — the follow-up wires
+// pebbleStore.IngestSSTs against the delivery-uploaded files.
+func TestPartition_ApplyLPTransferSST_BookkeepingOnFinal(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	lp := uint32(7)
 
-	// Synthesize one LP-prefixed key — an inv row for the dest LP.
-	id := &enginev1.InvocationId{PartitionKey: uint64(lp), Uuid: []byte("0123456789abcdef")}
-	invKey, err := keys.InvocationKey(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	value := []byte{0x01, 0x02, 0x03}
-
-	chunkCmd := envelope(t, &enginev1.Command{
-		Kind: &enginev1.Command_ApplyLpTransferChunk{
-			ApplyLpTransferChunk: &enginev1.ApplyLPTransferChunk{
+	cmd := envelope(t, &enginev1.Command{
+		Kind: &enginev1.Command_ApplyLpTransferSst{
+			ApplyLpTransferSst: &enginev1.ApplyLPTransferSST{
 				TransferId:  "txn-stage",
 				Lp:          lp,
 				SourceShard: 1,
-				ChunkSeq:    0,
-				Rows: []*enginev1.TransferRow{
-					{Key: invKey, Value: value, NamespaceHint: enginev1.TransferNamespace_TRANSFER_NS_INV},
-				},
-				IsFinal: true,
+				SstSeq:      0,
+				Ssts:        nil, // Ingest is stubbed for now.
+				IsFinal:     true,
 			},
 		},
 	})
-	if _, err := p.Update([]statemachine.Entry{{Index: 1, Cmd: chunkCmd}}); err != nil {
+	if _, err := p.Update([]statemachine.Entry{{Index: 1, Cmd: cmd}}); err != nil {
 		t.Fatal(err)
 	}
-	// is_final should emit a staged ack.
 	gotStagedAct := false
 	for _, a := range col.Drain() {
 		if _, ok := a.(ActSignalLPTransferStaged); ok {
@@ -116,26 +110,18 @@ func TestPartition_ApplyLPTransferChunk_StagesRows(t *testing.T) {
 		}
 	}
 	if !gotStagedAct {
-		t.Fatal("expected ActSignalLPTransferStaged on is_final chunk")
+		t.Fatal("expected ActSignalLPTransferStaged on is_final SST")
 	}
-	// The row should be present in the store verbatim.
 	store := p.cfg.Snapshotter.Store()
-	got, closer, err := store.Get(invKey)
-	if err != nil {
-		t.Fatalf("expected row to be present after chunk apply: %v", err)
-	}
-	defer closer.Close()
-	gotCopy := append([]byte(nil), got...)
-	if string(gotCopy) != string(value) {
-		t.Errorf("staged value = %v; want %v", gotCopy, value)
-	}
-	// Staging table records the final chunk.
 	row, err := (tables.LPStagingTable{S: store}).Get("txn-stage")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if row == nil || !row.GetIsFinalSeen() {
 		t.Errorf("staging row should record is_final_seen; got %+v", row)
+	}
+	if got := row.GetNextSstSeq(); got != 1 {
+		t.Errorf("next_sst_seq = %d; want 1", got)
 	}
 }
 
@@ -148,7 +134,21 @@ func TestPartition_FinishLPTransfer_RangeDeletesLPKeyspace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 1. Freeze + apply chunk to set up state.
+	// 1. Pre-seed an LP-prefixed row directly (the old chunk-apply
+	// path that wrote rows via batch.Set is gone; the new SST-apply
+	// arm Ingests files and is wired in the follow-up PR). Finish's
+	// range-delete behavior is independent of how data got there.
+	store := p.cfg.Snapshotter.Store()
+	b := store.NewBatch()
+	if err := b.Set(invKey, []byte("data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Commit(true); err != nil {
+		t.Fatal(err)
+	}
+	b.Close()
+
+	// Begin + Finish on this partition (acting as the source side).
 	beginCmd := envelope(t, &enginev1.Command{
 		Kind: &enginev1.Command_BeginLpTransfer{
 			BeginLpTransfer: &enginev1.BeginLPTransfer{
@@ -158,28 +158,9 @@ func TestPartition_FinishLPTransfer_RangeDeletesLPKeyspace(t *testing.T) {
 			},
 		},
 	})
-	chunkCmd := envelope(t, &enginev1.Command{
-		Kind: &enginev1.Command_ApplyLpTransferChunk{
-			ApplyLpTransferChunk: &enginev1.ApplyLPTransferChunk{
-				TransferId:  "txn-finish",
-				Lp:          lp,
-				SourceShard: 1,
-				ChunkSeq:    0,
-				Rows: []*enginev1.TransferRow{
-					{Key: invKey, Value: []byte("data"), NamespaceHint: enginev1.TransferNamespace_TRANSFER_NS_INV},
-				},
-				IsFinal: true,
-			},
-		},
-	})
-	if _, err := p.Update([]statemachine.Entry{
-		{Index: 1, Cmd: beginCmd},
-		{Index: 2, Cmd: chunkCmd},
-	}); err != nil {
+	if _, err := p.Update([]statemachine.Entry{{Index: 1, Cmd: beginCmd}}); err != nil {
 		t.Fatal(err)
 	}
-
-	// 2. Finish — should range-delete the LP namespace and drop the freeze.
 	finishCmd := envelope(t, &enginev1.Command{
 		Kind: &enginev1.Command_FinishLpTransfer{
 			FinishLpTransfer: &enginev1.FinishLPTransfer{
@@ -188,10 +169,9 @@ func TestPartition_FinishLPTransfer_RangeDeletesLPKeyspace(t *testing.T) {
 			},
 		},
 	})
-	if _, err := p.Update([]statemachine.Entry{{Index: 3, Cmd: finishCmd}}); err != nil {
+	if _, err := p.Update([]statemachine.Entry{{Index: 2, Cmd: finishCmd}}); err != nil {
 		t.Fatal(err)
 	}
-	store := p.cfg.Snapshotter.Store()
 	// The inv/<lp>/<id> row should be gone.
 	if _, closer, err := store.Get(invKey); err == nil {
 		closer.Close()
@@ -208,38 +188,29 @@ func TestPartition_FinishLPTransfer_RangeDeletesLPKeyspace(t *testing.T) {
 }
 
 func TestPartition_DedupArbitrary_StagesAndFinishesWithLP(t *testing.T) {
-	// LP-prefixed arbitrary dedup rides the transfer scan: a chunk
-	// carrying dedup/arbitrary/<lp>/<producer>/<seq> lands on the
-	// destination as a plain batch.Set, and Finish range-deletes the
-	// same prefix on the source. Regression guard for PR 4.
-	p, _, col := newTestPartition(t)
+	// LP-prefixed arbitrary dedup lives in the LP-prefixed keyspace, so
+	// Finish range-deletes it along with the rest. Regression guard for
+	// the LPNoLP sentinel-LP non-deletion behavior.
+	p, _, _ := newTestPartition(t)
 	lp := uint32(13)
 	dedupKey := keys.DedupArbitraryKey(lp, "outbox/p1", 42)
 	dedupVal := []byte{0xAA, 0xBB, 0xCC}
 
-	// 1. Apply a chunk with the dedup row.
-	chunkCmd := envelope(t, &enginev1.Command{
-		Kind: &enginev1.Command_ApplyLpTransferChunk{
-			ApplyLpTransferChunk: &enginev1.ApplyLPTransferChunk{
-				TransferId:  "txn-dedup",
-				Lp:          lp,
-				SourceShard: 1,
-				ChunkSeq:    0,
-				Rows: []*enginev1.TransferRow{
-					{Key: dedupKey, Value: dedupVal, NamespaceHint: enginev1.TransferNamespace_TRANSFER_NS_DEDUP_ARBITRARY},
-				},
-				IsFinal: true,
-			},
-		},
-	})
-	if _, err := p.Update([]statemachine.Entry{{Index: 1, Cmd: chunkCmd}}); err != nil {
+	// 1. Pre-seed the LP-prefixed dedup row directly (was previously
+	// done via ApplyLPTransferChunk; SST-shipping path lands the data
+	// in the same LSM via Ingest, which is wired in the follow-up PR).
+	store := p.cfg.Snapshotter.Store()
+	b := store.NewBatch()
+	if err := b.Set(dedupKey, dedupVal); err != nil {
 		t.Fatal(err)
 	}
-	col.Drain()
-	store := p.cfg.Snapshotter.Store()
+	if err := b.Commit(true); err != nil {
+		t.Fatal(err)
+	}
+	b.Close()
 	got, closer, err := store.Get(dedupKey)
 	if err != nil {
-		t.Fatalf("expected dedup row staged after chunk apply: %v", err)
+		t.Fatalf("seed dedup row: %v", err)
 	}
 	gotCopy := append([]byte(nil), got...)
 	closer.Close()
@@ -268,8 +239,8 @@ func TestPartition_DedupArbitrary_StagesAndFinishesWithLP(t *testing.T) {
 		},
 	})
 	if _, err := p.Update([]statemachine.Entry{
-		{Index: 2, Cmd: beginCmd},
-		{Index: 3, Cmd: finishCmd},
+		{Index: 1, Cmd: beginCmd},
+		{Index: 2, Cmd: finishCmd},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -282,14 +253,14 @@ func TestPartition_DedupArbitrary_StagesAndFinishesWithLP(t *testing.T) {
 	// walks real LP prefixes (PrefixUpperBound(real lp) can never
 	// reach the sentinel).
 	sentinelKey := keys.DedupArbitraryKey(keys.LPNoLP, "outbox/p1", 99)
-	b := store.NewBatch()
-	if err := b.Set(sentinelKey, []byte{0xFF}); err != nil {
+	sb := store.NewBatch()
+	if err := sb.Set(sentinelKey, []byte{0xFF}); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.Commit(true); err != nil {
+	if err := sb.Commit(true); err != nil {
 		t.Fatal(err)
 	}
-	b.Close()
+	sb.Close()
 	// Re-run finish for some real lp; sentinel must survive.
 	finishCmd2 := envelope(t, &enginev1.Command{
 		Kind: &enginev1.Command_FinishLpTransfer{

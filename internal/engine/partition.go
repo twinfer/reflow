@@ -345,8 +345,8 @@ func commandKindLabel(cmd *enginev1.Command) string {
 		return "ReapWorkflow"
 	case *enginev1.Command_BeginLpTransfer:
 		return "BeginLPTransfer"
-	case *enginev1.Command_ApplyLpTransferChunk:
-		return "ApplyLPTransferChunk"
+	case *enginev1.Command_ApplyLpTransferSst:
+		return "ApplyLPTransferSST"
 	case *enginev1.Command_CommitLpTransfer:
 		return "CommitLPTransfer"
 	case *enginev1.Command_FinishLpTransfer:
@@ -463,8 +463,8 @@ func lpFromCommand(cmd *enginev1.Command) uint32 {
 		return keys.LPFromPartitionKey(routing.PartitionKey(k.ReapWorkflow.GetService(), k.ReapWorkflow.GetWorkflowKey()))
 	case *enginev1.Command_BeginLpTransfer:
 		return k.BeginLpTransfer.GetLp()
-	case *enginev1.Command_ApplyLpTransferChunk:
-		return k.ApplyLpTransferChunk.GetLp()
+	case *enginev1.Command_ApplyLpTransferSst:
+		return k.ApplyLpTransferSst.GetLp()
 	case *enginev1.Command_CommitLpTransfer:
 		return k.CommitLpTransfer.GetLp()
 	case *enginev1.Command_FinishLpTransfer:
@@ -557,8 +557,8 @@ func (p *Partition) applyCommand(
 		return p.onReapWorkflow(batch, k.ReapWorkflow, inv, journal)
 	case *enginev1.Command_BeginLpTransfer:
 		return p.onBeginLPTransfer(batch, k.BeginLpTransfer, now, isLeader)
-	case *enginev1.Command_ApplyLpTransferChunk:
-		return p.onApplyLPTransferChunk(batch, k.ApplyLpTransferChunk, isLeader)
+	case *enginev1.Command_ApplyLpTransferSst:
+		return p.onApplyLPTransferSST(batch, k.ApplyLpTransferSst, isLeader)
 	case *enginev1.Command_CommitLpTransfer:
 		return p.onCommitLPTransfer(batch, k.CommitLpTransfer)
 	case *enginev1.Command_FinishLpTransfer:

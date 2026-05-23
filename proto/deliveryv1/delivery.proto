@@ -32,6 +32,21 @@ service Delivery {
   // blocking. Implementations issue exactly one DeliverResponse per
   // DeliverRequest, correlated by the echoed seq.
   rpc Deliver(stream DeliverRequest) returns (stream DeliverResponse);
+
+  // UploadLPTransferSST streams one SST file from a source partition's
+  // LPTransferSourceService to a destination partition. The first frame
+  // MUST be a header (dest_shard, transfer_id, namespace, expected size
+  // + checksum); subsequent frames are body chunks. The server writes
+  // the bytes to `<DataDir>/p<dest_shard>/state.lpstage_in/<transfer_id>/
+  // <namespace>.sst.tmp`, fsyncs, and atomically renames to
+  // `<namespace>.sst` on EOF. The single response carries the relative
+  // path the source must echo back in the subsequent
+  // Command_ApplyLpTransferSst Raft propose, or NotLeader/Err.
+  //
+  // Re-upload of the same (transfer_id, namespace) is idempotent: the
+  // .tmp file is overwritten on each attempt; rename is atomic.
+  rpc UploadLPTransferSST(stream UploadLPTransferSSTRequest)
+      returns (UploadLPTransferSSTResponse);
 }
 
 // DeliverRequest carries an outbox envelope that the sender wants
@@ -71,4 +86,45 @@ message NotLeader {
 // timeout). Sender should back off and retry.
 message Err {
   string message = 1;
+}
+
+// UploadLPTransferSSTRequest is one frame of the SST upload stream.
+// First frame MUST be a header; subsequent frames MUST be chunks.
+message UploadLPTransferSSTRequest {
+  oneof kind {
+    UploadLPTransferSSTHeader header = 1;
+    bytes chunk = 2;
+  }
+}
+
+// UploadLPTransferSSTHeader is the first stream frame. The server uses
+// dest_shard to confirm leadership locally and rejects with NotLeader
+// when this node does not host the dest shard's leader. namespace is a
+// short tag (e.g. "inv", "journal", "timer_primary") that determines
+// the on-disk filename `<namespace>.sst` under
+// `<dataDir>.lpstage_in/<transfer_id>/`. size_bytes and sha256_hex
+// belt the body against truncation / mid-stream corruption.
+message UploadLPTransferSSTHeader {
+  uint64 dest_shard = 1;
+  string transfer_id = 2;
+  string namespace = 3;
+  uint64 size_bytes = 4;
+  string sha256_hex = 5;
+}
+
+// UploadLPTransferSSTResponse is the single reply for one upload.
+message UploadLPTransferSSTResponse {
+  oneof kind {
+    UploadLPTransferSSTAck ack = 1;
+    NotLeader not_leader = 2;
+    Err err = 3;
+  }
+}
+
+// UploadLPTransferSSTAck confirms the file was written, fsynced, and
+// renamed into place. relative_path is rooted at the dest's
+// `<dataDir>.lpstage_in/<transfer_id>/` directory and is what the
+// source must echo back in TransferSSTRef.relative_path.
+message UploadLPTransferSSTAck {
+  string relative_path = 1;
 }

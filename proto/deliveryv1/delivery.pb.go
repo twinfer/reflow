@@ -354,6 +354,320 @@ func (x *Err) GetMessage() string {
 	return ""
 }
 
+// UploadLPTransferSSTRequest is one frame of the SST upload stream.
+// First frame MUST be a header; subsequent frames MUST be chunks.
+type UploadLPTransferSSTRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Kind:
+	//
+	//	*UploadLPTransferSSTRequest_Header
+	//	*UploadLPTransferSSTRequest_Chunk
+	Kind          isUploadLPTransferSSTRequest_Kind `protobuf_oneof:"kind"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UploadLPTransferSSTRequest) Reset() {
+	*x = UploadLPTransferSSTRequest{}
+	mi := &file_deliveryv1_delivery_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UploadLPTransferSSTRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UploadLPTransferSSTRequest) ProtoMessage() {}
+
+func (x *UploadLPTransferSSTRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_deliveryv1_delivery_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UploadLPTransferSSTRequest.ProtoReflect.Descriptor instead.
+func (*UploadLPTransferSSTRequest) Descriptor() ([]byte, []int) {
+	return file_deliveryv1_delivery_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *UploadLPTransferSSTRequest) GetKind() isUploadLPTransferSSTRequest_Kind {
+	if x != nil {
+		return x.Kind
+	}
+	return nil
+}
+
+func (x *UploadLPTransferSSTRequest) GetHeader() *UploadLPTransferSSTHeader {
+	if x != nil {
+		if x, ok := x.Kind.(*UploadLPTransferSSTRequest_Header); ok {
+			return x.Header
+		}
+	}
+	return nil
+}
+
+func (x *UploadLPTransferSSTRequest) GetChunk() []byte {
+	if x != nil {
+		if x, ok := x.Kind.(*UploadLPTransferSSTRequest_Chunk); ok {
+			return x.Chunk
+		}
+	}
+	return nil
+}
+
+type isUploadLPTransferSSTRequest_Kind interface {
+	isUploadLPTransferSSTRequest_Kind()
+}
+
+type UploadLPTransferSSTRequest_Header struct {
+	Header *UploadLPTransferSSTHeader `protobuf:"bytes,1,opt,name=header,proto3,oneof"`
+}
+
+type UploadLPTransferSSTRequest_Chunk struct {
+	Chunk []byte `protobuf:"bytes,2,opt,name=chunk,proto3,oneof"`
+}
+
+func (*UploadLPTransferSSTRequest_Header) isUploadLPTransferSSTRequest_Kind() {}
+
+func (*UploadLPTransferSSTRequest_Chunk) isUploadLPTransferSSTRequest_Kind() {}
+
+// UploadLPTransferSSTHeader is the first stream frame. The server uses
+// dest_shard to confirm leadership locally and rejects with NotLeader
+// when this node does not host the dest shard's leader. namespace is a
+// short tag (e.g. "inv", "journal", "timer_primary") that determines
+// the on-disk filename `<namespace>.sst` under
+// `<dataDir>.lpstage_in/<transfer_id>/`. size_bytes and sha256_hex
+// belt the body against truncation / mid-stream corruption.
+type UploadLPTransferSSTHeader struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DestShard     uint64                 `protobuf:"varint,1,opt,name=dest_shard,json=destShard,proto3" json:"dest_shard,omitempty"`
+	TransferId    string                 `protobuf:"bytes,2,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
+	Namespace     string                 `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	SizeBytes     uint64                 `protobuf:"varint,4,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	Sha256Hex     string                 `protobuf:"bytes,5,opt,name=sha256_hex,json=sha256Hex,proto3" json:"sha256_hex,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UploadLPTransferSSTHeader) Reset() {
+	*x = UploadLPTransferSSTHeader{}
+	mi := &file_deliveryv1_delivery_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UploadLPTransferSSTHeader) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UploadLPTransferSSTHeader) ProtoMessage() {}
+
+func (x *UploadLPTransferSSTHeader) ProtoReflect() protoreflect.Message {
+	mi := &file_deliveryv1_delivery_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UploadLPTransferSSTHeader.ProtoReflect.Descriptor instead.
+func (*UploadLPTransferSSTHeader) Descriptor() ([]byte, []int) {
+	return file_deliveryv1_delivery_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *UploadLPTransferSSTHeader) GetDestShard() uint64 {
+	if x != nil {
+		return x.DestShard
+	}
+	return 0
+}
+
+func (x *UploadLPTransferSSTHeader) GetTransferId() string {
+	if x != nil {
+		return x.TransferId
+	}
+	return ""
+}
+
+func (x *UploadLPTransferSSTHeader) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *UploadLPTransferSSTHeader) GetSizeBytes() uint64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *UploadLPTransferSSTHeader) GetSha256Hex() string {
+	if x != nil {
+		return x.Sha256Hex
+	}
+	return ""
+}
+
+// UploadLPTransferSSTResponse is the single reply for one upload.
+type UploadLPTransferSSTResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Kind:
+	//
+	//	*UploadLPTransferSSTResponse_Ack
+	//	*UploadLPTransferSSTResponse_NotLeader
+	//	*UploadLPTransferSSTResponse_Err
+	Kind          isUploadLPTransferSSTResponse_Kind `protobuf_oneof:"kind"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UploadLPTransferSSTResponse) Reset() {
+	*x = UploadLPTransferSSTResponse{}
+	mi := &file_deliveryv1_delivery_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UploadLPTransferSSTResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UploadLPTransferSSTResponse) ProtoMessage() {}
+
+func (x *UploadLPTransferSSTResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_deliveryv1_delivery_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UploadLPTransferSSTResponse.ProtoReflect.Descriptor instead.
+func (*UploadLPTransferSSTResponse) Descriptor() ([]byte, []int) {
+	return file_deliveryv1_delivery_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *UploadLPTransferSSTResponse) GetKind() isUploadLPTransferSSTResponse_Kind {
+	if x != nil {
+		return x.Kind
+	}
+	return nil
+}
+
+func (x *UploadLPTransferSSTResponse) GetAck() *UploadLPTransferSSTAck {
+	if x != nil {
+		if x, ok := x.Kind.(*UploadLPTransferSSTResponse_Ack); ok {
+			return x.Ack
+		}
+	}
+	return nil
+}
+
+func (x *UploadLPTransferSSTResponse) GetNotLeader() *NotLeader {
+	if x != nil {
+		if x, ok := x.Kind.(*UploadLPTransferSSTResponse_NotLeader); ok {
+			return x.NotLeader
+		}
+	}
+	return nil
+}
+
+func (x *UploadLPTransferSSTResponse) GetErr() *Err {
+	if x != nil {
+		if x, ok := x.Kind.(*UploadLPTransferSSTResponse_Err); ok {
+			return x.Err
+		}
+	}
+	return nil
+}
+
+type isUploadLPTransferSSTResponse_Kind interface {
+	isUploadLPTransferSSTResponse_Kind()
+}
+
+type UploadLPTransferSSTResponse_Ack struct {
+	Ack *UploadLPTransferSSTAck `protobuf:"bytes,1,opt,name=ack,proto3,oneof"`
+}
+
+type UploadLPTransferSSTResponse_NotLeader struct {
+	NotLeader *NotLeader `protobuf:"bytes,2,opt,name=not_leader,json=notLeader,proto3,oneof"`
+}
+
+type UploadLPTransferSSTResponse_Err struct {
+	Err *Err `protobuf:"bytes,3,opt,name=err,proto3,oneof"`
+}
+
+func (*UploadLPTransferSSTResponse_Ack) isUploadLPTransferSSTResponse_Kind() {}
+
+func (*UploadLPTransferSSTResponse_NotLeader) isUploadLPTransferSSTResponse_Kind() {}
+
+func (*UploadLPTransferSSTResponse_Err) isUploadLPTransferSSTResponse_Kind() {}
+
+// UploadLPTransferSSTAck confirms the file was written, fsynced, and
+// renamed into place. relative_path is rooted at the dest's
+// `<dataDir>.lpstage_in/<transfer_id>/` directory and is what the
+// source must echo back in TransferSSTRef.relative_path.
+type UploadLPTransferSSTAck struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RelativePath  string                 `protobuf:"bytes,1,opt,name=relative_path,json=relativePath,proto3" json:"relative_path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UploadLPTransferSSTAck) Reset() {
+	*x = UploadLPTransferSSTAck{}
+	mi := &file_deliveryv1_delivery_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UploadLPTransferSSTAck) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UploadLPTransferSSTAck) ProtoMessage() {}
+
+func (x *UploadLPTransferSSTAck) ProtoReflect() protoreflect.Message {
+	mi := &file_deliveryv1_delivery_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UploadLPTransferSSTAck.ProtoReflect.Descriptor instead.
+func (*UploadLPTransferSSTAck) Descriptor() ([]byte, []int) {
+	return file_deliveryv1_delivery_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *UploadLPTransferSSTAck) GetRelativePath() string {
+	if x != nil {
+		return x.RelativePath
+	}
+	return ""
+}
+
 var File_deliveryv1_delivery_proto protoreflect.FileDescriptor
 
 const file_deliveryv1_delivery_proto_rawDesc = "" +
@@ -376,9 +690,32 @@ const file_deliveryv1_delivery_proto_rawDesc = "" +
 	"\tNotLeader\x12$\n" +
 	"\x0eleader_node_id\x18\x01 \x01(\x04R\fleaderNodeId\"\x1f\n" +
 	"\x03Err\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage2b\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\"\x85\x01\n" +
+	"\x1aUploadLPTransferSSTRequest\x12G\n" +
+	"\x06header\x18\x01 \x01(\v2-.reflow.delivery.v1.UploadLPTransferSSTHeaderH\x00R\x06header\x12\x16\n" +
+	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\x06\n" +
+	"\x04kind\"\xb7\x01\n" +
+	"\x19UploadLPTransferSSTHeader\x12\x1d\n" +
+	"\n" +
+	"dest_shard\x18\x01 \x01(\x04R\tdestShard\x12\x1f\n" +
+	"\vtransfer_id\x18\x02 \x01(\tR\n" +
+	"transferId\x12\x1c\n" +
+	"\tnamespace\x18\x03 \x01(\tR\tnamespace\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x04 \x01(\x04R\tsizeBytes\x12\x1d\n" +
+	"\n" +
+	"sha256_hex\x18\x05 \x01(\tR\tsha256Hex\"\xd2\x01\n" +
+	"\x1bUploadLPTransferSSTResponse\x12>\n" +
+	"\x03ack\x18\x01 \x01(\v2*.reflow.delivery.v1.UploadLPTransferSSTAckH\x00R\x03ack\x12>\n" +
+	"\n" +
+	"not_leader\x18\x02 \x01(\v2\x1d.reflow.delivery.v1.NotLeaderH\x00R\tnotLeader\x12+\n" +
+	"\x03err\x18\x03 \x01(\v2\x17.reflow.delivery.v1.ErrH\x00R\x03errB\x06\n" +
+	"\x04kind\"=\n" +
+	"\x16UploadLPTransferSSTAck\x12#\n" +
+	"\rrelative_path\x18\x01 \x01(\tR\frelativePath2\xdc\x01\n" +
 	"\bDelivery\x12V\n" +
-	"\aDeliver\x12\".reflow.delivery.v1.DeliverRequest\x1a#.reflow.delivery.v1.DeliverResponse(\x010\x01B7Z5github.com/twinfer/reflow/proto/deliveryv1;deliveryv1b\x06proto3"
+	"\aDeliver\x12\".reflow.delivery.v1.DeliverRequest\x1a#.reflow.delivery.v1.DeliverResponse(\x010\x01\x12x\n" +
+	"\x13UploadLPTransferSST\x12..reflow.delivery.v1.UploadLPTransferSSTRequest\x1a/.reflow.delivery.v1.UploadLPTransferSSTResponse(\x01B7Z5github.com/twinfer/reflow/proto/deliveryv1;deliveryv1b\x06proto3"
 
 var (
 	file_deliveryv1_delivery_proto_rawDescOnce sync.Once
@@ -392,27 +729,37 @@ func file_deliveryv1_delivery_proto_rawDescGZIP() []byte {
 	return file_deliveryv1_delivery_proto_rawDescData
 }
 
-var file_deliveryv1_delivery_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_deliveryv1_delivery_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_deliveryv1_delivery_proto_goTypes = []any{
-	(*DeliverRequest)(nil),   // 0: reflow.delivery.v1.DeliverRequest
-	(*DeliverResponse)(nil),  // 1: reflow.delivery.v1.DeliverResponse
-	(*Ack)(nil),              // 2: reflow.delivery.v1.Ack
-	(*NotLeader)(nil),        // 3: reflow.delivery.v1.NotLeader
-	(*Err)(nil),              // 4: reflow.delivery.v1.Err
-	(*enginev1.Command)(nil), // 5: reflow.engine.v1.Command
+	(*DeliverRequest)(nil),              // 0: reflow.delivery.v1.DeliverRequest
+	(*DeliverResponse)(nil),             // 1: reflow.delivery.v1.DeliverResponse
+	(*Ack)(nil),                         // 2: reflow.delivery.v1.Ack
+	(*NotLeader)(nil),                   // 3: reflow.delivery.v1.NotLeader
+	(*Err)(nil),                         // 4: reflow.delivery.v1.Err
+	(*UploadLPTransferSSTRequest)(nil),  // 5: reflow.delivery.v1.UploadLPTransferSSTRequest
+	(*UploadLPTransferSSTHeader)(nil),   // 6: reflow.delivery.v1.UploadLPTransferSSTHeader
+	(*UploadLPTransferSSTResponse)(nil), // 7: reflow.delivery.v1.UploadLPTransferSSTResponse
+	(*UploadLPTransferSSTAck)(nil),      // 8: reflow.delivery.v1.UploadLPTransferSSTAck
+	(*enginev1.Command)(nil),            // 9: reflow.engine.v1.Command
 }
 var file_deliveryv1_delivery_proto_depIdxs = []int32{
-	5, // 0: reflow.delivery.v1.DeliverRequest.command:type_name -> reflow.engine.v1.Command
-	2, // 1: reflow.delivery.v1.DeliverResponse.ack:type_name -> reflow.delivery.v1.Ack
-	3, // 2: reflow.delivery.v1.DeliverResponse.not_leader:type_name -> reflow.delivery.v1.NotLeader
-	4, // 3: reflow.delivery.v1.DeliverResponse.err:type_name -> reflow.delivery.v1.Err
-	0, // 4: reflow.delivery.v1.Delivery.Deliver:input_type -> reflow.delivery.v1.DeliverRequest
-	1, // 5: reflow.delivery.v1.Delivery.Deliver:output_type -> reflow.delivery.v1.DeliverResponse
-	5, // [5:6] is the sub-list for method output_type
-	4, // [4:5] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	9,  // 0: reflow.delivery.v1.DeliverRequest.command:type_name -> reflow.engine.v1.Command
+	2,  // 1: reflow.delivery.v1.DeliverResponse.ack:type_name -> reflow.delivery.v1.Ack
+	3,  // 2: reflow.delivery.v1.DeliverResponse.not_leader:type_name -> reflow.delivery.v1.NotLeader
+	4,  // 3: reflow.delivery.v1.DeliverResponse.err:type_name -> reflow.delivery.v1.Err
+	6,  // 4: reflow.delivery.v1.UploadLPTransferSSTRequest.header:type_name -> reflow.delivery.v1.UploadLPTransferSSTHeader
+	8,  // 5: reflow.delivery.v1.UploadLPTransferSSTResponse.ack:type_name -> reflow.delivery.v1.UploadLPTransferSSTAck
+	3,  // 6: reflow.delivery.v1.UploadLPTransferSSTResponse.not_leader:type_name -> reflow.delivery.v1.NotLeader
+	4,  // 7: reflow.delivery.v1.UploadLPTransferSSTResponse.err:type_name -> reflow.delivery.v1.Err
+	0,  // 8: reflow.delivery.v1.Delivery.Deliver:input_type -> reflow.delivery.v1.DeliverRequest
+	5,  // 9: reflow.delivery.v1.Delivery.UploadLPTransferSST:input_type -> reflow.delivery.v1.UploadLPTransferSSTRequest
+	1,  // 10: reflow.delivery.v1.Delivery.Deliver:output_type -> reflow.delivery.v1.DeliverResponse
+	7,  // 11: reflow.delivery.v1.Delivery.UploadLPTransferSST:output_type -> reflow.delivery.v1.UploadLPTransferSSTResponse
+	10, // [10:12] is the sub-list for method output_type
+	8,  // [8:10] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_deliveryv1_delivery_proto_init() }
@@ -425,13 +772,22 @@ func file_deliveryv1_delivery_proto_init() {
 		(*DeliverResponse_NotLeader)(nil),
 		(*DeliverResponse_Err)(nil),
 	}
+	file_deliveryv1_delivery_proto_msgTypes[5].OneofWrappers = []any{
+		(*UploadLPTransferSSTRequest_Header)(nil),
+		(*UploadLPTransferSSTRequest_Chunk)(nil),
+	}
+	file_deliveryv1_delivery_proto_msgTypes[7].OneofWrappers = []any{
+		(*UploadLPTransferSSTResponse_Ack)(nil),
+		(*UploadLPTransferSSTResponse_NotLeader)(nil),
+		(*UploadLPTransferSSTResponse_Err)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_deliveryv1_delivery_proto_rawDesc), len(file_deliveryv1_delivery_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

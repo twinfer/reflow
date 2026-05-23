@@ -56,6 +56,9 @@ const (
 const (
 	// DeliveryDeliverProcedure is the fully-qualified name of the Delivery's Deliver RPC.
 	DeliveryDeliverProcedure = "/reflow.delivery.v1.Delivery/Deliver"
+	// DeliveryUploadLPTransferSSTProcedure is the fully-qualified name of the Delivery's
+	// UploadLPTransferSST RPC.
+	DeliveryUploadLPTransferSSTProcedure = "/reflow.delivery.v1.Delivery/UploadLPTransferSST"
 )
 
 // DeliveryClient is a client for the reflow.delivery.v1.Delivery service.
@@ -65,6 +68,19 @@ type DeliveryClient interface {
 	// blocking. Implementations issue exactly one DeliverResponse per
 	// DeliverRequest, correlated by the echoed seq.
 	Deliver(context.Context) *connect.BidiStreamForClient[deliveryv1.DeliverRequest, deliveryv1.DeliverResponse]
+	// UploadLPTransferSST streams one SST file from a source partition's
+	// LPTransferSourceService to a destination partition. The first frame
+	// MUST be a header (dest_shard, transfer_id, namespace, expected size
+	// + checksum); subsequent frames are body chunks. The server writes
+	// the bytes to `<DataDir>/p<dest_shard>/state.lpstage_in/<transfer_id>/
+	// <namespace>.sst.tmp`, fsyncs, and atomically renames to
+	// `<namespace>.sst` on EOF. The single response carries the relative
+	// path the source must echo back in the subsequent
+	// Command_ApplyLpTransferSst Raft propose, or NotLeader/Err.
+	//
+	// Re-upload of the same (transfer_id, namespace) is idempotent: the
+	// .tmp file is overwritten on each attempt; rename is atomic.
+	UploadLPTransferSST(context.Context) *connect.ClientStreamForClient[deliveryv1.UploadLPTransferSSTRequest, deliveryv1.UploadLPTransferSSTResponse]
 }
 
 // NewDeliveryClient constructs a client for the reflow.delivery.v1.Delivery service. By default, it
@@ -84,17 +100,29 @@ func NewDeliveryClient(httpClient connect.HTTPClient, baseURL string, opts ...co
 			connect.WithSchema(deliveryMethods.ByName("Deliver")),
 			connect.WithClientOptions(opts...),
 		),
+		uploadLPTransferSST: connect.NewClient[deliveryv1.UploadLPTransferSSTRequest, deliveryv1.UploadLPTransferSSTResponse](
+			httpClient,
+			baseURL+DeliveryUploadLPTransferSSTProcedure,
+			connect.WithSchema(deliveryMethods.ByName("UploadLPTransferSST")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // deliveryClient implements DeliveryClient.
 type deliveryClient struct {
-	deliver *connect.Client[deliveryv1.DeliverRequest, deliveryv1.DeliverResponse]
+	deliver             *connect.Client[deliveryv1.DeliverRequest, deliveryv1.DeliverResponse]
+	uploadLPTransferSST *connect.Client[deliveryv1.UploadLPTransferSSTRequest, deliveryv1.UploadLPTransferSSTResponse]
 }
 
 // Deliver calls reflow.delivery.v1.Delivery.Deliver.
 func (c *deliveryClient) Deliver(ctx context.Context) *connect.BidiStreamForClient[deliveryv1.DeliverRequest, deliveryv1.DeliverResponse] {
 	return c.deliver.CallBidiStream(ctx)
+}
+
+// UploadLPTransferSST calls reflow.delivery.v1.Delivery.UploadLPTransferSST.
+func (c *deliveryClient) UploadLPTransferSST(ctx context.Context) *connect.ClientStreamForClient[deliveryv1.UploadLPTransferSSTRequest, deliveryv1.UploadLPTransferSSTResponse] {
+	return c.uploadLPTransferSST.CallClientStream(ctx)
 }
 
 // DeliveryHandler is an implementation of the reflow.delivery.v1.Delivery service.
@@ -104,6 +132,19 @@ type DeliveryHandler interface {
 	// blocking. Implementations issue exactly one DeliverResponse per
 	// DeliverRequest, correlated by the echoed seq.
 	Deliver(context.Context, *connect.BidiStream[deliveryv1.DeliverRequest, deliveryv1.DeliverResponse]) error
+	// UploadLPTransferSST streams one SST file from a source partition's
+	// LPTransferSourceService to a destination partition. The first frame
+	// MUST be a header (dest_shard, transfer_id, namespace, expected size
+	// + checksum); subsequent frames are body chunks. The server writes
+	// the bytes to `<DataDir>/p<dest_shard>/state.lpstage_in/<transfer_id>/
+	// <namespace>.sst.tmp`, fsyncs, and atomically renames to
+	// `<namespace>.sst` on EOF. The single response carries the relative
+	// path the source must echo back in the subsequent
+	// Command_ApplyLpTransferSst Raft propose, or NotLeader/Err.
+	//
+	// Re-upload of the same (transfer_id, namespace) is idempotent: the
+	// .tmp file is overwritten on each attempt; rename is atomic.
+	UploadLPTransferSST(context.Context, *connect.ClientStream[deliveryv1.UploadLPTransferSSTRequest]) (*connect.Response[deliveryv1.UploadLPTransferSSTResponse], error)
 }
 
 // NewDeliveryHandler builds an HTTP handler from the service implementation. It returns the path on
@@ -119,10 +160,18 @@ func NewDeliveryHandler(svc DeliveryHandler, opts ...connect.HandlerOption) (str
 		connect.WithSchema(deliveryMethods.ByName("Deliver")),
 		connect.WithHandlerOptions(opts...),
 	)
+	deliveryUploadLPTransferSSTHandler := connect.NewClientStreamHandler(
+		DeliveryUploadLPTransferSSTProcedure,
+		svc.UploadLPTransferSST,
+		connect.WithSchema(deliveryMethods.ByName("UploadLPTransferSST")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/reflow.delivery.v1.Delivery/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DeliveryDeliverProcedure:
 			deliveryDeliverHandler.ServeHTTP(w, r)
+		case DeliveryUploadLPTransferSSTProcedure:
+			deliveryUploadLPTransferSSTHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -134,4 +183,8 @@ type UnimplementedDeliveryHandler struct{}
 
 func (UnimplementedDeliveryHandler) Deliver(context.Context, *connect.BidiStream[deliveryv1.DeliverRequest, deliveryv1.DeliverResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("reflow.delivery.v1.Delivery.Deliver is not implemented"))
+}
+
+func (UnimplementedDeliveryHandler) UploadLPTransferSST(context.Context, *connect.ClientStream[deliveryv1.UploadLPTransferSSTRequest]) (*connect.Response[deliveryv1.UploadLPTransferSSTResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.delivery.v1.Delivery.UploadLPTransferSST is not implemented"))
 }

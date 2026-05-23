@@ -286,8 +286,8 @@ func TestLPFromCommand(t *testing.T) {
 			42,
 		},
 		{
-			"ApplyLPTransferChunk",
-			&enginev1.Command{Kind: &enginev1.Command_ApplyLpTransferChunk{ApplyLpTransferChunk: &enginev1.ApplyLPTransferChunk{
+			"ApplyLPTransferSST",
+			&enginev1.Command{Kind: &enginev1.Command_ApplyLpTransferSst{ApplyLpTransferSst: &enginev1.ApplyLPTransferSST{
 				Lp: 100,
 			}}},
 			100,

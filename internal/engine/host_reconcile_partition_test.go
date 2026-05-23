@@ -9,12 +9,12 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// TestHost_OnPartitionTable_StartsLocallyOwnedShard verifies the
-// metadata-shard hook (wired in StartMetadataShard) reaches Host and
+// TestHost_ReconcilePartitionTable_StartsLocallyOwnedShard verifies that
+// the PartitionTable reconciler's applier path (ReconcilePartitionTable)
 // drives StartPartition for shards the local node owns but hasn't yet
-// started. Calls h.onPartitionTable directly so the test does not need
-// to spin up a multi-node Raft group.
-func TestHost_OnPartitionTable_StartsLocallyOwnedShard(t *testing.T) {
+// started. Calls h.ReconcilePartitionTable directly so the test does
+// not need to spin up a multi-node Raft group.
+func TestHost_ReconcilePartitionTable_StartsLocallyOwnedShard(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +39,7 @@ func TestHost_OnPartitionTable_StartsLocallyOwnedShard(t *testing.T) {
 		t.Fatalf("StartPartition(1): %v", err)
 	}
 
-	// Hook input: node owns both shards; shard 2 must be started.
+	// Input: node owns both shards; shard 2 must be started.
 	pt := &enginev1.PartitionTable{
 		AssignmentEpoch: 1,
 		Shards: map[uint64]*enginev1.ReplicaSet{
@@ -47,7 +47,7 @@ func TestHost_OnPartitionTable_StartsLocallyOwnedShard(t *testing.T) {
 			2: {NodeIds: []uint64{1}},
 		},
 	}
-	h.onPartitionTable(pt)
+	h.ReconcilePartitionTable(pt)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -59,22 +59,23 @@ func TestHost_OnPartitionTable_StartsLocallyOwnedShard(t *testing.T) {
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatal("shard 2 never started after onPartitionTable")
+			t.Fatal("shard 2 never started after ReconcilePartitionTable")
 		case <-tick.C:
 		}
 	}
 
-	// Shard 1 was pre-started; hook must not have torn it down or
+	// Shard 1 was pre-started; reconcile must not have torn it down or
 	// re-created it (would have returned "already started" from a
 	// concurrent StartPartition).
 	if h.Partition(1) == nil {
-		t.Fatal("shard 1 disappeared during hook handling")
+		t.Fatal("shard 1 disappeared during reconcile")
 	}
 }
 
-// TestHost_OnPartitionTable_NotLocallyOwned_NoStart verifies the hook
-// ignores shards whose replica set does not include this node.
-func TestHost_OnPartitionTable_NotLocallyOwned_NoStart(t *testing.T) {
+// TestHost_ReconcilePartitionTable_NotLocallyOwned_NoStart verifies
+// the applier ignores shards whose replica set does not include this
+// node.
+func TestHost_ReconcilePartitionTable_NotLocallyOwned_NoStart(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -94,14 +95,14 @@ func TestHost_OnPartitionTable_NotLocallyOwned_NoStart(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = h.Close() })
 
-	// Shard 2 owned by a different node only — hook should not start it.
+	// Shard 2 owned by a different node only — reconcile should not start it.
 	pt := &enginev1.PartitionTable{
 		AssignmentEpoch: 1,
 		Shards: map[uint64]*enginev1.ReplicaSet{
 			2: {NodeIds: []uint64{2, 3}},
 		},
 	}
-	h.onPartitionTable(pt)
+	h.ReconcilePartitionTable(pt)
 
 	// Give the goroutine a chance to do something (it shouldn't).
 	time.Sleep(150 * time.Millisecond)

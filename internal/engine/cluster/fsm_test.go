@@ -108,7 +108,7 @@ func TestCluster_RegisterNodePersists(t *testing.T) {
 	}
 }
 
-func TestCluster_UpdatePartitionTablePersistsAndHooks(t *testing.T) {
+func TestCluster_UpdatePartitionTablePersistsAndBumps(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "meta", "state")
 	st, err := storage.OpenPebble(dir, nil)
 	if err != nil {
@@ -117,11 +117,11 @@ func TestCluster_UpdatePartitionTablePersistsAndHooks(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	lead := &stubLeadership{}
 	lead.leader.Store(true)
-	var hookCalls []*enginev1.PartitionTable
+	notifier := NewTableNotifier()
 	f := New(0, 1, Config{
-		Snapshotter:      &stubSnapshotter{store: st},
-		Leadership:       lead,
-		OnPartitionTable: func(pt *enginev1.PartitionTable) { hookCalls = append(hookCalls, pt) },
+		Snapshotter: &stubSnapshotter{store: st},
+		Leadership:  lead,
+		Notifiers:   Notifiers{PartitionTable: notifier},
 	})
 	pt := &enginev1.PartitionTable{
 		AssignmentEpoch: 1,
@@ -149,8 +149,10 @@ func TestCluster_UpdatePartitionTablePersistsAndHooks(t *testing.T) {
 	if len(got.GetShards()) != 3 || got.GetAssignmentEpoch() != 1 {
 		t.Fatalf("partition table mismatch: %+v", got)
 	}
-	if len(hookCalls) != 1 || len(hookCalls[0].GetShards()) != 3 {
-		t.Fatalf("expected OnPartitionTable hook to fire with 3 shards; got %d call(s)", len(hookCalls))
+	select {
+	case <-notifier.Subscribe():
+	default:
+		t.Fatal("expected PartitionTable notifier to fire after UpdatePartitionTable apply")
 	}
 	// Applied index must reflect the entry's raft index.
 	m, err := (MetaTable{S: st}).Get()

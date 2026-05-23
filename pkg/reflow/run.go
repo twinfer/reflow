@@ -134,6 +134,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	// Constructed before engine.NewHost so the FSM picks them up at
 	// start; their Subscribe() ends are handed to subsystem
 	// goroutines later.
+	partitionTableNotifier := cluster.NewTableNotifier()
 	eventSourceNotifier := cluster.NewTableNotifier()
 	webhookSourceNotifier := cluster.NewTableNotifier()
 	secretNotifier := cluster.NewTableNotifier()
@@ -157,6 +158,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		Metrics:            metrics,
 		EagerStateMaxBytes: cfg.Handlers.EagerStateMaxBytes,
 		ClusterNotifiers: cluster.Notifiers{
+			PartitionTable:      partitionTableNotifier,
 			EventSourceTable:    eventSourceNotifier,
 			WebhookSourceTable:  webhookSourceNotifier,
 			SecretTable:         secretNotifier,
@@ -278,26 +280,27 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	}
 
 	host, herr := finishStartup(ctx, startupDeps{
-		cfg:                   cfg,
-		eh:                    eh,
-		adminEnabled:          adminEnabled,
-		shards:                shards,
-		snapshotTriggers:      snapshotTriggers,
-		deliverySrv:           deliverySrv,
-		deliveryClient:        deliveryClient,
-		deliveryCreds:         deliveryCreds,
-		adminCreds:            adminCreds,
-		handlerSigner:         handlerSigner,
-		httpAuthMW:            httpAuthMW,
-		authCloser:            httpAuthCloser,
-		metricsCloser:         metricsCloser,
-		metricsRegisterer:     metricsRegisterer,
-		metrics:               metrics,
-		eventSourceNotifier:   eventSourceNotifier,
-		webhookSourceNotifier: webhookSourceNotifier,
-		secretNotifier:        secretNotifier,
-		lpOwnersNotifier:      lpOwnersNotifier,
-		logger:                logger,
+		cfg:                    cfg,
+		eh:                     eh,
+		adminEnabled:           adminEnabled,
+		shards:                 shards,
+		snapshotTriggers:       snapshotTriggers,
+		deliverySrv:            deliverySrv,
+		deliveryClient:         deliveryClient,
+		deliveryCreds:          deliveryCreds,
+		adminCreds:             adminCreds,
+		handlerSigner:          handlerSigner,
+		httpAuthMW:             httpAuthMW,
+		authCloser:             httpAuthCloser,
+		metricsCloser:          metricsCloser,
+		metricsRegisterer:      metricsRegisterer,
+		metrics:                metrics,
+		partitionTableNotifier: partitionTableNotifier,
+		eventSourceNotifier:    eventSourceNotifier,
+		webhookSourceNotifier:  webhookSourceNotifier,
+		secretNotifier:         secretNotifier,
+		lpOwnersNotifier:       lpOwnersNotifier,
+		logger:                 logger,
 	})
 	if herr != nil {
 		if deliverySrv != nil {
@@ -443,26 +446,27 @@ func startIngressListener(
 // struct exists only to keep the call site readable; it's not exported
 // and has no behavior of its own.
 type startupDeps struct {
-	cfg                   Config
-	eh                    *engine.Host
-	adminEnabled          bool
-	shards                []uint64
-	snapshotTriggers      map[uint64]chan struct{}
-	deliverySrv           *connectserver.Server
-	deliveryClient        *delivery.Client
-	deliveryCreds         *creds.ListenerCreds
-	adminCreds            *creds.ListenerCreds
-	handlerSigner         *creds.Signer
-	httpAuthMW            func(http.Handler) http.Handler
-	authCloser            func() error
-	metricsCloser         func() error
-	metricsRegisterer     prometheus.Registerer
-	metrics               *observability.Metrics
-	eventSourceNotifier   *cluster.TableNotifier
-	webhookSourceNotifier *cluster.TableNotifier
-	secretNotifier        *cluster.TableNotifier
-	lpOwnersNotifier      *cluster.TableNotifier
-	logger                *slog.Logger
+	cfg                    Config
+	eh                     *engine.Host
+	adminEnabled           bool
+	shards                 []uint64
+	snapshotTriggers       map[uint64]chan struct{}
+	deliverySrv            *connectserver.Server
+	deliveryClient         *delivery.Client
+	deliveryCreds          *creds.ListenerCreds
+	adminCreds             *creds.ListenerCreds
+	handlerSigner          *creds.Signer
+	httpAuthMW             func(http.Handler) http.Handler
+	authCloser             func() error
+	metricsCloser          func() error
+	metricsRegisterer      prometheus.Registerer
+	metrics                *observability.Metrics
+	partitionTableNotifier *cluster.TableNotifier
+	eventSourceNotifier    *cluster.TableNotifier
+	webhookSourceNotifier  *cluster.TableNotifier
+	secretNotifier         *cluster.TableNotifier
+	lpOwnersNotifier       *cluster.TableNotifier
+	logger                 *slog.Logger
 }
 
 // finishStartup wires shard 0 + partition shards + optional snapshot
@@ -484,6 +488,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	metricsCloser := d.metricsCloser
 	metricsRegisterer := d.metricsRegisterer
 	metrics := d.metrics
+	partitionTableNotifier := d.partitionTableNotifier
 	eventSourceNotifier := d.eventSourceNotifier
 	webhookSourceNotifier := d.webhookSourceNotifier
 	secretNotifier := d.secretNotifier
@@ -650,6 +655,19 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		logger.Info("reflow: admin listening", "addr", cs.Addr(),
 			"driver", string(adminCreds.Driver))
 	}
+
+	// PartitionTable Reconciler converges this node's running-shard set
+	// with the cluster's shard-0 PartitionTable. Wakes on the notifier
+	// bump (any UpdatePartitionTable / EvictNode / rebalance step
+	// apply) or the 5s ticker (catches the post-snapshot-recovery case
+	// where dragonboat replaces on-disk state without firing the apply
+	// path). The first SyncRead is a no-op until shard 0 bootstraps.
+	go func() {
+		reader := partitionTableReader{host: eh}
+		if rerr := engine.RunPartitionTableReconciler(ctx, partitionTableNotifier.Subscribe(), reader, eh, logger); rerr != nil && !errors.Is(rerr, context.Canceled) {
+			logger.Warn("reflow: partition table reconcile loop exited", "err", rerr)
+		}
+	}()
 
 	// Routing Reconciler refreshes the per-node Partitioner's atomic
 	// LPOwners snapshot. Started as soon as shard 0 is up; the first
@@ -832,6 +850,18 @@ func (r secretReader) ListSecrets(ctx context.Context) ([]*enginev1.SecretRecord
 		return nil, 0, err
 	}
 	return list.Records, list.TableRevision, nil
+}
+
+// partitionTableReader is the Reader adapter the PartitionTable
+// reconciler uses to pull the latest shard-0 PartitionTable. SyncReads
+// via host.PartitionTable, which already pins a deadline internally for
+// dragonboat.
+type partitionTableReader struct {
+	host *engine.Host
+}
+
+func (r partitionTableReader) SnapshotPartitionTable(ctx context.Context) (*enginev1.PartitionTable, error) {
+	return r.host.PartitionTable(ctx)
 }
 
 // lpOwnersReader is the Reader adapter the routing reconciler uses to

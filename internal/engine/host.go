@@ -211,7 +211,7 @@ type Host struct {
 	metadataRunners map[uint64]*MetadataRunner
 	// startMu serializes StartPartition calls per shardID so concurrent
 	// callers — typically an explicit boot loop racing the
-	// OnPartitionTable hook — cannot both attempt to open the same
+	// PartitionTable reconciler — cannot both attempt to open the same
 	// per-shard Pebble directory (pebble fails the second open with
 	// "lock held"). The second caller waits, observes the partition is
 	// already running, and returns the existing runner.
@@ -226,8 +226,8 @@ type Host struct {
 	// Close; the second observes closed=true and returns without
 	// re-stopping the NodeHost (dragonboat panics on double-stop).
 	closed bool
-	// asyncStarts tracks goroutines spawned by onPartitionTable that
-	// call StartPartition out-of-band. Close waits on this so a
+	// asyncStarts tracks goroutines spawned by ReconcilePartitionTable
+	// that call StartPartition out-of-band. Close waits on this so a
 	// pebble.Open mid-flight can't race with t.TempDir cleanup or
 	// nh.Close().
 	asyncStarts sync.WaitGroup
@@ -477,11 +477,10 @@ func (h *Host) StartMetadataShard() (*MetadataRunner, error) {
 	leadership.SetCallbacks(runner.onBecomeLeader, runner.onStepDown)
 
 	fsmCfg := cluster.Config{
-		Snapshotter:      snap,
-		Leadership:       leadership,
-		Log:              h.log,
-		OnPartitionTable: h.onPartitionTable,
-		Notifiers:        h.cfg.ClusterNotifiers,
+		Snapshotter: snap,
+		Leadership:  leadership,
+		Log:         h.log,
+		Notifiers:   h.cfg.ClusterNotifiers,
 	}
 	raftCfg := config.Config{
 		ReplicaID:          h.cfg.NodeID,
@@ -747,7 +746,7 @@ func (h *Host) AwaitMetadataLeader(ctx context.Context) error {
 // with dragonboat, and wires the leader-side runner. Idempotent: a second
 // call for an already-running shard returns the existing runner. Serialized
 // per shardID so concurrent callers (e.g. boot loop racing the
-// OnPartitionTable hook) cannot collide on the per-shard Pebble open.
+// PartitionTable reconciler) cannot collide on the per-shard Pebble open.
 func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 	if shardID == 0 {
 		return nil, errors.New("host: shardID must be > 0")
@@ -899,16 +898,20 @@ func (h *Host) PartitionerRef() *routing.Partitioner {
 	return h.partitioner
 }
 
-// onPartitionTable reacts to a freshly-committed PartitionTable by starting
-// any locally-owned shards not yet running on this node. Wired as the
-// cluster FSM's OnPartitionTable hook (see StartMetadataShard).
+// ReconcilePartitionTable converges this node's running-shard set with
+// the given PartitionTable snapshot: starts any locally-owned shards
+// not yet running, and logs ownership losses that need an explicit
+// StopPartition follow-up from the rebalancer.
 //
-// Runs on the metadata FSM apply goroutine — StartPartition is offloaded
-// to a goroutine so per-shard Pebble open + dragonboat StartOnDiskReplica
-// do not stall further commits. StopPartition for ownership loss is
-// deferred (logged as a warning); the rebalancer leaves drained replicas
-// in place until an explicit StopPartition lands as a follow-up.
-func (h *Host) onPartitionTable(pt *enginev1.PartitionTable) {
+// Called by RunPartitionTableReconciler on its own goroutine — wakes on
+// the cluster.Notifiers.PartitionTable bump or the 5s ticker, never on
+// the FSM apply path. StartPartition is still offloaded to a per-shard
+// goroutine so per-shard Pebble open + dragonboat StartOnDiskReplica
+// do not stall further reconcile passes. StopPartition for ownership
+// loss is deferred (logged as a warning); the rebalancer leaves drained
+// replicas in place until an explicit StopPartition lands as a
+// follow-up.
+func (h *Host) ReconcilePartitionTable(pt *enginev1.PartitionTable) {
 	if pt == nil {
 		return
 	}
@@ -952,15 +955,15 @@ func (h *Host) onPartitionTable(pt *enginev1.PartitionTable) {
 		go func(sh uint64) {
 			defer h.asyncStarts.Done()
 			if _, err := h.StartPartition(sh); err != nil {
-				h.log.Warn("host: OnPartitionTable: StartPartition failed",
+				h.log.Warn("host: ReconcilePartitionTable: StartPartition failed",
 					"shard", sh, "err", err)
 				return
 			}
-			h.log.Info("host: OnPartitionTable: started shard", "shard", sh)
+			h.log.Info("host: ReconcilePartitionTable: started shard", "shard", sh)
 		}(shardID)
 	}
 	for _, shardID := range notOwned {
-		h.log.Warn("host: OnPartitionTable: shard no longer locally owned; StopPartition deferred",
+		h.log.Warn("host: ReconcilePartitionTable: shard no longer locally owned; StopPartition deferred",
 			"shard", shardID)
 	}
 }
@@ -1023,8 +1026,8 @@ func (h *Host) Close() error {
 	}
 	h.closed = true
 	h.mu.Unlock()
-	// Drain in-flight onPartitionTable spawns before tearing down — a
-	// goroutine mid-StartPartition (between the partitions==nil guard
+	// Drain in-flight ReconcilePartitionTable spawns before tearing down —
+	// a goroutine mid-StartPartition (between the partitions==nil guard
 	// and NewSnapshotter) would otherwise race pebble.Open against
 	// t.TempDir cleanup or nh.Close.
 	h.asyncStarts.Wait()

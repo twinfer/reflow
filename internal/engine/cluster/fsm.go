@@ -39,11 +39,6 @@ type Config struct {
 	Snapshotter SnapshotterRef
 	Leadership  LeadershipObserver
 	Log         *slog.Logger
-	// OnPartitionTable, if non-nil, is invoked after each Update batch
-	// commits when that batch contained an UpdatePartitionTable command.
-	// The argument is the freshly applied table. Intended to drive
-	// ownership-based shard start/stop on the metadata-leader's host.
-	OnPartitionTable func(*enginev1.PartitionTable)
 	// Notifiers carry per-table change signals into local subsystems
 	// (event-source Reconciler, etc.). Each one fires at most once per
 	// Update batch and only when an apply arm actually touched the
@@ -57,6 +52,7 @@ type Config struct {
 // to shard 0; the apply arm for the new command flips it on via
 // applyResult.notify.
 type Notifiers struct {
+	PartitionTable      *TableNotifier
 	EventSourceTable    *TableNotifier
 	WebhookSourceTable  *TableNotifier
 	SecretTable         *TableNotifier
@@ -117,15 +113,13 @@ const (
 	ResultValueFailedPrecondition uint64 = 1
 )
 
-// applyResult is the return value of applyCommand. It carries the
-// optional freshly-applied PartitionTable (for the OnPartitionTable
-// callback) plus a bitmap-style set of TableNotifier handles the
-// caller should Bump after batch.Commit succeeds. nil means "no
-// observable side effect for callbacks" (still committed to disk —
-// the row mutation already happened against the batch).
+// applyResult is the return value of applyCommand. It carries a
+// bitmap-style set of TableNotifier handles the caller should Bump
+// after batch.Commit succeeds. nil means "no observable side effect
+// for subscribers" (still committed to disk — the row mutation already
+// happened against the batch).
 type applyResult struct {
-	partitionTable *enginev1.PartitionTable
-	notify         []*TableNotifier
+	notify []*TableNotifier
 }
 
 // Update applies a batch of committed Raft entries.
@@ -147,7 +141,6 @@ func (f *FSM) Update(entries []statemachine.Entry) ([]statemachine.Entry, error)
 		return nil, fmt.Errorf("cluster: load meta: %w", err)
 	}
 
-	var newTable *enginev1.PartitionTable
 	// notifySet dedups notifier pointers across entries in this batch:
 	// multiple Upserts in one batch should still produce exactly one
 	// post-commit Bump per touched table.
@@ -185,9 +178,6 @@ func (f *FSM) Update(entries []statemachine.Entry) ([]statemachine.Entry, error)
 			return nil, err
 		}
 		if applied != nil {
-			if applied.partitionTable != nil {
-				newTable = applied.partitionTable
-			}
 			for _, n := range applied.notify {
 				noteOnce(n)
 			}
@@ -210,9 +200,6 @@ func (f *FSM) Update(entries []statemachine.Entry) ([]statemachine.Entry, error)
 		return nil, fmt.Errorf("cluster: commit batch: %w", err)
 	}
 
-	if newTable != nil && f.cfg.OnPartitionTable != nil {
-		f.cfg.OnPartitionTable(newTable)
-	}
 	// Notifier fan-out runs on the FSM apply goroutine, post-commit,
 	// non-blocking (TableNotifier.Bump drops when the buffer is full).
 	// Subscribers wake on their own goroutines, SyncRead, and converge.
@@ -271,17 +258,18 @@ func (f *FSM) applyCommand(
 				"raft_index", raftIndex)
 			return &applyResult{}, nil
 		}
-		// Clone so the in-memory hook observes an isolated value.
-		// UpdatePartitionTable is a full overwrite; proposers are
-		// responsible for sending the complete desired state, including
-		// MetaReplicas. The metadata-runner bootstrap reads existing
-		// MetaReplicas off disk before proposing so re-runs on leader
-		// gain don't wipe runtime-added members.
+		// Clone so the persisted bytes are independent of the inbound
+		// command (proposers may retain it). UpdatePartitionTable is a
+		// full overwrite; proposers are responsible for sending the
+		// complete desired state, including MetaReplicas. The
+		// metadata-runner bootstrap reads existing MetaReplicas off disk
+		// before proposing so re-runs on leader gain don't wipe
+		// runtime-added members.
 		applied := proto.Clone(pt).(*enginev1.PartitionTable)
 		if err := (PartitionTableTable{S: batch}).Put(batch, applied); err != nil {
 			return nil, fmt.Errorf("cluster: write partition table: %w", err)
 		}
-		return &applyResult{partitionTable: applied}, nil
+		return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.PartitionTable}}, nil
 	case *enginev1.Command_RegisterDeployment:
 		return f.applyRegisterDeployment(batch, env, k.RegisterDeployment, raftIndex)
 	case *enginev1.Command_DeleteDeployment:
@@ -1061,7 +1049,7 @@ func (f *FSM) applyEvictNode(
 	if err := (PartitionTableTable{S: batch}).Put(batch, pt); err != nil {
 		return nil, fmt.Errorf("cluster: write partition table: %w", err)
 	}
-	return &applyResult{partitionTable: proto.Clone(pt).(*enginev1.PartitionTable)}, nil
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.PartitionTable}}, nil
 }
 
 // applyBeginRebalanceStep appends the requested step to
@@ -1100,7 +1088,7 @@ func (f *FSM) applyBeginRebalanceStep(
 	if err := (PartitionTableTable{S: batch}).Put(batch, pt); err != nil {
 		return nil, fmt.Errorf("cluster: write partition table: %w", err)
 	}
-	return &applyResult{partitionTable: proto.Clone(pt).(*enginev1.PartitionTable)}, nil
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.PartitionTable}}, nil
 }
 
 // applyCompleteRebalanceStep removes the matching pending entry and
@@ -1176,7 +1164,7 @@ func (f *FSM) applyCompleteRebalanceStep(
 	if err := (PartitionTableTable{S: batch}).Put(batch, pt); err != nil {
 		return nil, fmt.Errorf("cluster: write partition table: %w", err)
 	}
-	return &applyResult{partitionTable: proto.Clone(pt).(*enginev1.PartitionTable)}, nil
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.PartitionTable}}, nil
 }
 
 // applySetRebalanceDrain writes (drain=true) or removes (drain=false) a

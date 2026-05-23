@@ -15,27 +15,16 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// Per-namespace short names used as on-disk filenames inside
-// <dataDir>.lpstage_{in,out}/<transfer_id>/. Stable strings — the
-// destination resolves TransferSSTRef.relative_path against its
-// staging dir, so these names are wire-visible.
-const (
-	sstNsInv            = "inv"
-	sstNsJournal        = "journal"
-	sstNsTimerIdx       = "timer_idx"
-	sstNsTimerLP        = "timer_lp"
-	sstNsState          = "state"
-	sstNsAwakeable      = "awakeable"
-	sstNsKeyLease       = "keylease"
-	sstNsIdemp          = "idemp"
-	sstNsSignalInbox    = "signal_inbox"
-	sstNsSignalAwaiter  = "signal_awaiter"
-	sstNsWorkflowRun    = "workflow_run"
-	sstNsPromise        = "promise"
-	sstNsPromiseAwaiter = "promise_awaiter"
-	sstNsDedupArbitrary = "dedup_arb"
-	sstNsTimerPrimary   = "timer_primary"
-)
+// sstNsTimerPrimary is the on-disk filename for the LP-agnostic
+// timer/<fire>/<id> rows shipped via the timer_lp secondary scan.
+// The LP-prefixed namespaces' filenames come from
+// keys.AllLPNamespaces, the single source of truth for the LP-scope
+// walker; timer_primary is the one exception because it's derived
+// from timer_lp rather than directly LP-prefixed.
+//
+// Wire-visible: the destination resolves TransferSSTRef.relative_path
+// against its staging dir, so this name MUST NOT change.
+const sstNsTimerPrimary = "timer_primary"
 
 // buildLPSSTs scans the LP's data on the source store and writes one
 // SST per non-empty LP-prefixed namespace plus one SST for the LP's
@@ -62,32 +51,12 @@ func buildLPSSTs(
 		return nil, fmt.Errorf("buildLPSSTs: mkdir %s: %w", outDir, err)
 	}
 
-	namespaces := []struct {
-		name   string
-		prefix []byte
-	}{
-		{sstNsInv, keys.InvocationLPPrefix(lp)},
-		{sstNsJournal, keys.JournalLPPrefix(lp)},
-		{sstNsTimerIdx, keys.TimerIdxLPPrefix(lp)},
-		{sstNsTimerLP, keys.TimerLPPrefixForLP(lp)},
-		{sstNsState, keys.StateLPPrefix(lp)},
-		{sstNsAwakeable, keys.AwakeableLPPrefix(lp)},
-		{sstNsKeyLease, keys.KeyLeaseLPPrefix(lp)},
-		{sstNsIdemp, keys.IdempotencyLPPrefix(lp)},
-		{sstNsSignalInbox, keys.SignalInboxLPPrefix(lp)},
-		{sstNsSignalAwaiter, keys.SignalAwaiterLPPrefix(lp)},
-		{sstNsWorkflowRun, keys.WorkflowRunLPPrefix(lp)},
-		{sstNsPromise, keys.PromiseLPPrefix(lp)},
-		{sstNsPromiseAwaiter, keys.PromiseAwaiterLPPrefix(lp)},
-		{sstNsDedupArbitrary, keys.DedupArbitraryLPPrefix(lp)},
-	}
-
 	var out []*enginev1.TransferSSTRef
-	for _, ns := range namespaces {
+	for _, ns := range keys.AllLPNamespaces {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		ref, err := buildNamespaceSST(pstore, ns.name, ns.prefix, outDir)
+		ref, err := buildNamespaceSST(pstore, ns.Name, ns.Prefix(lp), outDir)
 		if err != nil {
 			return nil, err
 		}

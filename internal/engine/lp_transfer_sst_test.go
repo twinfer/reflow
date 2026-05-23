@@ -163,6 +163,97 @@ func TestBuildLPSSTs_PopulatedLP(t *testing.T) {
 	}
 }
 
+// TestBuildLPSSTs_RoundTripEachRegisteredNamespace is the per-namespace
+// round-trip companion to keys.TestAllLPNamespacesCoversEveryPrefixBuilder.
+// For each entry in keys.AllLPNamespaces, seed exactly one row inside
+// that namespace's LP range, build SSTs, and assert the namespace's
+// `<name>.sst` appears in the result with non-zero size. Catches:
+//
+//   - A registry entry whose Prefix function points at the wrong
+//     namespace (the seeded row falls outside the scan range and the
+//     SST is missing or empty).
+//   - A registry entry whose Name doesn't match what buildLPSSTs
+//     stamps onto TransferSSTRef.relative_path (paths don't line up).
+//   - buildLPSSTs silently skipping an entry (no iteration, no SST).
+//
+// timer_lp is special-cased because buildTimerPrimarySST decodes its
+// keys to derive the LP-agnostic timer/<fire>/<id> primary row — an
+// arbitrary byte suffix would fail DecodeTimerLPKey and abort
+// buildLPSSTs before the per-namespace assertion runs.
+func TestBuildLPSSTs_RoundTripEachRegisteredNamespace(t *testing.T) {
+	for _, ns := range keys.AllLPNamespaces {
+		t.Run(ns.Name, func(t *testing.T) {
+			src := openTempPebble(t)
+			const lp uint32 = 7
+			seedNamespaceRow(t, src, ns, lp)
+
+			outDir := filepath.Join(t.TempDir(), "out")
+			refs, err := buildLPSSTs(context.Background(), src, lp, outDir)
+			if err != nil {
+				t.Fatalf("buildLPSSTs: %v", err)
+			}
+
+			wantName := ns.Name + ".sst"
+			var found *enginev1.TransferSSTRef
+			for _, r := range refs {
+				if r.GetRelativePath() == wantName {
+					found = r
+					break
+				}
+			}
+			if found == nil {
+				t.Fatalf("namespace %q seeded a row but its SST is missing from buildLPSSTs result; got refs %v — check that the registry entry's Prefix returns the right namespace and that buildLPSSTs iterates keys.AllLPNamespaces", ns.Name, refNames(refs))
+			}
+			if found.GetSizeBytes() == 0 {
+				t.Fatalf("namespace %q SST has zero size — scan picked up no rows even though we seeded one", ns.Name)
+			}
+		})
+	}
+}
+
+func seedNamespaceRow(t *testing.T, store *storage.PebbleStore, ns keys.LPNamespace, lp uint32) {
+	t.Helper()
+	b := store.NewBatch()
+	defer b.Close()
+	if ns.Name == "timer_lp" {
+		// buildTimerPrimarySST decodes timer_lp keys, so the seed must
+		// be a valid (lp, fire, id) row plus a matching primary timer
+		// row keyed by the same (fire, id).
+		id := &enginev1.InvocationId{PartitionKey: 42, Uuid: bytes.Repeat([]byte{0xAB}, 16)}
+		const fireAt uint64 = 1_700_000_000_000
+		lpk, err := keys.TimerLPKey(lp, fireAt, id)
+		if err != nil {
+			t.Fatalf("TimerLPKey: %v", err)
+		}
+		pk, err := keys.TimerKey(fireAt, id)
+		if err != nil {
+			t.Fatalf("TimerKey: %v", err)
+		}
+		if err := b.Set(lpk, []byte{1}); err != nil {
+			t.Fatalf("set timer_lp: %v", err)
+		}
+		if err := b.Set(pk, []byte("timer-payload")); err != nil {
+			t.Fatalf("set timer primary: %v", err)
+		}
+	} else {
+		k := appendBytes(ns.Prefix(lp), []byte("row-suffix"))
+		if err := b.Set(k, []byte("row-value")); err != nil {
+			t.Fatalf("set %s: %v", ns.Name, err)
+		}
+	}
+	if err := b.Commit(true); err != nil {
+		t.Fatalf("commit %s seed: %v", ns.Name, err)
+	}
+}
+
+func refNames(refs []*enginev1.TransferSSTRef) []string {
+	out := make([]string, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, r.GetRelativePath())
+	}
+	return out
+}
+
 func openTempPebble(t *testing.T) *storage.PebbleStore {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "pebble")

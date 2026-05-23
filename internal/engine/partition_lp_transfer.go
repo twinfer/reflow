@@ -287,26 +287,17 @@ func (p *Partition) onAbortLPTransfer(
 }
 
 // lpPrefixesForLP returns the lower-bound byte prefix for every
-// LP-prefixed namespace, scoped to one lp. The source-scan and the
-// source-cleanup paths iterate this set; keep them in sync with
-// keys.go's LP-prefixed namespace list.
+// LP-prefixed namespace, scoped to one lp. Both the source-scan
+// (buildLPSSTs) and the source-cleanup (onFinishLPTransfer /
+// onAbortLPTransfer) iterate keys.AllLPNamespaces — same source of
+// truth, so a new namespace cannot land in keys.go without being
+// covered by both sides of the transfer.
 func lpPrefixesForLP(lp uint32) [][]byte {
-	return [][]byte{
-		keys.InvocationLPPrefix(lp),
-		keys.JournalLPPrefix(lp),
-		keys.TimerIdxLPPrefix(lp),
-		keys.TimerLPPrefixForLP(lp),
-		keys.StateLPPrefix(lp),
-		keys.AwakeableLPPrefix(lp),
-		keys.KeyLeaseLPPrefix(lp),
-		keys.IdempotencyLPPrefix(lp),
-		keys.SignalInboxLPPrefix(lp),
-		keys.SignalAwaiterLPPrefix(lp),
-		keys.WorkflowRunLPPrefix(lp),
-		keys.PromiseLPPrefix(lp),
-		keys.PromiseAwaiterLPPrefix(lp),
-		keys.DedupArbitraryLPPrefix(lp),
+	out := make([][]byte, 0, len(keys.AllLPNamespaces))
+	for _, ns := range keys.AllLPNamespaces {
+		out = append(out, ns.Prefix(lp))
 	}
+	return out
 }
 
 // deleteLPTimers walks timer_lp/<lp>/... to collect (fire_at, id)

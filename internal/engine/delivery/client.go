@@ -184,10 +184,12 @@ func (c *Client) Send(ctx context.Context, destShardID uint64, producerID string
 
 // UploadLPTransferSST streams an SST file to the dest-shard replica
 // hosted by targetNodeID. Returns the receiver-echoed relative path on
-// ack, ErrNotLeader when the receiver is not the destination shard's
-// leader (PR 3 will widen to any replica), and an ordinary error
-// otherwise. namespace + transferID must each be a single path
-// segment (no separators); the server rejects malformed inputs.
+// ack, ErrNotLeader when the receiver does not host destShardID (used
+// as a pre-flight redirect — the server accepts uploads on any replica
+// that hosts the shard, since Pebble Ingest is replica-local), and an
+// ordinary error otherwise. namespace + transferID must each be a
+// single path segment (no separators); the server rejects malformed
+// inputs.
 //
 // The body is read from filePath, hashed with sha256 as it streams,
 // and the header carries (size_bytes, sha256_hex) for the receiver to

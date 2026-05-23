@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -61,6 +62,7 @@ type LPTransferService struct {
 	uploader LPSSTUploader
 	shardID  uint64
 	log      *slog.Logger
+	metrics  *observability.Metrics
 
 	mu      sync.Mutex
 	pending []lpTransferJob
@@ -91,8 +93,9 @@ const (
 // orchestration loop. sender + uploader may be nil in single-node
 // deployments — every transfer in that case is same-shard and the
 // service short-circuits its sends with a warning (real transfers
-// require a multi-node sender + uploader).
-func NewLPTransferService(store storage.Store, sender CrossShardSender, uploader LPSSTUploader, shardID uint64, log *slog.Logger) *LPTransferService {
+// require a multi-node sender + uploader). metrics may be nil; the
+// service skips per-SST observations when so.
+func NewLPTransferService(store storage.Store, sender CrossShardSender, uploader LPSSTUploader, shardID uint64, log *slog.Logger, metrics *observability.Metrics) *LPTransferService {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -102,6 +105,7 @@ func NewLPTransferService(store storage.Store, sender CrossShardSender, uploader
 		uploader: uploader,
 		shardID:  shardID,
 		log:      log,
+		metrics:  metrics,
 		wake:     make(chan struct{}, 1),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
@@ -312,10 +316,22 @@ func (s *LPTransferService) runScan(ctx context.Context, job lpTransferJob) erro
 		}
 		filePath := fmt.Sprintf("%s/%s", outDir, ref.GetRelativePath())
 		namespace := strings.TrimSuffix(ref.GetRelativePath(), ".sst")
+		if s.metrics != nil {
+			if st, statErr := os.Stat(filePath); statErr == nil {
+				s.metrics.LPTransferSSTSizeBytes.Observe(float64(st.Size()))
+			}
+		}
+		uploadStart := time.Now()
 		if _, err := s.uploader.UploadSSTToReplicas(
 			ctx, job.destShard, job.transferID, namespace, filePath,
 		); err != nil {
+			if s.metrics != nil {
+				s.metrics.LPTransferSSTUploadErrors.Inc()
+			}
 			return fmt.Errorf("lp scan: upload %s: %w", namespace, err)
+		}
+		if s.metrics != nil {
+			s.metrics.LPTransferSSTUploadSeconds.Observe(time.Since(uploadStart).Seconds())
 		}
 	}
 

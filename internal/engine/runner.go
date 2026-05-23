@@ -210,7 +210,7 @@ func (r *PartitionRunner) onBecomeLeader() {
 		r.proposer,
 		WorkflowReapServiceOptions{Log: r.log},
 	)
-	lpTransfer := NewLPTransferService(store, r.sender, r.lpUploader, r.ShardID, r.log)
+	lpTransfer := NewLPTransferService(store, r.sender, r.lpUploader, r.ShardID, r.log, r.metrics)
 	if r.invoker != nil {
 		r.invoker.Rebind(
 			tables.JournalTable{S: store},

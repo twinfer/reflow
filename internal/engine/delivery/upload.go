@@ -135,6 +135,17 @@ func (s *Server) UploadLPTransferSST(
 		_ = os.Remove(tmpPath)
 		return uploadErr(fmt.Sprintf("rename: %v", err)), nil
 	}
+	if uploadFsync {
+		// Persist the directory entry so the rename survives a power
+		// loss between rename() and the next dirent flush. Without
+		// this the SST may be invisible on remount, and the source's
+		// next Rebuild would re-upload from sst_seq=0 — correct, but
+		// costs a network round-trip on every recovery.
+		if dir, err := os.Open(transferDir); err == nil {
+			_ = dir.Sync()
+			_ = dir.Close()
+		}
+	}
 
 	relative := hdr.GetNamespace() + ".sst"
 	return connect.NewResponse(&deliveryv1.UploadLPTransferSSTResponse{

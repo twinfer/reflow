@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/keys"
@@ -102,6 +103,7 @@ func (p *Partition) onApplyLPTransferSST(
 	}
 
 	if len(cmd.GetSsts()) > 0 {
+		ingestStart := time.Now()
 		if err := ingestLPTransferSSTs(store, cmd); err != nil {
 			// Local file missing or Ingest failed — leave the staging row
 			// untouched so the source's next scan re-uploads + re-proposes
@@ -111,6 +113,9 @@ func (p *Partition) onApplyLPTransferSST(
 				"sst_seq", cmd.GetSstSeq(),
 				"err", err)
 			return nil
+		}
+		if p.cfg.Metrics != nil {
+			p.cfg.Metrics.LPTransferSSTIngestSeconds.Observe(time.Since(ingestStart).Seconds())
 		}
 	}
 

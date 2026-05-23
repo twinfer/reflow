@@ -15,17 +15,6 @@ func plannedOwners(shards []uint64) map[uint32]uint64 {
 	return routing.NewPlanner(shards).PlanAll()
 }
 
-// roundRobinOwners builds an LP map where every LP is owned by the
-// given shards in round-robin order. Decidedly skewed against the
-// planner — used by tests that need a known-imbalanced starting state.
-func roundRobinOwners(shards []uint64) map[uint32]uint64 {
-	out := make(map[uint32]uint64, keys.LPCount)
-	for lp := range keys.LPCount {
-		out[lp] = shards[int(lp)%len(shards)]
-	}
-	return out
-}
-
 func TestAdvise_SkewBelowEngage_Skips(t *testing.T) {
 	// 3 shards owning the planner's exact desired split → skew 0%.
 	owners := plannedOwners([]uint64{1, 2, 3})

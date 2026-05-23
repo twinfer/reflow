@@ -56,6 +56,22 @@ type Metrics struct {
 	// disengaged}. reason carries the cause for skip-style outcomes
 	// (skew_below_engage, cooldown, at_capacity, no_moves, no_planner).
 	RebalanceDecisions *prometheus.CounterVec
+	// LPTransferSSTSizeBytes is the per-SST file size observed on the
+	// source side after build, before upload. Useful for sizing the
+	// staging dir + Toxiproxy bandwidth budgets.
+	LPTransferSSTSizeBytes prometheus.Histogram
+	// LPTransferSSTUploadSeconds is the wall-clock duration of one
+	// fan-out upload (source → every replica of dest_shard) for a
+	// single SST. Includes replica-lookup time and parallel upload.
+	LPTransferSSTUploadSeconds prometheus.Histogram
+	// LPTransferSSTIngestSeconds is the wall-clock duration of one
+	// pebble.DB.Ingest on the destination replica, sampled per apply.
+	LPTransferSSTIngestSeconds prometheus.Histogram
+	// LPTransferSSTUploadErrors counts fan-out upload failures on the
+	// source side. A non-zero rate indicates either a replica is
+	// unreachable, a sha256/size mismatch fired, or the per-replica
+	// UploadTimeout (default 10m) elapsed.
+	LPTransferSSTUploadErrors prometheus.Counter
 }
 
 // NewMetrics builds reflow's collectors. Pass nil to use the default
@@ -127,5 +143,24 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name: "reflow_rebalance_decisions_total",
 			Help: "Rebalancer decisions, classified by outcome and reason.",
 		}, []string{"outcome", "reason"}),
+		LPTransferSSTSizeBytes: f.NewHistogram(prometheus.HistogramOpts{
+			Name:    "reflow_lp_transfer_sst_size_bytes",
+			Help:    "Size of LP-transfer SSTs built on the source side, in bytes.",
+			Buckets: prometheus.ExponentialBuckets(4096, 4, 10),
+		}),
+		LPTransferSSTUploadSeconds: f.NewHistogram(prometheus.HistogramOpts{
+			Name:    "reflow_lp_transfer_sst_upload_seconds",
+			Help:    "Duration of one fan-out SST upload (source → every dest_shard replica), in seconds.",
+			Buckets: prometheus.ExponentialBuckets(0.01, 2, 14),
+		}),
+		LPTransferSSTIngestSeconds: f.NewHistogram(prometheus.HistogramOpts{
+			Name:    "reflow_lp_transfer_sst_ingest_seconds",
+			Help:    "Duration of pebble.DB.Ingest on the dest replica, in seconds.",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
+		}),
+		LPTransferSSTUploadErrors: f.NewCounter(prometheus.CounterOpts{
+			Name: "reflow_lp_transfer_sst_upload_errors_total",
+			Help: "Fan-out upload failures from the source. A non-zero rate signals an unreachable replica, an integrity mismatch, or UploadTimeout elapse.",
+		}),
 	}
 }

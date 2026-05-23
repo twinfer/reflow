@@ -35,16 +35,20 @@ import (
 type TimerTable struct{ S storage.Reader }
 
 // Insert writes a new timer (primary + per-invocation + per-LP indexes).
-func (t TimerTable) Insert(b storage.Batch, fireAtMs uint64, id *enginev1.InvocationId, sleepIdx uint32) error {
+// The primary timer/<fire>/<id> row is tenant-agnostic — the timer
+// service drains in fire_at order across all tenants, which fragmenting
+// by tenant would defeat. Tenant identity is preserved on the two
+// secondary indexes (timer_idx, timer_lp).
+func (t TimerTable) Insert(b storage.Batch, tenant uint32, fireAtMs uint64, id *enginev1.InvocationId, sleepIdx uint32) error {
 	pk, err := keys.TimerKey(fireAtMs, id)
 	if err != nil {
 		return err
 	}
-	ik, err := keys.TimerIdxKey(id, fireAtMs)
+	ik, err := keys.TimerIdxKey(tenant, id, fireAtMs)
 	if err != nil {
 		return err
 	}
-	lpk, err := keys.TimerLPKey(keys.LPFromPartitionKey(id.GetPartitionKey()), fireAtMs, id)
+	lpk, err := keys.TimerLPKey(keys.LPFromPartitionKey(id.GetPartitionKey()), tenant, fireAtMs, id)
 	if err != nil {
 		return err
 	}
@@ -60,16 +64,16 @@ func (t TimerTable) Insert(b storage.Batch, fireAtMs uint64, id *enginev1.Invoca
 }
 
 // Delete removes a timer (primary + per-invocation + per-LP indexes).
-func (t TimerTable) Delete(b storage.Batch, fireAtMs uint64, id *enginev1.InvocationId) error {
+func (t TimerTable) Delete(b storage.Batch, tenant uint32, fireAtMs uint64, id *enginev1.InvocationId) error {
 	pk, err := keys.TimerKey(fireAtMs, id)
 	if err != nil {
 		return err
 	}
-	ik, err := keys.TimerIdxKey(id, fireAtMs)
+	ik, err := keys.TimerIdxKey(tenant, id, fireAtMs)
 	if err != nil {
 		return err
 	}
-	lpk, err := keys.TimerLPKey(keys.LPFromPartitionKey(id.GetPartitionKey()), fireAtMs, id)
+	lpk, err := keys.TimerLPKey(keys.LPFromPartitionKey(id.GetPartitionKey()), tenant, fireAtMs, id)
 	if err != nil {
 		return err
 	}
@@ -82,11 +86,15 @@ func (t TimerTable) Delete(b storage.Batch, fireAtMs uint64, id *enginev1.Invoca
 	return b.Delete(lpk)
 }
 
-// TimerEntry is the decoded form yielded by scans.
+// TimerEntry is the decoded form yielded by scans. Tenant is populated
+// from secondary-index scans (TimerIdx, TimerLP); primary timer scans
+// (ScanAll) cannot recover it because the primary key is tenant-agnostic
+// — there Tenant is 0.
 type TimerEntry struct {
 	FireAtMs uint64
 	ID       *enginev1.InvocationId
 	SleepIdx uint32
+	Tenant   uint32
 }
 
 // ScanAll iterates every timer in (fire_at, id) order. Used on leader gain to
@@ -97,9 +105,10 @@ func (t TimerTable) ScanAll(fn func(TimerEntry) error) error {
 }
 
 // ScanAllIndex iterates every per-invocation secondary-index row in the
-// partition. Yields (id, fire_at_ms) pairs in encoded (lp, id, fire_at_ms)
-// order. Used by tests to assert the primary↔secondary invariant.
-func (t TimerTable) ScanAllIndex(fn func(id *enginev1.InvocationId, fireAtMs uint64) error) error {
+// partition. Yields (tenant, id, fire_at_ms) tuples in encoded
+// (lp, tenant, id, fire_at_ms) order. Used by tests to assert the
+// primary↔secondary invariant.
+func (t TimerTable) ScanAllIndex(fn func(tenant uint32, id *enginev1.InvocationId, fireAtMs uint64) error) error {
 	lower := keys.TimerIdxPrefix()
 	upper := keys.PrefixUpperBound(lower)
 	iter, err := t.S.NewIter(lower, upper)
@@ -108,11 +117,11 @@ func (t TimerTable) ScanAllIndex(fn func(id *enginev1.InvocationId, fireAtMs uin
 	}
 	defer iter.Close()
 	for ok := iter.First(); ok; ok = iter.Next() {
-		id, fireAt, err := keys.DecodeTimerIdxKey(iter.Key())
+		tenant, id, fireAt, err := keys.DecodeTimerIdxKey(iter.Key())
 		if err != nil {
 			return err
 		}
-		if err := fn(id, fireAt); err != nil {
+		if err := fn(tenant, id, fireAt); err != nil {
 			return err
 		}
 	}
@@ -123,8 +132,8 @@ func (t TimerTable) ScanAllIndex(fn func(id *enginev1.InvocationId, fireAtMs uin
 // invocation via the per-invocation secondary index. Bounded by the
 // per-invocation timer count (typically 1-2), not the global timer table
 // size. Used by onPurge.
-func (t TimerTable) ScanByInvocation(id *enginev1.InvocationId, fn func(fireAtMs uint64) error) error {
-	lower, err := keys.TimerIdxPrefixForID(id)
+func (t TimerTable) ScanByInvocation(tenant uint32, id *enginev1.InvocationId, fn func(fireAtMs uint64) error) error {
+	lower, err := keys.TimerIdxPrefixForID(tenant, id)
 	if err != nil {
 		return err
 	}
@@ -135,7 +144,7 @@ func (t TimerTable) ScanByInvocation(id *enginev1.InvocationId, fn func(fireAtMs
 	}
 	defer iter.Close()
 	for ok := iter.First(); ok; ok = iter.Next() {
-		_, fireAt, err := keys.DecodeTimerIdxKey(iter.Key())
+		_, _, fireAt, err := keys.DecodeTimerIdxKey(iter.Key())
 		if err != nil {
 			return err
 		}
@@ -147,8 +156,10 @@ func (t TimerTable) ScanByInvocation(id *enginev1.InvocationId, fn func(fireAtMs
 }
 
 // ScanLP iterates every timer in one logical partition in (fire_at, id)
-// order via the per-LP secondary index. Used by the future cross-shard LP
-// transfer protocol.
+// order via the per-LP secondary index. Captures EVERY tenant on the LP
+// (the LP-wide scan range covers all per-tenant subranges); the per-row
+// tenant id is surfaced via TimerEntry.Tenant. Used by the future
+// cross-shard LP transfer protocol.
 func (t TimerTable) ScanLP(lp uint32, fn func(TimerEntry) error) error {
 	lower := keys.TimerLPPrefixForLP(lp)
 	upper := keys.PrefixUpperBound(lower)
@@ -158,7 +169,7 @@ func (t TimerTable) ScanLP(lp uint32, fn func(TimerEntry) error) error {
 	}
 	defer iter.Close()
 	for ok := iter.First(); ok; ok = iter.Next() {
-		_, fireAt, id, err := keys.DecodeTimerLPKey(iter.Key())
+		_, tenant, fireAt, id, err := keys.DecodeTimerLPKey(iter.Key())
 		if err != nil {
 			return err
 		}
@@ -167,7 +178,7 @@ func (t TimerTable) ScanLP(lp uint32, fn func(TimerEntry) error) error {
 			return errors.New("timer_lp value has wrong length")
 		}
 		sleepIdx := binary.BigEndian.Uint32(val)
-		if err := fn(TimerEntry{FireAtMs: fireAt, ID: id, SleepIdx: sleepIdx}); err != nil {
+		if err := fn(TimerEntry{FireAtMs: fireAt, ID: id, SleepIdx: sleepIdx, Tenant: tenant}); err != nil {
 			return err
 		}
 	}

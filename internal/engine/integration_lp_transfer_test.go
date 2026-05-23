@@ -110,7 +110,7 @@ func TestIntegrationLPTransfer_SeededRowsShipViaSST(t *testing.T) {
 		store := sourceRunner.Snapshotter().Store()
 		batch := store.NewBatch()
 		for k, v := range seedRows {
-			key := keys.StateKey(targetLP, seedSvc, seedObj, k)
+			key := keys.StateKey(targetLP, keys.TenantDefault, seedSvc, seedObj, k)
 			if err := batch.Set(key, v); err != nil {
 				batch.Close()
 				t.Fatalf("node %d: batch.Set(%q): %v", i, k, err)
@@ -124,7 +124,7 @@ func TestIntegrationLPTransfer_SeededRowsShipViaSST(t *testing.T) {
 	// Sanity-check: dest doesn't have the seeded keys yet.
 	destStore := host.Partition(destShard).Snapshotter().Store()
 	for k := range seedRows {
-		key := keys.StateKey(targetLP, seedSvc, seedObj, k)
+		key := keys.StateKey(targetLP, keys.TenantDefault, seedSvc, seedObj, k)
 		v, closer, gerr := destStore.Get(key)
 		if gerr == nil {
 			closer.Close()
@@ -204,7 +204,7 @@ func TestIntegrationLPTransfer_SeededRowsShipViaSST(t *testing.T) {
 	// node we initially picked; the apply path runs on every replica so
 	// any of the three would do.
 	for k, wantV := range seedRows {
-		key := keys.StateKey(targetLP, seedSvc, seedObj, k)
+		key := keys.StateKey(targetLP, keys.TenantDefault, seedSvc, seedObj, k)
 		v, closer, gerr := destStore.Get(key)
 		if gerr != nil {
 			t.Fatalf("dest.Get(%q) post-transfer: %v", k, gerr)
@@ -221,7 +221,7 @@ func TestIntegrationLPTransfer_SeededRowsShipViaSST(t *testing.T) {
 	// every replica during onFinishLPTransfer. Verify on the same host.
 	sourceStore := host.Partition(sourceShard).Snapshotter().Store()
 	for k := range seedRows {
-		key := keys.StateKey(targetLP, seedSvc, seedObj, k)
+		key := keys.StateKey(targetLP, keys.TenantDefault, seedSvc, seedObj, k)
 		v, closer, gerr := sourceStore.Get(key)
 		if gerr == nil {
 			closer.Close()

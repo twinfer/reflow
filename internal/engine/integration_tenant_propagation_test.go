@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/pkg/handler"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -88,7 +89,7 @@ func TestTenantIDPropagation_EndToEnd(t *testing.T) {
 	// Assert 1: Caller's slot-0 JEInput.tenant_id (the durable journal
 	// row written by the invoker's first-activation propose) carries the
 	// submitted tenant.
-	callerInput, err := jt.Read(callerID, 0)
+	callerInput, err := jt.Read(keys.TenantDefault, callerID, 0)
 	if err != nil {
 		t.Fatalf("read caller slot 0: %v", err)
 	}
@@ -101,7 +102,7 @@ func TestTenantIDPropagation_EndToEnd(t *testing.T) {
 	// stamping from cur.GetTenantId() on the parent's JECall apply arm.
 	calleeTarget := &enginev1.InvocationTarget{ServiceName: "Callee", HandlerName: "do"}
 	calleeID := deriveCalleeID(callerID, 1, calleeTarget)
-	calleeInput, err := jt.Read(calleeID, 0)
+	calleeInput, err := jt.Read(keys.TenantDefault, calleeID, 0)
 	if err != nil {
 		t.Fatalf("read callee slot 0: %v", err)
 	}

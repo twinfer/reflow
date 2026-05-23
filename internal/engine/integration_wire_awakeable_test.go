@@ -239,7 +239,7 @@ func TestWireDispatch_HTTP2_Awakeable(t *testing.T) {
 	var awakeableID string
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		v, present, err := st.Get(lp, target, "awk_id")
+		v, present, err := st.Get(lp, keys.TenantDefault, target, "awk_id")
 		if err == nil && present {
 			awakeableID = string(v)
 			break

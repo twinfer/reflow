@@ -10,6 +10,7 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/loadgen"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
@@ -391,7 +392,7 @@ func scanContains(h *engine.Host, id *enginev1.InvocationId, idx uint32) bool {
 	}
 	// Open a fresh table view because the snapshotter may rebind.
 	jt := journalTableFor(store)
-	got, err := jt.Read(id, idx)
+	got, err := jt.Read(keys.TenantDefault, id, idx)
 	if err != nil || got == nil {
 		return false
 	}

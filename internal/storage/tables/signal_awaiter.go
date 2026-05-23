@@ -21,8 +21,8 @@ import (
 type SignalAwaiterTable struct{ S storage.Reader }
 
 // Put writes the directory row. The name must not contain "/".
-func (t SignalAwaiterTable) Put(b storage.Batch, id *enginev1.InvocationId, name string, entry *enginev1.SignalAwaiter) error {
-	k, err := keys.SignalAwaiterKey(id, name)
+func (t SignalAwaiterTable) Put(b storage.Batch, tenant uint32, id *enginev1.InvocationId, name string, entry *enginev1.SignalAwaiter) error {
+	k, err := keys.SignalAwaiterKey(tenant, id, name)
 	if err != nil {
 		return err
 	}
@@ -30,8 +30,8 @@ func (t SignalAwaiterTable) Put(b storage.Batch, id *enginev1.InvocationId, name
 }
 
 // Get returns the awaiter for (id, name), or (nil, nil) when absent.
-func (t SignalAwaiterTable) Get(id *enginev1.InvocationId, name string) (*enginev1.SignalAwaiter, error) {
-	k, err := keys.SignalAwaiterKey(id, name)
+func (t SignalAwaiterTable) Get(tenant uint32, id *enginev1.InvocationId, name string) (*enginev1.SignalAwaiter, error) {
+	k, err := keys.SignalAwaiterKey(tenant, id, name)
 	if err != nil {
 		return nil, err
 	}
@@ -46,8 +46,8 @@ func (t SignalAwaiterTable) Get(id *enginev1.InvocationId, name string) (*engine
 }
 
 // Delete removes the directory row.
-func (t SignalAwaiterTable) Delete(b storage.Batch, id *enginev1.InvocationId, name string) error {
-	k, err := keys.SignalAwaiterKey(id, name)
+func (t SignalAwaiterTable) Delete(b storage.Batch, tenant uint32, id *enginev1.InvocationId, name string) error {
+	k, err := keys.SignalAwaiterKey(tenant, id, name)
 	if err != nil {
 		return err
 	}
@@ -56,8 +56,8 @@ func (t SignalAwaiterTable) Delete(b storage.Batch, id *enginev1.InvocationId, n
 
 // DeleteAllForInvocation range-deletes every awaiter row under
 // (inv_id). Called by onPurge.
-func (t SignalAwaiterTable) DeleteAllForInvocation(b storage.Batch, id *enginev1.InvocationId) error {
-	prefix, err := keys.SignalAwaiterPrefixForInvocation(id)
+func (t SignalAwaiterTable) DeleteAllForInvocation(b storage.Batch, tenant uint32, id *enginev1.InvocationId) error {
+	prefix, err := keys.SignalAwaiterPrefixForInvocation(tenant, id)
 	if err != nil {
 		return err
 	}

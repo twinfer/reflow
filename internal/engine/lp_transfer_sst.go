@@ -190,7 +190,7 @@ func buildTimerPrimarySST(
 	var smallest, largest []byte
 	var wrote bool
 	for ok := true; ok; ok = it.Next() {
-		_, fireAt, id, derr := keys.DecodeTimerLPKey(it.Key())
+		_, _, fireAt, id, derr := keys.DecodeTimerLPKey(it.Key())
 		if derr != nil {
 			return nil, fmt.Errorf("buildLPSSTs: decode timer_lp key: %w", derr)
 		}

@@ -416,11 +416,11 @@ func TestPartition_ClearAllState_WipesAllRowsForObject(t *testing.T) {
 	otherLP := keys.LPFromPartitionKey(routing.PartitionKey(otherTarget.GetServiceName(), otherTarget.GetObjectKey()))
 	b := store.NewBatch()
 	for _, k := range []string{"a", "b", "c"} {
-		if err := st.Set(b, lp, target, k, []byte(k+"-val")); err != nil {
+		if err := st.Set(b, lp, keys.TenantDefault, target, k, []byte(k+"-val")); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := st.Set(b, otherLP, otherTarget, "z", []byte("z-val")); err != nil {
+	if err := st.Set(b, otherLP, keys.TenantDefault, otherTarget, "z", []byte("z-val")); err != nil {
 		t.Fatal(err)
 	}
 	if err := b.Commit(true); err != nil {
@@ -467,7 +467,7 @@ func TestPartition_ClearAllState_WipesAllRowsForObject(t *testing.T) {
 
 	// All rows on the invocation's object are gone.
 	for _, k := range []string{"a", "b", "c"} {
-		_, present, err := st.Get(lp, target, k)
+		_, present, err := st.Get(lp, keys.TenantDefault, target, k)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -476,7 +476,7 @@ func TestPartition_ClearAllState_WipesAllRowsForObject(t *testing.T) {
 		}
 	}
 	// Rows on a different object_key are untouched.
-	v, present, err := st.Get(otherLP, otherTarget, "z")
+	v, present, err := st.Get(otherLP, keys.TenantDefault, otherTarget, "z")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +535,7 @@ func TestPartition_RunProposal_TerminalWritesJERun(t *testing.T) {
 
 	// Journal entry at index 1 has retryable=false + value=ok.
 	journal := tables.JournalTable{S: p.cfg.Snapshotter.Store()}
-	got, err := journal.Read(id, 1)
+	got, err := journal.Read(keys.TenantDefault, id, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,7 +610,7 @@ func TestPartition_RunProposal_RetryableSchedulesTimer(t *testing.T) {
 
 	// Journal entry is JERun{retryable=true}.
 	journal := tables.JournalTable{S: p.cfg.Snapshotter.Store()}
-	got, err := journal.Read(id, 1)
+	got, err := journal.Read(keys.TenantDefault, id, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -688,7 +688,7 @@ func TestPartition_RunProposal_ExhaustedPolicyDemotesToTerminal(t *testing.T) {
 	}
 
 	journal := tables.JournalTable{S: p.cfg.Snapshotter.Store()}
-	got, err := journal.Read(id, 1)
+	got, err := journal.Read(keys.TenantDefault, id, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

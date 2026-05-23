@@ -197,7 +197,7 @@ func (p *Partition) Update(entries []statemachine.Entry) ([]statemachine.Entry, 
 		// follows the LP across shard moves.
 		envLP := lpFromCommand(env.GetCommand())
 		if d := env.GetHeader().GetDedup(); d != nil {
-			dup, err := dedup.IsDuplicate(envLP, d)
+			dup, err := dedup.IsDuplicate(envLP, keys.TenantDefault, d)
 			if err != nil {
 				return nil, fmt.Errorf("partition: dedup check: %w", err)
 			}
@@ -292,7 +292,7 @@ func (p *Partition) Update(entries []statemachine.Entry) ([]statemachine.Entry, 
 					}
 				}
 			}
-			if err := dedup.Record(batch, envLP, d); err != nil {
+			if err := dedup.Record(batch, envLP, keys.TenantDefault, d); err != nil {
 				return nil, fmt.Errorf("partition: record dedup: %w", err)
 			}
 		}
@@ -618,7 +618,7 @@ func (p *Partition) onInvoke(batch storage.Batch, cmd *enginev1.InvokeCommand, n
 	// hardened in a future improvement by writing a redirect status row.
 	if ik := cmd.GetIdempotencyKey(); ik != "" {
 		idemT := tables.IdempotencyTable{S: batch}
-		prior, ierr := idemT.Get(lp, target.GetServiceName(), target.GetHandlerName(), target.GetObjectKey(), ik)
+		prior, ierr := idemT.Get(lp, keys.TenantDefault, target.GetServiceName(), target.GetHandlerName(), target.GetObjectKey(), ik)
 		if ierr != nil {
 			return fmt.Errorf("onInvoke: idempotency lookup: %w", ierr)
 		}
@@ -631,7 +631,7 @@ func (p *Partition) onInvoke(batch storage.Batch, cmd *enginev1.InvokeCommand, n
 				"object_key", target.GetObjectKey())
 			return nil
 		}
-		if perr := idemT.Put(batch, lp, target.GetServiceName(), target.GetHandlerName(), target.GetObjectKey(), ik, id); perr != nil {
+		if perr := idemT.Put(batch, lp, keys.TenantDefault, target.GetServiceName(), target.GetHandlerName(), target.GetObjectKey(), ik, id); perr != nil {
 			return fmt.Errorf("onInvoke: idempotency record: %w", perr)
 		}
 	}
@@ -645,7 +645,7 @@ func (p *Partition) onInvoke(batch storage.Batch, cmd *enginev1.InvokeCommand, n
 	// time out, same shape as idempotency dedup).
 	if protocolv1.Kind(cmd.GetKind()) == protocolv1.Kind_KIND_WORKFLOW && target.GetObjectKey() != "" {
 		runT := tables.WorkflowRunTable{S: batch}
-		prior, rerr := runT.Get(lp, target.GetServiceName(), target.GetObjectKey())
+		prior, rerr := runT.Get(lp, keys.TenantDefault, target.GetServiceName(), target.GetObjectKey())
 		if rerr != nil {
 			return fmt.Errorf("onInvoke: workflow_run lookup: %w", rerr)
 		}
@@ -657,12 +657,12 @@ func (p *Partition) onInvoke(batch storage.Batch, cmd *enginev1.InvokeCommand, n
 				"workflow_key", target.GetObjectKey())
 			return nil
 		}
-		if perr := runT.Put(batch, lp, target.GetServiceName(), target.GetObjectKey(), id); perr != nil {
+		if perr := runT.Put(batch, lp, keys.TenantDefault, target.GetServiceName(), target.GetObjectKey(), id); perr != nil {
 			return fmt.Errorf("onInvoke: workflow_run record: %w", perr)
 		}
 	}
 
-	cur, err := inv.Get(id)
+	cur, err := inv.Get(keys.TenantDefault, id)
 	if err != nil {
 		return fmt.Errorf("onInvoke: load status: %w", err)
 	}
@@ -676,7 +676,7 @@ func (p *Partition) onInvoke(batch storage.Batch, cmd *enginev1.InvokeCommand, n
 		p.cfg.Log.Warn("partition: invalid Invoke transition", "err", err)
 		return nil
 	}
-	if err := inv.Put(batch, id, next); err != nil {
+	if err := inv.Put(batch, keys.TenantDefault, id, next); err != nil {
 		return fmt.Errorf("onInvoke: write status: %w", err)
 	}
 
@@ -686,7 +686,7 @@ func (p *Partition) onInvoke(batch storage.Batch, cmd *enginev1.InvokeCommand, n
 	// in that case.
 	if keyed && len(actions) > 0 {
 		klt := tables.KeyLeaseTable{S: batch}
-		curLease, lerr := klt.Get(lp, target.GetServiceName(), target.GetObjectKey())
+		curLease, lerr := klt.Get(lp, keys.TenantDefault, target.GetServiceName(), target.GetObjectKey())
 		if lerr != nil {
 			return fmt.Errorf("onInvoke: load key lease: %w", lerr)
 		}
@@ -697,7 +697,7 @@ func (p *Partition) onInvoke(batch storage.Batch, cmd *enginev1.InvokeCommand, n
 		if ferr := sm.Fire(vobjEnqueue, id); ferr != nil {
 			return fmt.Errorf("onInvoke: vobj fire: %w", ferr)
 		}
-		if perr := klt.Put(batch, lp, target.GetServiceName(), target.GetObjectKey(), nextLease); perr != nil {
+		if perr := klt.Put(batch, lp, keys.TenantDefault, target.GetServiceName(), target.GetObjectKey(), nextLease); perr != nil {
 			return fmt.Errorf("onInvoke: write key lease: %w", perr)
 		}
 		// Drop the original ActInvoke from transitionOnInvoke; the gate is
@@ -739,7 +739,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 	)
 	if id != nil {
 		var err error
-		cur, err = inv.Get(id)
+		cur, err = inv.Get(keys.TenantDefault, id)
 		if err != nil {
 			return fmt.Errorf("onInvokerEffect: load status: %w", err)
 		}
@@ -749,7 +749,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 	case *enginev1.InvokerEffect_JournalAppended:
 		entry := k.JournalAppended.GetEntry()
 		// Persist the journal entry first.
-		if err := journal.Append(batch, id, entry); err != nil {
+		if err := journal.Append(batch, keys.TenantDefault, id, entry); err != nil {
 			return fmt.Errorf("onInvokerEffect: journal append: %w", err)
 		}
 		if p.cfg.Metrics != nil {
@@ -758,7 +758,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 		// Per-entry-type side effects: timers, awakeable directory, outbox.
 		switch e := entry.GetEntry().(type) {
 		case *enginev1.JournalEntry_Sleep:
-			if err := timersT.Insert(batch, e.Sleep.GetFireAtMs(), id, entry.GetIndex()); err != nil {
+			if err := timersT.Insert(batch, keys.TenantDefault, e.Sleep.GetFireAtMs(), id, entry.GetIndex()); err != nil {
 				return fmt.Errorf("onInvokerEffect: timer insert: %w", err)
 			}
 			if isLeader {
@@ -775,7 +775,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 					"err", vErr, "id", akID)
 			} else {
 				dir := &enginev1.AwakeableEntry{Owner: id, EntryIndex: entry.GetIndex()}
-				if err := awakeT.Put(batch, akID, dir); err != nil {
+				if err := awakeT.Put(batch, keys.TenantDefault, akID, dir); err != nil {
 					return fmt.Errorf("onInvokerEffect: awakeable put: %w", err)
 				}
 			}
@@ -831,7 +831,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			// can serve GetState without a journal scan.
 			if t := statusTarget(cur); t != nil {
 				lpT := keys.LPFromPartitionKey(routing.PartitionKey(t.GetServiceName(), t.GetObjectKey()))
-				if err := (tables.StateTable{S: batch}).Set(batch, lpT, t, e.SetState.GetKey(), e.SetState.GetValue()); err != nil {
+				if err := (tables.StateTable{S: batch}).Set(batch, lpT, keys.TenantDefault, t, e.SetState.GetKey(), e.SetState.GetValue()); err != nil {
 					return fmt.Errorf("onInvokerEffect: state set: %w", err)
 				}
 			} else {
@@ -841,7 +841,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 		case *enginev1.JournalEntry_ClearState:
 			if t := statusTarget(cur); t != nil {
 				lpT := keys.LPFromPartitionKey(routing.PartitionKey(t.GetServiceName(), t.GetObjectKey()))
-				if err := (tables.StateTable{S: batch}).Clear(batch, lpT, t, e.ClearState.GetKey()); err != nil {
+				if err := (tables.StateTable{S: batch}).Clear(batch, lpT, keys.TenantDefault, t, e.ClearState.GetKey()); err != nil {
 					return fmt.Errorf("onInvokerEffect: state clear: %w", err)
 				}
 			} else {
@@ -856,7 +856,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			// still append the journal entry above for replay parity).
 			if t := statusTarget(cur); t != nil {
 				lpT := keys.LPFromPartitionKey(routing.PartitionKey(t.GetServiceName(), t.GetObjectKey()))
-				if err := (tables.StateTable{S: batch}).ClearObject(batch, lpT, t); err != nil {
+				if err := (tables.StateTable{S: batch}).ClearObject(batch, lpT, keys.TenantDefault, t); err != nil {
 					return fmt.Errorf("onInvokerEffect: state clear-all: %w", err)
 				}
 			} else {
@@ -877,7 +877,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			lpT := keys.LPFromPartitionKey(routing.PartitionKey(t.GetServiceName(), t.GetObjectKey()))
 			key := e.GetState.GetKey()
 			resultIdx := e.GetState.GetResultCompletionId()
-			val, present, gerr := (tables.StateTable{S: batch}).Get(lpT, t, key)
+			val, present, gerr := (tables.StateTable{S: batch}).Get(lpT, keys.TenantDefault, t, key)
 			if gerr != nil {
 				return fmt.Errorf("onInvokerEffect: state get: %w", gerr)
 			}
@@ -890,7 +890,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 					},
 				},
 			}
-			if err := journal.Append(batch, id, resultEntry); err != nil {
+			if err := journal.Append(batch, keys.TenantDefault, id, resultEntry); err != nil {
 				return fmt.Errorf("onInvokerEffect: journal append (get_state result): %w", err)
 			}
 			// Wake the suspended session. The current session is still
@@ -911,7 +911,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			resultIdx := e.GetStateKeys.GetResultCompletionId()
 			var keysOut []string
 			lpT := keys.LPFromPartitionKey(routing.PartitionKey(t.GetServiceName(), t.GetObjectKey()))
-			if err := (tables.StateTable{S: batch}).ScanObject(lpT, t, func(k string, _ []byte) error {
+			if err := (tables.StateTable{S: batch}).ScanObject(lpT, keys.TenantDefault, t, func(k string, _ []byte) error {
 				keysOut = append(keysOut, k)
 				return nil
 			}); err != nil {
@@ -923,7 +923,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 					GetStateKeysResult: &enginev1.JEGetStateKeysResult{Keys: keysOut},
 				},
 			}
-			if err := journal.Append(batch, id, resultEntry); err != nil {
+			if err := journal.Append(batch, keys.TenantDefault, id, resultEntry); err != nil {
 				return fmt.Errorf("onInvokerEffect: journal append (get_state_keys result): %w", err)
 			}
 			if isLeader {
@@ -960,7 +960,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			name := e.AwaitSignal.GetSignalName()
 			resultIdx := e.AwaitSignal.GetResultCompletionId()
 			inboxT := tables.SignalInboxTable{S: batch}
-			buffered, berr := inboxT.Get(id, name)
+			buffered, berr := inboxT.Get(keys.TenantDefault, id, name)
 			if berr != nil {
 				return fmt.Errorf("onInvokerEffect: signal inbox lookup: %w", berr)
 			}
@@ -974,10 +974,10 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 						},
 					},
 				}
-				if err := journal.Append(batch, id, resultEntry); err != nil {
+				if err := journal.Append(batch, keys.TenantDefault, id, resultEntry); err != nil {
 					return fmt.Errorf("onInvokerEffect: journal append (signal result inline): %w", err)
 				}
-				if err := inboxT.Delete(batch, id, name); err != nil {
+				if err := inboxT.Delete(batch, keys.TenantDefault, id, name); err != nil {
 					return fmt.Errorf("onInvokerEffect: inbox delete (consumed): %w", err)
 				}
 				// The current session emitted JEAwaitSignal expecting a
@@ -997,7 +997,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 					Owner:      id,
 					EntryIndex: entry.GetIndex(),
 				}
-				if err := (tables.SignalAwaiterTable{S: batch}).Put(batch, id, name, awaiter); err != nil {
+				if err := (tables.SignalAwaiterTable{S: batch}).Put(batch, keys.TenantDefault, id, name, awaiter); err != nil {
 					return fmt.Errorf("onInvokerEffect: awaiter put: %w", err)
 				}
 			}
@@ -1038,7 +1038,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			// differ from the calling invocation's LP (cross-workflow
 			// WorkflowPromise.Result()).
 			lpP := keys.LPFromPartitionKey(routing.PartitionKey(svc, wfKey))
-			pv, perr := (tables.PromiseTable{S: batch}).Get(lpP, svc, wfKey, name)
+			pv, perr := (tables.PromiseTable{S: batch}).Get(lpP, keys.TenantDefault, svc, wfKey, name)
 			if perr != nil {
 				return fmt.Errorf("onInvokerEffect: promise lookup: %w", perr)
 			}
@@ -1050,7 +1050,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 						PromiseResult: promiseResultFromValue(name, pv),
 					},
 				}
-				if err := journal.Append(batch, id, resultEntry); err != nil {
+				if err := journal.Append(batch, keys.TenantDefault, id, resultEntry); err != nil {
 					return fmt.Errorf("onInvokerEffect: journal append (promise result inline): %w", err)
 				}
 				if isLeader {
@@ -1061,7 +1061,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 					Owner:      id,
 					EntryIndex: entry.GetIndex(),
 				}
-				if err := (tables.PromiseAwaiterTable{S: batch}).PutForSlot(batch, lpP, svc, wfKey, name, awaiter); err != nil {
+				if err := (tables.PromiseAwaiterTable{S: batch}).PutForSlot(batch, lpP, keys.TenantDefault, svc, wfKey, name, awaiter); err != nil {
 					return fmt.Errorf("onInvokerEffect: promise awaiter put: %w", err)
 				}
 			}
@@ -1078,7 +1078,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			}
 			name := e.PeekPromise.GetName()
 			lpP := keys.LPFromPartitionKey(routing.PartitionKey(svc, wfKey))
-			pv, perr := (tables.PromiseTable{S: batch}).Get(lpP, svc, wfKey, name)
+			pv, perr := (tables.PromiseTable{S: batch}).Get(lpP, keys.TenantDefault, svc, wfKey, name)
 			if perr != nil {
 				return fmt.Errorf("onInvokerEffect: peek promise lookup: %w", perr)
 			}
@@ -1094,7 +1094,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 					e.PeekPromise.FailureMessage = rj.GetFailureMessage()
 				}
 			}
-			if err := journal.Append(batch, id, entry); err != nil {
+			if err := journal.Append(batch, keys.TenantDefault, id, entry); err != nil {
 				return fmt.Errorf("onInvokerEffect: journal append (peek stamp): %w", err)
 			}
 		case *enginev1.JournalEntry_CompletePromise:
@@ -1159,7 +1159,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			// Local apply path.
 			promiseT := tables.PromiseTable{S: batch}
 			lpP := keys.LPFromPartitionKey(routing.PartitionKey(svc, wfKey))
-			cur_pv, cerr := promiseT.Get(lpP, svc, wfKey, name)
+			cur_pv, cerr := promiseT.Get(lpP, keys.TenantDefault, svc, wfKey, name)
 			if cerr != nil {
 				return fmt.Errorf("onInvokerEffect: promise lookup (complete): %w", cerr)
 			}
@@ -1167,7 +1167,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			conflictMsg := "promise already completed"
 			if cur_pv == nil || cur_pv.GetPending() != nil {
 				newPV := buildPromiseValueFromJournal(e.CompletePromise, nowMs)
-				if err := promiseT.Put(batch, lpP, svc, wfKey, name, newPV); err != nil {
+				if err := promiseT.Put(batch, lpP, keys.TenantDefault, svc, wfKey, name, newPV); err != nil {
 					return fmt.Errorf("onInvokerEffect: promise put: %w", err)
 				}
 				succeeded = true
@@ -1186,7 +1186,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 					},
 				},
 			}
-			if err := journal.Append(batch, id, ack); err != nil {
+			if err := journal.Append(batch, keys.TenantDefault, id, ack); err != nil {
 				return fmt.Errorf("onInvokerEffect: journal append (promise complete ack): %w", err)
 			}
 			// Wake the resolver so it sees the ack on respawn.
@@ -1220,7 +1220,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 		// 1-based count of fn invocations completed for this slot.
 		priorAttempt := uint32(0)
 		priorFailures := []string(nil)
-		if prior, rerr := journal.Read(id, idx); rerr == nil {
+		if prior, rerr := journal.Read(keys.TenantDefault, id, idx); rerr == nil {
 			if pr := prior.GetRun(); pr != nil {
 				priorAttempt = pr.GetAttempt()
 				priorFailures = pr.GetAttemptFailures()
@@ -1240,7 +1240,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 		}
 
 		writeRun := func(retryable bool) error {
-			return journal.Append(batch, id, &enginev1.JournalEntry{
+			return journal.Append(batch, keys.TenantDefault, id, &enginev1.JournalEntry{
 				Index: idx,
 				Entry: &enginev1.JournalEntry_Run{Run: &enginev1.JERun{
 					Value:           rp.GetValue(),
@@ -1273,7 +1273,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 				return fmt.Errorf("onInvokerEffect: journal append (run exhausted): %w", err)
 			}
 			fireAtMs := nowMs + 1
-			if err := timersT.Insert(batch, fireAtMs, id, idx); err != nil {
+			if err := timersT.Insert(batch, keys.TenantDefault, fireAtMs, id, idx); err != nil {
 				return fmt.Errorf("onInvokerEffect: timer insert (run exhausted): %w", err)
 			}
 			if isLeader {
@@ -1296,7 +1296,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 		if err := writeRun(true); err != nil {
 			return fmt.Errorf("onInvokerEffect: journal append (run retry): %w", err)
 		}
-		if err := timersT.Insert(batch, fireAtMs, id, idx); err != nil {
+		if err := timersT.Insert(batch, keys.TenantDefault, fireAtMs, id, idx); err != nil {
 			return fmt.Errorf("onInvokerEffect: timer insert (run retry): %w", err)
 		}
 		if isLeader {
@@ -1311,7 +1311,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 		next, actions = cur, nil
 	case *enginev1.InvokerEffect_AwakeableResolved:
 		akID := k.AwakeableResolved.GetAwakeableId()
-		dir, dirErr := awakeT.Get(akID)
+		dir, dirErr := awakeT.Get(keys.TenantDefault, akID)
 		if dirErr != nil {
 			if errors.Is(dirErr, storage.ErrNotFound) {
 				p.cfg.Log.Warn("partition: AwakeableResolved for unknown id", "id", akID)
@@ -1332,10 +1332,10 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 				},
 			},
 		}
-		if err := journal.Append(batch, id, resultEntry); err != nil {
+		if err := journal.Append(batch, keys.TenantDefault, id, resultEntry); err != nil {
 			return fmt.Errorf("onInvokerEffect: journal append (awakeable result): %w", err)
 		}
-		if err := awakeT.Delete(batch, akID); err != nil {
+		if err := awakeT.Delete(batch, keys.TenantDefault, akID); err != nil {
 			return fmt.Errorf("onInvokerEffect: awakeable delete: %w", err)
 		}
 		next, actions, err = transitionOnAwakeableResolved(
@@ -1363,7 +1363,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 		}
 		klt := tables.KeyLeaseTable{S: batch}
 		sigLP := keys.LPFromPartitionKey(routing.PartitionKey(sigTarget.GetServiceName(), sigTarget.GetObjectKey()))
-		lease, lerr := klt.Get(sigLP, sigTarget.GetServiceName(), sigTarget.GetObjectKey())
+		lease, lerr := klt.Get(sigLP, keys.TenantDefault, sigTarget.GetServiceName(), sigTarget.GetObjectKey())
 		if lerr != nil {
 			return fmt.Errorf("onInvokerEffect: signal key-lease lookup: %w", lerr)
 		}
@@ -1375,7 +1375,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			return nil
 		}
 		activeID := lease.GetCurrentInvocation()
-		activeCur, gerr := inv.Get(activeID)
+		activeCur, gerr := inv.Get(keys.TenantDefault, activeID)
 		if gerr != nil {
 			return fmt.Errorf("onInvokerEffect: signal load active status: %w", gerr)
 		}
@@ -1389,7 +1389,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 				return cerr
 			}
 			if cnext != nil {
-				if perr := inv.Put(batch, activeID, cnext); perr != nil {
+				if perr := inv.Put(batch, keys.TenantDefault, activeID, cnext); perr != nil {
 					return fmt.Errorf("onInvokerEffect: write status (cancel): %w", perr)
 				}
 			}
@@ -1408,7 +1408,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 		payload := k.SignalDelivered.GetPayload()
 		awaiterT := tables.SignalAwaiterTable{S: batch}
 		inboxT := tables.SignalInboxTable{S: batch}
-		awaiter, aerr := awaiterT.Get(activeID, sigName)
+		awaiter, aerr := awaiterT.Get(keys.TenantDefault, activeID, sigName)
 		if aerr != nil {
 			return fmt.Errorf("onInvokerEffect: signal awaiter lookup: %w", aerr)
 		}
@@ -1426,10 +1426,10 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 					},
 				},
 			}
-			if err := journal.Append(batch, activeID, resultEntry); err != nil {
+			if err := journal.Append(batch, keys.TenantDefault, activeID, resultEntry); err != nil {
 				return fmt.Errorf("onInvokerEffect: journal append (signal result stitch): %w", err)
 			}
-			if err := awaiterT.Delete(batch, activeID, sigName); err != nil {
+			if err := awaiterT.Delete(batch, keys.TenantDefault, activeID, sigName); err != nil {
 				return fmt.Errorf("onInvokerEffect: awaiter delete: %w", err)
 			}
 		} else {
@@ -1440,7 +1440,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 				Payload:       payload,
 				DeliveredAtMs: nowMs,
 			}
-			if err := inboxT.Put(batch, activeID, sigName, entry); err != nil {
+			if err := inboxT.Put(batch, keys.TenantDefault, activeID, sigName, entry); err != nil {
 				return fmt.Errorf("onInvokerEffect: inbox put: %w", err)
 			}
 		}
@@ -1482,7 +1482,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 		}
 		promiseT := tables.PromiseTable{S: batch}
 		lpP := keys.LPFromPartitionKey(routing.PartitionKey(svc, wk))
-		cur_pv, perr := promiseT.Get(lpP, svc, wk, name)
+		cur_pv, perr := promiseT.Get(lpP, keys.TenantDefault, svc, wk, name)
 		if perr != nil {
 			return fmt.Errorf("onInvokerEffect: promise lookup (ingress): %w", perr)
 		}
@@ -1490,7 +1490,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 		conflictMsg := "promise already completed"
 		if cur_pv == nil || cur_pv.GetPending() != nil {
 			newPV := buildPromiseValueFromEffect(pc, nowMs)
-			if err := promiseT.Put(batch, lpP, svc, wk, name, newPV); err != nil {
+			if err := promiseT.Put(batch, lpP, keys.TenantDefault, svc, wk, name, newPV); err != nil {
 				return fmt.Errorf("onInvokerEffect: promise put (ingress): %w", err)
 			}
 			succeeded = true
@@ -1536,7 +1536,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 		return nil
 	}
 	if next != nil {
-		if err := inv.Put(batch, id, next); err != nil {
+		if err := inv.Put(batch, keys.TenantDefault, id, next); err != nil {
 			return fmt.Errorf("onInvokerEffect: write status: %w", err)
 		}
 	}
@@ -1613,14 +1613,14 @@ func (p *Partition) applyTerminalCompletion(
 	}
 	if completedTarget != nil {
 		var pending []uint64
-		if serr := timersT.ScanByInvocation(id, func(fireAt uint64) error {
+		if serr := timersT.ScanByInvocation(keys.TenantDefault, id, func(fireAt uint64) error {
 			pending = append(pending, fireAt)
 			return nil
 		}); serr != nil {
 			return next, actions, fmt.Errorf("applyTerminalCompletion: scan timers: %w", serr)
 		}
 		for _, fireAt := range pending {
-			if derr := timersT.Delete(batch, fireAt, id); derr != nil {
+			if derr := timersT.Delete(batch, keys.TenantDefault, fireAt, id); derr != nil {
 				return next, actions, fmt.Errorf("applyTerminalCompletion: delete timer: %w", derr)
 			}
 			if isLeader {
@@ -1636,7 +1636,7 @@ func (p *Partition) applyTerminalCompletion(
 	if completedTarget != nil && completedTarget.GetObjectKey() != "" {
 		runT := tables.WorkflowRunTable{S: batch}
 		runLP := keys.LPFromPartitionKey(routing.PartitionKey(completedTarget.GetServiceName(), completedTarget.GetObjectKey()))
-		runRow, rerr := runT.Get(runLP, completedTarget.GetServiceName(), completedTarget.GetObjectKey())
+		runRow, rerr := runT.Get(runLP, keys.TenantDefault, completedTarget.GetServiceName(), completedTarget.GetObjectKey())
 		if rerr != nil {
 			return next, actions, fmt.Errorf("applyTerminalCompletion: workflow_run lookup: %w", rerr)
 		}
@@ -1691,7 +1691,7 @@ func (p *Partition) applyPromiseAwaiterScan(
 	awaiterT := tables.PromiseAwaiterTable{S: batch}
 	lpP := keys.LPFromPartitionKey(routing.PartitionKey(svc, workflowKey))
 	var awaiters []*enginev1.PromiseAwaiter
-	if err := awaiterT.ScanForName(lpP, svc, workflowKey, name, func(a *enginev1.PromiseAwaiter) error {
+	if err := awaiterT.ScanForName(lpP, keys.TenantDefault, svc, workflowKey, name, func(a *enginev1.PromiseAwaiter) error {
 		awaiters = append(awaiters, proto.Clone(a).(*enginev1.PromiseAwaiter))
 		return nil
 	}); err != nil {
@@ -1706,10 +1706,10 @@ func (p *Partition) applyPromiseAwaiterScan(
 				PromiseResult: promiseResultFromValue(name, newPV),
 			},
 		}
-		if err := journal.Append(batch, a.GetOwner(), resultEntry); err != nil {
+		if err := journal.Append(batch, keys.TenantDefault, a.GetOwner(), resultEntry); err != nil {
 			return fmt.Errorf("onInvokerEffect: journal append (promise result stitch): %w", err)
 		}
-		if err := awaiterT.DeleteForSlot(batch, lpP, svc, workflowKey, name, a.GetEntryIndex()); err != nil {
+		if err := awaiterT.DeleteForSlot(batch, lpP, keys.TenantDefault, svc, workflowKey, name, a.GetEntryIndex()); err != nil {
 			return fmt.Errorf("onInvokerEffect: promise awaiter delete: %w", err)
 		}
 		if !runFSM {
@@ -1718,7 +1718,7 @@ func (p *Partition) applyPromiseAwaiterScan(
 			}
 			continue
 		}
-		ownerCur, gerr := inv.Get(a.GetOwner())
+		ownerCur, gerr := inv.Get(keys.TenantDefault, a.GetOwner())
 		if gerr != nil {
 			return fmt.Errorf("onInvokerEffect: load awaiter status: %w", gerr)
 		}
@@ -1729,7 +1729,7 @@ func (p *Partition) applyPromiseAwaiterScan(
 			continue
 		}
 		if ownerNext != nil {
-			if err := inv.Put(batch, a.GetOwner(), ownerNext); err != nil {
+			if err := inv.Put(batch, keys.TenantDefault, a.GetOwner(), ownerNext); err != nil {
 				return fmt.Errorf("onInvokerEffect: write awaiter status: %w", err)
 			}
 		}
@@ -1798,7 +1798,7 @@ func (p *Partition) applyCallResultToParent(
 	failureMessage string,
 	nowMs uint64,
 ) ([]Action, error) {
-	parentStatus, err := inv.Get(parentID)
+	parentStatus, err := inv.Get(keys.TenantDefault, parentID)
 	if err != nil {
 		return nil, fmt.Errorf("applyCallResultToParent: load parent status: %w", err)
 	}
@@ -1813,7 +1813,7 @@ func (p *Partition) applyCallResultToParent(
 			},
 		},
 	}
-	if err := journal.Append(batch, parentID, resultEntry); err != nil {
+	if err := journal.Append(batch, keys.TenantDefault, parentID, resultEntry); err != nil {
 		return nil, fmt.Errorf("applyCallResultToParent: journal append: %w", err)
 	}
 	parentNext, parentActions, terr := transitionOnCallResultDelivered(
@@ -1825,7 +1825,7 @@ func (p *Partition) applyCallResultToParent(
 		return nil, nil
 	}
 	if parentNext != nil {
-		if err := inv.Put(batch, parentID, parentNext); err != nil {
+		if err := inv.Put(batch, keys.TenantDefault, parentID, parentNext); err != nil {
 			return nil, fmt.Errorf("applyCallResultToParent: persist parent status: %w", err)
 		}
 	}
@@ -1911,7 +1911,7 @@ func (p *Partition) onPromiseCompletionAck(
 	if err := p.checkLPFreeze(batch, callerID.GetPartitionKey()); err != nil {
 		return err
 	}
-	cur, err := inv.Get(callerID)
+	cur, err := inv.Get(keys.TenantDefault, callerID)
 	if err != nil {
 		return fmt.Errorf("onPromiseCompletionAck: load status: %w", err)
 	}
@@ -1925,7 +1925,7 @@ func (p *Partition) onPromiseCompletionAck(
 			},
 		},
 	}
-	if err := journal.Append(batch, callerID, entry); err != nil {
+	if err := journal.Append(batch, keys.TenantDefault, callerID, entry); err != nil {
 		return fmt.Errorf("onPromiseCompletionAck: journal append: %w", err)
 	}
 	next, actions, terr := transitionOnJournalAppend(callerID, cur, &enginev1.JournalEntryAppended{Entry: entry}, nowMs)
@@ -1934,7 +1934,7 @@ func (p *Partition) onPromiseCompletionAck(
 		return nil
 	}
 	if next != nil {
-		if err := inv.Put(batch, callerID, next); err != nil {
+		if err := inv.Put(batch, keys.TenantDefault, callerID, next); err != nil {
 			return fmt.Errorf("onPromiseCompletionAck: write status: %w", err)
 		}
 	}
@@ -1988,7 +1988,7 @@ func (p *Partition) onReapWorkflow(
 	}
 	runT := tables.WorkflowRunTable{S: batch}
 	lpW := keys.LPFromPartitionKey(routing.PartitionKey(svc, wfKey))
-	invID, rerr := runT.Get(lpW, svc, wfKey)
+	invID, rerr := runT.Get(lpW, keys.TenantDefault, svc, wfKey)
 	if rerr != nil {
 		return fmt.Errorf("onReapWorkflow: workflow_run lookup: %w", rerr)
 	}
@@ -1997,7 +1997,7 @@ func (p *Partition) onReapWorkflow(
 		// ReapWorkflow proposal). No-op.
 		return nil
 	}
-	cur, gerr := inv.Get(invID)
+	cur, gerr := inv.Get(keys.TenantDefault, invID)
 	if gerr != nil {
 		return fmt.Errorf("onReapWorkflow: load status: %w", gerr)
 	}
@@ -2010,29 +2010,29 @@ func (p *Partition) onReapWorkflow(
 		return nil
 	}
 	// Range-delete every per-key namespace.
-	if err := (tables.StateTable{S: batch}).ClearObject(batch, lpW, &enginev1.InvocationTarget{ServiceName: svc, ObjectKey: wfKey}); err != nil {
+	if err := (tables.StateTable{S: batch}).ClearObject(batch, lpW, keys.TenantDefault, &enginev1.InvocationTarget{ServiceName: svc, ObjectKey: wfKey}); err != nil {
 		return fmt.Errorf("onReapWorkflow: state clear-object: %w", err)
 	}
-	if err := (tables.PromiseTable{S: batch}).DeleteAllForWorkflow(batch, lpW, svc, wfKey); err != nil {
+	if err := (tables.PromiseTable{S: batch}).DeleteAllForWorkflow(batch, lpW, keys.TenantDefault, svc, wfKey); err != nil {
 		return fmt.Errorf("onReapWorkflow: promise delete-all: %w", err)
 	}
-	if err := (tables.PromiseAwaiterTable{S: batch}).DeleteAllForWorkflow(batch, lpW, svc, wfKey); err != nil {
+	if err := (tables.PromiseAwaiterTable{S: batch}).DeleteAllForWorkflow(batch, lpW, keys.TenantDefault, svc, wfKey); err != nil {
 		return fmt.Errorf("onReapWorkflow: promise_awaiter delete-all: %w", err)
 	}
-	if err := runT.Delete(batch, lpW, svc, wfKey); err != nil {
+	if err := runT.Delete(batch, lpW, keys.TenantDefault, svc, wfKey); err != nil {
 		return fmt.Errorf("onReapWorkflow: workflow_run delete: %w", err)
 	}
 	// Per-invocation rows: subsume onPurge for this id.
-	if err := inv.Delete(batch, invID); err != nil {
+	if err := inv.Delete(batch, keys.TenantDefault, invID); err != nil {
 		return fmt.Errorf("onReapWorkflow: inv delete: %w", err)
 	}
-	if err := journal.DeletePrefix(batch, invID); err != nil {
+	if err := journal.DeletePrefix(batch, keys.TenantDefault, invID); err != nil {
 		return fmt.Errorf("onReapWorkflow: journal delete-prefix: %w", err)
 	}
-	if err := (tables.SignalInboxTable{S: batch}).DeleteAllForInvocation(batch, invID); err != nil {
+	if err := (tables.SignalInboxTable{S: batch}).DeleteAllForInvocation(batch, keys.TenantDefault, invID); err != nil {
 		return fmt.Errorf("onReapWorkflow: signal_inbox delete-all: %w", err)
 	}
-	if err := (tables.SignalAwaiterTable{S: batch}).DeleteAllForInvocation(batch, invID); err != nil {
+	if err := (tables.SignalAwaiterTable{S: batch}).DeleteAllForInvocation(batch, keys.TenantDefault, invID); err != nil {
 		return fmt.Errorf("onReapWorkflow: signal_awaiter delete-all: %w", err)
 	}
 	return nil
@@ -2041,7 +2041,7 @@ func (p *Partition) onReapWorkflow(
 func (p *Partition) releaseKeyLease(batch storage.Batch, target *enginev1.InvocationTarget) ([]Action, error) {
 	klt := tables.KeyLeaseTable{S: batch}
 	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
-	cur, err := klt.Get(lp, target.GetServiceName(), target.GetObjectKey())
+	cur, err := klt.Get(lp, keys.TenantDefault, target.GetServiceName(), target.GetObjectKey())
 	if err != nil {
 		return nil, fmt.Errorf("releaseKeyLease: load: %w", err)
 	}
@@ -2058,7 +2058,7 @@ func (p *Partition) releaseKeyLease(batch storage.Batch, target *enginev1.Invoca
 	if ferr := sm.Fire(vobjComplete); ferr != nil {
 		return nil, fmt.Errorf("releaseKeyLease: vobj fire: %w", ferr)
 	}
-	if perr := klt.Put(batch, lp, target.GetServiceName(), target.GetObjectKey(), next); perr != nil {
+	if perr := klt.Put(batch, lp, keys.TenantDefault, target.GetServiceName(), target.GetObjectKey(), next); perr != nil {
 		return nil, fmt.Errorf("releaseKeyLease: write: %w", perr)
 	}
 	return leaseActs, nil
@@ -2181,7 +2181,7 @@ func (p *Partition) onTimerFired(batch storage.Batch, cmd *enginev1.TimerFired, 
 	if err := p.checkLPFreeze(batch, id.GetPartitionKey()); err != nil {
 		return err
 	}
-	cur, err := inv.Get(id)
+	cur, err := inv.Get(keys.TenantDefault, id)
 	if err != nil {
 		return fmt.Errorf("onTimerFired: load status: %w", err)
 	}
@@ -2192,7 +2192,7 @@ func (p *Partition) onTimerFired(batch storage.Batch, cmd *enginev1.TimerFired, 
 
 	// Delete the timer row regardless of FSM outcome — even an invalid
 	// transition must clear the row so we don't re-fire forever.
-	if delErr := timers.Delete(batch, cmd.GetFireAtMs(), id); delErr != nil {
+	if delErr := timers.Delete(batch, keys.TenantDefault, cmd.GetFireAtMs(), id); delErr != nil {
 		return fmt.Errorf("onTimerFired: delete timer: %w", delErr)
 	}
 
@@ -2221,11 +2221,11 @@ func (p *Partition) onTimerFired(batch storage.Batch, cmd *enginev1.TimerFired, 
 	// If batching ever fuses appends with TimerFired in one batch this
 	// read needs to consult the in-flight batch first.
 	journal := tables.JournalTable{S: batch}
-	anchor, anchorErr := journal.Read(id, cmd.GetSleepIndex())
+	anchor, anchorErr := journal.Read(keys.TenantDefault, id, cmd.GetSleepIndex())
 	if anchorErr == nil {
 		if _, isRun := anchor.GetEntry().(*enginev1.JournalEntry_Run); isRun {
 			if next != nil {
-				if err := inv.Put(batch, id, next); err != nil {
+				if err := inv.Put(batch, keys.TenantDefault, id, next); err != nil {
 					return fmt.Errorf("onTimerFired: write status: %w", err)
 				}
 			}
@@ -2245,12 +2245,12 @@ func (p *Partition) onTimerFired(batch storage.Batch, cmd *enginev1.TimerFired, 
 			SleepResult: &enginev1.JESleepResult{SleepIndex: cmd.GetSleepIndex()},
 		},
 	}
-	if err := journal.Append(batch, id, je); err != nil {
+	if err := journal.Append(batch, keys.TenantDefault, id, je); err != nil {
 		return fmt.Errorf("onTimerFired: append SleepResult: %w", err)
 	}
 
 	if next != nil {
-		if err := inv.Put(batch, id, next); err != nil {
+		if err := inv.Put(batch, keys.TenantDefault, id, next); err != nil {
 			return fmt.Errorf("onTimerFired: write status: %w", err)
 		}
 	}
@@ -2272,7 +2272,7 @@ func (p *Partition) onPurge(
 	if err := p.checkLPFreeze(batch, id.GetPartitionKey()); err != nil {
 		return err
 	}
-	cur, err := inv.Get(id)
+	cur, err := inv.Get(keys.TenantDefault, id)
 	if err != nil {
 		return fmt.Errorf("onPurge: load status: %w", err)
 	}
@@ -2280,20 +2280,20 @@ func (p *Partition) onPurge(
 		p.cfg.Log.Warn("partition: invalid Purge transition", "err", err)
 		return nil
 	}
-	if err := inv.Delete(batch, id); err != nil {
+	if err := inv.Delete(batch, keys.TenantDefault, id); err != nil {
 		return fmt.Errorf("onPurge: delete inv: %w", err)
 	}
-	if err := journal.DeletePrefix(batch, id); err != nil {
+	if err := journal.DeletePrefix(batch, keys.TenantDefault, id); err != nil {
 		return fmt.Errorf("onPurge: delete journal: %w", err)
 	}
 	// Signal inbox/awaiter rows live keyed by inv_id but aren't reaped
 	// by the Completed transition (the inbox could legitimately carry
 	// signals that arrived between Suspend and Complete). Purge is the
 	// definitive cleanup point.
-	if err := (tables.SignalInboxTable{S: batch}).DeleteAllForInvocation(batch, id); err != nil {
+	if err := (tables.SignalInboxTable{S: batch}).DeleteAllForInvocation(batch, keys.TenantDefault, id); err != nil {
 		return fmt.Errorf("onPurge: signal inbox cleanup: %w", err)
 	}
-	if err := (tables.SignalAwaiterTable{S: batch}).DeleteAllForInvocation(batch, id); err != nil {
+	if err := (tables.SignalAwaiterTable{S: batch}).DeleteAllForInvocation(batch, keys.TenantDefault, id); err != nil {
 		return fmt.Errorf("onPurge: signal awaiter cleanup: %w", err)
 	}
 	// State rows (state/<service>/<key>/...) are *not* deleted here.
@@ -2387,7 +2387,7 @@ func (p *Partition) Lookup(query any) (any, error) {
 	}
 	switch q := query.(type) {
 	case LookupInvocation:
-		return (tables.InvocationTable{S: store}).Get(q.ID)
+		return (tables.InvocationTable{S: store}).Get(keys.TenantDefault, q.ID)
 	case LookupAppliedIndex:
 		m, err := (tables.MetaTable{S: store}).Get()
 		if err != nil {
@@ -2395,20 +2395,20 @@ func (p *Partition) Lookup(query any) (any, error) {
 		}
 		return m.GetAppliedIndex(), nil
 	case LookupAwakeable:
-		return (tables.AwakeableTable{S: store}).Get(q.ID)
+		return (tables.AwakeableTable{S: store}).Get(keys.TenantDefault, q.ID)
 	case LookupState:
 		lp := keys.LPFromPartitionKey(routing.PartitionKey(q.Target.GetServiceName(), q.Target.GetObjectKey()))
-		v, present, err := (tables.StateTable{S: store}).Get(lp, q.Target, q.Key)
+		v, present, err := (tables.StateTable{S: store}).Get(lp, keys.TenantDefault, q.Target, q.Key)
 		if err != nil {
 			return nil, err
 		}
 		return StateLookupResult{Value: v, Present: present}, nil
 	case LookupIdempotency:
 		lp := keys.LPFromPartitionKey(routing.PartitionKey(q.Service, q.ObjectKey))
-		return (tables.IdempotencyTable{S: store}).Get(lp, q.Service, q.Handler, q.ObjectKey, q.IdempotencyKey)
+		return (tables.IdempotencyTable{S: store}).Get(lp, keys.TenantDefault, q.Service, q.Handler, q.ObjectKey, q.IdempotencyKey)
 	case LookupWorkflowRun:
 		lp := keys.LPFromPartitionKey(routing.PartitionKey(q.Service, q.WorkflowKey))
-		return (tables.WorkflowRunTable{S: store}).Get(lp, q.Service, q.WorkflowKey)
+		return (tables.WorkflowRunTable{S: store}).Get(lp, keys.TenantDefault, q.Service, q.WorkflowKey)
 	default:
 		return nil, fmt.Errorf("partition: unknown lookup type %T", query)
 	}

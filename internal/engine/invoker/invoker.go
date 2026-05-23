@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -252,7 +253,7 @@ func (i *Invoker) installSessionLocked(id *enginev1.InvocationId, target *engine
 		return nil, false
 	}
 
-	status, err := i.invocationTable.Get(id)
+	status, err := i.invocationTable.Get(keys.TenantDefault, id)
 	if err != nil {
 		i.log.Warn("invoker: load status for dispatch failed",
 			"id", invocationIDString(id), "err", err)
@@ -349,7 +350,7 @@ func (i *Invoker) ResumeNonTerminal(ctx context.Context, table tables.Invocation
 	}
 	i.mu.Unlock()
 
-	return table.ScanAll(ctx, func(id *enginev1.InvocationId, s *enginev1.InvocationStatus) error {
+	return table.ScanAll(ctx, func(_ uint32, id *enginev1.InvocationId, s *enginev1.InvocationStatus) error {
 		var target *enginev1.InvocationTarget
 		switch st := s.GetStatus().(type) {
 		case *enginev1.InvocationStatus_Scheduled:

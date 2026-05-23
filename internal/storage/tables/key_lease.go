@@ -20,9 +20,9 @@ type KeyLeaseTable struct{ S storage.Reader }
 
 // Get loads the lease row. Returns (nil, nil) when absent — callers
 // treat that as IDLE with an empty queue. "Optional lookup" convention.
-func (t KeyLeaseTable) Get(lp uint32, service, objectKey string) (*enginev1.KeyLeaseStatus, error) {
+func (t KeyLeaseTable) Get(lp, tenant uint32, service, objectKey string) (*enginev1.KeyLeaseStatus, error) {
 	var s enginev1.KeyLeaseStatus
-	err := getProto(t.S, keys.KeyLeaseKey(lp, service, objectKey), &s)
+	err := getProto(t.S, keys.KeyLeaseKey(lp, tenant, service, objectKey), &s)
 	if errors.Is(err, storage.ErrNotFound) {
 		return nil, nil
 	}
@@ -33,6 +33,6 @@ func (t KeyLeaseTable) Get(lp uint32, service, objectKey string) (*enginev1.KeyL
 }
 
 // Put writes the lease row into the batch.
-func (t KeyLeaseTable) Put(b storage.Batch, lp uint32, service, objectKey string, s *enginev1.KeyLeaseStatus) error {
-	return putProto(b, keys.KeyLeaseKey(lp, service, objectKey), s)
+func (t KeyLeaseTable) Put(b storage.Batch, lp, tenant uint32, service, objectKey string, s *enginev1.KeyLeaseStatus) error {
+	return putProto(b, keys.KeyLeaseKey(lp, tenant, service, objectKey), s)
 }

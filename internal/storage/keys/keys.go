@@ -2,28 +2,33 @@
 // state store. Because each partition has its own Pebble DB, keys do NOT carry
 // a partition_id prefix — isolation is at the DB level.
 //
-// Most namespaces carry a 4-byte big-endian Logical Partition (LP) id
-// immediately after the namespace string. LP is `partition_key % LPCount`;
-// it lets a per-LP range scan resolve to a bounded iterator
-// `[ns/<lp>, ns/<lp+1>)` without filter overhead. This is prerequisite shape
-// for the cross-shard LP transfer protocol.
+// LP-prefixed namespaces carry a 4-byte big-endian Logical Partition (LP) id
+// immediately after the namespace string, followed by a 4-byte big-endian
+// tenant id. LP is `partition_key % LPCount`; tenant is the multi-tenant
+// owner (tenant=0 is the reserved default-tenant sentinel). The (lp, tenant)
+// pair lets:
+//   - LP-transfer range-scan `[ns/<lp>, ns/<lp+1>)` capture every tenant on
+//     one LP without filter overhead (the per-LP scan is byte-prefix wide
+//     enough to span all tenants on that LP).
+//   - Per-tenant code scope to `[ns/<lp>/<tenant>, ns/<lp>/<tenant+1>)` when
+//     a consumer only wants one tenant's rows on this LP.
 //
 // LP-prefixed namespaces (LP source in parentheses):
 //
-//	inv/<lp:4><24-byte inv_id>                                       -> InvocationStatus    (id.PartitionKey)
-//	journal/<lp:4><24-byte inv_id>/<4-byte BE u32 idx>               -> JournalEntry        (id.PartitionKey)
-//	timer_idx/<lp:4><24-byte id>/<8-byte BE fire_at_ms>              -> "" (secondary)     (id.PartitionKey)
-//	state/<lp:4><service>/<obj_key>/<state_key>                      -> bytes              (svc, obj)
-//	awakeable/<lp:4><26-byte id>                                     -> AwakeableEntry     (AwakeableOwnerPartitionKey)
-//	keylease/<lp:4><service>/<obj_key>                               -> KeyLeaseStatus     (svc, obj)
-//	idempotency/<lp:4><32-byte sha256>                               -> InvocationId       (svc, obj_key)
-//	signal_inbox/<lp:4><24-byte inv_id>/<name>                       -> SignalInboxEntry   (id.PartitionKey)
-//	signal_awaiter/<lp:4><24-byte inv_id>/<name>                     -> SignalAwaiter      (id.PartitionKey)
-//	workflow_run/<lp:4><service>/<workflow_key>                      -> InvocationId       (svc, wf_key)
-//	promise/<lp:4><service>/<workflow_key>/<name>                    -> PromiseValue       (svc, wf_key)
-//	promise_awaiter/<lp:4><service>/<workflow_key>/<name>/<idx:4>    -> PromiseAwaiter     (svc, wf_key)
-//	timer_lp/<lp:4><8-byte BE fire_at_ms>/<24-byte id>               -> uint32 sleep_index (id.PartitionKey)
-//	dedup/arbitrary/<lp:4><producer_id>/<8-byte BE seq>              -> DedupEntry         (command kind)
+//	inv/<lp:4><tenant:4><24-byte inv_id>                                       -> InvocationStatus    (id.PartitionKey)
+//	journal/<lp:4><tenant:4><24-byte inv_id>/<4-byte BE u32 idx>               -> JournalEntry        (id.PartitionKey)
+//	timer_idx/<lp:4><tenant:4><24-byte id>/<8-byte BE fire_at_ms>              -> "" (secondary)     (id.PartitionKey)
+//	state/<lp:4><tenant:4><service>/<obj_key>/<state_key>                      -> bytes              (svc, obj)
+//	awakeable/<lp:4><tenant:4><26-byte id>                                     -> AwakeableEntry     (AwakeableOwnerPartitionKey)
+//	keylease/<lp:4><tenant:4><service>/<obj_key>                               -> KeyLeaseStatus     (svc, obj)
+//	idempotency/<lp:4><tenant:4><32-byte sha256>                               -> InvocationId       (svc, obj_key)
+//	signal_inbox/<lp:4><tenant:4><24-byte inv_id>/<name>                       -> SignalInboxEntry   (id.PartitionKey)
+//	signal_awaiter/<lp:4><tenant:4><24-byte inv_id>/<name>                     -> SignalAwaiter      (id.PartitionKey)
+//	workflow_run/<lp:4><tenant:4><service>/<workflow_key>                      -> InvocationId       (svc, wf_key)
+//	promise/<lp:4><tenant:4><service>/<workflow_key>/<name>                    -> PromiseValue       (svc, wf_key)
+//	promise_awaiter/<lp:4><tenant:4><service>/<workflow_key>/<name>/<idx:4>    -> PromiseAwaiter     (svc, wf_key)
+//	timer_lp/<lp:4><tenant:4><8-byte BE fire_at_ms>/<24-byte id>               -> uint32 sleep_index (id.PartitionKey)
+//	dedup/arbitrary/<lp:4><tenant:4><producer_id>/<8-byte BE seq>              -> DedupEntry         (command kind)
 //
 // LP-agnostic namespaces (singletons, ordering-sensitive, or shard-scoped):
 //
@@ -79,6 +84,15 @@ const (
 	LPCount uint32 = 4096
 	// LPLen is the byte width of the encoded LP field.
 	LPLen = 4
+	// TenantLen is the byte width of the encoded tenant id, which sits
+	// immediately after the LP field in every LP-prefixed key.
+	TenantLen = 4
+	// TenantDefault is the reserved default-tenant sentinel. Anonymous
+	// traffic, internal probes, single-tenant deployments, and pre-PR-4
+	// call sites all key under this id. It is a real, valid tenant_id;
+	// records keyed under it are stored, read, and shipped by LP-transfer
+	// the same as any other tenant.
+	TenantDefault uint32 = 0
 	// LPNoLP is the sentinel LP for arbitrary dedup rows that don't belong
 	// to any real LP — today only the OutboxAck command, which is shard-
 	// internal and LP-agnostic. The sentinel is chosen so it can never
@@ -127,6 +141,14 @@ func appendLP(out []byte, lp uint32) []byte {
 	return append(out, b[:]...)
 }
 
+// appendTenant appends the 4-byte big-endian encoding of tenant to out.
+// Sits immediately after appendLP in every LP-prefixed key constructor.
+func appendTenant(out []byte, tenant uint32) []byte {
+	var b [TenantLen]byte
+	binary.BigEndian.PutUint32(b[:], tenant)
+	return append(out, b[:]...)
+}
+
 // EncodeInvocationID returns the canonical 24-byte raw form of an InvocationId.
 func EncodeInvocationID(id *enginev1.InvocationId) ([]byte, error) {
 	if len(id.GetUuid()) != 16 {
@@ -160,16 +182,17 @@ func MetaKey() []byte { return []byte(metaPrefix) }
 // to open a DB written by an incompatible binary.
 func FormatVersionKey() []byte { return []byte(formatPrefix) }
 
-// InvocationKey returns inv/<lp:4><24-byte id>.
-func InvocationKey(id *enginev1.InvocationId) ([]byte, error) {
+// InvocationKey returns inv/<lp:4><tenant:4><24-byte id>.
+func InvocationKey(tenant uint32, id *enginev1.InvocationId) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(invPrefix)+LPLen+invocationIDLen)
+	out := make([]byte, 0, len(invPrefix)+LPLen+TenantLen+invocationIDLen)
 	out = append(out, invPrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	return append(out, raw...), nil
 }
 
@@ -182,32 +205,34 @@ func InvocationLPPrefix(lp uint32) []byte {
 	return appendLP(out, lp)
 }
 
-// JournalPrefix returns journal/<lp:4><24-byte id>/.
+// JournalPrefix returns journal/<lp:4><tenant:4><24-byte id>/.
 //
 // Use with PrefixUpperBound to scan every entry for an invocation.
-func JournalPrefix(id *enginev1.InvocationId) ([]byte, error) {
+func JournalPrefix(tenant uint32, id *enginev1.InvocationId) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(journalPrefix)+LPLen+invocationIDLen+1)
+	out := make([]byte, 0, len(journalPrefix)+LPLen+TenantLen+invocationIDLen+1)
 	out = append(out, journalPrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	out = append(out, raw...)
 	return append(out, '/'), nil
 }
 
-// JournalKey returns journal/<lp:4><24-byte id>/<4-byte BE index>.
-func JournalKey(id *enginev1.InvocationId, index uint32) ([]byte, error) {
+// JournalKey returns journal/<lp:4><tenant:4><24-byte id>/<4-byte BE index>.
+func JournalKey(tenant uint32, id *enginev1.InvocationId, index uint32) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(journalPrefix)+LPLen+invocationIDLen+1+4)
+	out := make([]byte, 0, len(journalPrefix)+LPLen+TenantLen+invocationIDLen+1+4)
 	out = append(out, journalPrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	out = append(out, raw...)
 	out = append(out, '/')
 	var idxBuf [4]byte
@@ -248,18 +273,19 @@ func DecodeTimerKey(key []byte) (uint64, *enginev1.InvocationId, error) {
 	return fireAt, id, err
 }
 
-// TimerLPKey returns timer_lp/<lp:4><8-byte BE fire_at>/<24-byte id>.
+// TimerLPKey returns timer_lp/<lp:4><tenant:4><8-byte BE fire_at>/<24-byte id>.
 // Pair-written with TimerKey so the LP transfer protocol can extract
 // every timer in an LP via a single bounded range scan. The value mirrors
 // the primary row (4-byte BE sleep_index).
-func TimerLPKey(lp uint32, fireAtMs uint64, id *enginev1.InvocationId) ([]byte, error) {
+func TimerLPKey(lp, tenant uint32, fireAtMs uint64, id *enginev1.InvocationId) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]byte, 0, len(timerLPPrefix)+LPLen+8+invocationIDLen)
+	out := make([]byte, 0, len(timerLPPrefix)+LPLen+TenantLen+8+invocationIDLen)
 	out = append(out, timerLPPrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	var fireBuf [8]byte
 	binary.BigEndian.PutUint64(fireBuf[:], fireAtMs)
 	out = append(out, fireBuf[:]...)
@@ -277,33 +303,37 @@ func TimerLPPrefixForLP(lp uint32) []byte {
 	return appendLP(out, lp)
 }
 
-// DecodeTimerLPKey extracts (lp, fireAtMs, invocation_id) from a timer_lp key.
-func DecodeTimerLPKey(key []byte) (uint32, uint64, *enginev1.InvocationId, error) {
-	want := len(timerLPPrefix) + LPLen + 8 + invocationIDLen
+// DecodeTimerLPKey extracts (lp, tenant, fireAtMs, invocation_id) from a
+// timer_lp key.
+func DecodeTimerLPKey(key []byte) (uint32, uint32, uint64, *enginev1.InvocationId, error) {
+	want := len(timerLPPrefix) + LPLen + TenantLen + 8 + invocationIDLen
 	if len(key) != want {
-		return 0, 0, nil, fmt.Errorf("timer_lp key length = %d; want %d", len(key), want)
+		return 0, 0, 0, nil, fmt.Errorf("timer_lp key length = %d; want %d", len(key), want)
 	}
 	p := len(timerLPPrefix)
 	lp := binary.BigEndian.Uint32(key[p : p+LPLen])
 	p += LPLen
+	tenant := binary.BigEndian.Uint32(key[p : p+TenantLen])
+	p += TenantLen
 	fireAt := binary.BigEndian.Uint64(key[p : p+8])
 	id, err := DecodeInvocationID(key[p+8:])
-	return lp, fireAt, id, err
+	return lp, tenant, fireAt, id, err
 }
 
-// TimerIdxKey returns timer_idx/<lp:4><24-byte id>/<8-byte BE fire_at>. The
-// secondary index lets onPurge find every pending timer for an invocation
-// with a single bounded range scan instead of walking the whole timer/
-// namespace.
-func TimerIdxKey(id *enginev1.InvocationId, fireAtMs uint64) ([]byte, error) {
+// TimerIdxKey returns timer_idx/<lp:4><tenant:4><24-byte id>/<8-byte BE
+// fire_at>. The secondary index lets onPurge find every pending timer for
+// an invocation with a single bounded range scan instead of walking the
+// whole timer/ namespace.
+func TimerIdxKey(tenant uint32, id *enginev1.InvocationId, fireAtMs uint64) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(timerIdxPrefix)+LPLen+invocationIDLen+8)
+	out := make([]byte, 0, len(timerIdxPrefix)+LPLen+TenantLen+invocationIDLen+8)
 	out = append(out, timerIdxPrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	out = append(out, raw...)
 	var fireBuf [8]byte
 	binary.BigEndian.PutUint64(fireBuf[:], fireAtMs)
@@ -314,34 +344,38 @@ func TimerIdxKey(id *enginev1.InvocationId, fireAtMs uint64) ([]byte, error) {
 // range scan over every secondary-index row in the partition.
 func TimerIdxPrefix() []byte { return []byte(timerIdxPrefix) }
 
-// TimerIdxPrefixForID returns timer_idx/<lp:4><24-byte id>/, suitable for
-// a range scan over every secondary-index row for one invocation.
-func TimerIdxPrefixForID(id *enginev1.InvocationId) ([]byte, error) {
+// TimerIdxPrefixForID returns timer_idx/<lp:4><tenant:4><24-byte id>/,
+// suitable for a range scan over every secondary-index row for one
+// invocation.
+func TimerIdxPrefixForID(tenant uint32, id *enginev1.InvocationId) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(timerIdxPrefix)+LPLen+invocationIDLen)
+	out := make([]byte, 0, len(timerIdxPrefix)+LPLen+TenantLen+invocationIDLen)
 	out = append(out, timerIdxPrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	return append(out, raw...), nil
 }
 
-// DecodeTimerIdxKey extracts (invocation_id, fireAtMs) from a secondary-
-// index key.
-func DecodeTimerIdxKey(key []byte) (*enginev1.InvocationId, uint64, error) {
-	want := len(timerIdxPrefix) + LPLen + invocationIDLen + 8
+// DecodeTimerIdxKey extracts (tenant, invocation_id, fireAtMs) from a
+// secondary-index key.
+func DecodeTimerIdxKey(key []byte) (uint32, *enginev1.InvocationId, uint64, error) {
+	want := len(timerIdxPrefix) + LPLen + TenantLen + invocationIDLen + 8
 	if len(key) != want {
-		return nil, 0, fmt.Errorf("timer_idx key length = %d; want %d", len(key), want)
+		return 0, nil, 0, fmt.Errorf("timer_idx key length = %d; want %d", len(key), want)
 	}
 	p := len(timerIdxPrefix) + LPLen
+	tenant := binary.BigEndian.Uint32(key[p : p+TenantLen])
+	p += TenantLen
 	id, err := DecodeInvocationID(key[p : p+invocationIDLen])
 	if err != nil {
-		return nil, 0, err
+		return 0, nil, 0, err
 	}
 	fireAt := binary.BigEndian.Uint64(key[p+invocationIDLen:])
-	return id, fireAt, nil
+	return tenant, id, fireAt, nil
 }
 
 // DedupSelfKey returns dedup/self/<8-byte BE leader_epoch>/<8-byte BE seq>.
@@ -366,20 +400,22 @@ func DedupSelfKey(leaderEpoch, seq uint64) []byte {
 	return append(out, buf[:]...)
 }
 
-// DedupArbitraryKey returns dedup/arbitrary/<lp:4><producer_id>/<8-byte BE seq>.
-// Exact-match keying for the same reason as DedupSelfKey — concurrent
-// producers (e.g. loadgen goroutines) allocate seq from a shared atomic
-// counter and submit out-of-order to dragonboat.
+// DedupArbitraryKey returns
+// dedup/arbitrary/<lp:4><tenant:4><producer_id>/<8-byte BE seq>. Exact-
+// match keying for the same reason as DedupSelfKey — concurrent producers
+// (e.g. loadgen goroutines) allocate seq from a shared atomic counter and
+// submit out-of-order to dragonboat.
 //
 // LP-prefixed: arbitrary dedup state belongs to a logical partition and rides
 // the LP-transfer scan, so a producer retry that hits the LP's new owner
 // after a transfer flip finds its dedup row already present. The caller
 // derives lp from the command kind via lpFromCommand in partition.go; for
 // the few LP-agnostic kinds (OutboxAck) pass LPNoLP.
-func DedupArbitraryKey(lp uint32, producerID string, seq uint64) []byte {
-	out := make([]byte, 0, len(dedupArbPrefix)+LPLen+len(producerID)+1+8)
+func DedupArbitraryKey(lp, tenant uint32, producerID string, seq uint64) []byte {
+	out := make([]byte, 0, len(dedupArbPrefix)+LPLen+TenantLen+len(producerID)+1+8)
 	out = append(out, dedupArbPrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	out = append(out, producerID...)
 	out = append(out, '/')
 	var buf [8]byte
@@ -403,14 +439,16 @@ func DedupArbitraryLPPrefix(lp uint32) []byte {
 // packages can avoid colliding with it.
 func StatePrefix() []byte { return []byte(statePrefix) }
 
-// StateKey returns state/<lp:4><service>/<obj_key>/<state_key>. For unkeyed
-// services pass objectKey="". Callers must ensure none of the three string
-// components contain '/', otherwise the namespace boundary is ambiguous —
-// the API surface in pkg/handler rejects invalid keys before they reach here.
-func StateKey(lp uint32, service, objectKey, stateKey string) []byte {
-	out := make([]byte, 0, len(statePrefix)+LPLen+len(service)+1+len(objectKey)+1+len(stateKey))
+// StateKey returns state/<lp:4><tenant:4><service>/<obj_key>/<state_key>.
+// For unkeyed services pass objectKey="". Callers must ensure none of the
+// three string components contain '/', otherwise the namespace boundary
+// is ambiguous — the API surface in pkg/handler rejects invalid keys
+// before they reach here.
+func StateKey(lp, tenant uint32, service, objectKey, stateKey string) []byte {
+	out := make([]byte, 0, len(statePrefix)+LPLen+TenantLen+len(service)+1+len(objectKey)+1+len(stateKey))
 	out = append(out, statePrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	out = append(out, service...)
 	out = append(out, '/')
 	out = append(out, objectKey...)
@@ -418,13 +456,14 @@ func StateKey(lp uint32, service, objectKey, stateKey string) []byte {
 	return append(out, stateKey...)
 }
 
-// StatePrefixForObject returns state/<lp:4><service>/<obj_key>/, suitable as
-// the LowerBound for a per-object scan paired with PrefixUpperBound for the
-// matching UpperBound.
-func StatePrefixForObject(lp uint32, service, objectKey string) []byte {
-	out := make([]byte, 0, len(statePrefix)+LPLen+len(service)+1+len(objectKey)+1)
+// StatePrefixForObject returns state/<lp:4><tenant:4><service>/<obj_key>/,
+// suitable as the LowerBound for a per-object scan paired with
+// PrefixUpperBound for the matching UpperBound.
+func StatePrefixForObject(lp, tenant uint32, service, objectKey string) []byte {
+	out := make([]byte, 0, len(statePrefix)+LPLen+TenantLen+len(service)+1+len(objectKey)+1)
 	out = append(out, statePrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	out = append(out, service...)
 	out = append(out, '/')
 	out = append(out, objectKey...)
@@ -459,41 +498,45 @@ func DecodeOutboxKey(key []byte) (uint64, error) {
 // AwakeablePrefix returns the awakeable/ namespace prefix.
 func AwakeablePrefix() []byte { return []byte(awakeablePrefix) }
 
-// AwakeableKey returns awakeable/<lp:4><26-byte id>. The caller is responsible
-// for validating the id via ValidateAwakeableID before constructing the key;
-// passing a malformed id here produces a syntactically valid key but risks
-// collision with future namespace extensions. The lp must be derived from
-// the awakeable id's owner partition key — callers compose
+// AwakeableKey returns awakeable/<lp:4><tenant:4><26-byte id>. The caller
+// is responsible for validating the id via ValidateAwakeableID before
+// constructing the key; passing a malformed id here produces a
+// syntactically valid key but risks collision with future namespace
+// extensions. The lp must be derived from the awakeable id's owner
+// partition key — callers compose
 // `LPFromPartitionKey(AwakeableOwnerPartitionKey(id))`.
-func AwakeableKey(lp uint32, id string) []byte {
-	out := make([]byte, 0, len(awakeablePrefix)+LPLen+len(id))
+func AwakeableKey(lp, tenant uint32, id string) []byte {
+	out := make([]byte, 0, len(awakeablePrefix)+LPLen+TenantLen+len(id))
 	out = append(out, awakeablePrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	return append(out, id...)
 }
 
-// KeyLeaseKey returns keylease/<lp:4><service>/<obj_key>. For unkeyed targets
-// callers must skip this namespace entirely; the VO gate is only consulted
-// for keyed invocations.
-func KeyLeaseKey(lp uint32, service, objectKey string) []byte {
-	out := make([]byte, 0, len(keyLeasePrefix)+LPLen+len(service)+1+len(objectKey))
+// KeyLeaseKey returns keylease/<lp:4><tenant:4><service>/<obj_key>. For
+// unkeyed targets callers must skip this namespace entirely; the VO gate
+// is only consulted for keyed invocations.
+func KeyLeaseKey(lp, tenant uint32, service, objectKey string) []byte {
+	out := make([]byte, 0, len(keyLeasePrefix)+LPLen+TenantLen+len(service)+1+len(objectKey))
 	out = append(out, keyLeasePrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	out = append(out, service...)
 	out = append(out, '/')
 	return append(out, objectKey...)
 }
 
-// IdempotencyKey returns idempotency/<lp:4><sha256(tuple)>. The tuple is the
-// caller-supplied (service, handler, object_key, idempotency_key) hashed
-// with length-prefixed components so adjacent fields never alias. Used by
-// the onInvoke dedup path: a hit means an invocation with the same tuple
-// was already accepted; the stored value is the prior InvocationId.
+// IdempotencyKey returns idempotency/<lp:4><tenant:4><sha256(tuple)>. The
+// tuple is the caller-supplied (service, handler, object_key,
+// idempotency_key) hashed with length-prefixed components so adjacent
+// fields never alias. Used by the onInvoke dedup path: a hit means an
+// invocation with the same tuple was already accepted; the stored value
+// is the prior InvocationId.
 //
 // The lp is derived from (service, object_key) at the caller site — it
 // must match the LP that future writers would compute for the same tuple,
 // otherwise point-Get misses the dedup row.
-func IdempotencyKey(lp uint32, service, handler, objectKey, idempotencyKey string) []byte {
+func IdempotencyKey(lp, tenant uint32, service, handler, objectKey, idempotencyKey string) []byte {
 	h := sha256.New()
 	writeLP := func(s string) {
 		var lp [4]byte
@@ -506,9 +549,10 @@ func IdempotencyKey(lp uint32, service, handler, objectKey, idempotencyKey strin
 	writeLP(objectKey)
 	writeLP(idempotencyKey)
 	sum := h.Sum(nil)
-	out := make([]byte, 0, len(idempPrefix)+LPLen+len(sum))
+	out := make([]byte, 0, len(idempPrefix)+LPLen+TenantLen+len(sum))
 	out = append(out, idempPrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	return append(out, sum...)
 }
 
@@ -554,77 +598,84 @@ func ValidateAwakeableID(id string) error {
 	return nil
 }
 
-// SignalInboxKey returns signal_inbox/<lp:4><inv_id>/<name>. The name is a
-// user-supplied UTF-8 string; callers must reject names containing the
-// "/" delimiter at the SDK boundary so prefix scans on
-// signal_inbox/<lp:4><inv_id>/ stay unambiguous.
-func SignalInboxKey(id *enginev1.InvocationId, name string) ([]byte, error) {
+// SignalInboxKey returns signal_inbox/<lp:4><tenant:4><inv_id>/<name>.
+// The name is a user-supplied UTF-8 string; callers must reject names
+// containing the "/" delimiter at the SDK boundary so prefix scans on
+// signal_inbox/<lp:4><tenant:4><inv_id>/ stay unambiguous.
+func SignalInboxKey(tenant uint32, id *enginev1.InvocationId, name string) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(signalInboxPrefix)+LPLen+invocationIDLen+1+len(name))
+	out := make([]byte, 0, len(signalInboxPrefix)+LPLen+TenantLen+invocationIDLen+1+len(name))
 	out = append(out, signalInboxPrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	out = append(out, raw...)
 	out = append(out, '/')
 	return append(out, name...), nil
 }
 
-// SignalInboxPrefixForInvocation returns signal_inbox/<lp:4><inv_id>/, used
-// with PrefixUpperBound for range-delete on Purge.
-func SignalInboxPrefixForInvocation(id *enginev1.InvocationId) ([]byte, error) {
+// SignalInboxPrefixForInvocation returns
+// signal_inbox/<lp:4><tenant:4><inv_id>/, used with PrefixUpperBound for
+// range-delete on Purge.
+func SignalInboxPrefixForInvocation(tenant uint32, id *enginev1.InvocationId) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(signalInboxPrefix)+LPLen+invocationIDLen+1)
+	out := make([]byte, 0, len(signalInboxPrefix)+LPLen+TenantLen+invocationIDLen+1)
 	out = append(out, signalInboxPrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	out = append(out, raw...)
 	return append(out, '/'), nil
 }
 
-// SignalAwaiterKey returns signal_awaiter/<lp:4><inv_id>/<name>. Same shape
-// as SignalInboxKey.
-func SignalAwaiterKey(id *enginev1.InvocationId, name string) ([]byte, error) {
+// SignalAwaiterKey returns signal_awaiter/<lp:4><tenant:4><inv_id>/<name>.
+// Same shape as SignalInboxKey.
+func SignalAwaiterKey(tenant uint32, id *enginev1.InvocationId, name string) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(signalAwaiterPrefix)+LPLen+invocationIDLen+1+len(name))
+	out := make([]byte, 0, len(signalAwaiterPrefix)+LPLen+TenantLen+invocationIDLen+1+len(name))
 	out = append(out, signalAwaiterPrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	out = append(out, raw...)
 	out = append(out, '/')
 	return append(out, name...), nil
 }
 
-// SignalAwaiterPrefixForInvocation returns signal_awaiter/<lp:4><inv_id>/.
-func SignalAwaiterPrefixForInvocation(id *enginev1.InvocationId) ([]byte, error) {
+// SignalAwaiterPrefixForInvocation returns
+// signal_awaiter/<lp:4><tenant:4><inv_id>/.
+func SignalAwaiterPrefixForInvocation(tenant uint32, id *enginev1.InvocationId) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(signalAwaiterPrefix)+LPLen+invocationIDLen+1)
+	out := make([]byte, 0, len(signalAwaiterPrefix)+LPLen+TenantLen+invocationIDLen+1)
 	out = append(out, signalAwaiterPrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	out = append(out, raw...)
 	return append(out, '/'), nil
 }
 
-// WorkflowRunKey returns workflow_run/<lp:4><service>/<workflow_key>. Used by
-// the apply path to dedup repeated SubmitInvocation requests for a
-// KIND_WORKFLOW Run handler — the value is the InvocationId of the
+// WorkflowRunKey returns workflow_run/<lp:4><tenant:4><service>/<workflow_key>.
+// Used by the apply path to dedup repeated SubmitInvocation requests for
+// a KIND_WORKFLOW Run handler — the value is the InvocationId of the
 // currently-active or most-recently-completed run for that (service, key).
-func WorkflowRunKey(lp uint32, service, workflowKey string) []byte {
-	out := make([]byte, 0, len(workflowRunPrefix)+LPLen+len(service)+1+len(workflowKey))
+func WorkflowRunKey(lp, tenant uint32, service, workflowKey string) []byte {
+	out := make([]byte, 0, len(workflowRunPrefix)+LPLen+TenantLen+len(service)+1+len(workflowKey))
 	out = append(out, workflowRunPrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	out = append(out, service...)
 	out = append(out, '/')
 	return append(out, workflowKey...)
@@ -634,13 +685,14 @@ func WorkflowRunKey(lp uint32, service, workflowKey string) []byte {
 // the workflow retention reaper to scan completed runs.
 func WorkflowRunPrefix() []byte { return []byte(workflowRunPrefix) }
 
-// PromiseKey returns promise/<lp:4><service>/<workflow_key>/<name>. Named
-// durable promises are scoped to a workflow run; the key encodes that
-// scope directly so per-workflow range scans are bounded.
-func PromiseKey(lp uint32, service, workflowKey, name string) []byte {
-	out := make([]byte, 0, len(promisePrefix)+LPLen+len(service)+1+len(workflowKey)+1+len(name))
+// PromiseKey returns promise/<lp:4><tenant:4><service>/<workflow_key>/<name>.
+// Named durable promises are scoped to a workflow run; the key encodes
+// that scope directly so per-workflow range scans are bounded.
+func PromiseKey(lp, tenant uint32, service, workflowKey, name string) []byte {
+	out := make([]byte, 0, len(promisePrefix)+LPLen+TenantLen+len(service)+1+len(workflowKey)+1+len(name))
 	out = append(out, promisePrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	out = append(out, service...)
 	out = append(out, '/')
 	out = append(out, workflowKey...)
@@ -648,13 +700,14 @@ func PromiseKey(lp uint32, service, workflowKey, name string) []byte {
 	return append(out, name...)
 }
 
-// PromisePrefixForWorkflow returns promise/<lp:4><service>/<workflow_key>/,
-// suitable as the LowerBound for a per-workflow scan. Used by the
-// retention reaper.
-func PromisePrefixForWorkflow(lp uint32, service, workflowKey string) []byte {
-	out := make([]byte, 0, len(promisePrefix)+LPLen+len(service)+1+len(workflowKey)+1)
+// PromisePrefixForWorkflow returns
+// promise/<lp:4><tenant:4><service>/<workflow_key>/, suitable as the
+// LowerBound for a per-workflow scan. Used by the retention reaper.
+func PromisePrefixForWorkflow(lp, tenant uint32, service, workflowKey string) []byte {
+	out := make([]byte, 0, len(promisePrefix)+LPLen+TenantLen+len(service)+1+len(workflowKey)+1)
 	out = append(out, promisePrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	out = append(out, service...)
 	out = append(out, '/')
 	out = append(out, workflowKey...)
@@ -662,15 +715,16 @@ func PromisePrefixForWorkflow(lp uint32, service, workflowKey string) []byte {
 }
 
 // PromiseAwaiterKey returns
-// promise_awaiter/<lp:4><service>/<workflow_key>/<name>/<4-byte BE entry_index>.
+// promise_awaiter/<lp:4><tenant:4><service>/<workflow_key>/<name>/<4-byte BE entry_index>.
 // The entry_index suffix lets multiple co-pending Promise(name).Result()
 // calls from distinct invocations each get their own row; resolution
-// prefix-scans (service, key, name) and stitches every awaiter in the same
-// batch.
-func PromiseAwaiterKey(lp uint32, service, workflowKey, name string, entryIndex uint32) []byte {
-	out := make([]byte, 0, len(promiseAwaiterPrefix)+LPLen+len(service)+1+len(workflowKey)+1+len(name)+1+4)
+// prefix-scans (service, key, name) and stitches every awaiter in the
+// same batch.
+func PromiseAwaiterKey(lp, tenant uint32, service, workflowKey, name string, entryIndex uint32) []byte {
+	out := make([]byte, 0, len(promiseAwaiterPrefix)+LPLen+TenantLen+len(service)+1+len(workflowKey)+1+len(name)+1+4)
 	out = append(out, promiseAwaiterPrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	out = append(out, service...)
 	out = append(out, '/')
 	out = append(out, workflowKey...)
@@ -683,12 +737,13 @@ func PromiseAwaiterKey(lp uint32, service, workflowKey, name string, entryIndex 
 }
 
 // PromiseAwaiterPrefixForName returns
-// promise_awaiter/<lp:4><service>/<workflow_key>/<name>/, suitable as the
-// LowerBound for a per-name scan of every awaiter slot.
-func PromiseAwaiterPrefixForName(lp uint32, service, workflowKey, name string) []byte {
-	out := make([]byte, 0, len(promiseAwaiterPrefix)+LPLen+len(service)+1+len(workflowKey)+1+len(name)+1)
+// promise_awaiter/<lp:4><tenant:4><service>/<workflow_key>/<name>/,
+// suitable as the LowerBound for a per-name scan of every awaiter slot.
+func PromiseAwaiterPrefixForName(lp, tenant uint32, service, workflowKey, name string) []byte {
+	out := make([]byte, 0, len(promiseAwaiterPrefix)+LPLen+TenantLen+len(service)+1+len(workflowKey)+1+len(name)+1)
 	out = append(out, promiseAwaiterPrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	out = append(out, service...)
 	out = append(out, '/')
 	out = append(out, workflowKey...)
@@ -698,11 +753,12 @@ func PromiseAwaiterPrefixForName(lp uint32, service, workflowKey, name string) [
 }
 
 // PromiseAwaiterPrefixForWorkflow returns
-// promise_awaiter/<lp:4><service>/<workflow_key>/.
-func PromiseAwaiterPrefixForWorkflow(lp uint32, service, workflowKey string) []byte {
-	out := make([]byte, 0, len(promiseAwaiterPrefix)+LPLen+len(service)+1+len(workflowKey)+1)
+// promise_awaiter/<lp:4><tenant:4><service>/<workflow_key>/.
+func PromiseAwaiterPrefixForWorkflow(lp, tenant uint32, service, workflowKey string) []byte {
+	out := make([]byte, 0, len(promiseAwaiterPrefix)+LPLen+TenantLen+len(service)+1+len(workflowKey)+1)
 	out = append(out, promiseAwaiterPrefix...)
 	out = appendLP(out, lp)
+	out = appendTenant(out, tenant)
 	out = append(out, service...)
 	out = append(out, '/')
 	out = append(out, workflowKey...)

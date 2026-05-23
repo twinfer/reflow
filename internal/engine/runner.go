@@ -8,6 +8,7 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine/invoker"
 	"github.com/twinfer/reflow/internal/observability"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -400,5 +401,5 @@ func (r *PartitionRunner) StatusOf(id *enginev1.InvocationId) (*enginev1.Invocat
 		return nil, errors.New("runner: snapshotter closed")
 	}
 	defer release()
-	return (tables.InvocationTable{S: store}).Get(id)
+	return (tables.InvocationTable{S: store}).Get(keys.TenantDefault, id)
 }

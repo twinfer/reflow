@@ -28,34 +28,34 @@ func awakeableLP(id string) (uint32, error) {
 // Put records the directory row. id must already be validated via
 // keys.ValidateAwakeableID; the table itself does not re-check beyond what
 // AwakeableOwnerPartitionKey enforces.
-func (t AwakeableTable) Put(b storage.Batch, id string, entry *enginev1.AwakeableEntry) error {
+func (t AwakeableTable) Put(b storage.Batch, tenant uint32, id string, entry *enginev1.AwakeableEntry) error {
 	lp, err := awakeableLP(id)
 	if err != nil {
 		return err
 	}
-	return putProto(b, keys.AwakeableKey(lp, id), entry)
+	return putProto(b, keys.AwakeableKey(lp, tenant, id), entry)
 }
 
 // Get loads the directory row. Returns (nil, ErrNotFound) when absent
 // (this is a "required-id" lookup; caller is expected to have minted
 // id earlier).
-func (t AwakeableTable) Get(id string) (*enginev1.AwakeableEntry, error) {
+func (t AwakeableTable) Get(tenant uint32, id string) (*enginev1.AwakeableEntry, error) {
 	lp, err := awakeableLP(id)
 	if err != nil {
 		return nil, err
 	}
 	var entry enginev1.AwakeableEntry
-	if err := getProto(t.S, keys.AwakeableKey(lp, id), &entry); err != nil {
+	if err := getProto(t.S, keys.AwakeableKey(lp, tenant, id), &entry); err != nil {
 		return nil, err
 	}
 	return &entry, nil
 }
 
 // Delete removes the directory row.
-func (t AwakeableTable) Delete(b storage.Batch, id string) error {
+func (t AwakeableTable) Delete(b storage.Batch, tenant uint32, id string) error {
 	lp, err := awakeableLP(id)
 	if err != nil {
 		return err
 	}
-	return b.Delete(keys.AwakeableKey(lp, id))
+	return b.Delete(keys.AwakeableKey(lp, tenant, id))
 }

@@ -53,6 +53,7 @@ var errStatePreloadOverflow = errors.New("state preload overflow")
 // keeps reads cheap for the keys that did make it into the snapshot.
 func preloadEagerState(
 	stateTable tables.StateTable,
+	tenant uint32,
 	target *enginev1.InvocationTarget,
 	id *enginev1.InvocationId,
 	maxBytes uint32,
@@ -72,7 +73,7 @@ func preloadEagerState(
 	// id was minted from the same routing tuple, which is true in
 	// production but not in tests that mint synthetic ids.
 	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
-	err := stateTable.ScanObject(lp, target, func(key string, value []byte) error {
+	err := stateTable.ScanObject(lp, tenant, target, func(key string, value []byte) error {
 		total += uint32(len(key) + len(value))
 		if total > maxBytes {
 			overflowed = true

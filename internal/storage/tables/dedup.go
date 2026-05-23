@@ -27,15 +27,15 @@ import (
 type DedupTable struct{ S storage.Reader }
 
 // IsDuplicate reports whether the incoming Dedup has already been seen. lp
-// is consumed only when d carries an Arbitrary kind — Arbitrary dedup rows
-// are LP-prefixed so they ride the LP-transfer scan and follow the LP
-// across shard moves. SelfProposal dedup is shard-scoped to leader_epoch
-// and ignores lp.
-func (t DedupTable) IsDuplicate(lp uint32, d *enginev1.Dedup) (bool, error) {
+// and tenant are consumed only when d carries an Arbitrary kind —
+// Arbitrary dedup rows are LP+tenant-prefixed so they ride the LP-transfer
+// scan and follow the LP across shard moves. SelfProposal dedup is
+// shard-scoped to leader_epoch and ignores both lp and tenant.
+func (t DedupTable) IsDuplicate(lp, tenant uint32, d *enginev1.Dedup) (bool, error) {
 	if d == nil {
 		return false, nil
 	}
-	key, ok := dedupKey(lp, d)
+	key, ok := dedupKey(lp, tenant, d)
 	if !ok {
 		// Dedup with no kind set — treat as "no dedup info"; never dup.
 		return false, nil
@@ -53,12 +53,12 @@ func (t DedupTable) IsDuplicate(lp uint32, d *enginev1.Dedup) (bool, error) {
 // Record marks the (namespace, seq) tuple as seen. Caller should only call
 // this after IsDuplicate returned false (or for entries that bypass dedup
 // like AnnounceLeader's first proposal). See IsDuplicate for the meaning
-// of lp.
-func (t DedupTable) Record(b storage.Batch, lp uint32, d *enginev1.Dedup) error {
+// of lp and tenant.
+func (t DedupTable) Record(b storage.Batch, lp, tenant uint32, d *enginev1.Dedup) error {
 	if d == nil {
 		return nil
 	}
-	key, ok := dedupKey(lp, d)
+	key, ok := dedupKey(lp, tenant, d)
 	if !ok {
 		return nil
 	}
@@ -98,14 +98,14 @@ func (t DedupTable) GCSelfBelowEpoch(b storage.Batch, gcUntilEpoch uint64) error
 
 // dedupKey returns the storage key for a Dedup, carrying both the producer
 // namespace and the sequence number so each propose has its own slot. lp
-// is consumed only for the Arbitrary variant. The boolean is false for an
-// empty Dedup (kind unset).
-func dedupKey(lp uint32, d *enginev1.Dedup) ([]byte, bool) {
+// and tenant are consumed only for the Arbitrary variant. The boolean is
+// false for an empty Dedup (kind unset).
+func dedupKey(lp, tenant uint32, d *enginev1.Dedup) ([]byte, bool) {
 	switch k := d.GetKind().(type) {
 	case *enginev1.Dedup_SelfProposal:
 		return keys.DedupSelfKey(k.SelfProposal.GetLeaderEpoch(), k.SelfProposal.GetSeq()), true
 	case *enginev1.Dedup_Arbitrary:
-		return keys.DedupArbitraryKey(lp, k.Arbitrary.GetProducerId(), k.Arbitrary.GetSeq()), true
+		return keys.DedupArbitraryKey(lp, tenant, k.Arbitrary.GetProducerId(), k.Arbitrary.GetSeq()), true
 	case nil:
 		return nil, false
 	default:

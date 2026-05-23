@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/twinfer/reflow/internal/storage"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -91,10 +92,10 @@ func TestTimerService_RebuildFromTable(t *testing.T) {
 	id2 := &enginev1.InvocationId{PartitionKey: 2, Uuid: []byte("bbbbbbbbbbbbbbbb")}
 
 	b := s.NewBatch()
-	if err := table.Insert(b, now+30, id1, 0); err != nil {
+	if err := table.Insert(b, keys.TenantDefault, now+30, id1, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := table.Insert(b, now+10, id2, 1); err != nil {
+	if err := table.Insert(b, keys.TenantDefault, now+10, id2, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err := b.Commit(true); err != nil {

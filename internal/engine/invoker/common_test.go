@@ -36,7 +36,7 @@ func TestPreloadEagerState_OverflowKeepsPartialCache(t *testing.T) {
 	batch := store.NewBatch()
 	for i := range 4 {
 		key := fmt.Sprintf("k%d", i)
-		if err := st.Set(batch, lp, target, key, []byte(big)); err != nil {
+		if err := st.Set(batch, lp, keys.TenantDefault, target, key, []byte(big)); err != nil {
 			t.Fatalf("StateTable.Set(%s): %v", key, err)
 		}
 	}
@@ -44,7 +44,7 @@ func TestPreloadEagerState_OverflowKeepsPartialCache(t *testing.T) {
 		t.Fatalf("batch commit: %v", err)
 	}
 
-	cache, overflowed := preloadEagerState(st, target, id, DefaultEagerStateMaxBytes, discardLogger())
+	cache, overflowed := preloadEagerState(st, keys.TenantDefault, target, id, DefaultEagerStateMaxBytes, discardLogger())
 	if !overflowed {
 		t.Fatalf("overflowed=false; want true (100 KiB across 4 rows > 64 KiB cap)")
 	}
@@ -83,7 +83,7 @@ func TestPreloadEagerState_NoOverflowFullSnapshot(t *testing.T) {
 	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
 	batch := store.NewBatch()
 	for k, v := range want {
-		if err := st.Set(batch, lp, target, k, v); err != nil {
+		if err := st.Set(batch, lp, keys.TenantDefault, target, k, v); err != nil {
 			t.Fatalf("Set(%s): %v", k, err)
 		}
 	}
@@ -91,7 +91,7 @@ func TestPreloadEagerState_NoOverflowFullSnapshot(t *testing.T) {
 		t.Fatalf("batch commit: %v", err)
 	}
 
-	cache, overflowed := preloadEagerState(st, target, id, DefaultEagerStateMaxBytes, discardLogger())
+	cache, overflowed := preloadEagerState(st, keys.TenantDefault, target, id, DefaultEagerStateMaxBytes, discardLogger())
 	if overflowed {
 		t.Errorf("overflowed=true; want false (3 tiny rows are well under the cap)")
 	}
@@ -124,7 +124,7 @@ func TestPreloadEagerState_CustomCapHonored(t *testing.T) {
 	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
 	batch := store.NewBatch()
 	for _, k := range []string{"a", "b"} {
-		if err := st.Set(batch, lp, target, k, []byte(row)); err != nil {
+		if err := st.Set(batch, lp, keys.TenantDefault, target, k, []byte(row)); err != nil {
 			t.Fatalf("Set(%s): %v", k, err)
 		}
 	}
@@ -132,7 +132,7 @@ func TestPreloadEagerState_CustomCapHonored(t *testing.T) {
 		t.Fatalf("batch commit: %v", err)
 	}
 
-	cache, overflowed := preloadEagerState(st, target, id, 4*1024, discardLogger())
+	cache, overflowed := preloadEagerState(st, keys.TenantDefault, target, id, 4*1024, discardLogger())
 	if !overflowed {
 		t.Fatalf("overflowed=false with 4 KiB cap on 6 KiB total; want true")
 	}
@@ -156,7 +156,7 @@ func TestPreloadEagerState_ZeroCapUsesDefault(t *testing.T) {
 	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
 	batch := store.NewBatch()
 	for i := range 4 {
-		if err := st.Set(batch, lp, target, fmt.Sprintf("k%d", i), []byte(big)); err != nil {
+		if err := st.Set(batch, lp, keys.TenantDefault, target, fmt.Sprintf("k%d", i), []byte(big)); err != nil {
 			t.Fatalf("Set: %v", err)
 		}
 	}
@@ -164,7 +164,7 @@ func TestPreloadEagerState_ZeroCapUsesDefault(t *testing.T) {
 		t.Fatalf("batch commit: %v", err)
 	}
 
-	cache, overflowed := preloadEagerState(st, target, id, 0, discardLogger())
+	cache, overflowed := preloadEagerState(st, keys.TenantDefault, target, id, 0, discardLogger())
 	if !overflowed {
 		t.Fatalf("overflowed=false with default cap; want true (100 KiB > 64 KiB default)")
 	}
@@ -182,7 +182,7 @@ func TestPreloadEagerState_UnkeyedReturnsNil(t *testing.T) {
 	target := &enginev1.InvocationTarget{ServiceName: "Svc"} // ObjectKey empty
 	id := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("0123456789ABCDEF")}
 
-	cache, overflowed := preloadEagerState(st, target, id, DefaultEagerStateMaxBytes, discardLogger())
+	cache, overflowed := preloadEagerState(st, keys.TenantDefault, target, id, DefaultEagerStateMaxBytes, discardLogger())
 	if cache != nil {
 		t.Errorf("cache = %v; want nil for unkeyed service", cache)
 	}

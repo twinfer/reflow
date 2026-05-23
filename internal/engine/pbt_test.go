@@ -915,7 +915,7 @@ func (m *engineMachine) Check(t *rapid.T) {
 		})
 		klt := tables.KeyLeaseTable{S: m.snaps[m.sIdx(shard)].Store()}
 		lp := keys.LPFromPartitionKey(routing.PartitionKey(lk.service, lk.objectKey))
-		got, err := klt.Get(lp, lk.service, lk.objectKey)
+		got, err := klt.Get(lp, keys.TenantDefault, lk.service, lk.objectKey)
 		if err != nil {
 			t.Fatalf("KeyLeaseTable.Get shard=%d %+v: %v", shard, lk, err)
 		}
@@ -980,7 +980,7 @@ func (m *engineMachine) Check(t *rapid.T) {
 			return nil
 		})
 		secondary := map[timerRow]struct{}{}
-		_ = tt.ScanAllIndex(func(id *enginev1.InvocationId, fireAtMs uint64) error {
+		_ = tt.ScanAllIndex(func(_ uint32, id *enginev1.InvocationId, fireAtMs uint64) error {
 			secondary[timerRow{idHex: idHex(id), fireAtMs: fireAtMs}] = struct{}{}
 			return nil
 		})
@@ -1032,7 +1032,7 @@ func (m *engineMachine) Check(t *rapid.T) {
 			continue
 		}
 		shard := m.shardOf(owner.id)
-		row, err := (tables.AwakeableTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(awk)
+		row, err := (tables.AwakeableTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(keys.TenantDefault, awk)
 		if err != nil {
 			t.Fatalf("AwakeableTable.Get shard=%d %q: %v", shard, awk, err)
 		}
@@ -1057,7 +1057,7 @@ func (m *engineMachine) Check(t *rapid.T) {
 			ServiceName: lk.service, ObjectKey: lk.objectKey,
 		})
 		lp := keys.LPFromPartitionKey(routing.PartitionKey(lk.service, lk.objectKey))
-		got, err := (tables.WorkflowRunTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(lp, lk.service, lk.objectKey)
+		got, err := (tables.WorkflowRunTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(lp, keys.TenantDefault, lk.service, lk.objectKey)
 		if err != nil {
 			t.Fatalf("WorkflowRunTable.Get shard=%d %+v: %v", shard, lk, err)
 		}
@@ -1085,7 +1085,7 @@ func (m *engineMachine) Check(t *rapid.T) {
 		target := &enginev1.InvocationTarget{ServiceName: lk.service, ObjectKey: lk.objectKey}
 		lp := keys.LPFromPartitionKey(routing.PartitionKey(lk.service, lk.objectKey))
 		got := map[string][]byte{}
-		if err := (tables.StateTable{S: m.snaps[m.sIdx(shard)].Store()}).ScanObject(lp, target, func(k string, v []byte) error {
+		if err := (tables.StateTable{S: m.snaps[m.sIdx(shard)].Store()}).ScanObject(lp, keys.TenantDefault, target, func(k string, v []byte) error {
 			got[k] = append([]byte(nil), v...)
 			return nil
 		}); err != nil {

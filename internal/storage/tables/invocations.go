@@ -3,6 +3,8 @@ package tables
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"errors"
 
 	"google.golang.org/protobuf/proto"
 
@@ -20,8 +22,8 @@ type InvocationTable struct{ S storage.Reader }
 // Get loads an invocation's status. Returns Free if the row is absent
 // ("default" convention — matches restate's default at
 // crates/storage-api/src/invocation_status_table/mod.rs:152-154).
-func (t InvocationTable) Get(id *enginev1.InvocationId) (*enginev1.InvocationStatus, error) {
-	k, err := keys.InvocationKey(id)
+func (t InvocationTable) Get(tenant uint32, id *enginev1.InvocationId) (*enginev1.InvocationStatus, error) {
+	k, err := keys.InvocationKey(tenant, id)
 	if err != nil {
 		return nil, err
 	}
@@ -37,16 +39,16 @@ func (t InvocationTable) Get(id *enginev1.InvocationId) (*enginev1.InvocationSta
 	return &s, nil
 }
 
-func (t InvocationTable) Put(b storage.Batch, id *enginev1.InvocationId, s *enginev1.InvocationStatus) error {
-	k, err := keys.InvocationKey(id)
+func (t InvocationTable) Put(b storage.Batch, tenant uint32, id *enginev1.InvocationId, s *enginev1.InvocationStatus) error {
+	k, err := keys.InvocationKey(tenant, id)
 	if err != nil {
 		return err
 	}
 	return putProto(b, k, s)
 }
 
-func (t InvocationTable) Delete(b storage.Batch, id *enginev1.InvocationId) error {
-	k, err := keys.InvocationKey(id)
+func (t InvocationTable) Delete(b storage.Batch, tenant uint32, id *enginev1.InvocationId) error {
+	k, err := keys.InvocationKey(tenant, id)
 	if err != nil {
 		return err
 	}
@@ -59,7 +61,10 @@ func (t InvocationTable) Delete(b storage.Batch, id *enginev1.InvocationId) erro
 //
 // Rows whose Status is Free are skipped (they're equivalent to the row being
 // absent; defensive against partial migrations).
-func (t InvocationTable) ScanAll(ctx context.Context, fn func(id *enginev1.InvocationId, s *enginev1.InvocationStatus) error) error {
+//
+// The tenant id is decoded from each key and passed to the callback so
+// callers can distinguish per-tenant rows during cross-tenant walks.
+func (t InvocationTable) ScanAll(ctx context.Context, fn func(tenant uint32, id *enginev1.InvocationId, s *enginev1.InvocationStatus) error) error {
 	prefix := []byte("inv/")
 	iter, err := t.S.NewIter(prefix, keys.PrefixUpperBound(prefix))
 	if err != nil {
@@ -74,8 +79,7 @@ func (t InvocationTable) ScanAll(ctx context.Context, fn func(id *enginev1.Invoc
 		if !bytes.HasPrefix(key, prefix) {
 			continue
 		}
-		// Skip the namespace prefix + 4-byte LP to reach the 24-byte id body.
-		id, err := keys.DecodeInvocationID(key[len(prefix)+keys.LPLen:])
+		tenant, id, err := decodeInvKeyTenantAndID(key, len(prefix))
 		if err != nil {
 			return err
 		}
@@ -86,7 +90,7 @@ func (t InvocationTable) ScanAll(ctx context.Context, fn func(id *enginev1.Invoc
 		if _, free := s.GetStatus().(*enginev1.InvocationStatus_Free); free {
 			continue
 		}
-		if err := fn(id, &s); err != nil {
+		if err := fn(tenant, id, &s); err != nil {
 			return err
 		}
 	}
@@ -95,10 +99,12 @@ func (t InvocationTable) ScanAll(ctx context.Context, fn func(id *enginev1.Invoc
 
 // ScanLP iterates every invocation status whose owner partition_key reduces
 // to the given logical partition id. Bounded by a single Pebble range scan
-// over [inv/<lp:4>, inv/<lp+1:4>). Used by the future cross-shard LP
+// over [inv/<lp:4>, inv/<lp+1:4>). Captures EVERY tenant on the LP — the
+// scan range is tenant-agnostic, the per-row tenant is decoded from the
+// key and surfaced via the callback. Used by the future cross-shard LP
 // transfer protocol to extract one LP's invocations without touching the
 // rest of the shard.
-func (t InvocationTable) ScanLP(ctx context.Context, lp uint32, fn func(id *enginev1.InvocationId, s *enginev1.InvocationStatus) error) error {
+func (t InvocationTable) ScanLP(ctx context.Context, lp uint32, fn func(tenant uint32, id *enginev1.InvocationId, s *enginev1.InvocationStatus) error) error {
 	lower := keys.InvocationLPPrefix(lp)
 	upper := keys.PrefixUpperBound(lower)
 	iter, err := t.S.NewIter(lower, upper)
@@ -111,8 +117,8 @@ func (t InvocationTable) ScanLP(ctx context.Context, lp uint32, fn func(id *engi
 			return err
 		}
 		key := iter.Key()
-		// key is inv/<lp:4><id:24>; slice off the prefix + lp to get the id body.
-		id, err := keys.DecodeInvocationID(key[len(lower):])
+		// key is inv/<lp:4><tenant:4><id:24>; lower covers inv/<lp:4>.
+		tenant, id, err := decodeInvKeyTenantAndID(key, len(lower))
 		if err != nil {
 			return err
 		}
@@ -123,9 +129,32 @@ func (t InvocationTable) ScanLP(ctx context.Context, lp uint32, fn func(id *engi
 		if _, free := s.GetStatus().(*enginev1.InvocationStatus_Free); free {
 			continue
 		}
-		if err := fn(id, &s); err != nil {
+		if err := fn(tenant, id, &s); err != nil {
 			return err
 		}
 	}
 	return iter.Error()
 }
+
+// decodeInvKeyTenantAndID slices an inv/ key starting at namespaceLen
+// (which already covers the `inv/` namespace prefix; for ScanAll that's
+// len("inv/"), for ScanLP it's len("inv/")+LPLen). Returns the embedded
+// tenant id and the decoded invocation id body.
+func decodeInvKeyTenantAndID(key []byte, lpOrPrefixLen int) (uint32, *enginev1.InvocationId, error) {
+	tail := key[lpOrPrefixLen:]
+	if lpOrPrefixLen == len([]byte("inv/")) {
+		// ScanAll call site — `tail` is <lp:4><tenant:4><id:24>; skip lp.
+		tail = tail[keys.LPLen:]
+	}
+	if len(tail) < keys.TenantLen {
+		return 0, nil, errInvKeyShape
+	}
+	tenant := binary.BigEndian.Uint32(tail[:keys.TenantLen])
+	id, err := keys.DecodeInvocationID(tail[keys.TenantLen:])
+	if err != nil {
+		return 0, nil, err
+	}
+	return tenant, id, nil
+}
+
+var errInvKeyShape = errors.New("inv/ key shorter than tenant prefix")

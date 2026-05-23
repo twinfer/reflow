@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/twinfer/reflow/internal/storage"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -48,7 +49,7 @@ func (f *fakeProposer) ProposeSelf(_ context.Context, cmd *enginev1.Command) err
 	case *enginev1.InvokerEffect_JournalAppended:
 		b := store.NewBatch()
 		defer b.Close()
-		if err := (tables.JournalTable{S: store}).Append(b, eff.GetInvocationId(), k.JournalAppended.GetEntry()); err != nil {
+		if err := (tables.JournalTable{S: store}).Append(b, keys.TenantDefault, eff.GetInvocationId(), k.JournalAppended.GetEntry()); err != nil {
 			return err
 		}
 		return b.Commit(true)
@@ -62,7 +63,7 @@ func (f *fakeProposer) ProposeSelf(_ context.Context, cmd *enginev1.Command) err
 				FailureMessage: k.RunProposal.GetFailureMessage(),
 			}},
 		}
-		if err := (tables.JournalTable{S: store}).Append(b, eff.GetInvocationId(), entry); err != nil {
+		if err := (tables.JournalTable{S: store}).Append(b, keys.TenantDefault, eff.GetInvocationId(), entry); err != nil {
 			return err
 		}
 		return b.Commit(true)
@@ -101,7 +102,7 @@ func TestJournalReader_Empty(t *testing.T) {
 	s := storage.NewMemStore()
 	defer s.Close()
 	jr := NewJournalReader(tables.JournalTable{S: s})
-	entries, err := jr.Load(newID(1, "id"))
+	entries, err := jr.Load(keys.TenantDefault, newID(1, "id"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +121,7 @@ func TestJournalReader_InOrder(t *testing.T) {
 	for _, idx := range []uint32{3, 1, 2} {
 		b := s.NewBatch()
 		entry := &enginev1.JournalEntry{Index: idx, Entry: &enginev1.JournalEntry_Input{Input: &enginev1.JEInput{Value: []byte{byte(idx)}}}}
-		if err := jt.Append(b, id, entry); err != nil {
+		if err := jt.Append(b, keys.TenantDefault, id, entry); err != nil {
 			t.Fatal(err)
 		}
 		if err := b.Commit(true); err != nil {
@@ -129,7 +130,7 @@ func TestJournalReader_InOrder(t *testing.T) {
 		b.Close()
 	}
 
-	entries, err := NewJournalReader(jt).Load(id)
+	entries, err := NewJournalReader(jt).Load(keys.TenantDefault, id)
 	if err != nil {
 		t.Fatal(err)
 	}

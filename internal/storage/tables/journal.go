@@ -17,8 +17,8 @@ import (
 // crates/storage-api/src/journal_table_v2.
 type JournalTable struct{ S storage.Reader }
 
-func (t JournalTable) Append(b storage.Batch, id *enginev1.InvocationId, e *enginev1.JournalEntry) error {
-	k, err := keys.JournalKey(id, e.GetIndex())
+func (t JournalTable) Append(b storage.Batch, tenant uint32, id *enginev1.InvocationId, e *enginev1.JournalEntry) error {
+	k, err := keys.JournalKey(tenant, id, e.GetIndex())
 	if err != nil {
 		return err
 	}
@@ -27,8 +27,8 @@ func (t JournalTable) Append(b storage.Batch, id *enginev1.InvocationId, e *engi
 
 // Read returns the entry at (id, index). Returns (nil, ErrNotFound) when
 // the entry does not exist — "required" convention.
-func (t JournalTable) Read(id *enginev1.InvocationId, index uint32) (*enginev1.JournalEntry, error) {
-	k, err := keys.JournalKey(id, index)
+func (t JournalTable) Read(tenant uint32, id *enginev1.InvocationId, index uint32) (*enginev1.JournalEntry, error) {
+	k, err := keys.JournalKey(tenant, id, index)
 	if err != nil {
 		return nil, err
 	}
@@ -41,8 +41,8 @@ func (t JournalTable) Read(id *enginev1.InvocationId, index uint32) (*enginev1.J
 
 // Scan iterates every entry for an invocation in index order. fn returning
 // non-nil aborts and is returned.
-func (t JournalTable) Scan(id *enginev1.InvocationId, fn func(*enginev1.JournalEntry) error) error {
-	prefix, err := keys.JournalPrefix(id)
+func (t JournalTable) Scan(tenant uint32, id *enginev1.InvocationId, fn func(*enginev1.JournalEntry) error) error {
+	prefix, err := keys.JournalPrefix(tenant, id)
 	if err != nil {
 		return err
 	}
@@ -65,8 +65,8 @@ func (t JournalTable) Scan(id *enginev1.InvocationId, fn func(*enginev1.JournalE
 
 // DeletePrefix removes every entry for an invocation. Used when purging a
 // completed invocation.
-func (t JournalTable) DeletePrefix(b storage.Batch, id *enginev1.InvocationId) error {
-	prefix, err := keys.JournalPrefix(id)
+func (t JournalTable) DeletePrefix(b storage.Batch, tenant uint32, id *enginev1.InvocationId) error {
+	prefix, err := keys.JournalPrefix(tenant, id)
 	if err != nil {
 		return err
 	}

@@ -1670,6 +1670,290 @@ func (x *DescribeTenantResponse) GetTenant() *enginev1.TenantRecord {
 	return nil
 }
 
+// UpsertTenantDEKRequest carries one TenantDEKRecord plus an optional
+// CAS guard. record.tenant_id must be non-zero (the FSM rejects 0).
+// record.name is the AAD used for KEK→DEK unwrap; rotation writes a
+// new record with a new name and a new ciphertext blob.
+type UpsertTenantDEKRequest struct {
+	state             protoimpl.MessageState    `protogen:"open.v1"`
+	Record            *enginev1.TenantDEKRecord `protobuf:"bytes,1,opt,name=record,proto3" json:"record,omitempty"`
+	IfTableRevisionEq uint64                    `protobuf:"varint,2,opt,name=if_table_revision_eq,json=ifTableRevisionEq,proto3" json:"if_table_revision_eq,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *UpsertTenantDEKRequest) Reset() {
+	*x = UpsertTenantDEKRequest{}
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpsertTenantDEKRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpsertTenantDEKRequest) ProtoMessage() {}
+
+func (x *UpsertTenantDEKRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpsertTenantDEKRequest.ProtoReflect.Descriptor instead.
+func (*UpsertTenantDEKRequest) Descriptor() ([]byte, []int) {
+	return file_clusterctlv1_clusterctl_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *UpsertTenantDEKRequest) GetRecord() *enginev1.TenantDEKRecord {
+	if x != nil {
+		return x.Record
+	}
+	return nil
+}
+
+func (x *UpsertTenantDEKRequest) GetIfTableRevisionEq() uint64 {
+	if x != nil {
+		return x.IfTableRevisionEq
+	}
+	return 0
+}
+
+type UpsertTenantDEKResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TableRevision uint64                 `protobuf:"varint,1,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpsertTenantDEKResponse) Reset() {
+	*x = UpsertTenantDEKResponse{}
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpsertTenantDEKResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpsertTenantDEKResponse) ProtoMessage() {}
+
+func (x *UpsertTenantDEKResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpsertTenantDEKResponse.ProtoReflect.Descriptor instead.
+func (*UpsertTenantDEKResponse) Descriptor() ([]byte, []int) {
+	return file_clusterctlv1_clusterctl_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *UpsertTenantDEKResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
+type DeleteTenantDEKRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	TenantId          uint32                 `protobuf:"varint,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	IfTableRevisionEq uint64                 `protobuf:"varint,2,opt,name=if_table_revision_eq,json=ifTableRevisionEq,proto3" json:"if_table_revision_eq,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *DeleteTenantDEKRequest) Reset() {
+	*x = DeleteTenantDEKRequest{}
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteTenantDEKRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteTenantDEKRequest) ProtoMessage() {}
+
+func (x *DeleteTenantDEKRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteTenantDEKRequest.ProtoReflect.Descriptor instead.
+func (*DeleteTenantDEKRequest) Descriptor() ([]byte, []int) {
+	return file_clusterctlv1_clusterctl_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *DeleteTenantDEKRequest) GetTenantId() uint32 {
+	if x != nil {
+		return x.TenantId
+	}
+	return 0
+}
+
+func (x *DeleteTenantDEKRequest) GetIfTableRevisionEq() uint64 {
+	if x != nil {
+		return x.IfTableRevisionEq
+	}
+	return 0
+}
+
+type DeleteTenantDEKResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TableRevision uint64                 `protobuf:"varint,1,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteTenantDEKResponse) Reset() {
+	*x = DeleteTenantDEKResponse{}
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteTenantDEKResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteTenantDEKResponse) ProtoMessage() {}
+
+func (x *DeleteTenantDEKResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteTenantDEKResponse.ProtoReflect.Descriptor instead.
+func (*DeleteTenantDEKResponse) Descriptor() ([]byte, []int) {
+	return file_clusterctlv1_clusterctl_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *DeleteTenantDEKResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
+type ListTenantDEKsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListTenantDEKsRequest) Reset() {
+	*x = ListTenantDEKsRequest{}
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListTenantDEKsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListTenantDEKsRequest) ProtoMessage() {}
+
+func (x *ListTenantDEKsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListTenantDEKsRequest.ProtoReflect.Descriptor instead.
+func (*ListTenantDEKsRequest) Descriptor() ([]byte, []int) {
+	return file_clusterctlv1_clusterctl_proto_rawDescGZIP(), []int{36}
+}
+
+type ListTenantDEKsResponse struct {
+	state         protoimpl.MessageState      `protogen:"open.v1"`
+	TenantDeks    []*enginev1.TenantDEKRecord `protobuf:"bytes,1,rep,name=tenant_deks,json=tenantDeks,proto3" json:"tenant_deks,omitempty"`
+	TableRevision uint64                      `protobuf:"varint,2,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListTenantDEKsResponse) Reset() {
+	*x = ListTenantDEKsResponse{}
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListTenantDEKsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListTenantDEKsResponse) ProtoMessage() {}
+
+func (x *ListTenantDEKsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListTenantDEKsResponse.ProtoReflect.Descriptor instead.
+func (*ListTenantDEKsResponse) Descriptor() ([]byte, []int) {
+	return file_clusterctlv1_clusterctl_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *ListTenantDEKsResponse) GetTenantDeks() []*enginev1.TenantDEKRecord {
+	if x != nil {
+		return x.TenantDeks
+	}
+	return nil
+}
+
+func (x *ListTenantDEKsResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
 // LeaderHint is attached as a connect.Error detail on
 // connect.CodeUnavailable returned by mutating ClusterCtl RPCs when
 // the receiving node is not the metadata leader. Clients (joiner's
@@ -1685,7 +1969,7 @@ type LeaderHint struct {
 
 func (x *LeaderHint) Reset() {
 	*x = LeaderHint{}
-	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[32]
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1697,7 +1981,7 @@ func (x *LeaderHint) String() string {
 func (*LeaderHint) ProtoMessage() {}
 
 func (x *LeaderHint) ProtoReflect() protoreflect.Message {
-	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[32]
+	mi := &file_clusterctlv1_clusterctl_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1710,7 +1994,7 @@ func (x *LeaderHint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaderHint.ProtoReflect.Descriptor instead.
 func (*LeaderHint) Descriptor() ([]byte, []int) {
-	return file_clusterctlv1_clusterctl_proto_rawDescGZIP(), []int{32}
+	return file_clusterctlv1_clusterctl_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *LeaderHint) GetNodeId() uint64 {
@@ -1826,11 +2110,26 @@ const file_clusterctlv1_clusterctl_proto_rawDesc = "" +
 	"\x15DescribeTenantRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\rR\btenantId\"P\n" +
 	"\x16DescribeTenantResponse\x126\n" +
-	"\x06tenant\x18\x01 \x01(\v2\x1e.reflow.engine.v1.TenantRecordR\x06tenant\"L\n" +
+	"\x06tenant\x18\x01 \x01(\v2\x1e.reflow.engine.v1.TenantRecordR\x06tenant\"\x84\x01\n" +
+	"\x16UpsertTenantDEKRequest\x129\n" +
+	"\x06record\x18\x01 \x01(\v2!.reflow.engine.v1.TenantDEKRecordR\x06record\x12/\n" +
+	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"@\n" +
+	"\x17UpsertTenantDEKResponse\x12%\n" +
+	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"f\n" +
+	"\x16DeleteTenantDEKRequest\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\rR\btenantId\x12/\n" +
+	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"@\n" +
+	"\x17DeleteTenantDEKResponse\x12%\n" +
+	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"\x17\n" +
+	"\x15ListTenantDEKsRequest\"\x83\x01\n" +
+	"\x16ListTenantDEKsResponse\x12B\n" +
+	"\vtenant_deks\x18\x01 \x03(\v2!.reflow.engine.v1.TenantDEKRecordR\n" +
+	"tenantDeks\x12%\n" +
+	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"L\n" +
 	"\n" +
 	"LeaderHint\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12%\n" +
-	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\xfa\f\n" +
+	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\xc7\x0f\n" +
 	"\n" +
 	"ClusterCtl\x12V\n" +
 	"\aAddNode\x12$.reflow.clusterctl.v1.AddNodeRequest\x1a%.reflow.clusterctl.v1.AddNodeResponse\x12W\n" +
@@ -1850,7 +2149,10 @@ const file_clusterctlv1_clusterctl_proto_rawDesc = "" +
 	"\fUpsertTenant\x12).reflow.clusterctl.v1.UpsertTenantRequest\x1a*.reflow.clusterctl.v1.UpsertTenantResponse\x12e\n" +
 	"\fDeleteTenant\x12).reflow.clusterctl.v1.DeleteTenantRequest\x1a*.reflow.clusterctl.v1.DeleteTenantResponse\x12b\n" +
 	"\vListTenants\x12(.reflow.clusterctl.v1.ListTenantsRequest\x1a).reflow.clusterctl.v1.ListTenantsResponse\x12k\n" +
-	"\x0eDescribeTenant\x12+.reflow.clusterctl.v1.DescribeTenantRequest\x1a,.reflow.clusterctl.v1.DescribeTenantResponseB;Z9github.com/twinfer/reflow/proto/clusterctlv1;clusterctlv1b\x06proto3"
+	"\x0eDescribeTenant\x12+.reflow.clusterctl.v1.DescribeTenantRequest\x1a,.reflow.clusterctl.v1.DescribeTenantResponse\x12n\n" +
+	"\x0fUpsertTenantDEK\x12,.reflow.clusterctl.v1.UpsertTenantDEKRequest\x1a-.reflow.clusterctl.v1.UpsertTenantDEKResponse\x12n\n" +
+	"\x0fDeleteTenantDEK\x12,.reflow.clusterctl.v1.DeleteTenantDEKRequest\x1a-.reflow.clusterctl.v1.DeleteTenantDEKResponse\x12k\n" +
+	"\x0eListTenantDEKs\x12+.reflow.clusterctl.v1.ListTenantDEKsRequest\x1a,.reflow.clusterctl.v1.ListTenantDEKsResponseB;Z9github.com/twinfer/reflow/proto/clusterctlv1;clusterctlv1b\x06proto3"
 
 var (
 	file_clusterctlv1_clusterctl_proto_rawDescOnce sync.Once
@@ -1864,7 +2166,7 @@ func file_clusterctlv1_clusterctl_proto_rawDescGZIP() []byte {
 	return file_clusterctlv1_clusterctl_proto_rawDescData
 }
 
-var file_clusterctlv1_clusterctl_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
+var file_clusterctlv1_clusterctl_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
 var file_clusterctlv1_clusterctl_proto_goTypes = []any{
 	(*AddNodeRequest)(nil),            // 0: reflow.clusterctl.v1.AddNodeRequest
 	(*AddNodeResponse)(nil),           // 1: reflow.clusterctl.v1.AddNodeResponse
@@ -1898,60 +2200,75 @@ var file_clusterctlv1_clusterctl_proto_goTypes = []any{
 	(*ListTenantsResponse)(nil),       // 29: reflow.clusterctl.v1.ListTenantsResponse
 	(*DescribeTenantRequest)(nil),     // 30: reflow.clusterctl.v1.DescribeTenantRequest
 	(*DescribeTenantResponse)(nil),    // 31: reflow.clusterctl.v1.DescribeTenantResponse
-	(*LeaderHint)(nil),                // 32: reflow.clusterctl.v1.LeaderHint
-	nil,                               // 33: reflow.clusterctl.v1.RebalanceAdviseResponse.LpsPerShardEntry
-	(*enginev1.NodeMembership)(nil),   // 34: reflow.engine.v1.NodeMembership
-	(*enginev1.PartitionTable)(nil),   // 35: reflow.engine.v1.PartitionTable
-	(*enginev1.LPTransferRecord)(nil), // 36: reflow.engine.v1.LPTransferRecord
-	(*enginev1.TenantRecord)(nil),     // 37: reflow.engine.v1.TenantRecord
+	(*UpsertTenantDEKRequest)(nil),    // 32: reflow.clusterctl.v1.UpsertTenantDEKRequest
+	(*UpsertTenantDEKResponse)(nil),   // 33: reflow.clusterctl.v1.UpsertTenantDEKResponse
+	(*DeleteTenantDEKRequest)(nil),    // 34: reflow.clusterctl.v1.DeleteTenantDEKRequest
+	(*DeleteTenantDEKResponse)(nil),   // 35: reflow.clusterctl.v1.DeleteTenantDEKResponse
+	(*ListTenantDEKsRequest)(nil),     // 36: reflow.clusterctl.v1.ListTenantDEKsRequest
+	(*ListTenantDEKsResponse)(nil),    // 37: reflow.clusterctl.v1.ListTenantDEKsResponse
+	(*LeaderHint)(nil),                // 38: reflow.clusterctl.v1.LeaderHint
+	nil,                               // 39: reflow.clusterctl.v1.RebalanceAdviseResponse.LpsPerShardEntry
+	(*enginev1.NodeMembership)(nil),   // 40: reflow.engine.v1.NodeMembership
+	(*enginev1.PartitionTable)(nil),   // 41: reflow.engine.v1.PartitionTable
+	(*enginev1.LPTransferRecord)(nil), // 42: reflow.engine.v1.LPTransferRecord
+	(*enginev1.TenantRecord)(nil),     // 43: reflow.engine.v1.TenantRecord
+	(*enginev1.TenantDEKRecord)(nil),  // 44: reflow.engine.v1.TenantDEKRecord
 }
 var file_clusterctlv1_clusterctl_proto_depIdxs = []int32{
-	34, // 0: reflow.clusterctl.v1.ListNodesResponse.nodes:type_name -> reflow.engine.v1.NodeMembership
-	35, // 1: reflow.clusterctl.v1.ListPartitionsResponse.table:type_name -> reflow.engine.v1.PartitionTable
+	40, // 0: reflow.clusterctl.v1.ListNodesResponse.nodes:type_name -> reflow.engine.v1.NodeMembership
+	41, // 1: reflow.clusterctl.v1.ListPartitionsResponse.table:type_name -> reflow.engine.v1.PartitionTable
 	11, // 2: reflow.clusterctl.v1.ListSnapshotsResponse.snapshots:type_name -> reflow.clusterctl.v1.SnapshotRef
-	36, // 3: reflow.clusterctl.v1.ListLPTransfersResponse.records:type_name -> reflow.engine.v1.LPTransferRecord
-	33, // 4: reflow.clusterctl.v1.RebalanceAdviseResponse.lps_per_shard:type_name -> reflow.clusterctl.v1.RebalanceAdviseResponse.LpsPerShardEntry
+	42, // 3: reflow.clusterctl.v1.ListLPTransfersResponse.records:type_name -> reflow.engine.v1.LPTransferRecord
+	39, // 4: reflow.clusterctl.v1.RebalanceAdviseResponse.lps_per_shard:type_name -> reflow.clusterctl.v1.RebalanceAdviseResponse.LpsPerShardEntry
 	19, // 5: reflow.clusterctl.v1.RebalanceAdviseResponse.would_transfer:type_name -> reflow.clusterctl.v1.RebalanceMove
-	37, // 6: reflow.clusterctl.v1.UpsertTenantRequest.record:type_name -> reflow.engine.v1.TenantRecord
-	37, // 7: reflow.clusterctl.v1.ListTenantsResponse.tenants:type_name -> reflow.engine.v1.TenantRecord
-	37, // 8: reflow.clusterctl.v1.DescribeTenantResponse.tenant:type_name -> reflow.engine.v1.TenantRecord
-	0,  // 9: reflow.clusterctl.v1.ClusterCtl.AddNode:input_type -> reflow.clusterctl.v1.AddNodeRequest
-	0,  // 10: reflow.clusterctl.v1.ClusterCtl.SelfJoin:input_type -> reflow.clusterctl.v1.AddNodeRequest
-	2,  // 11: reflow.clusterctl.v1.ClusterCtl.RemoveNode:input_type -> reflow.clusterctl.v1.RemoveNodeRequest
-	4,  // 12: reflow.clusterctl.v1.ClusterCtl.ListNodes:input_type -> reflow.clusterctl.v1.ListNodesRequest
-	6,  // 13: reflow.clusterctl.v1.ClusterCtl.ListPartitions:input_type -> reflow.clusterctl.v1.ListPartitionsRequest
-	8,  // 14: reflow.clusterctl.v1.ClusterCtl.CreateSnapshot:input_type -> reflow.clusterctl.v1.CreateSnapshotRequest
-	10, // 15: reflow.clusterctl.v1.ClusterCtl.ListSnapshots:input_type -> reflow.clusterctl.v1.ListSnapshotsRequest
-	13, // 16: reflow.clusterctl.v1.ClusterCtl.DeleteSnapshot:input_type -> reflow.clusterctl.v1.DeleteSnapshotRequest
-	15, // 17: reflow.clusterctl.v1.ClusterCtl.TransferLP:input_type -> reflow.clusterctl.v1.TransferLPRequest
-	17, // 18: reflow.clusterctl.v1.ClusterCtl.ListLPTransfers:input_type -> reflow.clusterctl.v1.ListLPTransfersRequest
-	20, // 19: reflow.clusterctl.v1.ClusterCtl.RebalanceAdvise:input_type -> reflow.clusterctl.v1.RebalanceAdviseRequest
-	22, // 20: reflow.clusterctl.v1.ClusterCtl.RebalanceDrain:input_type -> reflow.clusterctl.v1.RebalanceDrainRequest
-	24, // 21: reflow.clusterctl.v1.ClusterCtl.UpsertTenant:input_type -> reflow.clusterctl.v1.UpsertTenantRequest
-	26, // 22: reflow.clusterctl.v1.ClusterCtl.DeleteTenant:input_type -> reflow.clusterctl.v1.DeleteTenantRequest
-	28, // 23: reflow.clusterctl.v1.ClusterCtl.ListTenants:input_type -> reflow.clusterctl.v1.ListTenantsRequest
-	30, // 24: reflow.clusterctl.v1.ClusterCtl.DescribeTenant:input_type -> reflow.clusterctl.v1.DescribeTenantRequest
-	1,  // 25: reflow.clusterctl.v1.ClusterCtl.AddNode:output_type -> reflow.clusterctl.v1.AddNodeResponse
-	1,  // 26: reflow.clusterctl.v1.ClusterCtl.SelfJoin:output_type -> reflow.clusterctl.v1.AddNodeResponse
-	3,  // 27: reflow.clusterctl.v1.ClusterCtl.RemoveNode:output_type -> reflow.clusterctl.v1.RemoveNodeResponse
-	5,  // 28: reflow.clusterctl.v1.ClusterCtl.ListNodes:output_type -> reflow.clusterctl.v1.ListNodesResponse
-	7,  // 29: reflow.clusterctl.v1.ClusterCtl.ListPartitions:output_type -> reflow.clusterctl.v1.ListPartitionsResponse
-	9,  // 30: reflow.clusterctl.v1.ClusterCtl.CreateSnapshot:output_type -> reflow.clusterctl.v1.CreateSnapshotResponse
-	12, // 31: reflow.clusterctl.v1.ClusterCtl.ListSnapshots:output_type -> reflow.clusterctl.v1.ListSnapshotsResponse
-	14, // 32: reflow.clusterctl.v1.ClusterCtl.DeleteSnapshot:output_type -> reflow.clusterctl.v1.DeleteSnapshotResponse
-	16, // 33: reflow.clusterctl.v1.ClusterCtl.TransferLP:output_type -> reflow.clusterctl.v1.TransferLPResponse
-	18, // 34: reflow.clusterctl.v1.ClusterCtl.ListLPTransfers:output_type -> reflow.clusterctl.v1.ListLPTransfersResponse
-	21, // 35: reflow.clusterctl.v1.ClusterCtl.RebalanceAdvise:output_type -> reflow.clusterctl.v1.RebalanceAdviseResponse
-	23, // 36: reflow.clusterctl.v1.ClusterCtl.RebalanceDrain:output_type -> reflow.clusterctl.v1.RebalanceDrainResponse
-	25, // 37: reflow.clusterctl.v1.ClusterCtl.UpsertTenant:output_type -> reflow.clusterctl.v1.UpsertTenantResponse
-	27, // 38: reflow.clusterctl.v1.ClusterCtl.DeleteTenant:output_type -> reflow.clusterctl.v1.DeleteTenantResponse
-	29, // 39: reflow.clusterctl.v1.ClusterCtl.ListTenants:output_type -> reflow.clusterctl.v1.ListTenantsResponse
-	31, // 40: reflow.clusterctl.v1.ClusterCtl.DescribeTenant:output_type -> reflow.clusterctl.v1.DescribeTenantResponse
-	25, // [25:41] is the sub-list for method output_type
-	9,  // [9:25] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	43, // 6: reflow.clusterctl.v1.UpsertTenantRequest.record:type_name -> reflow.engine.v1.TenantRecord
+	43, // 7: reflow.clusterctl.v1.ListTenantsResponse.tenants:type_name -> reflow.engine.v1.TenantRecord
+	43, // 8: reflow.clusterctl.v1.DescribeTenantResponse.tenant:type_name -> reflow.engine.v1.TenantRecord
+	44, // 9: reflow.clusterctl.v1.UpsertTenantDEKRequest.record:type_name -> reflow.engine.v1.TenantDEKRecord
+	44, // 10: reflow.clusterctl.v1.ListTenantDEKsResponse.tenant_deks:type_name -> reflow.engine.v1.TenantDEKRecord
+	0,  // 11: reflow.clusterctl.v1.ClusterCtl.AddNode:input_type -> reflow.clusterctl.v1.AddNodeRequest
+	0,  // 12: reflow.clusterctl.v1.ClusterCtl.SelfJoin:input_type -> reflow.clusterctl.v1.AddNodeRequest
+	2,  // 13: reflow.clusterctl.v1.ClusterCtl.RemoveNode:input_type -> reflow.clusterctl.v1.RemoveNodeRequest
+	4,  // 14: reflow.clusterctl.v1.ClusterCtl.ListNodes:input_type -> reflow.clusterctl.v1.ListNodesRequest
+	6,  // 15: reflow.clusterctl.v1.ClusterCtl.ListPartitions:input_type -> reflow.clusterctl.v1.ListPartitionsRequest
+	8,  // 16: reflow.clusterctl.v1.ClusterCtl.CreateSnapshot:input_type -> reflow.clusterctl.v1.CreateSnapshotRequest
+	10, // 17: reflow.clusterctl.v1.ClusterCtl.ListSnapshots:input_type -> reflow.clusterctl.v1.ListSnapshotsRequest
+	13, // 18: reflow.clusterctl.v1.ClusterCtl.DeleteSnapshot:input_type -> reflow.clusterctl.v1.DeleteSnapshotRequest
+	15, // 19: reflow.clusterctl.v1.ClusterCtl.TransferLP:input_type -> reflow.clusterctl.v1.TransferLPRequest
+	17, // 20: reflow.clusterctl.v1.ClusterCtl.ListLPTransfers:input_type -> reflow.clusterctl.v1.ListLPTransfersRequest
+	20, // 21: reflow.clusterctl.v1.ClusterCtl.RebalanceAdvise:input_type -> reflow.clusterctl.v1.RebalanceAdviseRequest
+	22, // 22: reflow.clusterctl.v1.ClusterCtl.RebalanceDrain:input_type -> reflow.clusterctl.v1.RebalanceDrainRequest
+	24, // 23: reflow.clusterctl.v1.ClusterCtl.UpsertTenant:input_type -> reflow.clusterctl.v1.UpsertTenantRequest
+	26, // 24: reflow.clusterctl.v1.ClusterCtl.DeleteTenant:input_type -> reflow.clusterctl.v1.DeleteTenantRequest
+	28, // 25: reflow.clusterctl.v1.ClusterCtl.ListTenants:input_type -> reflow.clusterctl.v1.ListTenantsRequest
+	30, // 26: reflow.clusterctl.v1.ClusterCtl.DescribeTenant:input_type -> reflow.clusterctl.v1.DescribeTenantRequest
+	32, // 27: reflow.clusterctl.v1.ClusterCtl.UpsertTenantDEK:input_type -> reflow.clusterctl.v1.UpsertTenantDEKRequest
+	34, // 28: reflow.clusterctl.v1.ClusterCtl.DeleteTenantDEK:input_type -> reflow.clusterctl.v1.DeleteTenantDEKRequest
+	36, // 29: reflow.clusterctl.v1.ClusterCtl.ListTenantDEKs:input_type -> reflow.clusterctl.v1.ListTenantDEKsRequest
+	1,  // 30: reflow.clusterctl.v1.ClusterCtl.AddNode:output_type -> reflow.clusterctl.v1.AddNodeResponse
+	1,  // 31: reflow.clusterctl.v1.ClusterCtl.SelfJoin:output_type -> reflow.clusterctl.v1.AddNodeResponse
+	3,  // 32: reflow.clusterctl.v1.ClusterCtl.RemoveNode:output_type -> reflow.clusterctl.v1.RemoveNodeResponse
+	5,  // 33: reflow.clusterctl.v1.ClusterCtl.ListNodes:output_type -> reflow.clusterctl.v1.ListNodesResponse
+	7,  // 34: reflow.clusterctl.v1.ClusterCtl.ListPartitions:output_type -> reflow.clusterctl.v1.ListPartitionsResponse
+	9,  // 35: reflow.clusterctl.v1.ClusterCtl.CreateSnapshot:output_type -> reflow.clusterctl.v1.CreateSnapshotResponse
+	12, // 36: reflow.clusterctl.v1.ClusterCtl.ListSnapshots:output_type -> reflow.clusterctl.v1.ListSnapshotsResponse
+	14, // 37: reflow.clusterctl.v1.ClusterCtl.DeleteSnapshot:output_type -> reflow.clusterctl.v1.DeleteSnapshotResponse
+	16, // 38: reflow.clusterctl.v1.ClusterCtl.TransferLP:output_type -> reflow.clusterctl.v1.TransferLPResponse
+	18, // 39: reflow.clusterctl.v1.ClusterCtl.ListLPTransfers:output_type -> reflow.clusterctl.v1.ListLPTransfersResponse
+	21, // 40: reflow.clusterctl.v1.ClusterCtl.RebalanceAdvise:output_type -> reflow.clusterctl.v1.RebalanceAdviseResponse
+	23, // 41: reflow.clusterctl.v1.ClusterCtl.RebalanceDrain:output_type -> reflow.clusterctl.v1.RebalanceDrainResponse
+	25, // 42: reflow.clusterctl.v1.ClusterCtl.UpsertTenant:output_type -> reflow.clusterctl.v1.UpsertTenantResponse
+	27, // 43: reflow.clusterctl.v1.ClusterCtl.DeleteTenant:output_type -> reflow.clusterctl.v1.DeleteTenantResponse
+	29, // 44: reflow.clusterctl.v1.ClusterCtl.ListTenants:output_type -> reflow.clusterctl.v1.ListTenantsResponse
+	31, // 45: reflow.clusterctl.v1.ClusterCtl.DescribeTenant:output_type -> reflow.clusterctl.v1.DescribeTenantResponse
+	33, // 46: reflow.clusterctl.v1.ClusterCtl.UpsertTenantDEK:output_type -> reflow.clusterctl.v1.UpsertTenantDEKResponse
+	35, // 47: reflow.clusterctl.v1.ClusterCtl.DeleteTenantDEK:output_type -> reflow.clusterctl.v1.DeleteTenantDEKResponse
+	37, // 48: reflow.clusterctl.v1.ClusterCtl.ListTenantDEKs:output_type -> reflow.clusterctl.v1.ListTenantDEKsResponse
+	30, // [30:49] is the sub-list for method output_type
+	11, // [11:30] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_clusterctlv1_clusterctl_proto_init() }
@@ -1965,7 +2282,7 @@ func file_clusterctlv1_clusterctl_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_clusterctlv1_clusterctl_proto_rawDesc), len(file_clusterctlv1_clusterctl_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   34,
+			NumMessages:   40,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

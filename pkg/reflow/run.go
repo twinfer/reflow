@@ -141,6 +141,16 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	lpOwnersNotifier := cluster.NewTableNotifier()
 	rebalanceDrainNotifier := cluster.NewTableNotifier()
 	tenantNotifier := cluster.NewTableNotifier()
+	tenantDEKNotifier := cluster.NewTableNotifier()
+
+	// TenantDEKResolver constructed before HostConfig so the per-shard
+	// StoreFactory closures pick it up. defaultAEAD is nil today —
+	// tenant_id=0 (anonymous / single-tenant traffic) passes through
+	// the encstore wrapper as plaintext. Encryption-at-rest for tenant
+	// 0 would need a bootstrap KMS pointer; deferred until operators
+	// have a use case. RunReconciler is started further down, after
+	// engine.NewHost so the Reader adapter has a live *engine.Host.
+	tenantDEKs := secretstore.NewTenantDEKResolver(metricsRegisterer, logger, nil)
 
 	hcfg := engine.HostConfig{
 		NodeID:             cfg.Node.ID,
@@ -166,7 +176,9 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			LPOwnersTable:       lpOwnersNotifier,
 			RebalanceDrainTable: rebalanceDrainNotifier,
 			TenantTable:         tenantNotifier,
+			TenantDEKTable:      tenantDEKNotifier,
 		},
+		TenantDEKResolver: tenantDEKs,
 		Rebalance: rebalance.Config{
 			Mode:                       cfg.Rebalance.Mode,
 			MaxConcurrentTransfers:     cfg.Rebalance.MaxConcurrentTransfers,
@@ -303,6 +315,8 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		webhookSourceNotifier:  webhookSourceNotifier,
 		secretNotifier:         secretNotifier,
 		lpOwnersNotifier:       lpOwnersNotifier,
+		tenantDEKNotifier:      tenantDEKNotifier,
+		tenantDEKs:             tenantDEKs,
 		logger:                 logger,
 	})
 	if herr != nil {
@@ -469,6 +483,8 @@ type startupDeps struct {
 	webhookSourceNotifier  *cluster.TableNotifier
 	secretNotifier         *cluster.TableNotifier
 	lpOwnersNotifier       *cluster.TableNotifier
+	tenantDEKNotifier      *cluster.TableNotifier
+	tenantDEKs             *secretstore.TenantDEKResolver
 	logger                 *slog.Logger
 }
 
@@ -695,6 +711,19 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		}
 	}()
 
+	// TenantDEKResolver was constructed pre-HostConfig and handed to
+	// the encstore wrapper at the StoreFactory closures. The reconcile
+	// loop starts here so the Reader adapter has a live *engine.Host.
+	// Until the first reconcile completes, encstore.Lookup returns
+	// ErrTenantDEKUnavailable for any non-default tenant — apply path
+	// reads observe Unavailable instead of corruption.
+	go func() {
+		reader := tenantDEKReader{host: eh}
+		if rerr := d.tenantDEKs.RunReconciler(ctx, d.tenantDEKNotifier.Subscribe(), reader); rerr != nil && !errors.Is(rerr, context.Canceled) {
+			logger.Warn("reflow: tenant_dek reconcile loop exited", "err", rerr)
+		}
+	}()
+
 	multiNode := len(cfg.Cluster.Peers) > 1
 	ingressRT, ingressCreds, webhookMgr, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, secrets, metrics, metricsRegisterer, logger)
 	if err != nil {
@@ -849,6 +878,22 @@ func (r secretReader) ListSecrets(ctx context.Context) ([]*enginev1.SecretRecord
 	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	list, err := r.host.Secrets(readCtx)
+	if err != nil {
+		return nil, 0, err
+	}
+	return list.Records, list.TableRevision, nil
+}
+
+// tenantDEKReader is the Reader adapter the TenantDEKResolver uses
+// to pull the latest set of TenantDEKRecord rows from shard 0.
+type tenantDEKReader struct {
+	host *engine.Host
+}
+
+func (r tenantDEKReader) ListTenantDEKs(ctx context.Context) ([]*enginev1.TenantDEKRecord, uint64, error) {
+	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	list, err := r.host.TenantDEKs(readCtx)
 	if err != nil {
 		return nil, 0, err
 	}

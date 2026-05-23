@@ -139,7 +139,7 @@ func dispatchPKI(args []string) error {
 // `reflowd config`.
 func dispatchCluster(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: reflowd cluster {add-node|remove-node|nodes|partitions|snapshot|transfer-lp|list-lp-transfers|tenants} [flags]")
+		return fmt.Errorf("usage: reflowd cluster {add-node|remove-node|nodes|partitions|snapshot|transfer-lp|list-lp-transfers|tenants|tenant-deks} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -164,6 +164,8 @@ func dispatchCluster(ctx context.Context, args []string) error {
 		return cmdRebalanceDrain(ctx, rest)
 	case "tenants":
 		return cmdTenants(ctx, rest)
+	case "tenant-deks":
+		return cmdTenantDEKs(ctx, rest)
 	default:
 		return fmt.Errorf("reflowd cluster: unknown subcommand %q", sub)
 	}

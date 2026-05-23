@@ -176,7 +176,7 @@ func (r *Resolver) Reconcile(ctx context.Context, desired []*enginev1.SecretReco
 		if name == "" {
 			continue
 		}
-		bytes, err := resolveRemoteEncrypted(ctx, rec.GetRemoteEncrypted(), name, r.metrics)
+		bytes, err := ResolveRemoteEncrypted(ctx, rec.GetRemoteEncrypted(), []byte(name), r.metrics)
 		if err != nil {
 			r.log.Warn("secretstore: resolve secret",
 				"name", name, "err", err)
@@ -194,10 +194,20 @@ func (r *Resolver) Reconcile(ctx context.Context, desired []*enginev1.SecretReco
 	return nil
 }
 
-// resolveRemoteEncrypted is the per-record fetch + decrypt path.
-// Returns plaintext bytes on success; emits stage-labeled metrics on
-// any failure.
-func resolveRemoteEncrypted(ctx context.Context, re *enginev1.RemoteEncryptedSecret, name string, m *Metrics) ([]byte, error) {
+// ResolveRemoteEncrypted is the per-record fetch + decrypt path used
+// by both Resolver (for shard 0 SecretTable rows) and TenantDEKResolver
+// (for shard 0 TenantDEKTable rows). Fetches ciphertext from
+// gocloud.dev/blob, dispatches the KEK URI through Tink's KMSClient
+// registry, and AEAD-decrypts with the caller-supplied aad. Returns
+// plaintext bytes on success; emits stage-labeled metrics on any
+// failure (the metrics argument may be nil if the caller doesn't
+// participate in the shared instrumentation).
+//
+// aad binds the ciphertext to the row identity. SecretRecord passes
+// []byte(record.name); TenantDEKRecord likewise passes
+// []byte(record.name) — both rely on rename-is-re-encrypt to prevent
+// cross-row ciphertext replay.
+func ResolveRemoteEncrypted(ctx context.Context, re *enginev1.RemoteEncryptedSecret, aad []byte, m *Metrics) ([]byte, error) {
 	if re == nil {
 		return nil, errors.New("source.remote_encrypted is nil")
 	}
@@ -243,7 +253,7 @@ func resolveRemoteEncrypted(ctx context.Context, re *enginev1.RemoteEncryptedSec
 	if err != nil {
 		return nil, bumpErr(stageKMSGetAEAD, fmt.Errorf("GetAEAD(%q): %w", re.GetKekUri(), err))
 	}
-	pt, err := aead.Decrypt(ct, []byte(name))
+	pt, err := aead.Decrypt(ct, aad)
 	if err != nil {
 		return nil, bumpErr(stageDecrypt, fmt.Errorf("AEAD.Decrypt: %w", err))
 	}

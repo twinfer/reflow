@@ -598,6 +598,116 @@ func validateTenantRecord(rec *enginev1.TenantRecord) error {
 	return nil
 }
 
+// UpsertTenantDEK inserts or updates one TenantDEKRecord. tenant_id is
+// caller-supplied (no server-side allocation — DEKs are addressed by
+// the existing tenant id, not a separate sequence). name is required
+// (it's the AAD for the KEK→DEK unwrap, so rotation = new name + new
+// ciphertext). blob_uri and kek_uri are required.
+func (s *Server) UpsertTenantDEK(ctx context.Context, req *connect.Request[clusterctlv1.UpsertTenantDEKRequest]) (*connect.Response[clusterctlv1.UpsertTenantDEKResponse], error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
+	rec := req.Msg.GetRecord()
+	if rec == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("clusterctl: record required"))
+	}
+	if err := validateTenantDEKRecord(rec); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	cmd := &enginev1.Command{
+		Kind: &enginev1.Command_UpsertTenantDek{
+			UpsertTenantDek: &enginev1.UpsertTenantDEK{Record: rec},
+		},
+	}
+	if err := s.proposeCAS(callCtx, cmd, req.Msg.GetIfTableRevisionEq()); err != nil {
+		return nil, err
+	}
+	newRev, err := s.readTenantDEKRevision(callCtx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("clusterctl: read post-apply revision: %w", err))
+	}
+	return connect.NewResponse(&clusterctlv1.UpsertTenantDEKResponse{TableRevision: newRev}), nil
+}
+
+// DeleteTenantDEK removes the row identified by tenant_id. Running
+// this makes the tenant's data permanently unrecoverable.
+func (s *Server) DeleteTenantDEK(ctx context.Context, req *connect.Request[clusterctlv1.DeleteTenantDEKRequest]) (*connect.Response[clusterctlv1.DeleteTenantDEKResponse], error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
+	id := req.Msg.GetTenantId()
+	if id == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("clusterctl: tenant_id required (0 is the default-tenant sentinel)"))
+	}
+	cmd := &enginev1.Command{
+		Kind: &enginev1.Command_DeleteTenantDek{
+			DeleteTenantDek: &enginev1.DeleteTenantDEK{TenantId: id},
+		},
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	if err := s.proposeCAS(callCtx, cmd, req.Msg.GetIfTableRevisionEq()); err != nil {
+		return nil, err
+	}
+	newRev, err := s.readTenantDEKRevision(callCtx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("clusterctl: read post-apply revision: %w", err))
+	}
+	return connect.NewResponse(&clusterctlv1.DeleteTenantDEKResponse{TableRevision: newRev}), nil
+}
+
+// ListTenantDEKs returns every TenantDEKRecord plus the table
+// revision in one SyncRead. No leader gate.
+func (s *Server) ListTenantDEKs(ctx context.Context, _ *connect.Request[clusterctlv1.ListTenantDEKsRequest]) (*connect.Response[clusterctlv1.ListTenantDEKsResponse], error) {
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	list, err := s.host.TenantDEKs(callCtx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable,
+			fmt.Errorf("clusterctl: read tenant_deks: %w", err))
+	}
+	return connect.NewResponse(&clusterctlv1.ListTenantDEKsResponse{
+		TenantDeks:    list.Records,
+		TableRevision: list.TableRevision,
+	}), nil
+}
+
+func (s *Server) readTenantDEKRevision(ctx context.Context) (uint64, error) {
+	list, err := s.host.TenantDEKs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return list.TableRevision, nil
+}
+
+// validateTenantDEKRecord enforces shape rules on a TenantDEKRecord.
+// tenant_id must be non-zero (the default tenant uses a built-in
+// cluster-wide AEAD); name + blob_uri + kek_uri are required.
+func validateTenantDEKRecord(rec *enginev1.TenantDEKRecord) error {
+	if rec.GetTenantId() == 0 {
+		return errors.New("tenant_id is required (0 is the default-tenant sentinel)")
+	}
+	if rec.GetName() == "" {
+		return errors.New("name is required")
+	}
+	re := rec.GetRemoteEncrypted()
+	if re == nil {
+		return errors.New("remote_encrypted is required")
+	}
+	if re.GetBlobUri() == "" {
+		return errors.New("remote_encrypted.blob_uri is required")
+	}
+	if re.GetKekUri() == "" {
+		return errors.New("remote_encrypted.kek_uri is required")
+	}
+	return nil
+}
+
 // replicaSetContainsID is a small predicate; cluster has the same logic
 // but its package is below ours in the import graph.
 func replicaSetContainsID(ids []uint64, nodeID uint64) bool {

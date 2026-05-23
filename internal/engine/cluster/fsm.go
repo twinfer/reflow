@@ -60,6 +60,7 @@ type Notifiers struct {
 	LPTransfersTable    *TableNotifier
 	RebalanceDrainTable *TableNotifier
 	TenantTable         *TableNotifier
+	TenantDEKTable      *TableNotifier
 }
 
 // FSM is the dragonboat IOnDiskStateMachine for shard 0. It accepts only
@@ -311,6 +312,10 @@ func (f *FSM) applyCommand(
 		return f.applyUpsertTenant(batch, env, k.UpsertTenant, raftIndex)
 	case *enginev1.Command_DeleteTenant:
 		return f.applyDeleteTenant(batch, env, k.DeleteTenant, raftIndex)
+	case *enginev1.Command_UpsertTenantDek:
+		return f.applyUpsertTenantDEK(batch, env, k.UpsertTenantDek, raftIndex)
+	case *enginev1.Command_DeleteTenantDek:
+		return f.applyDeleteTenantDEK(batch, env, k.DeleteTenantDek, raftIndex)
 	case nil:
 		f.cfg.Log.Warn("cluster: envelope has no command kind", "raft_index", raftIndex)
 		return &applyResult{}, nil
@@ -1325,6 +1330,72 @@ func (f *FSM) applyDeleteTenant(
 	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.TenantTable}}, nil
 }
 
+// applyUpsertTenantDEK writes the TenantDEKRecord and bumps
+// RevisionTableTenantDEK. CAS + notifier semantics mirror
+// applyUpsertSecret. record.tenant_id == 0 is rejected (the default
+// tenant uses a built-in cluster-wide AEAD, not a resolver-fetched DEK).
+func (f *FSM) applyUpsertTenantDEK(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.UpsertTenantDEK,
+	raftIndex uint64,
+) (*applyResult, error) {
+	rec := cmd.GetRecord()
+	if rec == nil || rec.GetTenantId() == 0 || rec.GetName() == "" {
+		f.cfg.Log.Warn("cluster: UpsertTenantDEK missing record, tenant_id, or name; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableTenantDEK)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load tenant_dek revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	if err := (TenantDEKTable{S: batch}).Put(batch, rec); err != nil {
+		return nil, fmt.Errorf("cluster: write tenant_dek: %w", err)
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableTenantDEK, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump tenant_dek revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.TenantDEKTable}}, nil
+}
+
+// applyDeleteTenantDEK removes the TenantDEKRecord and bumps
+// RevisionTableTenantDEK. Same CAS + notifier semantics as Upsert.
+// Delete-of-absent is a no-op (the revision still bumps). Running
+// this makes the tenant's data permanently unrecoverable.
+func (f *FSM) applyDeleteTenantDEK(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.DeleteTenantDEK,
+	raftIndex uint64,
+) (*applyResult, error) {
+	id := cmd.GetTenantId()
+	if id == 0 {
+		f.cfg.Log.Warn("cluster: DeleteTenantDEK zero tenant_id; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableTenantDEK)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load tenant_dek revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	if err := (TenantDEKTable{S: batch}).Delete(batch, id); err != nil {
+		return nil, fmt.Errorf("cluster: delete tenant_dek: %w", err)
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableTenantDEK, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump tenant_dek revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.TenantDEKTable}}, nil
+}
+
 // pickRebalanceTarget returns the ReplicaSet to mutate for a step with
 // the given shardID, plus a setter that lazily inserts a fresh ReplicaSet
 // at that location (used when promoting into an empty set).
@@ -1452,6 +1523,11 @@ type (
 	// named tenant. Resolves via the TenantNameIndexTable then loads the
 	// full row.
 	LookupTenantByName struct{ Name string }
+
+	// LookupTenantDEKs returns *TenantDEKList — every TenantDEKRecord on
+	// shard 0 plus the table's CAS revision in one SyncRead. The
+	// per-node TenantDEKResolver calls this on each TableNotifier wake.
+	LookupTenantDEKs struct{}
 )
 
 // DeploymentList bundles every row in DeploymentTable with the table's
@@ -1508,6 +1584,13 @@ type RebalanceDrainList struct {
 // revision, atomic w.r.t. the read snapshot.
 type TenantList struct {
 	Tenants       []*enginev1.TenantRecord
+	TableRevision uint64
+}
+
+// TenantDEKList bundles every row in TenantDEKTable with the table's
+// CAS revision, atomic w.r.t. the read snapshot.
+type TenantDEKList struct {
+	Records       []*enginev1.TenantDEKRecord
 	TableRevision uint64
 }
 
@@ -1657,6 +1740,16 @@ func (f *FSM) Lookup(query any) (any, error) {
 			return (*enginev1.TenantRecord)(nil), nil
 		}
 		return (TenantTable{S: store}).Get(id)
+	case LookupTenantDEKs:
+		records, err := (TenantDEKTable{S: store}).List()
+		if err != nil {
+			return nil, err
+		}
+		rev, err := (RevisionTable{S: store}).Get(RevisionTableTenantDEK)
+		if err != nil {
+			return nil, err
+		}
+		return &TenantDEKList{Records: records, TableRevision: rev}, nil
 	default:
 		return nil, fmt.Errorf("cluster: unknown lookup type %T", query)
 	}

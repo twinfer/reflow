@@ -797,6 +797,79 @@ func (t TenantNameIndexTable) Delete(b storage.Batch, name string) error {
 	return b.Delete(TenantNameIndexKey(name))
 }
 
+// TenantDEKTable persists TenantDEKRecord rows keyed by 4-byte BE
+// tenant_id. Lives on shard 0 alongside TenantTable. Per-node
+// internal/secretstore.TenantDEKResolver SyncRead-iterates this table
+// on each TableNotifier wake to refresh the in-memory tenant_id→AEAD
+// resolution map; the DEK plaintext never leaves the resolving node's
+// process memory.
+//
+// tenant_id==0 (the default-tenant sentinel) must never appear in a
+// row — the default tenant uses a built-in cluster-wide AEAD wired at
+// Host startup, not a resolver-fetched DEK.
+type TenantDEKTable struct{ S storage.Reader }
+
+func (t TenantDEKTable) Get(tenantID uint32) (*enginev1.TenantDEKRecord, error) {
+	val, closer, err := t.S.Get(TenantDEKKey(tenantID))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer closer.Close()
+	var rec enginev1.TenantDEKRecord
+	if err := proto.Unmarshal(val, &rec); err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (t TenantDEKTable) Put(b storage.Batch, rec *enginev1.TenantDEKRecord) error {
+	if rec.GetTenantId() == 0 {
+		return errors.New("TenantDEKTable.Put: zero tenant_id (reserved for default-tenant sentinel)")
+	}
+	if rec.GetName() == "" {
+		return errors.New("TenantDEKTable.Put: empty name")
+	}
+	buf, err := proto.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return b.Set(TenantDEKKey(rec.GetTenantId()), buf)
+}
+
+// Delete removes the row for tenant_id. Delete-of-absent is a no-op.
+func (t TenantDEKTable) Delete(b storage.Batch, tenantID uint32) error {
+	if tenantID == 0 {
+		return errors.New("TenantDEKTable.Delete: zero tenant_id")
+	}
+	return b.Delete(TenantDEKKey(tenantID))
+}
+
+// List returns every TenantDEKRecord in ascending tenant_id order.
+func (t TenantDEKTable) List() ([]*enginev1.TenantDEKRecord, error) {
+	prefix := TenantDEKPrefix()
+	upper := prefixUpperBound(prefix)
+	iter, err := t.S.NewIter(prefix, upper)
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	var out []*enginev1.TenantDEKRecord
+	for ok := iter.First(); ok; ok = iter.Next() {
+		if !bytes.HasPrefix(iter.Key(), prefix) {
+			continue
+		}
+		var rec enginev1.TenantDEKRecord
+		if err := proto.Unmarshal(iter.Value(), &rec); err != nil {
+			return nil, err
+		}
+		out = append(out, &rec)
+	}
+	return out, iter.Error()
+}
+
 // prefixUpperBound is a local clone of keys.PrefixUpperBound to avoid an
 // import cycle (internal/storage/keys is for the partition codec).
 func prefixUpperBound(prefix []byte) []byte {

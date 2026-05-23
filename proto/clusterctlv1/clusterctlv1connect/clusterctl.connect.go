@@ -104,6 +104,15 @@ const (
 	// ClusterCtlDescribeTenantProcedure is the fully-qualified name of the ClusterCtl's DescribeTenant
 	// RPC.
 	ClusterCtlDescribeTenantProcedure = "/reflow.clusterctl.v1.ClusterCtl/DescribeTenant"
+	// ClusterCtlUpsertTenantDEKProcedure is the fully-qualified name of the ClusterCtl's
+	// UpsertTenantDEK RPC.
+	ClusterCtlUpsertTenantDEKProcedure = "/reflow.clusterctl.v1.ClusterCtl/UpsertTenantDEK"
+	// ClusterCtlDeleteTenantDEKProcedure is the fully-qualified name of the ClusterCtl's
+	// DeleteTenantDEK RPC.
+	ClusterCtlDeleteTenantDEKProcedure = "/reflow.clusterctl.v1.ClusterCtl/DeleteTenantDEK"
+	// ClusterCtlListTenantDEKsProcedure is the fully-qualified name of the ClusterCtl's ListTenantDEKs
+	// RPC.
+	ClusterCtlListTenantDEKsProcedure = "/reflow.clusterctl.v1.ClusterCtl/ListTenantDEKs"
 )
 
 // ClusterCtlClient is a client for the reflow.clusterctl.v1.ClusterCtl service.
@@ -186,6 +195,25 @@ type ClusterCtlClient interface {
 	// DescribeTenant returns one TenantRecord by id, or CodeNotFound.
 	// Reads via SyncRead.
 	DescribeTenant(context.Context, *connect.Request[clusterctlv1.DescribeTenantRequest]) (*connect.Response[clusterctlv1.DescribeTenantResponse], error)
+	// UpsertTenantDEK inserts or replaces one row in shard 0's
+	// TenantDEKTable. The DEK plaintext never traverses Raft — the
+	// record carries a gocloud.dev/blob URI for the ciphertext and a
+	// Tink KMS URI for the KEK that unwraps it. Per-node
+	// internal/secretstore.TenantDEKResolver fetches + decrypts at
+	// reconcile time and materializes a tink.AEAD primitive cached
+	// under record.tenant_id. CAS via if_table_revision_eq. Leader-only.
+	// Server rejects record.tenant_id == 0 (the default tenant uses a
+	// built-in cluster-wide AEAD, not a TenantDEKTable row).
+	UpsertTenantDEK(context.Context, *connect.Request[clusterctlv1.UpsertTenantDEKRequest]) (*connect.Response[clusterctlv1.UpsertTenantDEKResponse], error)
+	// DeleteTenantDEK removes one row from shard 0's TenantDEKTable.
+	// Same CAS semantics as UpsertTenantDEK. Delete-of-absent succeeds
+	// (and bumps the revision). This is the second of the two-step
+	// tenant-wipe procedure — running it makes the tenant's data
+	// permanently unrecoverable (the DEK is gone). Leader-only.
+	DeleteTenantDEK(context.Context, *connect.Request[clusterctlv1.DeleteTenantDEKRequest]) (*connect.Response[clusterctlv1.DeleteTenantDEKResponse], error)
+	// ListTenantDEKs returns every TenantDEKRecord plus the table's CAS
+	// revision in one SyncRead. Reads from any peer.
+	ListTenantDEKs(context.Context, *connect.Request[clusterctlv1.ListTenantDEKsRequest]) (*connect.Response[clusterctlv1.ListTenantDEKsResponse], error)
 }
 
 // NewClusterCtlClient constructs a client for the reflow.clusterctl.v1.ClusterCtl service. By
@@ -295,6 +323,24 @@ func NewClusterCtlClient(httpClient connect.HTTPClient, baseURL string, opts ...
 			connect.WithSchema(clusterCtlMethods.ByName("DescribeTenant")),
 			connect.WithClientOptions(opts...),
 		),
+		upsertTenantDEK: connect.NewClient[clusterctlv1.UpsertTenantDEKRequest, clusterctlv1.UpsertTenantDEKResponse](
+			httpClient,
+			baseURL+ClusterCtlUpsertTenantDEKProcedure,
+			connect.WithSchema(clusterCtlMethods.ByName("UpsertTenantDEK")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteTenantDEK: connect.NewClient[clusterctlv1.DeleteTenantDEKRequest, clusterctlv1.DeleteTenantDEKResponse](
+			httpClient,
+			baseURL+ClusterCtlDeleteTenantDEKProcedure,
+			connect.WithSchema(clusterCtlMethods.ByName("DeleteTenantDEK")),
+			connect.WithClientOptions(opts...),
+		),
+		listTenantDEKs: connect.NewClient[clusterctlv1.ListTenantDEKsRequest, clusterctlv1.ListTenantDEKsResponse](
+			httpClient,
+			baseURL+ClusterCtlListTenantDEKsProcedure,
+			connect.WithSchema(clusterCtlMethods.ByName("ListTenantDEKs")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -316,6 +362,9 @@ type clusterCtlClient struct {
 	deleteTenant    *connect.Client[clusterctlv1.DeleteTenantRequest, clusterctlv1.DeleteTenantResponse]
 	listTenants     *connect.Client[clusterctlv1.ListTenantsRequest, clusterctlv1.ListTenantsResponse]
 	describeTenant  *connect.Client[clusterctlv1.DescribeTenantRequest, clusterctlv1.DescribeTenantResponse]
+	upsertTenantDEK *connect.Client[clusterctlv1.UpsertTenantDEKRequest, clusterctlv1.UpsertTenantDEKResponse]
+	deleteTenantDEK *connect.Client[clusterctlv1.DeleteTenantDEKRequest, clusterctlv1.DeleteTenantDEKResponse]
+	listTenantDEKs  *connect.Client[clusterctlv1.ListTenantDEKsRequest, clusterctlv1.ListTenantDEKsResponse]
 }
 
 // AddNode calls reflow.clusterctl.v1.ClusterCtl.AddNode.
@@ -398,6 +447,21 @@ func (c *clusterCtlClient) DescribeTenant(ctx context.Context, req *connect.Requ
 	return c.describeTenant.CallUnary(ctx, req)
 }
 
+// UpsertTenantDEK calls reflow.clusterctl.v1.ClusterCtl.UpsertTenantDEK.
+func (c *clusterCtlClient) UpsertTenantDEK(ctx context.Context, req *connect.Request[clusterctlv1.UpsertTenantDEKRequest]) (*connect.Response[clusterctlv1.UpsertTenantDEKResponse], error) {
+	return c.upsertTenantDEK.CallUnary(ctx, req)
+}
+
+// DeleteTenantDEK calls reflow.clusterctl.v1.ClusterCtl.DeleteTenantDEK.
+func (c *clusterCtlClient) DeleteTenantDEK(ctx context.Context, req *connect.Request[clusterctlv1.DeleteTenantDEKRequest]) (*connect.Response[clusterctlv1.DeleteTenantDEKResponse], error) {
+	return c.deleteTenantDEK.CallUnary(ctx, req)
+}
+
+// ListTenantDEKs calls reflow.clusterctl.v1.ClusterCtl.ListTenantDEKs.
+func (c *clusterCtlClient) ListTenantDEKs(ctx context.Context, req *connect.Request[clusterctlv1.ListTenantDEKsRequest]) (*connect.Response[clusterctlv1.ListTenantDEKsResponse], error) {
+	return c.listTenantDEKs.CallUnary(ctx, req)
+}
+
 // ClusterCtlHandler is an implementation of the reflow.clusterctl.v1.ClusterCtl service.
 type ClusterCtlHandler interface {
 	// AddNode registers a new peer with shard 0 and enqueues a rebalance
@@ -478,6 +542,25 @@ type ClusterCtlHandler interface {
 	// DescribeTenant returns one TenantRecord by id, or CodeNotFound.
 	// Reads via SyncRead.
 	DescribeTenant(context.Context, *connect.Request[clusterctlv1.DescribeTenantRequest]) (*connect.Response[clusterctlv1.DescribeTenantResponse], error)
+	// UpsertTenantDEK inserts or replaces one row in shard 0's
+	// TenantDEKTable. The DEK plaintext never traverses Raft — the
+	// record carries a gocloud.dev/blob URI for the ciphertext and a
+	// Tink KMS URI for the KEK that unwraps it. Per-node
+	// internal/secretstore.TenantDEKResolver fetches + decrypts at
+	// reconcile time and materializes a tink.AEAD primitive cached
+	// under record.tenant_id. CAS via if_table_revision_eq. Leader-only.
+	// Server rejects record.tenant_id == 0 (the default tenant uses a
+	// built-in cluster-wide AEAD, not a TenantDEKTable row).
+	UpsertTenantDEK(context.Context, *connect.Request[clusterctlv1.UpsertTenantDEKRequest]) (*connect.Response[clusterctlv1.UpsertTenantDEKResponse], error)
+	// DeleteTenantDEK removes one row from shard 0's TenantDEKTable.
+	// Same CAS semantics as UpsertTenantDEK. Delete-of-absent succeeds
+	// (and bumps the revision). This is the second of the two-step
+	// tenant-wipe procedure — running it makes the tenant's data
+	// permanently unrecoverable (the DEK is gone). Leader-only.
+	DeleteTenantDEK(context.Context, *connect.Request[clusterctlv1.DeleteTenantDEKRequest]) (*connect.Response[clusterctlv1.DeleteTenantDEKResponse], error)
+	// ListTenantDEKs returns every TenantDEKRecord plus the table's CAS
+	// revision in one SyncRead. Reads from any peer.
+	ListTenantDEKs(context.Context, *connect.Request[clusterctlv1.ListTenantDEKsRequest]) (*connect.Response[clusterctlv1.ListTenantDEKsResponse], error)
 }
 
 // NewClusterCtlHandler builds an HTTP handler from the service implementation. It returns the path
@@ -583,6 +666,24 @@ func NewClusterCtlHandler(svc ClusterCtlHandler, opts ...connect.HandlerOption) 
 		connect.WithSchema(clusterCtlMethods.ByName("DescribeTenant")),
 		connect.WithHandlerOptions(opts...),
 	)
+	clusterCtlUpsertTenantDEKHandler := connect.NewUnaryHandler(
+		ClusterCtlUpsertTenantDEKProcedure,
+		svc.UpsertTenantDEK,
+		connect.WithSchema(clusterCtlMethods.ByName("UpsertTenantDEK")),
+		connect.WithHandlerOptions(opts...),
+	)
+	clusterCtlDeleteTenantDEKHandler := connect.NewUnaryHandler(
+		ClusterCtlDeleteTenantDEKProcedure,
+		svc.DeleteTenantDEK,
+		connect.WithSchema(clusterCtlMethods.ByName("DeleteTenantDEK")),
+		connect.WithHandlerOptions(opts...),
+	)
+	clusterCtlListTenantDEKsHandler := connect.NewUnaryHandler(
+		ClusterCtlListTenantDEKsProcedure,
+		svc.ListTenantDEKs,
+		connect.WithSchema(clusterCtlMethods.ByName("ListTenantDEKs")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/reflow.clusterctl.v1.ClusterCtl/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ClusterCtlAddNodeProcedure:
@@ -617,6 +718,12 @@ func NewClusterCtlHandler(svc ClusterCtlHandler, opts ...connect.HandlerOption) 
 			clusterCtlListTenantsHandler.ServeHTTP(w, r)
 		case ClusterCtlDescribeTenantProcedure:
 			clusterCtlDescribeTenantHandler.ServeHTTP(w, r)
+		case ClusterCtlUpsertTenantDEKProcedure:
+			clusterCtlUpsertTenantDEKHandler.ServeHTTP(w, r)
+		case ClusterCtlDeleteTenantDEKProcedure:
+			clusterCtlDeleteTenantDEKHandler.ServeHTTP(w, r)
+		case ClusterCtlListTenantDEKsProcedure:
+			clusterCtlListTenantDEKsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -688,4 +795,16 @@ func (UnimplementedClusterCtlHandler) ListTenants(context.Context, *connect.Requ
 
 func (UnimplementedClusterCtlHandler) DescribeTenant(context.Context, *connect.Request[clusterctlv1.DescribeTenantRequest]) (*connect.Response[clusterctlv1.DescribeTenantResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.DescribeTenant is not implemented"))
+}
+
+func (UnimplementedClusterCtlHandler) UpsertTenantDEK(context.Context, *connect.Request[clusterctlv1.UpsertTenantDEKRequest]) (*connect.Response[clusterctlv1.UpsertTenantDEKResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.UpsertTenantDEK is not implemented"))
+}
+
+func (UnimplementedClusterCtlHandler) DeleteTenantDEK(context.Context, *connect.Request[clusterctlv1.DeleteTenantDEKRequest]) (*connect.Response[clusterctlv1.DeleteTenantDEKResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.DeleteTenantDEK is not implemented"))
+}
+
+func (UnimplementedClusterCtlHandler) ListTenantDEKs(context.Context, *connect.Request[clusterctlv1.ListTenantDEKsRequest]) (*connect.Response[clusterctlv1.ListTenantDEKsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.ListTenantDEKs is not implemented"))
 }

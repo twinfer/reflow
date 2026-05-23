@@ -231,6 +231,21 @@ message Command {
     // by shardID=0.
     UpsertTenant upsert_tenant = 40;
     DeleteTenant delete_tenant = 41;
+    // UpsertTenantDEK / DeleteTenantDEK carry shard-0 TenantDEKTable
+    // mutations — the per-tenant data-encryption-key records consumed
+    // by the per-node internal/secretstore.TenantDEKResolver to wrap
+    // and unwrap value bytes for the valueEncryptingStore wrapper.
+    // Same CAS + notifier semantics as the secret pair. The DEK
+    // plaintext never appears in these commands; per-node
+    // TenantDEKResolver fetches the blob and decrypts via the Tink
+    // registry at reconcile time, then materializes a tink.AEAD
+    // primitive via keyset.Read + aead.New. The record's `name` field
+    // is the AAD for the KEK→DEK unwrap, so rotation = write a new
+    // record with a new name + new ciphertext + new RemoteEncrypted
+    // pointer and flip tenant_id → new_name (one CAS round-trip).
+    // Accepted only by shardID=0.
+    UpsertTenantDEK upsert_tenant_dek = 42;
+    DeleteTenantDEK delete_tenant_dek = 43;
   }
 }
 
@@ -1368,6 +1383,53 @@ message UpsertTenant {
 // calls land.
 message DeleteTenant {
   uint32 id = 1;
+}
+
+// TenantDEKRecord is the persisted shape of one per-tenant
+// data-encryption key in shard 0's TenantDEKTable. The plaintext DEK
+// itself is never a field — like SecretRecord, the row carries a
+// pointer to where the ciphertext lives (gocloud.dev/blob URI) and
+// which KEK can decrypt it (Tink KMS URI).
+//
+// Per-node internal/secretstore.TenantDEKResolver fetches the blob,
+// dispatches the KEK URI to registry.GetKMSClient, calls
+// tink.AEAD.Decrypt(ciphertext, aad=record.name) for the plaintext
+// keyset bytes, then keyset.Read + aead.New to materialize a
+// tink.AEAD primitive cached under tenant_id. AAD = record.name (not
+// tenant_id) so DEK rotation is a write-new-name + flip-pointer
+// operation: a leaked ciphertext for record "dek-acme-v1" can't be
+// replayed under record "dek-acme-v2".
+//
+// tenant_id=0 is the reserved default-tenant sentinel and must never
+// appear in a TenantDEKTable row — the default tenant uses a
+// cluster-wide built-in AEAD constructed at Host startup, not a
+// resolver-fetched DEK.
+message TenantDEKRecord {
+  uint32 tenant_id = 1;
+  string name = 2;
+  RemoteEncryptedSecret remote_encrypted = 3;
+  int64 created_at_ms = 4;
+}
+
+// UpsertTenantDEK is the Command_UpsertTenantDEK payload. Apply arm
+// CAS-checks Envelope.precondition, writes
+// TenantDEKTable[record.tenant_id] = record, bumps
+// RevisionTableTenantDEK, and fires the TenantDEKTable notifier so
+// each node's local TenantDEKResolver wakes and re-resolves. The FSM
+// rejects record.tenant_id == 0.
+message UpsertTenantDEK {
+  TenantDEKRecord record = 1;
+}
+
+// DeleteTenantDEK is the Command_DeleteTenantDEK payload. Same CAS +
+// notifier semantics as Upsert. Delete-of-absent is a no-op (the
+// revision still bumps). This is the second of the two-step
+// tenant-wipe procedure — running it makes the tenant's data
+// permanently unrecoverable (the DEK is gone; ciphertext stays on
+// disk but no key can decrypt it). DeleteTenant on its own leaves
+// the DEK intact so a delete-misclick is recoverable.
+message DeleteTenantDEK {
+  uint32 tenant_id = 1;
 }
 
 // UpsertWebhookSource is the Command_UpsertWebhookSource payload.

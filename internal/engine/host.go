@@ -26,6 +26,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/storage"
+	"github.com/twinfer/reflow/internal/storage/encstore"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -168,6 +169,13 @@ type HostConfig struct {
 	// onBecomeLeader. pkg/reflow.withDefaults defaults Mode to "off",
 	// so the production default is also disabled.
 	Rebalance rebalance.Config
+
+	// TenantDEKResolver, when non-nil, wraps every per-shard
+	// storage.Store with internal/storage/encstore.NewStore so values
+	// under LP-prefixed namespaces are AEAD-encrypted at rest with the
+	// tenant's data-encryption key. Nil disables the wrapper for the
+	// whole host (single-tenant deployments, tests, chaos suites).
+	TenantDEKResolver encstore.Resolver
 }
 
 // Peer is a static cluster member known at bootstrap. NodeHostID may be
@@ -460,7 +468,14 @@ func (h *Host) StartMetadataShard() (*MetadataRunner, error) {
 
 	dataDir := filepath.Join(h.cfg.DataDir, "meta", "state")
 	snap, err := NewSnapshotter(dataDir, func(p string) (storage.Store, error) {
-		return storage.OpenPebbleWithFormatGuard(p, h.pebbleOptionsFor(shardID), storage.StorageFormatVersion)
+		raw, oerr := storage.OpenPebbleWithFormatGuard(p, h.pebbleOptionsFor(shardID), storage.StorageFormatVersion)
+		if oerr != nil {
+			return nil, oerr
+		}
+		if h.cfg.TenantDEKResolver == nil {
+			return raw, nil
+		}
+		return encstore.NewStore(raw, h.cfg.TenantDEKResolver), nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("host: open metadata store: %w", err)
@@ -761,6 +776,25 @@ func (h *Host) Tenants(ctx context.Context) (*cluster.TenantList, error) {
 	return out, nil
 }
 
+// TenantDEKs SyncReads every TenantDEKRecord from shard 0 plus the
+// table's CAS revision. Used by the per-node
+// internal/secretstore.TenantDEKResolver on each TableNotifier wake
+// and by the cluster admin RPCs.
+func (h *Host) TenantDEKs(ctx context.Context) (*cluster.TenantDEKList, error) {
+	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupTenantDEKs{})
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return &cluster.TenantDEKList{}, nil
+	}
+	out, ok := res.(*cluster.TenantDEKList)
+	if !ok {
+		return nil, fmt.Errorf("host: TenantDEKs: unexpected lookup type %T", res)
+	}
+	return out, nil
+}
+
 // TenantByName SyncReads the TenantRecord for the named tenant via the
 // shard-0 TenantNameIndexTable, or nil when no row exists. Used by the
 // Config server's UpsertTenant flow to resolve create-vs-update without
@@ -832,7 +866,14 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 
 	dataDir := filepath.Join(h.cfg.DataDir, fmt.Sprintf("p%d", shardID), "state")
 	snap, err := NewSnapshotter(dataDir, func(p string) (storage.Store, error) {
-		return storage.OpenPebbleWithFormatGuard(p, h.pebbleOptionsFor(shardID), storage.StorageFormatVersion)
+		raw, oerr := storage.OpenPebbleWithFormatGuard(p, h.pebbleOptionsFor(shardID), storage.StorageFormatVersion)
+		if oerr != nil {
+			return nil, oerr
+		}
+		if h.cfg.TenantDEKResolver == nil {
+			return raw, nil
+		}
+		return encstore.NewStore(raw, h.cfg.TenantDEKResolver), nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("host: open partition store: %w", err)

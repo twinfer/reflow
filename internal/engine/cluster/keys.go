@@ -39,6 +39,15 @@
 //	                                   server resolves create-vs-update
 //	                                   by reading this on the leader
 //	                                   before propose)
+//	tenant_dek/<4-byte BE tenant_id> -> TenantDEKRecord (per-tenant
+//	                                   data-encryption-key reference;
+//	                                   per-node TenantDEKResolver
+//	                                   SyncRead-iterates this on each
+//	                                   table notifier wake to refresh
+//	                                   the in-memory tenant_id→AEAD
+//	                                   map; the DEK plaintext never
+//	                                   leaves the resolving node's
+//	                                   process memory)
 //	tablerev/<table_name>           -> TableRevision singleton (CAS guard
 //	                                   for cluster-managed config tables;
 //	                                   separate top-level namespace so it
@@ -67,6 +76,7 @@ const (
 	rebalanceDrainPrefix  = "rebalance_drain/"
 	tenantPrefix          = "tenant/"
 	tenantNameIndexPrefix = "tenant_name_idx/"
+	tenantDEKPrefix       = "tenant_dek/"
 	tableRevisionPrefix   = "tablerev/"
 )
 
@@ -82,6 +92,7 @@ const (
 	RevisionTableLPTransfers    = "lptransfers"
 	RevisionTableRebalanceDrain = "rebalance_drain"
 	RevisionTableTenant         = "tenant"
+	RevisionTableTenantDEK      = "tenant_dek"
 )
 
 // MetaKey returns the singleton key for the metadata shard's PartitionMeta.
@@ -236,6 +247,24 @@ func TenantNameIndexKey(name string) []byte {
 	out := make([]byte, 0, len(tenantNameIndexPrefix)+len(name))
 	out = append(out, tenantNameIndexPrefix...)
 	return append(out, name...)
+}
+
+// TenantDEKPrefix returns the tenant_dek/ namespace prefix. Used for
+// forward range iteration; rows sort in tenant_id order because the
+// 4-byte BE encoding of tenant_id follows the prefix.
+func TenantDEKPrefix() []byte { return []byte(tenantDEKPrefix) }
+
+// TenantDEKKey returns tenant_dek/<4-byte BE tenant_id>. Big-endian
+// so lexicographic byte order matches numeric id order. tenant_id==0
+// is the default-tenant sentinel and must never be persisted here —
+// the default tenant uses a built-in cluster-wide AEAD, not a
+// resolver-fetched DEK.
+func TenantDEKKey(tenantID uint32) []byte {
+	out := make([]byte, 0, len(tenantDEKPrefix)+4)
+	out = append(out, tenantDEKPrefix...)
+	var buf [4]byte
+	binary.BigEndian.PutUint32(buf[:], tenantID)
+	return append(out, buf[:]...)
 }
 
 // RevisionKey returns the CAS singleton key for a table identified by

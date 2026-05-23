@@ -1220,6 +1220,27 @@ func (h *Host) LookupInvocationStatus(ctx context.Context, shardID uint64, id *e
 	return s, nil
 }
 
+// LookupActiveInvocationCount returns the number of non-terminal
+// (Scheduled/Invoked/Suspended) invocations for tenantID on the given
+// partition shard. Source of truth for the ingress quota reconciler's
+// drift correction.
+func (h *Host) LookupActiveInvocationCount(ctx context.Context, shardID uint64, tenantID uint32) (int64, error) {
+	res, err := h.nh.SyncRead(ctx, shardID, LookupActiveInvocationCount{TenantID: tenantID})
+	if err != nil {
+		return 0, err
+	}
+	n, ok := res.(int64)
+	if !ok {
+		return 0, fmt.Errorf("lookup returned unexpected type %T", res)
+	}
+	return n, nil
+}
+
+// NumPartitionShards returns the routing modulus the host was started
+// with. Quota and other cross-shard reconcilers iterate 1..N when fanning
+// out reads.
+func (h *Host) NumPartitionShards() uint64 { return h.cfg.NumPartitionShards }
+
 // AwaitLeader blocks until shardID has a stable leader (LeaderUpdated event
 // fired) or ctx expires.
 func (h *Host) AwaitLeader(ctx context.Context, shardID uint64) error {

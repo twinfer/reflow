@@ -21,6 +21,7 @@ import (
 	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/routing"
+	"github.com/twinfer/reflow/internal/ingress/quota"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 	"github.com/twinfer/reflow/proto/ingressv1/ingressv1connect"
@@ -33,17 +34,23 @@ import (
 type Server struct {
 	ingressv1connect.UnimplementedIngressHandler
 
-	host *engine.Host
-	log  *slog.Logger
+	host     *engine.Host
+	log      *slog.Logger
+	enforcer quota.Enforcer
 }
 
 // NewServer builds an ingress Server bound to the given host. Log
-// defaults to slog.Default if nil.
-func NewServer(h *engine.Host, log *slog.Logger) *Server {
+// defaults to slog.Default if nil. enforcer defaults to quota.NoopEnforcer
+// when nil so single-tenant / test deployments don't need to wire the
+// reconciler.
+func NewServer(h *engine.Host, log *slog.Logger, enforcer quota.Enforcer) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{host: h, log: log}
+	if enforcer == nil {
+		enforcer = quota.NoopEnforcer{}
+	}
+	return &Server{host: h, log: log, enforcer: enforcer}
 }
 
 // SubmitInvocation mints a fresh InvocationId stamped with the
@@ -146,6 +153,13 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 	var tenantID uint32
 	if p, ok := auth.PrincipalFromContext(ctx); ok {
 		tenantID = auth.TenantIDFromPrincipal(p)
+	}
+
+	// Soft quota gate. NoopEnforcer when quota is disabled / unwired.
+	// Default-tenant (0) always admitted; tenants without a configured
+	// limit always admitted; over-limit returns CodeResourceExhausted.
+	if err := s.enforcer.Enforce(ctx, tenantID); err != nil {
+		return nil, err
 	}
 
 	cmd := &enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{

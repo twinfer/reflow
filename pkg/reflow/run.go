@@ -26,6 +26,7 @@ import (
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/internal/ingress/eventsource"
 	httpingress "github.com/twinfer/reflow/internal/ingress/http"
+	"github.com/twinfer/reflow/internal/ingress/quota"
 	internalwebhook "github.com/twinfer/reflow/internal/ingress/webhook"
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/secretstore"
@@ -394,6 +395,7 @@ func startIngressListener(
 	multiNode bool,
 	mw func(http.Handler) http.Handler,
 	secrets *secretstore.Resolver,
+	enforcer quota.Enforcer,
 	metrics *observability.Metrics,
 	metricsRegisterer prometheus.Registerer,
 	logger *slog.Logger,
@@ -419,6 +421,7 @@ func startIngressListener(
 		TLS:        lc.ServerTLSConfig,
 		Log:        logger,
 		Middleware: mw,
+		Enforcer:   enforcer,
 	}
 	icfg.ExtraRoutes = func(srv *ingress.Server) []connectserver.Route {
 		var routes []connectserver.Route
@@ -729,21 +732,41 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		}
 	}()
 
+	// TenantTable wake fan-out. TableNotifier is single-subscriber by
+	// design — the propose-then-Subscribe test pattern relies on the
+	// buffered-1 channel (see internal/engine/cluster/notifier.go).
+	// When multiple consumers need the same wake (TenantTable drives
+	// both the OIDC reconciler and the quota reconciler), pkg/reflow
+	// subscribes once and relays to N dedicated buffered-1 channels.
+	tenantWakeOIDC := make(chan struct{}, 1)
+	tenantWakeQuota := make(chan struct{}, 1)
+	go relayWake(ctx, d.tenantNotifier.Subscribe(), tenantWakeOIDC, tenantWakeQuota)
+
 	// TenantOIDCReconciler keeps the jwtVerifier's byIssuer snapshot
 	// aligned with the union of cluster-default issuers and per-tenant
 	// issuers carried on TenantRecord.OidcIssuers. Reconciler is a
 	// no-op when jwtVerifier is nil (no cluster-default OIDC and no
-	// tenants yet — possible in SPIFFE-only deployments). Wakes on
-	// the TenantTable notifier; 5s ticker backstop.
+	// tenants yet — possible in SPIFFE-only deployments).
 	go func() {
 		reader := tenantReader{host: eh}
-		if rerr := d.tenantOIDC.RunReconciler(ctx, d.tenantNotifier.Subscribe(), reader); rerr != nil && !errors.Is(rerr, context.Canceled) {
+		if rerr := d.tenantOIDC.RunReconciler(ctx, tenantWakeOIDC, reader); rerr != nil && !errors.Is(rerr, context.Canceled) {
 			logger.Warn("reflow: tenant_oidc reconcile loop exited", "err", rerr)
 		}
 	}()
 
+	// Construct the quota Manager before the ingress listener so the
+	// Enforcer can be threaded into ingress.Config. NoopEnforcer is the
+	// fallback when something downstream short-circuits.
+	quotaMgr := quota.New(metricsRegisterer, logger)
+	go func() {
+		reader := tenantReader{host: eh}
+		if rerr := quotaMgr.RunReconciler(ctx, tenantWakeQuota, reader, eh); rerr != nil && !errors.Is(rerr, context.Canceled) {
+			logger.Warn("reflow: quota reconcile loop exited", "err", rerr)
+		}
+	}()
+
 	multiNode := len(cfg.Cluster.Peers) > 1
-	ingressRT, ingressCreds, webhookMgr, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, secrets, metrics, metricsRegisterer, logger)
+	ingressRT, ingressCreds, webhookMgr, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, secrets, quotaMgr, metrics, metricsRegisterer, logger)
 	if err != nil {
 		if snapshotCxl != nil {
 			snapshotCxl()
@@ -916,6 +939,31 @@ func (r tenantDEKReader) ListTenantDEKs(ctx context.Context) ([]*enginev1.Tenant
 		return nil, 0, err
 	}
 	return list.Records, list.TableRevision, nil
+}
+
+// relayWake forwards each receive on src to a non-blocking send on
+// every out channel. Used when a single TableNotifier needs to feed
+// multiple consumer goroutines (TableNotifier is single-subscriber
+// by design — see internal/engine/cluster/notifier.go — so the
+// fan-out lives at this layer where the consumers are wired). Each
+// out channel must be buffered-1 to preserve the coalesce-bursts
+// contract; the relay drops sends when the consumer hasn't yet
+// drained, identical to TableNotifier.Bump semantics. Exits on ctx
+// cancel.
+func relayWake(ctx context.Context, src <-chan struct{}, out ...chan<- struct{}) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-src:
+			for _, c := range out {
+				select {
+				case c <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}
 }
 
 // tenantReader is the Reader adapter the TenantOIDCReconciler uses to

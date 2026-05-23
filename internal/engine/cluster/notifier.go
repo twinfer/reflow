@@ -18,7 +18,13 @@ package cluster
 //   - Subscribe: returns the receive end. v1 supports exactly one
 //     subscriber per notifier; this matches the per-table model
 //     (one Reconciler owns each subsystem). Re-subscribing returns the
-//     same channel.
+//     same channel. When multiple consumers need to wake on the same
+//     table (e.g. TenantTable drives both the OIDC reconciler and the
+//     quota reconciler), the second consumer subscribes to a fan-out
+//     relay built in pkg/reflow — TableNotifier itself stays
+//     single-subscriber so the existing propose-then-Subscribe test
+//     pattern continues to work (subscribe-after-bump still drains
+//     the pending signal from the buffered-1 channel).
 //
 // Why not a callback closure: callbacks let consumers smuggle
 // business logic onto the apply goroutine, which violates the

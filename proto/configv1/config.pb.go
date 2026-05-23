@@ -1282,6 +1282,388 @@ func (x *ListSecretsResponse) GetTableRevision() uint64 {
 	return 0
 }
 
+// UpsertTenantRequest carries one TenantRecord plus an optional CAS
+// guard. record.id may be 0 (the server allocates an id from
+// max(existing.id)+1 before propose) or non-zero (update). name must
+// be non-empty.
+type UpsertTenantRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Record            *enginev1.TenantRecord `protobuf:"bytes,1,opt,name=record,proto3" json:"record,omitempty"`
+	IfTableRevisionEq uint64                 `protobuf:"varint,2,opt,name=if_table_revision_eq,json=ifTableRevisionEq,proto3" json:"if_table_revision_eq,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *UpsertTenantRequest) Reset() {
+	*x = UpsertTenantRequest{}
+	mi := &file_configv1_config_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpsertTenantRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpsertTenantRequest) ProtoMessage() {}
+
+func (x *UpsertTenantRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpsertTenantRequest.ProtoReflect.Descriptor instead.
+func (*UpsertTenantRequest) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *UpsertTenantRequest) GetRecord() *enginev1.TenantRecord {
+	if x != nil {
+		return x.Record
+	}
+	return nil
+}
+
+func (x *UpsertTenantRequest) GetIfTableRevisionEq() uint64 {
+	if x != nil {
+		return x.IfTableRevisionEq
+	}
+	return 0
+}
+
+// UpsertTenantResponse echoes the assigned tenant_id (always populated,
+// even on update) and the post-apply table revision.
+type UpsertTenantResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantId      uint32                 `protobuf:"varint,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	TableRevision uint64                 `protobuf:"varint,2,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpsertTenantResponse) Reset() {
+	*x = UpsertTenantResponse{}
+	mi := &file_configv1_config_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpsertTenantResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpsertTenantResponse) ProtoMessage() {}
+
+func (x *UpsertTenantResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpsertTenantResponse.ProtoReflect.Descriptor instead.
+func (*UpsertTenantResponse) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *UpsertTenantResponse) GetTenantId() uint32 {
+	if x != nil {
+		return x.TenantId
+	}
+	return 0
+}
+
+func (x *UpsertTenantResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
+type DeleteTenantRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	TenantId          uint32                 `protobuf:"varint,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	IfTableRevisionEq uint64                 `protobuf:"varint,2,opt,name=if_table_revision_eq,json=ifTableRevisionEq,proto3" json:"if_table_revision_eq,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *DeleteTenantRequest) Reset() {
+	*x = DeleteTenantRequest{}
+	mi := &file_configv1_config_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteTenantRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteTenantRequest) ProtoMessage() {}
+
+func (x *DeleteTenantRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteTenantRequest.ProtoReflect.Descriptor instead.
+func (*DeleteTenantRequest) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *DeleteTenantRequest) GetTenantId() uint32 {
+	if x != nil {
+		return x.TenantId
+	}
+	return 0
+}
+
+func (x *DeleteTenantRequest) GetIfTableRevisionEq() uint64 {
+	if x != nil {
+		return x.IfTableRevisionEq
+	}
+	return 0
+}
+
+type DeleteTenantResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TableRevision uint64                 `protobuf:"varint,1,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteTenantResponse) Reset() {
+	*x = DeleteTenantResponse{}
+	mi := &file_configv1_config_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteTenantResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteTenantResponse) ProtoMessage() {}
+
+func (x *DeleteTenantResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteTenantResponse.ProtoReflect.Descriptor instead.
+func (*DeleteTenantResponse) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *DeleteTenantResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
+type ListTenantsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListTenantsRequest) Reset() {
+	*x = ListTenantsRequest{}
+	mi := &file_configv1_config_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListTenantsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListTenantsRequest) ProtoMessage() {}
+
+func (x *ListTenantsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListTenantsRequest.ProtoReflect.Descriptor instead.
+func (*ListTenantsRequest) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{30}
+}
+
+type ListTenantsResponse struct {
+	state         protoimpl.MessageState   `protogen:"open.v1"`
+	Tenants       []*enginev1.TenantRecord `protobuf:"bytes,1,rep,name=tenants,proto3" json:"tenants,omitempty"`
+	TableRevision uint64                   `protobuf:"varint,2,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListTenantsResponse) Reset() {
+	*x = ListTenantsResponse{}
+	mi := &file_configv1_config_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListTenantsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListTenantsResponse) ProtoMessage() {}
+
+func (x *ListTenantsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListTenantsResponse.ProtoReflect.Descriptor instead.
+func (*ListTenantsResponse) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *ListTenantsResponse) GetTenants() []*enginev1.TenantRecord {
+	if x != nil {
+		return x.Tenants
+	}
+	return nil
+}
+
+func (x *ListTenantsResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
+type DescribeTenantRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantId      uint32                 `protobuf:"varint,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DescribeTenantRequest) Reset() {
+	*x = DescribeTenantRequest{}
+	mi := &file_configv1_config_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DescribeTenantRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DescribeTenantRequest) ProtoMessage() {}
+
+func (x *DescribeTenantRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DescribeTenantRequest.ProtoReflect.Descriptor instead.
+func (*DescribeTenantRequest) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *DescribeTenantRequest) GetTenantId() uint32 {
+	if x != nil {
+		return x.TenantId
+	}
+	return 0
+}
+
+type DescribeTenantResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tenant        *enginev1.TenantRecord `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DescribeTenantResponse) Reset() {
+	*x = DescribeTenantResponse{}
+	mi := &file_configv1_config_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DescribeTenantResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DescribeTenantResponse) ProtoMessage() {}
+
+func (x *DescribeTenantResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DescribeTenantResponse.ProtoReflect.Descriptor instead.
+func (*DescribeTenantResponse) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *DescribeTenantResponse) GetTenant() *enginev1.TenantRecord {
+	if x != nil {
+		return x.Tenant
+	}
+	return nil
+}
+
 // LeaderHint is attached as a connect.Error detail on
 // connect.CodeUnavailable returned by mutating Config RPCs when the
 // receiving node is not the metadata leader. Clients extract it, dial
@@ -1297,7 +1679,7 @@ type LeaderHint struct {
 
 func (x *LeaderHint) Reset() {
 	*x = LeaderHint{}
-	mi := &file_configv1_config_proto_msgTypes[26]
+	mi := &file_configv1_config_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1309,7 +1691,7 @@ func (x *LeaderHint) String() string {
 func (*LeaderHint) ProtoMessage() {}
 
 func (x *LeaderHint) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[26]
+	mi := &file_configv1_config_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1322,7 +1704,7 @@ func (x *LeaderHint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaderHint.ProtoReflect.Descriptor instead.
 func (*LeaderHint) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{26}
+	return file_configv1_config_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *LeaderHint) GetNodeId() uint64 {
@@ -1406,12 +1788,30 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\x12ListSecretsRequest\"v\n" +
 	"\x13ListSecretsResponse\x128\n" +
 	"\arecords\x18\x01 \x03(\v2\x1e.reflow.engine.v1.SecretRecordR\arecords\x12%\n" +
-	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"L\n" +
+	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"~\n" +
+	"\x13UpsertTenantRequest\x126\n" +
+	"\x06record\x18\x01 \x01(\v2\x1e.reflow.engine.v1.TenantRecordR\x06record\x12/\n" +
+	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"Z\n" +
+	"\x14UpsertTenantResponse\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\rR\btenantId\x12%\n" +
+	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"c\n" +
+	"\x13DeleteTenantRequest\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\rR\btenantId\x12/\n" +
+	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"=\n" +
+	"\x14DeleteTenantResponse\x12%\n" +
+	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"\x14\n" +
+	"\x12ListTenantsRequest\"v\n" +
+	"\x13ListTenantsResponse\x128\n" +
+	"\atenants\x18\x01 \x03(\v2\x1e.reflow.engine.v1.TenantRecordR\atenants\x12%\n" +
+	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"4\n" +
+	"\x15DescribeTenantRequest\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\rR\btenantId\"P\n" +
+	"\x16DescribeTenantResponse\x126\n" +
+	"\x06tenant\x18\x01 \x01(\v2\x1e.reflow.engine.v1.TenantRecordR\x06tenant\"L\n" +
 	"\n" +
 	"LeaderHint\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12%\n" +
-	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\xf7\n" +
-	"\n" +
+	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\xf6\r\n" +
 	"\x06Config\x12o\n" +
 	"\x12RegisterDeployment\x12+.reflow.config.v1.RegisterDeploymentRequest\x1a,.reflow.config.v1.RegisterDeploymentResponse\x12f\n" +
 	"\x0fListDeployments\x12(.reflow.config.v1.ListDeploymentsRequest\x1a).reflow.config.v1.ListDeploymentsResponse\x12o\n" +
@@ -1425,7 +1825,11 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\x12ListWebhookSources\x12+.reflow.config.v1.ListWebhookSourcesRequest\x1a,.reflow.config.v1.ListWebhookSourcesResponse\x12]\n" +
 	"\fUpsertSecret\x12%.reflow.config.v1.UpsertSecretRequest\x1a&.reflow.config.v1.UpsertSecretResponse\x12]\n" +
 	"\fDeleteSecret\x12%.reflow.config.v1.DeleteSecretRequest\x1a&.reflow.config.v1.DeleteSecretResponse\x12Z\n" +
-	"\vListSecrets\x12$.reflow.config.v1.ListSecretsRequest\x1a%.reflow.config.v1.ListSecretsResponseB3Z1github.com/twinfer/reflow/proto/configv1;configv1b\x06proto3"
+	"\vListSecrets\x12$.reflow.config.v1.ListSecretsRequest\x1a%.reflow.config.v1.ListSecretsResponse\x12]\n" +
+	"\fUpsertTenant\x12%.reflow.config.v1.UpsertTenantRequest\x1a&.reflow.config.v1.UpsertTenantResponse\x12]\n" +
+	"\fDeleteTenant\x12%.reflow.config.v1.DeleteTenantRequest\x1a&.reflow.config.v1.DeleteTenantResponse\x12Z\n" +
+	"\vListTenants\x12$.reflow.config.v1.ListTenantsRequest\x1a%.reflow.config.v1.ListTenantsResponse\x12c\n" +
+	"\x0eDescribeTenant\x12'.reflow.config.v1.DescribeTenantRequest\x1a(.reflow.config.v1.DescribeTenantResponseB3Z1github.com/twinfer/reflow/proto/configv1;configv1b\x06proto3"
 
 var (
 	file_configv1_config_proto_rawDescOnce sync.Once
@@ -1439,7 +1843,7 @@ func file_configv1_config_proto_rawDescGZIP() []byte {
 	return file_configv1_config_proto_rawDescData
 }
 
-var file_configv1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
+var file_configv1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_configv1_config_proto_goTypes = []any{
 	(*RegisterDeploymentRequest)(nil),    // 0: reflow.config.v1.RegisterDeploymentRequest
 	(*RegisterDeploymentResponse)(nil),   // 1: reflow.config.v1.RegisterDeploymentResponse
@@ -1467,52 +1871,72 @@ var file_configv1_config_proto_goTypes = []any{
 	(*DeleteSecretResponse)(nil),         // 23: reflow.config.v1.DeleteSecretResponse
 	(*ListSecretsRequest)(nil),           // 24: reflow.config.v1.ListSecretsRequest
 	(*ListSecretsResponse)(nil),          // 25: reflow.config.v1.ListSecretsResponse
-	(*LeaderHint)(nil),                   // 26: reflow.config.v1.LeaderHint
-	(*enginev1.DeploymentRecord)(nil),    // 27: reflow.engine.v1.DeploymentRecord
-	(*enginev1.EventSourceRecord)(nil),   // 28: reflow.engine.v1.EventSourceRecord
-	(*enginev1.WebhookSourceRecord)(nil), // 29: reflow.engine.v1.WebhookSourceRecord
-	(*enginev1.SecretRecord)(nil),        // 30: reflow.engine.v1.SecretRecord
+	(*UpsertTenantRequest)(nil),          // 26: reflow.config.v1.UpsertTenantRequest
+	(*UpsertTenantResponse)(nil),         // 27: reflow.config.v1.UpsertTenantResponse
+	(*DeleteTenantRequest)(nil),          // 28: reflow.config.v1.DeleteTenantRequest
+	(*DeleteTenantResponse)(nil),         // 29: reflow.config.v1.DeleteTenantResponse
+	(*ListTenantsRequest)(nil),           // 30: reflow.config.v1.ListTenantsRequest
+	(*ListTenantsResponse)(nil),          // 31: reflow.config.v1.ListTenantsResponse
+	(*DescribeTenantRequest)(nil),        // 32: reflow.config.v1.DescribeTenantRequest
+	(*DescribeTenantResponse)(nil),       // 33: reflow.config.v1.DescribeTenantResponse
+	(*LeaderHint)(nil),                   // 34: reflow.config.v1.LeaderHint
+	(*enginev1.DeploymentRecord)(nil),    // 35: reflow.engine.v1.DeploymentRecord
+	(*enginev1.EventSourceRecord)(nil),   // 36: reflow.engine.v1.EventSourceRecord
+	(*enginev1.WebhookSourceRecord)(nil), // 37: reflow.engine.v1.WebhookSourceRecord
+	(*enginev1.SecretRecord)(nil),        // 38: reflow.engine.v1.SecretRecord
+	(*enginev1.TenantRecord)(nil),        // 39: reflow.engine.v1.TenantRecord
 }
 var file_configv1_config_proto_depIdxs = []int32{
-	27, // 0: reflow.config.v1.ListDeploymentsResponse.deployments:type_name -> reflow.engine.v1.DeploymentRecord
-	27, // 1: reflow.config.v1.DescribeDeploymentResponse.deployment:type_name -> reflow.engine.v1.DeploymentRecord
-	28, // 2: reflow.config.v1.UpsertEventSourceRequest.record:type_name -> reflow.engine.v1.EventSourceRecord
-	28, // 3: reflow.config.v1.ListEventSourcesResponse.sources:type_name -> reflow.engine.v1.EventSourceRecord
-	29, // 4: reflow.config.v1.UpsertWebhookSourceRequest.record:type_name -> reflow.engine.v1.WebhookSourceRecord
-	29, // 5: reflow.config.v1.ListWebhookSourcesResponse.sources:type_name -> reflow.engine.v1.WebhookSourceRecord
-	30, // 6: reflow.config.v1.UpsertSecretRequest.record:type_name -> reflow.engine.v1.SecretRecord
-	30, // 7: reflow.config.v1.ListSecretsResponse.records:type_name -> reflow.engine.v1.SecretRecord
-	0,  // 8: reflow.config.v1.Config.RegisterDeployment:input_type -> reflow.config.v1.RegisterDeploymentRequest
-	2,  // 9: reflow.config.v1.Config.ListDeployments:input_type -> reflow.config.v1.ListDeploymentsRequest
-	4,  // 10: reflow.config.v1.Config.DescribeDeployment:input_type -> reflow.config.v1.DescribeDeploymentRequest
-	6,  // 11: reflow.config.v1.Config.DeleteDeployment:input_type -> reflow.config.v1.DeleteDeploymentRequest
-	8,  // 12: reflow.config.v1.Config.UpsertEventSource:input_type -> reflow.config.v1.UpsertEventSourceRequest
-	10, // 13: reflow.config.v1.Config.DeleteEventSource:input_type -> reflow.config.v1.DeleteEventSourceRequest
-	12, // 14: reflow.config.v1.Config.ListEventSources:input_type -> reflow.config.v1.ListEventSourcesRequest
-	14, // 15: reflow.config.v1.Config.UpsertWebhookSource:input_type -> reflow.config.v1.UpsertWebhookSourceRequest
-	16, // 16: reflow.config.v1.Config.DeleteWebhookSource:input_type -> reflow.config.v1.DeleteWebhookSourceRequest
-	18, // 17: reflow.config.v1.Config.ListWebhookSources:input_type -> reflow.config.v1.ListWebhookSourcesRequest
-	20, // 18: reflow.config.v1.Config.UpsertSecret:input_type -> reflow.config.v1.UpsertSecretRequest
-	22, // 19: reflow.config.v1.Config.DeleteSecret:input_type -> reflow.config.v1.DeleteSecretRequest
-	24, // 20: reflow.config.v1.Config.ListSecrets:input_type -> reflow.config.v1.ListSecretsRequest
-	1,  // 21: reflow.config.v1.Config.RegisterDeployment:output_type -> reflow.config.v1.RegisterDeploymentResponse
-	3,  // 22: reflow.config.v1.Config.ListDeployments:output_type -> reflow.config.v1.ListDeploymentsResponse
-	5,  // 23: reflow.config.v1.Config.DescribeDeployment:output_type -> reflow.config.v1.DescribeDeploymentResponse
-	7,  // 24: reflow.config.v1.Config.DeleteDeployment:output_type -> reflow.config.v1.DeleteDeploymentResponse
-	9,  // 25: reflow.config.v1.Config.UpsertEventSource:output_type -> reflow.config.v1.UpsertEventSourceResponse
-	11, // 26: reflow.config.v1.Config.DeleteEventSource:output_type -> reflow.config.v1.DeleteEventSourceResponse
-	13, // 27: reflow.config.v1.Config.ListEventSources:output_type -> reflow.config.v1.ListEventSourcesResponse
-	15, // 28: reflow.config.v1.Config.UpsertWebhookSource:output_type -> reflow.config.v1.UpsertWebhookSourceResponse
-	17, // 29: reflow.config.v1.Config.DeleteWebhookSource:output_type -> reflow.config.v1.DeleteWebhookSourceResponse
-	19, // 30: reflow.config.v1.Config.ListWebhookSources:output_type -> reflow.config.v1.ListWebhookSourcesResponse
-	21, // 31: reflow.config.v1.Config.UpsertSecret:output_type -> reflow.config.v1.UpsertSecretResponse
-	23, // 32: reflow.config.v1.Config.DeleteSecret:output_type -> reflow.config.v1.DeleteSecretResponse
-	25, // 33: reflow.config.v1.Config.ListSecrets:output_type -> reflow.config.v1.ListSecretsResponse
-	21, // [21:34] is the sub-list for method output_type
-	8,  // [8:21] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	35, // 0: reflow.config.v1.ListDeploymentsResponse.deployments:type_name -> reflow.engine.v1.DeploymentRecord
+	35, // 1: reflow.config.v1.DescribeDeploymentResponse.deployment:type_name -> reflow.engine.v1.DeploymentRecord
+	36, // 2: reflow.config.v1.UpsertEventSourceRequest.record:type_name -> reflow.engine.v1.EventSourceRecord
+	36, // 3: reflow.config.v1.ListEventSourcesResponse.sources:type_name -> reflow.engine.v1.EventSourceRecord
+	37, // 4: reflow.config.v1.UpsertWebhookSourceRequest.record:type_name -> reflow.engine.v1.WebhookSourceRecord
+	37, // 5: reflow.config.v1.ListWebhookSourcesResponse.sources:type_name -> reflow.engine.v1.WebhookSourceRecord
+	38, // 6: reflow.config.v1.UpsertSecretRequest.record:type_name -> reflow.engine.v1.SecretRecord
+	38, // 7: reflow.config.v1.ListSecretsResponse.records:type_name -> reflow.engine.v1.SecretRecord
+	39, // 8: reflow.config.v1.UpsertTenantRequest.record:type_name -> reflow.engine.v1.TenantRecord
+	39, // 9: reflow.config.v1.ListTenantsResponse.tenants:type_name -> reflow.engine.v1.TenantRecord
+	39, // 10: reflow.config.v1.DescribeTenantResponse.tenant:type_name -> reflow.engine.v1.TenantRecord
+	0,  // 11: reflow.config.v1.Config.RegisterDeployment:input_type -> reflow.config.v1.RegisterDeploymentRequest
+	2,  // 12: reflow.config.v1.Config.ListDeployments:input_type -> reflow.config.v1.ListDeploymentsRequest
+	4,  // 13: reflow.config.v1.Config.DescribeDeployment:input_type -> reflow.config.v1.DescribeDeploymentRequest
+	6,  // 14: reflow.config.v1.Config.DeleteDeployment:input_type -> reflow.config.v1.DeleteDeploymentRequest
+	8,  // 15: reflow.config.v1.Config.UpsertEventSource:input_type -> reflow.config.v1.UpsertEventSourceRequest
+	10, // 16: reflow.config.v1.Config.DeleteEventSource:input_type -> reflow.config.v1.DeleteEventSourceRequest
+	12, // 17: reflow.config.v1.Config.ListEventSources:input_type -> reflow.config.v1.ListEventSourcesRequest
+	14, // 18: reflow.config.v1.Config.UpsertWebhookSource:input_type -> reflow.config.v1.UpsertWebhookSourceRequest
+	16, // 19: reflow.config.v1.Config.DeleteWebhookSource:input_type -> reflow.config.v1.DeleteWebhookSourceRequest
+	18, // 20: reflow.config.v1.Config.ListWebhookSources:input_type -> reflow.config.v1.ListWebhookSourcesRequest
+	20, // 21: reflow.config.v1.Config.UpsertSecret:input_type -> reflow.config.v1.UpsertSecretRequest
+	22, // 22: reflow.config.v1.Config.DeleteSecret:input_type -> reflow.config.v1.DeleteSecretRequest
+	24, // 23: reflow.config.v1.Config.ListSecrets:input_type -> reflow.config.v1.ListSecretsRequest
+	26, // 24: reflow.config.v1.Config.UpsertTenant:input_type -> reflow.config.v1.UpsertTenantRequest
+	28, // 25: reflow.config.v1.Config.DeleteTenant:input_type -> reflow.config.v1.DeleteTenantRequest
+	30, // 26: reflow.config.v1.Config.ListTenants:input_type -> reflow.config.v1.ListTenantsRequest
+	32, // 27: reflow.config.v1.Config.DescribeTenant:input_type -> reflow.config.v1.DescribeTenantRequest
+	1,  // 28: reflow.config.v1.Config.RegisterDeployment:output_type -> reflow.config.v1.RegisterDeploymentResponse
+	3,  // 29: reflow.config.v1.Config.ListDeployments:output_type -> reflow.config.v1.ListDeploymentsResponse
+	5,  // 30: reflow.config.v1.Config.DescribeDeployment:output_type -> reflow.config.v1.DescribeDeploymentResponse
+	7,  // 31: reflow.config.v1.Config.DeleteDeployment:output_type -> reflow.config.v1.DeleteDeploymentResponse
+	9,  // 32: reflow.config.v1.Config.UpsertEventSource:output_type -> reflow.config.v1.UpsertEventSourceResponse
+	11, // 33: reflow.config.v1.Config.DeleteEventSource:output_type -> reflow.config.v1.DeleteEventSourceResponse
+	13, // 34: reflow.config.v1.Config.ListEventSources:output_type -> reflow.config.v1.ListEventSourcesResponse
+	15, // 35: reflow.config.v1.Config.UpsertWebhookSource:output_type -> reflow.config.v1.UpsertWebhookSourceResponse
+	17, // 36: reflow.config.v1.Config.DeleteWebhookSource:output_type -> reflow.config.v1.DeleteWebhookSourceResponse
+	19, // 37: reflow.config.v1.Config.ListWebhookSources:output_type -> reflow.config.v1.ListWebhookSourcesResponse
+	21, // 38: reflow.config.v1.Config.UpsertSecret:output_type -> reflow.config.v1.UpsertSecretResponse
+	23, // 39: reflow.config.v1.Config.DeleteSecret:output_type -> reflow.config.v1.DeleteSecretResponse
+	25, // 40: reflow.config.v1.Config.ListSecrets:output_type -> reflow.config.v1.ListSecretsResponse
+	27, // 41: reflow.config.v1.Config.UpsertTenant:output_type -> reflow.config.v1.UpsertTenantResponse
+	29, // 42: reflow.config.v1.Config.DeleteTenant:output_type -> reflow.config.v1.DeleteTenantResponse
+	31, // 43: reflow.config.v1.Config.ListTenants:output_type -> reflow.config.v1.ListTenantsResponse
+	33, // 44: reflow.config.v1.Config.DescribeTenant:output_type -> reflow.config.v1.DescribeTenantResponse
+	28, // [28:45] is the sub-list for method output_type
+	11, // [11:28] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_configv1_config_proto_init() }
@@ -1526,7 +1950,7 @@ func file_configv1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_configv1_config_proto_rawDesc), len(file_configv1_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   27,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

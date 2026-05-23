@@ -212,6 +212,18 @@ message Command {
     // Envelope.precondition.if_table_revision_eq when set; bumps
     // RevisionTableRebalanceDrain on apply. Accepted only by shardID=0.
     SetRebalanceDrain set_rebalance_drain = 39;
+    // UpsertTenant / DeleteTenant carry shard-0 TenantTable mutations.
+    // Tenants scope multi-tenant invocations: per-tenant OIDC issuer
+    // bindings, per-tenant quota caps, per-tenant value-encryption key
+    // material (the DEK record lives in TenantDEKTable, separately).
+    // Same CAS + notifier semantics as the event-source / webhook /
+    // secret pairs. tenant_id=0 is the reserved default-tenant sentinel
+    // for anonymous / single-tenant traffic; UpsertTenant rejects
+    // record.id == 0 (the FSM never auto-allocates; the Config server
+    // pre-allocates via ListTenants + CAS round-trip). Accepted only
+    // by shardID=0.
+    UpsertTenant upsert_tenant = 40;
+    DeleteTenant delete_tenant = 41;
   }
 }
 
@@ -1257,6 +1269,77 @@ message UpsertSecret {
 // metric and clean up by deleting the consumer rows next.
 message DeleteSecret {
   string name = 1;
+}
+
+// TenantRecord is the persisted shape of one tenant in shard 0's
+// TenantTable. Tenants scope multi-tenant invocations: the `id` is the
+// 4-byte numeric key used in the apply-path principal kind
+// `tenant/<id>` and (in later PRs) in per-tenant storage key prefixes;
+// `name` is the operator-facing slug carried for display only — never
+// load-bearing on the apply path so rename-by-name doesn't require a
+// data migration.
+//
+// id=0 is the reserved default-tenant sentinel for anonymous /
+// single-tenant traffic and must never appear in a TenantTable row.
+// max_concurrent_invocations==0 means "unlimited" (the ingress-side
+// quota gate skips this tenant). oidc_issuers is consumed by the
+// per-tenant OIDC reconciler in PR 5; PR 1 just persists it.
+message TenantRecord {
+  uint32 id = 1;
+  string name = 2;
+  uint32 max_concurrent_invocations = 3;
+  repeated OIDCIssuerConfig oidc_issuers = 4;
+}
+
+// OIDCIssuerConfig mirrors internal/auth.OIDCIssuerConfig field-for-
+// field. Each tenant may register one or more OIDC issuers; the
+// per-tenant OIDC reconciler (PR 5) merges these with the cluster
+// default into the atomic-pointer-swapped jwtVerifier map. Principal
+// kind = `tenant/<tenant_id>` on successful verify.
+//
+// PrincipalClaim selects which JWT claim becomes the principal subject
+// (default "sub"). KindClaim, when non-empty, overrides the default
+// `tenant/<id>` kind from a JWT claim — leave empty for the standard
+// per-tenant binding. JwksFile, when non-empty, sources keys from a
+// local file instead of issuer-URL discovery (air-gapped setups).
+// ClockSkewMs is advisory; the verifier clamps to a hard minimum.
+message OIDCIssuerConfig {
+  string name = 1;
+  string issuer_url = 2;
+  string jwks_file = 3;
+  repeated string audiences = 4;
+  string principal_claim = 5;
+  string kind_claim = 6;
+  map<string, string> required_claims = 7;
+  repeated string allowed_claims = 8;
+  int64 clock_skew_ms = 9;
+  bool eager_discovery = 10;
+}
+
+// UpsertTenant is the Command_UpsertTenant payload. Apply arm
+// CAS-checks Envelope.precondition, writes TenantTable[record.id] =
+// record, maintains the name→id secondary index, bumps
+// RevisionTableTenant, and fires the TenantTable notifier. The Config
+// server pre-allocates record.id before proposing (read-then-write
+// CAS round-trip against the table revision) — the FSM rejects
+// record.id == 0.
+message UpsertTenant {
+  TenantRecord record = 1;
+}
+
+// DeleteTenant is the Command_DeleteTenant payload. Apply arm
+// CAS-checks Envelope.precondition, removes TenantTable[id], removes
+// the corresponding name→id index row, bumps the table revision (even
+// when the row was absent — the revision bump is the operator's signal
+// that the proposal landed), and fires the TenantTable notifier.
+//
+// Deliberately does NOT cascade-delete tenant data (invocation rows,
+// journal entries, per-tenant DEK record). v1 leaves cleanup to
+// operator follow-up — a TenantDEK delete + per-tenant range-delete
+// pass — so a delete-misclick is recoverable until those follow-on
+// calls land.
+message DeleteTenant {
+  uint32 id = 1;
 }
 
 // UpsertWebhookSource is the Command_UpsertWebhookSource payload.

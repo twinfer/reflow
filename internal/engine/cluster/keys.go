@@ -31,6 +31,14 @@
 //	                                   autonomous rebalancer subtracts
 //	                                   drained shards from the planner's
 //	                                   input set)
+//	tenant/<4-byte BE id>           -> TenantRecord (id=0 reserved for
+//	                                   the default-tenant sentinel and
+//	                                   never persisted)
+//	tenant_name_idx/<name>          -> 4-byte BE tenant_id (name → id
+//	                                   secondary index; the Config
+//	                                   server resolves create-vs-update
+//	                                   by reading this on the leader
+//	                                   before propose)
 //	tablerev/<table_name>           -> TableRevision singleton (CAS guard
 //	                                   for cluster-managed config tables;
 //	                                   separate top-level namespace so it
@@ -57,6 +65,8 @@ const (
 	lpOwnerPrefix         = "lpowner/"
 	lpTransferPrefix      = "lptransfer/"
 	rebalanceDrainPrefix  = "rebalance_drain/"
+	tenantPrefix          = "tenant/"
+	tenantNameIndexPrefix = "tenant_name_idx/"
 	tableRevisionPrefix   = "tablerev/"
 )
 
@@ -71,6 +81,7 @@ const (
 	RevisionTableLPOwners       = "lpowners"
 	RevisionTableLPTransfers    = "lptransfers"
 	RevisionTableRebalanceDrain = "rebalance_drain"
+	RevisionTableTenant         = "tenant"
 )
 
 // MetaKey returns the singleton key for the metadata shard's PartitionMeta.
@@ -193,6 +204,38 @@ func RebalanceDrainKey(shardID uint64) []byte {
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], shardID)
 	return append(out, buf[:]...)
+}
+
+// TenantPrefix returns the tenant/ namespace prefix. Used for forward
+// range iteration; rows sort in id order because the 4-byte BE encoding
+// of id follows the prefix.
+func TenantPrefix() []byte { return []byte(tenantPrefix) }
+
+// TenantKey returns tenant/<4-byte BE id>. Big-endian so lexicographic
+// byte order matches numeric id order. id==0 is the default-tenant
+// sentinel and must never be persisted (the FSM rejects it).
+func TenantKey(id uint32) []byte {
+	out := make([]byte, 0, len(tenantPrefix)+4)
+	out = append(out, tenantPrefix...)
+	var buf [4]byte
+	binary.BigEndian.PutUint32(buf[:], id)
+	return append(out, buf[:]...)
+}
+
+// TenantNameIndexPrefix returns the tenant_name_idx/ namespace prefix.
+// Used for iteration; the Config server scans this to resolve a
+// create-vs-update decision by name without loading every full
+// TenantRecord row.
+func TenantNameIndexPrefix() []byte { return []byte(tenantNameIndexPrefix) }
+
+// TenantNameIndexKey returns tenant_name_idx/<name>. Value is the
+// 4-byte BE tenant_id. Maintained by the UpsertTenant/DeleteTenant
+// apply arms; the FSM trusts the Config server to have validated
+// uniqueness via the read-then-CAS round-trip.
+func TenantNameIndexKey(name string) []byte {
+	out := make([]byte, 0, len(tenantNameIndexPrefix)+len(name))
+	out = append(out, tenantNameIndexPrefix...)
+	return append(out, name...)
 }
 
 // RevisionKey returns the CAS singleton key for a table identified by

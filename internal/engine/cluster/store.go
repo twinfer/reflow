@@ -2,7 +2,9 @@ package cluster
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
+	"fmt"
 
 	"google.golang.org/protobuf/proto"
 
@@ -674,6 +676,125 @@ func (t RebalanceDrainTable) List() ([]*enginev1.RebalanceDrainRecord, error) {
 		out = append(out, &rec)
 	}
 	return out, iter.Error()
+}
+
+// TenantTable persists TenantRecord rows keyed by 4-byte BE id. Lives
+// on shard 0 alongside DeploymentTable. Rows sort in ascending id
+// order, so List returns the lowest id first — useful for the Config
+// server's "allocate max(id)+1" path during create.
+//
+// The 4-byte numeric id is the load-bearing key; `name` is carried
+// for display only and is indexed via TenantNameIndexTable for
+// create-vs-update resolution. Tenant id 0 is the default-tenant
+// sentinel and must never be persisted (the FSM rejects it).
+type TenantTable struct{ S storage.Reader }
+
+func (t TenantTable) Get(id uint32) (*enginev1.TenantRecord, error) {
+	val, closer, err := t.S.Get(TenantKey(id))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer closer.Close()
+	var rec enginev1.TenantRecord
+	if err := proto.Unmarshal(val, &rec); err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (t TenantTable) Put(b storage.Batch, rec *enginev1.TenantRecord) error {
+	if rec.GetId() == 0 {
+		return errors.New("TenantTable.Put: zero id (reserved for default-tenant sentinel)")
+	}
+	if rec.GetName() == "" {
+		return errors.New("TenantTable.Put: empty name")
+	}
+	buf, err := proto.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return b.Set(TenantKey(rec.GetId()), buf)
+}
+
+// Delete removes the row for id. Delete-of-absent is a no-op; callers
+// still bump the table revision so the operator's CAS-roundtrip CLI
+// observes progress.
+func (t TenantTable) Delete(b storage.Batch, id uint32) error {
+	if id == 0 {
+		return errors.New("TenantTable.Delete: zero id")
+	}
+	return b.Delete(TenantKey(id))
+}
+
+// List returns every TenantRecord in ascending id order.
+func (t TenantTable) List() ([]*enginev1.TenantRecord, error) {
+	prefix := TenantPrefix()
+	upper := prefixUpperBound(prefix)
+	iter, err := t.S.NewIter(prefix, upper)
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	var out []*enginev1.TenantRecord
+	for ok := iter.First(); ok; ok = iter.Next() {
+		if !bytes.HasPrefix(iter.Key(), prefix) {
+			continue
+		}
+		var rec enginev1.TenantRecord
+		if err := proto.Unmarshal(iter.Value(), &rec); err != nil {
+			return nil, err
+		}
+		out = append(out, &rec)
+	}
+	return out, iter.Error()
+}
+
+// TenantNameIndexTable maintains the name → id secondary index for
+// TenantTable. Maintained by the apply arms (UpsertTenant inserts /
+// re-points the row, DeleteTenant removes it). Read by the Config
+// server to resolve create-vs-update by name without scanning every
+// TenantRecord.
+type TenantNameIndexTable struct{ S storage.Reader }
+
+// Get returns the tenant id for name, or 0 if absent (0 is also the
+// default-tenant sentinel — callers distinguish "not indexed" from
+// "default tenant" by context: this table never holds the default
+// tenant, so 0 always means "not found").
+func (t TenantNameIndexTable) Get(name string) (uint32, error) {
+	val, closer, err := t.S.Get(TenantNameIndexKey(name))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	defer closer.Close()
+	if len(val) != 4 {
+		return 0, fmt.Errorf("TenantNameIndexTable.Get: malformed value len=%d", len(val))
+	}
+	return binary.BigEndian.Uint32(val), nil
+}
+
+func (t TenantNameIndexTable) Put(b storage.Batch, name string, id uint32) error {
+	if name == "" {
+		return errors.New("TenantNameIndexTable.Put: empty name")
+	}
+	if id == 0 {
+		return errors.New("TenantNameIndexTable.Put: zero id")
+	}
+	var buf [4]byte
+	binary.BigEndian.PutUint32(buf[:], id)
+	return b.Set(TenantNameIndexKey(name), buf[:])
+}
+
+func (t TenantNameIndexTable) Delete(b storage.Batch, name string) error {
+	if name == "" {
+		return errors.New("TenantNameIndexTable.Delete: empty name")
+	}
+	return b.Delete(TenantNameIndexKey(name))
 }
 
 // prefixUpperBound is a local clone of keys.PrefixUpperBound to avoid an

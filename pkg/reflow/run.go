@@ -140,6 +140,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	secretNotifier := cluster.NewTableNotifier()
 	lpOwnersNotifier := cluster.NewTableNotifier()
 	rebalanceDrainNotifier := cluster.NewTableNotifier()
+	tenantNotifier := cluster.NewTableNotifier()
 
 	hcfg := engine.HostConfig{
 		NodeID:             cfg.Node.ID,
@@ -164,6 +165,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			SecretTable:         secretNotifier,
 			LPOwnersTable:       lpOwnersNotifier,
 			RebalanceDrainTable: rebalanceDrainNotifier,
+			TenantTable:         tenantNotifier,
 		},
 		Rebalance: rebalance.Config{
 			Mode:                       cfg.Rebalance.Mode,

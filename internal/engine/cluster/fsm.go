@@ -59,6 +59,7 @@ type Notifiers struct {
 	LPOwnersTable       *TableNotifier
 	LPTransfersTable    *TableNotifier
 	RebalanceDrainTable *TableNotifier
+	TenantTable         *TableNotifier
 }
 
 // FSM is the dragonboat IOnDiskStateMachine for shard 0. It accepts only
@@ -306,6 +307,10 @@ func (f *FSM) applyCommand(
 		return f.applyCompleteRebalanceStep(batch, k.CompleteRebalanceStep, raftIndex)
 	case *enginev1.Command_SetRebalanceDrain:
 		return f.applySetRebalanceDrain(batch, env, k.SetRebalanceDrain, raftIndex)
+	case *enginev1.Command_UpsertTenant:
+		return f.applyUpsertTenant(batch, env, k.UpsertTenant, raftIndex)
+	case *enginev1.Command_DeleteTenant:
+		return f.applyDeleteTenant(batch, env, k.DeleteTenant, raftIndex)
 	case nil:
 		f.cfg.Log.Warn("cluster: envelope has no command kind", "raft_index", raftIndex)
 		return &applyResult{}, nil
@@ -1218,6 +1223,108 @@ func (f *FSM) applySetRebalanceDrain(
 	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.RebalanceDrainTable}}, nil
 }
 
+// applyUpsertTenant writes the TenantRecord, maintains the name→id
+// secondary index (re-pointing on rename, evicting the prior name's
+// row if it differs), and bumps RevisionTableTenant. CAS via
+// Envelope.precondition; notifier fan-out via Notifiers.TenantTable.
+//
+// record.id == 0 is rejected (id=0 is the default-tenant sentinel and
+// never persists). The Config server is responsible for pre-allocating
+// the id and ensuring name uniqueness via a read-then-CAS round-trip
+// against the table revision; the FSM trusts the proposal.
+func (f *FSM) applyUpsertTenant(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.UpsertTenant,
+	raftIndex uint64,
+) (*applyResult, error) {
+	rec := cmd.GetRecord()
+	if rec == nil || rec.GetId() == 0 || rec.GetName() == "" {
+		f.cfg.Log.Warn("cluster: UpsertTenant missing record, id, or name; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableTenant)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load tenant revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	// If a row for this id already exists with a different name, evict
+	// the stale name index entry. Read-your-writes against the in-flight
+	// batch (the prior row may have been written by an earlier entry in
+	// this same apply batch).
+	tab := TenantTable{S: batch}
+	idx := TenantNameIndexTable{S: batch}
+	prev, err := tab.Get(rec.GetId())
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load prior tenant: %w", err)
+	}
+	if prev != nil && prev.GetName() != rec.GetName() {
+		if err := idx.Delete(batch, prev.GetName()); err != nil {
+			return nil, fmt.Errorf("cluster: evict tenant name index: %w", err)
+		}
+	}
+	if err := tab.Put(batch, rec); err != nil {
+		return nil, fmt.Errorf("cluster: write tenant: %w", err)
+	}
+	if err := idx.Put(batch, rec.GetName(), rec.GetId()); err != nil {
+		return nil, fmt.Errorf("cluster: write tenant name index: %w", err)
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableTenant, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump tenant revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.TenantTable}}, nil
+}
+
+// applyDeleteTenant removes the TenantRecord and its name-index entry,
+// then bumps RevisionTableTenant. CAS + notifier semantics mirror
+// applyDeleteEventSource. Deliberately does not cascade-delete tenant
+// data (invocation rows, journal entries, per-tenant DEK record) —
+// see DeleteTenant proto comment.
+func (f *FSM) applyDeleteTenant(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.DeleteTenant,
+	raftIndex uint64,
+) (*applyResult, error) {
+	id := cmd.GetId()
+	if id == 0 {
+		f.cfg.Log.Warn("cluster: DeleteTenant zero id; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableTenant)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load tenant revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	tab := TenantTable{S: batch}
+	// Load first so we can evict the name-index row. Read-your-writes
+	// against the in-flight batch.
+	prev, err := tab.Get(id)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load tenant for delete: %w", err)
+	}
+	if err := tab.Delete(batch, id); err != nil {
+		return nil, fmt.Errorf("cluster: delete tenant: %w", err)
+	}
+	if prev != nil {
+		if err := (TenantNameIndexTable{S: batch}).Delete(batch, prev.GetName()); err != nil {
+			return nil, fmt.Errorf("cluster: delete tenant name index: %w", err)
+		}
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableTenant, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump tenant revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.TenantTable}}, nil
+}
+
 // pickRebalanceTarget returns the ReplicaSet to mutate for a step with
 // the given shardID, plus a setter that lazily inserts a fresh ReplicaSet
 // at that location (used when promoting into an empty set).
@@ -1333,6 +1440,18 @@ type (
 	// autonomous rebalancer's advisor calls this on each tick to
 	// subtract drained shards from the planner's input.
 	LookupRebalanceDrains struct{}
+
+	// LookupTenants returns *TenantList — every TenantRecord on shard 0
+	// plus the table's CAS revision in one SyncRead. The Config server
+	// uses it to resolve create-vs-update (and pre-allocate ids) before
+	// proposing an Upsert; per-node reconcilers in later PRs will call
+	// it on each TenantTable notifier wake.
+	LookupTenants struct{}
+
+	// LookupTenantByName returns *enginev1.TenantRecord (or nil) for the
+	// named tenant. Resolves via the TenantNameIndexTable then loads the
+	// full row.
+	LookupTenantByName struct{ Name string }
 )
 
 // DeploymentList bundles every row in DeploymentTable with the table's
@@ -1382,6 +1501,13 @@ type LPTransfersList struct {
 // table's CAS revision, atomic w.r.t. the read snapshot.
 type RebalanceDrainList struct {
 	Records       []*enginev1.RebalanceDrainRecord
+	TableRevision uint64
+}
+
+// TenantList bundles every row in TenantTable with the table's CAS
+// revision, atomic w.r.t. the read snapshot.
+type TenantList struct {
+	Tenants       []*enginev1.TenantRecord
 	TableRevision uint64
 }
 
@@ -1512,6 +1638,25 @@ func (f *FSM) Lookup(query any) (any, error) {
 			return nil, err
 		}
 		return &RebalanceDrainList{Records: records, TableRevision: rev}, nil
+	case LookupTenants:
+		tenants, err := (TenantTable{S: store}).List()
+		if err != nil {
+			return nil, err
+		}
+		rev, err := (RevisionTable{S: store}).Get(RevisionTableTenant)
+		if err != nil {
+			return nil, err
+		}
+		return &TenantList{Tenants: tenants, TableRevision: rev}, nil
+	case LookupTenantByName:
+		id, err := (TenantNameIndexTable{S: store}).Get(q.Name)
+		if err != nil {
+			return nil, err
+		}
+		if id == 0 {
+			return (*enginev1.TenantRecord)(nil), nil
+		}
+		return (TenantTable{S: store}).Get(id)
 	default:
 		return nil, fmt.Errorf("cluster: unknown lookup type %T", query)
 	}

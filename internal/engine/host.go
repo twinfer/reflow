@@ -742,6 +742,44 @@ func (h *Host) RebalanceDrains(ctx context.Context) (*cluster.RebalanceDrainList
 	return out, nil
 }
 
+// Tenants SyncReads every TenantRecord from shard 0 plus the table's
+// CAS revision. Used by the Config server's Upsert/Delete RPCs to
+// pre-allocate ids + check the table revision in one round-trip, and
+// by per-node tenant reconcilers in later PRs.
+func (h *Host) Tenants(ctx context.Context) (*cluster.TenantList, error) {
+	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupTenants{})
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return &cluster.TenantList{}, nil
+	}
+	out, ok := res.(*cluster.TenantList)
+	if !ok {
+		return nil, fmt.Errorf("host: Tenants: unexpected lookup type %T", res)
+	}
+	return out, nil
+}
+
+// TenantByName SyncReads the TenantRecord for the named tenant via the
+// shard-0 TenantNameIndexTable, or nil when no row exists. Used by the
+// Config server's UpsertTenant flow to resolve create-vs-update without
+// scanning the entire TenantTable.
+func (h *Host) TenantByName(ctx context.Context, name string) (*enginev1.TenantRecord, error) {
+	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupTenantByName{Name: name})
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return nil, nil
+	}
+	out, ok := res.(*enginev1.TenantRecord)
+	if !ok {
+		return nil, fmt.Errorf("host: TenantByName: unexpected lookup type %T", res)
+	}
+	return out, nil
+}
+
 // AwaitMetadataLeader blocks until shard 0 has a stable leader.
 func (h *Host) AwaitMetadataLeader(ctx context.Context) error {
 	tick := time.NewTicker(20 * time.Millisecond)

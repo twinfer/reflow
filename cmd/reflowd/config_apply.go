@@ -40,7 +40,7 @@ type resourceMetadata struct {
 // (per Reconcile's sourceConfigsEqual check) but still bumps the
 // revision because the FSM bumps unconditionally on Upsert.
 //
-// Supported kinds: EventSource, WebhookSource.
+// Supported kinds: EventSource, WebhookSource, Tenant.
 func cmdApply(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)
@@ -79,11 +79,57 @@ func applyOneDoc(ctx context.Context, cli *reflowclient.Client, doc resourceDoc)
 		return applyEventSource(ctx, cli, doc)
 	case "WebhookSource":
 		return applyWebhookSource(ctx, cli, doc)
+	case "Tenant":
+		return applyTenant(ctx, cli, doc)
 	case "":
 		return errors.New("missing kind")
 	default:
-		return fmt.Errorf("unknown kind %q (supported: EventSource, WebhookSource)", doc.Kind)
+		return fmt.Errorf("unknown kind %q (supported: EventSource, WebhookSource, Tenant)", doc.Kind)
 	}
+}
+
+// applyTenant decodes a Tenant doc and round-trips through
+// Config.UpsertTenant. metadata.name is the canonical key; the spec
+// carries quotas + per-tenant OIDC issuers. The server resolves
+// create-vs-update by name, so applying the same file twice in a row
+// is idempotent (the second apply reuses the existing id).
+func applyTenant(ctx context.Context, cli *reflowclient.Client, doc resourceDoc) error {
+	if doc.Metadata.Name == "" {
+		return errors.New("metadata.name is required")
+	}
+	rec, err := decodeTenantSpec(doc.Spec)
+	if err != nil {
+		return err
+	}
+	rec.Name = doc.Metadata.Name
+	resp, err := cli.Config.UpsertTenant(ctx, connect.NewRequest(&configv1.UpsertTenantRequest{
+		Record: rec,
+	}))
+	if err != nil {
+		return err
+	}
+	fmt.Printf("tenant upserted (name=%s, tenant_id=%d, table_revision=%d)\n",
+		rec.GetName(), resp.Msg.GetTenantId(), resp.Msg.GetTableRevision())
+	return nil
+}
+
+// decodeTenantSpec round-trips spec → JSON → protojson into a
+// TenantRecord. protojson handles nested OIDCIssuerConfig and the
+// numeric quota fields uniformly.
+func decodeTenantSpec(spec map[string]any) (*enginev1.TenantRecord, error) {
+	if spec == nil {
+		return nil, errors.New("spec is required")
+	}
+	jsonBytes, err := json.Marshal(spec)
+	if err != nil {
+		return nil, fmt.Errorf("marshal spec: %w", err)
+	}
+	var rec enginev1.TenantRecord
+	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
+	if err := opts.Unmarshal(jsonBytes, &rec); err != nil {
+		return nil, fmt.Errorf("decode Tenant spec: %w", err)
+	}
+	return &rec, nil
 }
 
 func applyWebhookSource(ctx context.Context, cli *reflowclient.Client, doc resourceDoc) error {

@@ -20,6 +20,8 @@ import (
 	connect "connectrpc.com/connect"
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/golang-jwt/jwt/v5"
+
+	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
 // jwtTestKit holds the RSA key + matching JWKS server + helper for
@@ -112,7 +114,7 @@ func newJWTOnlyMiddleware(t *testing.T, cfgs []OIDCIssuerConfig) func(http.Handl
 	t.Helper()
 	// Trust domain "none" + zero OIDC slice routing: the SPIFFE step
 	// returns anonymous on no-TLS, then bearer takes over.
-	mw, closer, err := HTTPMiddleware(Config{TrustDomain: "reflow.local", OIDC: cfgs}, nil)
+	mw, closer, _, err := HTTPMiddleware(Config{TrustDomain: "reflow.local", OIDC: cfgs}, nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}
@@ -151,7 +153,7 @@ func jwtFriendlyPolicy(t *testing.T) string {
 
 func newJWTMiddlewareWithPolicy(t *testing.T, cfgs []OIDCIssuerConfig) func(http.Handler) http.Handler {
 	t.Helper()
-	mw, closer, err := HTTPMiddleware(Config{
+	mw, closer, _, err := HTTPMiddleware(Config{
 		TrustDomain: "reflow.local",
 		PolicyFile:  jwtFriendlyPolicy(t),
 		OIDC:        cfgs,
@@ -480,7 +482,7 @@ func TestJWTAuthFunc_MalformedTokenRejected(t *testing.T) {
 // per-request routing keys on `iss`, so duplicates would be ambiguous.
 func TestJWTAuthFunc_DuplicateIssuerURLRejected(t *testing.T) {
 	kit := newJWTKit(t)
-	_, _, err := HTTPMiddleware(Config{
+	_, _, _, err := HTTPMiddleware(Config{
 		TrustDomain: "reflow.local",
 		OIDC: []OIDCIssuerConfig{
 			{IssuerURL: kit.issuer, Audiences: []string{"reflow"}},
@@ -494,7 +496,7 @@ func TestJWTAuthFunc_DuplicateIssuerURLRejected(t *testing.T) {
 
 func TestJWTAuthFunc_NoAudiencesRejected(t *testing.T) {
 	kit := newJWTKit(t)
-	_, _, err := HTTPMiddleware(Config{
+	_, _, _, err := HTTPMiddleware(Config{
 		TrustDomain: "reflow.local",
 		OIDC: []OIDCIssuerConfig{
 			{IssuerURL: kit.issuer, Audiences: nil},
@@ -511,7 +513,7 @@ func TestJWTAuthFunc_NoAudiencesRejected(t *testing.T) {
 // request fails (no IdP), but a later request after the backoff
 // expires succeeds.
 //
-// We exercise this by directly constructing newJWTVerifier with
+// We exercise this by directly constructing NewJWTVerifier with
 // EagerDiscovery=false and a bogus URL, asserting verify fails, then
 // rebuilding with a real URL succeeds.
 func TestJWTAuthFunc_LazyDiscoveryNoEager(t *testing.T) {
@@ -525,12 +527,12 @@ func TestJWTAuthFunc_LazyDiscoveryNoEager(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	v, err := newJWTVerifier(ctx, []OIDCIssuerConfig{{
+	v, err := NewJWTVerifier(ctx, []OIDCIssuerConfig{{
 		IssuerURL: bogus,
 		Audiences: []string{"reflow"},
 	}}, nil)
 	if err != nil {
-		t.Fatalf("newJWTVerifier (lazy): %v", err)
+		t.Fatalf("NewJWTVerifier (lazy): %v", err)
 	}
 	if v == nil {
 		t.Fatal("v is nil")
@@ -548,7 +550,7 @@ func TestJWTAuthFunc_LazyDiscoveryNoEager(t *testing.T) {
 
 // TestJWTAuthFunc_EagerDiscoveryAbortsOnUnreachableIssuer covers the
 // inverse: with EagerDiscovery=true, an unreachable issuer makes
-// newJWTVerifier return an error (and reflow.Run would fail to start).
+// NewJWTVerifier return an error (and reflow.Run would fail to start).
 func TestJWTAuthFunc_EagerDiscoveryAbortsOnUnreachableIssuer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(500)
@@ -558,7 +560,7 @@ func TestJWTAuthFunc_EagerDiscoveryAbortsOnUnreachableIssuer(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := newJWTVerifier(ctx, []OIDCIssuerConfig{{
+	_, err := NewJWTVerifier(ctx, []OIDCIssuerConfig{{
 		IssuerURL:      bogus,
 		Audiences:      []string{"reflow"},
 		EagerDiscovery: true,
@@ -571,7 +573,7 @@ func TestJWTAuthFunc_EagerDiscoveryAbortsOnUnreachableIssuer(t *testing.T) {
 // TestJWTAuthFunc_JWKSFileFailFast: bad JWKS file aborts startup.
 func TestJWTAuthFunc_JWKSFileFailFast(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.json")
-	_, _, err := HTTPMiddleware(Config{
+	_, _, _, err := HTTPMiddleware(Config{
 		TrustDomain: "reflow.local",
 		OIDC: []OIDCIssuerConfig{
 			{IssuerURL: "https://idp.example.com", JWKSFile: path, Audiences: []string{"reflow"}},
@@ -661,3 +663,74 @@ func indexOf(s, sub string) int {
 // silenceUnusedFmt keeps fmt in the import list for the err format
 // helpers above without triggering an unused-import lint.
 var _ = fmt.Sprintf
+
+// TestJWTAuthFunc_TenantBoundSubjectPrefix asserts that a JWT
+// verified through a tenant-bound issuerEntry produces a Principal
+// shaped for TenantIDFromPrincipal — Kind="tenant" (literal) and
+// Subject="<tenantID>/<jwt-sub>". The reconciler is the only path
+// that builds tenant-bound entries today; we drive it directly.
+func TestJWTAuthFunc_TenantBoundSubjectPrefix(t *testing.T) {
+	kit := newJWTKit(t)
+	ctx := context.Background()
+
+	v, err := NewJWTVerifier(ctx, nil, nil)
+	if err != nil {
+		t.Fatalf("NewJWTVerifier: %v", err)
+	}
+	r := NewTenantOIDCReconciler(v, nil, nil)
+	r.Reconcile(ctx, []*enginev1.TenantRecord{{
+		Id: 42, Name: "acme",
+		OidcIssuers: []*enginev1.OIDCIssuerConfig{{
+			IssuerUrl: kit.issuer,
+			Audiences: []string{"reflow"},
+		}},
+	}})
+
+	token := kit.mint(t, kit.defaultClaims())
+	p, vErr := v.verify(ctx, token)
+	if vErr != nil {
+		t.Fatalf("verify: %v", vErr)
+	}
+	if p.Kind != "tenant" {
+		t.Errorf("Kind=%q; want \"tenant\" (literal)", p.Kind)
+	}
+	if p.Subject != "42/alice" {
+		t.Errorf("Subject=%q; want \"42/alice\"", p.Subject)
+	}
+	if got := TenantIDFromPrincipal(p); got != 42 {
+		t.Errorf("TenantIDFromPrincipal=%d; want 42", got)
+	}
+	if p.Raw != "tenant/42/alice" {
+		t.Errorf("Raw=%q; want \"tenant/42/alice\"", p.Raw)
+	}
+}
+
+// TestBearerAuthFunc_EmptySnapshotFallsThrough confirms the
+// snapshot-empty shortcut: when no cluster default and no tenants
+// have OIDC configured, a bearer token is silently ignored and the
+// request proceeds to anonymous auth (mirrors the legacy nil-verifier
+// no-op so SPIFFE-only deployments aren't broken by the always-init
+// verifier change in newJWTVerifier).
+func TestBearerAuthFunc_EmptySnapshotFallsThrough(t *testing.T) {
+	ctx := context.Background()
+	v, err := NewJWTVerifier(ctx, nil, nil)
+	if err != nil {
+		t.Fatalf("NewJWTVerifier: %v", err)
+	}
+	if v == nil {
+		t.Fatal("verifier should be non-nil even with empty config")
+	}
+	if got := len(v.snapshot()); got != 0 {
+		t.Fatalf("initial snapshot size=%d; want 0", got)
+	}
+	fn := bearerAuthFunc(v)
+	r := httptest.NewRequest("POST", "/", nil)
+	r.Header.Set("Authorization", "Bearer some.token.here")
+	info, ferr := fn(ctx, r)
+	if ferr != nil {
+		t.Errorf("bearerAuthFunc returned err=%v; want nil (fall-through)", ferr)
+	}
+	if info != nil {
+		t.Errorf("bearerAuthFunc returned info=%v; want nil (fall-through)", info)
+	}
+}

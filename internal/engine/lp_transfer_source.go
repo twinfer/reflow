@@ -252,14 +252,6 @@ func (s *LPTransferService) Stop() {
 // Done returns a channel closed when Run has returned.
 func (s *LPTransferService) Done() <-chan struct{} { return s.done }
 
-// pendingLen returns the in-memory queue length. Tests use this to
-// assert drain progress.
-func (s *LPTransferService) pendingLen() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.pending)
-}
-
 func (s *LPTransferService) sendAck(ctx context.Context, transferID string, phase enginev1.LPTransferPhase, phaseLabel string) error {
 	if s.sender == nil {
 		return errors.New("lp transfer ack: no CrossShardSender configured")

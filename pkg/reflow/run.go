@@ -252,12 +252,13 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		return nil, err
 	}
 
-	mw, mwCloser, mwErr := auth.HTTPMiddleware(buildAuthConfig(cfg.Auth), logger)
+	mw, mwCloser, jwtVerifier, mwErr := auth.HTTPMiddleware(buildAuthConfig(cfg.Auth), logger)
 	if mwErr != nil {
 		return bail(fmt.Errorf("reflow: auth middleware: %w", mwErr))
 	}
 	httpAuthMW = mw
 	httpAuthCloser = mwCloser
+	tenantOIDC := auth.NewTenantOIDCReconciler(jwtVerifier, buildAuthConfig(cfg.Auth).OIDC, logger)
 
 	if crossShard {
 		dc, derr := creds.Build(cfg.Delivery.Creds, logger)
@@ -315,8 +316,10 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		webhookSourceNotifier:  webhookSourceNotifier,
 		secretNotifier:         secretNotifier,
 		lpOwnersNotifier:       lpOwnersNotifier,
+		tenantNotifier:         tenantNotifier,
 		tenantDEKNotifier:      tenantDEKNotifier,
 		tenantDEKs:             tenantDEKs,
+		tenantOIDC:             tenantOIDC,
 		logger:                 logger,
 	})
 	if herr != nil {
@@ -483,8 +486,10 @@ type startupDeps struct {
 	webhookSourceNotifier  *cluster.TableNotifier
 	secretNotifier         *cluster.TableNotifier
 	lpOwnersNotifier       *cluster.TableNotifier
+	tenantNotifier         *cluster.TableNotifier
 	tenantDEKNotifier      *cluster.TableNotifier
 	tenantDEKs             *secretstore.TenantDEKResolver
+	tenantOIDC             *auth.TenantOIDCReconciler
 	logger                 *slog.Logger
 }
 
@@ -724,6 +729,19 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		}
 	}()
 
+	// TenantOIDCReconciler keeps the jwtVerifier's byIssuer snapshot
+	// aligned with the union of cluster-default issuers and per-tenant
+	// issuers carried on TenantRecord.OidcIssuers. Reconciler is a
+	// no-op when jwtVerifier is nil (no cluster-default OIDC and no
+	// tenants yet — possible in SPIFFE-only deployments). Wakes on
+	// the TenantTable notifier; 5s ticker backstop.
+	go func() {
+		reader := tenantReader{host: eh}
+		if rerr := d.tenantOIDC.RunReconciler(ctx, d.tenantNotifier.Subscribe(), reader); rerr != nil && !errors.Is(rerr, context.Canceled) {
+			logger.Warn("reflow: tenant_oidc reconcile loop exited", "err", rerr)
+		}
+	}()
+
 	multiNode := len(cfg.Cluster.Peers) > 1
 	ingressRT, ingressCreds, webhookMgr, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, secrets, metrics, metricsRegisterer, logger)
 	if err != nil {
@@ -898,6 +916,22 @@ func (r tenantDEKReader) ListTenantDEKs(ctx context.Context) ([]*enginev1.Tenant
 		return nil, 0, err
 	}
 	return list.Records, list.TableRevision, nil
+}
+
+// tenantReader is the Reader adapter the TenantOIDCReconciler uses to
+// pull the latest set of TenantRecord rows from shard 0.
+type tenantReader struct {
+	host *engine.Host
+}
+
+func (r tenantReader) ListTenants(ctx context.Context) ([]*enginev1.TenantRecord, uint64, error) {
+	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	list, err := r.host.Tenants(readCtx)
+	if err != nil {
+		return nil, 0, err
+	}
+	return list.Tenants, list.TableRevision, nil
 }
 
 // partitionTableReader is the Reader adapter the PartitionTable

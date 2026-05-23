@@ -81,7 +81,7 @@ func bringUp(t *testing.T, reg *handler.Registry) string {
 		}
 	}
 
-	mw, _, err := auth.HTTPMiddleware(auth.Config{TrustDomain: "reflow.local"}, nil)
+	mw, _, _, err := auth.HTTPMiddleware(auth.Config{TrustDomain: "reflow.local"}, nil)
 	if err != nil {
 		t.Fatalf("auth.HTTPMiddleware: %v", err)
 	}
@@ -395,7 +395,7 @@ func bringUpWithConfig(t *testing.T, reg *handler.Registry, cfg httpingress.Conf
 		}
 	}
 
-	mw, _, err := auth.HTTPMiddleware(auth.Config{TrustDomain: "reflow.local"}, nil)
+	mw, _, _, err := auth.HTTPMiddleware(auth.Config{TrustDomain: "reflow.local"}, nil)
 	if err != nil {
 		t.Fatalf("auth.HTTPMiddleware: %v", err)
 	}

@@ -22,7 +22,7 @@ import (
 // surfaces in the same integration coverage.
 func testIngressMiddleware(t *testing.T) func(http.Handler) http.Handler {
 	t.Helper()
-	mw, _, err := auth.HTTPMiddleware(auth.Config{TrustDomain: "reflow.local"}, nil)
+	mw, _, _, err := auth.HTTPMiddleware(auth.Config{TrustDomain: "reflow.local"}, nil)
 	if err != nil {
 		t.Fatalf("auth.HTTPMiddleware: %v", err)
 	}

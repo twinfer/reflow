@@ -11,8 +11,10 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/authn"
@@ -33,19 +35,28 @@ const wwwAuthenticateBearerInvalid = `Bearer error="invalid_token"`
 // accepted scheme on this surface.
 const wwwAuthenticateBearer = "Bearer"
 
-// jwtVerifier dispatches an inbound Bearer token to the right issuer
+// JWTVerifier dispatches an inbound Bearer token to the right issuer
 // entry by inspecting the unverified `iss` claim, then delegates to
-// that entry's go-oidc Verifier.
-type jwtVerifier struct {
-	byIssuer map[string]*issuerEntry
+// that entry's go-oidc Verifier. The byIssuer map is swapped
+// atomically by TenantOIDCReconciler — verify() reads the live
+// snapshot lock-free; each entry's own mutex covers its lazy
+// discovery state independently.
+type JWTVerifier struct {
+	byIssuer atomic.Pointer[map[string]*issuerEntry]
 	log      *slog.Logger
 }
 
 // issuerEntry is one configured OIDC issuer plus its (possibly lazy)
-// go-oidc Verifier.
+// go-oidc Verifier. tenantID binds this entry to a specific tenant
+// (0 = cluster-default): when non-zero, verify() returns a Principal
+// shaped for TenantIDFromPrincipal consumption — Kind="tenant",
+// Subject="<tenantID>/<jwt-sub>". Entries are reused across
+// reconcile passes when the cfg hasn't changed so the cached
+// verifier + backoff state survive.
 type issuerEntry struct {
-	cfg OIDCIssuerConfig
-	log *slog.Logger
+	cfg      OIDCIssuerConfig
+	tenantID uint32
+	log      *slog.Logger
 
 	// For lazy discovery: discoverOnce gates the first attempt;
 	// verifier holds the result of a successful discovery. nextRetry
@@ -56,18 +67,19 @@ type issuerEntry struct {
 	backoff   *backoff.ExponentialBackOff
 }
 
-// newJWTVerifier builds a multi-issuer verifier from the OIDC config
+// NewJWTVerifier builds a multi-issuer verifier from the OIDC config
 // slice. Issuers with JWKSFile fail-fast on file errors. Issuers with
-// OIDC discovery are lazy unless EagerDiscovery is true. Empty config
-// returns (nil, nil) — the AuthFunc skips bearer auth entirely.
-func newJWTVerifier(ctx context.Context, cfg []OIDCIssuerConfig, log *slog.Logger) (*jwtVerifier, error) {
-	if len(cfg) == 0 {
-		return nil, nil
-	}
+// OIDC discovery are lazy unless EagerDiscovery is true. An empty
+// cfg still returns a non-nil verifier with an empty snapshot — the
+// TenantOIDCReconciler can later add per-tenant entries via
+// replaceSnapshot. bearerAuthFunc treats an empty snapshot as
+// "no OIDC configured" and falls through to anonymous.
+func NewJWTVerifier(ctx context.Context, cfg []OIDCIssuerConfig, log *slog.Logger) (*JWTVerifier, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	v := &jwtVerifier{byIssuer: make(map[string]*issuerEntry, len(cfg)), log: log}
+	v := &JWTVerifier{log: log}
+	initial := make(map[string]*issuerEntry, len(cfg))
 	for i, ic := range cfg {
 		if ic.IssuerURL == "" {
 			return nil, fmt.Errorf("auth: oidc[%d]: issuer_url is required", i)
@@ -75,42 +87,81 @@ func newJWTVerifier(ctx context.Context, cfg []OIDCIssuerConfig, log *slog.Logge
 		if len(ic.Audiences) == 0 {
 			return nil, fmt.Errorf("auth: oidc[%d]: audiences must list at least one expected aud value", i)
 		}
-		if _, dup := v.byIssuer[ic.IssuerURL]; dup {
+		if _, dup := initial[ic.IssuerURL]; dup {
 			return nil, fmt.Errorf("auth: oidc[%d]: duplicate issuer_url %q", i, ic.IssuerURL)
 		}
-		entry := &issuerEntry{cfg: ic, log: log.With("issuer", labelFor(ic))}
-		entry.backoff = backoff.NewExponentialBackOff()
-		entry.backoff.InitialInterval = 1 * time.Second
-		entry.backoff.MaxInterval = 30 * time.Second
-
-		switch {
-		case ic.JWKSFile != "":
-			verifier, err := buildStaticVerifier(ic)
-			if err != nil {
-				return nil, fmt.Errorf("auth: oidc[%d] (%q): %w", i, labelFor(ic), err)
-			}
-			entry.verifier = verifier
-		case ic.EagerDiscovery:
-			if err := entry.discover(ctx); err != nil {
-				return nil, fmt.Errorf("auth: oidc[%d] (%q): eager discovery: %w", i, labelFor(ic), err)
-			}
+		entry, err := buildIssuerEntry(ctx, ic, 0, log)
+		if err != nil {
+			return nil, fmt.Errorf("auth: oidc[%d] (%q): %w", i, labelFor(ic), err)
 		}
-		v.byIssuer[ic.IssuerURL] = entry
+		initial[ic.IssuerURL] = entry
 	}
+	v.byIssuer.Store(&initial)
 	return v, nil
+}
+
+// buildIssuerEntry constructs one issuerEntry, performing JWKS-file
+// fail-fast and EagerDiscovery roundtrips when requested. Shared
+// between NewJWTVerifier (startup) and the TenantOIDCReconciler
+// (runtime per-tenant adds).
+func buildIssuerEntry(ctx context.Context, ic OIDCIssuerConfig, tenantID uint32, log *slog.Logger) (*issuerEntry, error) {
+	entry := &issuerEntry{cfg: ic, tenantID: tenantID, log: log.With("issuer", labelFor(ic))}
+	entry.backoff = backoff.NewExponentialBackOff()
+	entry.backoff.InitialInterval = 1 * time.Second
+	entry.backoff.MaxInterval = 30 * time.Second
+
+	switch {
+	case ic.JWKSFile != "":
+		verifier, err := buildStaticVerifier(ic)
+		if err != nil {
+			return nil, err
+		}
+		entry.verifier = verifier
+	case ic.EagerDiscovery:
+		if err := entry.discover(ctx); err != nil {
+			return nil, fmt.Errorf("eager discovery: %w", err)
+		}
+	}
+	return entry, nil
+}
+
+// snapshot returns the current byIssuer map. The map must be treated
+// as read-only — callers that want to mutate must build a fresh map
+// and call replaceSnapshot. Used by TenantOIDCReconciler for
+// prev-entry reuse on reconcile.
+func (v *JWTVerifier) snapshot() map[string]*issuerEntry {
+	if v == nil {
+		return nil
+	}
+	p := v.byIssuer.Load()
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+// replaceSnapshot atomically installs next as the live byIssuer map.
+// Called by TenantOIDCReconciler after building the merged
+// cluster-default + per-tenant map.
+func (v *JWTVerifier) replaceSnapshot(next map[string]*issuerEntry) {
+	if v == nil {
+		return
+	}
+	v.byIssuer.Store(&next)
 }
 
 // verify runs the AuthFunc step for a Bearer token. Returns the
 // Principal on success, a hard authn.Errorf otherwise. Token parse
 // failures and verification failures both map to CodeUnauthenticated
 // with an opaque message; full reasons go to the audit log.
-func (v *jwtVerifier) verify(ctx context.Context, raw string) (Principal, error) {
+func (v *JWTVerifier) verify(ctx context.Context, raw string) (Principal, error) {
 	iss, err := unsafeReadIssuer(raw)
 	if err != nil {
 		v.log.Warn("jwt: malformed token", "err", err)
 		return Principal{}, authn.Errorf("invalid token")
 	}
-	entry, ok := v.byIssuer[iss]
+	snap := v.snapshot()
+	entry, ok := snap[iss]
 	if !ok {
 		v.log.Warn("jwt: unknown issuer", "iss", iss)
 		return Principal{}, authn.Errorf("invalid token")
@@ -163,6 +214,16 @@ func (e *issuerEntry) verify(ctx context.Context, raw string) (Principal, error)
 		if k := lookupStringClaim(allClaims, e.cfg.KindClaim); k != "" {
 			kind = sanitizeSubject(k)
 		}
+	}
+	// Tenant-bound entry: override the configured kind/subject so the
+	// downstream principal carries Kind="tenant" + Subject="<id>/<sub>".
+	// TenantIDFromPrincipal parses up to the first '/' as the tenant
+	// id; sanitizeSubject has already eaten any IdP-supplied slashes
+	// from the original subject so the '/' we add here is always the
+	// only one.
+	if e.tenantID != 0 {
+		kind = "tenant"
+		subject = strconv.FormatUint(uint64(e.tenantID), 10) + "/" + subject
 	}
 	var attached map[string]string
 	if len(e.cfg.AllowedClaims) > 0 {
@@ -328,17 +389,23 @@ func labelFor(ic OIDCIssuerConfig) string {
 }
 
 // bearerAuthFunc returns an authn.AuthFunc that pulls "Authorization:
-// Bearer ..." and verifies it via the configured jwtVerifier. When
+// Bearer ..." and verifies it via the configured JWTVerifier. When
 // the header is absent it returns (nil, nil) so the caller falls
 // through to anonymous. Header present but verification failed
-// returns a hard CodeUnauthenticated error.
-func bearerAuthFunc(v *jwtVerifier) authn.AuthFunc {
+// returns a hard CodeUnauthenticated error. An empty issuer
+// snapshot (no cluster default + no tenants configured) is treated
+// the same as a missing header — the bearer is silently ignored so
+// SPIFFE-only deployments don't reject otherwise-irrelevant tokens.
+func bearerAuthFunc(v *JWTVerifier) authn.AuthFunc {
 	if v == nil {
 		return func(_ context.Context, _ *http.Request) (any, error) { return nil, nil }
 	}
 	return func(ctx context.Context, r *http.Request) (any, error) {
 		token, ok := authn.BearerToken(r)
 		if !ok {
+			return nil, nil
+		}
+		if len(v.snapshot()) == 0 {
 			return nil, nil
 		}
 		p, err := v.verify(ctx, token)

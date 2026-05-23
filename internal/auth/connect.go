@@ -44,31 +44,37 @@ const FileWatcherReload = 30 * time.Second
 //  3. The wrapped handler runs with the Principal attached to the
 //     request context via ContextWithPrincipal.
 //
+// Returns the constructed *JWTVerifier so callers can wire a
+// TenantOIDCReconciler against it (per-tenant OIDC adds/removes
+// happen via verifier.replaceSnapshot from outside this package).
+// Verifier is always non-nil; a snapshot-empty verifier means no
+// issuers are configured today and bearer auth falls through.
+//
 // The closer releases the policy file watcher goroutine; safe to call
 // when nil (embedded-policy installations have no resources to free).
-func HTTPMiddleware(cfg Config, log *slog.Logger) (mw func(http.Handler) http.Handler, closer func() error, err error) {
+func HTTPMiddleware(cfg Config, log *slog.Logger) (mw func(http.Handler) http.Handler, closer func() error, verifier *JWTVerifier, err error) {
 	if log == nil {
 		log = slog.Default()
 	}
 	pol, c, perr := loadPolicy(cfg.PolicyFile, log)
 	if perr != nil {
-		return nil, nil, perr
+		return nil, nil, nil, perr
 	}
-	jwt, jerr := newJWTVerifier(context.Background(), cfg.OIDC, log)
+	jwt, jerr := NewJWTVerifier(context.Background(), cfg.OIDC, log)
 	if jerr != nil {
 		if c != nil {
 			_ = c()
 		}
-		return nil, nil, jerr
+		return nil, nil, nil, jerr
 	}
 	auth := composeAuthFunc(cfg.TrustDomain, jwt, log)
 	authnMW := authn.NewMiddleware(auth)
 	errWriter := connect.NewErrorWriter()
-	policy := policyHandler(pol, log, errWriter, jwt != nil)
+	policy := policyHandler(pol, log, errWriter, len(cfg.OIDC) > 0)
 	mw = func(next http.Handler) http.Handler {
 		return authnMW.Wrap(policy(next))
 	}
-	return mw, c, nil
+	return mw, c, jwt, nil
 }
 
 // composeAuthFunc chains the SPIFFE and Bearer authenticators per the
@@ -76,7 +82,7 @@ func HTTPMiddleware(cfg Config, log *slog.Logger) (mw func(http.Handler) http.Ha
 // present (a leaked bearer cannot forge a peer-verified leaf). When
 // the SPIFFE step returns a non-anonymous Principal the bearer is
 // not consulted; a debug-level log notes the override.
-func composeAuthFunc(td string, jwt *jwtVerifier, log *slog.Logger) authn.AuthFunc {
+func composeAuthFunc(td string, jwt *JWTVerifier, log *slog.Logger) authn.AuthFunc {
 	spiffe := spiffeAuthFunc(td)
 	bearer := bearerAuthFunc(jwt)
 	return func(ctx context.Context, r *http.Request) (any, error) {

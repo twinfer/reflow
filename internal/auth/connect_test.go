@@ -53,7 +53,7 @@ func TestPolicy_StarterAllowMatrix(t *testing.T) {
 
 func newTestMW(t *testing.T, td string) func(http.Handler) http.Handler {
 	t.Helper()
-	mw, closer, err := HTTPMiddleware(Config{TrustDomain: td}, nil)
+	mw, closer, _, err := HTTPMiddleware(Config{TrustDomain: td}, nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}

@@ -877,11 +877,6 @@ func LPStagingKey(transferID string) []byte {
 	return append(out, transferID...)
 }
 
-// LPStagingPrefix returns the lp_staging/ namespace prefix, used by
-// the destination's leader-side rebuild path to enumerate in-progress
-// staging rows.
-func LPStagingPrefix() []byte { return []byte(lpStagingPrefix) }
-
 func init() {
 	if LPCount&(LPCount-1) != 0 {
 		panic("keys: LPCount must be a power of two")

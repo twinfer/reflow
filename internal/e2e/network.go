@@ -5,7 +5,10 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"net/netip"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,15 +17,42 @@ import (
 	"github.com/testcontainers/testcontainers-go/network"
 )
 
-// clusterSubnet is the /16 every cluster's docker network uses. Per-node
-// IPs are derived as <subnet>.10+nodeID so the test process and any
-// debug tool can predict them. The subnet is namespaced (not the docker
-// default bridge range) to keep collisions unlikely across parallel test
-// runs.
-const (
-	clusterSubnet  = "10.42.0.0/16"
-	clusterGateway = "10.42.0.1"
+// clusterSubnetOctet is the middle octet picked once per test process
+// (e.g. 10.<octet>.0.0/16). Each go-test binary runs in its own process,
+// so two parallel e2e packages get independent values — eliminating the
+// "Pool overlaps with other one on this address space" failure mode
+// that fixed-subnet allocation produced under `go test ./internal/e2e/...`.
+// Range [50, 250] avoids common bridge/docker defaults at the edges.
+//
+// Mutable under processSubnetMu so newDockerNetwork can re-roll on a
+// genuine collision (rare: another process happens to choose the same
+// octet, or a stale network from a killed run survived).
+var (
+	processSubnetMu sync.Mutex
+	clusterOctet    = byte(50 + rand.IntN(201))
 )
+
+// clusterSubnet returns the current /16 (e.g. "10.137.0.0/16").
+func clusterSubnet() string {
+	processSubnetMu.Lock()
+	defer processSubnetMu.Unlock()
+	return fmt.Sprintf("10.%d.0.0/16", clusterOctet)
+}
+
+// clusterGateway returns the .1 gateway IP for the current subnet.
+func clusterGateway() string {
+	processSubnetMu.Lock()
+	defer processSubnetMu.Unlock()
+	return fmt.Sprintf("10.%d.0.1", clusterOctet)
+}
+
+// reRollSubnet picks a new octet. Called when network.New reports a
+// pool overlap so the next attempt has a fresh chance.
+func reRollSubnet() {
+	processSubnetMu.Lock()
+	defer processSubnetMu.Unlock()
+	clusterOctet = byte(50 + rand.IntN(201))
+}
 
 // newDockerNetwork creates a user-defined bridge network with a fixed
 // subnet. Per-container IPs are pre-allocated so dragonboat's gossip
@@ -34,36 +64,53 @@ const (
 // Each container is attached with both a stable DNS alias (reflowd-node1,
 // loadhandler, ...) and a fixed IPv4 address. Raft + delivery use DNS
 // (they accept hostnames); gossip uses the IP form.
+//
+// On Docker "Pool overlaps with other one on this address space" the
+// helper re-rolls the per-process octet and retries up to maxRetries
+// times — that error indicates either a stale network or a concurrent
+// process picked the same octet.
 func newDockerNetwork(t testing.TB) *testcontainers.DockerNetwork {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	ipam := &mobynet.IPAM{
-		Driver: "default",
-		Config: []mobynet.IPAMConfig{
-			{
-				Subnet:  netip.MustParsePrefix(clusterSubnet),
-				Gateway: netip.MustParseAddr(clusterGateway),
+	const maxRetries = 8
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		ipam := &mobynet.IPAM{
+			Driver: "default",
+			Config: []mobynet.IPAMConfig{
+				{
+					Subnet:  netip.MustParsePrefix(clusterSubnet()),
+					Gateway: netip.MustParseAddr(clusterGateway()),
+				},
 			},
-		},
+		}
+		nw, err := network.New(ctx, network.WithIPAM(ipam))
+		if err == nil {
+			t.Cleanup(func() {
+				// Use a fresh background context — t.Context() is already
+				// cancelled when Cleanup runs.
+				shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				_ = nw.Remove(shutdown)
+			})
+			return nw
+		}
+		lastErr = err
+		if !strings.Contains(err.Error(), "Pool overlaps") {
+			break
+		}
+		reRollSubnet()
 	}
-	nw, err := network.New(ctx, network.WithIPAM(ipam))
-	if err != nil {
-		t.Fatalf("e2e: create docker network: %v", err)
-	}
-	t.Cleanup(func() {
-		// Use a fresh background context — t.Context() is already
-		// cancelled when Cleanup runs.
-		shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		_ = nw.Remove(shutdown)
-	})
-	return nw
+	t.Fatalf("e2e: create docker network: %v", lastErr)
+	return nil
 }
 
 // nodeIP returns the static IPv4 address assigned to reflowd-node<N>
-// within the cluster's docker network. Reserved range: 10.42.0.11
-// through 10.42.0.99 for reflowd nodes; 10.42.0.100+ for sidecars.
+// within the cluster's docker network. Per-cluster octet ranges:
+// .11..99 reserved for reflowd nodes; .100+ for sidecars.
 func nodeIP(nodeID uint64) string {
-	return fmt.Sprintf("10.42.0.%d", 10+nodeID)
+	processSubnetMu.Lock()
+	defer processSubnetMu.Unlock()
+	return fmt.Sprintf("10.%d.0.%d", clusterOctet, 10+nodeID)
 }

@@ -72,10 +72,13 @@ func targetRaftPort(target uint64) int {
 }
 
 // sidecarIP returns the static IPAM address of the toxiproxy sidecar
-// assigned to source nodeID. Lives in the 10.42.0.20+ range so it
-// never collides with reflowd-nodeIP (10.42.0.10+).
+// assigned to source nodeID. Lives in the 10.X.0.20+ range (per-process
+// X chosen in network.go) so it never collides with reflowd-nodeIP
+// (10.X.0.10+).
 func sidecarIP(source uint64) string {
-	return fmt.Sprintf("10.42.0.%d", 20+source)
+	processSubnetMu.Lock()
+	defer processSubnetMu.Unlock()
+	return fmt.Sprintf("10.%d.0.%d", clusterOctet, 20+source)
 }
 
 // raftAdvertisedThrough is what reflowd publishes through gossip as its

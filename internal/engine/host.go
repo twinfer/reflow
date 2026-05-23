@@ -96,6 +96,11 @@ type HostConfig struct {
 	// outbox row ever targets a remote shard).
 	CrossShardSender CrossShardSender
 
+	// LPSSTUploader is the side-channel SST shipper handed to each
+	// partition's LPTransferService. Wired up in pkg/reflow over the
+	// delivery Connect listener; nil in single-node deployments.
+	LPSSTUploader LPSSTUploader
+
 	// NumPartitionShards is the total number of partition shards in the
 	// cluster (the routing modulus). Independent of replication factor
 	// and of peer count: a deployment can host N shards on M peers in any
@@ -425,6 +430,17 @@ func (h *Host) pebbleOptionsFor(shardID uint64) *pebble.Options {
 func (h *Host) SetCrossShardSender(s CrossShardSender) {
 	h.mu.Lock()
 	h.cfg.CrossShardSender = s
+	h.mu.Unlock()
+}
+
+// SetLPSSTUploader installs the LP-transfer SST shipper every later
+// StartPartition call will hand to its LPTransferService. Must be
+// called before StartPartition for multi-node deployments — partitions
+// that fail to receive an uploader will fall back to a "no uploader"
+// scan error and the lpMover saga will stall + abort.
+func (h *Host) SetLPSSTUploader(u LPSSTUploader) {
+	h.mu.Lock()
+	h.cfg.LPSSTUploader = u
 	h.mu.Unlock()
 }
 
@@ -792,6 +808,17 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		initialEpoch = m.GetLatestAnnouncedEpoch()
 	}
 
+	// Reap orphan LP-transfer staging dirs (`<dataDir>.lpstage_{in,out}/<id>/`)
+	// whose transfer_id is not referenced by a durable LPFreezeTable /
+	// LPStagingTable row. A crash mid-transfer can leave half-uploaded SSTs
+	// behind; the in-flight saga's Rebuild on leader gain will re-upload /
+	// re-Ingest under the same transfer_id and the dirs we keep here serve
+	// that retry.
+	if err := reapLPTransferStagingDirs(dataDir, snap.Store(), h.log); err != nil {
+		h.log.Warn("host: lp-transfer staging cleanup failed; continuing",
+			"shard", shardID, "err", err)
+	}
+
 	collector := &ActionCollector{}
 	proposer := NewRaftProposer(h.nh, shardID)
 	leadership := NewLeadership(LeadershipConfig{
@@ -808,6 +835,7 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		leadership:  leadership,
 		collector:   collector,
 		sender:      h.cfg.CrossShardSender,
+		lpUploader:  h.cfg.LPSSTUploader,
 		log:         h.log,
 	}
 	// The Invoker is constructed once and survives leader gain/loss
@@ -874,6 +902,44 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		return nil, fmt.Errorf("host: StartOnDiskReplica: %w", err)
 	}
 	return runner, nil
+}
+
+// PartitionReplicas returns the node IDs of every replica hosting
+// shardID, per shard 0's PartitionTable. Used by the LP-transfer SST
+// uploader to fan out to all replicas in parallel (Pebble Ingest is
+// replica-local, so every replica needs the file before the apply
+// arm Ingests it).
+func (h *Host) PartitionReplicas(ctx context.Context, shardID uint64) ([]uint64, error) {
+	pt, err := h.PartitionTable(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if pt == nil {
+		return nil, nil
+	}
+	rs := pt.GetShards()[shardID]
+	if rs == nil {
+		return nil, nil
+	}
+	return append([]uint64(nil), rs.GetNodeIds()...), nil
+}
+
+// PartitionDataDir returns the per-shard on-disk dataDir used by Pebble
+// (and the sibling staging dirs <dataDir>.lpstage_{in,out}/). The path
+// exists as soon as StartPartition has been called for shardID; the
+// LP-transfer upload server resolves <transfer_id>/<namespace>.sst.tmp
+// under it. Returns ("", false) when shardID is not hosted on this node.
+func (h *Host) PartitionDataDir(shardID uint64) (string, bool) {
+	if shardID == 0 {
+		return "", false
+	}
+	h.mu.RLock()
+	_, ok := h.partitions[shardID]
+	h.mu.RUnlock()
+	if !ok {
+		return "", false
+	}
+	return filepath.Join(h.cfg.DataDir, fmt.Sprintf("p%d", shardID), "state"), true
 }
 
 // Partition returns the runner for the given shard or nil if none is started.
@@ -1203,6 +1269,57 @@ func (h *Host) nodeHostIDOf(nodeID uint64) string {
 // raftEventListener implements raftio.IRaftEventListener for dragonboat. It
 // must NOT block — handed off to the runner's leadership which is also
 // non-blocking.
+// reapLPTransferStagingDirs deletes subdirectories of <dataDir>.lpstage_in/
+// and <dataDir>.lpstage_out/ whose transfer_id is not present in the
+// corresponding LP-transfer table. Both sibling roots are best-effort:
+// a missing root is not an error; a present-but-unreadable entry is
+// logged and skipped so a bad permission doesn't block partition open.
+func reapLPTransferStagingDirs(dataDir string, store storage.Store, log *slog.Logger) error {
+	live := map[string]map[string]struct{}{
+		dataDir + ".lpstage_out": {},
+		dataDir + ".lpstage_in":  {},
+	}
+	freezes, err := (tables.LPFreezeTable{S: store}).List(context.Background())
+	if err != nil {
+		return fmt.Errorf("list lp-freezes: %w", err)
+	}
+	for _, e := range freezes {
+		live[dataDir+".lpstage_out"][e.Row.GetTransferId()] = struct{}{}
+	}
+	stagings, err := (tables.LPStagingTable{S: store}).All(context.Background())
+	if err != nil {
+		return fmt.Errorf("list lp-staging: %w", err)
+	}
+	for _, r := range stagings {
+		live[dataDir+".lpstage_in"][r.GetTransferId()] = struct{}{}
+	}
+	for root, keep := range live {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			log.Warn("host: read staging root", "root", root, "err", err)
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			if _, ok := keep[e.Name()]; ok {
+				continue
+			}
+			path := filepath.Join(root, e.Name())
+			if err := os.RemoveAll(path); err != nil {
+				log.Warn("host: remove orphan staging dir", "path", path, "err", err)
+				continue
+			}
+			log.Info("host: removed orphan lp-transfer staging dir", "path", path)
+		}
+	}
+	return nil
+}
+
 type raftEventListener struct{ host *Host }
 
 func (l *raftEventListener) LeaderUpdated(info raftio.LeaderInfo) {

@@ -869,13 +869,18 @@ func LPFreezePrefix() []byte { return []byte(lpFreezePrefix) }
 
 // LPStagingKey returns lp_staging/<transfer_id>. The LPStagingTable is
 // a per-destination-partition control-plane namespace used by
-// ApplyLPTransferChunk to enforce in-order chunk delivery and absorb
+// ApplyLPTransferSST to enforce in-order SST delivery and absorb
 // retries. Dropped by CommitLPTransfer / AbortLPTransfer.
 func LPStagingKey(transferID string) []byte {
 	out := make([]byte, 0, len(lpStagingPrefix)+len(transferID))
 	out = append(out, lpStagingPrefix...)
 	return append(out, transferID...)
 }
+
+// LPStagingPrefix returns the lp_staging/ namespace prefix, used by
+// orphan-cleanup at partition open to enumerate live destination
+// transfers.
+func LPStagingPrefix() []byte { return []byte(lpStagingPrefix) }
 
 func init() {
 	if LPCount&(LPCount-1) != 0 {

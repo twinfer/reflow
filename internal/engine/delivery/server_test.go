@@ -21,6 +21,7 @@ type fakeHost struct {
 	runners  map[uint64]RunnerView
 	leader   map[uint64]uint64
 	metadata RunnerView
+	dataDirs map[uint64]string
 }
 
 func (h *fakeHost) PartitionRunner(shardID uint64) RunnerView {
@@ -38,6 +39,10 @@ func (h *fakeHost) PartitionLeaderHint(shardID uint64) (uint64, bool) {
 		return id, true
 	}
 	return 0, false
+}
+func (h *fakeHost) PartitionDataDir(shardID uint64) (string, bool) {
+	d, ok := h.dataDirs[shardID]
+	return d, ok
 }
 
 func TestDeliveryServer_NotHosted_ReturnsNotLeaderHint(t *testing.T) {

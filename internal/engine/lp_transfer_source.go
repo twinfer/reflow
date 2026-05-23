@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,11 +45,22 @@ const lpTransferAckProducer = "lptransfer-ack/"
 // On Stop or ctx cancellation the loop returns; pending work is
 // re-enqueued on the next leader's Rebuild via the durable
 // LPFreezeTable / LPStagingTable rows.
+// LPSSTUploader is the side-channel SST shipping seam used by
+// LPTransferService.runScan. Uploads bypass Raft (the per-replica
+// dest's apply path Ingests the file locally). In production the
+// wrapper in pkg/reflow fans out to every replica hosting destShard;
+// nil in single-node deployments where every transfer resolves to
+// the local store (saga short-circuits before runScan).
+type LPSSTUploader interface {
+	UploadSSTToReplicas(ctx context.Context, destShard uint64, transferID, namespace, filePath string) (relPath string, err error)
+}
+
 type LPTransferService struct {
-	store   storage.Store
-	sender  CrossShardSender
-	shardID uint64
-	log     *slog.Logger
+	store    storage.Store
+	sender   CrossShardSender
+	uploader LPSSTUploader
+	shardID  uint64
+	log      *slog.Logger
 
 	mu      sync.Mutex
 	pending []lpTransferJob
@@ -75,22 +88,23 @@ const (
 )
 
 // NewLPTransferService constructs the per-partition LP transfer
-// orchestration loop. sender may be nil in single-node deployments —
-// every transfer in that case is same-shard and the service short-
-// circuits its sends with a warning (real transfers require a multi-
-// node sender).
-func NewLPTransferService(store storage.Store, sender CrossShardSender, shardID uint64, log *slog.Logger) *LPTransferService {
+// orchestration loop. sender + uploader may be nil in single-node
+// deployments — every transfer in that case is same-shard and the
+// service short-circuits its sends with a warning (real transfers
+// require a multi-node sender + uploader).
+func NewLPTransferService(store storage.Store, sender CrossShardSender, uploader LPSSTUploader, shardID uint64, log *slog.Logger) *LPTransferService {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &LPTransferService{
-		store:   store,
-		sender:  sender,
-		shardID: shardID,
-		log:     log,
-		wake:    make(chan struct{}, 1),
-		stop:    make(chan struct{}),
-		done:    make(chan struct{}),
+		store:    store,
+		sender:   sender,
+		uploader: uploader,
+		shardID:  shardID,
+		log:      log,
+		wake:     make(chan struct{}, 1),
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
 	}
 }
 
@@ -265,35 +279,75 @@ func (s *LPTransferService) sendAck(ctx context.Context, transferID string, phas
 
 // runScan ships the LP's data to the destination as SST files via the
 // upload RPC, then proposes a single ApplyLPTransferSST command on the
-// dest shard so the apply arm Ingests the files.
+// dest shard so each replica's apply arm Ingests its locally-staged
+// files.
 //
-// Pending wire-up in a follow-up PR: this stub builds the SSTs (via
-// buildLPSSTs) so the source-side disk path is exercised, but does NOT
-// upload them or propose the command — those need
-// Client.UploadLPTransferSST + the dest's apply arm, both stubbed in
-// this PR. The freeze gate on source and the LPStagingTable on dest
-// keep the saga safe in the meantime; the lpMover's stall detection
-// will transition stuck transfers to ABORTING after lpMoverStallTimeout.
+// Each non-empty namespace becomes one SST; the source fans the upload
+// across every replica hosting destShard (Pebble Ingest is replica-
+// local). On retry the same files are re-built and re-uploaded — the
+// dest's LPStagingTable.next_sst_seq absorbs the redundant propose.
+//
+// The local outDir is removed on success so disk space is freed before
+// the next transfer; orphan cleanup at partition open is the safety
+// net for crashes between SST build and successful propose.
 func (s *LPTransferService) runScan(ctx context.Context, job lpTransferJob) error {
 	if s.sender == nil {
 		return errors.New("lp transfer scan: no CrossShardSender configured")
+	}
+	if s.uploader == nil {
+		return errors.New("lp transfer scan: no LPSSTUploader configured")
 	}
 	pstore, ok := s.store.(*storage.PebbleStore)
 	if !ok {
 		return errors.New("lp transfer scan: store is not *PebbleStore (SST shipping requires Pebble)")
 	}
-	// outDir is per-transfer so retries don't collide; the host-level
-	// startup cleanup reaps orphans whose transfer_id is absent from
-	// LPFreezeTable.
 	outDir := fmt.Sprintf("%s.lpstage_out/%s", pstore.DataDir(), job.transferID)
 	refs, err := buildLPSSTs(ctx, pstore, job.lp, outDir)
 	if err != nil {
 		return fmt.Errorf("lp scan: build SSTs: %w", err)
 	}
-	s.log.Warn("lp transfer scan: SST upload + propose not yet implemented in this PR; built local SSTs only",
-		"transfer_id", job.transferID, "lp", job.lp, "ssts", len(refs))
-	return errors.New("lp transfer scan: SST shipping wire pending follow-up PR")
+	for _, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		filePath := fmt.Sprintf("%s/%s", outDir, ref.GetRelativePath())
+		namespace := strings.TrimSuffix(ref.GetRelativePath(), ".sst")
+		if _, err := s.uploader.UploadSSTToReplicas(
+			ctx, job.destShard, job.transferID, namespace, filePath,
+		); err != nil {
+			return fmt.Errorf("lp scan: upload %s: %w", namespace, err)
+		}
+	}
+
+	applyCmd := &enginev1.Command{
+		Kind: &enginev1.Command_ApplyLpTransferSst{
+			ApplyLpTransferSst: &enginev1.ApplyLPTransferSST{
+				TransferId:  job.transferID,
+				Lp:          job.lp,
+				SourceShard: s.shardID,
+				SstSeq:      0,
+				Ssts:        refs,
+				IsFinal:     true,
+			},
+		},
+	}
+	producerID := fmt.Sprintf("lptransfer-sst/%d/%s", s.shardID, job.transferID)
+	proposeCtx, cancel := context.WithTimeout(ctx, lpTransferProposeTimeout)
+	defer cancel()
+	if err := s.sender.Send(proposeCtx, job.destShard, producerID, 0, applyCmd); err != nil {
+		return fmt.Errorf("lp scan: propose ApplyLPTransferSST: %w", err)
+	}
+
+	// SSTs are now landed and Ingested on dest replicas — local outDir
+	// can go. Removal failures are non-fatal (orphan cleanup at partition
+	// open is the safety net).
+	if err := os.RemoveAll(outDir); err != nil {
+		s.log.Warn("lp transfer scan: remove staging out", "dir", outDir, "err", err)
+	}
+	return nil
 }
+
+const lpTransferProposeTimeout = 10 * time.Second
 
 func lpJobKindLabel(k lpJobKind) string {
 	switch k {

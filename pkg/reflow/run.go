@@ -277,6 +277,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		}
 		deliverySrv, deliveryClient = ds, dc
 		eh.SetCrossShardSender(dc)
+		eh.SetLPSSTUploader(delivery.NewLPSSTUploader(eh, dc, logger))
 	}
 
 	host, herr := finishStartup(ctx, startupDeps{

@@ -558,7 +558,7 @@ func (p *Partition) applyCommand(
 	case *enginev1.Command_BeginLpTransfer:
 		return p.onBeginLPTransfer(batch, k.BeginLpTransfer, now, isLeader)
 	case *enginev1.Command_ApplyLpTransferSst:
-		return p.onApplyLPTransferSST(batch, k.ApplyLpTransferSst, isLeader)
+		return p.onApplyLPTransferSST(batch, store, k.ApplyLpTransferSst, isLeader)
 	case *enginev1.Command_CommitLpTransfer:
 		return p.onCommitLPTransfer(batch, k.CommitLpTransfer)
 	case *enginev1.Command_FinishLpTransfer:

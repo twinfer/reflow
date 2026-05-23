@@ -31,9 +31,13 @@ type PartitionRunner struct {
 	// envelopes whose destination_shard_id is non-local. nil in single-
 	// node deployments; populated by Host.StartPartition when multi-node
 	// is configured.
-	sender  CrossShardSender
-	log     *slog.Logger
-	metrics *observability.Metrics
+	sender CrossShardSender
+	// lpUploader ships LP-transfer SSTs out-of-band to every replica
+	// hosting the destination shard. nil in single-node deployments;
+	// populated by Host.StartPartition in multi-node deployments.
+	lpUploader LPSSTUploader
+	log        *slog.Logger
+	metrics    *observability.Metrics
 
 	// timers, outbox, workflowReap, and lpTransfer are populated by
 	// onBecomeLeader and torn down by onStepDown. dispatchActions reads
@@ -206,7 +210,7 @@ func (r *PartitionRunner) onBecomeLeader() {
 		r.proposer,
 		WorkflowReapServiceOptions{Log: r.log},
 	)
-	lpTransfer := NewLPTransferService(store, r.sender, r.ShardID, r.log)
+	lpTransfer := NewLPTransferService(store, r.sender, r.lpUploader, r.ShardID, r.log)
 	if r.invoker != nil {
 		r.invoker.Rebind(
 			tables.JournalTable{S: store},

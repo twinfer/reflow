@@ -49,6 +49,11 @@ type HostView interface {
 	// shardID, sourced from dragonboat gossip. Used to populate
 	// NotLeader hints on responses.
 	PartitionLeaderHint(shardID uint64) (uint64, bool)
+	// PartitionDataDir returns the per-shard on-disk dataDir (the Pebble
+	// directory). The LP-transfer upload server writes staged SSTs into
+	// `<dataDir>.lpstage_in/<transfer_id>/`. Returns ("", false) when
+	// shardID is not hosted on this node.
+	PartitionDataDir(shardID uint64) (string, bool)
 }
 
 // Server implements deliveryv1connect.DeliveryHandler over an *engine.Host.

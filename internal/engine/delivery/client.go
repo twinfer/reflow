@@ -2,11 +2,15 @@ package delivery
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -35,6 +39,15 @@ type EndpointResolver interface {
 	NodeEndpoint(nodeID uint64) (string, bool)
 }
 
+// ReplicaResolver enumerates the replicas of a partition shard. Used by
+// the LP-transfer SST uploader to fan an upload across every replica
+// (Pebble Ingest is replica-local). *engine.Host satisfies this via
+// PartitionReplicas (one linearizable read of shard 0's PartitionTable).
+type ReplicaResolver interface {
+	PartitionReplicas(ctx context.Context, shardID uint64) ([]uint64, error)
+	NodeEndpoint(nodeID uint64) (string, bool)
+}
+
 // ClientConfig collects the small surface of tunables. SendTimeout
 // bounds a single round trip. ClientTLSConfig selects the transport:
 // non-nil → https + HTTP/2 over TLS; nil → http + h2c.
@@ -43,6 +56,14 @@ type ClientConfig struct {
 	Log             *slog.Logger
 	SendTimeout     time.Duration
 	ClientTLSConfig *tls.Config
+	// UploadTimeout bounds a single LP-transfer SST upload. Distinct from
+	// SendTimeout because uploads carry multi-MB payloads — the 5-second
+	// default for Send would routinely truncate. Default 10 minutes.
+	UploadTimeout time.Duration
+	// UploadChunkBytes is the per-frame body size on UploadLPTransferSST.
+	// Default 256 KiB — large enough to amortize per-frame overhead, small
+	// enough that one frame fits comfortably in a Connect message.
+	UploadChunkBytes int
 	// Transport, when non-nil, replaces the http.Transport this client
 	// would otherwise construct. Used by tests that need to dial a
 	// non-network listener (httptest server, bufconn-like fakes).
@@ -83,6 +104,12 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}
 	if cfg.SendTimeout == 0 {
 		cfg.SendTimeout = 5 * time.Second
+	}
+	if cfg.UploadTimeout == 0 {
+		cfg.UploadTimeout = 10 * time.Minute
+	}
+	if cfg.UploadChunkBytes <= 0 {
+		cfg.UploadChunkBytes = 256 * 1024
 	}
 	return &Client{cfg: cfg, conns: make(map[string]*conn)}, nil
 }
@@ -153,6 +180,137 @@ func (c *Client) Send(ctx context.Context, destShardID uint64, producerID string
 	default:
 		return fmt.Errorf("delivery: unexpected response kind %T", kind)
 	}
+}
+
+// UploadLPTransferSST streams an SST file to the dest-shard replica
+// hosted by targetNodeID. Returns the receiver-echoed relative path on
+// ack, ErrNotLeader when the receiver is not the destination shard's
+// leader (PR 3 will widen to any replica), and an ordinary error
+// otherwise. namespace + transferID must each be a single path
+// segment (no separators); the server rejects malformed inputs.
+//
+// The body is read from filePath, hashed with sha256 as it streams,
+// and the header carries (size_bytes, sha256_hex) for the receiver to
+// verify before fsync + atomic rename. Re-upload of the same
+// (transfer_id, namespace) is idempotent at the server.
+//
+// Caller-supplied targetNodeID so the LP-transfer fan-out wrapper can
+// upload to every replica of destShardID in parallel (Pebble Ingest is
+// replica-local — every replica needs the file).
+func (c *Client) UploadLPTransferSST(
+	ctx context.Context,
+	targetNodeID uint64,
+	destShardID uint64,
+	transferID string,
+	namespace string,
+	filePath string,
+) (string, error) {
+	endpoint, ok := c.cfg.Resolver.NodeEndpoint(targetNodeID)
+	if !ok || endpoint == "" {
+		return "", fmt.Errorf("delivery upload: no endpoint for node %d", targetNodeID)
+	}
+	co, err := c.dial(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("delivery upload: dial %s: %w", endpoint, err)
+	}
+
+	f, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("delivery upload: open %s: %w", filePath, err)
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("delivery upload: stat %s: %w", filePath, err)
+	}
+
+	// Hash separately so the header carries the full-body sha256 before
+	// the receiver sees any chunk.
+	sum, err := fileSHA256(filePath)
+	if err != nil {
+		return "", fmt.Errorf("delivery upload: hash %s: %w", filePath, err)
+	}
+
+	callCtx := ctx
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithTimeout(ctx, c.cfg.UploadTimeout)
+		defer cancel()
+	}
+
+	// Serialize uploads per-endpoint behind sendMu so a fast OutboxAck
+	// Send cannot interleave with a slow multi-MB upload on the same
+	// HTTP/2 stream pool. Connect streams are separate HTTP/2 streams
+	// in principle, but serializing keeps the failure surface trivial.
+	co.sendMu.Lock()
+	defer co.sendMu.Unlock()
+
+	stream := co.client.UploadLPTransferSST(callCtx)
+	hdr := &deliveryv1.UploadLPTransferSSTRequest{
+		Kind: &deliveryv1.UploadLPTransferSSTRequest_Header{
+			Header: &deliveryv1.UploadLPTransferSSTHeader{
+				DestShard:  destShardID,
+				TransferId: transferID,
+				Namespace:  namespace,
+				SizeBytes:  uint64(st.Size()),
+				Sha256Hex:  sum,
+			},
+		},
+	}
+	if err := stream.Send(hdr); err != nil {
+		_, _ = stream.CloseAndReceive()
+		return "", fmt.Errorf("delivery upload: send header: %w", err)
+	}
+
+	buf := make([]byte, c.cfg.UploadChunkBytes)
+	for {
+		n, rerr := f.Read(buf)
+		if n > 0 {
+			frame := &deliveryv1.UploadLPTransferSSTRequest{
+				Kind: &deliveryv1.UploadLPTransferSSTRequest_Chunk{Chunk: append([]byte(nil), buf[:n]...)},
+			}
+			if err := stream.Send(frame); err != nil {
+				_, _ = stream.CloseAndReceive()
+				return "", fmt.Errorf("delivery upload: send chunk: %w", err)
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			_, _ = stream.CloseAndReceive()
+			return "", fmt.Errorf("delivery upload: read body: %w", rerr)
+		}
+	}
+	resp, err := stream.CloseAndReceive()
+	if err != nil {
+		return "", fmt.Errorf("delivery upload: close+recv: %w", err)
+	}
+	switch kind := resp.Msg.GetKind().(type) {
+	case *deliveryv1.UploadLPTransferSSTResponse_Ack:
+		return kind.Ack.GetRelativePath(), nil
+	case *deliveryv1.UploadLPTransferSSTResponse_NotLeader:
+		return "", fmt.Errorf("%w (hint=%d)", ErrNotLeader, kind.NotLeader.GetLeaderNodeId())
+	case *deliveryv1.UploadLPTransferSSTResponse_Err:
+		return "", fmt.Errorf("delivery upload: receiver err: %s", kind.Err.GetMessage())
+	default:
+		return "", fmt.Errorf("delivery upload: unexpected response kind %T", kind)
+	}
+}
+
+// fileSHA256 hashes the file at path in one pass and returns the
+// lowercase hex digest.
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // dial returns the pooled connection for endpoint, creating one on

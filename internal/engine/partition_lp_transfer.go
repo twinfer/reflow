@@ -1,7 +1,12 @@
 package engine
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/keys"
@@ -53,12 +58,16 @@ func (p *Partition) onBeginLPTransfer(
 // ActSignalLPTransferStaged so the runner routes phase=STAGED back to
 // shard 0.
 //
-// Pending wire-up in a follow-up PR: actual Ingest needs the delivery
-// upload RPC to land the files on the dest's disk first. The validation
-// + LPStagingRow update path lives here so this arm can be unit-tested
-// against pre-staged files independently.
+// Determinism: every replica receives the same command via Raft, and the
+// source uploads the SSTs to every replica before proposing — so the
+// Ingest call here is deterministic across replicas. If the local file
+// is missing (replica hasn't received the upload yet), we skip the
+// Ingest + bookkeeping update so the source's retry replays the chunk
+// from sst_seq=0. The freeze gate on source means no concurrent writes
+// race the dest's pre-Ingest state.
 func (p *Partition) onApplyLPTransferSST(
 	batch storage.Batch,
+	store storage.Store,
 	cmd *enginev1.ApplyLPTransferSST,
 	isLeader bool,
 ) error {
@@ -91,16 +100,19 @@ func (p *Partition) onApplyLPTransferSST(
 			"expected_seq", expectedSeq)
 		return nil
 	}
-	// TODO(SST shipping PR 2): resolve cmd.GetSsts() relative_path values
-	// against <dataDir>.lpstage_in/<transfer_id>/ and call
-	// pebbleStore.IngestSSTs(ctx, paths). The Ingest call cannot happen on
-	// the apply path's batch (Ingest is a top-level DB operation); the
-	// LPStagingRow bookkeeping below + the ActSignalLPTransferStaged push
-	// are the apply-path's share of the work.
-	p.cfg.Log.Warn("partition: ApplyLPTransferSST Ingest not yet wired; bookkeeping only",
-		"transfer_id", cmd.GetTransferId(),
-		"sst_seq", cmd.GetSstSeq(),
-		"ssts", len(cmd.GetSsts()))
+
+	if len(cmd.GetSsts()) > 0 {
+		if err := ingestLPTransferSSTs(store, cmd); err != nil {
+			// Local file missing or Ingest failed — leave the staging row
+			// untouched so the source's next scan re-uploads + re-proposes
+			// from sst_seq=0. Returning nil keeps the shard running.
+			p.cfg.Log.Warn("partition: ApplyLPTransferSST Ingest failed; skipping bookkeeping",
+				"transfer_id", cmd.GetTransferId(),
+				"sst_seq", cmd.GetSstSeq(),
+				"err", err)
+			return nil
+		}
+	}
 
 	if row == nil {
 		row = &enginev1.LPStagingRow{
@@ -124,6 +136,32 @@ func (p *Partition) onApplyLPTransferSST(
 		})
 	}
 	return nil
+}
+
+// ingestLPTransferSSTs resolves cmd.Ssts to absolute paths under
+// <dataDir>.lpstage_in/<transfer_id>/ and calls pebble.DB.Ingest. Path
+// traversal is rejected; missing files surface as an error so the
+// caller can skip bookkeeping and let the source retry.
+func ingestLPTransferSSTs(store storage.Store, cmd *enginev1.ApplyLPTransferSST) error {
+	pstore, ok := store.(*storage.PebbleStore)
+	if !ok {
+		return errors.New("non-Pebble store cannot host LP-transfer SST shipping")
+	}
+	stageDir := pstore.DataDir() + ".lpstage_in"
+	transferDir := filepath.Join(stageDir, cmd.GetTransferId())
+	paths := make([]string, 0, len(cmd.GetSsts()))
+	for _, ref := range cmd.GetSsts() {
+		rel := ref.GetRelativePath()
+		if rel == "" || strings.ContainsAny(rel, "/\\") || strings.Contains(rel, "..") {
+			return fmt.Errorf("invalid relative_path %q", rel)
+		}
+		full := filepath.Join(transferDir, rel)
+		if _, err := os.Stat(full); err != nil {
+			return fmt.Errorf("staged sst missing: %w", err)
+		}
+		paths = append(paths, full)
+	}
+	return pstore.IngestSSTs(context.Background(), paths)
 }
 
 // onCommitLPTransfer drops the destination's staging row after the

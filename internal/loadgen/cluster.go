@@ -477,6 +477,7 @@ func (c *Cluster) bringUpNode(t testing.TB, idx int) error {
 		return fmt.Errorf("delivery.NewClient: %w", err)
 	}
 	h.SetCrossShardSender(dc)
+	h.SetLPSSTUploader(delivery.NewLPSSTUploader(h, dc, nil))
 
 	ln, err := listenWithRetry(addrs.delivery, 2*time.Second)
 	if err != nil {

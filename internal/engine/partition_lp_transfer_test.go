@@ -2,11 +2,14 @@ package engine
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/lni/dragonboat/v4/statemachine"
 
 	"github.com/twinfer/reflow/internal/engine/routing"
+	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -79,11 +82,130 @@ func TestPartition_LPFreeze_RejectsInvoke(t *testing.T) {
 	}
 }
 
+// TestPartition_ApplyLPTransferSST_IngestsStagedFile drives the apply
+// arm with a real SST file pre-staged at
+// `<dataDir>.lpstage_in/<transfer_id>/<namespace>.sst`. The apply
+// must resolve the path, Ingest into the partition store, and then
+// the seeded key reads back through Get.
+func TestPartition_ApplyLPTransferSST_IngestsStagedFile(t *testing.T) {
+	p, _, col := newTestPartition(t)
+	pstore := p.cfg.Snapshotter.Store().(*storage.PebbleStore)
+
+	lp := uint32(7)
+	transferID := "txn-ingest"
+	namespace := "inv"
+	key := append([]byte(nil), keys.InvocationLPPrefix(lp)...)
+	key = append(key, []byte("alpha")...)
+	val := []byte("ingested-value")
+
+	stageDir := filepath.Join(pstore.DataDir()+".lpstage_in", transferID)
+	if err := os.MkdirAll(stageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sstPath := filepath.Join(stageDir, namespace+".sst")
+	w, err := pstore.OpenSSTFile(sstPath)
+	if err != nil {
+		t.Fatalf("OpenSSTFile: %v", err)
+	}
+	if err := w.Set(key, val); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := envelope(t, &enginev1.Command{
+		Kind: &enginev1.Command_ApplyLpTransferSst{
+			ApplyLpTransferSst: &enginev1.ApplyLPTransferSST{
+				TransferId:  transferID,
+				Lp:          lp,
+				SourceShard: 1,
+				SstSeq:      0,
+				Ssts: []*enginev1.TransferSSTRef{
+					{RelativePath: namespace + ".sst"},
+				},
+				IsFinal: true,
+			},
+		},
+	})
+	if _, err := p.Update([]statemachine.Entry{{Index: 1, Cmd: cmd}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, closer, err := pstore.Get(key)
+	if err != nil {
+		t.Fatalf("Get ingested key: %v", err)
+	}
+	gotCopy := append([]byte(nil), got...)
+	closer.Close()
+	if !bytes.Equal(gotCopy, val) {
+		t.Errorf("ingested value mismatch: got %q want %q", gotCopy, val)
+	}
+
+	gotStaged := false
+	for _, a := range col.Drain() {
+		if _, ok := a.(ActSignalLPTransferStaged); ok {
+			gotStaged = true
+		}
+	}
+	if !gotStaged {
+		t.Error("expected ActSignalLPTransferStaged on is_final SST")
+	}
+	row, err := (tables.LPStagingTable{S: pstore}).Get(transferID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row == nil || !row.GetIsFinalSeen() {
+		t.Errorf("staging row missing is_final_seen; got %+v", row)
+	}
+	if got := row.GetNextSstSeq(); got != 1 {
+		t.Errorf("next_sst_seq = %d; want 1", got)
+	}
+}
+
+// TestPartition_ApplyLPTransferSST_MissingFile_SkipsBookkeeping
+// exercises the safety path: an apply arm whose staged file is missing
+// must NOT advance the LPStagingRow (so the source's retry re-uploads
+// and re-proposes from sst_seq=0).
+func TestPartition_ApplyLPTransferSST_MissingFile_SkipsBookkeeping(t *testing.T) {
+	p, _, col := newTestPartition(t)
+
+	cmd := envelope(t, &enginev1.Command{
+		Kind: &enginev1.Command_ApplyLpTransferSst{
+			ApplyLpTransferSst: &enginev1.ApplyLPTransferSST{
+				TransferId:  "txn-missing",
+				Lp:          11,
+				SourceShard: 1,
+				SstSeq:      0,
+				Ssts: []*enginev1.TransferSSTRef{
+					{RelativePath: "inv.sst"},
+				},
+				IsFinal: true,
+			},
+		},
+	})
+	if _, err := p.Update([]statemachine.Entry{{Index: 1, Cmd: cmd}}); err != nil {
+		t.Fatal(err)
+	}
+	store := p.cfg.Snapshotter.Store()
+	row, err := (tables.LPStagingTable{S: store}).Get("txn-missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row != nil {
+		t.Errorf("staging row should not exist on Ingest failure; got %+v", row)
+	}
+	for _, a := range col.Drain() {
+		if _, ok := a.(ActSignalLPTransferStaged); ok {
+			t.Error("ActSignalLPTransferStaged emitted despite Ingest failure")
+		}
+	}
+}
+
 // TestPartition_ApplyLPTransferSST_BookkeepingOnFinal exercises the
-// dest-side apply arm's bookkeeping path: LPStagingRow created, seq
-// bumped, is_final_seen flipped, ActSignalLPTransferStaged emitted.
-// The actual Ingest call is stubbed in this PR — the follow-up wires
-// pebbleStore.IngestSSTs against the delivery-uploaded files.
+// dest-side apply arm's bookkeeping-only path: empty Ssts (e.g. a
+// transfer whose source LP had nothing in any namespace) still bumps
+// next_sst_seq and emits ActSignalLPTransferStaged on is_final.
 func TestPartition_ApplyLPTransferSST_BookkeepingOnFinal(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	lp := uint32(7)

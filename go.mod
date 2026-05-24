@@ -18,6 +18,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.17
 	github.com/buraksezer/consistent v0.10.0
 	github.com/caddyserver/certmagic v0.25.3
+	github.com/cedar-policy/cedar-go v1.6.2
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/cockroachdb/pebble/v2 v2.1.5

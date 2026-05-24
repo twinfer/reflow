@@ -34,6 +34,14 @@ type Metrics struct {
 	DecryptTotal   *prometheus.CounterVec
 	DecryptErrors  *prometheus.CounterVec
 	DecryptSeconds *prometheus.HistogramVec
+	// CASignTotal / CASignErrors track LookupForCASigning — the
+	// dedicated path the cluster CA signing key resolves through.
+	// Per-event audit log entries supplement these counters.
+	//   name: secret name. Cardinality is bounded by the cluster's CA
+	//         row count (1 typically; ≤handful with rotation), so
+	//         per-name labelling is safe here.
+	CASignTotal  *prometheus.CounterVec
+	CASignErrors *prometheus.CounterVec
 }
 
 // NewMetrics builds the secretstore collectors. Pass nil to use the
@@ -70,6 +78,14 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Help:    "End-to-end latency of SecretStore remote_encrypted resolution: blob fetch + KMS lookup + Decrypt. Buckets cover 1ms–2s.",
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 12),
 		}, []string{"kek_scheme"}),
+		CASignTotal: registerOrExistingCounterVec(reg, prometheus.CounterOpts{
+			Name: "reflow_pki_ca_sign_total",
+			Help: "Successful CA-signing-key lookups via LookupForCASigning. Each increment maps to one signing operation by certmgr.ClusterIssuer.",
+		}, []string{"name"}),
+		CASignErrors: registerOrExistingCounterVec(reg, prometheus.CounterOpts{
+			Name: "reflow_pki_ca_sign_errors_total",
+			Help: "CA-signing-key lookup failures. Reasons: missing (no secret row), unresolved (resolve still pending or in error).",
+		}, []string{"name", "reason"}),
 	}
 }
 

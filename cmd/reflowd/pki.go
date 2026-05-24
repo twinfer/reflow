@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -13,6 +14,10 @@ import (
 )
 
 // cmdInitCA generates a single cluster CA in --out as ca.crt + ca.key.
+// DEPRECATED: prefer `reflowd config ca init`, which writes the CA
+// into the cluster's shard-0 CARootTable + SecretTable so every node
+// picks it up via the existing reconciler path. Kept here for
+// single-node fixtures and integration tests; will be removed in PR 4.
 func cmdInitCA(args []string) error {
 	fs := flag.NewFlagSet("init-ca", flag.ContinueOnError)
 	out := fs.String("out", "", "output directory for the CA files (required)")
@@ -23,6 +28,8 @@ func cmdInitCA(args []string) error {
 	if *out == "" {
 		return errors.New("--out is required")
 	}
+
+	fmt.Fprintln(os.Stderr, "reflowd pki init-ca: deprecated; use `reflowd config ca init` for cluster-managed CA roots.")
 
 	ca, err := pki.NewCA(*cn)
 	if err != nil {

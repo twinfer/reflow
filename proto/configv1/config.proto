@@ -107,6 +107,17 @@ service Config {
   // and the optional limit. A returned `more` flag indicates the
   // limit was reached before the filter range was exhausted.
   rpc ListAuditLog(ListAuditLogRequest) returns (ListAuditLogResponse);
+
+  // UpsertCARoot / DeleteCARoot / ListCARoots mirror the secret trio
+  // against shard 0's CARootTable. Each CARootRecord carries a CA
+  // cert (PEM) plus a pointer to the SecretTable row holding the
+  // AEAD-wrapped signing key. The signing key never traverses Raft.
+  // Per-node certmgr.ClusterIssuer fetches + decrypts via
+  // secretstore.LookupForCASigning at reconcile time. Leader-only for
+  // mutating calls; List is SyncRead.
+  rpc UpsertCARoot(UpsertCARootRequest) returns (UpsertCARootResponse);
+  rpc DeleteCARoot(DeleteCARootRequest) returns (DeleteCARootResponse);
+  rpc ListCARoots(ListCARootsRequest) returns (ListCARootsResponse);
 }
 
 // RegisterDeploymentRequest names a handler endpoint reachable over
@@ -220,6 +231,30 @@ message DeleteSecretResponse {
 message ListSecretsRequest {}
 message ListSecretsResponse {
   repeated reflow.engine.v1.SecretRecord records = 1;
+  uint64 table_revision = 2;
+}
+
+// UpsertCARootRequest carries one CARootRecord plus an optional CAS
+// guard. if_table_revision_eq=0 disables CAS.
+message UpsertCARootRequest {
+  reflow.engine.v1.CARootRecord record = 1;
+  uint64 if_table_revision_eq = 2;
+}
+message UpsertCARootResponse {
+  uint64 table_revision = 1;
+}
+
+message DeleteCARootRequest {
+  string name = 1;
+  uint64 if_table_revision_eq = 2;
+}
+message DeleteCARootResponse {
+  uint64 table_revision = 1;
+}
+
+message ListCARootsRequest {}
+message ListCARootsResponse {
+  repeated reflow.engine.v1.CARootRecord records = 1;
   uint64 table_revision = 2;
 }
 

@@ -478,6 +478,72 @@ func (t SecretTable) List() ([]*enginev1.SecretRecord, error) {
 	return out, iter.Error()
 }
 
+// CARootTable persists CARootRecord rows keyed by name. Lives on shard
+// 0 alongside the other cluster-managed config tables. The row holds
+// the CA cert PEM and a pointer (key_secret_name) into SecretTable
+// where the AEAD-wrapped signing key lives; the key never traverses
+// Raft. Per-node certmgr.ClusterIssuer instances SyncRead-iterate this
+// table on each TableNotifier wake to refresh the active CA snapshot.
+type CARootTable struct{ S storage.Reader }
+
+func (t CARootTable) Get(name string) (*enginev1.CARootRecord, error) {
+	val, closer, err := t.S.Get(CARootKey(name))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer closer.Close()
+	var rec enginev1.CARootRecord
+	if err := proto.Unmarshal(val, &rec); err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (t CARootTable) Put(b storage.Batch, rec *enginev1.CARootRecord) error {
+	if rec.GetName() == "" {
+		return errors.New("CARootTable.Put: empty name")
+	}
+	buf, err := proto.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return b.Set(CARootKey(rec.GetName()), buf)
+}
+
+// Delete removes the row for name. Delete-of-absent is a no-op.
+func (t CARootTable) Delete(b storage.Batch, name string) error {
+	if name == "" {
+		return errors.New("CARootTable.Delete: empty name")
+	}
+	return b.Delete(CARootKey(name))
+}
+
+// List returns every CARootRecord in lexicographic name order.
+func (t CARootTable) List() ([]*enginev1.CARootRecord, error) {
+	prefix := CARootPrefix()
+	upper := prefixUpperBound(prefix)
+	iter, err := t.S.NewIter(prefix, upper)
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	var out []*enginev1.CARootRecord
+	for ok := iter.First(); ok; ok = iter.Next() {
+		if !bytes.HasPrefix(iter.Key(), prefix) {
+			continue
+		}
+		var rec enginev1.CARootRecord
+		if err := proto.Unmarshal(iter.Value(), &rec); err != nil {
+			return nil, err
+		}
+		out = append(out, &rec)
+	}
+	return out, iter.Error()
+}
+
 // LPOwnersTable persists LPOwnerRecord rows keyed by lp ∈ [0, LPCount).
 // Lives on shard 0 alongside the other cluster-managed config tables.
 // Per-node routing Reconcilers SyncRead the table on each TableNotifier

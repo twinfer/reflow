@@ -111,6 +111,31 @@ func (r *Resolver) Lookup(name string) ([]byte, bool) {
 	return b, ok
 }
 
+// LookupForCASigning is Lookup specialised for the cluster CA signing
+// key resolved via the same Reconcile pipeline. Each call increments
+// reflow_pki_ca_sign_total{name} on hit, or
+// reflow_pki_ca_sign_errors_total{name, reason} on miss; the caller
+// (certmgr.ClusterIssuer) is expected to emit one audit log entry per
+// signing operation alongside this metric. Per-name labelling is safe
+// here because the row set is bounded (typically one "active" row;
+// ≤handful with rotation history).
+func (r *Resolver) LookupForCASigning(name string) ([]byte, error) {
+	if r == nil {
+		return nil, errors.New("secretstore: nil resolver")
+	}
+	b, ok := r.Lookup(name)
+	if !ok {
+		if r.metrics != nil {
+			r.metrics.CASignErrors.WithLabelValues(name, "missing").Inc()
+		}
+		return nil, fmt.Errorf("secretstore: ca signing key %q not resolved", name)
+	}
+	if r.metrics != nil {
+		r.metrics.CASignTotal.WithLabelValues(name).Inc()
+	}
+	return b, nil
+}
+
 // RunReconciler is the production-mode reconcile loop. Wakes on the
 // notifier (FSM post-commit Bump) or a 5s ticker, SyncRead's the
 // desired state, resolves each record, and atomically swaps the

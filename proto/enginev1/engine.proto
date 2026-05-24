@@ -265,6 +265,15 @@ message Command {
     // ts_ms < before_ts_ms. Accepted only by shardID=0. principal is
     // always empty on this command (engine-self-proposed).
     GcAuditLog gc_audit_log = 44;
+    // UpsertCARoot / DeleteCARoot carry shard-0 CARootTable mutations
+    // — the cluster CA cert (PEM) plus a pointer to the SecretTable row
+    // holding the AEAD-wrapped private key. Same CAS + notifier
+    // semantics as the secret pair. The signing key never appears in
+    // these commands; per-node certmgr.ClusterIssuer fetches the blob
+    // and decrypts via secretstore.LookupForCASigning at reconcile
+    // time. Accepted only by shardID=0.
+    UpsertCARoot upsert_ca_root = 45;
+    DeleteCARoot delete_ca_root = 46;
   }
 }
 
@@ -1330,6 +1339,41 @@ message UpsertSecret {
 // preserve-prev-on-error semantics handle gracefully — operators see a
 // metric and clean up by deleting the consumer rows next.
 message DeleteSecret {
+  string name = 1;
+}
+
+// CARootRecord is the persisted shape of one cluster CA root in shard
+// 0's CARootTable. The row carries the CA cert (PEM) plus a pointer
+// into SecretTable holding the AEAD-wrapped signing key — the key
+// never traverses Raft. `name` is the row's identity (e.g. "active");
+// `rotation_epoch` is monotonic across rotations so a future rotation
+// PR can keep older rows around for trust-bundle inclusion without
+// breaking the active-CA lookup. `fingerprint` is sha256:<hex> over
+// the cert's RawSubjectPublicKeyInfo and is the trust-anchor pin
+// joiners verify against (matches creds.SPKIFingerprint).
+message CARootRecord {
+  string name = 1;
+  bytes cert_pem = 2;
+  string key_secret_name = 3;
+  string fingerprint = 4;
+  uint32 rotation_epoch = 5;
+  fixed64 created_at_ms = 6;
+}
+
+// UpsertCARoot is the Command_UpsertCARoot payload. Apply arm CAS-
+// checks Envelope.precondition, writes CARootTable[record.name] =
+// record, bumps the table revision, and fires the CARootTable notifier
+// so each node's local certmgr.ClusterIssuer wakes and re-resolves.
+message UpsertCARoot {
+  CARootRecord record = 1;
+}
+
+// DeleteCARoot is the Command_DeleteCARoot payload. Same CAS + notifier
+// semantics as Upsert. Delete-of-absent is a no-op. Deleting the
+// active CA row will break leaf issuance on the next renewal until a
+// new row is written; consumers (the ClusterIssuer) preserve their
+// in-memory active CA on resolve error.
+message DeleteCARoot {
   string name = 1;
 }
 

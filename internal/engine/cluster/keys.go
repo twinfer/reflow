@@ -87,6 +87,7 @@ const (
 	tenantNameIndexPrefix = "tenant_name_idx/"
 	tenantDEKPrefix       = "tenant_dek/"
 	auditLogPrefix        = "auditlog/"
+	caRootPrefix          = "caroot/"
 	tableRevisionPrefix   = "tablerev/"
 )
 
@@ -103,6 +104,7 @@ const (
 	RevisionTableRebalanceDrain = "rebalance_drain"
 	RevisionTableTenant         = "tenant"
 	RevisionTableTenantDEK      = "tenant_dek"
+	RevisionTableCARoot         = "caroot"
 )
 
 // MetaKey returns the singleton key for the metadata shard's PartitionMeta.
@@ -179,6 +181,18 @@ func SecretPrefix() []byte { return []byte(secretPrefix) }
 func SecretKey(name string) []byte {
 	out := make([]byte, 0, len(secretPrefix)+len(name))
 	out = append(out, secretPrefix...)
+	return append(out, name...)
+}
+
+// CARootPrefix returns the caroot/ namespace prefix. Used for iteration.
+func CARootPrefix() []byte { return []byte(caRootPrefix) }
+
+// CARootKey returns caroot/<name>. The conventional row name is
+// "active"; rotation appends rows whose name encodes the rotation
+// epoch so the historical chain remains queryable.
+func CARootKey(name string) []byte {
+	out := make([]byte, 0, len(caRootPrefix)+len(name))
+	out = append(out, caRootPrefix...)
 	return append(out, name...)
 }
 

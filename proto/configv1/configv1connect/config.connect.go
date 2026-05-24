@@ -95,6 +95,12 @@ const (
 	ConfigListSecretsProcedure = "/reflow.config.v1.Config/ListSecrets"
 	// ConfigListAuditLogProcedure is the fully-qualified name of the Config's ListAuditLog RPC.
 	ConfigListAuditLogProcedure = "/reflow.config.v1.Config/ListAuditLog"
+	// ConfigUpsertCARootProcedure is the fully-qualified name of the Config's UpsertCARoot RPC.
+	ConfigUpsertCARootProcedure = "/reflow.config.v1.Config/UpsertCARoot"
+	// ConfigDeleteCARootProcedure is the fully-qualified name of the Config's DeleteCARoot RPC.
+	ConfigDeleteCARootProcedure = "/reflow.config.v1.Config/DeleteCARoot"
+	// ConfigListCARootsProcedure is the fully-qualified name of the Config's ListCARoots RPC.
+	ConfigListCARootsProcedure = "/reflow.config.v1.Config/ListCARoots"
 )
 
 // ConfigClient is a client for the reflow.config.v1.Config service.
@@ -165,6 +171,16 @@ type ConfigClient interface {
 	// and the optional limit. A returned `more` flag indicates the
 	// limit was reached before the filter range was exhausted.
 	ListAuditLog(context.Context, *connect.Request[configv1.ListAuditLogRequest]) (*connect.Response[configv1.ListAuditLogResponse], error)
+	// UpsertCARoot / DeleteCARoot / ListCARoots mirror the secret trio
+	// against shard 0's CARootTable. Each CARootRecord carries a CA
+	// cert (PEM) plus a pointer to the SecretTable row holding the
+	// AEAD-wrapped signing key. The signing key never traverses Raft.
+	// Per-node certmgr.ClusterIssuer fetches + decrypts via
+	// secretstore.LookupForCASigning at reconcile time. Leader-only for
+	// mutating calls; List is SyncRead.
+	UpsertCARoot(context.Context, *connect.Request[configv1.UpsertCARootRequest]) (*connect.Response[configv1.UpsertCARootResponse], error)
+	DeleteCARoot(context.Context, *connect.Request[configv1.DeleteCARootRequest]) (*connect.Response[configv1.DeleteCARootResponse], error)
+	ListCARoots(context.Context, *connect.Request[configv1.ListCARootsRequest]) (*connect.Response[configv1.ListCARootsResponse], error)
 }
 
 // NewConfigClient constructs a client for the reflow.config.v1.Config service. By default, it uses
@@ -262,6 +278,24 @@ func NewConfigClient(httpClient connect.HTTPClient, baseURL string, opts ...conn
 			connect.WithSchema(configMethods.ByName("ListAuditLog")),
 			connect.WithClientOptions(opts...),
 		),
+		upsertCARoot: connect.NewClient[configv1.UpsertCARootRequest, configv1.UpsertCARootResponse](
+			httpClient,
+			baseURL+ConfigUpsertCARootProcedure,
+			connect.WithSchema(configMethods.ByName("UpsertCARoot")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteCARoot: connect.NewClient[configv1.DeleteCARootRequest, configv1.DeleteCARootResponse](
+			httpClient,
+			baseURL+ConfigDeleteCARootProcedure,
+			connect.WithSchema(configMethods.ByName("DeleteCARoot")),
+			connect.WithClientOptions(opts...),
+		),
+		listCARoots: connect.NewClient[configv1.ListCARootsRequest, configv1.ListCARootsResponse](
+			httpClient,
+			baseURL+ConfigListCARootsProcedure,
+			connect.WithSchema(configMethods.ByName("ListCARoots")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -281,6 +315,9 @@ type configClient struct {
 	deleteSecret        *connect.Client[configv1.DeleteSecretRequest, configv1.DeleteSecretResponse]
 	listSecrets         *connect.Client[configv1.ListSecretsRequest, configv1.ListSecretsResponse]
 	listAuditLog        *connect.Client[configv1.ListAuditLogRequest, configv1.ListAuditLogResponse]
+	upsertCARoot        *connect.Client[configv1.UpsertCARootRequest, configv1.UpsertCARootResponse]
+	deleteCARoot        *connect.Client[configv1.DeleteCARootRequest, configv1.DeleteCARootResponse]
+	listCARoots         *connect.Client[configv1.ListCARootsRequest, configv1.ListCARootsResponse]
 }
 
 // RegisterDeployment calls reflow.config.v1.Config.RegisterDeployment.
@@ -353,6 +390,21 @@ func (c *configClient) ListAuditLog(ctx context.Context, req *connect.Request[co
 	return c.listAuditLog.CallUnary(ctx, req)
 }
 
+// UpsertCARoot calls reflow.config.v1.Config.UpsertCARoot.
+func (c *configClient) UpsertCARoot(ctx context.Context, req *connect.Request[configv1.UpsertCARootRequest]) (*connect.Response[configv1.UpsertCARootResponse], error) {
+	return c.upsertCARoot.CallUnary(ctx, req)
+}
+
+// DeleteCARoot calls reflow.config.v1.Config.DeleteCARoot.
+func (c *configClient) DeleteCARoot(ctx context.Context, req *connect.Request[configv1.DeleteCARootRequest]) (*connect.Response[configv1.DeleteCARootResponse], error) {
+	return c.deleteCARoot.CallUnary(ctx, req)
+}
+
+// ListCARoots calls reflow.config.v1.Config.ListCARoots.
+func (c *configClient) ListCARoots(ctx context.Context, req *connect.Request[configv1.ListCARootsRequest]) (*connect.Response[configv1.ListCARootsResponse], error) {
+	return c.listCARoots.CallUnary(ctx, req)
+}
+
 // ConfigHandler is an implementation of the reflow.config.v1.Config service.
 type ConfigHandler interface {
 	// RegisterDeployment introduces a new handler deployment to the
@@ -421,6 +473,16 @@ type ConfigHandler interface {
 	// and the optional limit. A returned `more` flag indicates the
 	// limit was reached before the filter range was exhausted.
 	ListAuditLog(context.Context, *connect.Request[configv1.ListAuditLogRequest]) (*connect.Response[configv1.ListAuditLogResponse], error)
+	// UpsertCARoot / DeleteCARoot / ListCARoots mirror the secret trio
+	// against shard 0's CARootTable. Each CARootRecord carries a CA
+	// cert (PEM) plus a pointer to the SecretTable row holding the
+	// AEAD-wrapped signing key. The signing key never traverses Raft.
+	// Per-node certmgr.ClusterIssuer fetches + decrypts via
+	// secretstore.LookupForCASigning at reconcile time. Leader-only for
+	// mutating calls; List is SyncRead.
+	UpsertCARoot(context.Context, *connect.Request[configv1.UpsertCARootRequest]) (*connect.Response[configv1.UpsertCARootResponse], error)
+	DeleteCARoot(context.Context, *connect.Request[configv1.DeleteCARootRequest]) (*connect.Response[configv1.DeleteCARootResponse], error)
+	ListCARoots(context.Context, *connect.Request[configv1.ListCARootsRequest]) (*connect.Response[configv1.ListCARootsResponse], error)
 }
 
 // NewConfigHandler builds an HTTP handler from the service implementation. It returns the path on
@@ -514,6 +576,24 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 		connect.WithSchema(configMethods.ByName("ListAuditLog")),
 		connect.WithHandlerOptions(opts...),
 	)
+	configUpsertCARootHandler := connect.NewUnaryHandler(
+		ConfigUpsertCARootProcedure,
+		svc.UpsertCARoot,
+		connect.WithSchema(configMethods.ByName("UpsertCARoot")),
+		connect.WithHandlerOptions(opts...),
+	)
+	configDeleteCARootHandler := connect.NewUnaryHandler(
+		ConfigDeleteCARootProcedure,
+		svc.DeleteCARoot,
+		connect.WithSchema(configMethods.ByName("DeleteCARoot")),
+		connect.WithHandlerOptions(opts...),
+	)
+	configListCARootsHandler := connect.NewUnaryHandler(
+		ConfigListCARootsProcedure,
+		svc.ListCARoots,
+		connect.WithSchema(configMethods.ByName("ListCARoots")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/reflow.config.v1.Config/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ConfigRegisterDeploymentProcedure:
@@ -544,6 +624,12 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 			configListSecretsHandler.ServeHTTP(w, r)
 		case ConfigListAuditLogProcedure:
 			configListAuditLogHandler.ServeHTTP(w, r)
+		case ConfigUpsertCARootProcedure:
+			configUpsertCARootHandler.ServeHTTP(w, r)
+		case ConfigDeleteCARootProcedure:
+			configDeleteCARootHandler.ServeHTTP(w, r)
+		case ConfigListCARootsProcedure:
+			configListCARootsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -607,4 +693,16 @@ func (UnimplementedConfigHandler) ListSecrets(context.Context, *connect.Request[
 
 func (UnimplementedConfigHandler) ListAuditLog(context.Context, *connect.Request[configv1.ListAuditLogRequest]) (*connect.Response[configv1.ListAuditLogResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.ListAuditLog is not implemented"))
+}
+
+func (UnimplementedConfigHandler) UpsertCARoot(context.Context, *connect.Request[configv1.UpsertCARootRequest]) (*connect.Response[configv1.UpsertCARootResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.UpsertCARoot is not implemented"))
+}
+
+func (UnimplementedConfigHandler) DeleteCARoot(context.Context, *connect.Request[configv1.DeleteCARootRequest]) (*connect.Response[configv1.DeleteCARootResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DeleteCARoot is not implemented"))
+}
+
+func (UnimplementedConfigHandler) ListCARoots(context.Context, *connect.Request[configv1.ListCARootsRequest]) (*connect.Response[configv1.ListCARootsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.ListCARoots is not implemented"))
 }

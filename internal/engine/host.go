@@ -730,6 +730,24 @@ func (h *Host) Secrets(ctx context.Context) (*cluster.SecretList, error) {
 	return out, nil
 }
 
+// CARoots SyncReads every CARootRecord from shard 0 plus the table's
+// CAS revision. Used by the admin RPCs and the per-node
+// certmgr.ClusterIssuer to refresh the active CA snapshot.
+func (h *Host) CARoots(ctx context.Context) (*cluster.CARootList, error) {
+	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupCARoots{})
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return &cluster.CARootList{}, nil
+	}
+	out, ok := res.(*cluster.CARootList)
+	if !ok {
+		return nil, fmt.Errorf("host: CARoots: unexpected lookup type %T", res)
+	}
+	return out, nil
+}
+
 // LPOwners SyncReads every LPOwnerRecord from shard 0 plus the table's
 // CAS revision. Used by the per-node routing Reconciler to refresh the
 // Partitioner's atomic snapshot. Returns an empty list with revision 0

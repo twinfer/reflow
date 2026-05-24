@@ -139,6 +139,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	eventSourceNotifier := cluster.NewTableNotifier()
 	webhookSourceNotifier := cluster.NewTableNotifier()
 	secretNotifier := cluster.NewTableNotifier()
+	caRootNotifier := cluster.NewTableNotifier()
 	lpOwnersNotifier := cluster.NewTableNotifier()
 	rebalanceDrainNotifier := cluster.NewTableNotifier()
 	tenantNotifier := cluster.NewTableNotifier()
@@ -174,6 +175,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			EventSourceTable:    eventSourceNotifier,
 			WebhookSourceTable:  webhookSourceNotifier,
 			SecretTable:         secretNotifier,
+			CARootTable:         caRootNotifier,
 			LPOwnersTable:       lpOwnersNotifier,
 			RebalanceDrainTable: rebalanceDrainNotifier,
 			TenantTable:         tenantNotifier,
@@ -321,6 +323,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		eventSourceNotifier:    eventSourceNotifier,
 		webhookSourceNotifier:  webhookSourceNotifier,
 		secretNotifier:         secretNotifier,
+		caRootNotifier:         caRootNotifier,
 		lpOwnersNotifier:       lpOwnersNotifier,
 		tenantNotifier:         tenantNotifier,
 		tenantDEKNotifier:      tenantDEKNotifier,
@@ -493,6 +496,7 @@ type startupDeps struct {
 	eventSourceNotifier    *cluster.TableNotifier
 	webhookSourceNotifier  *cluster.TableNotifier
 	secretNotifier         *cluster.TableNotifier
+	caRootNotifier         *cluster.TableNotifier
 	lpOwnersNotifier       *cluster.TableNotifier
 	tenantNotifier         *cluster.TableNotifier
 	tenantDEKNotifier      *cluster.TableNotifier

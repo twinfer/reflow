@@ -227,6 +227,11 @@ Config (Config RPCs; app config; --admin can be ANY node):
                                 (operator self-verification only).
   config upsert-webhook         Register a webhook source referencing
                                 an existing secret by --secret=NAME.
+  config ca init                Generate a cluster CA, KEK-wrap the key
+                                to a blob, and register both in shard 0
+                                (UpsertSecret then UpsertCARoot).
+  config ca list                List CARootTable rows (no signing keys).
+  config ca delete              Remove one CARootTable row by name.
 
 Run any subcommand with --help for its specific flags.
 `)

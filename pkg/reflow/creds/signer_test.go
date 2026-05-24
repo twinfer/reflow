@@ -13,7 +13,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math/big"
-	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -33,18 +32,15 @@ func (p *fakeProvider) KeyMaterial(_ context.Context) (*certprovider.KeyMaterial
 
 func (p *fakeProvider) Close() {}
 
-func makeCert(t *testing.T, key any, pub any, trustDomain, spiffePath string) tls.Certificate {
+// makeCert builds a self-signed leaf with CN=principalRaw (the
+// "<kind>/<name>" form the auth layer reads at peer-verify time).
+func makeCert(t *testing.T, key any, pub any, principalRaw string) tls.Certificate {
 	t.Helper()
-	uri, err := url.Parse("spiffe://" + trustDomain + spiffePath)
-	if err != nil {
-		t.Fatalf("parse spiffe url: %v", err)
-	}
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "test"},
+		Subject:      pkix.Name{CommonName: principalRaw},
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(time.Hour),
-		URIs:         []*url.URL{uri},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, key)
 	if err != nil {
@@ -62,14 +58,14 @@ func TestSigner_ECDSAP256(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	cert := makeCert(t, key, &key.PublicKey, "reflow.local", "/node/1")
-	s := NewSigner(&fakeProvider{cert: cert}, "reflow.local")
+	cert := makeCert(t, key, &key.PublicKey, "node/1")
+	s := NewSigner(&fakeProvider{cert: cert})
 
 	tok, err := s.Sign("dep-abc")
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
-	verifySignedToken(t, tok, "spiffe://reflow.local/node/1", "dep-abc", &key.PublicKey, jwt.SigningMethodES256)
+	verifySignedToken(t, tok, "node/1", "dep-abc", &key.PublicKey, jwt.SigningMethodES256)
 }
 
 func TestSigner_Ed25519(t *testing.T) {
@@ -77,14 +73,14 @@ func TestSigner_Ed25519(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	cert := makeCert(t, priv, pub, "reflow.local", "/node/2")
-	s := NewSigner(&fakeProvider{cert: cert}, "reflow.local")
+	cert := makeCert(t, priv, pub, "node/2")
+	s := NewSigner(&fakeProvider{cert: cert})
 
 	tok, err := s.Sign("dep-xyz")
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
-	verifySignedToken(t, tok, "spiffe://reflow.local/node/2", "dep-xyz", pub, jwt.SigningMethodEdDSA)
+	verifySignedToken(t, tok, "node/2", "dep-xyz", pub, jwt.SigningMethodEdDSA)
 }
 
 func TestSigner_RSA(t *testing.T) {
@@ -92,31 +88,32 @@ func TestSigner_RSA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	cert := makeCert(t, key, &key.PublicKey, "reflow.local", "/node/3")
-	s := NewSigner(&fakeProvider{cert: cert}, "reflow.local")
+	cert := makeCert(t, key, &key.PublicKey, "node/3")
+	s := NewSigner(&fakeProvider{cert: cert})
 
 	tok, err := s.Sign("dep-rsa")
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
-	verifySignedToken(t, tok, "spiffe://reflow.local/node/3", "dep-rsa", &key.PublicKey, jwt.SigningMethodRS256)
+	verifySignedToken(t, tok, "node/3", "dep-rsa", &key.PublicKey, jwt.SigningMethodRS256)
 }
 
 func TestSigner_EmptyAudienceRejected(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	cert := makeCert(t, key, &key.PublicKey, "reflow.local", "/node/1")
-	s := NewSigner(&fakeProvider{cert: cert}, "reflow.local")
+	cert := makeCert(t, key, &key.PublicKey, "node/1")
+	s := NewSigner(&fakeProvider{cert: cert})
 	if _, err := s.Sign(""); err == nil {
 		t.Fatal("expected error for empty audience; got nil")
 	}
 }
 
-func TestSigner_WrongTrustDomainRejected(t *testing.T) {
+func TestSigner_MalformedCNRejected(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	cert := makeCert(t, key, &key.PublicKey, "other.local", "/node/1")
-	s := NewSigner(&fakeProvider{cert: cert}, "reflow.local")
+	// CN missing the "<kind>/<name>" shape — single segment.
+	cert := makeCert(t, key, &key.PublicKey, "no-slash-here")
+	s := NewSigner(&fakeProvider{cert: cert})
 	if _, err := s.Sign("dep-1"); err == nil {
-		t.Fatal("expected error for trust-domain mismatch; got nil")
+		t.Fatal("expected error for malformed leaf CN; got nil")
 	}
 }
 
@@ -153,9 +150,9 @@ func (p *countingProvider) SetCert(c tls.Certificate) {
 
 func TestSigner_CacheHitReusesToken(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	cert := makeCert(t, key, &key.PublicKey, "reflow.local", "/node/1")
+	cert := makeCert(t, key, &key.PublicKey, "node/1")
 	prov := &countingProvider{cert: cert}
-	s := NewSigner(prov, "reflow.local")
+	s := NewSigner(prov)
 
 	tok1, err := s.Sign("dep-1")
 	if err != nil {
@@ -175,9 +172,9 @@ func TestSigner_CacheHitReusesToken(t *testing.T) {
 
 func TestSigner_CacheDistinctAudience(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	cert := makeCert(t, key, &key.PublicKey, "reflow.local", "/node/1")
+	cert := makeCert(t, key, &key.PublicKey, "node/1")
 	prov := &countingProvider{cert: cert}
-	s := NewSigner(prov, "reflow.local")
+	s := NewSigner(prov)
 
 	tokA, _ := s.Sign("dep-a")
 	tokB, _ := s.Sign("dep-b")
@@ -197,9 +194,9 @@ func TestSigner_CacheDistinctAudience(t *testing.T) {
 
 func TestSigner_CacheRenewsBeforeExpiry(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	cert := makeCert(t, key, &key.PublicKey, "reflow.local", "/node/1")
+	cert := makeCert(t, key, &key.PublicKey, "node/1")
 	prov := &countingProvider{cert: cert}
-	s := NewSigner(prov, "reflow.local")
+	s := NewSigner(prov)
 	// Force renewal: TTL=1ms means the first token is already within
 	// the renewMargin window by the second call.
 	s.ttl = time.Millisecond
@@ -218,9 +215,9 @@ func TestSigner_CacheRenewsBeforeExpiry(t *testing.T) {
 
 func TestSigner_CacheEvictsOnCertRotation(t *testing.T) {
 	keyA, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	certA := makeCert(t, keyA, &keyA.PublicKey, "reflow.local", "/node/1")
+	certA := makeCert(t, keyA, &keyA.PublicKey, "node/1")
 	prov := &countingProvider{cert: certA}
-	s := NewSigner(prov, "reflow.local")
+	s := NewSigner(prov)
 	s.ttl = time.Millisecond
 	s.renewMargin = 0 // remove margin so a 1ms-TTL token expires reliably
 
@@ -234,7 +231,7 @@ func TestSigner_CacheEvictsOnCertRotation(t *testing.T) {
 	// Rotate the cert. After sleeping past TTL, dep-a's next Sign
 	// observes the new fingerprint and must drop dep-b's stale entry.
 	keyB, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	certB := makeCert(t, keyB, &keyB.PublicKey, "reflow.local", "/node/1")
+	certB := makeCert(t, keyB, &keyB.PublicKey, "node/1")
 	prov.SetCert(certB)
 	time.Sleep(5 * time.Millisecond)
 
@@ -302,7 +299,7 @@ func verifySignedToken(t *testing.T, tok, wantIss, wantAud string, pub any, want
 	if err != nil {
 		t.Fatalf("parse x5c cert: %v", err)
 	}
-	if len(cert.URIs) != 1 || cert.URIs[0].String() != wantIss {
-		t.Errorf("x5c cert URI = %v; want %q", cert.URIs, wantIss)
+	if cert.Subject.CommonName != wantIss {
+		t.Errorf("x5c cert CN = %q; want %q", cert.Subject.CommonName, wantIss)
 	}
 }

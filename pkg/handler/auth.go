@@ -12,15 +12,16 @@ import (
 
 type authContextKey struct{}
 
-// CallerURI returns the verified SPIFFE URI of the caller stashed by
-// withAuth, or ("", false) when the request didn't pass through the
-// middleware (auth disabled, or running outside the wired routes).
-func CallerURI(ctx context.Context) (string, bool) {
+// CallerPrincipal returns the verified caller principal Raw form
+// (e.g. "node/1", "operator/alice") stashed by withAuth, or ("",
+// false) when the request didn't pass through the middleware (auth
+// disabled, or running outside the wired routes).
+func CallerPrincipal(ctx context.Context) (string, bool) {
 	v, ok := ctx.Value(authContextKey{}).(*creds.Verified)
 	if !ok || v == nil {
 		return "", false
 	}
-	return v.CallerURI, true
+	return v.CallerPrincipal, true
 }
 
 // withAuth wraps next with verification of the request's
@@ -28,7 +29,7 @@ func CallerURI(ctx context.Context) (string, bool) {
 // failure the request is rejected with 401, no body, and a
 // WWW-Authenticate hint; the failure reason is logged at debug. On
 // success the *creds.Verified is stashed in r.Context so downstream
-// handlers can call CallerURI.
+// handlers can call CallerPrincipal.
 func withAuth(v *creds.Verifier, log *slog.Logger, next http.Handler) http.Handler {
 	if log == nil {
 		log = slog.Default()

@@ -7,7 +7,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
-	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -52,15 +51,14 @@ func TestBuild_MissingNestedSpecErrors(t *testing.T) {
 
 func TestBuild_TLS(t *testing.T) {
 	dir := t.TempDir()
-	caFile, certFile, keyFile := writeSPIFFETestPKI(t, dir, "spiffe://reflow.local/node/1")
+	caFile, certFile, keyFile := writeMeshTestPKI(t, dir, "node/1")
 
 	lc, err := Build(Spec{
 		Driver: DriverTLS,
 		TLS: &TLSSpec{
-			CAFile:      caFile,
-			CertFile:    certFile,
-			KeyFile:     keyFile,
-			TrustDomain: "reflow.local",
+			CAFile:   caFile,
+			CertFile: certFile,
+			KeyFile:  keyFile,
 		},
 	}, nil)
 	if err != nil {
@@ -79,7 +77,7 @@ func TestBuild_TLS(t *testing.T) {
 
 func TestBuild_TLSMissingCAErrors(t *testing.T) {
 	dir := t.TempDir()
-	_, certFile, keyFile := writeSPIFFETestPKI(t, dir, "spiffe://reflow.local/node/1")
+	_, certFile, keyFile := writeMeshTestPKI(t, dir, "node/1")
 	_, err := Build(Spec{
 		Driver: DriverTLS,
 		TLS:    &TLSSpec{CertFile: certFile, KeyFile: keyFile},
@@ -135,11 +133,11 @@ func TestBuild_STSRequiredFields(t *testing.T) {
 	}
 }
 
-// writeSPIFFETestPKI generates a self-signed ed25519 CA and a single
-// leaf cert with the given SPIFFE URI SAN, returning paths to PEM files
-// in dir. Used by TLS-driver tests to materialise valid SVIDs without
-// pulling in the testdata fixtures from internal/pki.
-func writeSPIFFETestPKI(t *testing.T, dir, spiffeURI string) (caFile, certFile, keyFile string) {
+// writeMeshTestPKI generates a self-signed ed25519 CA and a single
+// leaf cert with CN=principalRaw, returning paths to PEM files in dir.
+// Used by TLS-driver tests to materialise valid mesh leaves without
+// pulling in internal/pki.
+func writeMeshTestPKI(t *testing.T, dir, principalRaw string) (caFile, certFile, keyFile string) {
 	t.Helper()
 
 	caPub, caPriv, err := ed25519.GenerateKey(rand.Reader)
@@ -164,18 +162,13 @@ func writeSPIFFETestPKI(t *testing.T, dir, spiffeURI string) (caFile, certFile, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	u, err := url.Parse(spiffeURI)
-	if err != nil {
-		t.Fatal(err)
-	}
 	leafTmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(2),
-		Subject:      pkix.Name{CommonName: "reflow-test-leaf"},
+		Subject:      pkix.Name{CommonName: principalRaw},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		URIs:         []*url.URL{u},
 	}
 	leafDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, caTmpl, leafPub, caPriv)
 	if err != nil {

@@ -17,8 +17,8 @@ import (
 // spec names which builder to call and what JSON config to feed it.
 //
 // Identity holds the local leaf+key material. Roots holds the trust
-// bundle. The two halves are deliberately separate so a SPIFFE provider
-// can rotate the leaf independently of the trust bundle.
+// bundle. The two halves are deliberately separate so a workload-API
+// provider can rotate the leaf independently of the trust bundle.
 type CertProviderSpec struct {
 	// Identity is the provider name registered via certprovider.Register
 	// (e.g. "file_watcher", "spire_agent").
@@ -31,18 +31,11 @@ type CertProviderSpec struct {
 	Roots string `koanf:"roots"`
 	// RootsConfig is the opaque JSON config for the roots provider.
 	RootsConfig string `koanf:"roots_config"`
-	// TrustDomain is the SPIFFE trust domain enforced on peer leaves.
-	// Empty defaults to DefaultTrustDomain.
-	TrustDomain string `koanf:"trust_domain"`
+	// MeshCAFingerprint, when non-empty, pins the SPKI fingerprint of
+	// the CA cert at the root of every verified chain. See TLSSpec.
+	MeshCAFingerprint string `koanf:"mesh_ca_fingerprint"`
 	// ClientAuth, when true (default), enforces mTLS on the server side.
 	ClientAuth *bool `koanf:"client_auth"`
-}
-
-func (s CertProviderSpec) trustDomain() string {
-	if s.TrustDomain == "" {
-		return DefaultTrustDomain
-	}
-	return s.TrustDomain
 }
 
 func (s CertProviderSpec) clientAuth() bool {
@@ -83,7 +76,7 @@ func buildCertProvider(s *CertProviderSpec, _ *slog.Logger) (*ListenerCreds, err
 		}
 	}
 
-	td := s.trustDomain()
+	verify := verifyMeshIdentity(s.MeshCAFingerprint)
 
 	getCert := func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
 		km, err := identity.KeyMaterial(context.Background())
@@ -102,12 +95,12 @@ func buildCertProvider(s *CertProviderSpec, _ *slog.Logger) (*ListenerCreds, err
 		serverCfg := &tls.Config{
 			MinVersion:            tls.VersionTLS13,
 			GetCertificate:        getCert,
-			VerifyPeerCertificate: verifyURISANWellFormed(td),
+			VerifyPeerCertificate: verify,
 		}
 		clientCfg := &tls.Config{
 			MinVersion:            tls.VersionTLS13,
 			GetClientCertificate:  getClientCert,
-			VerifyPeerCertificate: verifyURISANWellFormed(td),
+			VerifyPeerCertificate: verify,
 		}
 		if roots != nil {
 			km, kerr := roots.KeyMaterial(context.Background())
@@ -170,5 +163,5 @@ func BuildSigner(spec *CertProviderSpec, _ *slog.Logger) (*Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reflow/creds: build identity provider: %w", err)
 	}
-	return NewSigner(identity, spec.trustDomain()), nil
+	return NewSigner(identity), nil
 }

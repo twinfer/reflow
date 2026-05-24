@@ -9,12 +9,11 @@
 //
 // Every reflowd process hosts a ClusterCtl Connect RPC server on a
 // dedicated port (typically :8082). The server is mTLS-protected; the
-// caller's SPIFFE URI SAN identifies its role
-// (`spiffe://<trust-domain>/operator/<name>` for operators). The
-// `reflowd cluster ...` CLI is the canonical client. SelfJoin has a
-// narrower carve-out: it accepts a `node/*` SPIFFE principal, but only
-// when the principal's NodeID equals req.node_id (defense in depth
-// behind the path-based authz rule).
+// caller's leaf CN encodes its principal Raw form (e.g.
+// `operator/<name>` for operators). The `reflowd cluster ...` CLI is
+// the canonical client. SelfJoin has a narrower carve-out: it accepts
+// a `node/*` principal, but only when the principal's NodeID equals
+// req.node_id (defense in depth behind the path-based authz rule).
 //
 // Authorization lives in internal/auth (the shared starter authz policy
 // consumed by both the gRPC delivery interceptor and the Connect HTTP

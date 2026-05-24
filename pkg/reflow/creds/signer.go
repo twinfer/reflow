@@ -34,8 +34,8 @@ const defaultRenewMargin = 10 * time.Second
 // keypair — the same cert/key the cluster mTLS surfaces use, fetched
 // via a certprovider.Provider so rotations are picked up on the next
 // Sign call. The leaf cert travels in the x5c header so handlers
-// verify the chain against the configured CA and check the SPIFFE URI
-// in the leaf's SAN — no pre-shared public key required.
+// verify the chain against the configured CA and read the principal
+// Raw form from the leaf's CN — no pre-shared public key required.
 //
 // Signed tokens are cached per audience and reused until they approach
 // expiry — engine→handler dispatch is the hottest call site, and
@@ -44,7 +44,6 @@ const defaultRenewMargin = 10 * time.Second
 // next miss when the new cert's fingerprint differs.
 type Signer struct {
 	provider    certprovider.Provider
-	trustDomain string
 	ttl         time.Duration
 	renewMargin time.Duration
 
@@ -62,16 +61,10 @@ type cachedToken struct {
 }
 
 // NewSigner constructs a Signer bound to a certprovider.Provider for
-// pull-based access to the current leaf cert + private key. Empty
-// trustDomain falls back to DefaultTrustDomain so the iss claim is
-// always well-formed.
-func NewSigner(p certprovider.Provider, trustDomain string) *Signer {
-	if trustDomain == "" {
-		trustDomain = DefaultTrustDomain
-	}
+// pull-based access to the current leaf cert + private key.
+func NewSigner(p certprovider.Provider) *Signer {
 	return &Signer{
 		provider:    p,
-		trustDomain: trustDomain,
 		ttl:         DefaultSignerTTL,
 		renewMargin: defaultRenewMargin,
 		cache:       make(map[string]cachedToken),
@@ -88,7 +81,7 @@ func (s *Signer) Close() {
 	s.provider.Close()
 }
 
-// Sign mints (or returns a cached) JWT with iss=engine's SPIFFE URI,
+// Sign mints (or returns a cached) JWT with iss=engine's principal Raw form,
 // aud=audience, iat=now, exp=now+ttl, and the leaf chain in the x5c
 // header. audience is typically the deployment_id pinned at
 // handlerclient construction.
@@ -139,7 +132,7 @@ func (s *Signer) signFresh(audience string) (string, error) {
 		}
 		leaf = l
 	}
-	iss, err := ExtractSPIFFEURI(leaf, s.trustDomain)
+	iss, err := LeafPrincipal(leaf)
 	if err != nil {
 		return "", fmt.Errorf("reflow/creds: signer: extract iss: %w", err)
 	}

@@ -12,7 +12,6 @@ import (
 	"math/big"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -325,7 +324,7 @@ var stubHandler handler.Handler = func(_ handler.Context, _ []byte) ([]byte, err
 // when the engine-side dispatch signs the request. Mirrors
 // TestServer_RoundTrip but with auth enabled on both ends.
 func TestServer_RoundTrip_WithAuth(t *testing.T) {
-	caPEM, signer, spiffe := buildCAAndSigner(t, "/node/1")
+	caPEM, signer, principal := buildCAAndSigner(t, "node/1")
 
 	reg := handler.NewRegistry()
 	if err := reg.RegisterService("Echo", "echo", func(_ handler.Context, in []byte) ([]byte, error) {
@@ -334,10 +333,9 @@ func TestServer_RoundTrip_WithAuth(t *testing.T) {
 		t.Fatalf("RegisterService: %v", err)
 	}
 	srv, err := handler.NewServer(handler.Config{
-		Registry:      reg,
-		RootCAs:       caPEM,
-		AllowedSPIFFE: []string{spiffe},
-		TrustDomain:   "reflow.local",
+		Registry:          reg,
+		RootCAs:           caPEM,
+		AllowedPrincipals: []string{principal},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -370,17 +368,16 @@ func TestServer_RoundTrip_WithAuth(t *testing.T) {
 // — withAuth runs before Connect's stream handler, so an empty POST
 // is enough to exercise the 401 path.
 func TestServer_AuthRejectsForeignCA(t *testing.T) {
-	caPEM, _, spiffe := buildCAAndSigner(t, "/node/1")
+	caPEM, _, principal := buildCAAndSigner(t, "node/1")
 	// Foreign signer: rooted at a different CA — verifier won't accept.
-	_, foreignSigner, _ := buildCAAndSigner(t, "/node/1")
+	_, foreignSigner, _ := buildCAAndSigner(t, "node/1")
 
 	reg := handler.NewRegistry()
 	_ = reg.RegisterService("Echo", "echo", func(_ handler.Context, in []byte) ([]byte, error) { return in, nil })
 	srv, err := handler.NewServer(handler.Config{
-		Registry:      reg,
-		RootCAs:       caPEM,
-		AllowedSPIFFE: []string{spiffe},
-		TrustDomain:   "reflow.local",
+		Registry:          reg,
+		RootCAs:           caPEM,
+		AllowedPrincipals: []string{principal},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -419,10 +416,10 @@ func TestServer_AuthRejectsForeignCA(t *testing.T) {
 	}
 }
 
-// buildCAAndSigner builds a self-signed CA + a leaf signed by it,
-// wraps the leaf in a *creds.Signer, and returns the CA PEM bundle.
-// The leaf's SPIFFE URI is "spiffe://reflow.local"+spiffePath.
-func buildCAAndSigner(t *testing.T, spiffePath string) (caPEM []byte, signer *creds.Signer, spiffe string) {
+// buildCAAndSigner builds a self-signed CA + a leaf signed by it with
+// CN=principalRaw (the post-PR-1 mesh-leaf identity shape), wraps the
+// leaf in a *creds.Signer, and returns the CA PEM bundle.
+func buildCAAndSigner(t *testing.T, principalRaw string) (caPEM []byte, signer *creds.Signer, principal string) {
 	t.Helper()
 	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	caTmpl := &x509.Certificate{
@@ -442,13 +439,11 @@ func buildCAAndSigner(t *testing.T, spiffePath string) (caPEM []byte, signer *cr
 	caPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
 
 	leafKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	uri, _ := url.Parse("spiffe://reflow.local" + spiffePath)
 	leafTmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(2),
-		Subject:      pkix.Name{CommonName: "test-leaf"},
+		Subject:      pkix.Name{CommonName: principalRaw},
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(time.Hour),
-		URIs:         []*url.URL{uri},
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 	}
 	leafDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, caCert, &leafKey.PublicKey, caKey)
@@ -457,8 +452,8 @@ func buildCAAndSigner(t *testing.T, spiffePath string) (caPEM []byte, signer *cr
 	}
 	leaf, _ := x509.ParseCertificate(leafDER)
 	cert := tls.Certificate{Certificate: [][]byte{leafDER}, PrivateKey: leafKey, Leaf: leaf}
-	signer = creds.NewSigner(&e2eFakeProvider{cert: cert}, "reflow.local")
-	return caPEM, signer, "spiffe://reflow.local" + spiffePath
+	signer = creds.NewSigner(&e2eFakeProvider{cert: cert})
+	return caPEM, signer, principalRaw
 }
 
 type e2eFakeProvider struct{ cert tls.Certificate }

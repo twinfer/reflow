@@ -39,18 +39,13 @@ type Config struct {
 	// caller's leaf; the engine signs with a leaf rooted at one of these.
 	RootCAs []byte
 
-	// AllowedSPIFFE is the exact-match allowlist of caller SPIFFE URIs
-	// (e.g. "spiffe://reflow.local/node/1"). Required when RootCAs is
-	// set; leave empty when RootCAs is nil.
-	AllowedSPIFFE []string
-
-	// TrustDomain governs SPIFFE URI extraction from the caller's leaf.
-	// Empty falls back to creds.DefaultTrustDomain ("reflow.local").
-	// Only consulted when RootCAs is set.
-	TrustDomain string
+	// AllowedPrincipals is the exact-match allowlist of caller principal
+	// Raw strings (e.g. "node/1", "operator/alice"). Required when
+	// RootCAs is set; leave empty when RootCAs is nil.
+	AllowedPrincipals []string
 
 	// ExpectedAudience, when non-empty, requires the JWT aud claim to
-	// match. Empty skips the aud check (chain + SPIFFE + exp/iat still
+	// match. Empty skips the aud check (chain + principal + exp/iat still
 	// run). The SDK handler typically doesn't know its own deployment_id
 	// (engine-assigned), so this is opt-in.
 	ExpectedAudience string
@@ -76,8 +71,8 @@ type Server struct {
 //
 // When cfg.RootCAs is non-nil, every request must carry an
 // Authorization: Bearer <jwt> header whose x5c chain anchors at one of
-// the configured roots and whose leaf SPIFFE URI appears in
-// cfg.AllowedSPIFFE; verification failures reject with 401.
+// the configured roots and whose leaf CN matches an entry in
+// cfg.AllowedPrincipals; verification failures reject with 401.
 func NewServer(cfg Config) (*Server, error) {
 	verifier, err := validateConfig(&cfg)
 	if err != nil {
@@ -147,12 +142,12 @@ func validateConfig(cfg *Config) (*creds.Verifier, error) {
 		cfg.Codec = wire.DefaultCodec()
 	}
 	if cfg.RootCAs == nil {
-		if len(cfg.AllowedSPIFFE) > 0 || cfg.TrustDomain != "" || cfg.ExpectedAudience != "" {
+		if len(cfg.AllowedPrincipals) > 0 || cfg.ExpectedAudience != "" {
 			return nil, errors.New("handler: auth fields set without RootCAs; either set RootCAs to enable verification or remove the other auth fields")
 		}
 		return nil, nil
 	}
-	v, err := creds.NewVerifier(cfg.RootCAs, cfg.AllowedSPIFFE, cfg.TrustDomain, cfg.ExpectedAudience)
+	v, err := creds.NewVerifier(cfg.RootCAs, cfg.AllowedPrincipals, cfg.ExpectedAudience)
 	if err != nil {
 		return nil, fmt.Errorf("handler: build verifier: %w", err)
 	}

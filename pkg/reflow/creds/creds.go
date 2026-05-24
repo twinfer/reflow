@@ -30,12 +30,12 @@ const (
 	// DriverInsecure is the default — no transport security. Build
 	// returns this for the zero Spec.
 	DriverInsecure Driver = "insecure"
-	// DriverTLS terminates TLS using PEM files on disk with reflow's
-	// SPIFFE URI-SAN convention. Replaces the legacy TLSConfig path.
+	// DriverTLS terminates TLS using PEM files on disk; mesh leaves
+	// encode the principal Raw form in CN.
 	DriverTLS Driver = "tls"
 	// DriverCertProvider terminates TLS using grpc-go's certprovider
 	// plug-in framework. Use when an external agent rotates certs
-	// (SPIFFE/SPIRE workload API, in-cluster cert manager).
+	// (SPIRE workload API, in-cluster cert manager).
 	DriverCertProvider Driver = "tls_certprovider"
 	// DriverALTS uses Google's ALTS (Application Layer Transport
 	// Security) — GCE/GKE-only.

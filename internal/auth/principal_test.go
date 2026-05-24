@@ -7,7 +7,7 @@ import (
 )
 
 func TestPrincipalContextRoundTrip(t *testing.T) {
-	want := Principal{Kind: "node", Subject: "7", Raw: "node/7", URI: "spiffe://reflow.local/node/7"}
+	want := Principal{Kind: "node", Subject: "7", Raw: "node/7", MeshCAFingerprint: "sha256:abc"}
 	ctx := ContextWithPrincipal(context.Background(), want)
 	got, ok := PrincipalFromContext(ctx)
 	if !ok {

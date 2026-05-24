@@ -6,7 +6,6 @@ import (
 	"crypto/x509/pkix"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 )
@@ -51,9 +50,9 @@ func TestPolicy_StarterAllowMatrix(t *testing.T) {
 	}
 }
 
-func newTestMW(t *testing.T, td string) func(http.Handler) http.Handler {
+func newTestMW(t *testing.T) func(http.Handler) http.Handler {
 	t.Helper()
-	mw, closer, _, err := HTTPMiddleware(Config{TrustDomain: td}, nil)
+	mw, closer, _, err := HTTPMiddleware(Config{}, nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}
@@ -64,12 +63,11 @@ func newTestMW(t *testing.T, td string) func(http.Handler) http.Handler {
 }
 
 // TestHTTPMiddleware_StampsPrincipalFromTLS feeds a synthetic
-// *tls.ConnectionState with a verified spiffe leaf into the middleware
-// and asserts the downstream handler observes the principal both in the
-// header and via PrincipalFromContext.
+// *tls.ConnectionState with a verified mesh leaf into the middleware
+// and asserts the downstream handler observes the principal both in
+// the header and via PrincipalFromContext.
 func TestHTTPMiddleware_StampsPrincipalFromTLS(t *testing.T) {
-	td := "reflow.local"
-	mw := newTestMW(t, td)
+	mw := newTestMW(t)
 
 	var sawHeader string
 	var sawPrincipal Principal
@@ -80,11 +78,9 @@ func TestHTTPMiddleware_StampsPrincipalFromTLS(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// Synthesize a verified-chain leaf with spiffe URI.
-	u, _ := url.Parse("spiffe://" + td + "/operator/alice")
+	// Synthesize a verified-chain leaf with mesh CN.
 	leaf := &x509.Certificate{
-		Subject: pkix.Name{CommonName: "alice"},
-		URIs:    []*url.URL{u},
+		Subject: pkix.Name{CommonName: "operator/alice"},
 	}
 
 	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
@@ -112,15 +108,13 @@ func TestHTTPMiddleware_StampsPrincipalFromTLS(t *testing.T) {
 // /ClusterCtl/ListNodes must produce CodePermissionDenied (HTTP 403 fallback
 // since the test request is not a Connect-shaped POST).
 func TestHTTPMiddleware_DeniesUnauthorizedPrincipal(t *testing.T) {
-	td := "reflow.local"
-	mw := newTestMW(t, td)
+	mw := newTestMW(t)
 	called := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	})
-	u, _ := url.Parse("spiffe://" + td + "/node/7")
-	leaf := &x509.Certificate{URIs: []*url.URL{u}}
+	leaf := &x509.Certificate{Subject: pkix.Name{CommonName: "node/7"}}
 	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf}}}
 	w := httptest.NewRecorder()
@@ -136,7 +130,7 @@ func TestHTTPMiddleware_DeniesUnauthorizedPrincipal(t *testing.T) {
 // TestHTTPMiddleware_AllowsAnonymousIngress: ingress allow rule has no
 // principal constraint; an anonymous (no TLS) request must pass through.
 func TestHTTPMiddleware_AllowsAnonymousIngress(t *testing.T) {
-	mw := newTestMW(t, "reflow.local")
+	mw := newTestMW(t)
 	called := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
@@ -156,7 +150,7 @@ func TestHTTPMiddleware_AllowsAnonymousIngress(t *testing.T) {
 // monitoring separate "no client cert presented" from "auth-config
 // rejects principal X".
 func TestHTTPMiddleware_DeniesAnonymousOnGuardedPath(t *testing.T) {
-	mw := newTestMW(t, "reflow.local")
+	mw := newTestMW(t)
 	called := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
@@ -174,14 +168,14 @@ func TestHTTPMiddleware_DeniesAnonymousOnGuardedPath(t *testing.T) {
 	}
 }
 
-// TestHTTPMiddleware_NonSPIFFELeafTreatedAnonymous covers the mTLS-
-// without-SPIFFE case: a verified leaf with zero URI SANs is no longer
-// a hard error (it could be a client-cert deployment that uses bearer
-// tokens for identity). The principal is anonymous, so a guarded path
-// still gets 401 via the policy.
-func TestHTTPMiddleware_NonSPIFFELeafTreatedAnonymous(t *testing.T) {
-	mw := newTestMW(t, "reflow.local")
-	leaf := &x509.Certificate{Subject: pkix.Name{CommonName: "noop"}}
+// TestHTTPMiddleware_EmptyCNLeafTreatedAnonymous covers the
+// mTLS-but-no-mesh-CN case: a verified leaf with empty CN is no
+// longer a hard error (it could be a client-cert deployment that uses
+// bearer tokens for identity). The principal is anonymous, so a
+// guarded path still gets 401 via the policy.
+func TestHTTPMiddleware_EmptyCNLeafTreatedAnonymous(t *testing.T) {
+	mw := newTestMW(t)
+	leaf := &x509.Certificate{} // empty CN
 	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf}}}
 	w := httptest.NewRecorder()
@@ -191,27 +185,22 @@ func TestHTTPMiddleware_NonSPIFFELeafTreatedAnonymous(t *testing.T) {
 	}
 }
 
-// TestHTTPMiddleware_MalformedSPIFFELeafRejected: a verified leaf
-// carrying a URI SAN that fails SPIFFE format checks (wrong trust
-// domain, wrong scheme, multiple URIs, missing kind/subject) must
-// surface as a hard 401 — the leaf claims a SPIFFE identity that we
-// can't honor, so falling through to anonymous would be a security
-// regression.
-func TestHTTPMiddleware_MalformedSPIFFELeafRejected(t *testing.T) {
-	cases := map[string][]*url.URL{
-		"wrong-scheme":   {mustParseURL(t, "https://reflow.local/operator/alice")},
-		"wrong-td":       {mustParseURL(t, "spiffe://elsewhere.local/operator/alice")},
-		"missing-name":   {mustParseURL(t, "spiffe://reflow.local/operator")},
-		"empty-segments": {mustParseURL(t, "spiffe://reflow.local//alice")},
-		"multiple-uris": {
-			mustParseURL(t, "spiffe://reflow.local/operator/alice"),
-			mustParseURL(t, "spiffe://reflow.local/operator/bob"),
-		},
+// TestHTTPMiddleware_MalformedCNLeafRejected: a verified leaf
+// carrying a CN that fails the <kind>/<name> shape must surface as a
+// hard 401 — the leaf claims a mesh identity that we can't honor, so
+// falling through to anonymous would be a security regression.
+func TestHTTPMiddleware_MalformedCNLeafRejected(t *testing.T) {
+	cases := map[string]string{
+		"single-segment":   "no-slash",
+		"empty-kind":       "/alice",
+		"empty-name":       "operator/",
+		"too-many-slashes": "tenant/42/operator/alice",
+		"only-slash":       "/",
 	}
-	for name, uris := range cases {
+	for name, cn := range cases {
 		t.Run(name, func(t *testing.T) {
-			mw := newTestMW(t, "reflow.local")
-			leaf := &x509.Certificate{URIs: uris}
+			mw := newTestMW(t)
+			leaf := &x509.Certificate{Subject: pkix.Name{CommonName: cn}}
 			r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 			r.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf}}}
 			w := httptest.NewRecorder()
@@ -227,7 +216,7 @@ func TestHTTPMiddleware_MalformedSPIFFELeafRejected(t *testing.T) {
 // Connect-shaped request gets a connect-protocol error response, not a
 // plain HTTP 401/403. Verified by content-type and body shape.
 func TestHTTPMiddleware_ConnectErrorEncoding(t *testing.T) {
-	mw := newTestMW(t, "reflow.local")
+	mw := newTestMW(t)
 	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	// Connect unary content-type marks this as a Connect RPC request.
 	r.Header.Set("Content-Type", "application/proto")
@@ -243,11 +232,11 @@ func TestHTTPMiddleware_ConnectErrorEncoding(t *testing.T) {
 }
 
 // TestHTTPMiddleware_NoWWWAuthenticateWhenOIDCDisabled: when only
-// SPIFFE is wired (no OIDC issuer), the anonymous-denial 401 must NOT
-// advertise Bearer as an accepted scheme — there's no IdP-issued token
-// the client could present.
+// mesh-mTLS is wired (no OIDC issuer), the anonymous-denial 401 must
+// NOT advertise Bearer as an accepted scheme — there's no IdP-issued
+// token the client could present.
 func TestHTTPMiddleware_NoWWWAuthenticateWhenOIDCDisabled(t *testing.T) {
-	mw := newTestMW(t, "reflow.local")
+	mw := newTestMW(t)
 	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	w := httptest.NewRecorder()
 	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
@@ -257,13 +246,4 @@ func TestHTTPMiddleware_NoWWWAuthenticateWhenOIDCDisabled(t *testing.T) {
 	if got := w.Result().Header.Get("WWW-Authenticate"); got != "" {
 		t.Errorf("WWW-Authenticate=%q; want empty when bearer not configured", got)
 	}
-}
-
-func mustParseURL(t *testing.T, s string) *url.URL {
-	t.Helper()
-	u, err := url.Parse(s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return u
 }

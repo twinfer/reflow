@@ -93,7 +93,7 @@ func newGochannelTest(t *testing.T, svc, hname string, hf handler.Handler) *goch
 		t.Fatalf("AutoSeed: %v", err)
 	}
 
-	mw, _, _, err := auth.HTTPMiddleware(auth.Config{TrustDomain: "reflow.local"}, nil)
+	mw, _, _, err := auth.HTTPMiddleware(auth.Config{}, nil)
 	if err != nil {
 		t.Fatalf("auth middleware: %v", err)
 	}

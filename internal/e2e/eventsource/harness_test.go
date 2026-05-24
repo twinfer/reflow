@@ -103,7 +103,7 @@ func bringUpEventSourceHost(t *testing.T, svc, hname string, hf handler.Handler)
 		t.Fatalf("AutoSeed: %v", err)
 	}
 
-	mw, _, _, err := auth.HTTPMiddleware(auth.Config{TrustDomain: "reflow.local"}, nil)
+	mw, _, _, err := auth.HTTPMiddleware(auth.Config./internal/e2e/eventsource/harness_test.go, nil)
 	if err != nil {
 		t.Fatalf("auth middleware: %v", err)
 	}

@@ -176,17 +176,15 @@ type AdminConfig struct {
 // stack shared by Admin, Delivery, and Ingress listeners.
 //
 // Two authenticators chain at the HTTP layer below Connect's protocol
-// dispatch: SPIFFE mTLS (from TrustDomain), then OIDC Bearer JWT (from
-// OIDC). mTLS wins when both are presented on the same request. A
-// request with neither produces an anonymous principal; the path-glob
-// policy at PolicyFile decides whether anonymous is acceptable.
+// dispatch: mesh-leaf mTLS (principal from leaf CN), then OIDC Bearer
+// JWT (from OIDC). mTLS wins when both are presented on the same
+// request. A request with neither produces an anonymous principal;
+// the path-glob policy at PolicyFile decides whether anonymous is
+// acceptable.
 //
 // OIDC config is not hot-reloaded; issuer or audience changes require
 // a node restart (same as TLS material).
 type AuthConfig struct {
-	// TrustDomain is the SPIFFE trust domain expected on TLS leaves.
-	// Empty defaults to DefaultTrustDomain.
-	TrustDomain string `koanf:"trust_domain"`
 	// PolicyFile, when non-empty, points at a JSON authz policy that
 	// is hot-reloaded every 30s by a polling watcher. Empty installs
 	// the embedded starter policy (see internal/auth).
@@ -369,26 +367,12 @@ const (
 	RebalanceModeAuto     = "auto"
 )
 
-// DefaultTrustDomain is the SPIFFE trust domain used when
-// AuthConfig.TrustDomain is empty.
-const DefaultTrustDomain = creds.DefaultTrustDomain
-
-// trustDomainOrDefault returns cfg.Auth.TrustDomain or
-// DefaultTrustDomain when unset.
-func (c AuthConfig) trustDomainOrDefault() string {
-	if c.TrustDomain == "" {
-		return DefaultTrustDomain
-	}
-	return c.TrustDomain
-}
-
 // buildAuthConfig translates the public AuthConfig into the internal
 // auth.Config consumed by auth.HTTPMiddleware. Lives at the
 // pkg → internal boundary so internal/auth never imports pkg/reflow.
 func buildAuthConfig(c AuthConfig) auth.Config {
 	out := auth.Config{
-		TrustDomain: c.trustDomainOrDefault(),
-		PolicyFile:  c.PolicyFile,
+		PolicyFile: c.PolicyFile,
 	}
 	if len(c.OIDC) == 0 {
 		return out

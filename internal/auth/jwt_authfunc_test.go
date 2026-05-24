@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -112,9 +111,9 @@ func (k *jwtTestKit) defaultClaims() jwt.MapClaims {
 
 func newJWTOnlyMiddleware(t *testing.T, cfgs []OIDCIssuerConfig) func(http.Handler) http.Handler {
 	t.Helper()
-	// Trust domain "none" + zero OIDC slice routing: the SPIFFE step
+	// Zero TLS state + zero OIDC slice routing: the mesh step
 	// returns anonymous on no-TLS, then bearer takes over.
-	mw, closer, _, err := HTTPMiddleware(Config{TrustDomain: "reflow.local", OIDC: cfgs}, nil)
+	mw, closer, _, err := HTTPMiddleware(Config{OIDC: cfgs}, nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}
@@ -154,9 +153,8 @@ func jwtFriendlyPolicy(t *testing.T) string {
 func newJWTMiddlewareWithPolicy(t *testing.T, cfgs []OIDCIssuerConfig) func(http.Handler) http.Handler {
 	t.Helper()
 	mw, closer, _, err := HTTPMiddleware(Config{
-		TrustDomain: "reflow.local",
-		PolicyFile:  jwtFriendlyPolicy(t),
-		OIDC:        cfgs,
+		PolicyFile: jwtFriendlyPolicy(t),
+		OIDC:       cfgs,
 	}, nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
@@ -329,8 +327,7 @@ func TestJWTAuthFunc_MTLSWinsOverBearer(t *testing.T) {
 
 	// Verified mTLS leaf for operator/alice + a valid bearer token for
 	// user/alice. mTLS must win — Principal.Kind = operator.
-	u, _ := url.Parse("spiffe://reflow.local/operator/alice")
-	leaf := &x509.Certificate{Subject: pkix.Name{CommonName: "alice"}, URIs: []*url.URL{u}}
+	leaf := &x509.Certificate{Subject: pkix.Name{CommonName: "operator/alice"}}
 	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf}}}
 	r.Header.Set("Authorization", "Bearer "+kit.mint(t, kit.defaultClaims()))
@@ -483,7 +480,6 @@ func TestJWTAuthFunc_MalformedTokenRejected(t *testing.T) {
 func TestJWTAuthFunc_DuplicateIssuerURLRejected(t *testing.T) {
 	kit := newJWTKit(t)
 	_, _, _, err := HTTPMiddleware(Config{
-		TrustDomain: "reflow.local",
 		OIDC: []OIDCIssuerConfig{
 			{IssuerURL: kit.issuer, Audiences: []string{"reflow"}},
 			{IssuerURL: kit.issuer, Audiences: []string{"reflow"}},
@@ -497,7 +493,6 @@ func TestJWTAuthFunc_DuplicateIssuerURLRejected(t *testing.T) {
 func TestJWTAuthFunc_NoAudiencesRejected(t *testing.T) {
 	kit := newJWTKit(t)
 	_, _, _, err := HTTPMiddleware(Config{
-		TrustDomain: "reflow.local",
 		OIDC: []OIDCIssuerConfig{
 			{IssuerURL: kit.issuer, Audiences: nil},
 		},
@@ -574,7 +569,6 @@ func TestJWTAuthFunc_EagerDiscoveryAbortsOnUnreachableIssuer(t *testing.T) {
 func TestJWTAuthFunc_JWKSFileFailFast(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.json")
 	_, _, _, err := HTTPMiddleware(Config{
-		TrustDomain: "reflow.local",
 		OIDC: []OIDCIssuerConfig{
 			{IssuerURL: "https://idp.example.com", JWKSFile: path, Audiences: []string{"reflow"}},
 		},

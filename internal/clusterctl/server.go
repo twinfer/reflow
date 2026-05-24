@@ -140,10 +140,10 @@ func (s *Server) AddNode(ctx context.Context, req *connect.Request[clusterctlv1.
 }
 
 // SelfJoin is AddNode initiated by the joiner itself. Authorization
-// requires the caller's SPIFFE identity to be node/<req.node_id>.
-// Transport authz already gates this method to node/* principals; this
+// requires the caller's principal to be node/<req.node_id>. Transport
+// authz already gates this method to node/* principals; this
 // in-handler check is the second gate ensuring the node_id in the
-// request matches the SPIFFE subject (defense in depth).
+// request matches the principal Subject (defense in depth).
 func (s *Server) SelfJoin(ctx context.Context, req *connect.Request[clusterctlv1.AddNodeRequest]) (*connect.Response[clusterctlv1.AddNodeResponse], error) {
 	if err := s.requireLeader(); err != nil {
 		return nil, err
@@ -158,18 +158,18 @@ func (s *Server) SelfJoin(ctx context.Context, req *connect.Request[clusterctlv1
 	return connect.NewResponse(out), nil
 }
 
-// checkSelfJoinPrincipal enforces the SPIFFE-equals-NodeID gate for
-// SelfJoin. Extracted so it's unit-testable without standing up an
-// engine.Host / MetadataRunner.
+// checkSelfJoinPrincipal enforces the principal-equals-NodeID gate
+// for SelfJoin. Extracted so it's unit-testable without standing up
+// an engine.Host / MetadataRunner.
 func checkSelfJoinPrincipal(ctx context.Context, nodeID uint64) error {
 	principal, ok := auth.PrincipalFromContext(ctx)
 	if !ok || principal.Kind != "node" {
 		return connect.NewError(connect.CodePermissionDenied,
-			errors.New("clusterctl: SelfJoin requires a node SPIFFE identity"))
+			errors.New("clusterctl: SelfJoin requires a node-kind principal"))
 	}
 	if principal.Subject != strconv.FormatUint(nodeID, 10) {
 		return connect.NewError(connect.CodePermissionDenied,
-			fmt.Errorf("clusterctl: SelfJoin SPIFFE node/%s does not match req.node_id=%d",
+			fmt.Errorf("clusterctl: SelfJoin principal node/%s does not match req.node_id=%d",
 				principal.Subject, nodeID))
 	}
 	return nil

@@ -32,8 +32,8 @@ const FileWatcherReload = 30 * time.Second
 // HTTPMiddleware builds the inbound auth chain for the Connect-mounted
 // HTTP handler. The chain has three steps:
 //
-//  1. authn.Middleware runs an AuthFunc that tries SPIFFE-from-mTLS
-//     first, then Bearer-JWT (when cfg.OIDC is non-empty). Verification
+//  1. authn.Middleware runs an AuthFunc that tries mTLS-leaf-CN first,
+//     then Bearer-JWT (when cfg.OIDC is non-empty). Verification
 //     failures emit connect.CodeUnauthenticated.
 //  2. policyHandler reads the stamped Principal, sets the server-
 //     controlled X-Reflow-Principal header (any inbound copy is
@@ -67,7 +67,7 @@ func HTTPMiddleware(cfg Config, log *slog.Logger) (mw func(http.Handler) http.Ha
 		}
 		return nil, nil, nil, jerr
 	}
-	auth := composeAuthFunc(cfg.TrustDomain, jwt, log)
+	auth := composeAuthFunc(jwt, log)
 	authnMW := authn.NewMiddleware(auth)
 	errWriter := connect.NewErrorWriter()
 	policy := policyHandler(pol, log, errWriter, len(cfg.OIDC) > 0)
@@ -77,16 +77,16 @@ func HTTPMiddleware(cfg Config, log *slog.Logger) (mw func(http.Handler) http.Ha
 	return mw, c, jwt, nil
 }
 
-// composeAuthFunc chains the SPIFFE and Bearer authenticators per the
-// composition rules in the refactor plan: mTLS wins when both are
+// composeAuthFunc chains the mesh-leaf and Bearer authenticators per
+// the composition rules in the refactor plan: mTLS wins when both are
 // present (a leaked bearer cannot forge a peer-verified leaf). When
-// the SPIFFE step returns a non-anonymous Principal the bearer is
-// not consulted; a debug-level log notes the override.
-func composeAuthFunc(td string, jwt *JWTVerifier, log *slog.Logger) authn.AuthFunc {
-	spiffe := spiffeAuthFunc(td)
+// the mesh step returns a non-anonymous Principal the bearer is not
+// consulted; a debug-level log notes the override.
+func composeAuthFunc(jwt *JWTVerifier, log *slog.Logger) authn.AuthFunc {
+	mesh := meshAuthFunc()
 	bearer := bearerAuthFunc(jwt)
 	return func(ctx context.Context, r *http.Request) (any, error) {
-		info, err := spiffe(ctx, r)
+		info, err := mesh(ctx, r)
 		if err != nil {
 			return nil, err
 		}

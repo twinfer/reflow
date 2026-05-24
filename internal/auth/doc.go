@@ -3,10 +3,10 @@
 // listeners. The model is:
 //
 //   - An authn.AuthFunc turns each inbound *http.Request into a
-//     Principal. Today there are two authenticators: SPIFFE from the
-//     verified mTLS leaf (spiffe_authfunc.go) and Bearer JWT against
-//     one or more configured OIDC issuers (jwt_authfunc.go). mTLS
-//     wins when both are presented.
+//     Principal. Today there are two authenticators: mesh-leaf-CN
+//     from the verified mTLS leaf (mesh_authfunc.go) and Bearer JWT
+//     against one or more configured OIDC issuers (jwt_authfunc.go).
+//     mTLS wins when both are presented.
 //
 //   - The policy handler stamps Principal.Raw into the server-
 //     controlled X-Reflow-Principal header (any inbound copy is

@@ -13,37 +13,31 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
-// DefaultTrustDomain is the SPIFFE trust domain used when TLSSpec
-// leaves it empty. Mirrors pkg/reflow.DefaultTrustDomain so the creds
-// package stands alone.
-const DefaultTrustDomain = "reflow.local"
-
 // TLSSpec is the file-driven TLS configuration. One CA signs every
-// leaf; each leaf carries a SPIFFE URI SAN whose path is /<role>/<id>.
-// The transport layer verifies chain + URI well-formedness; role
-// enforcement (node/* vs operator/*) is left to the auth interceptor.
+// leaf; each leaf's CN encodes the principal Raw form (<kind>/<name>).
+// The transport layer verifies chain + CN shape; role enforcement
+// (node/* vs operator/*) is left to the auth interceptor.
 type TLSSpec struct {
-	CAFile      string `koanf:"ca_file"`
-	CertFile    string `koanf:"cert_file"`
-	KeyFile     string `koanf:"key_file"`
-	TrustDomain string `koanf:"trust_domain"`
+	CAFile   string `koanf:"ca_file"`
+	CertFile string `koanf:"cert_file"`
+	KeyFile  string `koanf:"key_file"`
+	// MeshCAFingerprint, when non-empty, pins the SPKI fingerprint of
+	// the CA cert at the root of every verified chain. Values are
+	// "sha256:<hex>" per SPKIFingerprint. A mismatch fails the
+	// handshake regardless of which CA pool the chain validates
+	// against — defends against a former-mesh-CA cert that was
+	// rotated out but is still present in some operator's bundle.
+	MeshCAFingerprint string `koanf:"mesh_ca_fingerprint"`
 	// ServerName, when set, is the SNI / DNS-SAN verification target
 	// the client TLS config sends to the server. Empty falls back to
 	// grpc-go's default (derived from the dial target). Useful when
-	// dialing by IP — the leaf's URI SAN check still runs; this only
+	// dialing by IP — the CN identity check still runs; this only
 	// gates the standard DNS verification path.
 	ServerName string `koanf:"server_name"`
 	// ClientAuth, when true, requires and verifies client certs on the
 	// server side. Default true for reflow's mTLS surfaces (Delivery,
 	// Admin); set false only when fronting OAuth/JWT validation.
 	ClientAuth *bool `koanf:"client_auth"`
-}
-
-func (s TLSSpec) trustDomain() string {
-	if s.TrustDomain == "" {
-		return DefaultTrustDomain
-	}
-	return s.TrustDomain
 }
 
 func (s TLSSpec) clientAuth() bool {
@@ -63,7 +57,6 @@ func buildTLS(s *TLSSpec, _ *slog.Logger) (*ListenerCreds, error) {
 	if s.CAFile == "" {
 		return nil, errEmptyField(DriverTLS, "ca_file")
 	}
-	td := s.trustDomain()
 
 	get, err := hotReloadKeypair(s.CertFile, s.KeyFile)
 	if err != nil {
@@ -74,10 +67,11 @@ func buildTLS(s *TLSSpec, _ *slog.Logger) (*ListenerCreds, error) {
 		return nil, err
 	}
 
+	verify := verifyMeshIdentity(s.MeshCAFingerprint)
 	serverCfg := &tls.Config{
 		MinVersion:            tls.VersionTLS13,
 		GetCertificate:        get,
-		VerifyPeerCertificate: verifyURISANWellFormed(td),
+		VerifyPeerCertificate: verify,
 	}
 	if s.clientAuth() {
 		serverCfg.ClientAuth = tls.RequireAndVerifyClientCert
@@ -90,7 +84,7 @@ func buildTLS(s *TLSSpec, _ *slog.Logger) (*ListenerCreds, error) {
 		},
 		RootCAs:               pool,
 		ServerName:            s.ServerName,
-		VerifyPeerCertificate: verifyURISANWellFormed(td),
+		VerifyPeerCertificate: verify,
 	}
 
 	return &ListenerCreds{
@@ -176,40 +170,27 @@ func loadCAPool(path string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// verifyURISANWellFormed enforces the SPIFFE URI SAN shape on every
-// verified leaf (exactly one URI, scheme=spiffe, host=trustDomain,
-// non-empty path). Role checks happen in the auth interceptor.
-func verifyURISANWellFormed(trustDomain string) func(rawCerts [][]byte, chains [][]*x509.Certificate) error {
+// verifyMeshIdentity returns a VerifyPeerCertificate callback that
+// enforces the mesh-identity contract on every verified leaf: the CN
+// must match <kind>/<name>, and (when pin is non-empty) the chain
+// root's SPKI fingerprint must equal pin. Role enforcement happens in
+// the auth interceptor.
+func verifyMeshIdentity(pin string) func(rawCerts [][]byte, chains [][]*x509.Certificate) error {
 	return func(_ [][]byte, chains [][]*x509.Certificate) error {
 		if len(chains) == 0 || len(chains[0]) == 0 {
 			return errors.New("reflow/creds: no verified chain")
 		}
-		_, err := ExtractSPIFFEURI(chains[0][0], trustDomain)
-		return err
+		chain := chains[0]
+		if _, err := LeafPrincipal(chain[0]); err != nil {
+			return err
+		}
+		if pin == "" {
+			return nil
+		}
+		root := chain[len(chain)-1]
+		if got := SPKIFingerprint(root); got != pin {
+			return fmt.Errorf("reflow/creds: mesh CA fingerprint %s does not match pin %s", got, pin)
+		}
+		return nil
 	}
-}
-
-// ExtractSPIFFEURI returns the leaf's single SPIFFE URI SAN as a string,
-// after validating the same shape verifyURISANWellFormed enforces during
-// TLS handshakes (exactly one URI SAN, scheme=spiffe, host=trustDomain,
-// non-empty path). Used by the JWT signer to derive the iss claim from
-// the engine's own leaf without duplicating the validation logic.
-func ExtractSPIFFEURI(leaf *x509.Certificate, trustDomain string) (string, error) {
-	if leaf == nil {
-		return "", errors.New("reflow/creds: nil leaf certificate")
-	}
-	if len(leaf.URIs) != 1 {
-		return "", fmt.Errorf("reflow/creds: leaf must carry exactly one URI SAN; got %d", len(leaf.URIs))
-	}
-	u := leaf.URIs[0]
-	if u.Scheme != "spiffe" {
-		return "", fmt.Errorf("reflow/creds: leaf URI scheme %q; want spiffe", u.Scheme)
-	}
-	if u.Host != trustDomain {
-		return "", fmt.Errorf("reflow/creds: leaf trust domain %q; want %q", u.Host, trustDomain)
-	}
-	if len(u.Path) <= 1 {
-		return "", fmt.Errorf("reflow/creds: leaf URI %q has empty path", u.String())
-	}
-	return u.String(), nil
 }

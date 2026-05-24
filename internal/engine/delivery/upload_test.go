@@ -28,7 +28,7 @@ func uploadTestServer(t *testing.T, leader bool) (*Client, string, func()) {
 		leader:   map[uint64]uint64{7: 1},
 		dataDirs: map[uint64]string{7: dataDir},
 	}
-	mw, mwCloser, _, err := auth.HTTPMiddleware(auth.Config{TrustDomain: "reflow.local", PolicyFile: writeTestPolicy(t)}, nil)
+	mw, mwCloser, _, err := auth.HTTPMiddleware(auth.Config{PolicyFile: writeTestPolicy(t)}, nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}

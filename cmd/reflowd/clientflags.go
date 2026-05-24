@@ -10,17 +10,16 @@ import (
 	"github.com/twinfer/reflow/pkg/reflowclient"
 )
 
-// tlsFlags installs --client-cert / --client-key / --ca / --trust-domain
-// with env fallbacks. Shared by every `reflowd cluster` and `reflowd
-// config` subcommand that dials the admin Connect port; cluster RPCs go
+// tlsFlags installs --client-cert / --client-key / --ca with env
+// fallbacks. Shared by every `reflowd cluster` and `reflowd config`
+// subcommand that dials the admin Connect port; cluster RPCs go
 // through cli.Cluster.X (ClusterCtl), config RPCs through cli.Config.Y
 // (Config), both served on the same mTLS listener.
 type tlsFlags struct {
-	clientCert  string
-	clientKey   string
-	ca          string
-	addr        string
-	trustDomain string
+	clientCert string
+	clientKey  string
+	ca         string
+	addr       string
 }
 
 func registerTLSFlags(fs *flag.FlagSet) *tlsFlags {
@@ -29,15 +28,7 @@ func registerTLSFlags(fs *flag.FlagSet) *tlsFlags {
 	fs.StringVar(&f.clientKey, "client-key", os.Getenv("REFLOW_CLIENT_KEY"), "operator key PEM (env REFLOW_CLIENT_KEY)")
 	fs.StringVar(&f.ca, "ca", os.Getenv("REFLOW_CA_CERT"), "cluster CA PEM (env REFLOW_CA_CERT)")
 	fs.StringVar(&f.addr, "admin", os.Getenv("REFLOW_ADMIN_ADDR"), "admin host:port of any cluster node — mutating RPCs follow LeaderHint redirects (env REFLOW_ADMIN_ADDR)")
-	fs.StringVar(&f.trustDomain, "trust-domain", envOrDefault("REFLOW_TRUST_DOMAIN", "reflow.local"), "SPIFFE trust domain (env REFLOW_TRUST_DOMAIN)")
 	return f
-}
-
-func envOrDefault(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }
 
 func (t *tlsFlags) validate() error {
@@ -53,10 +44,9 @@ func (t *tlsFlags) dialOpts() reflowclient.DialOptions {
 		Creds: creds.Spec{
 			Driver: creds.DriverTLS,
 			TLS: &creds.TLSSpec{
-				CAFile:      t.ca,
-				CertFile:    t.clientCert,
-				KeyFile:     t.clientKey,
-				TrustDomain: t.trustDomain,
+				CAFile:   t.ca,
+				CertFile: t.clientCert,
+				KeyFile:  t.clientKey,
 			},
 		},
 	}

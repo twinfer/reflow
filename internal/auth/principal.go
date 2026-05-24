@@ -7,10 +7,10 @@ import (
 )
 
 // Principal is the server-trusted identity of a caller, materialized by
-// an authentication step (mTLS-leaf SPIFFE URI or verified Bearer JWT)
-// at the HTTP middleware layer. It is the value the policy handler
-// stamps into the outgoing X-Reflow-Principal header so the policy
-// engine matches on Raw.
+// an authentication step (mTLS-leaf CN or verified Bearer JWT) at the
+// HTTP middleware layer. It is the value the policy handler stamps into
+// the outgoing X-Reflow-Principal header so the policy engine matches
+// on Raw.
 type Principal struct {
 	// Kind names the principal class — "node", "operator", "user", or
 	// "" for the anonymous principal.
@@ -18,17 +18,18 @@ type Principal struct {
 	// Subject is the principal name within Kind (node id, operator
 	// name, OIDC sub claim).
 	Subject string
-	// URI is the canonical identifier when one exists: a spiffe://
-	// URL from a leaf cert, an oidc:// pseudo-URL from a bearer token.
-	// Empty for the anonymous principal.
-	URI string
 	// Raw is the policy-engine match key — always "kind/subject" with
 	// no whitespace; the policy file matches against this string
-	// verbatim.
+	// verbatim. For mTLS principals it is also the leaf cert's CN.
 	Raw string
+	// MeshCAFingerprint is the sha256:<hex> SPKI hash of the CA that
+	// signed the leaf, when this Principal was materialized from an
+	// mTLS handshake. Empty for JWT-derived and anonymous principals.
+	// Recorded for audit; not used for authorization.
+	MeshCAFingerprint string
 	// Claims is the forward-compat extension bag: OIDC claims copied
 	// in by the JWT verifier per OIDCIssuer.AllowedClaims, OPA results
-	// later. Empty for SPIFFE.
+	// later. Empty for mTLS.
 	Claims map[string]string
 }
 

@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -263,7 +262,7 @@ func TestAdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 		}
 	}()
 
-	mw, authCloser, _, err := auth.HTTPMiddleware(auth.Config{TrustDomain: testTrustDomain}, nil)
+	mw, authCloser, _, err := auth.HTTPMiddleware(auth.Config{}, nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}
@@ -286,7 +285,7 @@ func TestAdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	// 1) creds.Build refuses a TLS spec without a leaf keypair.
 	if _, err := creds.Build(creds.Spec{
 		Driver: creds.DriverTLS,
-		TLS:    &creds.TLSSpec{CAFile: caFile, TrustDomain: testTrustDomain},
+		TLS:    &creds.TLSSpec{CAFile: caFile},
 	}, nil); err == nil {
 		t.Fatal("expected creds.Build to reject empty operator cert; got nil err")
 	}
@@ -323,11 +322,10 @@ func TestAdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 	operatorCreds, err := creds.Build(creds.Spec{
 		Driver: creds.DriverTLS,
 		TLS: &creds.TLSSpec{
-			CAFile:      caFile,
-			CertFile:    opCert,
-			KeyFile:     opKey,
-			TrustDomain: testTrustDomain,
-			ServerName:  "127.0.0.1",
+			CAFile:     caFile,
+			CertFile:   opCert,
+			KeyFile:    opKey,
+			ServerName: "127.0.0.1",
 		},
 	}, nil)
 	if err != nil {
@@ -562,15 +560,10 @@ func writeAdminTLSFixtures(t *testing.T, dir string) (creds.TLSSpec, string, str
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodeURI, err := pki.BuildSPIFFEID(testTrustDomain, "node", "1")
-	if err != nil {
-		t.Fatal(err)
-	}
 	leaf, err := ca.Issue(pki.LeafOptions{
 		Kind:  pki.LeafNode,
-		Name:  "node-1",
+		Name:  "1",
 		Hosts: []string{"127.0.0.1", "localhost"},
-		URIs:  []*url.URL{nodeURI},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -579,14 +572,9 @@ func writeAdminTLSFixtures(t *testing.T, dir string) (creds.TLSSpec, string, str
 	if err != nil {
 		t.Fatal(err)
 	}
-	opURI, err := pki.BuildSPIFFEID(testTrustDomain, "operator", "test-op")
-	if err != nil {
-		t.Fatal(err)
-	}
 	opLeaf, err := ca.Issue(pki.LeafOptions{
 		Kind: pki.LeafOperator,
 		Name: "test-op",
-		URIs: []*url.URL{opURI},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -596,14 +584,11 @@ func writeAdminTLSFixtures(t *testing.T, dir string) (creds.TLSSpec, string, str
 		t.Fatal(err)
 	}
 	return creds.TLSSpec{
-		CAFile:      caCrt,
-		CertFile:    nodeCrt,
-		KeyFile:     nodeKey,
-		TrustDomain: testTrustDomain,
+		CAFile:   caCrt,
+		CertFile: nodeCrt,
+		KeyFile:  nodeKey,
 	}, opCrt, opKey, caCrt
 }
-
-const testTrustDomain = "reflow.local"
 
 var _ = engine.HostConfig{}
 var _ = fmt.Sprintf

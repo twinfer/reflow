@@ -13,13 +13,13 @@
 // PKI subcommands (no cluster contact needed):
 //
 //	reflowd pki init-ca        --out=DIR
-//	reflowd pki issue-cert     --kind=node --node-id=N --hostname=H --ca-dir=DIR --out=DIR [--trust-domain=reflow.local]
-//	reflowd pki issue-operator --name=NAME --ca-dir=DIR --out=DIR [--trust-domain=reflow.local]
+//	reflowd pki issue-cert     --kind=node --node-id=N --hostname=H --ca-dir=DIR --out=DIR
+//	reflowd pki issue-operator --name=NAME --ca-dir=DIR --out=DIR
 //
 // init-ca writes ca.crt + ca.key. Every leaf is signed by that single CA
-// and carries a SPIFFE URI SAN (spiffe://<trust-domain>/node/<id> or
-// spiffe://<trust-domain>/operator/<name>) that the reflow TLS layer
-// matches against the listener's expected role.
+// and carries the principal Raw form in its CN (e.g. "node/1",
+// "operator/alice") that the reflow TLS layer matches against the
+// listener's expected role.
 //
 // Cluster and config subcommands talk to the admin Connect listener via
 // mTLS. --admin may point at ANY cluster node — mutating commands follow

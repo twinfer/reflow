@@ -9,12 +9,11 @@
 //
 // Every reflowd process hosts a ClusterCtl Connect RPC server on a
 // dedicated port (typically :8082). The server is mTLS-protected; the
-// caller's SPIFFE URI SAN identifies its role
-// (`spiffe://<trust-domain>/operator/<name>` for operators). The
-// `reflowd cluster ...` CLI is the canonical client. SelfJoin has a
-// narrower carve-out: it accepts a `node/*` SPIFFE principal, but only
-// when the principal's NodeID equals req.node_id (defense in depth
-// behind the path-based authz rule).
+// caller's leaf CN encodes its principal Raw form (e.g.
+// `operator/<name>` for operators). The `reflowd cluster ...` CLI is
+// the canonical client. SelfJoin has a narrower carve-out: it accepts
+// a `node/*` principal, but only when the principal's NodeID equals
+// req.node_id (defense in depth behind the path-based authz rule).
 //
 // Authorization lives in internal/auth (the shared starter authz policy
 // consumed by both the gRPC delivery interceptor and the Connect HTTP
@@ -123,12 +122,12 @@ type ClusterCtlClient interface {
 	// voter after dragonboat reports catch-up.
 	AddNode(context.Context, *connect.Request[clusterctlv1.AddNodeRequest]) (*connect.Response[clusterctlv1.AddNodeResponse], error)
 	// SelfJoin is AddNode initiated by the joiner itself. Authorized when
-	// the caller's SPIFFE identity is spiffe://<td>/node/<req.node_id>;
-	// any other principal is rejected. Same payload and FSM effect as
-	// AddNode — the two methods exist as distinct authorization paths
-	// so the gRPC authz policy can gate them by role (operator/* vs
-	// node/<id>). Idempotent: the underlying RegisterNode +
-	// BeginRebalanceStep apply arms upsert/dedup.
+	// the caller's leaf-CN principal is "node/<req.node_id>"; any other
+	// principal is rejected. Same payload and FSM effect as AddNode —
+	// the two methods exist as distinct authorization paths so the
+	// authz policy can gate them by role (operator/* vs node/<id>).
+	// Idempotent: the underlying RegisterNode + BeginRebalanceStep apply
+	// arms upsert/dedup.
 	SelfJoin(context.Context, *connect.Request[clusterctlv1.AddNodeRequest]) (*connect.Response[clusterctlv1.AddNodeResponse], error)
 	// RemoveNode marks a peer as evicted in shard 0. The rebalancer
 	// observes and walks the dragonboat membership-change sequence
@@ -470,12 +469,12 @@ type ClusterCtlHandler interface {
 	// voter after dragonboat reports catch-up.
 	AddNode(context.Context, *connect.Request[clusterctlv1.AddNodeRequest]) (*connect.Response[clusterctlv1.AddNodeResponse], error)
 	// SelfJoin is AddNode initiated by the joiner itself. Authorized when
-	// the caller's SPIFFE identity is spiffe://<td>/node/<req.node_id>;
-	// any other principal is rejected. Same payload and FSM effect as
-	// AddNode — the two methods exist as distinct authorization paths
-	// so the gRPC authz policy can gate them by role (operator/* vs
-	// node/<id>). Idempotent: the underlying RegisterNode +
-	// BeginRebalanceStep apply arms upsert/dedup.
+	// the caller's leaf-CN principal is "node/<req.node_id>"; any other
+	// principal is rejected. Same payload and FSM effect as AddNode —
+	// the two methods exist as distinct authorization paths so the
+	// authz policy can gate them by role (operator/* vs node/<id>).
+	// Idempotent: the underlying RegisterNode + BeginRebalanceStep apply
+	// arms upsert/dedup.
 	SelfJoin(context.Context, *connect.Request[clusterctlv1.AddNodeRequest]) (*connect.Response[clusterctlv1.AddNodeResponse], error)
 	// RemoveNode marks a peer as evicted in shard 0. The rebalancer
 	// observes and walks the dragonboat membership-change sequence

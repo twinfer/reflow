@@ -237,7 +237,6 @@ func (e *issuerEntry) verify(ctx context.Context, raw string) (Principal, error)
 	return Principal{
 		Kind:    kind,
 		Subject: subject,
-		URI:     "oidc://" + tok.Issuer + "#" + subject,
 		Raw:     kind + "/" + subject,
 		Claims:  attached,
 	}, nil

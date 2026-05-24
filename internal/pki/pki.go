@@ -1,12 +1,12 @@
 // Package pki generates a tiny ECDSA-P256-based CA and leaf certificates
 // for reflow's single-CA mTLS surface. Both node and operator leaves are
-// signed by the same root; role lives in each leaf's SPIFFE URI SAN
-// (spiffe://<trust-domain>/node/<id>, spiffe://<trust-domain>/operator/<name>).
-// Used by the reflowd pki init-ca / issue-cert / issue-operator
-// subcommands and by integration tests.
+// signed by the same root; role lives in each leaf's Subject CommonName
+// as "<kind>/<name>" (e.g. "node/1", "operator/alice"). Used by the
+// reflowd pki init-ca / issue-cert / issue-operator subcommands and by
+// integration tests.
 //
-// Stdlib-only — no external CA, no ACME, no SPIFFE workload-API runtime.
-// Operators bringing their own PKI bypass this package entirely.
+// Stdlib-only — no external CA, no ACME. Operators bringing their own
+// PKI bypass this package entirely.
 package pki
 
 import (
@@ -20,10 +20,8 @@ import (
 	"fmt"
 	"math/big"
 	"net"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -43,15 +41,30 @@ type CA struct {
 }
 
 // LeafKind tags the certificate's intended use. Drives KeyUsage +
-// ExtKeyUsage selection.
+// ExtKeyUsage selection and the role prefix in the leaf CN.
 type LeafKind int
 
 const (
-	// LeafNode is a reflowd node certificate (server+client auth).
+	// LeafNode is a reflowd node certificate (server+client auth). CN
+	// prefix is "node/".
 	LeafNode LeafKind = iota
-	// LeafOperator is an operator certificate (client auth only).
+	// LeafOperator is an operator certificate (client auth only). CN
+	// prefix is "operator/".
 	LeafOperator
 )
+
+// rolePrefix returns the principal-Raw role prefix encoded in the leaf
+// CN for k. Empty + error for unknown kinds.
+func rolePrefix(k LeafKind) (string, error) {
+	switch k {
+	case LeafNode:
+		return "node", nil
+	case LeafOperator:
+		return "operator", nil
+	default:
+		return "", fmt.Errorf("pki: unknown leaf kind %d", k)
+	}
+}
 
 // DefaultCAValidity is the lifetime of CA certificates created by NewCA.
 const DefaultCAValidity = 10 * 365 * 24 * time.Hour
@@ -99,24 +112,29 @@ func NewCA(commonName string) (*CA, error) {
 	}, nil
 }
 
-// LeafOptions tunes Issue. Name becomes the leaf's CN. Hosts are the
-// DNS / IP SAN entries (parsed automatically). URIs are the URI SANs;
-// at least one SPIFFE-formatted URI is expected for production leaves
-// — the TLS verifier in pkg/reflow rejects certs without one. Validity
+// LeafOptions tunes Issue. Name is the principal-Raw name segment
+// (e.g. "1" for node 1, "alice" for operator alice); the role prefix
+// is derived from Kind and the resulting CN is "<role>/<name>". Hosts
+// are the DNS / IP SAN entries (parsed automatically). Validity
 // defaults to DefaultLeafValidity when zero.
 type LeafOptions struct {
 	Kind     LeafKind
 	Name     string
 	Hosts    []string
-	URIs     []*url.URL
 	Validity time.Duration
 }
 
 // Issue signs a fresh leaf certificate with ca. The returned Material is
-// PEM-encoded and ready to write to disk.
+// PEM-encoded and ready to write to disk. The leaf's CN encodes the
+// principal Raw form (<role>/<name>); the auth layer reads it back at
+// peer-verify time.
 func (ca *CA) Issue(opts LeafOptions) (Material, error) {
 	if opts.Name == "" {
 		return Material{}, errors.New("pki: leaf Name is required")
+	}
+	role, err := rolePrefix(opts.Kind)
+	if err != nil {
+		return Material{}, err
 	}
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -132,7 +150,7 @@ func (ca *CA) Issue(opts LeafOptions) (Material, error) {
 	}
 	template := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: opts.Name},
+		Subject:      pkix.Name{CommonName: role + "/" + opts.Name},
 		NotBefore:    time.Now().Add(-1 * time.Minute),
 		NotAfter:     time.Now().Add(validity),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
@@ -144,8 +162,6 @@ func (ca *CA) Issue(opts LeafOptions) (Material, error) {
 		}
 	case LeafOperator:
 		template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
-	default:
-		return Material{}, fmt.Errorf("pki: unknown leaf kind %d", opts.Kind)
 	}
 	for _, h := range opts.Hosts {
 		if ip := net.ParseIP(h); ip != nil {
@@ -153,9 +169,6 @@ func (ca *CA) Issue(opts LeafOptions) (Material, error) {
 			continue
 		}
 		template.DNSNames = append(template.DNSNames, h)
-	}
-	if len(opts.URIs) > 0 {
-		template.URIs = append(template.URIs, opts.URIs...)
 	}
 
 	der, err := x509.CreateCertificate(rand.Reader, template, ca.Cert, &priv.PublicKey, ca.Key)
@@ -260,25 +273,4 @@ func randomSerial() (*big.Int, error) {
 		return nil, fmt.Errorf("pki: serial: %w", err)
 	}
 	return n, nil
-}
-
-// BuildSPIFFEID builds a SPIFFE-formatted URL of the form
-// spiffe://<trustDomain>/<role>/<name>. trustDomain must be non-empty,
-// and role and name must not contain "/" — keeping the path strictly
-// two segments lets the verifier do an unambiguous prefix match.
-func BuildSPIFFEID(trustDomain, role, name string) (*url.URL, error) {
-	if trustDomain == "" {
-		return nil, errors.New("pki: SPIFFE trust domain is required")
-	}
-	if role == "" || strings.ContainsRune(role, '/') {
-		return nil, fmt.Errorf("pki: invalid SPIFFE role %q", role)
-	}
-	if name == "" || strings.ContainsRune(name, '/') {
-		return nil, fmt.Errorf("pki: invalid SPIFFE name %q", name)
-	}
-	return &url.URL{
-		Scheme: "spiffe",
-		Host:   trustDomain,
-		Path:   "/" + role + "/" + name,
-	}, nil
 }

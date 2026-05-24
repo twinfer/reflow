@@ -4,7 +4,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -38,16 +37,16 @@ func cmdInitCA(args []string) error {
 	return nil
 }
 
-// cmdIssueCert issues a node leaf cert signed by the cluster CA. The leaf
-// carries a SPIFFE URI SAN of the form spiffe://<trust-domain>/node/<id>.
+// cmdIssueCert issues a node leaf cert signed by the cluster CA. The
+// leaf's CN is "node/<id>" — the principal Raw form the auth layer
+// reads at peer-verify time.
 func cmdIssueCert(args []string) error {
 	fs := flag.NewFlagSet("issue-cert", flag.ContinueOnError)
 	kind := fs.String("kind", "node", "cert kind (only 'node' supported here)")
-	nodeID := fs.Uint64("node-id", 0, "node ID; used in the URI SAN and filename (required for kind=node)")
+	nodeID := fs.Uint64("node-id", 0, "node ID; used in the CN and filename (required for kind=node)")
 	hostnames := fs.String("hostname", "", "comma-separated DNS / IP SANs (required for kind=node)")
 	caDir := fs.String("ca-dir", "", "directory containing ca.crt + ca.key (required)")
 	out := fs.String("out", "", "output directory for the leaf cert (required)")
-	trustDomain := fs.String("trust-domain", "reflow.local", "SPIFFE trust domain")
 	validity := fs.Duration("validity", pki.DefaultLeafValidity, "leaf cert lifetime")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -62,40 +61,34 @@ func cmdIssueCert(args []string) error {
 	if err != nil {
 		return err
 	}
-	uri, err := pki.BuildSPIFFEID(*trustDomain, "node", strconv.FormatUint(*nodeID, 10))
-	if err != nil {
-		return err
-	}
+	name := strconv.FormatUint(*nodeID, 10)
+	filenamePrefix := "node-" + name
 	hosts := strings.Split(*hostnames, ",")
-	name := fmt.Sprintf("node-%d", *nodeID)
 	leaf, err := ca.Issue(pki.LeafOptions{
 		Kind:     pki.LeafNode,
 		Name:     name,
 		Hosts:    hosts,
-		URIs:     []*url.URL{uri},
 		Validity: *validity,
 	})
 	if err != nil {
 		return err
 	}
-	cp, kp, err := pki.WriteMaterial(*out, name, leaf)
+	cp, kp, err := pki.WriteMaterial(*out, filenamePrefix, leaf)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("wrote %s\n", cp)
-	fmt.Printf("wrote %s (valid for %s, uri=%s)\n", kp, *validity, uri.String())
+	fmt.Printf("wrote %s (valid for %s, CN=node/%s)\n", kp, *validity, name)
 	return nil
 }
 
 // cmdIssueOperator issues an operator client cert signed by the cluster
-// CA. The leaf carries a SPIFFE URI SAN of the form
-// spiffe://<trust-domain>/operator/<name>.
+// CA. The leaf's CN is "operator/<name>".
 func cmdIssueOperator(args []string) error {
 	fs := flag.NewFlagSet("issue-operator", flag.ContinueOnError)
-	name := fs.String("name", "", "operator name; becomes the cert CN and SPIFFE path segment (required)")
+	name := fs.String("name", "", "operator name; becomes the cert CN suffix (required)")
 	caDir := fs.String("ca-dir", "", "directory containing ca.crt + ca.key (required)")
 	out := fs.String("out", "", "output directory for the operator cert (required)")
-	trustDomain := fs.String("trust-domain", "reflow.local", "SPIFFE trust domain")
 	validity := fs.Duration("validity", 30*24*time.Hour, "operator cert lifetime")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -107,14 +100,9 @@ func cmdIssueOperator(args []string) error {
 	if err != nil {
 		return err
 	}
-	uri, err := pki.BuildSPIFFEID(*trustDomain, "operator", *name)
-	if err != nil {
-		return err
-	}
 	leaf, err := ca.Issue(pki.LeafOptions{
 		Kind:     pki.LeafOperator,
 		Name:     *name,
-		URIs:     []*url.URL{uri},
 		Validity: *validity,
 	})
 	if err != nil {
@@ -125,6 +113,6 @@ func cmdIssueOperator(args []string) error {
 		return err
 	}
 	fmt.Printf("wrote %s\n", cp)
-	fmt.Printf("wrote %s (valid for %s, uri=%s)\n", kp, *validity, uri.String())
+	fmt.Printf("wrote %s (valid for %s, CN=operator/%s)\n", kp, *validity, *name)
 	return nil
 }

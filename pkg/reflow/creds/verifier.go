@@ -23,58 +23,57 @@ var allowedAlgs = []string{
 }
 
 // Verifier validates engine→handler JWTs minted by Signer. Roots are
-// the operator-supplied trust bundle; allowedSPIFFE is the exact-match
-// allowlist of caller SPIFFE URIs. audience, when non-empty, additionally
+// the operator-supplied trust bundle; allowedPrincipals is the
+// exact-match allowlist of caller principal Raw strings (e.g.
+// "node/1", "operator/alice"). audience, when non-empty, additionally
 // requires the token's aud claim to match.
 type Verifier struct {
-	pool          *x509.CertPool
-	allowedSPIFFE map[string]struct{}
-	trustDomain   string
-	audience      string
+	pool              *x509.CertPool
+	allowedPrincipals map[string]struct{}
+	audience          string
 }
 
 // Verified is the success payload from Verifier.Verify: the caller's
-// SPIFFE URI (extracted from the leaf cert and bound to the iss claim)
-// and the audience claim from the token.
+// principal Raw form (extracted from the leaf cert CN and bound to
+// the iss claim), the audience claim from the token, and the SPKI
+// fingerprint of the chain's root CA for audit.
 type Verified struct {
-	CallerURI string
-	Audience  string
+	CallerPrincipal   string
+	Audience          string
+	MeshCAFingerprint string
 }
 
 // NewVerifier builds a Verifier from a PEM bundle of trusted roots and
-// the SPIFFE URI allowlist. Empty trustDomain falls back to
-// DefaultTrustDomain. audience may be empty to skip the aud check.
-func NewVerifier(rootsPEM []byte, allowedSPIFFE []string, trustDomain, audience string) (*Verifier, error) {
+// the principal allowlist (Raw strings, "kind/name"). audience may be
+// empty to skip the aud check.
+func NewVerifier(rootsPEM []byte, allowedPrincipals []string, audience string) (*Verifier, error) {
 	if len(rootsPEM) == 0 {
 		return nil, errors.New("reflow/creds: verifier requires non-empty rootsPEM")
 	}
-	if len(allowedSPIFFE) == 0 {
-		return nil, errors.New("reflow/creds: verifier requires at least one allowed SPIFFE URI")
+	if len(allowedPrincipals) == 0 {
+		return nil, errors.New("reflow/creds: verifier requires at least one allowed principal")
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(rootsPEM) {
 		return nil, errors.New("reflow/creds: verifier: rootsPEM contains no parseable PEM blocks")
 	}
-	set := make(map[string]struct{}, len(allowedSPIFFE))
-	for _, uri := range allowedSPIFFE {
-		set[uri] = struct{}{}
-	}
-	if trustDomain == "" {
-		trustDomain = DefaultTrustDomain
+	set := make(map[string]struct{}, len(allowedPrincipals))
+	for _, p := range allowedPrincipals {
+		set[p] = struct{}{}
 	}
 	return &Verifier{
-		pool:          pool,
-		allowedSPIFFE: set,
-		trustDomain:   trustDomain,
-		audience:      audience,
+		pool:              pool,
+		allowedPrincipals: set,
+		audience:          audience,
 	}, nil
 }
 
 // Verify parses bearer as a JWT, decodes its x5c header, verifies the
-// chain against the configured roots, checks the leaf's SPIFFE URI
-// against the allowlist, binds iss to the leaf URI, verifies the
-// signature with the leaf's public key, and lets jwt validate exp/iat.
-// On success returns the caller's SPIFFE URI and the aud claim.
+// chain against the configured roots, reads the leaf CN as the
+// caller's principal Raw form, checks it against the allowlist, binds
+// iss to the leaf principal, and lets jwt validate exp/iat. On
+// success returns the caller's principal and the aud claim plus the
+// chain root's SPKI fingerprint for audit.
 func (v *Verifier) Verify(bearer string) (*Verified, error) {
 	if v == nil {
 		return nil, errors.New("reflow/creds: nil Verifier")
@@ -83,7 +82,7 @@ func (v *Verifier) Verify(bearer string) (*Verified, error) {
 		return nil, errors.New("reflow/creds: empty bearer token")
 	}
 	claims := &jwt.RegisteredClaims{}
-	var leafURI string
+	var callerPrincipal, caFingerprint string
 	parsed, err := jwt.ParseWithClaims(bearer, claims, func(tok *jwt.Token) (any, error) {
 		raw, ok := tok.Header["x5c"].([]any)
 		if !ok || len(raw) == 0 {
@@ -110,24 +109,29 @@ func (v *Verifier) Verify(bearer string) (*Verified, error) {
 		for _, c := range chain[1:] {
 			intermediates.AddCert(c)
 		}
-		if _, verr := leaf.Verify(x509.VerifyOptions{
+		verifiedChains, verr := leaf.Verify(x509.VerifyOptions{
 			Roots:         v.pool,
 			Intermediates: intermediates,
 			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
-		}); verr != nil {
+		})
+		if verr != nil {
 			return nil, fmt.Errorf("chain verify: %w", verr)
 		}
-		uri, uerr := ExtractSPIFFEURI(leaf, v.trustDomain)
-		if uerr != nil {
-			return nil, fmt.Errorf("leaf SPIFFE URI: %w", uerr)
+		principal, perr := LeafPrincipal(leaf)
+		if perr != nil {
+			return nil, fmt.Errorf("leaf identity: %w", perr)
 		}
-		if _, ok := v.allowedSPIFFE[uri]; !ok {
-			return nil, fmt.Errorf("caller %q not in allowlist", uri)
+		if _, ok := v.allowedPrincipals[principal]; !ok {
+			return nil, fmt.Errorf("caller %q not in allowlist", principal)
 		}
-		if iss := claims.Issuer; iss != uri {
-			return nil, fmt.Errorf("iss %q != leaf URI %q", iss, uri)
+		if iss := claims.Issuer; iss != principal {
+			return nil, fmt.Errorf("iss %q != leaf principal %q", iss, principal)
 		}
-		leafURI = uri
+		callerPrincipal = principal
+		if len(verifiedChains) > 0 {
+			c := verifiedChains[0]
+			caFingerprint = SPKIFingerprint(c[len(c)-1])
+		}
 		return leaf.PublicKey, nil
 	},
 		jwt.WithValidMethods(allowedAlgs),
@@ -147,7 +151,11 @@ func (v *Verifier) Verify(bearer string) (*Verified, error) {
 	if len(claims.Audience) > 0 {
 		aud = claims.Audience[0]
 	}
-	return &Verified{CallerURI: leafURI, Audience: aud}, nil
+	return &Verified{
+		CallerPrincipal:   callerPrincipal,
+		Audience:          aud,
+		MeshCAFingerprint: caFingerprint,
+	}, nil
 }
 
 func audienceContains(aud jwt.ClaimStrings, want string) bool {

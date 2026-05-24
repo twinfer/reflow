@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflow/internal/authz"
 	"github.com/twinfer/reflow/internal/bootstrap"
 	"github.com/twinfer/reflow/internal/certmgr"
 	"github.com/twinfer/reflow/internal/clusterctl"
@@ -29,7 +30,6 @@ import (
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/internal/ingress/eventsource"
-	httpingress "github.com/twinfer/reflow/internal/ingress/http"
 	"github.com/twinfer/reflow/internal/ingress/quota"
 	internalwebhook "github.com/twinfer/reflow/internal/ingress/webhook"
 	"github.com/twinfer/reflow/internal/observability"
@@ -274,6 +274,15 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	httpAuthCloser = mwCloser
 	tenantOIDC := auth.NewTenantOIDCReconciler(jwtVerifier, buildAuthConfig(cfg.Auth).OIDC, logger)
 
+	// Cedar authorization engine, shared by every Connect service via the
+	// authz interceptor. Seeded with the in-binary foundational policies
+	// until PR3 moves policy text onto shard 0.
+	authzEngine, azErr := authz.NewEngine([]byte(authz.FoundationalClusterPolicies))
+	if azErr != nil {
+		return bail(fmt.Errorf("reflow: authz engine: %w", azErr))
+	}
+	authzInterceptor := authz.NewInterceptor(authzEngine, logger, len(cfg.Auth.OIDC) > 0)
+
 	if crossShard {
 		dc, derr := creds.Build(cfg.Delivery.Creds, logger)
 		if derr != nil {
@@ -300,7 +309,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		deliveryClient *delivery.Client
 	)
 	if crossShard {
-		ds, dc, derr := startDeliveryListener(ctx, eh, cfg, deliveryCreds, httpAuthMW, logger)
+		ds, dc, derr := startDeliveryListener(ctx, eh, cfg, deliveryCreds, httpAuthMW, authzInterceptor, logger)
 		if derr != nil {
 			return bail(derr)
 		}
@@ -321,6 +330,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		adminCreds:             adminCreds,
 		handlerSigner:          handlerSigner,
 		httpAuthMW:             httpAuthMW,
+		authzInterceptor:       authzInterceptor,
 		authCloser:             httpAuthCloser,
 		metricsCloser:          metricsCloser,
 		metricsRegisterer:      metricsRegisterer,
@@ -361,6 +371,7 @@ func startDeliveryListener(
 	cfg Config,
 	lc *creds.ListenerCreds,
 	mw func(http.Handler) http.Handler,
+	authzIc connect.Interceptor,
 	logger *slog.Logger,
 ) (*connectserver.Server, *delivery.Client, error) {
 	dc, err := delivery.NewClient(delivery.ClientConfig{
@@ -373,7 +384,7 @@ func startDeliveryListener(
 	}
 
 	srv := delivery.NewServer(eh, logger)
-	path, handler := srv.NewHandler()
+	path, handler := srv.NewHandler(connect.WithInterceptors(authzIc))
 	cs, cerr := connectserver.New(ctx, connectserver.Config{
 		Addr: cfg.Node.DeliveryAddr,
 		TLS:  lc.ServerTLSConfig,
@@ -409,6 +420,7 @@ func startIngressListener(
 	cfg Config,
 	multiNode bool,
 	mw func(http.Handler) http.Handler,
+	authzIc connect.Interceptor,
 	secrets *secretstore.Resolver,
 	enforcer quota.Enforcer,
 	metrics *observability.Metrics,
@@ -432,24 +444,15 @@ func startIngressListener(
 	// reconciler against it.
 	var webhookMgr *internalwebhook.Manager
 	icfg := ingress.Config{
-		Addr:       cfg.Ingress.Addr,
-		TLS:        lc.ServerTLSConfig,
-		Log:        logger,
-		Middleware: mw,
-		Enforcer:   enforcer,
+		Addr:             cfg.Ingress.Addr,
+		TLS:              lc.ServerTLSConfig,
+		Log:              logger,
+		Middleware:       mw,
+		AuthzInterceptor: authzIc,
+		Enforcer:         enforcer,
 	}
 	icfg.ExtraRoutes = func(srv *ingress.Server) []connectserver.Route {
 		var routes []connectserver.Route
-		if !cfg.Ingress.HTTP.Disabled {
-			httpCfg := httpingress.Config{
-				MaxBodyBytes: cfg.Ingress.HTTP.MaxBodyBytes,
-				MaxPollMs:    cfg.Ingress.HTTP.MaxPollMs,
-			}
-			routes = append(routes, connectserver.Route{
-				Path:    "/v1/",
-				Handler: mw(httpingress.NewRouter(srv, httpCfg, metrics)),
-			})
-		}
 		// Always mount the /webhooks/ catch-all even when no sources
 		// are configured — an empty snapshot 404s every request, so
 		// the route is harmless and gives operators a stable mount
@@ -495,6 +498,7 @@ type startupDeps struct {
 	adminCreds             *creds.ListenerCreds
 	handlerSigner          *creds.Signer
 	httpAuthMW             func(http.Handler) http.Handler
+	authzInterceptor       connect.Interceptor
 	authCloser             func() error
 	metricsCloser          func() error
 	metricsRegisterer      prometheus.Registerer
@@ -528,6 +532,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	adminCreds := d.adminCreds
 	handlerSigner := d.handlerSigner
 	httpAuthMW := d.httpAuthMW
+	authzInterceptor := d.authzInterceptor
 	authCloser := d.authCloser
 	metricsCloser := d.metricsCloser
 	metricsRegisterer := d.metricsRegisterer
@@ -682,9 +687,9 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		// engine proposer's ctx key so every Raft proposal originating
 		// from an admin/config Connect call stamps Envelope.Header.principal
 		// — the durable audit trail's "who".
-		ppi := connect.WithInterceptors(proposalPrincipalInterceptor{})
-		clusterPath, clusterH := clusterSrv.NewHandler(ppi)
-		configPath, configH := configSrv.NewHandler(ppi)
+		opts := connect.WithInterceptors(d.authzInterceptor, proposalPrincipalInterceptor{})
+		clusterPath, clusterH := clusterSrv.NewHandler(opts)
+		configPath, configH := configSrv.NewHandler(opts)
 		cs, lErr := connectserver.New(ctx, connectserver.Config{
 			Addr: cfg.Admin.Addr,
 			TLS:  adminCreds.ServerTLSConfig,
@@ -858,7 +863,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	}()
 
 	multiNode := len(cfg.Cluster.Peers) > 1
-	ingressRT, ingressCreds, webhookMgr, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, secrets, quotaMgr, metrics, metricsRegisterer, logger)
+	ingressRT, ingressCreds, webhookMgr, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, authzInterceptor, secrets, quotaMgr, metrics, metricsRegisterer, logger)
 	if err != nil {
 		if snapshotCxl != nil {
 			snapshotCxl()

@@ -123,39 +123,9 @@ func newJWTOnlyMiddleware(t *testing.T, cfgs []OIDCIssuerConfig) func(http.Handl
 	return mw
 }
 
-// jwtFriendlyPolicy writes a permissive policy that allows the
-// principal kind "user/*" through /reflow.clusterctl.v1.ClusterCtl/ListNodes
-// so the JWT path can return 200.
-func jwtFriendlyPolicy(t *testing.T) string {
-	t.Helper()
-	body := `{
-	  "allow_rules": [
-	    {
-	      "name": "ingress",
-	      "request": {"paths": ["/reflow.ingress.v1.Ingress/*"]}
-	    },
-	    {
-	      "name": "clusterctl-user",
-	      "request": {
-	        "paths": ["/reflow.clusterctl.v1.ClusterCtl/*"],
-	        "headers": [{"key": "x-reflow-principal", "values": ["user/*", "operator/*"]}]
-	      }
-	    }
-	  ]
-	}`
-	path := filepath.Join(t.TempDir(), "policy.json")
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
 func newJWTMiddlewareWithPolicy(t *testing.T, cfgs []OIDCIssuerConfig) func(http.Handler) http.Handler {
 	t.Helper()
-	mw, closer, _, err := HTTPMiddleware(Config{
-		PolicyFile: jwtFriendlyPolicy(t),
-		OIDC:       cfgs,
-	}, nil)
+	mw, closer, _, err := HTTPMiddleware(Config{OIDC: cfgs}, nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}
@@ -619,27 +589,6 @@ func TestJWTAuthFunc_WWWAuthenticateOnInvalidToken(t *testing.T) {
 	want := `Bearer error="invalid_token"`
 	if got := w.Result().Header.Get("WWW-Authenticate"); got != want {
 		t.Errorf("WWW-Authenticate=%q; want %q", got, want)
-	}
-}
-
-// TestJWTAuthFunc_WWWAuthenticateOnAnonymousDenial: anonymous request
-// to a guarded path when OIDC is configured must advertise Bearer so
-// non-mTLS clients know which scheme to try.
-func TestJWTAuthFunc_WWWAuthenticateOnAnonymousDenial(t *testing.T) {
-	kit := newJWTKit(t)
-	mw := newJWTOnlyMiddleware(t, []OIDCIssuerConfig{{
-		IssuerURL: kit.issuer,
-		Audiences: []string{"reflow"},
-	}})
-	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
-	// No Authorization header — anonymous.
-	w := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)
-	if w.Result().StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status=%d; want 401", w.Result().StatusCode)
-	}
-	if got := w.Result().Header.Get("WWW-Authenticate"); got != "Bearer" {
-		t.Errorf("WWW-Authenticate=%q; want Bearer", got)
 	}
 }
 

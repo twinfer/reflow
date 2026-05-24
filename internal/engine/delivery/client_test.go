@@ -5,14 +5,13 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflow/internal/authz"
 	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
 	"github.com/twinfer/reflow/proto/deliveryv1/deliveryv1connect"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -60,40 +59,21 @@ func (s *stubHandler) Deliver(ctx context.Context, stream *connect.BidiStream[de
 	}
 }
 
-// writeTestPolicy writes a permissive policy that allows anonymous
-// access to /reflow.delivery.v1.Delivery/*. Wiring tests still go
-// through auth.HTTPMiddleware so the middleware/policy/extractor stack
-// runs end-to-end; TLS + node-cert fixtures are exercised separately by
-// the integration tests in internal/engine.
-func writeTestPolicy(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	p := filepath.Join(dir, "policy.json")
-	body := `{
-  "allow_rules": [
-    {
-      "name": "test_delivery_open",
-      "request": {"paths": ["/reflow.delivery.v1.Delivery/*"]}
-    }
-  ]
-}`
-	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
-		t.Fatalf("write policy: %v", err)
-	}
-	return p
-}
-
 // startTestDelivery stands up the Connect Delivery handler over h2c on a
-// random local port. The handler is wrapped by auth.HTTPMiddleware using
-// the temp test policy so the auth flow exercises in tests.
+// random local port, wrapped by auth.HTTPMiddleware so the authn + principal
+// stamping flow runs in tests. No authz interceptor is wired, so the
+// anonymous h2c caller is not gated — these tests cover delivery mechanics.
 func startTestDelivery(t *testing.T, h *stubHandler) (*Client, func()) {
 	t.Helper()
 
-	mw, mwCloser, _, err := auth.HTTPMiddleware(auth.Config{PolicyFile: writeTestPolicy(t)}, nil)
+	mw, mwCloser, _, err := auth.HTTPMiddleware(auth.Config{}, nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}
 
+	// Delivery mechanics test — no authz interceptor, so the anonymous h2c
+	// caller is not gated (authz enforcement is covered in internal/authz
+	// and by TestDeliveryClient_PolicyDenies).
 	path, handler := deliveryv1connect.NewDeliveryHandler(h)
 	mux := http.NewServeMux()
 	mux.Handle(path, mw(handler))
@@ -215,24 +195,7 @@ func TestDeliveryClient_NoLeaderHint(t *testing.T) {
 // the client surfaces it as a non-Ack error. Exercises the auth path
 // from the inside without TLS fixtures.
 func TestDeliveryClient_PolicyDenies(t *testing.T) {
-	dir := t.TempDir()
-	policy := filepath.Join(dir, "policy.json")
-	body := `{
-  "allow_rules": [
-    {
-      "name": "deny_anonymous_delivery",
-      "request": {
-        "paths": ["/reflow.delivery.v1.Delivery/*"],
-        "headers": [{"key": "x-reflow-principal", "values": ["node/*"]}]
-      }
-    }
-  ]
-}`
-	if err := os.WriteFile(policy, []byte(body), 0o600); err != nil {
-		t.Fatalf("write policy: %v", err)
-	}
-
-	mw, mwCloser, _, err := auth.HTTPMiddleware(auth.Config{PolicyFile: policy}, nil)
+	mw, mwCloser, _, err := auth.HTTPMiddleware(auth.Config{}, nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}
@@ -242,11 +205,20 @@ func TestDeliveryClient_PolicyDenies(t *testing.T) {
 		}
 	}()
 
+	// The foundational Cedar policy gates Delivery to node/* principals.
+	// The h2c client dials without a peer cert (anonymous), so the authz
+	// interceptor must reject — anonymous denials map to CodeUnauthenticated.
+	engine, err := authz.NewEngine([]byte(authz.FoundationalClusterPolicies))
+	if err != nil {
+		t.Fatalf("authz.NewEngine: %v", err)
+	}
+	ic := authz.NewInterceptor(engine, nil, false)
+
 	h := &stubHandler{respond: func(req *deliveryv1.DeliverRequest) *deliveryv1.DeliverResponse {
 		t.Fatalf("handler reached despite anonymous caller; received %+v", req)
 		return nil
 	}}
-	path, handler := deliveryv1connect.NewDeliveryHandler(h)
+	path, handler := deliveryv1connect.NewDeliveryHandler(h, connect.WithInterceptors(ic))
 	mux := http.NewServeMux()
 	mux.Handle(path, mw(handler))
 

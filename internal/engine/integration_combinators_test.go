@@ -433,8 +433,9 @@ func TestCombinator_All_SurvivesRestart(t *testing.T) {
 	hBefore := openSingleNodeOnDir(t, dataDir, raftAddr)
 	registerDeploymentURL(t, hBefore, handlerURL)
 	rtBefore, err := ingress.Start(context.Background(), hBefore, ingress.Config{
-		Addr:       "127.0.0.1:0",
-		Middleware: testIngressMiddleware(t),
+		Addr:             "127.0.0.1:0",
+		Middleware:       testIngressMiddleware(t),
+		AuthzInterceptor: testAuthzInterceptor(t),
 	})
 	if err != nil {
 		t.Fatalf("ingress: %v", err)
@@ -476,8 +477,9 @@ func TestCombinator_All_SurvivesRestart(t *testing.T) {
 	emitted.Store(false)
 	hAfter := openSingleNodeOnDir(t, dataDir, raftAddr)
 	rtAfter, err := ingress.Start(context.Background(), hAfter, ingress.Config{
-		Addr:       "127.0.0.1:0",
-		Middleware: testIngressMiddleware(t),
+		Addr:             "127.0.0.1:0",
+		Middleware:       testIngressMiddleware(t),
+		AuthzInterceptor: testAuthzInterceptor(t),
 	})
 	if err != nil {
 		t.Fatalf("ingress after restart: %v", err)

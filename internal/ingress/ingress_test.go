@@ -13,6 +13,7 @@ import (
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflow/internal/authz"
 	"github.com/twinfer/reflow/internal/config"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/ingress"
@@ -22,11 +23,10 @@ import (
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
 
-// testIngressMiddleware returns the embedded starter policy via the
-// production auth middleware. The starter policy's ingress_open allow
-// rule lets anonymous traffic through /reflow.ingress.v1.Ingress/*, so
-// h2c tests reach the handler. Exercising the middleware end-to-end
-// guarantees the wiring isn't silently skipped.
+// testIngressMiddleware returns the production authn middleware (no OIDC),
+// which stamps the principal. Authorization is the separate interceptor
+// below; exercising the middleware end-to-end guarantees the wiring isn't
+// silently skipped.
 func testIngressMiddleware(t *testing.T) func(http.Handler) http.Handler {
 	t.Helper()
 	mw, _, _, err := auth.HTTPMiddleware(auth.Config{}, nil)
@@ -34,6 +34,18 @@ func testIngressMiddleware(t *testing.T) func(http.Handler) http.Handler {
 		t.Fatalf("auth.HTTPMiddleware: %v", err)
 	}
 	return mw
+}
+
+// testAuthzInterceptor returns a Cedar authz interceptor over the in-binary
+// foundational policies — ingress is open to all principals, so anonymous h2c
+// tests reach the handler, authorized the same way production wires it.
+func testAuthzInterceptor(t *testing.T) *authz.Interceptor {
+	t.Helper()
+	ic, err := authz.NewFoundationalInterceptor(nil, false)
+	if err != nil {
+		t.Fatalf("authz.NewFoundationalInterceptor: %v", err)
+	}
+	return ic
 }
 
 // makeID builds an InvocationId from a partition key and a 16-byte uuid.
@@ -114,8 +126,9 @@ func bringUpHostWithIngress(t *testing.T, reg *handler.Registry) (*engine.Host, 
 	}
 
 	rt, err := ingress.Start(context.Background(), h, ingress.Config{
-		Addr:       "127.0.0.1:0",
-		Middleware: testIngressMiddleware(t),
+		Addr:             "127.0.0.1:0",
+		Middleware:       testIngressMiddleware(t),
+		AuthzInterceptor: testAuthzInterceptor(t),
 	})
 	if err != nil {
 		t.Fatalf("ingress.Start: %v", err)

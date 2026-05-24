@@ -36,6 +36,11 @@ type Config struct {
 	// not by skipping the middleware. Tests that intentionally bypass
 	// auth must pass an explicit identity passthrough.
 	Middleware func(http.Handler) http.Handler
+	// AuthzInterceptor enforces Cedar authorization on every ingress RPC.
+	// It runs after the auth Middleware has attached the verified principal
+	// to the request context. REQUIRED — Start returns an error when nil, so
+	// the ingress data plane is never served without authorization.
+	AuthzInterceptor connect.Interceptor
 	// ExtraRoutes builds additional connectserver.Routes mounted on the
 	// same listener as the Connect ingress. Called once after Start
 	// constructs the in-process Server, so the caller can wire handlers
@@ -70,14 +75,17 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 		return nil, errors.New("ingress: Addr is required")
 	}
 	if cfg.Middleware == nil {
-		return nil, errors.New("ingress: Middleware is required (policy enforcement happens here; tests should pass an explicit identity passthrough)")
+		return nil, errors.New("ingress: Middleware is required (authn happens here; tests should pass an explicit identity passthrough)")
+	}
+	if cfg.AuthzInterceptor == nil {
+		return nil, errors.New("ingress: AuthzInterceptor is required (Cedar authorization happens here; tests should pass an allow-all interceptor)")
 	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
 	srv := NewServer(host, cfg.Log, cfg.Enforcer)
 	path, handler := ingressv1connect.NewIngressHandler(srv,
-		connect.WithInterceptors(withDefaultDeadline(defaultLookupTimeout)),
+		connect.WithInterceptors(cfg.AuthzInterceptor, withDefaultDeadline(defaultLookupTimeout)),
 	)
 	routes := []connectserver.Route{{Path: path, Handler: cfg.Middleware(handler)}}
 	if cfg.ExtraRoutes != nil {

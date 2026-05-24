@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflow/internal/authz"
 	"github.com/twinfer/reflow/internal/config"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/ingress"
@@ -97,9 +98,14 @@ func newGochannelTest(t *testing.T, svc, hname string, hf handler.Handler) *goch
 	if err != nil {
 		t.Fatalf("auth middleware: %v", err)
 	}
+	authzIc, err := authz.NewFoundationalInterceptor(nil, false)
+	if err != nil {
+		t.Fatalf("authz interceptor: %v", err)
+	}
 	rt, err := ingress.Start(context.Background(), h, ingress.Config{
-		Addr:       "127.0.0.1:0",
-		Middleware: mw,
+		Addr:             "127.0.0.1:0",
+		Middleware:       mw,
+		AuthzInterceptor: authzIc,
 	})
 	if err != nil {
 		t.Fatalf("ingress.Start: %v", err)

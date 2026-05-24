@@ -1,6 +1,7 @@
-// Package auth is reflow's authentication + authorization HTTP
-// middleware layer for the Connect-based ingress, admin, and delivery
-// listeners. The model is:
+// Package auth is reflow's authentication HTTP middleware layer for the
+// Connect-based ingress, admin, and delivery listeners. Authorization is a
+// separate concern, enforced downstream by the Cedar Connect interceptor in
+// internal/authz. The model is:
 //
 //   - An authn.AuthFunc turns each inbound *http.Request into a
 //     Principal. Today there are two authenticators: mesh-leaf-CN
@@ -8,18 +9,12 @@
 //     against one or more configured OIDC issuers (jwt_authfunc.go).
 //     mTLS wins when both are presented.
 //
-//   - The policy handler stamps Principal.Raw into the server-
-//     controlled X-Reflow-Principal header (any inbound copy is
-//     stripped first, so a client cannot forge identity) and then
-//     matches request URL.Path against a JSON allow-list policy.
-//     Denial emits a connect-coded error (CodeUnauthenticated for
-//     anonymous, CodePermissionDenied for known-but-rejected) so
-//     clients see the right error across Connect / gRPC / gRPC-Web /
-//     HTTP-JSON.
-//
-//   - The embedded starter policy lives in starter_policy.json;
-//     operators override via Config.PolicyFile, which is polled for
-//     mtime changes every FileWatcherReload (30s).
+//   - The stamp handler (policy_handler.go) stamps Principal.Raw into the
+//     server-controlled X-Reflow-Principal header (any inbound copy is
+//     stripped first, so a client cannot forge identity) and attaches the
+//     Principal to the request context. It never denies — authentication
+//     failures are emitted by the authn middleware, and authorization is
+//     decided by the Cedar interceptor, which sees the decoded request body.
 //
 // Adding a new authentication source (e.g. PASETO, AWS SigV4) means
 // writing one more authn.AuthFunc and composing it ahead of the

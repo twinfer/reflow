@@ -6,8 +6,7 @@ import "time"
 // pkg/reflow.Run translates the user-facing struct into this one at
 // the boundary so internal/auth never imports pkg/reflow.
 type Config struct {
-	PolicyFile string
-	OIDC       []OIDCIssuerConfig
+	OIDC []OIDCIssuerConfig
 }
 
 // OIDCIssuerConfig mirrors pkg/reflow.OIDCIssuer. See that struct's

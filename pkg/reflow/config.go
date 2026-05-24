@@ -245,16 +245,12 @@ type BootstrapConfig struct {
 // dispatch: mesh-leaf mTLS (principal from leaf CN), then OIDC Bearer
 // JWT (from OIDC). mTLS wins when both are presented on the same
 // request. A request with neither produces an anonymous principal;
-// the path-glob policy at PolicyFile decides whether anonymous is
-// acceptable.
+// the Cedar authorization interceptor (internal/authz) decides whether
+// anonymous is acceptable for each procedure.
 //
 // OIDC config is not hot-reloaded; issuer or audience changes require
 // a node restart (same as TLS material).
 type AuthConfig struct {
-	// PolicyFile, when non-empty, points at a JSON authz policy that
-	// is hot-reloaded every 30s by a polling watcher. Empty installs
-	// the embedded starter policy (see internal/auth).
-	PolicyFile string `koanf:"policy_file"`
 	// OIDC is the list of Bearer-JWT issuers reflow accepts. Empty
 	// disables bearer authentication (SPIFFE mTLS still works). Per-
 	// request issuer routing is by the JWT `iss` claim, so issuer URLs
@@ -437,9 +433,7 @@ const (
 // auth.Config consumed by auth.HTTPMiddleware. Lives at the
 // pkg → internal boundary so internal/auth never imports pkg/reflow.
 func buildAuthConfig(c AuthConfig) auth.Config {
-	out := auth.Config{
-		PolicyFile: c.PolicyFile,
-	}
+	out := auth.Config{}
 	if len(c.OIDC) == 0 {
 		return out
 	}
@@ -547,36 +541,6 @@ type IngressConfig struct {
 	// insecure; multi-node deployments emit a startup warning so the
 	// operator knows the client surface is unauthenticated.
 	Creds creds.Spec `koanf:"creds"`
-	// HTTP toggles the REST-style facade mounted on the same listener
-	// under /v1/*. Same Connect-typed ingress.Server, same auth
-	// middleware, no second port.
-	HTTP IngressHTTPConfig `koanf:"http"`
-}
-
-// IngressHTTPConfig configures the REST surface mounted at /v1/* on the
-// ingress listener. The REST handlers delegate to the same in-process
-// ingress.Server as Connect, so routing / idempotency / error semantics
-// are identical.
-type IngressHTTPConfig struct {
-	// Disabled skips mounting the /v1/* router. The Connect ingress at
-	// /reflow.ingress.v1.Ingress/* is unaffected.
-	Disabled bool `koanf:"disabled"`
-	// MaxBodyBytes caps inbound request bodies on /v1/*. Zero falls back
-	// to a 1 MiB default. Requests larger than the cap are rejected with
-	// 413 Payload Too Large before any handler logic runs.
-	MaxBodyBytes int64 `koanf:"max_body_bytes"`
-	// MaxPollMs caps long-poll endpoints (/v1/attach, /v1/call) at the
-	// REST surface. Zero falls back to 30_000 (30s), chosen below common
-	// LB idle timeouts (ALB / ingress-nginx default 60s) so REST clients
-	// don't see surprise 502s. The Connect surface continues to cap at
-	// 60s independently.
-	MaxPollMs int `koanf:"max_poll_ms"`
-	// TrustedProxies is the CIDR allowlist of immediate-peer addresses
-	// permitted to set X-Forwarded-Host / RFC 7239 Forwarded headers.
-	// Empty (secure default) means forwarded-host headers are ignored.
-	// Reserved for future hostmux wiring; not consumed by the v1 runtime
-	// path.
-	TrustedProxies []string `koanf:"trusted_proxies"`
 }
 
 // MetricsConfig configures the Prometheus collector and the optional

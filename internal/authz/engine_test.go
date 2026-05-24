@@ -9,6 +9,16 @@ import (
 	"github.com/twinfer/reflow/internal/auth"
 )
 
+// Procedure-path action ids (full Connect paths, matching schema.cedar).
+const (
+	actUpsertEventSource = "/reflow.config.v1.Config/UpsertEventSource"
+	actAddNode           = "/reflow.clusterctl.v1.ClusterCtl/AddNode"
+	actSelfJoin          = "/reflow.clusterctl.v1.ClusterCtl/SelfJoin"
+	actDeliver           = "/reflow.delivery.v1.Delivery/Deliver"
+	actUploadSST         = "/reflow.delivery.v1.Delivery/UploadLPTransferSST"
+	actSubmitInvocation  = "/reflow.ingress.v1.Ingress/SubmitInvocation"
+)
+
 func mustEngine(t *testing.T, policies string) *Engine {
 	t.Helper()
 	e, err := NewEngine([]byte(policies))
@@ -19,21 +29,17 @@ func mustEngine(t *testing.T, policies string) *Engine {
 }
 
 // evalReq builds a single-principal, single-resource request and authorizes
-// it. Anonymous principals (PrincipalEntity ok=false) get a sentinel UID of a
-// type absent from the schema, so they match no `principal is X` head.
+// it. Every principal maps to a typed entity (anonymous -> Anonymous).
 func evalReq(e *Engine, action string, p auth.Principal, resType cedar.EntityType, resID string, resAttrs types.RecordMap) cedar.Decision {
-	em := types.EntityMap{}
-	pUID, pEnt, ok := PrincipalEntity(p)
-	if ok {
-		em[pUID] = pEnt
-	} else {
-		pUID = cedar.NewEntityUID("Anonymous", "anonymous")
-	}
+	pUID, pEnt := PrincipalEntity(p)
 	if resAttrs == nil {
 		resAttrs = types.RecordMap{}
 	}
 	rUID := cedar.NewEntityUID(resType, cedar.String(resID))
-	em[rUID] = types.Entity{UID: rUID, Attributes: types.NewRecord(resAttrs)}
+	em := types.EntityMap{
+		pUID: pEnt,
+		rUID: types.Entity{UID: rUID, Attributes: types.NewRecord(resAttrs)},
+	}
 	dec, _ := e.Authorize(cedar.Request{
 		Principal: pUID,
 		Action:    cedar.NewEntityUID("Action", cedar.String(action)),
@@ -49,8 +55,9 @@ func TestNewEngine_FoundationalPoliciesValidate(t *testing.T) {
 }
 
 // TestAuthorize_PlaneSeparation is the golden fixture anchoring the current
-// (pre-Cedar) plane separation: operators full access, nodes restricted to
-// inter-node mesh RPCs, everyone else denied. Survives the PR2 cutover.
+// plane separation through the Cedar engine: operators full access, nodes
+// restricted to mesh RPCs, ingress open to all, config/clusterctl denied to
+// non-operators. Survives the PR2 cutover unchanged.
 func TestAuthorize_PlaneSeparation(t *testing.T) {
 	e := mustEngine(t, FoundationalClusterPolicies)
 	operator := auth.Principal{Kind: "operator", Subject: "alice", Raw: "operator/alice"}
@@ -65,16 +72,17 @@ func TestAuthorize_PlaneSeparation(t *testing.T) {
 		resID   string
 		want    cedar.Decision
 	}{
-		{"operator-config", operator, "UpsertEventSource", TypeEventSourceRecord, "kafka", cedar.Allow},
-		{"operator-addnode", operator, "AddNode", TypePlatformConfig, "cluster", cedar.Allow},
-		{"operator-submit", operator, "SubmitInvocation", TypeInvocation, "svc", cedar.Allow},
-		{"node-delivery", node, "DeliveryDeliver", TypePlatformConfig, "cluster", cedar.Allow},
-		{"node-list-undelivered", node, "DeliveryListUndelivered", TypePlatformConfig, "cluster", cedar.Allow},
-		{"node-selfjoin", node, "SelfJoin", TypePlatformConfig, "cluster", cedar.Allow},
-		{"node-config-denied", node, "UpsertEventSource", TypeEventSourceRecord, "kafka", cedar.Deny},
-		{"node-addnode-denied", node, "AddNode", TypePlatformConfig, "cluster", cedar.Deny},
-		{"anon-config-denied", anon, "UpsertEventSource", TypeEventSourceRecord, "kafka", cedar.Deny},
-		{"anon-delivery-denied", anon, "DeliveryDeliver", TypePlatformConfig, "cluster", cedar.Deny},
+		{"operator-config", operator, actUpsertEventSource, TypeEventSourceRecord, "kafka", cedar.Allow},
+		{"operator-addnode", operator, actAddNode, TypePlatformConfig, "cluster", cedar.Allow},
+		{"operator-submit", operator, actSubmitInvocation, TypeInvocation, "svc", cedar.Allow},
+		{"node-deliver", node, actDeliver, TypePlatformConfig, "cluster", cedar.Allow},
+		{"node-upload-sst", node, actUploadSST, TypePlatformConfig, "cluster", cedar.Allow},
+		{"node-selfjoin", node, actSelfJoin, TypePlatformConfig, "cluster", cedar.Allow},
+		{"node-config-denied", node, actUpsertEventSource, TypeEventSourceRecord, "kafka", cedar.Deny},
+		{"node-addnode-denied", node, actAddNode, TypePlatformConfig, "cluster", cedar.Deny},
+		{"anon-submit-open", anon, actSubmitInvocation, TypeInvocation, "svc", cedar.Allow},
+		{"anon-config-denied", anon, actUpsertEventSource, TypeEventSourceRecord, "kafka", cedar.Deny},
+		{"anon-addnode-denied", anon, actAddNode, TypePlatformConfig, "cluster", cedar.Deny},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -86,34 +94,34 @@ func TestAuthorize_PlaneSeparation(t *testing.T) {
 }
 
 // TestPrincipalEntity_Mapping checks the auth.Principal -> Cedar UID + attrs
-// mapping for each represented kind, and that anonymous/user map to ok=false.
+// mapping for each kind, including the always-typed anonymous and user cases.
 func TestPrincipalEntity_Mapping(t *testing.T) {
-	op, _, ok := PrincipalEntity(auth.Principal{Kind: "operator", Subject: "alice"})
-	if !ok || op.Type != TypeClusterOperator || op.ID != "alice" {
-		t.Errorf("operator: uid=%v ok=%v", op, ok)
+	op, _ := PrincipalEntity(auth.Principal{Kind: "operator", Subject: "alice"})
+	if op.Type != TypeClusterOperator || op.ID != "alice" {
+		t.Errorf("operator: uid=%v", op)
 	}
 
-	nodeUID, nodeEnt, ok := PrincipalEntity(auth.Principal{Kind: "node", Subject: "7"})
-	if !ok || nodeUID.Type != TypeNode {
-		t.Fatalf("node: uid=%v ok=%v", nodeUID, ok)
+	nodeUID, nodeEnt := PrincipalEntity(auth.Principal{Kind: "node", Subject: "7"})
+	if nodeUID.Type != TypeNode {
+		t.Fatalf("node: uid=%v", nodeUID)
 	}
 	if v, _ := nodeEnt.Attributes.Get("node_id"); v != types.Long(7) {
 		t.Errorf("node_id = %v want 7", v)
 	}
 
-	tUID, tEnt, ok := PrincipalEntity(auth.Principal{Kind: "tenant", Subject: "12/bob"})
-	if !ok || tUID.Type != TypeTenantAdmin {
-		t.Fatalf("tenant: uid=%v ok=%v", tUID, ok)
+	tUID, tEnt := PrincipalEntity(auth.Principal{Kind: "tenant", Subject: "12/bob"})
+	if tUID.Type != TypeTenantAdmin {
+		t.Fatalf("tenant: uid=%v", tUID)
 	}
 	if v, _ := tEnt.Attributes.Get("tenant_id"); v != types.Long(12) {
 		t.Errorf("tenant_id = %v want 12", v)
 	}
 
-	if _, _, ok := PrincipalEntity(auth.Principal{}); ok {
-		t.Error("anonymous should map to ok=false")
+	if uUID, _ := PrincipalEntity(auth.Principal{Kind: "user", Subject: "x"}); uUID.Type != TypeUser {
+		t.Errorf("user: uid=%v want type User", uUID)
 	}
-	if _, _, ok := PrincipalEntity(auth.Principal{Kind: "user", Subject: "x"}); ok {
-		t.Error("user should map to ok=false (no User entity in schema)")
+	if aUID, _ := PrincipalEntity(auth.Principal{}); aUID.Type != TypeAnonymous {
+		t.Errorf("anonymous: uid=%v want type Anonymous", aUID)
 	}
 }
 
@@ -122,7 +130,7 @@ func TestPrincipalEntity_Mapping(t *testing.T) {
 // be a principal for AddNode (operator-only). Caught at compile, not eval.
 func TestCompileAndValidate_RejectsAppliesToViolation(t *testing.T) {
 	e := mustEngine(t, FoundationalClusterPolicies)
-	bad := `permit (principal is TenantAdmin, action == Action::"AddNode", resource);`
+	bad := `permit (principal is TenantAdmin, action == Action::"/reflow.clusterctl.v1.ClusterCtl/AddNode", resource);`
 	if _, err := e.CompileAndValidate([]byte(bad)); err == nil {
 		t.Fatal("expected schema validation to reject TenantAdmin on AddNode")
 	}
@@ -131,24 +139,22 @@ func TestCompileAndValidate_RejectsAppliesToViolation(t *testing.T) {
 // TestTenantIsolation_ValidatesAndEnforces proves the headline mechanism
 // (the PR5 guarantee) works: a tenant-isolation policy validates against the
 // schema and denies cross-tenant access while allowing same-tenant access.
-// Uses an explicit action match (not the TenantConfigActions group) so the
-// request needs no action-hierarchy entities.
 func TestTenantIsolation_ValidatesAndEnforces(t *testing.T) {
-	const tenantPolicy = `
+	tenantPolicy := `
 permit (
     principal is TenantAdmin,
-    action == Action::"UpsertEventSource",
+    action == Action::"` + actUpsertEventSource + `",
     resource
 ) when { resource.tenant_id == principal.tenant_id && principal.tenant_id > 0 };
 `
 	e := mustEngine(t, FoundationalClusterPolicies+tenantPolicy)
 	tenant12 := auth.Principal{Kind: "tenant", Subject: "12/alice"}
 
-	if got := evalReq(e, "UpsertEventSource", tenant12, TypeEventSourceRecord, "kafka",
+	if got := evalReq(e, actUpsertEventSource, tenant12, TypeEventSourceRecord, "kafka",
 		types.RecordMap{"tenant_id": types.Long(12), "name": types.String("kafka")}); got != cedar.Allow {
 		t.Errorf("same-tenant: got %v want Allow", got)
 	}
-	if got := evalReq(e, "UpsertEventSource", tenant12, TypeEventSourceRecord, "kafka",
+	if got := evalReq(e, actUpsertEventSource, tenant12, TypeEventSourceRecord, "kafka",
 		types.RecordMap{"tenant_id": types.Long(99), "name": types.String("kafka")}); got != cedar.Deny {
 		t.Errorf("cross-tenant: got %v want Deny", got)
 	}

@@ -14,6 +14,8 @@ const (
 	TypeClusterOperator cedar.EntityType = "ClusterOperator"
 	TypeNode            cedar.EntityType = "Node"
 	TypeTenantAdmin     cedar.EntityType = "TenantAdmin"
+	TypeUser            cedar.EntityType = "User"
+	TypeAnonymous       cedar.EntityType = "Anonymous"
 
 	TypeEventSourceRecord   cedar.EntityType = "EventSourceRecord"
 	TypeWebhookSourceRecord cedar.EntityType = "WebhookSourceRecord"
@@ -30,32 +32,36 @@ const (
 var PlatformConfigUID = cedar.NewEntityUID(TypePlatformConfig, "cluster")
 
 // PrincipalEntity maps a server-verified auth.Principal to its Cedar
-// principal UID and entity (carrying the attributes the schema declares for
-// that type). The bool is false for principals with no Cedar representation —
-// the anonymous principal and, for now, pre-tenancy user/* principals; those
-// are authorized only by policies with an unconstrained principal scope
-// (PR2 decides the open-ingress rule). It never returns a User entity because
-// the schema has none.
-func PrincipalEntity(p auth.Principal) (cedar.EntityUID, types.Entity, bool) {
+// principal UID and entity, carrying the attributes the schema declares for
+// that type. Every principal — including the anonymous one — maps to a typed
+// entity: Cedar has no null principal, and uniform ingress authorization
+// needs a typed subject for open (unauthenticated) traffic. Anonymous maps to
+// Anonymous::"anonymous"; a pre-tenancy OIDC caller (Kind "user") maps to a
+// User entity so it stays distinguishable from anonymous in audit.
+func PrincipalEntity(p auth.Principal) (cedar.EntityUID, types.Entity) {
 	switch p.Kind {
 	case "operator":
 		uid := cedar.NewEntityUID(TypeClusterOperator, cedar.String(p.Subject))
-		return uid, types.Entity{UID: uid}, true
+		return uid, types.Entity{UID: uid}
 	case "node":
 		uid := cedar.NewEntityUID(TypeNode, cedar.String(p.Subject))
-		ent := types.Entity{UID: uid, Attributes: types.NewRecord(types.RecordMap{
+		return uid, types.Entity{UID: uid, Attributes: types.NewRecord(types.RecordMap{
 			"node_id": types.Long(parseNodeID(p.Subject)),
 		})}
-		return uid, ent, true
 	case "tenant":
 		uid := cedar.NewEntityUID(TypeTenantAdmin, cedar.String(p.Subject))
-		ent := types.Entity{UID: uid, Attributes: types.NewRecord(types.RecordMap{
+		return uid, types.Entity{UID: uid, Attributes: types.NewRecord(types.RecordMap{
 			"tenant_id": types.Long(int64(auth.TenantIDFromPrincipal(p))),
 			"subject":   types.String(p.Subject),
 		})}
-		return uid, ent, true
+	case "user":
+		uid := cedar.NewEntityUID(TypeUser, cedar.String(p.Subject))
+		return uid, types.Entity{UID: uid, Attributes: types.NewRecord(types.RecordMap{
+			"subject": types.String(p.Subject),
+		})}
 	default:
-		return cedar.EntityUID{}, types.Entity{}, false
+		uid := cedar.NewEntityUID(TypeAnonymous, "anonymous")
+		return uid, types.Entity{UID: uid}
 	}
 }
 

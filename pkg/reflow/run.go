@@ -762,12 +762,18 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 			bsCreds.ServerTLSConfig.ClientAuth = tls.NoClientCert
 			bsCreds.ServerTLSConfig.ClientCAs = nil
 		}
+		mode, merr := certmgrSigningMode(cfg.PKI.Builtin.SigningMode)
+		if merr != nil {
+			return nil, fmt.Errorf("reflow: pki.builtin.signing_mode: %w", merr)
+		}
 		issueCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		issuer, ierr := certmgr.NewClusterIssuer(issueCtx, certmgr.ClusterOptions{
-			Reader:    caRootReader{host: eh},
-			Keys:      secrets,
-			Principal: "node/" + strconv.FormatUint(cfg.Node.ID, 10),
-			Validity:  cfg.Bootstrap.LeafValidity,
+			Reader:      caRootReader{host: eh},
+			Keys:        secrets,
+			SigningMode: mode,
+			KMSKeyURI:   cfg.PKI.Builtin.KMSKeyURI,
+			Principal:   "node/" + strconv.FormatUint(cfg.Node.ID, 10),
+			Validity:    cfg.Bootstrap.LeafValidity,
 		})
 		cancel()
 		if ierr != nil {
@@ -1011,6 +1017,21 @@ func (r secretReader) ListSecrets(ctx context.Context) ([]*enginev1.SecretRecord
 		return nil, 0, err
 	}
 	return list.Records, list.TableRevision, nil
+}
+
+// certmgrSigningMode maps the koanf-facing string ("local" or
+// "kms_remote", empty defaults to "local") to the certmgr enum. Any
+// other value returns an error so an operator typo doesn't silently
+// fall back to local mode and contradict the configured KMS URI.
+func certmgrSigningMode(s string) (certmgr.SigningMode, error) {
+	switch s {
+	case "", "local":
+		return certmgr.SigningModeLocal, nil
+	case "kms_remote":
+		return certmgr.SigningModeRemote, nil
+	default:
+		return 0, fmt.Errorf("unknown signing mode %q (want \"local\" or \"kms_remote\")", s)
+	}
 }
 
 // caRootReader is the certmgr.CARootReader adapter the bootstrap

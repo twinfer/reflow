@@ -48,6 +48,7 @@ type Config struct {
 	Handlers     HandlersConfig     `koanf:"handlers"`
 	EventSources EventSourcesConfig `koanf:"event_sources"`
 	KMS          KMSConfig          `koanf:"kms"`
+	PKI          PKIConfig          `koanf:"pki"`
 	Rebalance    RebalanceConfig    `koanf:"rebalance"`
 	Audit        AuditConfig        `koanf:"audit"`
 }
@@ -104,6 +105,46 @@ type AuditConfig struct {
 // to enable it.
 type KMSConfig struct {
 	Vault VaultKMSConfig `koanf:"vault"`
+}
+
+// PKIConfig configures how the cluster CA signs leaves. Today the
+// only Issuer implementation is "builtin" (the CARootTable-backed
+// ClusterIssuer); the sub-scope leaves room for future Issuer plugins
+// (ACME, smallstep, k8s cert-manager) without renaming fields.
+type PKIConfig struct {
+	Builtin BuiltinPKIConfig `koanf:"builtin"`
+}
+
+// BuiltinPKIConfig tunes the shard-0-backed ClusterIssuer. SigningMode
+// picks the CA signing-key source:
+//
+//   - "local" (default): the CA private key is fetched from shard 0's
+//     SecretTable as PEM bytes on every Refresh. KEK-wrapped at rest;
+//     plaintext key bytes appear in process memory for as long as the
+//     active CA snapshot is held.
+//   - "kms_remote": KMSKeyURI is dispatched through certmgr's
+//     RemoteSigner registry to obtain a crypto.Signer that proxies
+//     every Sign() call to the KMS. The CA private key NEVER enters
+//     process memory. Operators wire concrete provider factories
+//     (AWS KMS, GCP Cloud KMS, Vault Transit, Azure Key Vault, …) at
+//     startup via certmgr.RegisterRemoteSigner before reflow.Run.
+//
+// kms_remote is cluster-wide: the cert PEM in CARootTable is bound to
+// the KMS-held key, so every node MUST be configured with the same
+// signing mode + URI. Mixing modes within one cluster will trip the
+// cert-vs-signer public-key check at Refresh time and the node will
+// refuse to issue leaves.
+type BuiltinPKIConfig struct {
+	// SigningMode selects "local" or "kms_remote". Empty defaults to
+	// "local" for backwards-compatibility with pre-PR-5 deployments.
+	SigningMode string `koanf:"signing_mode"`
+
+	// KMSKeyURI is the URI of the KMS-managed signing key handle, e.g.
+	// "aws-kms://arn:aws:kms:us-east-1:123:key/abc",
+	// "gcp-kms://projects/p/locations/l/keyRings/r/cryptoKeys/k",
+	// "hcvault://addr/transit/keys/name". Required when
+	// SigningMode="kms_remote"; ignored otherwise.
+	KMSKeyURI string `koanf:"kms_key_uri"`
 }
 
 // VaultKMSConfig configures the HashiCorp Vault Transit KMS provider.

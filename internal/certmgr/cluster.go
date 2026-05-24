@@ -3,6 +3,7 @@ package certmgr
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/x509"
@@ -34,16 +35,34 @@ type CASigningKeyResolver interface {
 	LookupForCASigning(name string) ([]byte, error)
 }
 
+// SigningMode selects how the ClusterIssuer obtains the CA private
+// key. Local resolves a PEM-encoded key from the SecretStore (the
+// default since PR 3). Remote dispatches a KMS URI through the
+// RemoteSigner registry, returning a crypto.Signer that proxies every
+// Sign() call to the KMS — the CA private key bytes never enter
+// process memory.
+type SigningMode int
+
+const (
+	// SigningModeLocal resolves the CA signing key from SecretStore.
+	SigningModeLocal SigningMode = iota
+	// SigningModeRemote resolves a crypto.Signer from the global
+	// RemoteSigner registry keyed by URI prefix.
+	SigningModeRemote
+)
+
 // ClusterIssuer is a certmagic.Issuer that signs leaves with the
-// cluster CA root stored in shard 0's CARootTable + SecretTable. It
-// holds an atomic snapshot of the parsed CA (cert + key); Refresh
-// re-resolves on a CARootTable wake. The CSR's public key is signed;
+// cluster CA root stored in shard 0's CARootTable. The signing-key
+// source depends on SigningMode: local (SecretStore) or remote (KMS
+// via the RemoteSigner registry). The CSR's public key is signed;
 // the leaf's CN is set from the issuer's construction-time principal,
 // matching BuiltinIssuer's contract so the auth layer can keep keying
 // on CN.
 type ClusterIssuer struct {
 	reader    CARootReader
 	keys      CASigningKeyResolver
+	mode      SigningMode
+	kmsURI    string
 	principal string
 	kind      LeafKind
 	name      string
@@ -66,31 +85,51 @@ const (
 )
 
 type activeCA struct {
-	cert *x509.Certificate
-	key  *ecdsa.PrivateKey
-	pem  []byte
+	cert   *x509.Certificate
+	signer crypto.Signer
+	pem    []byte
 }
 
-// ClusterOptions configures a ClusterIssuer.
+// ClusterOptions configures a ClusterIssuer. SigningMode picks the
+// key-source path:
+//
+//   - SigningModeLocal (default): Keys is required; the CA private
+//     key is fetched from SecretStore as PEM bytes on every Refresh.
+//   - SigningModeRemote: KMSKeyURI is required; the URI is dispatched
+//     through the global RemoteSigner registry (see RegisterRemoteSigner)
+//     to obtain a crypto.Signer that proxies sign operations to the
+//     KMS. Keys is unused (and may be nil).
 type ClusterOptions struct {
-	Reader    CARootReader
-	Keys      CASigningKeyResolver
-	Principal string
-	Hosts     []string
-	Validity  time.Duration
+	Reader      CARootReader
+	Keys        CASigningKeyResolver
+	SigningMode SigningMode
+	KMSKeyURI   string
+	Principal   string
+	Hosts       []string
+	Validity    time.Duration
 	// RowName is the CARootTable row to read. Defaults to "active".
 	RowName string
 }
 
 // NewClusterIssuer returns a ClusterIssuer wired against the supplied
-// reader + key resolver. Refresh is called eagerly so misconfiguration
-// surfaces at construction time, not on the first signing operation.
+// reader + signing-key source. Refresh is called eagerly so
+// misconfiguration surfaces at construction time, not on the first
+// signing operation.
 func NewClusterIssuer(ctx context.Context, opts ClusterOptions) (*ClusterIssuer, error) {
 	if opts.Reader == nil {
 		return nil, errors.New("certmgr: ClusterIssuer requires Reader")
 	}
-	if opts.Keys == nil {
-		return nil, errors.New("certmgr: ClusterIssuer requires Keys")
+	switch opts.SigningMode {
+	case SigningModeLocal:
+		if opts.Keys == nil {
+			return nil, errors.New("certmgr: ClusterIssuer requires Keys in local signing mode")
+		}
+	case SigningModeRemote:
+		if opts.KMSKeyURI == "" {
+			return nil, errors.New("certmgr: ClusterIssuer requires KMSKeyURI in kms_remote signing mode")
+		}
+	default:
+		return nil, fmt.Errorf("certmgr: unknown signing mode %d", opts.SigningMode)
 	}
 	kind, name, ok := parsePrincipalRaw(opts.Principal)
 	if !ok {
@@ -103,6 +142,8 @@ func NewClusterIssuer(ctx context.Context, opts ClusterOptions) (*ClusterIssuer,
 	c := &ClusterIssuer{
 		reader:    opts.Reader,
 		keys:      opts.Keys,
+		mode:      opts.SigningMode,
+		kmsURI:    opts.KMSKeyURI,
 		principal: opts.Principal,
 		kind:      kind,
 		name:      name,
@@ -116,11 +157,12 @@ func NewClusterIssuer(ctx context.Context, opts ClusterOptions) (*ClusterIssuer,
 	return c, nil
 }
 
-// Refresh re-reads the CARootTable + signing key and atomically swaps
-// the active CA snapshot. On any error the previous snapshot is left
-// in place so a transient blob/KMS hiccup doesn't break renewals.
-// Returns the error so the operator-facing first-call surfaces it; the
-// background reconciler loop logs + counts.
+// Refresh re-reads the CARootTable + resolves the signing key (local
+// or remote, depending on SigningMode) and atomically swaps the active
+// CA snapshot. On any error the previous snapshot is left in place so
+// a transient blob/KMS hiccup doesn't break renewals. Returns the
+// error so the operator-facing first-call surfaces it; the background
+// reconciler loop logs + counts.
 func (c *ClusterIssuer) Refresh(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -136,23 +178,48 @@ func (c *ClusterIssuer) Refresh(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("certmgr: parse CA cert: %w", err)
 	}
-	keyPEM, err := c.keys.LookupForCASigning(row.GetKeySecretName())
+	signer, err := c.resolveSigner(ctx, row)
 	if err != nil {
-		return fmt.Errorf("certmgr: resolve CA key: %w", err)
+		return err
 	}
-	key, err := parsePEMECPrivateKey(keyPEM)
-	if err != nil {
-		return fmt.Errorf("certmgr: parse CA key: %w", err)
-	}
-	if cert.PublicKey == nil || !ecdsaPublicKeyMatches(cert.PublicKey, &key.PublicKey) {
+	if cert.PublicKey == nil || !publicKeyMatches(cert.PublicKey, signer.Public()) {
 		return errors.New("certmgr: CA cert public key does not match resolved signing key")
 	}
 	c.active.Store(&activeCA{
-		cert: cert,
-		key:  key,
-		pem:  row.GetCertPem(),
+		cert:   cert,
+		signer: signer,
+		pem:    row.GetCertPem(),
 	})
 	return nil
+}
+
+// resolveSigner picks the per-mode key source. Local fetches PEM bytes
+// from SecretStore; Remote dispatches the configured URI through the
+// RemoteSigner registry. KMSKeyURI is ignored in local mode and
+// key_secret_name is ignored in remote mode — operator-facing CARoot
+// rows carry both fields for the future where a single cluster may
+// rotate between modes, but at any given moment only one is read.
+func (c *ClusterIssuer) resolveSigner(ctx context.Context, row *enginev1.CARootRecord) (crypto.Signer, error) {
+	switch c.mode {
+	case SigningModeLocal:
+		keyPEM, err := c.keys.LookupForCASigning(row.GetKeySecretName())
+		if err != nil {
+			return nil, fmt.Errorf("certmgr: resolve CA key: %w", err)
+		}
+		key, err := parsePEMECPrivateKey(keyPEM)
+		if err != nil {
+			return nil, fmt.Errorf("certmgr: parse CA key: %w", err)
+		}
+		return key, nil
+	case SigningModeRemote:
+		signer, err := ResolveRemoteSigner(ctx, c.kmsURI)
+		if err != nil {
+			return nil, fmt.Errorf("certmgr: resolve kms_remote signer: %w", err)
+		}
+		return signer, nil
+	default:
+		return nil, fmt.Errorf("certmgr: unknown signing mode %d", c.mode)
+	}
 }
 
 // Run is the reconcile loop: wake on sub (CARootTable notifier) or a
@@ -218,7 +285,7 @@ func (c *ClusterIssuer) Issue(_ context.Context, csr *x509.CertificateRequest) (
 	for _, ip := range csr.IPAddresses {
 		template.IPAddresses = append(template.IPAddresses, ip)
 	}
-	der, err := x509.CreateCertificate(rand.Reader, template, a.cert, csr.PublicKey, a.key)
+	der, err := x509.CreateCertificate(rand.Reader, template, a.cert, csr.PublicKey, a.signer)
 	if err != nil {
 		return nil, fmt.Errorf("certmgr: sign leaf: %w", err)
 	}
@@ -290,7 +357,7 @@ func (c *ClusterIssuer) IssueForPrincipal(
 	for _, ip := range csr.IPAddresses {
 		template.IPAddresses = append(template.IPAddresses, ip)
 	}
-	der, err := x509.CreateCertificate(rand.Reader, template, a.cert, csr.PublicKey, a.key)
+	der, err := x509.CreateCertificate(rand.Reader, template, a.cert, csr.PublicKey, a.signer)
 	if err != nil {
 		return nil, fmt.Errorf("certmgr: sign leaf: %w", err)
 	}
@@ -349,19 +416,24 @@ func parsePEMECPrivateKey(pemBytes []byte) (*ecdsa.PrivateKey, error) {
 	}
 }
 
-func ecdsaPublicKeyMatches(certPub any, signingPub *ecdsa.PublicKey) bool {
-	if _, ok := certPub.(*ecdsa.PublicKey); !ok {
+// publicKeyMatches compares two public keys via DER-encoded SPKI
+// bytes. The DER form is the canonical wire representation, so two
+// keys are equal iff their PKIX-marshaled SubjectPublicKeyInfo bytes
+// match — works for ECDSA, RSA, Ed25519 alike, so the kms_remote path
+// is not coupled to ECDSA.
+func publicKeyMatches(a, b crypto.PublicKey) bool {
+	if a == nil || b == nil {
 		return false
 	}
-	a, err := x509.MarshalPKIXPublicKey(certPub)
+	aDER, err := x509.MarshalPKIXPublicKey(a)
 	if err != nil {
 		return false
 	}
-	b, err := x509.MarshalPKIXPublicKey(signingPub)
+	bDER, err := x509.MarshalPKIXPublicKey(b)
 	if err != nil {
 		return false
 	}
-	return bytes.Equal(a, b)
+	return bytes.Equal(aDER, bDER)
 }
 
 func appendHost(t *x509.Certificate, host string) {

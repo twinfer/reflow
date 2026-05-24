@@ -101,6 +101,14 @@ const (
 	ConfigDeleteCARootProcedure = "/reflow.config.v1.Config/DeleteCARoot"
 	// ConfigListCARootsProcedure is the fully-qualified name of the Config's ListCARoots RPC.
 	ConfigListCARootsProcedure = "/reflow.config.v1.Config/ListCARoots"
+	// ConfigCreateJoinTokenProcedure is the fully-qualified name of the Config's CreateJoinToken RPC.
+	ConfigCreateJoinTokenProcedure = "/reflow.config.v1.Config/CreateJoinToken"
+	// ConfigDeleteJoinTokenProcedure is the fully-qualified name of the Config's DeleteJoinToken RPC.
+	ConfigDeleteJoinTokenProcedure = "/reflow.config.v1.Config/DeleteJoinToken"
+	// ConfigListJoinTokensProcedure is the fully-qualified name of the Config's ListJoinTokens RPC.
+	ConfigListJoinTokensProcedure = "/reflow.config.v1.Config/ListJoinTokens"
+	// ConfigIssueOperatorProcedure is the fully-qualified name of the Config's IssueOperator RPC.
+	ConfigIssueOperatorProcedure = "/reflow.config.v1.Config/IssueOperator"
 )
 
 // ConfigClient is a client for the reflow.config.v1.Config service.
@@ -181,6 +189,25 @@ type ConfigClient interface {
 	UpsertCARoot(context.Context, *connect.Request[configv1.UpsertCARootRequest]) (*connect.Response[configv1.UpsertCARootResponse], error)
 	DeleteCARoot(context.Context, *connect.Request[configv1.DeleteCARootRequest]) (*connect.Response[configv1.DeleteCARootResponse], error)
 	ListCARoots(context.Context, *connect.Request[configv1.ListCARootsRequest]) (*connect.Response[configv1.ListCARootsResponse], error)
+	// CreateJoinToken mints a one-time kubeadm-style joiner credential.
+	// The server generates a random plaintext, persists only its sha256
+	// hash + a JoinTokenRecord into shard 0's JoinTokenTable, and
+	// returns the plaintext to the operator exactly once. Subsequent
+	// List calls show only the hash. Operators redeem the plaintext via
+	// `reflowd run --join`. Leader-only.
+	CreateJoinToken(context.Context, *connect.Request[configv1.CreateJoinTokenRequest]) (*connect.Response[configv1.CreateJoinTokenResponse], error)
+	// DeleteJoinToken removes a row by hex(token_hash) — surfaces in
+	// ListJoinTokens. Idempotent.
+	DeleteJoinToken(context.Context, *connect.Request[configv1.DeleteJoinTokenRequest]) (*connect.Response[configv1.DeleteJoinTokenResponse], error)
+	// ListJoinTokens returns every JoinTokenRecord. SyncRead.
+	ListJoinTokens(context.Context, *connect.Request[configv1.ListJoinTokensRequest]) (*connect.Response[configv1.ListJoinTokensResponse], error)
+	// IssueOperator mints an operator client cert against the active
+	// cluster CA. The operator generates the keypair locally, sends the
+	// CSR, and receives the signed leaf + CA chain. Authorization is via
+	// the existing operator/* policy gate; the in-server signer is the
+	// same ClusterIssuer the bootstrap listener uses. Leader-only.
+	// Replaces the deleted `reflowd pki issue-operator` flow.
+	IssueOperator(context.Context, *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error)
 }
 
 // NewConfigClient constructs a client for the reflow.config.v1.Config service. By default, it uses
@@ -296,6 +323,30 @@ func NewConfigClient(httpClient connect.HTTPClient, baseURL string, opts ...conn
 			connect.WithSchema(configMethods.ByName("ListCARoots")),
 			connect.WithClientOptions(opts...),
 		),
+		createJoinToken: connect.NewClient[configv1.CreateJoinTokenRequest, configv1.CreateJoinTokenResponse](
+			httpClient,
+			baseURL+ConfigCreateJoinTokenProcedure,
+			connect.WithSchema(configMethods.ByName("CreateJoinToken")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteJoinToken: connect.NewClient[configv1.DeleteJoinTokenRequest, configv1.DeleteJoinTokenResponse](
+			httpClient,
+			baseURL+ConfigDeleteJoinTokenProcedure,
+			connect.WithSchema(configMethods.ByName("DeleteJoinToken")),
+			connect.WithClientOptions(opts...),
+		),
+		listJoinTokens: connect.NewClient[configv1.ListJoinTokensRequest, configv1.ListJoinTokensResponse](
+			httpClient,
+			baseURL+ConfigListJoinTokensProcedure,
+			connect.WithSchema(configMethods.ByName("ListJoinTokens")),
+			connect.WithClientOptions(opts...),
+		),
+		issueOperator: connect.NewClient[configv1.IssueOperatorRequest, configv1.IssueOperatorResponse](
+			httpClient,
+			baseURL+ConfigIssueOperatorProcedure,
+			connect.WithSchema(configMethods.ByName("IssueOperator")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -318,6 +369,10 @@ type configClient struct {
 	upsertCARoot        *connect.Client[configv1.UpsertCARootRequest, configv1.UpsertCARootResponse]
 	deleteCARoot        *connect.Client[configv1.DeleteCARootRequest, configv1.DeleteCARootResponse]
 	listCARoots         *connect.Client[configv1.ListCARootsRequest, configv1.ListCARootsResponse]
+	createJoinToken     *connect.Client[configv1.CreateJoinTokenRequest, configv1.CreateJoinTokenResponse]
+	deleteJoinToken     *connect.Client[configv1.DeleteJoinTokenRequest, configv1.DeleteJoinTokenResponse]
+	listJoinTokens      *connect.Client[configv1.ListJoinTokensRequest, configv1.ListJoinTokensResponse]
+	issueOperator       *connect.Client[configv1.IssueOperatorRequest, configv1.IssueOperatorResponse]
 }
 
 // RegisterDeployment calls reflow.config.v1.Config.RegisterDeployment.
@@ -405,6 +460,26 @@ func (c *configClient) ListCARoots(ctx context.Context, req *connect.Request[con
 	return c.listCARoots.CallUnary(ctx, req)
 }
 
+// CreateJoinToken calls reflow.config.v1.Config.CreateJoinToken.
+func (c *configClient) CreateJoinToken(ctx context.Context, req *connect.Request[configv1.CreateJoinTokenRequest]) (*connect.Response[configv1.CreateJoinTokenResponse], error) {
+	return c.createJoinToken.CallUnary(ctx, req)
+}
+
+// DeleteJoinToken calls reflow.config.v1.Config.DeleteJoinToken.
+func (c *configClient) DeleteJoinToken(ctx context.Context, req *connect.Request[configv1.DeleteJoinTokenRequest]) (*connect.Response[configv1.DeleteJoinTokenResponse], error) {
+	return c.deleteJoinToken.CallUnary(ctx, req)
+}
+
+// ListJoinTokens calls reflow.config.v1.Config.ListJoinTokens.
+func (c *configClient) ListJoinTokens(ctx context.Context, req *connect.Request[configv1.ListJoinTokensRequest]) (*connect.Response[configv1.ListJoinTokensResponse], error) {
+	return c.listJoinTokens.CallUnary(ctx, req)
+}
+
+// IssueOperator calls reflow.config.v1.Config.IssueOperator.
+func (c *configClient) IssueOperator(ctx context.Context, req *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error) {
+	return c.issueOperator.CallUnary(ctx, req)
+}
+
 // ConfigHandler is an implementation of the reflow.config.v1.Config service.
 type ConfigHandler interface {
 	// RegisterDeployment introduces a new handler deployment to the
@@ -483,6 +558,25 @@ type ConfigHandler interface {
 	UpsertCARoot(context.Context, *connect.Request[configv1.UpsertCARootRequest]) (*connect.Response[configv1.UpsertCARootResponse], error)
 	DeleteCARoot(context.Context, *connect.Request[configv1.DeleteCARootRequest]) (*connect.Response[configv1.DeleteCARootResponse], error)
 	ListCARoots(context.Context, *connect.Request[configv1.ListCARootsRequest]) (*connect.Response[configv1.ListCARootsResponse], error)
+	// CreateJoinToken mints a one-time kubeadm-style joiner credential.
+	// The server generates a random plaintext, persists only its sha256
+	// hash + a JoinTokenRecord into shard 0's JoinTokenTable, and
+	// returns the plaintext to the operator exactly once. Subsequent
+	// List calls show only the hash. Operators redeem the plaintext via
+	// `reflowd run --join`. Leader-only.
+	CreateJoinToken(context.Context, *connect.Request[configv1.CreateJoinTokenRequest]) (*connect.Response[configv1.CreateJoinTokenResponse], error)
+	// DeleteJoinToken removes a row by hex(token_hash) — surfaces in
+	// ListJoinTokens. Idempotent.
+	DeleteJoinToken(context.Context, *connect.Request[configv1.DeleteJoinTokenRequest]) (*connect.Response[configv1.DeleteJoinTokenResponse], error)
+	// ListJoinTokens returns every JoinTokenRecord. SyncRead.
+	ListJoinTokens(context.Context, *connect.Request[configv1.ListJoinTokensRequest]) (*connect.Response[configv1.ListJoinTokensResponse], error)
+	// IssueOperator mints an operator client cert against the active
+	// cluster CA. The operator generates the keypair locally, sends the
+	// CSR, and receives the signed leaf + CA chain. Authorization is via
+	// the existing operator/* policy gate; the in-server signer is the
+	// same ClusterIssuer the bootstrap listener uses. Leader-only.
+	// Replaces the deleted `reflowd pki issue-operator` flow.
+	IssueOperator(context.Context, *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error)
 }
 
 // NewConfigHandler builds an HTTP handler from the service implementation. It returns the path on
@@ -594,6 +688,30 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 		connect.WithSchema(configMethods.ByName("ListCARoots")),
 		connect.WithHandlerOptions(opts...),
 	)
+	configCreateJoinTokenHandler := connect.NewUnaryHandler(
+		ConfigCreateJoinTokenProcedure,
+		svc.CreateJoinToken,
+		connect.WithSchema(configMethods.ByName("CreateJoinToken")),
+		connect.WithHandlerOptions(opts...),
+	)
+	configDeleteJoinTokenHandler := connect.NewUnaryHandler(
+		ConfigDeleteJoinTokenProcedure,
+		svc.DeleteJoinToken,
+		connect.WithSchema(configMethods.ByName("DeleteJoinToken")),
+		connect.WithHandlerOptions(opts...),
+	)
+	configListJoinTokensHandler := connect.NewUnaryHandler(
+		ConfigListJoinTokensProcedure,
+		svc.ListJoinTokens,
+		connect.WithSchema(configMethods.ByName("ListJoinTokens")),
+		connect.WithHandlerOptions(opts...),
+	)
+	configIssueOperatorHandler := connect.NewUnaryHandler(
+		ConfigIssueOperatorProcedure,
+		svc.IssueOperator,
+		connect.WithSchema(configMethods.ByName("IssueOperator")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/reflow.config.v1.Config/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ConfigRegisterDeploymentProcedure:
@@ -630,6 +748,14 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 			configDeleteCARootHandler.ServeHTTP(w, r)
 		case ConfigListCARootsProcedure:
 			configListCARootsHandler.ServeHTTP(w, r)
+		case ConfigCreateJoinTokenProcedure:
+			configCreateJoinTokenHandler.ServeHTTP(w, r)
+		case ConfigDeleteJoinTokenProcedure:
+			configDeleteJoinTokenHandler.ServeHTTP(w, r)
+		case ConfigListJoinTokensProcedure:
+			configListJoinTokensHandler.ServeHTTP(w, r)
+		case ConfigIssueOperatorProcedure:
+			configIssueOperatorHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -705,4 +831,20 @@ func (UnimplementedConfigHandler) DeleteCARoot(context.Context, *connect.Request
 
 func (UnimplementedConfigHandler) ListCARoots(context.Context, *connect.Request[configv1.ListCARootsRequest]) (*connect.Response[configv1.ListCARootsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.ListCARoots is not implemented"))
+}
+
+func (UnimplementedConfigHandler) CreateJoinToken(context.Context, *connect.Request[configv1.CreateJoinTokenRequest]) (*connect.Response[configv1.CreateJoinTokenResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.CreateJoinToken is not implemented"))
+}
+
+func (UnimplementedConfigHandler) DeleteJoinToken(context.Context, *connect.Request[configv1.DeleteJoinTokenRequest]) (*connect.Response[configv1.DeleteJoinTokenResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DeleteJoinToken is not implemented"))
+}
+
+func (UnimplementedConfigHandler) ListJoinTokens(context.Context, *connect.Request[configv1.ListJoinTokensRequest]) (*connect.Response[configv1.ListJoinTokensResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.ListJoinTokens is not implemented"))
+}
+
+func (UnimplementedConfigHandler) IssueOperator(context.Context, *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.IssueOperator is not implemented"))
 }

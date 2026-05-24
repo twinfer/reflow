@@ -118,6 +118,27 @@ service Config {
   rpc UpsertCARoot(UpsertCARootRequest) returns (UpsertCARootResponse);
   rpc DeleteCARoot(DeleteCARootRequest) returns (DeleteCARootResponse);
   rpc ListCARoots(ListCARootsRequest) returns (ListCARootsResponse);
+
+  // CreateJoinToken mints a one-time kubeadm-style joiner credential.
+  // The server generates a random plaintext, persists only its sha256
+  // hash + a JoinTokenRecord into shard 0's JoinTokenTable, and
+  // returns the plaintext to the operator exactly once. Subsequent
+  // List calls show only the hash. Operators redeem the plaintext via
+  // `reflowd run --join`. Leader-only.
+  rpc CreateJoinToken(CreateJoinTokenRequest) returns (CreateJoinTokenResponse);
+  // DeleteJoinToken removes a row by hex(token_hash) — surfaces in
+  // ListJoinTokens. Idempotent.
+  rpc DeleteJoinToken(DeleteJoinTokenRequest) returns (DeleteJoinTokenResponse);
+  // ListJoinTokens returns every JoinTokenRecord. SyncRead.
+  rpc ListJoinTokens(ListJoinTokensRequest) returns (ListJoinTokensResponse);
+
+  // IssueOperator mints an operator client cert against the active
+  // cluster CA. The operator generates the keypair locally, sends the
+  // CSR, and receives the signed leaf + CA chain. Authorization is via
+  // the existing operator/* policy gate; the in-server signer is the
+  // same ClusterIssuer the bootstrap listener uses. Leader-only.
+  // Replaces the deleted `reflowd pki issue-operator` flow.
+  rpc IssueOperator(IssueOperatorRequest) returns (IssueOperatorResponse);
 }
 
 // RegisterDeploymentRequest names a handler endpoint reachable over
@@ -296,4 +317,69 @@ message ListAuditLogResponse {
   // hard ceiling) cut the response short. Clients narrow the time
   // window or increase limit and re-issue.
   bool more = 2;
+}
+
+// CreateJoinTokenRequest configures a one-time bootstrap credential.
+//   - kind: NODE for a `reflowd run --join` flow, OPERATOR for
+//     `reflowd config issue-operator` (the operator generates the
+//     keypair locally and submits a CSR — same RPC, different path
+//     into the cluster).
+//   - requested_name: the CN-name segment the joiner will use. For
+//     node tokens, "auto" lets the bootstrap server allocate the
+//     next free node_id at redemption time. For operator tokens, the
+//     name is mandatory (operator-chosen, never "auto").
+//   - ttl_seconds: how long the token remains redeemable. The
+//     bootstrap server rejects with PermissionDenied once exceeded.
+//     Zero means no TTL (single_use is still enforced — once spent,
+//     the row stays in the table but cannot be redeemed again).
+//   - single_use: true (the default) marks the row as spent on the
+//     first successful MeshSign redemption. false produces a token
+//     that can be redeemed repeatedly until expiry — used sparingly
+//     for ephemeral CI scenarios.
+message CreateJoinTokenRequest {
+  reflow.engine.v1.JoinTokenKind kind = 1;
+  string requested_name = 2;
+  uint64 ttl_seconds = 3;
+  bool single_use = 4;
+}
+
+message CreateJoinTokenResponse {
+  // token is the plaintext credential the operator forwards to the
+  // joiner. Shown exactly once; the server persists only sha256(token).
+  string token = 1;
+  bytes token_hash = 2;
+  uint64 table_revision = 3;
+}
+
+message DeleteJoinTokenRequest {
+  // token_hash is the sha256(token) returned by ListJoinTokens.
+  bytes token_hash = 1;
+  uint64 if_table_revision_eq = 2;
+}
+message DeleteJoinTokenResponse {
+  uint64 table_revision = 1;
+}
+
+message ListJoinTokensRequest {}
+message ListJoinTokensResponse {
+  repeated reflow.engine.v1.JoinTokenRecord records = 1;
+  uint64 table_revision = 2;
+}
+
+// IssueOperatorRequest carries an operator-generated CSR. Replaces the
+// deleted `reflowd pki issue-operator` flow. The operator keypair never
+// leaves the operator's machine; the server signs only the public key.
+message IssueOperatorRequest {
+  // DER-encoded x509.CertificateRequest. Subject.CommonName must be
+  // "operator/<name>". validity is honored up to the server's
+  // configured ceiling (default 30 days; longer requests are clamped
+  // silently).
+  bytes csr_der = 1;
+  uint64 validity_seconds = 2;
+}
+
+message IssueOperatorResponse {
+  bytes cert_pem = 1;
+  bytes ca_chain_pem = 2;
+  string ca_fingerprint = 3;
 }

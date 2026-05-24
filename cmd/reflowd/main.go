@@ -1,25 +1,22 @@
-// Command reflowd is the production reflow binary. It exposes four
+// Command reflowd is the production reflow binary. It exposes three
 // top-level subcommands:
 //
 //	reflowd run                 # start the engine
-//	reflowd pki <subcmd>        # offline CA + leaf issuance
 //	reflowd cluster <subcmd>    # mTLS-authenticated ClusterCtl RPCs
 //	                            # (fleet ops: membership, partitions,
 //	                            # snapshots, LP transfers)
 //	reflowd config <subcmd>     # mTLS-authenticated Config RPCs
 //	                            # (app config: deployments, event
-//	                            # sources, webhooks, secrets)
+//	                            # sources, webhooks, secrets,
+//	                            # CA roots, join tokens)
 //
-// PKI subcommands (no cluster contact needed):
-//
-//	reflowd pki init-ca        --out=DIR
-//	reflowd pki issue-cert     --kind=node --node-id=N --hostname=H --ca-dir=DIR --out=DIR
-//	reflowd pki issue-operator --name=NAME --ca-dir=DIR --out=DIR
-//
-// init-ca writes ca.crt + ca.key. Every leaf is signed by that single CA
-// and carries the principal Raw form in its CN (e.g. "node/1",
-// "operator/alice") that the reflow TLS layer matches against the
-// listener's expected role.
+// PKI: cluster CA + leaf material is managed via shard-0 tables —
+// operators run `reflowd config ca init` once to mint a cluster CA,
+// `reflowd config create-join-token` to mint a one-time joiner
+// credential, and `reflowd run --join` to redeem it. Every leaf carries
+// the principal Raw form (e.g. "node/1", "operator/alice") in its CN
+// that the reflow TLS layer matches against the listener's expected
+// role.
 //
 // Cluster and config subcommands talk to the admin Connect listener via
 // mTLS. --admin may point at ANY cluster node — mutating commands follow
@@ -94,8 +91,6 @@ func main() {
 	switch cmd {
 	case "run":
 		err = cmdRun(args)
-	case "pki":
-		err = dispatchPKI(args)
 	case "cluster":
 		err = dispatchCluster(ctx, args)
 	case "config":
@@ -111,25 +106,6 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "reflowd: %v\n", err)
 		os.Exit(1)
-	}
-}
-
-// dispatchPKI routes "reflowd pki <subcmd> ..." to the right handler.
-func dispatchPKI(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: reflowd pki {init-ca|issue-cert|issue-operator} [flags]")
-	}
-	sub := args[0]
-	rest := args[1:]
-	switch sub {
-	case "init-ca":
-		return cmdInitCA(rest)
-	case "issue-cert":
-		return cmdIssueCert(rest)
-	case "issue-operator":
-		return cmdIssueOperator(rest)
-	default:
-		return fmt.Errorf("reflowd pki: unknown subcommand %q", sub)
 	}
 }
 
@@ -177,11 +153,6 @@ func usage(w *os.File) {
 Engine:
   run                  Start the engine. Reads layered config:
                          defaults → $REFLOW_CONFIG file → REFLOW_* env.
-
-PKI (offline, no cluster contact):
-  pki init-ca            Create the cluster CA.
-  pki issue-cert         Issue a node leaf cert.
-  pki issue-operator     Issue an operator client cert.
 
 Cluster (ClusterCtl RPCs; fleet ops; --admin can be ANY node):
   cluster add-node              Register a new peer and start rebalance.
@@ -232,6 +203,13 @@ Config (Config RPCs; app config; --admin can be ANY node):
                                 (UpsertSecret then UpsertCARoot).
   config ca list                List CARootTable rows (no signing keys).
   config ca delete              Remove one CARootTable row by name.
+  config create-join-token      Mint a one-time bootstrap credential
+                                (--kind=node|operator). Prints the
+                                plaintext exactly once.
+  config list-join-tokens       List JoinTokenRecord rows (no plaintext).
+  config delete-join-token      Revoke a pending join token by --hash.
+  config issue-operator         Mint an operator client cert against the
+                                active cluster CA (--name=<operator>).
 
 Run any subcommand with --help for its specific flags.
 `)

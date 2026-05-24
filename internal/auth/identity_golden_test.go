@@ -8,28 +8,28 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/twinfer/reflow/internal/pki"
+	"github.com/twinfer/reflow/internal/certmgr"
 )
 
 // identity_golden_test.go snapshots the post-PR-1 mesh identity
-// pipeline end-to-end: a leaf issued by the production internal/pki.CA
-// encodes the principal Raw form in CN, and extractMesh parses it
-// into Principal{Kind, Subject, Raw, MeshCAFingerprint}.
+// pipeline end-to-end: a leaf issued by an in-test certmgr CA encodes
+// the principal Raw form in CN, and extractMesh parses it into
+// Principal{Kind, Subject, Raw, MeshCAFingerprint}.
 //
 // PR 1 (CN + SPKI-fingerprint identity) replaced the prior SPIFFE
 // URI shape; PR 0's earlier assertions were rewritten in lockstep.
 
-func goldenIssueLeaf(t *testing.T, ca *pki.CA, kind pki.LeafKind, name string) (*x509.Certificate, *x509.Certificate) {
+func goldenIssueLeaf(t *testing.T, ca *certmgr.CA, kind certmgr.CALeafKind, name string) (*x509.Certificate, *x509.Certificate) {
 	t.Helper()
-	mat, err := ca.Issue(pki.LeafOptions{
+	leafPEM, _, err := ca.IssueLeaf(certmgr.IssueLeafOptions{
 		Kind:  kind,
 		Name:  name,
 		Hosts: []string{"127.0.0.1"},
 	})
 	if err != nil {
-		t.Fatalf("CA.Issue: %v", err)
+		t.Fatalf("CA.IssueLeaf: %v", err)
 	}
-	block, _ := pem.Decode(mat.CertPEM)
+	block, _ := pem.Decode(leafPEM)
 	if block == nil {
 		t.Fatalf("decode leaf PEM: nil block")
 	}
@@ -41,11 +41,11 @@ func goldenIssueLeaf(t *testing.T, ca *pki.CA, kind pki.LeafKind, name string) (
 }
 
 func TestGolden_Identity_Node(t *testing.T) {
-	ca, err := pki.NewCA("golden-ca")
+	ca, err := certmgr.MintCA("golden-ca")
 	if err != nil {
-		t.Fatalf("NewCA: %v", err)
+		t.Fatalf("MintCA: %v", err)
 	}
-	leaf, caCert := goldenIssueLeaf(t, ca, pki.LeafNode, "1")
+	leaf, caCert := goldenIssueLeaf(t, ca, certmgr.CALeafNode, "1")
 
 	if got, want := leaf.Subject.CommonName, "node/1"; got != want {
 		t.Errorf("leaf CN = %q; want %q", got, want)
@@ -68,11 +68,11 @@ func TestGolden_Identity_Node(t *testing.T) {
 }
 
 func TestGolden_Identity_Operator(t *testing.T) {
-	ca, err := pki.NewCA("golden-ca")
+	ca, err := certmgr.MintCA("golden-ca")
 	if err != nil {
-		t.Fatalf("NewCA: %v", err)
+		t.Fatalf("MintCA: %v", err)
 	}
-	leaf, caCert := goldenIssueLeaf(t, ca, pki.LeafOperator, "alice")
+	leaf, caCert := goldenIssueLeaf(t, ca, certmgr.CALeafOperator, "alice")
 
 	if got, want := leaf.Subject.CommonName, "operator/alice"; got != want {
 		t.Errorf("leaf CN = %q; want %q", got, want)

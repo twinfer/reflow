@@ -42,6 +42,7 @@ type Config struct {
 	Logging      LoggingConfig      `koanf:"logging"`
 	Delivery     DeliveryConfig     `koanf:"delivery"`
 	Admin        AdminConfig        `koanf:"admin"`
+	Bootstrap    BootstrapConfig    `koanf:"bootstrap"`
 	Auth         AuthConfig         `koanf:"auth"`
 	Snapshot     SnapshotConfig     `koanf:"snapshot"`
 	Handlers     HandlersConfig     `koanf:"handlers"`
@@ -170,6 +171,30 @@ type AdminConfig struct {
 	// Creds selects the transport-security driver for the admin
 	// listener.
 	Creds creds.Spec `koanf:"creds"`
+}
+
+// BootstrapConfig configures the kubeadm-style joiner credential
+// exchange (MeshSign). The bootstrap listener is opt-in and segregated
+// from Admin so a freshly-installed joiner with no mesh leaf can reach
+// it without bypassing the Admin RequireAndVerifyClientCert gate. The
+// join token in the request is the authorization fact, not a TLS peer
+// cert. Operators typically enable the bootstrap port on a couple of
+// nodes behind a firewall rule that only allows freshly-imaged hosts
+// to reach it.
+type BootstrapConfig struct {
+	// Addr is the listen address. Empty disables the bootstrap server.
+	Addr string `koanf:"addr"`
+	// Disabled forces the bootstrap server off even when Addr is set.
+	Disabled bool `koanf:"disabled"`
+	// Creds selects the transport-security driver. TLS without client
+	// auth is the supported mode; the bootstrap server rejects start
+	// when ClientAuth would be required.
+	Creds creds.Spec `koanf:"creds"`
+	// LeafValidity is the validity stamped onto signed bootstrap
+	// leaves. Zero defaults to 24h, matching certmgr's per-renewal
+	// default — joiners renew via their per-node ClusterIssuer once
+	// running.
+	LeafValidity time.Duration `koanf:"leaf_validity"`
 }
 
 // AuthConfig drives the authentication + authorization interceptor

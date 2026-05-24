@@ -13,7 +13,7 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/pki"
+	"github.com/twinfer/reflow/internal/certmgr"
 	"github.com/twinfer/reflow/pkg/reflowclient"
 	configv1 "github.com/twinfer/reflow/proto/configv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -47,7 +47,7 @@ func cmdCAInit(ctx context.Context, args []string) error {
 		return err
 	}
 
-	ca, err := pki.NewCA(*cn)
+	ca, err := certmgr.MintCA(*cn)
 	if err != nil {
 		return fmt.Errorf("generate CA: %w", err)
 	}

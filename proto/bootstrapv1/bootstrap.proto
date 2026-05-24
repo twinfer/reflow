@@ -1,0 +1,78 @@
+// Reflow Bootstrap service — kubeadm-style joiner credential exchange.
+//
+// The bootstrap surface is a single RPC: SignCSR. A joiner that has been
+// issued a one-time `reflowd config create-join-token` plaintext sends a
+// CertificateSigningRequest plus the token to a cluster member; the
+// member verifies the token against shard 0's JoinTokenTable, proposes
+// ConsumeJoinToken to atomically mark the row spent, then signs the CSR
+// against the cluster CA (the same path the per-node ClusterIssuer uses
+// for leaf renewal). The joiner persists the returned leaf to its
+// data-dir/certmagic store and proceeds with normal SelfJoin (for node
+// kind) or returns the leaf to the operator client (for operator kind).
+//
+// The bootstrap listener is intentionally segregated from the admin /
+// clusterctl listeners. Admin uses RequireAndVerifyClientCert (you need
+// a mesh-issued leaf to talk to it); bootstrap accepts unauthenticated
+// TLS so a freshly-installed joiner with no leaf yet can reach the
+// service. Authentication is *intrinsic to the request* — the join
+// token is what authorizes the cert issuance, not a TLS peer cert.
+//
+// The endpoint is opt-in. Operators set cfg.Bootstrap.Addr to enable
+// it; production fleets typically enable it only on a couple of nodes
+// (the same nodes that will run `reflowd config create-join-token` for
+// their region) and behind a firewall rule that allows freshly-imaged
+// hosts to reach the port.
+
+syntax = "proto3";
+
+package reflow.bootstrap.v1;
+
+option go_package = "github.com/twinfer/reflow/proto/bootstrapv1;bootstrapv1";
+
+service MeshSign {
+  // SignCSR verifies join_token against shard 0's JoinTokenTable,
+  // proposes ConsumeJoinToken (which atomically marks single_use rows as
+  // spent), and on success signs csr_der against the active CA. Returns
+  // the signed leaf plus the active CA chain. The CSR's Subject.CN must
+  // match `<kind>/<requested_name>` of the redeemed token (the apply
+  // path doesn't enforce the alignment; the bootstrap server does
+  // before proposing). For node kind, if the token was created with
+  // requested_name="auto", the bootstrap server assigns the next free
+  // node_id from the cluster's existing NodeMembership rows and stamps
+  // it into the CN before signing.
+  //
+  // Leader-only: redirects via Connect error LeaderHint detail when the
+  // recipient isn't the metadata leader.
+  rpc SignCSR(SignCSRRequest) returns (SignCSRResponse);
+}
+
+message SignCSRRequest {
+  // DER-encoded x509.CertificateRequest. Subject.CommonName MUST be
+  // either `<kind>/<requested_name>` for a fixed name, or `<kind>/auto`
+  // for a node token whose record carries requested_name="auto". For
+  // an operator token, requested_name="auto" is rejected — the
+  // operator must pick the name at create-token time.
+  bytes csr_der = 1;
+  // Plaintext token, exactly as printed by
+  // `reflowd config create-join-token`. The server hashes it (sha256)
+  // and looks the row up in JoinTokenTable.
+  string join_token = 2;
+}
+
+message SignCSRResponse {
+  // PEM-encoded signed leaf certificate.
+  bytes cert_pem = 1;
+  // PEM-encoded CA chain (typically a single self-signed root).
+  // Joiners use it both to validate the returned leaf and to populate
+  // their RootCAs pool for outbound mTLS dials.
+  bytes ca_chain_pem = 2;
+  // For node tokens with requested_name="auto", carries the node_id the
+  // bootstrap server allocated and stamped into the CN. Joiners use it
+  // as the dragonboat replica id and on the subsequent SelfJoin RPC.
+  // Zero for operator tokens.
+  uint64 assigned_node_id = 3;
+  // SPKI fingerprint (sha256:<hex>) of the active CA cert at signing
+  // time. Joiners record this so future trust-anchor pinning checks
+  // (--root-cert-pin) can match without re-querying the table.
+  string ca_fingerprint = 4;
+}

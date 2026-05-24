@@ -14,12 +14,12 @@ import (
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflow/internal/certmgr"
 	"github.com/twinfer/reflow/internal/clusterctl"
 	"github.com/twinfer/reflow/internal/connectserver"
 	"github.com/twinfer/reflow/internal/engine"
 	enginesnap "github.com/twinfer/reflow/internal/engine/snapshot"
 
-	"github.com/twinfer/reflow/internal/pki"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
 	"github.com/twinfer/reflow/proto/clusterctlv1/clusterctlv1connect"
@@ -552,7 +552,7 @@ func TestAdminSnapshotRPCs_RejectFollower(t *testing.T) {
 // leaf (for the server) + an operator leaf (for the client).
 func writeAdminTLSFixtures(t *testing.T, dir string) (creds.TLSSpec, string, string, string) {
 	t.Helper()
-	ca, err := pki.NewCA("phase4_2-ca")
+	ca, err := certmgr.MintCA("phase4_2-ca")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -560,26 +560,26 @@ func writeAdminTLSFixtures(t *testing.T, dir string) (creds.TLSSpec, string, str
 	if err != nil {
 		t.Fatal(err)
 	}
-	leaf, err := ca.Issue(pki.LeafOptions{
-		Kind:  pki.LeafNode,
+	leafCrtPEM, leafKeyPEM, err := ca.IssueLeaf(certmgr.IssueLeafOptions{
+		Kind:  certmgr.CALeafNode,
 		Name:  "1",
 		Hosts: []string{"127.0.0.1", "localhost"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodeCrt, nodeKey, err := pki.WriteMaterial(dir, "node-1", leaf)
+	nodeCrt, nodeKey, err := certmgr.WriteLeaf(dir, "node-1", leafCrtPEM, leafKeyPEM)
 	if err != nil {
 		t.Fatal(err)
 	}
-	opLeaf, err := ca.Issue(pki.LeafOptions{
-		Kind: pki.LeafOperator,
+	opCrtPEM, opKeyPEM, err := ca.IssueLeaf(certmgr.IssueLeafOptions{
+		Kind: certmgr.CALeafOperator,
 		Name: "test-op",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	opCrt, opKey, err := pki.WriteMaterial(dir, "operator-test-op", opLeaf)
+	opCrt, opKey, err := certmgr.WriteLeaf(dir, "operator-test-op", opCrtPEM, opKeyPEM)
 	if err != nil {
 		t.Fatal(err)
 	}

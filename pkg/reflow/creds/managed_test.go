@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/pki"
+	"github.com/twinfer/reflow/internal/certmgr"
 )
 
 // TestBuild_TLSManagedIssuer end-to-ends the certmagic-managed path:
@@ -19,7 +19,7 @@ import (
 func TestBuild_TLSManagedIssuer(t *testing.T) {
 	dir := t.TempDir()
 
-	ca, err := pki.NewCA("reflow-managed-test-ca")
+	ca, err := certmgr.MintCA("reflow-managed-test-ca")
 	if err != nil {
 		t.Fatal(err)
 	}

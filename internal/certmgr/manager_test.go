@@ -8,12 +8,10 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/twinfer/reflow/internal/pki"
 )
 
 func TestManager_BuiltinIssuerProducesLeafWithPrincipalCN(t *testing.T) {
-	ca, err := pki.NewCA("reflow-test-ca")
+	ca, err := MintCA("reflow-test-ca")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +71,7 @@ func TestManager_BuiltinIssuerProducesLeafWithPrincipalCN(t *testing.T) {
 
 func TestManager_ReopenSameNodeOK_DifferentNodeRefuses(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "cm")
-	ca, err := pki.NewCA("reflow-test-ca")
+	ca, err := MintCA("reflow-test-ca")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +102,7 @@ func TestManager_ReopenSameNodeOK_DifferentNodeRefuses(t *testing.T) {
 }
 
 func TestBuiltinIssuer_RejectsMalformedPrincipal(t *testing.T) {
-	ca, err := pki.NewCA("ca")
+	ca, err := MintCA("ca")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,23 +10,20 @@ import (
 	"time"
 
 	"github.com/caddyserver/certmagic"
-
-	"github.com/twinfer/reflow/internal/pki"
 )
 
 // BuiltinIssuer is a certmagic.Issuer that signs leaves with a local
-// internal/pki.CA. CertMagic generates the private key + CSR; this
+// CA loaded from disk. CertMagic generates the private key + CSR; this
 // issuer takes the CSR's public key, ignores its SAN/CN, and writes a
 // fresh leaf whose CN is the principal Raw form (<kind>/<name>) supplied
-// at construction time. The CSR's identifier from ManageSync is opaque
-// to the issuer — it's only used by CertMagic's storage layout.
+// at construction time.
 //
 // One BuiltinIssuer issues exactly one principal's leaf; build a new one
 // per Manager rather than mutating principal at runtime.
 type BuiltinIssuer struct {
-	ca        *pki.CA
+	ca        *CA
 	principal string // "<kind>/<name>"
-	kind      pki.LeafKind
+	kind      CALeafKind
 	name      string
 	hosts     []string
 	validity  time.Duration
@@ -35,15 +32,14 @@ type BuiltinIssuer struct {
 // BuiltinOptions configures a BuiltinIssuer.
 type BuiltinOptions struct {
 	// CA is the loaded signing CA. Must be non-nil.
-	CA *pki.CA
+	CA *CA
 	// Principal is the leaf's CN — "<kind>/<name>", e.g. "node/1".
 	Principal string
 	// Hosts are DNS / IP SANs to embed in the leaf, in addition to the
-	// CN-based identity. Empty is fine; the engine's TLS verifier checks
-	// the CN, not the SAN list.
+	// CN-based identity.
 	Hosts []string
 	// Validity is the leaf's lifetime. Zero falls back to
-	// pki.DefaultLeafValidity.
+	// CADefaultLeafValidity.
 	Validity time.Duration
 }
 
@@ -83,7 +79,7 @@ func (b *BuiltinIssuer) Issue(_ context.Context, csr *x509.CertificateRequest) (
 	for _, ip := range csr.IPAddresses {
 		hosts = append(hosts, ip.String())
 	}
-	der, err := b.ca.IssueForKey(pki.LeafOptions{
+	der, err := b.ca.IssueLeafForKey(IssueLeafOptions{
 		Kind:     b.kind,
 		Name:     b.name,
 		Hosts:    hosts,
@@ -104,10 +100,10 @@ func (b *BuiltinIssuer) Issue(_ context.Context, csr *x509.CertificateRequest) (
 // collisions cannot happen here.
 func (b *BuiltinIssuer) IssuerKey() string { return "reflow-builtin" }
 
-// splitPrincipal parses "<role>/<name>" into a LeafKind + name. Returns
+// splitPrincipal parses "<role>/<name>" into a CALeafKind + name. Returns
 // ok=false on anything that doesn't match the expected shape; node and
-// operator are the only roles known to internal/pki today.
-func splitPrincipal(raw string) (pki.LeafKind, string, bool) {
+// operator are the only roles known here.
+func splitPrincipal(raw string) (CALeafKind, string, bool) {
 	idx := strings.IndexByte(raw, '/')
 	if idx <= 0 || idx == len(raw)-1 {
 		return 0, "", false
@@ -115,9 +111,9 @@ func splitPrincipal(raw string) (pki.LeafKind, string, bool) {
 	role, name := raw[:idx], raw[idx+1:]
 	switch role {
 	case "node":
-		return pki.LeafNode, name, true
+		return CALeafNode, name, true
 	case "operator":
-		return pki.LeafOperator, name, true
+		return CALeafOperator, name, true
 	default:
 		return 0, "", false
 	}

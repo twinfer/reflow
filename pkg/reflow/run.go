@@ -2,10 +2,12 @@ package reflow
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	connect "connectrpc.com/connect"
@@ -14,6 +16,8 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflow/internal/bootstrap"
+	"github.com/twinfer/reflow/internal/certmgr"
 	"github.com/twinfer/reflow/internal/clusterctl"
 	"github.com/twinfer/reflow/internal/config"
 	"github.com/twinfer/reflow/internal/connectserver"
@@ -140,6 +144,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	webhookSourceNotifier := cluster.NewTableNotifier()
 	secretNotifier := cluster.NewTableNotifier()
 	caRootNotifier := cluster.NewTableNotifier()
+	joinTokenNotifier := cluster.NewTableNotifier()
 	lpOwnersNotifier := cluster.NewTableNotifier()
 	rebalanceDrainNotifier := cluster.NewTableNotifier()
 	tenantNotifier := cluster.NewTableNotifier()
@@ -176,6 +181,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			WebhookSourceTable:  webhookSourceNotifier,
 			SecretTable:         secretNotifier,
 			CARootTable:         caRootNotifier,
+			JoinTokenTable:      joinTokenNotifier,
 			LPOwnersTable:       lpOwnersNotifier,
 			RebalanceDrainTable: rebalanceDrainNotifier,
 			TenantTable:         tenantNotifier,
@@ -324,6 +330,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		webhookSourceNotifier:  webhookSourceNotifier,
 		secretNotifier:         secretNotifier,
 		caRootNotifier:         caRootNotifier,
+		joinTokenNotifier:      joinTokenNotifier,
 		lpOwnersNotifier:       lpOwnersNotifier,
 		tenantNotifier:         tenantNotifier,
 		tenantDEKNotifier:      tenantDEKNotifier,
@@ -497,6 +504,7 @@ type startupDeps struct {
 	webhookSourceNotifier  *cluster.TableNotifier
 	secretNotifier         *cluster.TableNotifier
 	caRootNotifier         *cluster.TableNotifier
+	joinTokenNotifier      *cluster.TableNotifier
 	lpOwnersNotifier       *cluster.TableNotifier
 	tenantNotifier         *cluster.TableNotifier
 	tenantDEKNotifier      *cluster.TableNotifier
@@ -559,9 +567,11 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	}
 
 	var (
-		adminSrv     *connectserver.Server
-		snapshotCxl  context.CancelFunc
-		snapshotRepo *snapshot.BlobRepository
+		adminSrv      *connectserver.Server
+		bootstrapSrv  *connectserver.Server
+		bootstrapCred *creds.ListenerCreds
+		snapshotCxl   context.CancelFunc
+		snapshotRepo  *snapshot.BlobRepository
 	)
 
 	var snapshotRepoIface snapshot.Repository
@@ -733,6 +743,69 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		}
 	}()
 
+	// Bootstrap listener: opt-in, TLS-without-client-cert. Hosts the
+	// MeshSign service. The ClusterIssuer requires shard 0 to carry an
+	// "active" CARoot row; without one we log + skip so an operator can
+	// `reflowd config ca init` (or run `--bootstrap` on this node) and
+	// restart to bring the listener up.
+	if !cfg.Bootstrap.Disabled && cfg.Bootstrap.Addr != "" {
+		bsCreds, perr := creds.Build(cfg.Bootstrap.Creds, logger)
+		if perr != nil {
+			return nil, fmt.Errorf("reflow: bootstrap creds: %w", perr)
+		}
+		bootstrapCred = bsCreds
+		// The bootstrap port intentionally never requires a client
+		// cert — joiners haven't been issued one yet. Force-clear
+		// ClientAuth on the server side so an operator-shipped creds
+		// spec with client_auth=true doesn't silently render the
+		// bootstrap port unreachable from a virgin joiner.
+		if bsCreds.ServerTLSConfig != nil {
+			bsCreds.ServerTLSConfig.ClientAuth = tls.NoClientCert
+			bsCreds.ServerTLSConfig.ClientCAs = nil
+		}
+		issueCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		issuer, ierr := certmgr.NewClusterIssuer(issueCtx, certmgr.ClusterOptions{
+			Reader:    caRootReader{host: eh},
+			Keys:      secrets,
+			Principal: "node/" + strconv.FormatUint(cfg.Node.ID, 10),
+			Validity:  cfg.Bootstrap.LeafValidity,
+		})
+		cancel()
+		if ierr != nil {
+			logger.Warn("reflow: bootstrap listener skipped — no CA active yet",
+				"err", ierr,
+				"hint", "run --bootstrap on the first node or use `reflowd config ca init`")
+		} else {
+			// Once the cluster CA is active, the same ClusterIssuer
+			// powers IssueOperator on the Config admin RPC. Late-bind so
+			// the operator-facing `reflowd config issue-operator` flow
+			// works without a restart.
+			configSrv.SetOperatorIssuer(issuer)
+			bsServer, berr := bootstrap.NewServer(bootstrap.Config{
+				Host:         eh,
+				Runner:       runner,
+				Issuer:       issuer,
+				Log:          logger,
+				LeafValidity: cfg.Bootstrap.LeafValidity,
+			})
+			if berr != nil {
+				return nil, fmt.Errorf("reflow: bootstrap server: %w", berr)
+			}
+			bsPath, bsH := bsServer.NewHandler()
+			bs, lErr := connectserver.New(ctx, connectserver.Config{
+				Addr: cfg.Bootstrap.Addr,
+				TLS:  bsCreds.ServerTLSConfig,
+				Log:  logger,
+			}, connectserver.Route{Path: bsPath, Handler: bsH})
+			if lErr != nil {
+				return nil, fmt.Errorf("reflow: bootstrap listener: %w", lErr)
+			}
+			bootstrapSrv = bs
+			logger.Info("reflow: bootstrap listening", "addr", bs.Addr(),
+				"driver", string(bsCreds.Driver))
+		}
+	}
+
 	// TenantDEKResolver was constructed pre-HostConfig and handed to
 	// the encstore wrapper at the StoreFactory closures. The reconcile
 	// loop starts here so the Reader adapter has a live *engine.Host.
@@ -871,6 +944,8 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		deliveryCreds:  deliveryCreds,
 		adminSrv:       adminSrv,
 		adminCreds:     adminCreds,
+		bootstrapSrv:   bootstrapSrv,
+		bootstrapCreds: bootstrapCred,
 		authCloser:     authCloser,
 		snapshotCxl:    snapshotCxl,
 		snapshotRepo:   snapshotRepo,
@@ -933,6 +1008,23 @@ func (r secretReader) ListSecrets(ctx context.Context) ([]*enginev1.SecretRecord
 	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	list, err := r.host.Secrets(readCtx)
+	if err != nil {
+		return nil, 0, err
+	}
+	return list.Records, list.TableRevision, nil
+}
+
+// caRootReader is the certmgr.CARootReader adapter the bootstrap
+// listener's ClusterIssuer uses to pull the active CA snapshot from
+// shard 0.
+type caRootReader struct {
+	host *engine.Host
+}
+
+func (r caRootReader) CARoots(ctx context.Context) ([]*enginev1.CARootRecord, uint64, error) {
+	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	list, err := r.host.CARoots(readCtx)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/pki"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -39,9 +38,9 @@ func (f *fakeKeys) LookupForCASigning(name string) ([]byte, error) {
 	return b, nil
 }
 
-func newFakeBackends(t *testing.T, rowName, secretName string) (*fakeReader, *fakeKeys, *pki.CA) {
+func newFakeBackends(t *testing.T, rowName, secretName string) (*fakeReader, *fakeKeys, *CA) {
 	t.Helper()
-	ca, err := pki.NewCA("reflow-cluster-test-ca")
+	ca, err := MintCA("reflow-cluster-test-ca")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +124,7 @@ func TestClusterIssuer_RefreshFailsWhenSigningKeyMissing(t *testing.T) {
 func TestClusterIssuer_CertKeyMismatchRejected(t *testing.T) {
 	reader, _, _ := newFakeBackends(t, "active", "ca/root/active")
 	// Resolve to a different CA's key
-	other, err := pki.NewCA("other-ca")
+	other, err := MintCA("other-ca")
 	if err != nil {
 		t.Fatal(err)
 	}

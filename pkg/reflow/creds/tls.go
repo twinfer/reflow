@@ -15,7 +15,6 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	"github.com/twinfer/reflow/internal/certmgr"
-	"github.com/twinfer/reflow/internal/pki"
 )
 
 // TLSSpec is the TLS configuration. Two modes are supported:
@@ -234,7 +233,7 @@ func buildIssuer(is *IssuerSpec) (*certmgr.BuiltinIssuer, error) {
 		if is.Builtin == nil {
 			return nil, errors.New("reflow/creds: tls.issuer.builtin is required for builtin issuer type")
 		}
-		ca, err := pki.LoadCA(is.Builtin.CACertFile, is.Builtin.CAKeyFile)
+		ca, err := certmgr.LoadCA(is.Builtin.CACertFile, is.Builtin.CAKeyFile)
 		if err != nil {
 			return nil, fmt.Errorf("reflow/creds: load issuer CA: %w", err)
 		}

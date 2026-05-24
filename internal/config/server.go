@@ -32,6 +32,7 @@ import (
 	connect "connectrpc.com/connect"
 	"github.com/google/uuid"
 
+	"github.com/twinfer/reflow/internal/certmgr"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/cluster"
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
@@ -56,6 +57,10 @@ type Server struct {
 	runner *engine.MetadataRunner
 	log    *slog.Logger
 	signer handlerclient.Signer
+	// operatorIssuer signs IssueOperator CSRs against the active cluster
+	// CA. Optional: when nil (e.g. before a CA root exists), the
+	// IssueOperator RPC returns FailedPrecondition.
+	operatorIssuer *certmgr.ClusterIssuer
 
 	adminCallTimeout time.Duration
 }
@@ -68,6 +73,9 @@ type Config struct {
 	// Signer, when non-nil, mints a JWT on outgoing
 	// DiscoveryService.Discover requests during RegisterDeployment.
 	Signer handlerclient.Signer
+	// OperatorIssuer, when non-nil, enables the IssueOperator RPC. Used
+	// to sign operator-supplied CSRs against the active cluster CA.
+	OperatorIssuer *certmgr.ClusterIssuer
 }
 
 // NewServer constructs the Config server.
@@ -83,6 +91,7 @@ func NewServer(cfg Config) (*Server, error) {
 		runner:           cfg.Runner,
 		log:              cfg.Log,
 		signer:           cfg.Signer,
+		operatorIssuer:   cfg.OperatorIssuer,
 		adminCallTimeout: 30 * time.Second,
 	}, nil
 }
@@ -91,6 +100,14 @@ func NewServer(cfg Config) (*Server, error) {
 // connectserver. opts is forwarded to the generated handler.
 func (s *Server) NewHandler(opts ...connect.HandlerOption) (string, http.Handler) {
 	return configv1connect.NewConfigHandler(s, opts...)
+}
+
+// SetOperatorIssuer attaches a ClusterIssuer for the IssueOperator RPC.
+// Late-bound because the issuer requires shard 0 to have an active CA
+// row, which the operator may populate after the listener comes up.
+// Calling with nil disables IssueOperator (returns FailedPrecondition).
+func (s *Server) SetOperatorIssuer(issuer *certmgr.ClusterIssuer) {
+	s.operatorIssuer = issuer
 }
 
 // requireLeader returns CodeUnavailable when this node is not the

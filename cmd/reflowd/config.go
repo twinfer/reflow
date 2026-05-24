@@ -17,7 +17,7 @@ import (
 // hosted on the same admin Connect listener as ClusterCtl.
 func dispatchConfig(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: reflowd config {register-deployment|list-deployments|describe-deployment|delete-deployment|eventsources|webhooks|apply|export|get|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|upsert-webhook} [flags]")
+		return fmt.Errorf("usage: reflowd config {register-deployment|list-deployments|describe-deployment|delete-deployment|eventsources|webhooks|apply|export|get|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|upsert-webhook|audit|ca|create-join-token|list-join-tokens|delete-join-token|issue-operator} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -56,6 +56,14 @@ func dispatchConfig(ctx context.Context, args []string) error {
 		return cmdAudit(ctx, rest)
 	case "ca":
 		return dispatchCA(ctx, rest)
+	case "create-join-token":
+		return cmdCreateJoinToken(ctx, rest)
+	case "list-join-tokens":
+		return cmdListJoinTokens(ctx, rest)
+	case "delete-join-token":
+		return cmdDeleteJoinToken(ctx, rest)
+	case "issue-operator":
+		return cmdIssueOperator(ctx, rest)
 	default:
 		return fmt.Errorf("reflowd config: unknown subcommand %q", sub)
 	}

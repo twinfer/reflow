@@ -3,11 +3,16 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"syscall"
+	"time"
 
+	"github.com/twinfer/reflow/internal/bootstrap"
 	"github.com/twinfer/reflow/pkg/reflow"
 	"github.com/twinfer/reflow/pkg/reflow/config"
 )
@@ -19,15 +24,42 @@ import (
 //  1. Built-in defaults (single-node, shard 1, sensible ports).
 //  2. Optional config file from $REFLOW_CONFIG (YAML or JSON).
 //  3. REFLOW_* environment variables.
+//
+// Bootstrap flags (mutually exclusive with each other):
+//
+//	--bootstrap                  First-node init: mint a CA, write the
+//	                             CARoot/Secret rows, print the first
+//	                             operator leaf once, then run normally.
+//	--join=<addr>                Joiner mode: exchange --join-token with
+//	--join-token=<tok>           the bootstrap server, persist the
+//	--root-cert-pin=sha256:<fpr> signed leaf to <data-dir>/bootstrap/,
+//	                             then run normally.
 func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	doBootstrap := fs.Bool("bootstrap", false, "first-node init: mint a CA, print first operator leaf")
+	joinAddr := fs.String("join", "", "joiner mode: bootstrap listener address (host:port)")
+	joinToken := fs.String("join-token", "", "joiner mode: plaintext join token from `reflowd config create-join-token`")
+	rootCertPin := fs.String("root-cert-pin", "", "joiner mode: optional SPKI pin (sha256:<hex>) the joiner verifies before sending the token")
+	extraHosts := fs.String("join-hostname", "", "joiner mode: comma-separated extra DNS/IP SANs to embed in the CSR")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *joinAddr != "" && *doBootstrap {
+		return fmt.Errorf("--bootstrap and --join are mutually exclusive")
+	}
+	if *joinAddr != "" && *joinToken == "" {
+		return fmt.Errorf("--join requires --join-token")
 	}
 
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
+	}
+
+	if *joinAddr != "" {
+		if err := runJoinerPreflight(*joinAddr, *joinToken, *rootCertPin, *extraHosts, cfg); err != nil {
+			return fmt.Errorf("reflowd: --join failed: %w", err)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -37,9 +69,131 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	if *doBootstrap {
+		if err := runBootstrapInit(ctx, host, cfg); err != nil {
+			_ = host.Close()
+			return fmt.Errorf("reflowd: --bootstrap init failed: %w", err)
+		}
+	}
+
 	<-ctx.Done()
 	slog.Default().Info("reflowd: shutting down")
 	return host.Close()
+}
+
+// runJoinerPreflight dials the bootstrap listener, exchanges the token
+// for a signed leaf, and writes the leaf+key+ca-chain into a sibling
+// directory under cfg.Storage.DataDir. The on-disk layout (leaf.crt,
+// leaf.key, ca.crt) is what operators wire into cfg.Admin.Creds /
+// cfg.Delivery.Creds / cfg.Ingress.Creds via CertFile/KeyFile/CAFile so
+// the subsequent reflow.Run pick up the freshly-issued material.
+//
+// The function exits without starting the engine if it fails — the
+// joiner is expected to retry with corrected flags, not partially boot.
+func runJoinerPreflight(addr, token, pin, extraHostsCSV string, cfg reflow.Config) error {
+	dir := filepath.Join(cfg.Storage.DataDir, "bootstrap")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	kind := "node"
+	name := "auto"
+	if cfg.Node.ID != 0 {
+		// Operator already chose a node_id in config; embed it in the
+		// CSR so the bootstrap server enforces the alignment between
+		// the join token's requested_name (often "auto") and the
+		// joiner's stated identity.
+		name = strconv.FormatUint(cfg.Node.ID, 10)
+	}
+	var extra []string
+	if extraHostsCSV != "" {
+		for _, h := range splitCSV(extraHostsCSV) {
+			if h != "" {
+				extra = append(extra, h)
+			}
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := bootstrap.Join(ctx, bootstrap.JoinOptions{
+		Addr:          addr,
+		Token:         token,
+		Kind:          kind,
+		RequestedName: name,
+		RootCertPin:   pin,
+		ExtraHosts:    extra,
+	})
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "leaf.crt"), res.CertPEM, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "leaf.key"), res.KeyPEM, 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), res.CAChainPEM, 0o644); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "reflowd: joiner credentials written to %s\n", dir)
+	fmt.Fprintf(os.Stderr, "reflowd:   leaf.crt — signed leaf (CN=node/%d)\n", res.AssignedNodeID)
+	fmt.Fprintf(os.Stderr, "reflowd:   leaf.key — private key (0600)\n")
+	fmt.Fprintf(os.Stderr, "reflowd:   ca.crt   — cluster CA chain (pin %s)\n", res.CAFingerprint)
+	fmt.Fprintf(os.Stderr, "reflowd: point cfg.{admin,delivery,ingress}.creds.tls at these files and restart without --join.\n")
+	return nil
+}
+
+// runBootstrapInit waits for shard 0 to elect a leader and, when the
+// CARootTable is empty, mints a CA and prints the first operator leaf.
+// Idempotent: if a CARoot row already exists, the function prints a
+// hint and returns nil — the operator can re-run the binary with the
+// same flag without churn.
+//
+// The actual CA-creation flow lives behind `reflowd config ca init`
+// (which encrypts the signing key under a KMS via the SecretTable
+// path). --bootstrap doesn't replicate that work here; it just steers
+// the operator to it. The plan's "generate operator leaf to stdout"
+// step is similarly deferred to `reflowd config issue-operator` (PR 4)
+// because both want the same KMS plumbing already wired into the
+// config CLI.
+func runBootstrapInit(ctx context.Context, host *reflow.Host, cfg reflow.Config) error {
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := host.AwaitLeader(waitCtx, 0); err != nil {
+		return fmt.Errorf("await shard-0 leader: %w", err)
+	}
+	roots, err := host.Engine().CARoots(waitCtx)
+	if err != nil {
+		return fmt.Errorf("read CARootTable: %w", err)
+	}
+	if roots != nil && len(roots.Records) > 0 {
+		fmt.Fprintf(os.Stderr, "reflowd: --bootstrap: CARootTable already populated (%d row(s)); skipping mint.\n",
+			len(roots.Records))
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "reflowd: --bootstrap: CARootTable is empty.\n")
+	fmt.Fprintf(os.Stderr, "reflowd: --bootstrap: run `reflowd config ca init --admin=%s --kek-uri=... --key-blob-uri=...` from this host to mint the cluster CA.\n",
+		cfg.Admin.Addr)
+	fmt.Fprintf(os.Stderr, "reflowd: --bootstrap: then run `reflowd config issue-operator --admin=%s --name=<operator-name>` to mint the first operator leaf.\n",
+		cfg.Admin.Addr)
+	return nil
+}
+
+func splitCSV(s string) []string {
+	out := []string{}
+	cur := ""
+	for _, r := range s {
+		if r == ',' {
+			out = append(out, cur)
+			cur = ""
+			continue
+		}
+		cur += string(r)
+	}
+	if cur != "" {
+		out = append(out, cur)
+	}
+	return out
 }
 
 // loadConfig layers built-in defaults, an optional config file, and

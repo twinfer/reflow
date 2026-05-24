@@ -544,6 +544,71 @@ func (t CARootTable) List() ([]*enginev1.CARootRecord, error) {
 	return out, iter.Error()
 }
 
+// JoinTokenTable persists JoinTokenRecord rows keyed by the
+// sha256(token_plaintext). Lives on shard 0; the bootstrap server
+// SyncReads it on each MeshSign call to locate the redeemed token,
+// then ConsumeJoinToken-proposes to atomically mark single_use rows
+// consumed before issuing a leaf.
+type JoinTokenTable struct{ S storage.Reader }
+
+func (t JoinTokenTable) Get(tokenHash []byte) (*enginev1.JoinTokenRecord, error) {
+	val, closer, err := t.S.Get(JoinTokenKey(tokenHash))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer closer.Close()
+	var rec enginev1.JoinTokenRecord
+	if err := proto.Unmarshal(val, &rec); err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (t JoinTokenTable) Put(b storage.Batch, rec *enginev1.JoinTokenRecord) error {
+	if len(rec.GetTokenHash()) == 0 {
+		return errors.New("JoinTokenTable.Put: empty token_hash")
+	}
+	buf, err := proto.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return b.Set(JoinTokenKey(rec.GetTokenHash()), buf)
+}
+
+// Delete removes the row for tokenHash. Delete-of-absent is a no-op.
+func (t JoinTokenTable) Delete(b storage.Batch, tokenHash []byte) error {
+	if len(tokenHash) == 0 {
+		return errors.New("JoinTokenTable.Delete: empty token_hash")
+	}
+	return b.Delete(JoinTokenKey(tokenHash))
+}
+
+// List returns every JoinTokenRecord in lexicographic token-hash order.
+func (t JoinTokenTable) List() ([]*enginev1.JoinTokenRecord, error) {
+	prefix := JoinTokenPrefix()
+	upper := prefixUpperBound(prefix)
+	iter, err := t.S.NewIter(prefix, upper)
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	var out []*enginev1.JoinTokenRecord
+	for ok := iter.First(); ok; ok = iter.Next() {
+		if !bytes.HasPrefix(iter.Key(), prefix) {
+			continue
+		}
+		var rec enginev1.JoinTokenRecord
+		if err := proto.Unmarshal(iter.Value(), &rec); err != nil {
+			return nil, err
+		}
+		out = append(out, &rec)
+	}
+	return out, iter.Error()
+}
+
 // LPOwnersTable persists LPOwnerRecord rows keyed by lp ∈ [0, LPCount).
 // Lives on shard 0 alongside the other cluster-managed config tables.
 // Per-node routing Reconcilers SyncRead the table on each TableNotifier

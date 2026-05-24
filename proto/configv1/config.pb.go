@@ -1766,6 +1766,457 @@ func (x *ListAuditLogResponse) GetMore() bool {
 	return false
 }
 
+// CreateJoinTokenRequest configures a one-time bootstrap credential.
+//   - kind: NODE for a `reflowd run --join` flow, OPERATOR for
+//     `reflowd config issue-operator` (the operator generates the
+//     keypair locally and submits a CSR — same RPC, different path
+//     into the cluster).
+//   - requested_name: the CN-name segment the joiner will use. For
+//     node tokens, "auto" lets the bootstrap server allocate the
+//     next free node_id at redemption time. For operator tokens, the
+//     name is mandatory (operator-chosen, never "auto").
+//   - ttl_seconds: how long the token remains redeemable. The
+//     bootstrap server rejects with PermissionDenied once exceeded.
+//     Zero means no TTL (single_use is still enforced — once spent,
+//     the row stays in the table but cannot be redeemed again).
+//   - single_use: true (the default) marks the row as spent on the
+//     first successful MeshSign redemption. false produces a token
+//     that can be redeemed repeatedly until expiry — used sparingly
+//     for ephemeral CI scenarios.
+type CreateJoinTokenRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Kind          enginev1.JoinTokenKind `protobuf:"varint,1,opt,name=kind,proto3,enum=reflow.engine.v1.JoinTokenKind" json:"kind,omitempty"`
+	RequestedName string                 `protobuf:"bytes,2,opt,name=requested_name,json=requestedName,proto3" json:"requested_name,omitempty"`
+	TtlSeconds    uint64                 `protobuf:"varint,3,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`
+	SingleUse     bool                   `protobuf:"varint,4,opt,name=single_use,json=singleUse,proto3" json:"single_use,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateJoinTokenRequest) Reset() {
+	*x = CreateJoinTokenRequest{}
+	mi := &file_configv1_config_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateJoinTokenRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateJoinTokenRequest) ProtoMessage() {}
+
+func (x *CreateJoinTokenRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateJoinTokenRequest.ProtoReflect.Descriptor instead.
+func (*CreateJoinTokenRequest) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *CreateJoinTokenRequest) GetKind() enginev1.JoinTokenKind {
+	if x != nil {
+		return x.Kind
+	}
+	return enginev1.JoinTokenKind(0)
+}
+
+func (x *CreateJoinTokenRequest) GetRequestedName() string {
+	if x != nil {
+		return x.RequestedName
+	}
+	return ""
+}
+
+func (x *CreateJoinTokenRequest) GetTtlSeconds() uint64 {
+	if x != nil {
+		return x.TtlSeconds
+	}
+	return 0
+}
+
+func (x *CreateJoinTokenRequest) GetSingleUse() bool {
+	if x != nil {
+		return x.SingleUse
+	}
+	return false
+}
+
+type CreateJoinTokenResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// token is the plaintext credential the operator forwards to the
+	// joiner. Shown exactly once; the server persists only sha256(token).
+	Token         string `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	TokenHash     []byte `protobuf:"bytes,2,opt,name=token_hash,json=tokenHash,proto3" json:"token_hash,omitempty"`
+	TableRevision uint64 `protobuf:"varint,3,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateJoinTokenResponse) Reset() {
+	*x = CreateJoinTokenResponse{}
+	mi := &file_configv1_config_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateJoinTokenResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateJoinTokenResponse) ProtoMessage() {}
+
+func (x *CreateJoinTokenResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateJoinTokenResponse.ProtoReflect.Descriptor instead.
+func (*CreateJoinTokenResponse) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *CreateJoinTokenResponse) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *CreateJoinTokenResponse) GetTokenHash() []byte {
+	if x != nil {
+		return x.TokenHash
+	}
+	return nil
+}
+
+func (x *CreateJoinTokenResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
+type DeleteJoinTokenRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// token_hash is the sha256(token) returned by ListJoinTokens.
+	TokenHash         []byte `protobuf:"bytes,1,opt,name=token_hash,json=tokenHash,proto3" json:"token_hash,omitempty"`
+	IfTableRevisionEq uint64 `protobuf:"varint,2,opt,name=if_table_revision_eq,json=ifTableRevisionEq,proto3" json:"if_table_revision_eq,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *DeleteJoinTokenRequest) Reset() {
+	*x = DeleteJoinTokenRequest{}
+	mi := &file_configv1_config_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteJoinTokenRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteJoinTokenRequest) ProtoMessage() {}
+
+func (x *DeleteJoinTokenRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteJoinTokenRequest.ProtoReflect.Descriptor instead.
+func (*DeleteJoinTokenRequest) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *DeleteJoinTokenRequest) GetTokenHash() []byte {
+	if x != nil {
+		return x.TokenHash
+	}
+	return nil
+}
+
+func (x *DeleteJoinTokenRequest) GetIfTableRevisionEq() uint64 {
+	if x != nil {
+		return x.IfTableRevisionEq
+	}
+	return 0
+}
+
+type DeleteJoinTokenResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TableRevision uint64                 `protobuf:"varint,1,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteJoinTokenResponse) Reset() {
+	*x = DeleteJoinTokenResponse{}
+	mi := &file_configv1_config_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteJoinTokenResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteJoinTokenResponse) ProtoMessage() {}
+
+func (x *DeleteJoinTokenResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteJoinTokenResponse.ProtoReflect.Descriptor instead.
+func (*DeleteJoinTokenResponse) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *DeleteJoinTokenResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
+type ListJoinTokensRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListJoinTokensRequest) Reset() {
+	*x = ListJoinTokensRequest{}
+	mi := &file_configv1_config_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListJoinTokensRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListJoinTokensRequest) ProtoMessage() {}
+
+func (x *ListJoinTokensRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListJoinTokensRequest.ProtoReflect.Descriptor instead.
+func (*ListJoinTokensRequest) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{39}
+}
+
+type ListJoinTokensResponse struct {
+	state         protoimpl.MessageState      `protogen:"open.v1"`
+	Records       []*enginev1.JoinTokenRecord `protobuf:"bytes,1,rep,name=records,proto3" json:"records,omitempty"`
+	TableRevision uint64                      `protobuf:"varint,2,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListJoinTokensResponse) Reset() {
+	*x = ListJoinTokensResponse{}
+	mi := &file_configv1_config_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListJoinTokensResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListJoinTokensResponse) ProtoMessage() {}
+
+func (x *ListJoinTokensResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListJoinTokensResponse.ProtoReflect.Descriptor instead.
+func (*ListJoinTokensResponse) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *ListJoinTokensResponse) GetRecords() []*enginev1.JoinTokenRecord {
+	if x != nil {
+		return x.Records
+	}
+	return nil
+}
+
+func (x *ListJoinTokensResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
+// IssueOperatorRequest carries an operator-generated CSR. Replaces the
+// deleted `reflowd pki issue-operator` flow. The operator keypair never
+// leaves the operator's machine; the server signs only the public key.
+type IssueOperatorRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// DER-encoded x509.CertificateRequest. Subject.CommonName must be
+	// "operator/<name>". validity is honored up to the server's
+	// configured ceiling (default 30 days; longer requests are clamped
+	// silently).
+	CsrDer          []byte `protobuf:"bytes,1,opt,name=csr_der,json=csrDer,proto3" json:"csr_der,omitempty"`
+	ValiditySeconds uint64 `protobuf:"varint,2,opt,name=validity_seconds,json=validitySeconds,proto3" json:"validity_seconds,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *IssueOperatorRequest) Reset() {
+	*x = IssueOperatorRequest{}
+	mi := &file_configv1_config_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IssueOperatorRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IssueOperatorRequest) ProtoMessage() {}
+
+func (x *IssueOperatorRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IssueOperatorRequest.ProtoReflect.Descriptor instead.
+func (*IssueOperatorRequest) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *IssueOperatorRequest) GetCsrDer() []byte {
+	if x != nil {
+		return x.CsrDer
+	}
+	return nil
+}
+
+func (x *IssueOperatorRequest) GetValiditySeconds() uint64 {
+	if x != nil {
+		return x.ValiditySeconds
+	}
+	return 0
+}
+
+type IssueOperatorResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CertPem       []byte                 `protobuf:"bytes,1,opt,name=cert_pem,json=certPem,proto3" json:"cert_pem,omitempty"`
+	CaChainPem    []byte                 `protobuf:"bytes,2,opt,name=ca_chain_pem,json=caChainPem,proto3" json:"ca_chain_pem,omitempty"`
+	CaFingerprint string                 `protobuf:"bytes,3,opt,name=ca_fingerprint,json=caFingerprint,proto3" json:"ca_fingerprint,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IssueOperatorResponse) Reset() {
+	*x = IssueOperatorResponse{}
+	mi := &file_configv1_config_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IssueOperatorResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IssueOperatorResponse) ProtoMessage() {}
+
+func (x *IssueOperatorResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IssueOperatorResponse.ProtoReflect.Descriptor instead.
+func (*IssueOperatorResponse) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *IssueOperatorResponse) GetCertPem() []byte {
+	if x != nil {
+		return x.CertPem
+	}
+	return nil
+}
+
+func (x *IssueOperatorResponse) GetCaChainPem() []byte {
+	if x != nil {
+		return x.CaChainPem
+	}
+	return nil
+}
+
+func (x *IssueOperatorResponse) GetCaFingerprint() string {
+	if x != nil {
+		return x.CaFingerprint
+	}
+	return ""
+}
+
 var File_configv1_config_proto protoreflect.FileDescriptor
 
 const file_configv1_config_proto_rawDesc = "" +
@@ -1861,7 +2312,37 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\x05limit\x18\x05 \x01(\rR\x05limit\"f\n" +
 	"\x14ListAuditLogResponse\x12:\n" +
 	"\arecords\x18\x01 \x03(\v2 .reflow.engine.v1.AuditLogRecordR\arecords\x12\x12\n" +
-	"\x04more\x18\x02 \x01(\bR\x04more2\xf0\r\n" +
+	"\x04more\x18\x02 \x01(\bR\x04more\"\xb4\x01\n" +
+	"\x16CreateJoinTokenRequest\x123\n" +
+	"\x04kind\x18\x01 \x01(\x0e2\x1f.reflow.engine.v1.JoinTokenKindR\x04kind\x12%\n" +
+	"\x0erequested_name\x18\x02 \x01(\tR\rrequestedName\x12\x1f\n" +
+	"\vttl_seconds\x18\x03 \x01(\x04R\n" +
+	"ttlSeconds\x12\x1d\n" +
+	"\n" +
+	"single_use\x18\x04 \x01(\bR\tsingleUse\"u\n" +
+	"\x17CreateJoinTokenResponse\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\x12\x1d\n" +
+	"\n" +
+	"token_hash\x18\x02 \x01(\fR\ttokenHash\x12%\n" +
+	"\x0etable_revision\x18\x03 \x01(\x04R\rtableRevision\"h\n" +
+	"\x16DeleteJoinTokenRequest\x12\x1d\n" +
+	"\n" +
+	"token_hash\x18\x01 \x01(\fR\ttokenHash\x12/\n" +
+	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"@\n" +
+	"\x17DeleteJoinTokenResponse\x12%\n" +
+	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"\x17\n" +
+	"\x15ListJoinTokensRequest\"|\n" +
+	"\x16ListJoinTokensResponse\x12;\n" +
+	"\arecords\x18\x01 \x03(\v2!.reflow.engine.v1.JoinTokenRecordR\arecords\x12%\n" +
+	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"Z\n" +
+	"\x14IssueOperatorRequest\x12\x17\n" +
+	"\acsr_der\x18\x01 \x01(\fR\x06csrDer\x12)\n" +
+	"\x10validity_seconds\x18\x02 \x01(\x04R\x0fvaliditySeconds\"{\n" +
+	"\x15IssueOperatorResponse\x12\x19\n" +
+	"\bcert_pem\x18\x01 \x01(\fR\acertPem\x12 \n" +
+	"\fca_chain_pem\x18\x02 \x01(\fR\n" +
+	"caChainPem\x12%\n" +
+	"\x0eca_fingerprint\x18\x03 \x01(\tR\rcaFingerprint2\x87\x11\n" +
 	"\x06Config\x12o\n" +
 	"\x12RegisterDeployment\x12+.reflow.config.v1.RegisterDeploymentRequest\x1a,.reflow.config.v1.RegisterDeploymentResponse\x12f\n" +
 	"\x0fListDeployments\x12(.reflow.config.v1.ListDeploymentsRequest\x1a).reflow.config.v1.ListDeploymentsResponse\x12o\n" +
@@ -1879,7 +2360,11 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\fListAuditLog\x12%.reflow.config.v1.ListAuditLogRequest\x1a&.reflow.config.v1.ListAuditLogResponse\x12]\n" +
 	"\fUpsertCARoot\x12%.reflow.config.v1.UpsertCARootRequest\x1a&.reflow.config.v1.UpsertCARootResponse\x12]\n" +
 	"\fDeleteCARoot\x12%.reflow.config.v1.DeleteCARootRequest\x1a&.reflow.config.v1.DeleteCARootResponse\x12Z\n" +
-	"\vListCARoots\x12$.reflow.config.v1.ListCARootsRequest\x1a%.reflow.config.v1.ListCARootsResponseB3Z1github.com/twinfer/reflow/proto/configv1;configv1b\x06proto3"
+	"\vListCARoots\x12$.reflow.config.v1.ListCARootsRequest\x1a%.reflow.config.v1.ListCARootsResponse\x12f\n" +
+	"\x0fCreateJoinToken\x12(.reflow.config.v1.CreateJoinTokenRequest\x1a).reflow.config.v1.CreateJoinTokenResponse\x12f\n" +
+	"\x0fDeleteJoinToken\x12(.reflow.config.v1.DeleteJoinTokenRequest\x1a).reflow.config.v1.DeleteJoinTokenResponse\x12c\n" +
+	"\x0eListJoinTokens\x12'.reflow.config.v1.ListJoinTokensRequest\x1a(.reflow.config.v1.ListJoinTokensResponse\x12`\n" +
+	"\rIssueOperator\x12&.reflow.config.v1.IssueOperatorRequest\x1a'.reflow.config.v1.IssueOperatorResponseB3Z1github.com/twinfer/reflow/proto/configv1;configv1b\x06proto3"
 
 var (
 	file_configv1_config_proto_rawDescOnce sync.Once
@@ -1893,7 +2378,7 @@ func file_configv1_config_proto_rawDescGZIP() []byte {
 	return file_configv1_config_proto_rawDescData
 }
 
-var file_configv1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
+var file_configv1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 43)
 var file_configv1_config_proto_goTypes = []any{
 	(*RegisterDeploymentRequest)(nil),    // 0: reflow.config.v1.RegisterDeploymentRequest
 	(*RegisterDeploymentResponse)(nil),   // 1: reflow.config.v1.RegisterDeploymentResponse
@@ -1930,64 +2415,84 @@ var file_configv1_config_proto_goTypes = []any{
 	(*LeaderHint)(nil),                   // 32: reflow.config.v1.LeaderHint
 	(*ListAuditLogRequest)(nil),          // 33: reflow.config.v1.ListAuditLogRequest
 	(*ListAuditLogResponse)(nil),         // 34: reflow.config.v1.ListAuditLogResponse
-	(*enginev1.DeploymentRecord)(nil),    // 35: reflow.engine.v1.DeploymentRecord
-	(*enginev1.EventSourceRecord)(nil),   // 36: reflow.engine.v1.EventSourceRecord
-	(*enginev1.WebhookSourceRecord)(nil), // 37: reflow.engine.v1.WebhookSourceRecord
-	(*enginev1.SecretRecord)(nil),        // 38: reflow.engine.v1.SecretRecord
-	(*enginev1.CARootRecord)(nil),        // 39: reflow.engine.v1.CARootRecord
-	(*enginev1.AuditLogRecord)(nil),      // 40: reflow.engine.v1.AuditLogRecord
+	(*CreateJoinTokenRequest)(nil),       // 35: reflow.config.v1.CreateJoinTokenRequest
+	(*CreateJoinTokenResponse)(nil),      // 36: reflow.config.v1.CreateJoinTokenResponse
+	(*DeleteJoinTokenRequest)(nil),       // 37: reflow.config.v1.DeleteJoinTokenRequest
+	(*DeleteJoinTokenResponse)(nil),      // 38: reflow.config.v1.DeleteJoinTokenResponse
+	(*ListJoinTokensRequest)(nil),        // 39: reflow.config.v1.ListJoinTokensRequest
+	(*ListJoinTokensResponse)(nil),       // 40: reflow.config.v1.ListJoinTokensResponse
+	(*IssueOperatorRequest)(nil),         // 41: reflow.config.v1.IssueOperatorRequest
+	(*IssueOperatorResponse)(nil),        // 42: reflow.config.v1.IssueOperatorResponse
+	(*enginev1.DeploymentRecord)(nil),    // 43: reflow.engine.v1.DeploymentRecord
+	(*enginev1.EventSourceRecord)(nil),   // 44: reflow.engine.v1.EventSourceRecord
+	(*enginev1.WebhookSourceRecord)(nil), // 45: reflow.engine.v1.WebhookSourceRecord
+	(*enginev1.SecretRecord)(nil),        // 46: reflow.engine.v1.SecretRecord
+	(*enginev1.CARootRecord)(nil),        // 47: reflow.engine.v1.CARootRecord
+	(*enginev1.AuditLogRecord)(nil),      // 48: reflow.engine.v1.AuditLogRecord
+	(enginev1.JoinTokenKind)(0),          // 49: reflow.engine.v1.JoinTokenKind
+	(*enginev1.JoinTokenRecord)(nil),     // 50: reflow.engine.v1.JoinTokenRecord
 }
 var file_configv1_config_proto_depIdxs = []int32{
-	35, // 0: reflow.config.v1.ListDeploymentsResponse.deployments:type_name -> reflow.engine.v1.DeploymentRecord
-	35, // 1: reflow.config.v1.DescribeDeploymentResponse.deployment:type_name -> reflow.engine.v1.DeploymentRecord
-	36, // 2: reflow.config.v1.UpsertEventSourceRequest.record:type_name -> reflow.engine.v1.EventSourceRecord
-	36, // 3: reflow.config.v1.ListEventSourcesResponse.sources:type_name -> reflow.engine.v1.EventSourceRecord
-	37, // 4: reflow.config.v1.UpsertWebhookSourceRequest.record:type_name -> reflow.engine.v1.WebhookSourceRecord
-	37, // 5: reflow.config.v1.ListWebhookSourcesResponse.sources:type_name -> reflow.engine.v1.WebhookSourceRecord
-	38, // 6: reflow.config.v1.UpsertSecretRequest.record:type_name -> reflow.engine.v1.SecretRecord
-	38, // 7: reflow.config.v1.ListSecretsResponse.records:type_name -> reflow.engine.v1.SecretRecord
-	39, // 8: reflow.config.v1.UpsertCARootRequest.record:type_name -> reflow.engine.v1.CARootRecord
-	39, // 9: reflow.config.v1.ListCARootsResponse.records:type_name -> reflow.engine.v1.CARootRecord
-	40, // 10: reflow.config.v1.ListAuditLogResponse.records:type_name -> reflow.engine.v1.AuditLogRecord
-	0,  // 11: reflow.config.v1.Config.RegisterDeployment:input_type -> reflow.config.v1.RegisterDeploymentRequest
-	2,  // 12: reflow.config.v1.Config.ListDeployments:input_type -> reflow.config.v1.ListDeploymentsRequest
-	4,  // 13: reflow.config.v1.Config.DescribeDeployment:input_type -> reflow.config.v1.DescribeDeploymentRequest
-	6,  // 14: reflow.config.v1.Config.DeleteDeployment:input_type -> reflow.config.v1.DeleteDeploymentRequest
-	8,  // 15: reflow.config.v1.Config.UpsertEventSource:input_type -> reflow.config.v1.UpsertEventSourceRequest
-	10, // 16: reflow.config.v1.Config.DeleteEventSource:input_type -> reflow.config.v1.DeleteEventSourceRequest
-	12, // 17: reflow.config.v1.Config.ListEventSources:input_type -> reflow.config.v1.ListEventSourcesRequest
-	14, // 18: reflow.config.v1.Config.UpsertWebhookSource:input_type -> reflow.config.v1.UpsertWebhookSourceRequest
-	16, // 19: reflow.config.v1.Config.DeleteWebhookSource:input_type -> reflow.config.v1.DeleteWebhookSourceRequest
-	18, // 20: reflow.config.v1.Config.ListWebhookSources:input_type -> reflow.config.v1.ListWebhookSourcesRequest
-	20, // 21: reflow.config.v1.Config.UpsertSecret:input_type -> reflow.config.v1.UpsertSecretRequest
-	22, // 22: reflow.config.v1.Config.DeleteSecret:input_type -> reflow.config.v1.DeleteSecretRequest
-	24, // 23: reflow.config.v1.Config.ListSecrets:input_type -> reflow.config.v1.ListSecretsRequest
-	33, // 24: reflow.config.v1.Config.ListAuditLog:input_type -> reflow.config.v1.ListAuditLogRequest
-	26, // 25: reflow.config.v1.Config.UpsertCARoot:input_type -> reflow.config.v1.UpsertCARootRequest
-	28, // 26: reflow.config.v1.Config.DeleteCARoot:input_type -> reflow.config.v1.DeleteCARootRequest
-	30, // 27: reflow.config.v1.Config.ListCARoots:input_type -> reflow.config.v1.ListCARootsRequest
-	1,  // 28: reflow.config.v1.Config.RegisterDeployment:output_type -> reflow.config.v1.RegisterDeploymentResponse
-	3,  // 29: reflow.config.v1.Config.ListDeployments:output_type -> reflow.config.v1.ListDeploymentsResponse
-	5,  // 30: reflow.config.v1.Config.DescribeDeployment:output_type -> reflow.config.v1.DescribeDeploymentResponse
-	7,  // 31: reflow.config.v1.Config.DeleteDeployment:output_type -> reflow.config.v1.DeleteDeploymentResponse
-	9,  // 32: reflow.config.v1.Config.UpsertEventSource:output_type -> reflow.config.v1.UpsertEventSourceResponse
-	11, // 33: reflow.config.v1.Config.DeleteEventSource:output_type -> reflow.config.v1.DeleteEventSourceResponse
-	13, // 34: reflow.config.v1.Config.ListEventSources:output_type -> reflow.config.v1.ListEventSourcesResponse
-	15, // 35: reflow.config.v1.Config.UpsertWebhookSource:output_type -> reflow.config.v1.UpsertWebhookSourceResponse
-	17, // 36: reflow.config.v1.Config.DeleteWebhookSource:output_type -> reflow.config.v1.DeleteWebhookSourceResponse
-	19, // 37: reflow.config.v1.Config.ListWebhookSources:output_type -> reflow.config.v1.ListWebhookSourcesResponse
-	21, // 38: reflow.config.v1.Config.UpsertSecret:output_type -> reflow.config.v1.UpsertSecretResponse
-	23, // 39: reflow.config.v1.Config.DeleteSecret:output_type -> reflow.config.v1.DeleteSecretResponse
-	25, // 40: reflow.config.v1.Config.ListSecrets:output_type -> reflow.config.v1.ListSecretsResponse
-	34, // 41: reflow.config.v1.Config.ListAuditLog:output_type -> reflow.config.v1.ListAuditLogResponse
-	27, // 42: reflow.config.v1.Config.UpsertCARoot:output_type -> reflow.config.v1.UpsertCARootResponse
-	29, // 43: reflow.config.v1.Config.DeleteCARoot:output_type -> reflow.config.v1.DeleteCARootResponse
-	31, // 44: reflow.config.v1.Config.ListCARoots:output_type -> reflow.config.v1.ListCARootsResponse
-	28, // [28:45] is the sub-list for method output_type
-	11, // [11:28] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	43, // 0: reflow.config.v1.ListDeploymentsResponse.deployments:type_name -> reflow.engine.v1.DeploymentRecord
+	43, // 1: reflow.config.v1.DescribeDeploymentResponse.deployment:type_name -> reflow.engine.v1.DeploymentRecord
+	44, // 2: reflow.config.v1.UpsertEventSourceRequest.record:type_name -> reflow.engine.v1.EventSourceRecord
+	44, // 3: reflow.config.v1.ListEventSourcesResponse.sources:type_name -> reflow.engine.v1.EventSourceRecord
+	45, // 4: reflow.config.v1.UpsertWebhookSourceRequest.record:type_name -> reflow.engine.v1.WebhookSourceRecord
+	45, // 5: reflow.config.v1.ListWebhookSourcesResponse.sources:type_name -> reflow.engine.v1.WebhookSourceRecord
+	46, // 6: reflow.config.v1.UpsertSecretRequest.record:type_name -> reflow.engine.v1.SecretRecord
+	46, // 7: reflow.config.v1.ListSecretsResponse.records:type_name -> reflow.engine.v1.SecretRecord
+	47, // 8: reflow.config.v1.UpsertCARootRequest.record:type_name -> reflow.engine.v1.CARootRecord
+	47, // 9: reflow.config.v1.ListCARootsResponse.records:type_name -> reflow.engine.v1.CARootRecord
+	48, // 10: reflow.config.v1.ListAuditLogResponse.records:type_name -> reflow.engine.v1.AuditLogRecord
+	49, // 11: reflow.config.v1.CreateJoinTokenRequest.kind:type_name -> reflow.engine.v1.JoinTokenKind
+	50, // 12: reflow.config.v1.ListJoinTokensResponse.records:type_name -> reflow.engine.v1.JoinTokenRecord
+	0,  // 13: reflow.config.v1.Config.RegisterDeployment:input_type -> reflow.config.v1.RegisterDeploymentRequest
+	2,  // 14: reflow.config.v1.Config.ListDeployments:input_type -> reflow.config.v1.ListDeploymentsRequest
+	4,  // 15: reflow.config.v1.Config.DescribeDeployment:input_type -> reflow.config.v1.DescribeDeploymentRequest
+	6,  // 16: reflow.config.v1.Config.DeleteDeployment:input_type -> reflow.config.v1.DeleteDeploymentRequest
+	8,  // 17: reflow.config.v1.Config.UpsertEventSource:input_type -> reflow.config.v1.UpsertEventSourceRequest
+	10, // 18: reflow.config.v1.Config.DeleteEventSource:input_type -> reflow.config.v1.DeleteEventSourceRequest
+	12, // 19: reflow.config.v1.Config.ListEventSources:input_type -> reflow.config.v1.ListEventSourcesRequest
+	14, // 20: reflow.config.v1.Config.UpsertWebhookSource:input_type -> reflow.config.v1.UpsertWebhookSourceRequest
+	16, // 21: reflow.config.v1.Config.DeleteWebhookSource:input_type -> reflow.config.v1.DeleteWebhookSourceRequest
+	18, // 22: reflow.config.v1.Config.ListWebhookSources:input_type -> reflow.config.v1.ListWebhookSourcesRequest
+	20, // 23: reflow.config.v1.Config.UpsertSecret:input_type -> reflow.config.v1.UpsertSecretRequest
+	22, // 24: reflow.config.v1.Config.DeleteSecret:input_type -> reflow.config.v1.DeleteSecretRequest
+	24, // 25: reflow.config.v1.Config.ListSecrets:input_type -> reflow.config.v1.ListSecretsRequest
+	33, // 26: reflow.config.v1.Config.ListAuditLog:input_type -> reflow.config.v1.ListAuditLogRequest
+	26, // 27: reflow.config.v1.Config.UpsertCARoot:input_type -> reflow.config.v1.UpsertCARootRequest
+	28, // 28: reflow.config.v1.Config.DeleteCARoot:input_type -> reflow.config.v1.DeleteCARootRequest
+	30, // 29: reflow.config.v1.Config.ListCARoots:input_type -> reflow.config.v1.ListCARootsRequest
+	35, // 30: reflow.config.v1.Config.CreateJoinToken:input_type -> reflow.config.v1.CreateJoinTokenRequest
+	37, // 31: reflow.config.v1.Config.DeleteJoinToken:input_type -> reflow.config.v1.DeleteJoinTokenRequest
+	39, // 32: reflow.config.v1.Config.ListJoinTokens:input_type -> reflow.config.v1.ListJoinTokensRequest
+	41, // 33: reflow.config.v1.Config.IssueOperator:input_type -> reflow.config.v1.IssueOperatorRequest
+	1,  // 34: reflow.config.v1.Config.RegisterDeployment:output_type -> reflow.config.v1.RegisterDeploymentResponse
+	3,  // 35: reflow.config.v1.Config.ListDeployments:output_type -> reflow.config.v1.ListDeploymentsResponse
+	5,  // 36: reflow.config.v1.Config.DescribeDeployment:output_type -> reflow.config.v1.DescribeDeploymentResponse
+	7,  // 37: reflow.config.v1.Config.DeleteDeployment:output_type -> reflow.config.v1.DeleteDeploymentResponse
+	9,  // 38: reflow.config.v1.Config.UpsertEventSource:output_type -> reflow.config.v1.UpsertEventSourceResponse
+	11, // 39: reflow.config.v1.Config.DeleteEventSource:output_type -> reflow.config.v1.DeleteEventSourceResponse
+	13, // 40: reflow.config.v1.Config.ListEventSources:output_type -> reflow.config.v1.ListEventSourcesResponse
+	15, // 41: reflow.config.v1.Config.UpsertWebhookSource:output_type -> reflow.config.v1.UpsertWebhookSourceResponse
+	17, // 42: reflow.config.v1.Config.DeleteWebhookSource:output_type -> reflow.config.v1.DeleteWebhookSourceResponse
+	19, // 43: reflow.config.v1.Config.ListWebhookSources:output_type -> reflow.config.v1.ListWebhookSourcesResponse
+	21, // 44: reflow.config.v1.Config.UpsertSecret:output_type -> reflow.config.v1.UpsertSecretResponse
+	23, // 45: reflow.config.v1.Config.DeleteSecret:output_type -> reflow.config.v1.DeleteSecretResponse
+	25, // 46: reflow.config.v1.Config.ListSecrets:output_type -> reflow.config.v1.ListSecretsResponse
+	34, // 47: reflow.config.v1.Config.ListAuditLog:output_type -> reflow.config.v1.ListAuditLogResponse
+	27, // 48: reflow.config.v1.Config.UpsertCARoot:output_type -> reflow.config.v1.UpsertCARootResponse
+	29, // 49: reflow.config.v1.Config.DeleteCARoot:output_type -> reflow.config.v1.DeleteCARootResponse
+	31, // 50: reflow.config.v1.Config.ListCARoots:output_type -> reflow.config.v1.ListCARootsResponse
+	36, // 51: reflow.config.v1.Config.CreateJoinToken:output_type -> reflow.config.v1.CreateJoinTokenResponse
+	38, // 52: reflow.config.v1.Config.DeleteJoinToken:output_type -> reflow.config.v1.DeleteJoinTokenResponse
+	40, // 53: reflow.config.v1.Config.ListJoinTokens:output_type -> reflow.config.v1.ListJoinTokensResponse
+	42, // 54: reflow.config.v1.Config.IssueOperator:output_type -> reflow.config.v1.IssueOperatorResponse
+	34, // [34:55] is the sub-list for method output_type
+	13, // [13:34] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_configv1_config_proto_init() }
@@ -2001,7 +2506,7 @@ func file_configv1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_configv1_config_proto_rawDesc), len(file_configv1_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   35,
+			NumMessages:   43,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

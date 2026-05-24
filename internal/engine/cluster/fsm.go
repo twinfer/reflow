@@ -72,6 +72,7 @@ type Notifiers struct {
 	TenantTable         *TableNotifier
 	TenantDEKTable      *TableNotifier
 	CARootTable         *TableNotifier
+	JoinTokenTable      *TableNotifier
 }
 
 // FSM is the dragonboat IOnDiskStateMachine for shard 0. It accepts only
@@ -354,6 +355,12 @@ func (f *FSM) applyCommand(
 		return f.applyUpsertCARoot(batch, env, k.UpsertCaRoot, raftIndex)
 	case *enginev1.Command_DeleteCaRoot:
 		return f.applyDeleteCARoot(batch, env, k.DeleteCaRoot, raftIndex)
+	case *enginev1.Command_UpsertJoinToken:
+		return f.applyUpsertJoinToken(batch, env, k.UpsertJoinToken, raftIndex)
+	case *enginev1.Command_ConsumeJoinToken:
+		return f.applyConsumeJoinToken(batch, env, k.ConsumeJoinToken, raftIndex)
+	case *enginev1.Command_DeleteJoinToken:
+		return f.applyDeleteJoinToken(batch, env, k.DeleteJoinToken, raftIndex)
 	case nil:
 		f.cfg.Log.Warn("cluster: envelope has no command kind", "raft_index", raftIndex)
 		return &applyResult{}, nil
@@ -753,6 +760,127 @@ func (f *FSM) applyDeleteCARoot(
 		return nil, fmt.Errorf("cluster: bump caroot revision: %w", err)
 	}
 	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.CARootTable}}, nil
+}
+
+// applyUpsertJoinToken writes the JoinTokenRecord and bumps the table
+// revision. CAS + notifier semantics mirror the CARoot arm. The token
+// plaintext never traverses the FSM; the proposer ships sha256 already.
+func (f *FSM) applyUpsertJoinToken(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.UpsertJoinToken,
+	raftIndex uint64,
+) (*applyResult, error) {
+	rec := cmd.GetRecord()
+	if rec == nil || len(rec.GetTokenHash()) == 0 {
+		f.cfg.Log.Warn("cluster: UpsertJoinToken missing record or token_hash; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableJoinToken)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load jointoken revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	if err := (JoinTokenTable{S: batch}).Put(batch, rec); err != nil {
+		return nil, fmt.Errorf("cluster: write jointoken: %w", err)
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableJoinToken, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump jointoken revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.JoinTokenTable}}, nil
+}
+
+// applyConsumeJoinToken atomically marks a single_use token as consumed.
+// Beyond the standard CAS guard on Envelope.precondition, the apply arm
+// also rejects (via the same ResultValueFailedPrecondition sentinel) when
+// the row is absent, already used, or expired — so the bootstrap server's
+// SignCSR call can treat the proposer's success as proof that the token
+// was both valid and is now spent.
+func (f *FSM) applyConsumeJoinToken(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.ConsumeJoinToken,
+	raftIndex uint64,
+) (*applyResult, error) {
+	hash := cmd.GetTokenHash()
+	if len(hash) == 0 {
+		f.cfg.Log.Warn("cluster: ConsumeJoinToken missing token_hash; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableJoinToken)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load jointoken revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	tbl := JoinTokenTable{S: batch}
+	rec, err := tbl.Get(hash)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: read jointoken: %w", err)
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if rec == nil {
+		f.cfg.Log.Info("cluster: ConsumeJoinToken target absent",
+			"raft_index", raftIndex)
+		return nil, nil
+	}
+	if rec.GetSingleUse() && rec.GetUsed() {
+		f.cfg.Log.Info("cluster: ConsumeJoinToken already-used token",
+			"raft_index", raftIndex)
+		return nil, nil
+	}
+	if exp := rec.GetExpiryMs(); exp != 0 && uint64(nowMs) >= exp {
+		f.cfg.Log.Info("cluster: ConsumeJoinToken expired",
+			"raft_index", raftIndex, "expiry_ms", exp, "now_ms", nowMs)
+		return nil, nil
+	}
+	if rec.GetSingleUse() {
+		rec.Used = true
+		if err := tbl.Put(batch, rec); err != nil {
+			return nil, fmt.Errorf("cluster: mark jointoken used: %w", err)
+		}
+	}
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableJoinToken, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump jointoken revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.JoinTokenTable}}, nil
+}
+
+// applyDeleteJoinToken removes the named row (no-op if absent) and bumps
+// the table revision. Same CAS semantics as Upsert.
+func (f *FSM) applyDeleteJoinToken(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.DeleteJoinToken,
+	raftIndex uint64,
+) (*applyResult, error) {
+	hash := cmd.GetTokenHash()
+	if len(hash) == 0 {
+		f.cfg.Log.Warn("cluster: DeleteJoinToken missing token_hash; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableJoinToken)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load jointoken revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	if err := (JoinTokenTable{S: batch}).Delete(batch, hash); err != nil {
+		return nil, fmt.Errorf("cluster: delete jointoken: %w", err)
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableJoinToken, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump jointoken revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.JoinTokenTable}}, nil
 }
 
 // applyUpsertLPOwner writes one LPOwnerRecord and bumps the table
@@ -1640,6 +1768,12 @@ type (
 	// certmgr.ClusterIssuer calls this on each TableNotifier wake.
 	LookupCARoots struct{}
 
+	// LookupJoinTokens returns *JoinTokenList — every JoinTokenRecord on
+	// shard 0 plus the table's CAS revision in one SyncRead. The
+	// bootstrap server calls this to locate a redeemed token by hash on
+	// each MeshSign call; admin RPC List paths read the same shape.
+	LookupJoinTokens struct{}
+
 	// LookupAuditLog returns *AuditLogList — AuditLogRecord rows
 	// matching the supplied filters in raft_index ascending order, plus
 	// a More flag set when the limit was reached before the filter
@@ -1688,6 +1822,13 @@ type SecretList struct {
 // revision, atomic w.r.t. the read snapshot.
 type CARootList struct {
 	Records       []*enginev1.CARootRecord
+	TableRevision uint64
+}
+
+// JoinTokenList bundles every row in JoinTokenTable with the table's
+// CAS revision, atomic w.r.t. the read snapshot.
+type JoinTokenList struct {
+	Records       []*enginev1.JoinTokenRecord
 	TableRevision uint64
 }
 
@@ -1843,6 +1984,16 @@ func (f *FSM) Lookup(query any) (any, error) {
 			return nil, err
 		}
 		return &CARootList{Records: records, TableRevision: rev}, nil
+	case LookupJoinTokens:
+		records, err := (JoinTokenTable{S: store}).List()
+		if err != nil {
+			return nil, err
+		}
+		rev, err := (RevisionTable{S: store}).Get(RevisionTableJoinToken)
+		if err != nil {
+			return nil, err
+		}
+		return &JoinTokenList{Records: records, TableRevision: rev}, nil
 	case LookupLPOwners:
 		records, err := (LPOwnersTable{S: store}).List()
 		if err != nil {

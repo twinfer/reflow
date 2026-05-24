@@ -232,6 +232,71 @@ func (c *ClusterIssuer) Issue(_ context.Context, csr *x509.CertificateRequest) (
 // IssuerKey implements certmagic.Issuer.
 func (c *ClusterIssuer) IssuerKey() string { return "reflow-cluster" }
 
+// IssueForPrincipal signs csr against the active cluster CA but stamps
+// the CN to principalRaw (e.g. "node/7", "operator/alice") rather than
+// the issuer's construction-time principal. Used by the bootstrap
+// server, where the CN is determined by the redeeming join token, not
+// by the signing node's identity. validity defaults to the issuer's
+// configured validity (then 24h) when zero. Returns a PEM-encoded
+// bundle (leaf || CA chain) so the caller can persist it directly.
+func (c *ClusterIssuer) IssueForPrincipal(
+	csr *x509.CertificateRequest,
+	principalRaw string,
+	kind LeafKind,
+	hosts []string,
+	validity time.Duration,
+) ([]byte, error) {
+	if csr == nil || csr.PublicKey == nil {
+		return nil, errors.New("certmgr: IssueForPrincipal requires CSR with public key")
+	}
+	if principalRaw == "" {
+		return nil, errors.New("certmgr: IssueForPrincipal requires principalRaw")
+	}
+	a := c.active.Load()
+	if a == nil {
+		return nil, errors.New("certmgr: ClusterIssuer has no active CA snapshot")
+	}
+	if validity == 0 {
+		validity = c.validity
+	}
+	if validity == 0 {
+		validity = 24 * time.Hour
+	}
+	serial, err := randomSerial()
+	if err != nil {
+		return nil, err
+	}
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: principalRaw},
+		NotBefore:    time.Now().Add(-1 * time.Minute),
+		NotAfter:     time.Now().Add(validity),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+	}
+	switch kind {
+	case LeafNode:
+		template.ExtKeyUsage = []x509.ExtKeyUsage{
+			x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth,
+		}
+	case LeafOperator:
+		template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+	}
+	for _, h := range hosts {
+		appendHost(template, h)
+	}
+	for _, n := range csr.DNSNames {
+		template.DNSNames = append(template.DNSNames, n)
+	}
+	for _, ip := range csr.IPAddresses {
+		template.IPAddresses = append(template.IPAddresses, ip)
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, a.cert, csr.PublicKey, a.key)
+	if err != nil {
+		return nil, fmt.Errorf("certmgr: sign leaf: %w", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), nil
+}
+
 // ActiveCertPEM returns the cert PEM of the active CA snapshot, or nil
 // when no snapshot is loaded. Operator-facing inspection only.
 func (c *ClusterIssuer) ActiveCertPEM() []byte {

@@ -176,6 +176,34 @@ type HostConfig struct {
 	// tenant's data-encryption key. Nil disables the wrapper for the
 	// whole host (single-tenant deployments, tests, chaos suites).
 	TenantDEKResolver encstore.Resolver
+
+	// Audit configures the cluster-FSM config-change audit log
+	// (internal/audit). Logger nil disables slog fan-out; the durable
+	// AuditLogTable Pebble write on shard 0 is always performed. When
+	// RetentionDuration > 0, the metadata-shard leader spawns a
+	// leader-scoped goroutine that periodically proposes
+	// Command_GcAuditLog to delete rows older than RetentionDuration.
+	// Zero disables retention (rows accumulate indefinitely; suitable
+	// for tests).
+	Audit AuditConfig
+}
+
+// AuditConfig configures the config-change audit log.
+type AuditConfig struct {
+	// Logger receives a structured audit record (action_kind, target,
+	// tenant_id, principal, raft_index, ts_ms) for every successfully-
+	// applied cluster-FSM mutation. Nil = slog emission disabled.
+	// Operators fan out via slog.NewMultiHandler; Reflow ships no sink.
+	Logger *slog.Logger
+	// RetentionDuration bounds how long audit rows persist. The
+	// metadata-shard leader proposes Command_GcAuditLog{before_ts_ms}
+	// once per GcInterval to range-delete rows older than this. Zero
+	// disables retention entirely.
+	RetentionDuration time.Duration
+	// GcInterval is the cadence at which the leader-scoped GC goroutine
+	// proposes a retention pass. Zero defaults to 1 hour. The bound on
+	// retention precision is GcInterval, not the storage layer.
+	GcInterval time.Duration
 }
 
 // Peer is a static cluster member known at bootstrap. NodeHostID may be
@@ -511,6 +539,7 @@ func (h *Host) StartMetadataShard() (*MetadataRunner, error) {
 		Snapshotter: snap,
 		Leadership:  leadership,
 		Log:         h.log,
+		AuditLogger: h.cfg.Audit.Logger,
 		Notifiers:   h.cfg.ClusterNotifiers,
 	}
 	raftCfg := config.Config{
@@ -791,6 +820,26 @@ func (h *Host) TenantDEKs(ctx context.Context) (*cluster.TenantDEKList, error) {
 	out, ok := res.(*cluster.TenantDEKList)
 	if !ok {
 		return nil, fmt.Errorf("host: TenantDEKs: unexpected lookup type %T", res)
+	}
+	return out, nil
+}
+
+// AuditLog SyncReads AuditLogRecord rows from shard 0's AuditLogTable
+// matching the supplied filter (see cluster.LookupAuditLog field doc
+// for filter semantics). Returns rows in raft_index ascending order
+// plus a More flag indicating that the limit clamped the response.
+// Used by the Config server's ListAuditLog RPC.
+func (h *Host) AuditLog(ctx context.Context, q cluster.LookupAuditLog) (*cluster.AuditLogList, error) {
+	res, err := h.nh.SyncRead(ctx, 0, q)
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return &cluster.AuditLogList{}, nil
+	}
+	out, ok := res.(*cluster.AuditLogList)
+	if !ok {
+		return nil, fmt.Errorf("host: AuditLog: unexpected lookup type %T", res)
 	}
 	return out, nil
 }

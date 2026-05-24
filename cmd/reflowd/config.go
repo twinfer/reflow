@@ -52,6 +52,8 @@ func dispatchConfig(ctx context.Context, args []string) error {
 		return cmdDecryptSecret(ctx, rest)
 	case "upsert-webhook":
 		return cmdUpsertWebhook(ctx, rest)
+	case "audit":
+		return cmdAudit(ctx, rest)
 	default:
 		return fmt.Errorf("reflowd config: unknown subcommand %q", sub)
 	}

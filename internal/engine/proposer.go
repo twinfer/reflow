@@ -63,7 +63,7 @@ func (p *RaftProposer) LeaderEpoch() uint64 { return p.leaderEpoch.Load() }
 func (p *RaftProposer) ProposeSelf(ctx context.Context, cmd *enginev1.Command) error {
 	epoch := p.leaderEpoch.Load()
 	seq := p.nextSeq.Add(1)
-	env := buildSelfProposalEnvelope(epoch, seq, cmd)
+	env := buildSelfProposalEnvelope(ctx, epoch, seq, cmd)
 	_, err := p.proposeWithResult(ctx, env)
 	return err
 }
@@ -76,7 +76,7 @@ func (p *RaftProposer) ProposeSelf(ctx context.Context, cmd *enginev1.Command) e
 func (p *RaftProposer) ProposeSelfCAS(ctx context.Context, cmd *enginev1.Command, pre *enginev1.Precondition) (uint64, error) {
 	epoch := p.leaderEpoch.Load()
 	seq := p.nextSeq.Add(1)
-	env := buildSelfProposalEnvelope(epoch, seq, cmd)
+	env := buildSelfProposalEnvelope(ctx, epoch, seq, cmd)
 	env.Precondition = pre
 	return p.proposeWithResult(ctx, env)
 }
@@ -86,7 +86,7 @@ func (p *RaftProposer) ProposeSelfCAS(ctx context.Context, cmd *enginev1.Command
 // dedup table can reject retries; callers typically use a UUID + nanosecond
 // timestamp for "good enough" uniqueness.
 func (p *RaftProposer) ProposeIngress(ctx context.Context, producerID string, seq uint64, cmd *enginev1.Command) error {
-	env := buildIngressEnvelope(producerID, seq, cmd)
+	env := buildIngressEnvelope(ctx, producerID, seq, cmd)
 	return p.propose(ctx, env)
 }
 
@@ -157,10 +157,11 @@ func (p *RaftProposer) syncProposeOnce(ctx context.Context, sess *client.Session
 // state with no instance lifecycle.
 var nowMs = func() uint64 { return uint64(time.Now().UnixMilli()) }
 
-func buildSelfProposalEnvelope(epoch, seq uint64, cmd *enginev1.Command) *enginev1.Envelope {
+func buildSelfProposalEnvelope(ctx context.Context, epoch, seq uint64, cmd *enginev1.Command) *enginev1.Envelope {
 	return &enginev1.Envelope{
 		Header: &enginev1.Header{
 			CreatedAtMs: nowMs(),
+			Principal:   proposalPrincipalFromContext(ctx),
 			Dedup: &enginev1.Dedup{
 				Kind: &enginev1.Dedup_SelfProposal{
 					SelfProposal: &enginev1.SelfProposalDedup{
@@ -174,10 +175,44 @@ func buildSelfProposalEnvelope(epoch, seq uint64, cmd *enginev1.Command) *engine
 	}
 }
 
-func buildIngressEnvelope(producerID string, seq uint64, cmd *enginev1.Command) *enginev1.Envelope {
+// proposalPrincipalCtxKey is the ctx-value key carrying the
+// authenticated principal that originated a proposal. The
+// admin/config Connect interceptor wraps inbound ctx with
+// WithProposalPrincipal so the proposer can stamp Envelope.Header.principal
+// without forcing every handler to thread the string explicitly.
+// FSM-self-proposals (TimerService, Invoker, lpMover, audit GC) never
+// wrap and so the stamp comes through empty — the audit emitter
+// substitutes "engine" for those rows.
+type proposalPrincipalCtxKey struct{}
+
+// WithProposalPrincipal returns a derived ctx carrying principal as
+// the value to stamp on Envelope.Header.principal when the proposer
+// encloses a command. Used by the admin + config Connect servers to
+// thread the authenticated principal (e.g. "operator/alice",
+// "tenant/42/sub") through to the durable audit log without modifying
+// every propose call site. Empty principal returns ctx unchanged.
+func WithProposalPrincipal(ctx context.Context, principal string) context.Context {
+	if principal == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, proposalPrincipalCtxKey{}, principal)
+}
+
+// proposalPrincipalFromContext extracts the principal stamped by
+// WithProposalPrincipal, or "" when none was attached.
+func proposalPrincipalFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	p, _ := ctx.Value(proposalPrincipalCtxKey{}).(string)
+	return p
+}
+
+func buildIngressEnvelope(ctx context.Context, producerID string, seq uint64, cmd *enginev1.Command) *enginev1.Envelope {
 	return &enginev1.Envelope{
 		Header: &enginev1.Header{
 			CreatedAtMs: nowMs(),
+			Principal:   proposalPrincipalFromContext(ctx),
 			Dedup: &enginev1.Dedup{
 				Kind: &enginev1.Dedup_Arbitrary{
 					Arbitrary: &enginev1.ArbitraryDedup{

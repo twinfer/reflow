@@ -1339,6 +1339,151 @@ func (x *LeaderHint) GetAdminEndpoint() string {
 	return ""
 }
 
+// ListAuditLogRequest narrows the AuditLogTable scan. All filters are
+// optional: zero-valued fields disable that filter dimension.
+//   - since_ms / until_ms: ts_ms inclusive lower / exclusive upper bound.
+//     0 means "no bound on that side".
+//   - tenant_id: when non-zero, return only rows scoped to this tenant
+//     (including audit rows for that tenant's own UpsertTenant /
+//     UpsertTenantDEK / ... events). 0 returns every tenant including
+//     the default-tenant sentinel and engine-self-proposed rows.
+//   - action_kind: when non-empty, return only rows whose action_kind
+//     exactly matches (e.g. "UpsertTenant").
+//   - limit: cap the response size. 0 means "no caller-side cap" — the
+//     server still applies a hard ceiling (configurable; see the
+//     handler implementation) to keep one query from monopolizing
+//     a SyncRead.
+type ListAuditLogRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SinceMs       uint64                 `protobuf:"varint,1,opt,name=since_ms,json=sinceMs,proto3" json:"since_ms,omitempty"`
+	UntilMs       uint64                 `protobuf:"varint,2,opt,name=until_ms,json=untilMs,proto3" json:"until_ms,omitempty"`
+	TenantId      uint32                 `protobuf:"varint,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	ActionKind    string                 `protobuf:"bytes,4,opt,name=action_kind,json=actionKind,proto3" json:"action_kind,omitempty"`
+	Limit         uint32                 `protobuf:"varint,5,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAuditLogRequest) Reset() {
+	*x = ListAuditLogRequest{}
+	mi := &file_configv1_config_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAuditLogRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAuditLogRequest) ProtoMessage() {}
+
+func (x *ListAuditLogRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAuditLogRequest.ProtoReflect.Descriptor instead.
+func (*ListAuditLogRequest) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *ListAuditLogRequest) GetSinceMs() uint64 {
+	if x != nil {
+		return x.SinceMs
+	}
+	return 0
+}
+
+func (x *ListAuditLogRequest) GetUntilMs() uint64 {
+	if x != nil {
+		return x.UntilMs
+	}
+	return 0
+}
+
+func (x *ListAuditLogRequest) GetTenantId() uint32 {
+	if x != nil {
+		return x.TenantId
+	}
+	return 0
+}
+
+func (x *ListAuditLogRequest) GetActionKind() string {
+	if x != nil {
+		return x.ActionKind
+	}
+	return ""
+}
+
+func (x *ListAuditLogRequest) GetLimit() uint32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type ListAuditLogResponse struct {
+	state   protoimpl.MessageState     `protogen:"open.v1"`
+	Records []*enginev1.AuditLogRecord `protobuf:"bytes,1,rep,name=records,proto3" json:"records,omitempty"`
+	// more is true when the server-side limit (caller's or the handler's
+	// hard ceiling) cut the response short. Clients narrow the time
+	// window or increase limit and re-issue.
+	More          bool `protobuf:"varint,2,opt,name=more,proto3" json:"more,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAuditLogResponse) Reset() {
+	*x = ListAuditLogResponse{}
+	mi := &file_configv1_config_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAuditLogResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAuditLogResponse) ProtoMessage() {}
+
+func (x *ListAuditLogResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAuditLogResponse.ProtoReflect.Descriptor instead.
+func (*ListAuditLogResponse) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *ListAuditLogResponse) GetRecords() []*enginev1.AuditLogRecord {
+	if x != nil {
+		return x.Records
+	}
+	return nil
+}
+
+func (x *ListAuditLogResponse) GetMore() bool {
+	if x != nil {
+		return x.More
+	}
+	return false
+}
+
 var File_configv1_config_proto protoreflect.FileDescriptor
 
 const file_configv1_config_proto_rawDesc = "" +
@@ -1410,8 +1555,17 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\n" +
 	"LeaderHint\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12%\n" +
-	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\xf7\n" +
-	"\n" +
+	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint\"\x9f\x01\n" +
+	"\x13ListAuditLogRequest\x12\x19\n" +
+	"\bsince_ms\x18\x01 \x01(\x04R\asinceMs\x12\x19\n" +
+	"\buntil_ms\x18\x02 \x01(\x04R\auntilMs\x12\x1b\n" +
+	"\ttenant_id\x18\x03 \x01(\rR\btenantId\x12\x1f\n" +
+	"\vaction_kind\x18\x04 \x01(\tR\n" +
+	"actionKind\x12\x14\n" +
+	"\x05limit\x18\x05 \x01(\rR\x05limit\"f\n" +
+	"\x14ListAuditLogResponse\x12:\n" +
+	"\arecords\x18\x01 \x03(\v2 .reflow.engine.v1.AuditLogRecordR\arecords\x12\x12\n" +
+	"\x04more\x18\x02 \x01(\bR\x04more2\xd6\v\n" +
 	"\x06Config\x12o\n" +
 	"\x12RegisterDeployment\x12+.reflow.config.v1.RegisterDeploymentRequest\x1a,.reflow.config.v1.RegisterDeploymentResponse\x12f\n" +
 	"\x0fListDeployments\x12(.reflow.config.v1.ListDeploymentsRequest\x1a).reflow.config.v1.ListDeploymentsResponse\x12o\n" +
@@ -1425,7 +1579,8 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\x12ListWebhookSources\x12+.reflow.config.v1.ListWebhookSourcesRequest\x1a,.reflow.config.v1.ListWebhookSourcesResponse\x12]\n" +
 	"\fUpsertSecret\x12%.reflow.config.v1.UpsertSecretRequest\x1a&.reflow.config.v1.UpsertSecretResponse\x12]\n" +
 	"\fDeleteSecret\x12%.reflow.config.v1.DeleteSecretRequest\x1a&.reflow.config.v1.DeleteSecretResponse\x12Z\n" +
-	"\vListSecrets\x12$.reflow.config.v1.ListSecretsRequest\x1a%.reflow.config.v1.ListSecretsResponseB3Z1github.com/twinfer/reflow/proto/configv1;configv1b\x06proto3"
+	"\vListSecrets\x12$.reflow.config.v1.ListSecretsRequest\x1a%.reflow.config.v1.ListSecretsResponse\x12]\n" +
+	"\fListAuditLog\x12%.reflow.config.v1.ListAuditLogRequest\x1a&.reflow.config.v1.ListAuditLogResponseB3Z1github.com/twinfer/reflow/proto/configv1;configv1b\x06proto3"
 
 var (
 	file_configv1_config_proto_rawDescOnce sync.Once
@@ -1439,7 +1594,7 @@ func file_configv1_config_proto_rawDescGZIP() []byte {
 	return file_configv1_config_proto_rawDescData
 }
 
-var file_configv1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
+var file_configv1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_configv1_config_proto_goTypes = []any{
 	(*RegisterDeploymentRequest)(nil),    // 0: reflow.config.v1.RegisterDeploymentRequest
 	(*RegisterDeploymentResponse)(nil),   // 1: reflow.config.v1.RegisterDeploymentResponse
@@ -1468,51 +1623,57 @@ var file_configv1_config_proto_goTypes = []any{
 	(*ListSecretsRequest)(nil),           // 24: reflow.config.v1.ListSecretsRequest
 	(*ListSecretsResponse)(nil),          // 25: reflow.config.v1.ListSecretsResponse
 	(*LeaderHint)(nil),                   // 26: reflow.config.v1.LeaderHint
-	(*enginev1.DeploymentRecord)(nil),    // 27: reflow.engine.v1.DeploymentRecord
-	(*enginev1.EventSourceRecord)(nil),   // 28: reflow.engine.v1.EventSourceRecord
-	(*enginev1.WebhookSourceRecord)(nil), // 29: reflow.engine.v1.WebhookSourceRecord
-	(*enginev1.SecretRecord)(nil),        // 30: reflow.engine.v1.SecretRecord
+	(*ListAuditLogRequest)(nil),          // 27: reflow.config.v1.ListAuditLogRequest
+	(*ListAuditLogResponse)(nil),         // 28: reflow.config.v1.ListAuditLogResponse
+	(*enginev1.DeploymentRecord)(nil),    // 29: reflow.engine.v1.DeploymentRecord
+	(*enginev1.EventSourceRecord)(nil),   // 30: reflow.engine.v1.EventSourceRecord
+	(*enginev1.WebhookSourceRecord)(nil), // 31: reflow.engine.v1.WebhookSourceRecord
+	(*enginev1.SecretRecord)(nil),        // 32: reflow.engine.v1.SecretRecord
+	(*enginev1.AuditLogRecord)(nil),      // 33: reflow.engine.v1.AuditLogRecord
 }
 var file_configv1_config_proto_depIdxs = []int32{
-	27, // 0: reflow.config.v1.ListDeploymentsResponse.deployments:type_name -> reflow.engine.v1.DeploymentRecord
-	27, // 1: reflow.config.v1.DescribeDeploymentResponse.deployment:type_name -> reflow.engine.v1.DeploymentRecord
-	28, // 2: reflow.config.v1.UpsertEventSourceRequest.record:type_name -> reflow.engine.v1.EventSourceRecord
-	28, // 3: reflow.config.v1.ListEventSourcesResponse.sources:type_name -> reflow.engine.v1.EventSourceRecord
-	29, // 4: reflow.config.v1.UpsertWebhookSourceRequest.record:type_name -> reflow.engine.v1.WebhookSourceRecord
-	29, // 5: reflow.config.v1.ListWebhookSourcesResponse.sources:type_name -> reflow.engine.v1.WebhookSourceRecord
-	30, // 6: reflow.config.v1.UpsertSecretRequest.record:type_name -> reflow.engine.v1.SecretRecord
-	30, // 7: reflow.config.v1.ListSecretsResponse.records:type_name -> reflow.engine.v1.SecretRecord
-	0,  // 8: reflow.config.v1.Config.RegisterDeployment:input_type -> reflow.config.v1.RegisterDeploymentRequest
-	2,  // 9: reflow.config.v1.Config.ListDeployments:input_type -> reflow.config.v1.ListDeploymentsRequest
-	4,  // 10: reflow.config.v1.Config.DescribeDeployment:input_type -> reflow.config.v1.DescribeDeploymentRequest
-	6,  // 11: reflow.config.v1.Config.DeleteDeployment:input_type -> reflow.config.v1.DeleteDeploymentRequest
-	8,  // 12: reflow.config.v1.Config.UpsertEventSource:input_type -> reflow.config.v1.UpsertEventSourceRequest
-	10, // 13: reflow.config.v1.Config.DeleteEventSource:input_type -> reflow.config.v1.DeleteEventSourceRequest
-	12, // 14: reflow.config.v1.Config.ListEventSources:input_type -> reflow.config.v1.ListEventSourcesRequest
-	14, // 15: reflow.config.v1.Config.UpsertWebhookSource:input_type -> reflow.config.v1.UpsertWebhookSourceRequest
-	16, // 16: reflow.config.v1.Config.DeleteWebhookSource:input_type -> reflow.config.v1.DeleteWebhookSourceRequest
-	18, // 17: reflow.config.v1.Config.ListWebhookSources:input_type -> reflow.config.v1.ListWebhookSourcesRequest
-	20, // 18: reflow.config.v1.Config.UpsertSecret:input_type -> reflow.config.v1.UpsertSecretRequest
-	22, // 19: reflow.config.v1.Config.DeleteSecret:input_type -> reflow.config.v1.DeleteSecretRequest
-	24, // 20: reflow.config.v1.Config.ListSecrets:input_type -> reflow.config.v1.ListSecretsRequest
-	1,  // 21: reflow.config.v1.Config.RegisterDeployment:output_type -> reflow.config.v1.RegisterDeploymentResponse
-	3,  // 22: reflow.config.v1.Config.ListDeployments:output_type -> reflow.config.v1.ListDeploymentsResponse
-	5,  // 23: reflow.config.v1.Config.DescribeDeployment:output_type -> reflow.config.v1.DescribeDeploymentResponse
-	7,  // 24: reflow.config.v1.Config.DeleteDeployment:output_type -> reflow.config.v1.DeleteDeploymentResponse
-	9,  // 25: reflow.config.v1.Config.UpsertEventSource:output_type -> reflow.config.v1.UpsertEventSourceResponse
-	11, // 26: reflow.config.v1.Config.DeleteEventSource:output_type -> reflow.config.v1.DeleteEventSourceResponse
-	13, // 27: reflow.config.v1.Config.ListEventSources:output_type -> reflow.config.v1.ListEventSourcesResponse
-	15, // 28: reflow.config.v1.Config.UpsertWebhookSource:output_type -> reflow.config.v1.UpsertWebhookSourceResponse
-	17, // 29: reflow.config.v1.Config.DeleteWebhookSource:output_type -> reflow.config.v1.DeleteWebhookSourceResponse
-	19, // 30: reflow.config.v1.Config.ListWebhookSources:output_type -> reflow.config.v1.ListWebhookSourcesResponse
-	21, // 31: reflow.config.v1.Config.UpsertSecret:output_type -> reflow.config.v1.UpsertSecretResponse
-	23, // 32: reflow.config.v1.Config.DeleteSecret:output_type -> reflow.config.v1.DeleteSecretResponse
-	25, // 33: reflow.config.v1.Config.ListSecrets:output_type -> reflow.config.v1.ListSecretsResponse
-	21, // [21:34] is the sub-list for method output_type
-	8,  // [8:21] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	29, // 0: reflow.config.v1.ListDeploymentsResponse.deployments:type_name -> reflow.engine.v1.DeploymentRecord
+	29, // 1: reflow.config.v1.DescribeDeploymentResponse.deployment:type_name -> reflow.engine.v1.DeploymentRecord
+	30, // 2: reflow.config.v1.UpsertEventSourceRequest.record:type_name -> reflow.engine.v1.EventSourceRecord
+	30, // 3: reflow.config.v1.ListEventSourcesResponse.sources:type_name -> reflow.engine.v1.EventSourceRecord
+	31, // 4: reflow.config.v1.UpsertWebhookSourceRequest.record:type_name -> reflow.engine.v1.WebhookSourceRecord
+	31, // 5: reflow.config.v1.ListWebhookSourcesResponse.sources:type_name -> reflow.engine.v1.WebhookSourceRecord
+	32, // 6: reflow.config.v1.UpsertSecretRequest.record:type_name -> reflow.engine.v1.SecretRecord
+	32, // 7: reflow.config.v1.ListSecretsResponse.records:type_name -> reflow.engine.v1.SecretRecord
+	33, // 8: reflow.config.v1.ListAuditLogResponse.records:type_name -> reflow.engine.v1.AuditLogRecord
+	0,  // 9: reflow.config.v1.Config.RegisterDeployment:input_type -> reflow.config.v1.RegisterDeploymentRequest
+	2,  // 10: reflow.config.v1.Config.ListDeployments:input_type -> reflow.config.v1.ListDeploymentsRequest
+	4,  // 11: reflow.config.v1.Config.DescribeDeployment:input_type -> reflow.config.v1.DescribeDeploymentRequest
+	6,  // 12: reflow.config.v1.Config.DeleteDeployment:input_type -> reflow.config.v1.DeleteDeploymentRequest
+	8,  // 13: reflow.config.v1.Config.UpsertEventSource:input_type -> reflow.config.v1.UpsertEventSourceRequest
+	10, // 14: reflow.config.v1.Config.DeleteEventSource:input_type -> reflow.config.v1.DeleteEventSourceRequest
+	12, // 15: reflow.config.v1.Config.ListEventSources:input_type -> reflow.config.v1.ListEventSourcesRequest
+	14, // 16: reflow.config.v1.Config.UpsertWebhookSource:input_type -> reflow.config.v1.UpsertWebhookSourceRequest
+	16, // 17: reflow.config.v1.Config.DeleteWebhookSource:input_type -> reflow.config.v1.DeleteWebhookSourceRequest
+	18, // 18: reflow.config.v1.Config.ListWebhookSources:input_type -> reflow.config.v1.ListWebhookSourcesRequest
+	20, // 19: reflow.config.v1.Config.UpsertSecret:input_type -> reflow.config.v1.UpsertSecretRequest
+	22, // 20: reflow.config.v1.Config.DeleteSecret:input_type -> reflow.config.v1.DeleteSecretRequest
+	24, // 21: reflow.config.v1.Config.ListSecrets:input_type -> reflow.config.v1.ListSecretsRequest
+	27, // 22: reflow.config.v1.Config.ListAuditLog:input_type -> reflow.config.v1.ListAuditLogRequest
+	1,  // 23: reflow.config.v1.Config.RegisterDeployment:output_type -> reflow.config.v1.RegisterDeploymentResponse
+	3,  // 24: reflow.config.v1.Config.ListDeployments:output_type -> reflow.config.v1.ListDeploymentsResponse
+	5,  // 25: reflow.config.v1.Config.DescribeDeployment:output_type -> reflow.config.v1.DescribeDeploymentResponse
+	7,  // 26: reflow.config.v1.Config.DeleteDeployment:output_type -> reflow.config.v1.DeleteDeploymentResponse
+	9,  // 27: reflow.config.v1.Config.UpsertEventSource:output_type -> reflow.config.v1.UpsertEventSourceResponse
+	11, // 28: reflow.config.v1.Config.DeleteEventSource:output_type -> reflow.config.v1.DeleteEventSourceResponse
+	13, // 29: reflow.config.v1.Config.ListEventSources:output_type -> reflow.config.v1.ListEventSourcesResponse
+	15, // 30: reflow.config.v1.Config.UpsertWebhookSource:output_type -> reflow.config.v1.UpsertWebhookSourceResponse
+	17, // 31: reflow.config.v1.Config.DeleteWebhookSource:output_type -> reflow.config.v1.DeleteWebhookSourceResponse
+	19, // 32: reflow.config.v1.Config.ListWebhookSources:output_type -> reflow.config.v1.ListWebhookSourcesResponse
+	21, // 33: reflow.config.v1.Config.UpsertSecret:output_type -> reflow.config.v1.UpsertSecretResponse
+	23, // 34: reflow.config.v1.Config.DeleteSecret:output_type -> reflow.config.v1.DeleteSecretResponse
+	25, // 35: reflow.config.v1.Config.ListSecrets:output_type -> reflow.config.v1.ListSecretsResponse
+	28, // 36: reflow.config.v1.Config.ListAuditLog:output_type -> reflow.config.v1.ListAuditLogResponse
+	23, // [23:37] is the sub-list for method output_type
+	9,  // [9:23] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_configv1_config_proto_init() }
@@ -1526,7 +1687,7 @@ func file_configv1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_configv1_config_proto_rawDesc), len(file_configv1_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   27,
+			NumMessages:   29,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

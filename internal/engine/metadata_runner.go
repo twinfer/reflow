@@ -131,6 +131,15 @@ func (r *MetadataRunner) onBecomeLeader() {
 				bal.Run(leaderCtx)
 			})
 		}
+		// Audit-log retention scrubber. Started only when retention is
+		// enabled (RetentionDuration > 0); the goroutine itself short-
+		// circuits at the same gate but skipping the spawn keeps the
+		// goroutine count honest for tests that count leader goroutines.
+		if r.host.cfg.Audit.RetentionDuration > 0 {
+			r.leaderGoroutines.Go(func() {
+				newAuditGC(r, r.host.cfg.Audit).run(leaderCtx)
+			})
+		}
 	}
 }
 

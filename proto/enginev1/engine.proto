@@ -89,6 +89,19 @@ message Header {
   // OutboxEnvelopes by the partition so cross-shard hops carry the
   // tenant through to the receiving shard.
   uint32 tenant_id = 3;
+  // principal is the auth principal that originated this command,
+  // captured at the admin/config Connect propose sites from
+  // auth.PrincipalFromContext (e.g. "operator/alice", "tenant/42",
+  // "node/3"). Used exclusively by the cluster-FSM audit log
+  // (AuditLogTable); the FSM apply path does not gate behavior on it
+  // (real authz is enforced at the Connect layer before propose).
+  // FSM-self-proposed commands (rebalancer, lp-mover, audit GC,
+  // partition timer/outbox) leave it empty — audit records carry
+  // principal="engine" in that case. Partition-shard commands
+  // (Invoke, TimerFired, ...) do not populate this field; invocation
+  // submits are metrics, not audit signal, and the per-tenant binding
+  // already flows via tenant_id.
+  string principal = 4;
 }
 
 // Command oneof. Mirrors restate CommandKind in
@@ -246,6 +259,12 @@ message Command {
     // Accepted only by shardID=0.
     UpsertTenantDEK upsert_tenant_dek = 42;
     DeleteTenantDEK delete_tenant_dek = 43;
+    // GcAuditLog is the periodic retention pass for AuditLogTable.
+    // Proposed by the metadata leader's leader-scoped audit-GC
+    // goroutine; the apply arm range-deletes audit rows with
+    // ts_ms < before_ts_ms. Accepted only by shardID=0. principal is
+    // always empty on this command (engine-self-proposed).
+    GcAuditLog gc_audit_log = 44;
   }
 }
 
@@ -1806,5 +1825,41 @@ message LPStagingRow {
   uint64 source_shard = 3;
   uint64 next_sst_seq = 4;
   bool is_final_seen = 5;
+}
+
+// AuditLogRecord is one entry in shard 0's AuditLogTable. Written into
+// the same storage.Batch as the config mutation it audits, so the
+// audit row and the config write commit atomically.
+//
+// raft_index is the dragonboat entry index that produced this record
+// (unique across the cluster lifetime — there can never be two audit
+// rows under the same key). ts_ms is the FSM apply-path wall clock
+// stamp; advisory, since replays don't round-trip the timestamp.
+// action_kind is the Command oneof tag name (e.g. "UpsertTenant",
+// "DeleteWebhookSource"). target is a kind-specific identifier string
+// (e.g. the tenant_id as text for UpsertTenant, the secret name for
+// UpsertSecret); empty when the command doesn't bind to a single
+// addressable object. tenant_id is copied from Envelope.Header for
+// commands that scope to one tenant (UpsertTenantDEK, UpsertSecret
+// where the tenant is implicit, ...) and 0 otherwise. principal is
+// copied verbatim from Envelope.Header.principal; "engine" is
+// substituted by the audit emitter for autonomous (FSM-self-proposed)
+// commands like the rebalancer and the audit GC itself.
+message AuditLogRecord {
+  uint64 raft_index = 1;
+  fixed64 ts_ms = 2;
+  string action_kind = 3;
+  string target = 4;
+  uint32 tenant_id = 5;
+  string principal = 6;
+}
+
+// GcAuditLog is the periodic retention pass for AuditLogTable. The
+// apply arm range-deletes audit rows whose ts_ms is strictly less
+// than before_ts_ms. Proposed by the metadata leader's leader-scoped
+// audit-GC goroutine; idempotent (re-applying with the same or
+// earlier before_ts_ms is a no-op).
+message GcAuditLog {
+  fixed64 before_ts_ms = 1;
 }
 

@@ -187,6 +187,11 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			SkewEngagePct:              cfg.Rebalance.SkewEngagePct,
 			SkewDisengagePct:           cfg.Rebalance.SkewDisengagePct,
 		},
+		Audit: engine.AuditConfig{
+			Logger:            cfg.Audit.Logger,
+			RetentionDuration: *cfg.Audit.RetentionDuration,
+			GcInterval:        cfg.Audit.GcInterval,
+		},
 		OnSnapshotPersisted: func(shardID uint64) {
 			ch, ok := snapshotTriggers[shardID]
 			if !ok {
@@ -659,8 +664,13 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	}
 
 	if adminEnabled {
-		clusterPath, clusterH := clusterSrv.NewHandler()
-		configPath, configH := configSrv.NewHandler()
+		// proposalPrincipalInterceptor lifts auth.Principal into the
+		// engine proposer's ctx key so every Raft proposal originating
+		// from an admin/config Connect call stamps Envelope.Header.principal
+		// — the durable audit trail's "who".
+		ppi := connect.WithInterceptors(proposalPrincipalInterceptor{})
+		clusterPath, clusterH := clusterSrv.NewHandler(ppi)
+		configPath, configH := configSrv.NewHandler(ppi)
 		cs, lErr := connectserver.New(ctx, connectserver.Config{
 			Addr: cfg.Admin.Addr,
 			TLS:  adminCreds.ServerTLSConfig,
@@ -1181,6 +1191,17 @@ func withDefaults(cfg Config) Config {
 	}
 	if cfg.Rebalance.SkewDisengagePct == 0 {
 		cfg.Rebalance.SkewDisengagePct = 8
+	}
+	// Audit log retention. Pointer disambiguates "operator left it unset"
+	// (nil → default 90d) from "operator explicitly disabled retention"
+	// (non-nil zero → leader-scoped GC goroutine never spawns). Same
+	// convention as RebalanceConfig.MinSecondsBetweenTransfers.
+	if cfg.Audit.RetentionDuration == nil {
+		def := 90 * 24 * time.Hour
+		cfg.Audit.RetentionDuration = &def
+	}
+	if cfg.Audit.GcInterval == 0 {
+		cfg.Audit.GcInterval = time.Hour
 	}
 	return cfg
 }

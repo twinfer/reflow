@@ -746,8 +746,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	// Bootstrap listener: opt-in, TLS-without-client-cert. Hosts the
 	// MeshSign service. The ClusterIssuer requires shard 0 to carry an
 	// "active" CARoot row; without one we log + skip so an operator can
-	// `reflowd config ca init` (or run `--bootstrap` on this node) and
-	// restart to bring the listener up.
+	// `reflowd config ca init` and restart to bring the listener up.
 	if !cfg.Bootstrap.Disabled && cfg.Bootstrap.Addr != "" {
 		bsCreds, perr := creds.Build(cfg.Bootstrap.Creds, logger)
 		if perr != nil {
@@ -774,7 +773,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		if ierr != nil {
 			logger.Warn("reflow: bootstrap listener skipped — no CA active yet",
 				"err", ierr,
-				"hint", "run --bootstrap on the first node or use `reflowd config ca init`")
+				"hint", "run `reflowd config ca init` to mint the cluster CA")
 		} else {
 			// Once the cluster CA is active, the same ClusterIssuer
 			// powers IssueOperator on the Config admin RPC. Late-bind so

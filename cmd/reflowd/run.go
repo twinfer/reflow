@@ -25,27 +25,20 @@ import (
 //  2. Optional config file from $REFLOW_CONFIG (YAML or JSON).
 //  3. REFLOW_* environment variables.
 //
-// Bootstrap flags (mutually exclusive with each other):
+// Joiner flags:
 //
-//	--bootstrap                  First-node init: mint a CA, write the
-//	                             CARoot/Secret rows, print the first
-//	                             operator leaf once, then run normally.
 //	--join=<addr>                Joiner mode: exchange --join-token with
 //	--join-token=<tok>           the bootstrap server, persist the
 //	--root-cert-pin=sha256:<fpr> signed leaf to <data-dir>/bootstrap/,
 //	                             then run normally.
 func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	doBootstrap := fs.Bool("bootstrap", false, "first-node init: mint a CA, print first operator leaf")
 	joinAddr := fs.String("join", "", "joiner mode: bootstrap listener address (host:port)")
 	joinToken := fs.String("join-token", "", "joiner mode: plaintext join token from `reflowd config create-join-token`")
 	rootCertPin := fs.String("root-cert-pin", "", "joiner mode: optional SPKI pin (sha256:<hex>) the joiner verifies before sending the token")
 	extraHosts := fs.String("join-hostname", "", "joiner mode: comma-separated extra DNS/IP SANs to embed in the CSR")
 	if err := fs.Parse(args); err != nil {
 		return err
-	}
-	if *joinAddr != "" && *doBootstrap {
-		return fmt.Errorf("--bootstrap and --join are mutually exclusive")
 	}
 	if *joinAddr != "" && *joinToken == "" {
 		return fmt.Errorf("--join requires --join-token")
@@ -68,13 +61,6 @@ func cmdRun(args []string) error {
 	host, err := reflow.Run(ctx, cfg)
 	if err != nil {
 		return err
-	}
-
-	if *doBootstrap {
-		if err := runBootstrapInit(ctx, host, cfg); err != nil {
-			_ = host.Close()
-			return fmt.Errorf("reflowd: --bootstrap init failed: %w", err)
-		}
 	}
 
 	<-ctx.Done()
@@ -140,42 +126,6 @@ func runJoinerPreflight(addr, token, pin, extraHostsCSV string, cfg reflow.Confi
 	fmt.Fprintf(os.Stderr, "reflowd:   leaf.key — private key (0600)\n")
 	fmt.Fprintf(os.Stderr, "reflowd:   ca.crt   — cluster CA chain (pin %s)\n", res.CAFingerprint)
 	fmt.Fprintf(os.Stderr, "reflowd: point cfg.{admin,delivery,ingress}.creds.tls at these files and restart without --join.\n")
-	return nil
-}
-
-// runBootstrapInit waits for shard 0 to elect a leader and, when the
-// CARootTable is empty, mints a CA and prints the first operator leaf.
-// Idempotent: if a CARoot row already exists, the function prints a
-// hint and returns nil — the operator can re-run the binary with the
-// same flag without churn.
-//
-// The actual CA-creation flow lives behind `reflowd config ca init`
-// (which encrypts the signing key under a KMS via the SecretTable
-// path). --bootstrap doesn't replicate that work here; it just steers
-// the operator to it. The plan's "generate operator leaf to stdout"
-// step is similarly deferred to `reflowd config issue-operator` (PR 4)
-// because both want the same KMS plumbing already wired into the
-// config CLI.
-func runBootstrapInit(ctx context.Context, host *reflow.Host, cfg reflow.Config) error {
-	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if err := host.AwaitLeader(waitCtx, 0); err != nil {
-		return fmt.Errorf("await shard-0 leader: %w", err)
-	}
-	roots, err := host.Engine().CARoots(waitCtx)
-	if err != nil {
-		return fmt.Errorf("read CARootTable: %w", err)
-	}
-	if roots != nil && len(roots.Records) > 0 {
-		fmt.Fprintf(os.Stderr, "reflowd: --bootstrap: CARootTable already populated (%d row(s)); skipping mint.\n",
-			len(roots.Records))
-		return nil
-	}
-	fmt.Fprintf(os.Stderr, "reflowd: --bootstrap: CARootTable is empty.\n")
-	fmt.Fprintf(os.Stderr, "reflowd: --bootstrap: run `reflowd config ca init --admin=%s --kek-uri=... --key-blob-uri=...` from this host to mint the cluster CA.\n",
-		cfg.Admin.Addr)
-	fmt.Fprintf(os.Stderr, "reflowd: --bootstrap: then run `reflowd config issue-operator --admin=%s --name=<operator-name>` to mint the first operator leaf.\n",
-		cfg.Admin.Addr)
 	return nil
 }
 

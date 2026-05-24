@@ -284,8 +284,7 @@ func parseCSRCommonName(cn string) (kind, name string, ok bool) {
 
 // allocateNodeID picks max(existing.NodeId)+1 from the current
 // membership view. Starts at 1 when the table is empty (node_id=0 is
-// the reserved unspecified sentinel). Mirrors the convention used by
-// reflowd run --bootstrap for the first node's id.
+// the reserved unspecified sentinel).
 func (s *Server) allocateNodeID(ctx context.Context) (uint64, error) {
 	mems, err := s.host.Membership(ctx)
 	if err != nil {

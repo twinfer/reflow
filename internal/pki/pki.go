@@ -10,6 +10,7 @@
 package pki
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -183,6 +184,52 @@ func (ca *CA) Issue(opts LeafOptions) (Material, error) {
 		CertPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
 		KeyPEM:  pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
 	}, nil
+}
+
+// IssueForKey signs a leaf for pub using ca. Same template / KeyUsage /
+// ExtKeyUsage as Issue, but the public key (and so the matching private
+// key) is supplied by the caller — used by internal/certmgr's builtin
+// issuer, where CertMagic generates the key and hands the engine a CSR
+// to sign. Returns the DER-encoded leaf.
+func (ca *CA) IssueForKey(opts LeafOptions, pub crypto.PublicKey) ([]byte, error) {
+	if opts.Name == "" {
+		return nil, errors.New("pki: leaf Name is required")
+	}
+	role, err := rolePrefix(opts.Kind)
+	if err != nil {
+		return nil, err
+	}
+	serial, err := randomSerial()
+	if err != nil {
+		return nil, err
+	}
+	validity := opts.Validity
+	if validity == 0 {
+		validity = DefaultLeafValidity
+	}
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: role + "/" + opts.Name},
+		NotBefore:    time.Now().Add(-1 * time.Minute),
+		NotAfter:     time.Now().Add(validity),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+	}
+	switch opts.Kind {
+	case LeafNode:
+		template.ExtKeyUsage = []x509.ExtKeyUsage{
+			x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth,
+		}
+	case LeafOperator:
+		template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+	}
+	for _, h := range opts.Hosts {
+		if ip := net.ParseIP(h); ip != nil {
+			template.IPAddresses = append(template.IPAddresses, ip)
+			continue
+		}
+		template.DNSNames = append(template.DNSNames, h)
+	}
+	return x509.CreateCertificate(rand.Reader, template, ca.Cert, pub, ca.Key)
 }
 
 // Write writes the CA cert + key into dir as <prefix>-ca.crt /

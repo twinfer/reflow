@@ -1,6 +1,7 @@
 package creds
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -9,14 +10,26 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"google.golang.org/grpc/credentials"
+
+	"github.com/twinfer/reflow/internal/certmgr"
+	"github.com/twinfer/reflow/internal/pki"
 )
 
-// TLSSpec is the file-driven TLS configuration. One CA signs every
-// leaf; each leaf's CN encodes the principal Raw form (<kind>/<name>).
-// The transport layer verifies chain + CN shape; role enforcement
-// (node/* vs operator/*) is left to the auth interceptor.
+// TLSSpec is the TLS configuration. Two modes are supported:
+//
+//   - Externally-managed: set CAFile + CertFile + KeyFile. The engine
+//     loads the leaf from disk and hot-reloads on mtime change. The
+//     operator (or sidecar) is responsible for rotation.
+//   - Managed: set Issuer instead of CertFile/KeyFile. The engine asks
+//     the configured Issuer to sign a fresh leaf for Principal and
+//     keeps it renewed via CertMagic.
+//
+// Each leaf's CN encodes the principal Raw form (<kind>/<name>); the
+// transport layer verifies chain + CN shape, with role enforcement
+// (node/* vs operator/*) left to the auth interceptor.
 type TLSSpec struct {
 	CAFile   string `koanf:"ca_file"`
 	CertFile string `koanf:"cert_file"`
@@ -38,6 +51,51 @@ type TLSSpec struct {
 	// server side. Default true for reflow's mTLS surfaces (Delivery,
 	// Admin); set false only when fronting OAuth/JWT validation.
 	ClientAuth *bool `koanf:"client_auth"`
+	// Issuer, when set, enables CertMagic-managed leaves: the engine
+	// generates a key, issues a CSR through the configured Issuer, and
+	// keeps the leaf renewed. Mutually exclusive with CertFile/KeyFile;
+	// CAFile + MeshCAFingerprint still gate trust on the peer side.
+	Issuer *IssuerSpec `koanf:"issuer"`
+}
+
+// IssuerSpec selects which Issuer plugin signs CertMagic-managed leaves
+// and carries plugin-specific options. Exactly one of the nested *Spec
+// pointers must match Type.
+type IssuerSpec struct {
+	// Type names the issuer plugin. Today only "builtin" is wired.
+	// PR 3+ adds "cluster" (shard-0 CA + SecretStore-resolved key) and
+	// "kms_remote" (Tink KMSClient-signed).
+	Type string `koanf:"type"`
+	// Builtin holds the builtin-issuer settings — a CA cert + key
+	// loaded from disk.
+	Builtin *BuiltinIssuerSpec `koanf:"builtin"`
+	// CertCacheDir is the per-node CertMagic storage root; the
+	// FileStorage tree and the refuse-start lock both live here.
+	// Required.
+	CertCacheDir string `koanf:"cert_cache_dir"`
+	// NodeID is the engine's node identifier as a string; embedded in
+	// the cache-dir lock file. Required.
+	NodeID string `koanf:"node_id"`
+	// Principal is the principal Raw form this listener is signing for
+	// (e.g. "node/1", "operator/alice"). Becomes the leaf's CN.
+	// Required.
+	Principal string `koanf:"principal"`
+	// LeafValidity overrides the issuer's default lifetime for the
+	// signed leaf. Zero falls back to the issuer default. Short
+	// validities exercise CertMagic's renewal path under test.
+	LeafValidity time.Duration `koanf:"leaf_validity"`
+	// ExtraHosts are additional DNS / IP SANs to embed in the issued
+	// leaf (the engine's CN-based identity check ignores these; useful
+	// when fronted by a hostname-verifying client).
+	ExtraHosts []string `koanf:"extra_hosts"`
+}
+
+// BuiltinIssuerSpec configures the builtin Issuer (signs leaves with a
+// CA loaded from disk). Replaced in PR 3 by a shard-0-managed CA root +
+// SecretStore-wrapped key.
+type BuiltinIssuerSpec struct {
+	CACertFile string `koanf:"ca_cert_file"`
+	CAKeyFile  string `koanf:"ca_key_file"`
 }
 
 func (s TLSSpec) clientAuth() bool {
@@ -47,15 +105,21 @@ func (s TLSSpec) clientAuth() bool {
 	return *s.ClientAuth
 }
 
-func buildTLS(s *TLSSpec, _ *slog.Logger) (*ListenerCreds, error) {
+func buildTLS(s *TLSSpec, log *slog.Logger) (*ListenerCreds, error) {
 	if s == nil {
 		return nil, errMissingSpec(DriverTLS)
 	}
-	if s.CertFile == "" || s.KeyFile == "" {
-		return nil, errEmptyField(DriverTLS, "cert_file/key_file")
-	}
 	if s.CAFile == "" {
 		return nil, errEmptyField(DriverTLS, "ca_file")
+	}
+	if s.Issuer != nil {
+		if s.CertFile != "" || s.KeyFile != "" {
+			return nil, errors.New("reflow/creds: tls.issuer and tls.cert_file/key_file are mutually exclusive")
+		}
+		return buildManagedTLS(s, log)
+	}
+	if s.CertFile == "" || s.KeyFile == "" {
+		return nil, errEmptyField(DriverTLS, "cert_file/key_file")
 	}
 
 	get, err := hotReloadKeypair(s.CertFile, s.KeyFile)
@@ -93,6 +157,96 @@ func buildTLS(s *TLSSpec, _ *slog.Logger) (*ListenerCreds, error) {
 		Driver:          DriverTLS,
 		SecurityLevel:   credentials.PrivacyAndIntegrity,
 	}, nil
+}
+
+// buildManagedTLS wires a CertMagic-managed leaf. ManageLeaf is called
+// synchronously so handshakes never see a cold cache; renewal runs in
+// CertMagic's background and the returned tls.Configs pick up rotation
+// transparently via the cache.
+func buildManagedTLS(s *TLSSpec, log *slog.Logger) (*ListenerCreds, error) {
+	is := s.Issuer
+	if is.CertCacheDir == "" {
+		return nil, errEmptyField(DriverTLS, "issuer.cert_cache_dir")
+	}
+	if is.NodeID == "" {
+		return nil, errEmptyField(DriverTLS, "issuer.node_id")
+	}
+	if is.Principal == "" {
+		return nil, errEmptyField(DriverTLS, "issuer.principal")
+	}
+
+	issuer, err := buildIssuer(is)
+	if err != nil {
+		return nil, err
+	}
+	mgr, err := certmgr.New(certmgr.Options{
+		Dir:       is.CertCacheDir,
+		NodeID:    is.NodeID,
+		Principal: is.Principal,
+		Issuer:    issuer,
+		Logger:    log,
+	})
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := mgr.ManageLeaf(ctx); err != nil {
+		_ = mgr.Close()
+		return nil, err
+	}
+	pool, err := loadCAPool(s.CAFile)
+	if err != nil {
+		_ = mgr.Close()
+		return nil, err
+	}
+	verify := verifyMeshIdentity(s.MeshCAFingerprint)
+	serverCfg := &tls.Config{
+		MinVersion:            tls.VersionTLS13,
+		GetCertificate:        mgr.GetCertificate,
+		VerifyPeerCertificate: verify,
+	}
+	if s.clientAuth() {
+		serverCfg.ClientAuth = tls.RequireAndVerifyClientCert
+		serverCfg.ClientCAs = pool
+	}
+	clientCfg := &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return mgr.GetCertificate(nil)
+		},
+		RootCAs:               pool,
+		ServerName:            s.ServerName,
+		VerifyPeerCertificate: verify,
+	}
+	return &ListenerCreds{
+		ServerTLSConfig: serverCfg,
+		ClientTLSConfig: clientCfg,
+		Driver:          DriverTLS,
+		SecurityLevel:   credentials.PrivacyAndIntegrity,
+		Close:           mgr.Close,
+	}, nil
+}
+
+func buildIssuer(is *IssuerSpec) (*certmgr.BuiltinIssuer, error) {
+	switch is.Type {
+	case "", "builtin":
+		if is.Builtin == nil {
+			return nil, errors.New("reflow/creds: tls.issuer.builtin is required for builtin issuer type")
+		}
+		ca, err := pki.LoadCA(is.Builtin.CACertFile, is.Builtin.CAKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("reflow/creds: load issuer CA: %w", err)
+		}
+		return certmgr.NewBuiltinIssuer(certmgr.BuiltinOptions{
+			CA:        ca,
+			Principal: is.Principal,
+			Hosts:     is.ExtraHosts,
+			Validity:  is.LeafValidity,
+		})
+	default:
+		return nil, fmt.Errorf("reflow/creds: unknown issuer type %q", is.Type)
+	}
 }
 
 // hotReloadKeypair returns a callback that re-reads certFile/keyFile

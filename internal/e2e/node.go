@@ -389,25 +389,71 @@ func (n *ContainerNode) ingress() (*ingressclient.Client, error) {
 // resolveHostMapped returns "http://<host>:<port>" for a tcp port the
 // container has mapped to the host. Test code uses this to dial the
 // node's ingress / admin endpoint from outside the docker network.
-func resolveHostMapped(t testing.TB, ctx context.Context, c testcontainers.Container, containerPort string) string {
-	t.Helper()
-	host, err := c.Host(ctx)
-	if err != nil {
-		t.Fatalf("e2e: container host: %v", err)
-	}
-	// Docker Desktop publishes mapped ports on the IPv4 loopback only;
-	// dialing "localhost" can resolve to [::1] first and hit a flaky /
-	// refusing IPv6 path through the port proxy (intermittent EOF or
-	// connection-refused). Pin IPv4 so every host dial — ingress and
-	// admin — is deterministic.
-	if host == "localhost" {
-		host = "127.0.0.1"
+// hostMappedURL returns "http://127.0.0.1:<port>" for a container TCP port
+// (e.g. "8080/tcp"), preferring the IPv4 (0.0.0.0) host binding. Docker
+// Desktop publishes each port to BOTH an IPv4 and an IPv6 host binding, often
+// on DIFFERENT host ports; testcontainers' MappedPort returns only one
+// (sometimes the IPv6 one), and dialing it on 127.0.0.1 then refuses.
+// Selecting the IPv4 binding and dialing 127.0.0.1 keeps host and port on the
+// same stack (the v6 proxy path is the flaky one). Non-fatal.
+func hostMappedURL(ctx context.Context, c testcontainers.Container, containerPort string) (string, error) {
+	if insp, err := c.Inspect(ctx); err == nil && insp.NetworkSettings != nil {
+		for p, bindings := range insp.NetworkSettings.Ports {
+			if p.String() != containerPort {
+				continue
+			}
+			for _, b := range bindings {
+				if b.HostIP.Is4() { // the IPv4 (0.0.0.0) binding
+					return "http://" + net.JoinHostPort("127.0.0.1", b.HostPort), nil
+				}
+			}
+		}
 	}
 	mapped, err := c.MappedPort(ctx, containerPort)
 	if err != nil {
-		t.Fatalf("e2e: mapped port %s: %v", containerPort, err)
+		return "", fmt.Errorf("mapped port %s: %w", containerPort, err)
 	}
-	return "http://" + net.JoinHostPort(host, mapped.Port())
+	return "http://" + net.JoinHostPort("127.0.0.1", mapped.Port()), nil
+}
+
+// resolveHostMapped is hostMappedURL with a test-fatal error path, for the
+// bring-up code that has a *testing.T and cannot proceed without the port.
+func resolveHostMapped(t testing.TB, ctx context.Context, c testcontainers.Container, containerPort string) string {
+	t.Helper()
+	u, err := hostMappedURL(ctx, c, containerPort)
+	if err != nil {
+		t.Fatalf("e2e: resolve host port %s: %v", containerPort, err)
+	}
+	return u
+}
+
+// RefreshPorts re-resolves this node's host-mapped ingress + admin URLs and
+// invalidates the cached ingress client. Docker Desktop re-allocates a
+// running container's published host ports when the network topology changes
+// — e.g. when the loadhandler sidecar is added after the cluster is already
+// up — so URLs cached at construction go stale and dialing the old port
+// yields `connection refused`. Callers re-resolve between dial attempts.
+func (n *ContainerNode) RefreshPorts(ctx context.Context) error {
+	if n == nil {
+		return fmt.Errorf("e2e: RefreshPorts on nil node")
+	}
+	ing, err := hostMappedURL(ctx, n.container, ingressPort+"/tcp")
+	if err != nil {
+		return fmt.Errorf("e2e: RefreshPorts node %d ingress: %w", n.nodeID, err)
+	}
+	adm, err := hostMappedURL(ctx, n.container, adminPort+"/tcp")
+	if err != nil {
+		return fmt.Errorf("e2e: RefreshPorts node %d admin: %w", n.nodeID, err)
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.ingressURL = "https://" + stripScheme(ing)
+	n.adminURLForTest = adm
+	if n.ingressCli != nil {
+		_ = n.ingressCli.Close()
+		n.ingressCli = nil
+	}
+	return nil
 }
 
 // Compile-time check: ContainerNode satisfies loadgen.Node so the

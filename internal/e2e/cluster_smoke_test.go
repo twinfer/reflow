@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+
 	"github.com/twinfer/reflow/internal/e2e"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -33,9 +35,11 @@ func TestSmoke_ThreeNodeClusterInvocation(t *testing.T) {
 		t.Fatalf("register handler: %v", err)
 	}
 
-	submitCtx, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel2()
-	id, err := cluster.Nodes[0].SubmitInvocation(submitCtx, "e2e.Echo", "echo", "smoke-1", []byte("hello"))
+	// A just-booted node's host-mapped ingress port can flap under Docker
+	// Desktop's port forwarder, and a freshly-elected cluster needs a moment
+	// before the destination shard leader serves the propose. Submit through
+	// any node, retrying those startup transients (see submitWhenReady).
+	id, err := submitWhenReady(t, cluster, 45*time.Second)
 	if err != nil {
 		t.Fatalf("submit invocation: %v", err)
 	}
@@ -49,6 +53,46 @@ func TestSmoke_ThreeNodeClusterInvocation(t *testing.T) {
 	}
 }
 
+// submitWhenReady submits the smoke invocation through any node, retrying
+// transient transport errors until one node accepts it or timeout elapses.
+// A just-booted node's host-mapped ingress port can flap under Docker
+// Desktop's port forwarder (CodeUnavailable / connection refused), and a
+// freshly-elected cluster needs a moment before the destination shard
+// leader serves the propose (CodeDeadlineExceeded). Both are startup
+// warm-up transients, not invocation failures — round-robin across nodes
+// like RegisterHandler rather than pin to one.
+func submitWhenReady(t *testing.T, cluster *e2e.ContainerCluster, timeout time.Duration) (*enginev1.InvocationId, error) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		for _, n := range cluster.Nodes {
+			if n == nil {
+				continue
+			}
+			// Docker Desktop re-maps a running container's host port when the
+			// network topology changes (the loadhandler sidecar is added after
+			// the cluster is up), so re-resolve before each dial.
+			if err := n.RefreshPorts(context.Background()); err != nil {
+				lastErr = err
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			id, err := n.SubmitInvocation(ctx, "e2e.Echo", "echo", "smoke-1", []byte("hello"))
+			cancel()
+			if err == nil {
+				return id, nil
+			}
+			lastErr = err
+			if code := connect.CodeOf(err); code != connect.CodeUnavailable && code != connect.CodeDeadlineExceeded {
+				return nil, err
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return nil, fmt.Errorf("no node accepted the invocation within %s: %w", timeout, lastErr)
+}
+
 // awaitCompletion polls DescribeInvocation against any reachable node
 // until the status reaches the Completed terminal state, or the
 // deadline expires. A non-empty failure_message surfaces as an error
@@ -60,6 +104,11 @@ func awaitCompletion(t *testing.T, cluster *e2e.ContainerCluster, id *enginev1.I
 	for time.Now().Before(deadline) {
 		for _, n := range cluster.Nodes {
 			if n == nil {
+				continue
+			}
+			// Host ports can have been re-mapped since construction (see
+			// submitWhenReady); re-resolve so polling doesn't dial a dead port.
+			if err := n.RefreshPorts(context.Background()); err != nil {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

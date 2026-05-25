@@ -503,9 +503,11 @@ type Peer struct {
 // ClusterConfig describes the multi-node cluster. Single-node deployments
 // leave Peers empty.
 type ClusterConfig struct {
-	// Shards lists the partition shard IDs this node should host. Defaults
-	// to []uint64{1} when empty.
-	Shards []uint64 `koanf:"shards"`
+	// NumPartitionShards is the cluster-wide partition shard count (shard
+	// ids 1..S), independent of peer count and replication factor. 0 means
+	// auto: the peer count (1 for solo). Every shard is replicated on every
+	// peer (RF=N); physical shard ids are always contiguous 1..S.
+	NumPartitionShards uint64 `koanf:"num_partition_shards"`
 	// Peers is the static topology — non-empty for multi-node bootstrap.
 	Peers []Peer `koanf:"peers"`
 	// JoinExisting, when true, starts this node as a joiner of an

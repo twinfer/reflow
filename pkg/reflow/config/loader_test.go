@@ -28,7 +28,7 @@ storage:
 ingress:
   addr: ":8080"
 cluster:
-  shards: [1, 2, 3]
+  num_partition_shards: 3
 `
 	cfg, _, err := config.Load(config.FromFile(writeFile(t, dir, "config.yaml", yaml)))
 	if err != nil {
@@ -46,8 +46,8 @@ cluster:
 	if cfg.Ingress.Addr != ":8080" {
 		t.Errorf("Ingress = %+v", cfg.Ingress)
 	}
-	if len(cfg.Cluster.Shards) != 3 || cfg.Cluster.Shards[2] != 3 {
-		t.Errorf("Cluster.Shards = %v", cfg.Cluster.Shards)
+	if cfg.Cluster.NumPartitionShards != 3 {
+		t.Errorf("Cluster.NumPartitionShards = %d; want 3", cfg.Cluster.NumPartitionShards)
 	}
 }
 

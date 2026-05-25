@@ -170,7 +170,6 @@ func defaultValues() map[string]any {
 		"node.id":          uint64(1),
 		"node.raft_addr":   "127.0.0.1:9091",
 		"storage.data_dir": "./data",
-		"cluster.shards":   []uint64{1},
 		// Ingress is the user-facing API; reflow.Run starts it
 		// unconditionally and applies this same default if the operator
 		// leaves Addr empty. Surfaced here so users can see the canonical

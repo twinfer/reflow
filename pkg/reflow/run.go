@@ -101,17 +101,20 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		metricsCloser = startMetricsServer(cfg.Metrics, logger)
 	}
 
-	// NumPartitionShards is the routing modulus — independent of peer
-	// count. Multi-node deployments may host every shard on every peer
-	// so the two happen to coincide, but the engine must not bake that
-	// assumption in.
-	numShards := uint64(len(cfg.Cluster.Shards))
+	// NumPartitionShards is the routing modulus and the bootstrap shard
+	// count — independent of peer count and replication factor (every
+	// shard is replicated on every peer, RF=N). 0 means auto: the peer
+	// count, or 1 for solo. Physical shard ids are contiguous 1..S.
+	numShards := cfg.Cluster.NumPartitionShards
 	if numShards == 0 {
-		numShards = 1
+		numShards = uint64(len(cfg.Cluster.Peers))
+		if numShards == 0 {
+			numShards = 1
+		}
 	}
-	shards := cfg.Cluster.Shards
-	if len(shards) == 0 {
-		shards = []uint64{1}
+	shards := make([]uint64, 0, numShards)
+	for sh := uint64(1); sh <= numShards; sh++ {
+		shards = append(shards, sh)
 	}
 	snapshotTriggers := make(map[uint64]chan struct{}, len(shards))
 	for _, sh := range shards {

@@ -447,13 +447,10 @@ func writeClusterConfigYAML(t *testing.T, n int, numShards uint64, withToxiproxy
 		Gossip string
 	}
 	type tmplData struct {
-		Shards []uint64
-		Peers  []peer
+		NumShards uint64
+		Peers     []peer
 	}
-	data := tmplData{}
-	for i := uint64(1); i <= numShards; i++ {
-		data.Shards = append(data.Shards, i)
-	}
+	data := tmplData{NumShards: numShards}
 	for i := 0; i < n; i++ {
 		id := uint64(i + 1)
 		raft := fmt.Sprintf("reflowd-node%d:%s", id, raftPort)
@@ -490,7 +487,7 @@ func (c *tLogConsumer) Accept(l testcontainers.Log) {
 }
 
 const clusterConfigTmpl = `cluster:
-  shards: [{{range $i, $s := .Shards}}{{if $i}}, {{end}}{{$s}}{{end}}]
+  num_partition_shards: {{.NumShards}}
   peers:
 {{- range .Peers}}
     - node_id: {{.NodeID}}

@@ -90,8 +90,8 @@ func FromFile(path string) Source {
 //	REFLOW_INGRESS_GRPC_ADDR       → ingress.grpc_addr
 //	REFLOW_LOGGING_LEVEL           → logging.level
 //
-// For multi-value fields (e.g. cluster.shards = [1,2,3]), set the var
-// to a comma-separated list and koanf+mapstructure handles the split.
+// For multi-value scalar fields, set the var to a comma-separated list
+// and koanf+mapstructure handles the split.
 func FromEnv() Source {
 	return FromEnvPrefix(DefaultEnvPrefix)
 }

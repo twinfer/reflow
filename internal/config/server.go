@@ -32,6 +32,7 @@ import (
 	connect "connectrpc.com/connect"
 	"github.com/google/uuid"
 
+	"github.com/twinfer/reflow/internal/authz"
 	"github.com/twinfer/reflow/internal/certmgr"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/cluster"
@@ -468,6 +469,66 @@ func (s *Server) readEventSourceRevision(ctx context.Context) (uint64, error) {
 		return 0, err
 	}
 	return list.TableRevision, nil
+}
+
+// UpsertClusterAuthzPolicy validates policy_text against the Cedar schema
+// (layer 1) and, on success, proposes it as the cluster-wide
+// PlatformConfigRecord. An invalid policy is rejected at upload
+// (InvalidArgument) and never installed, so a typo can't silently swap in a
+// deny-everything policy on the next reconcile. CAS via if_table_revision_eq.
+func (s *Server) UpsertClusterAuthzPolicy(ctx context.Context, req *connect.Request[configv1.UpsertClusterAuthzPolicyRequest]) (*connect.Response[configv1.UpsertClusterAuthzPolicyResponse], error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
+	text := req.Msg.GetPolicyText()
+	if text == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("config: policy_text required"))
+	}
+	if err := authz.ValidateClusterPolicy([]byte(text)); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("config: cluster authz policy failed validation: %w", err))
+	}
+	cmd := &enginev1.Command{
+		Kind: &enginev1.Command_UpsertPlatformConfig{
+			UpsertPlatformConfig: &enginev1.UpsertPlatformConfig{
+				Record: &enginev1.PlatformConfigRecord{ClusterAuthzPolicyText: text},
+			},
+		},
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	if err := s.proposeCAS(callCtx, cmd, req.Msg.GetIfTableRevisionEq()); err != nil {
+		return nil, err
+	}
+	res, err := s.host.ClusterAuthzPolicy(callCtx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("config: read post-apply revision: %w", err))
+	}
+	return connect.NewResponse(&configv1.UpsertClusterAuthzPolicyResponse{TableRevision: res.TableRevision}), nil
+}
+
+// GetClusterAuthzPolicy returns the current cluster authz policy text + the
+// platform-config table revision. When no policy has been uploaded the row is
+// empty, so it returns the in-binary foundational policy — the effective
+// default the engine runs until an operator overrides it — with revision 0.
+// No leader gate: SyncRead serves from the local shard-0 replica.
+func (s *Server) GetClusterAuthzPolicy(ctx context.Context, _ *connect.Request[configv1.GetClusterAuthzPolicyRequest]) (*connect.Response[configv1.GetClusterAuthzPolicyResponse], error) {
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	res, err := s.host.ClusterAuthzPolicy(callCtx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable,
+			fmt.Errorf("config: read cluster authz policy: %w", err))
+	}
+	text := authz.FoundationalClusterPolicies
+	if res.Record != nil && res.Record.GetClusterAuthzPolicyText() != "" {
+		text = res.Record.GetClusterAuthzPolicyText()
+	}
+	return connect.NewResponse(&configv1.GetClusterAuthzPolicyResponse{
+		PolicyText:    text,
+		TableRevision: res.TableRevision,
+	}), nil
 }
 
 // AutoSeedEventSource is the in-process bootstrap entrypoint for

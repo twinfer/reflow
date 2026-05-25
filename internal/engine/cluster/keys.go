@@ -84,6 +84,7 @@ const (
 	metaPrefix            = "meta"
 	nodePrefix            = "node/"
 	partitionTabKey       = "partition_table"
+	platformConfigKey     = "platform_config"
 	deploymentPrefix      = "deployment/"
 	deploymentIndexPrefix = "deployment_idx/"
 	eventSourcePrefix     = "eventsrc/"
@@ -116,6 +117,7 @@ const (
 	RevisionTableTenantDEK      = "tenant_dek"
 	RevisionTableCARoot         = "caroot"
 	RevisionTableJoinToken      = "jointoken"
+	RevisionTablePlatformConfig = "platformconfig"
 )
 
 // MetaKey returns the singleton key for the metadata shard's PartitionMeta.
@@ -135,6 +137,9 @@ func NodeKey(nodeID uint64) []byte {
 
 // PartitionTableKey returns the singleton key for the PartitionTable.
 func PartitionTableKey() []byte { return []byte(partitionTabKey) }
+
+// PlatformConfigKey returns the singleton key for the PlatformConfigRecord.
+func PlatformConfigKey() []byte { return []byte(platformConfigKey) }
 
 // DeploymentPrefix returns the deployment/ namespace prefix. Used for
 // iteration via a forward range scan.

@@ -730,6 +730,24 @@ func (h *Host) Secrets(ctx context.Context) (*cluster.SecretList, error) {
 	return out, nil
 }
 
+// ClusterAuthzPolicy SyncReads the PlatformConfigRecord singleton from shard 0
+// plus the platform-config table's CAS revision. Used by the Config admin RPCs
+// and the per-node authz Reconciler.
+func (h *Host) ClusterAuthzPolicy(ctx context.Context) (*cluster.PlatformConfigResult, error) {
+	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupPlatformConfig{})
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return &cluster.PlatformConfigResult{}, nil
+	}
+	out, ok := res.(*cluster.PlatformConfigResult)
+	if !ok {
+		return nil, fmt.Errorf("host: ClusterAuthzPolicy: unexpected lookup type %T", res)
+	}
+	return out, nil
+}
+
 // CARoots SyncReads every CARootRecord from shard 0 plus the table's
 // CAS revision. Used by the admin RPCs and the per-node
 // certmgr.ClusterIssuer to refresh the active CA snapshot.

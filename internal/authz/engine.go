@@ -88,8 +88,24 @@ func (e *Engine) CompileAndValidate(policyText []byte) (*cedar.PolicySet, error)
 }
 
 // SetPolicies atomically swaps the live policy set. Used by the per-node
-// reconciler (PR3) when shard-0 policy text changes.
+// reconciler when shard-0 policy text changes.
 func (e *Engine) SetPolicies(ps *cedar.PolicySet) { e.policies.Store(ps) }
+
+// ValidateClusterPolicy runs layer-1 schema validation on policyText against
+// the embedded schema without installing it — the upload gate the Config
+// server calls before proposing a cluster authz policy. A nil error means the
+// policy parses and every statement conforms to the schema's appliesTo, so an
+// invalid policy is rejected at upload time rather than silently denying every
+// request once reconciled.
+func ValidateClusterPolicy(policyText []byte) error {
+	rs, err := resolveSchema()
+	if err != nil {
+		return err
+	}
+	e := &Engine{resolved: rs, validator: validate.New(rs)}
+	_, err = e.CompileAndValidate(policyText)
+	return err
+}
 
 // Authorize evaluates req against the live policy set. Cedar is default-deny:
 // a nil policy set or no matching permit yields Deny.

@@ -109,6 +109,12 @@ const (
 	ConfigListJoinTokensProcedure = "/reflow.config.v1.Config/ListJoinTokens"
 	// ConfigIssueOperatorProcedure is the fully-qualified name of the Config's IssueOperator RPC.
 	ConfigIssueOperatorProcedure = "/reflow.config.v1.Config/IssueOperator"
+	// ConfigUpsertClusterAuthzPolicyProcedure is the fully-qualified name of the Config's
+	// UpsertClusterAuthzPolicy RPC.
+	ConfigUpsertClusterAuthzPolicyProcedure = "/reflow.config.v1.Config/UpsertClusterAuthzPolicy"
+	// ConfigGetClusterAuthzPolicyProcedure is the fully-qualified name of the Config's
+	// GetClusterAuthzPolicy RPC.
+	ConfigGetClusterAuthzPolicyProcedure = "/reflow.config.v1.Config/GetClusterAuthzPolicy"
 )
 
 // ConfigClient is a client for the reflow.config.v1.Config service.
@@ -208,6 +214,14 @@ type ConfigClient interface {
 	// same ClusterIssuer the bootstrap listener uses. Leader-only.
 	// Replaces the deleted `reflowd pki issue-operator` flow.
 	IssueOperator(context.Context, *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error)
+	// UpsertClusterAuthzPolicy replaces shard 0's cluster-wide Cedar authz
+	// policy text (PlatformConfigRecord). The server runs layer-1 schema
+	// validation before proposing, so an invalid policy is rejected at upload,
+	// never installed. CAS via if_table_revision_eq. Operator-only. Leader-only.
+	UpsertClusterAuthzPolicy(context.Context, *connect.Request[configv1.UpsertClusterAuthzPolicyRequest]) (*connect.Response[configv1.UpsertClusterAuthzPolicyResponse], error)
+	// GetClusterAuthzPolicy returns the current cluster authz policy text + the
+	// platform-config table revision (for a CAS round-trip). Operator-only.
+	GetClusterAuthzPolicy(context.Context, *connect.Request[configv1.GetClusterAuthzPolicyRequest]) (*connect.Response[configv1.GetClusterAuthzPolicyResponse], error)
 }
 
 // NewConfigClient constructs a client for the reflow.config.v1.Config service. By default, it uses
@@ -347,32 +361,46 @@ func NewConfigClient(httpClient connect.HTTPClient, baseURL string, opts ...conn
 			connect.WithSchema(configMethods.ByName("IssueOperator")),
 			connect.WithClientOptions(opts...),
 		),
+		upsertClusterAuthzPolicy: connect.NewClient[configv1.UpsertClusterAuthzPolicyRequest, configv1.UpsertClusterAuthzPolicyResponse](
+			httpClient,
+			baseURL+ConfigUpsertClusterAuthzPolicyProcedure,
+			connect.WithSchema(configMethods.ByName("UpsertClusterAuthzPolicy")),
+			connect.WithClientOptions(opts...),
+		),
+		getClusterAuthzPolicy: connect.NewClient[configv1.GetClusterAuthzPolicyRequest, configv1.GetClusterAuthzPolicyResponse](
+			httpClient,
+			baseURL+ConfigGetClusterAuthzPolicyProcedure,
+			connect.WithSchema(configMethods.ByName("GetClusterAuthzPolicy")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // configClient implements ConfigClient.
 type configClient struct {
-	registerDeployment  *connect.Client[configv1.RegisterDeploymentRequest, configv1.RegisterDeploymentResponse]
-	listDeployments     *connect.Client[configv1.ListDeploymentsRequest, configv1.ListDeploymentsResponse]
-	describeDeployment  *connect.Client[configv1.DescribeDeploymentRequest, configv1.DescribeDeploymentResponse]
-	deleteDeployment    *connect.Client[configv1.DeleteDeploymentRequest, configv1.DeleteDeploymentResponse]
-	upsertEventSource   *connect.Client[configv1.UpsertEventSourceRequest, configv1.UpsertEventSourceResponse]
-	deleteEventSource   *connect.Client[configv1.DeleteEventSourceRequest, configv1.DeleteEventSourceResponse]
-	listEventSources    *connect.Client[configv1.ListEventSourcesRequest, configv1.ListEventSourcesResponse]
-	upsertWebhookSource *connect.Client[configv1.UpsertWebhookSourceRequest, configv1.UpsertWebhookSourceResponse]
-	deleteWebhookSource *connect.Client[configv1.DeleteWebhookSourceRequest, configv1.DeleteWebhookSourceResponse]
-	listWebhookSources  *connect.Client[configv1.ListWebhookSourcesRequest, configv1.ListWebhookSourcesResponse]
-	upsertSecret        *connect.Client[configv1.UpsertSecretRequest, configv1.UpsertSecretResponse]
-	deleteSecret        *connect.Client[configv1.DeleteSecretRequest, configv1.DeleteSecretResponse]
-	listSecrets         *connect.Client[configv1.ListSecretsRequest, configv1.ListSecretsResponse]
-	listAuditLog        *connect.Client[configv1.ListAuditLogRequest, configv1.ListAuditLogResponse]
-	upsertCARoot        *connect.Client[configv1.UpsertCARootRequest, configv1.UpsertCARootResponse]
-	deleteCARoot        *connect.Client[configv1.DeleteCARootRequest, configv1.DeleteCARootResponse]
-	listCARoots         *connect.Client[configv1.ListCARootsRequest, configv1.ListCARootsResponse]
-	createJoinToken     *connect.Client[configv1.CreateJoinTokenRequest, configv1.CreateJoinTokenResponse]
-	deleteJoinToken     *connect.Client[configv1.DeleteJoinTokenRequest, configv1.DeleteJoinTokenResponse]
-	listJoinTokens      *connect.Client[configv1.ListJoinTokensRequest, configv1.ListJoinTokensResponse]
-	issueOperator       *connect.Client[configv1.IssueOperatorRequest, configv1.IssueOperatorResponse]
+	registerDeployment       *connect.Client[configv1.RegisterDeploymentRequest, configv1.RegisterDeploymentResponse]
+	listDeployments          *connect.Client[configv1.ListDeploymentsRequest, configv1.ListDeploymentsResponse]
+	describeDeployment       *connect.Client[configv1.DescribeDeploymentRequest, configv1.DescribeDeploymentResponse]
+	deleteDeployment         *connect.Client[configv1.DeleteDeploymentRequest, configv1.DeleteDeploymentResponse]
+	upsertEventSource        *connect.Client[configv1.UpsertEventSourceRequest, configv1.UpsertEventSourceResponse]
+	deleteEventSource        *connect.Client[configv1.DeleteEventSourceRequest, configv1.DeleteEventSourceResponse]
+	listEventSources         *connect.Client[configv1.ListEventSourcesRequest, configv1.ListEventSourcesResponse]
+	upsertWebhookSource      *connect.Client[configv1.UpsertWebhookSourceRequest, configv1.UpsertWebhookSourceResponse]
+	deleteWebhookSource      *connect.Client[configv1.DeleteWebhookSourceRequest, configv1.DeleteWebhookSourceResponse]
+	listWebhookSources       *connect.Client[configv1.ListWebhookSourcesRequest, configv1.ListWebhookSourcesResponse]
+	upsertSecret             *connect.Client[configv1.UpsertSecretRequest, configv1.UpsertSecretResponse]
+	deleteSecret             *connect.Client[configv1.DeleteSecretRequest, configv1.DeleteSecretResponse]
+	listSecrets              *connect.Client[configv1.ListSecretsRequest, configv1.ListSecretsResponse]
+	listAuditLog             *connect.Client[configv1.ListAuditLogRequest, configv1.ListAuditLogResponse]
+	upsertCARoot             *connect.Client[configv1.UpsertCARootRequest, configv1.UpsertCARootResponse]
+	deleteCARoot             *connect.Client[configv1.DeleteCARootRequest, configv1.DeleteCARootResponse]
+	listCARoots              *connect.Client[configv1.ListCARootsRequest, configv1.ListCARootsResponse]
+	createJoinToken          *connect.Client[configv1.CreateJoinTokenRequest, configv1.CreateJoinTokenResponse]
+	deleteJoinToken          *connect.Client[configv1.DeleteJoinTokenRequest, configv1.DeleteJoinTokenResponse]
+	listJoinTokens           *connect.Client[configv1.ListJoinTokensRequest, configv1.ListJoinTokensResponse]
+	issueOperator            *connect.Client[configv1.IssueOperatorRequest, configv1.IssueOperatorResponse]
+	upsertClusterAuthzPolicy *connect.Client[configv1.UpsertClusterAuthzPolicyRequest, configv1.UpsertClusterAuthzPolicyResponse]
+	getClusterAuthzPolicy    *connect.Client[configv1.GetClusterAuthzPolicyRequest, configv1.GetClusterAuthzPolicyResponse]
 }
 
 // RegisterDeployment calls reflow.config.v1.Config.RegisterDeployment.
@@ -480,6 +508,16 @@ func (c *configClient) IssueOperator(ctx context.Context, req *connect.Request[c
 	return c.issueOperator.CallUnary(ctx, req)
 }
 
+// UpsertClusterAuthzPolicy calls reflow.config.v1.Config.UpsertClusterAuthzPolicy.
+func (c *configClient) UpsertClusterAuthzPolicy(ctx context.Context, req *connect.Request[configv1.UpsertClusterAuthzPolicyRequest]) (*connect.Response[configv1.UpsertClusterAuthzPolicyResponse], error) {
+	return c.upsertClusterAuthzPolicy.CallUnary(ctx, req)
+}
+
+// GetClusterAuthzPolicy calls reflow.config.v1.Config.GetClusterAuthzPolicy.
+func (c *configClient) GetClusterAuthzPolicy(ctx context.Context, req *connect.Request[configv1.GetClusterAuthzPolicyRequest]) (*connect.Response[configv1.GetClusterAuthzPolicyResponse], error) {
+	return c.getClusterAuthzPolicy.CallUnary(ctx, req)
+}
+
 // ConfigHandler is an implementation of the reflow.config.v1.Config service.
 type ConfigHandler interface {
 	// RegisterDeployment introduces a new handler deployment to the
@@ -577,6 +615,14 @@ type ConfigHandler interface {
 	// same ClusterIssuer the bootstrap listener uses. Leader-only.
 	// Replaces the deleted `reflowd pki issue-operator` flow.
 	IssueOperator(context.Context, *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error)
+	// UpsertClusterAuthzPolicy replaces shard 0's cluster-wide Cedar authz
+	// policy text (PlatformConfigRecord). The server runs layer-1 schema
+	// validation before proposing, so an invalid policy is rejected at upload,
+	// never installed. CAS via if_table_revision_eq. Operator-only. Leader-only.
+	UpsertClusterAuthzPolicy(context.Context, *connect.Request[configv1.UpsertClusterAuthzPolicyRequest]) (*connect.Response[configv1.UpsertClusterAuthzPolicyResponse], error)
+	// GetClusterAuthzPolicy returns the current cluster authz policy text + the
+	// platform-config table revision (for a CAS round-trip). Operator-only.
+	GetClusterAuthzPolicy(context.Context, *connect.Request[configv1.GetClusterAuthzPolicyRequest]) (*connect.Response[configv1.GetClusterAuthzPolicyResponse], error)
 }
 
 // NewConfigHandler builds an HTTP handler from the service implementation. It returns the path on
@@ -712,6 +758,18 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 		connect.WithSchema(configMethods.ByName("IssueOperator")),
 		connect.WithHandlerOptions(opts...),
 	)
+	configUpsertClusterAuthzPolicyHandler := connect.NewUnaryHandler(
+		ConfigUpsertClusterAuthzPolicyProcedure,
+		svc.UpsertClusterAuthzPolicy,
+		connect.WithSchema(configMethods.ByName("UpsertClusterAuthzPolicy")),
+		connect.WithHandlerOptions(opts...),
+	)
+	configGetClusterAuthzPolicyHandler := connect.NewUnaryHandler(
+		ConfigGetClusterAuthzPolicyProcedure,
+		svc.GetClusterAuthzPolicy,
+		connect.WithSchema(configMethods.ByName("GetClusterAuthzPolicy")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/reflow.config.v1.Config/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ConfigRegisterDeploymentProcedure:
@@ -756,6 +814,10 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 			configListJoinTokensHandler.ServeHTTP(w, r)
 		case ConfigIssueOperatorProcedure:
 			configIssueOperatorHandler.ServeHTTP(w, r)
+		case ConfigUpsertClusterAuthzPolicyProcedure:
+			configUpsertClusterAuthzPolicyHandler.ServeHTTP(w, r)
+		case ConfigGetClusterAuthzPolicyProcedure:
+			configGetClusterAuthzPolicyHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -847,4 +909,12 @@ func (UnimplementedConfigHandler) ListJoinTokens(context.Context, *connect.Reque
 
 func (UnimplementedConfigHandler) IssueOperator(context.Context, *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.IssueOperator is not implemented"))
+}
+
+func (UnimplementedConfigHandler) UpsertClusterAuthzPolicy(context.Context, *connect.Request[configv1.UpsertClusterAuthzPolicyRequest]) (*connect.Response[configv1.UpsertClusterAuthzPolicyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.UpsertClusterAuthzPolicy is not implemented"))
+}
+
+func (UnimplementedConfigHandler) GetClusterAuthzPolicy(context.Context, *connect.Request[configv1.GetClusterAuthzPolicyRequest]) (*connect.Response[configv1.GetClusterAuthzPolicyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.GetClusterAuthzPolicy is not implemented"))
 }

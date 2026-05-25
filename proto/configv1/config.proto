@@ -139,6 +139,15 @@ service Config {
   // same ClusterIssuer the bootstrap listener uses. Leader-only.
   // Replaces the deleted `reflowd pki issue-operator` flow.
   rpc IssueOperator(IssueOperatorRequest) returns (IssueOperatorResponse);
+
+  // UpsertClusterAuthzPolicy replaces shard 0's cluster-wide Cedar authz
+  // policy text (PlatformConfigRecord). The server runs layer-1 schema
+  // validation before proposing, so an invalid policy is rejected at upload,
+  // never installed. CAS via if_table_revision_eq. Operator-only. Leader-only.
+  rpc UpsertClusterAuthzPolicy(UpsertClusterAuthzPolicyRequest) returns (UpsertClusterAuthzPolicyResponse);
+  // GetClusterAuthzPolicy returns the current cluster authz policy text + the
+  // platform-config table revision (for a CAS round-trip). Operator-only.
+  rpc GetClusterAuthzPolicy(GetClusterAuthzPolicyRequest) returns (GetClusterAuthzPolicyResponse);
 }
 
 // RegisterDeploymentRequest names a handler endpoint reachable over
@@ -204,6 +213,20 @@ message DeleteEventSourceResponse {
 message ListEventSourcesRequest {}
 message ListEventSourcesResponse {
   repeated reflow.engine.v1.EventSourceRecord sources = 1;
+  uint64 table_revision = 2;
+}
+
+// Cluster authz policy (PlatformConfigRecord.cluster_authz_policy_text).
+message UpsertClusterAuthzPolicyRequest {
+  string policy_text = 1;
+  uint64 if_table_revision_eq = 2;
+}
+message UpsertClusterAuthzPolicyResponse {
+  uint64 table_revision = 1;
+}
+message GetClusterAuthzPolicyRequest {}
+message GetClusterAuthzPolicyResponse {
+  string policy_text = 1;
   uint64 table_revision = 2;
 }
 

@@ -285,6 +285,13 @@ message Command {
     UpsertJoinToken upsert_join_token = 47;
     ConsumeJoinToken consume_join_token = 48;
     DeleteJoinToken delete_join_token = 49;
+    // UpsertPlatformConfig replaces shard 0's PlatformConfigRecord singleton
+    // (cluster-wide platform policy; v1 = Cedar cluster authz policy text).
+    // Honors Envelope.precondition.if_table_revision_eq; bumps
+    // RevisionTablePlatformConfig and fires the PlatformConfigTable notifier
+    // so each node's authz reconciler recompiles the live policy set.
+    // Accepted only by shardID=0.
+    UpsertPlatformConfig upsert_platform_config = 50;
   }
 }
 
@@ -1255,6 +1262,21 @@ message EventSourceBackend {
 // EventSourceTable[record.name] = record, and bumps the table revision.
 message UpsertEventSource {
   EventSourceRecord record = 1;
+}
+
+// PlatformConfigRecord is shard 0's cluster-wide platform-config singleton
+// (one row). It carries fleet policy every node reconciles locally. v1 holds
+// only the Cedar cluster authz policy text; the other platform knobs from SAD
+// §6.15.2 (listener behavior, PKI mode, KMS enablement, audit retention,
+// default tenant quotas) slot in as added fields here, no new table needed.
+message PlatformConfigRecord {
+  string cluster_authz_policy_text = 1;
+}
+
+// UpsertPlatformConfig is the Command_UpsertPlatformConfig payload — the full
+// PlatformConfigRecord singleton (last-writer-wins under CAS).
+message UpsertPlatformConfig {
+  PlatformConfigRecord record = 1;
 }
 
 // DeleteEventSource is the Command_DeleteEventSource payload. Apply arm

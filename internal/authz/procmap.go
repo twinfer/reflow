@@ -77,14 +77,16 @@ var procMap = map[string]procEntry{
 	configv1connect.ConfigListSecretsProcedure:        {"ListSecrets", []string{groupConfigRead}},
 
 	// ----- Config: platform plane (operator only) -----
-	configv1connect.ConfigListAuditLogProcedure:    {"ListAuditLog", []string{groupPlatformConfig}},
-	configv1connect.ConfigUpsertCARootProcedure:    {"UpsertCARoot", []string{groupPlatformConfig}},
-	configv1connect.ConfigDeleteCARootProcedure:    {"DeleteCARoot", []string{groupPlatformConfig}},
-	configv1connect.ConfigListCARootsProcedure:     {"ListCARoots", []string{groupPlatformConfig}},
-	configv1connect.ConfigCreateJoinTokenProcedure: {"CreateJoinToken", []string{groupPlatformConfig}},
-	configv1connect.ConfigDeleteJoinTokenProcedure: {"DeleteJoinToken", []string{groupPlatformConfig}},
-	configv1connect.ConfigListJoinTokensProcedure:  {"ListJoinTokens", []string{groupPlatformConfig}},
-	configv1connect.ConfigIssueOperatorProcedure:   {"IssueOperator", []string{groupPlatformConfig}},
+	configv1connect.ConfigListAuditLogProcedure:             {"ListAuditLog", []string{groupPlatformConfig}},
+	configv1connect.ConfigUpsertCARootProcedure:             {"UpsertCARoot", []string{groupPlatformConfig}},
+	configv1connect.ConfigDeleteCARootProcedure:             {"DeleteCARoot", []string{groupPlatformConfig}},
+	configv1connect.ConfigListCARootsProcedure:              {"ListCARoots", []string{groupPlatformConfig}},
+	configv1connect.ConfigCreateJoinTokenProcedure:          {"CreateJoinToken", []string{groupPlatformConfig}},
+	configv1connect.ConfigDeleteJoinTokenProcedure:          {"DeleteJoinToken", []string{groupPlatformConfig}},
+	configv1connect.ConfigListJoinTokensProcedure:           {"ListJoinTokens", []string{groupPlatformConfig}},
+	configv1connect.ConfigIssueOperatorProcedure:            {"IssueOperator", []string{groupPlatformConfig}},
+	configv1connect.ConfigUpsertClusterAuthzPolicyProcedure: {"UpsertClusterAuthzPolicy", []string{groupPlatformConfig}},
+	configv1connect.ConfigGetClusterAuthzPolicyProcedure:    {"GetClusterAuthzPolicy", []string{groupPlatformConfig}},
 
 	// ----- ClusterCtl: tenant-lifecycle (operator only) -----
 	clusterctlv1connect.ClusterCtlUpsertTenantProcedure:    {"UpsertTenant", []string{groupTenantLifecycle}},

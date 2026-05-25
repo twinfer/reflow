@@ -718,6 +718,191 @@ func (x *ListEventSourcesResponse) GetTableRevision() uint64 {
 	return 0
 }
 
+// Cluster authz policy (PlatformConfigRecord.cluster_authz_policy_text).
+type UpsertClusterAuthzPolicyRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	PolicyText        string                 `protobuf:"bytes,1,opt,name=policy_text,json=policyText,proto3" json:"policy_text,omitempty"`
+	IfTableRevisionEq uint64                 `protobuf:"varint,2,opt,name=if_table_revision_eq,json=ifTableRevisionEq,proto3" json:"if_table_revision_eq,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *UpsertClusterAuthzPolicyRequest) Reset() {
+	*x = UpsertClusterAuthzPolicyRequest{}
+	mi := &file_configv1_config_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpsertClusterAuthzPolicyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpsertClusterAuthzPolicyRequest) ProtoMessage() {}
+
+func (x *UpsertClusterAuthzPolicyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpsertClusterAuthzPolicyRequest.ProtoReflect.Descriptor instead.
+func (*UpsertClusterAuthzPolicyRequest) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *UpsertClusterAuthzPolicyRequest) GetPolicyText() string {
+	if x != nil {
+		return x.PolicyText
+	}
+	return ""
+}
+
+func (x *UpsertClusterAuthzPolicyRequest) GetIfTableRevisionEq() uint64 {
+	if x != nil {
+		return x.IfTableRevisionEq
+	}
+	return 0
+}
+
+type UpsertClusterAuthzPolicyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TableRevision uint64                 `protobuf:"varint,1,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpsertClusterAuthzPolicyResponse) Reset() {
+	*x = UpsertClusterAuthzPolicyResponse{}
+	mi := &file_configv1_config_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpsertClusterAuthzPolicyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpsertClusterAuthzPolicyResponse) ProtoMessage() {}
+
+func (x *UpsertClusterAuthzPolicyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpsertClusterAuthzPolicyResponse.ProtoReflect.Descriptor instead.
+func (*UpsertClusterAuthzPolicyResponse) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *UpsertClusterAuthzPolicyResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
+type GetClusterAuthzPolicyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetClusterAuthzPolicyRequest) Reset() {
+	*x = GetClusterAuthzPolicyRequest{}
+	mi := &file_configv1_config_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetClusterAuthzPolicyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetClusterAuthzPolicyRequest) ProtoMessage() {}
+
+func (x *GetClusterAuthzPolicyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetClusterAuthzPolicyRequest.ProtoReflect.Descriptor instead.
+func (*GetClusterAuthzPolicyRequest) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{16}
+}
+
+type GetClusterAuthzPolicyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PolicyText    string                 `protobuf:"bytes,1,opt,name=policy_text,json=policyText,proto3" json:"policy_text,omitempty"`
+	TableRevision uint64                 `protobuf:"varint,2,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetClusterAuthzPolicyResponse) Reset() {
+	*x = GetClusterAuthzPolicyResponse{}
+	mi := &file_configv1_config_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetClusterAuthzPolicyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetClusterAuthzPolicyResponse) ProtoMessage() {}
+
+func (x *GetClusterAuthzPolicyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetClusterAuthzPolicyResponse.ProtoReflect.Descriptor instead.
+func (*GetClusterAuthzPolicyResponse) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *GetClusterAuthzPolicyResponse) GetPolicyText() string {
+	if x != nil {
+		return x.PolicyText
+	}
+	return ""
+}
+
+func (x *GetClusterAuthzPolicyResponse) GetTableRevision() uint64 {
+	if x != nil {
+		return x.TableRevision
+	}
+	return 0
+}
+
 // UpsertWebhookSourceRequest carries one WebhookSourceRecord plus an
 // optional CAS guard. if_table_revision_eq=0 disables CAS.
 type UpsertWebhookSourceRequest struct {
@@ -730,7 +915,7 @@ type UpsertWebhookSourceRequest struct {
 
 func (x *UpsertWebhookSourceRequest) Reset() {
 	*x = UpsertWebhookSourceRequest{}
-	mi := &file_configv1_config_proto_msgTypes[14]
+	mi := &file_configv1_config_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -742,7 +927,7 @@ func (x *UpsertWebhookSourceRequest) String() string {
 func (*UpsertWebhookSourceRequest) ProtoMessage() {}
 
 func (x *UpsertWebhookSourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[14]
+	mi := &file_configv1_config_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -755,7 +940,7 @@ func (x *UpsertWebhookSourceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertWebhookSourceRequest.ProtoReflect.Descriptor instead.
 func (*UpsertWebhookSourceRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{14}
+	return file_configv1_config_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *UpsertWebhookSourceRequest) GetRecord() *enginev1.WebhookSourceRecord {
@@ -781,7 +966,7 @@ type UpsertWebhookSourceResponse struct {
 
 func (x *UpsertWebhookSourceResponse) Reset() {
 	*x = UpsertWebhookSourceResponse{}
-	mi := &file_configv1_config_proto_msgTypes[15]
+	mi := &file_configv1_config_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -793,7 +978,7 @@ func (x *UpsertWebhookSourceResponse) String() string {
 func (*UpsertWebhookSourceResponse) ProtoMessage() {}
 
 func (x *UpsertWebhookSourceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[15]
+	mi := &file_configv1_config_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -806,7 +991,7 @@ func (x *UpsertWebhookSourceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertWebhookSourceResponse.ProtoReflect.Descriptor instead.
 func (*UpsertWebhookSourceResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{15}
+	return file_configv1_config_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *UpsertWebhookSourceResponse) GetTableRevision() uint64 {
@@ -826,7 +1011,7 @@ type DeleteWebhookSourceRequest struct {
 
 func (x *DeleteWebhookSourceRequest) Reset() {
 	*x = DeleteWebhookSourceRequest{}
-	mi := &file_configv1_config_proto_msgTypes[16]
+	mi := &file_configv1_config_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -838,7 +1023,7 @@ func (x *DeleteWebhookSourceRequest) String() string {
 func (*DeleteWebhookSourceRequest) ProtoMessage() {}
 
 func (x *DeleteWebhookSourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[16]
+	mi := &file_configv1_config_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -851,7 +1036,7 @@ func (x *DeleteWebhookSourceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteWebhookSourceRequest.ProtoReflect.Descriptor instead.
 func (*DeleteWebhookSourceRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{16}
+	return file_configv1_config_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *DeleteWebhookSourceRequest) GetName() string {
@@ -877,7 +1062,7 @@ type DeleteWebhookSourceResponse struct {
 
 func (x *DeleteWebhookSourceResponse) Reset() {
 	*x = DeleteWebhookSourceResponse{}
-	mi := &file_configv1_config_proto_msgTypes[17]
+	mi := &file_configv1_config_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -889,7 +1074,7 @@ func (x *DeleteWebhookSourceResponse) String() string {
 func (*DeleteWebhookSourceResponse) ProtoMessage() {}
 
 func (x *DeleteWebhookSourceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[17]
+	mi := &file_configv1_config_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -902,7 +1087,7 @@ func (x *DeleteWebhookSourceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteWebhookSourceResponse.ProtoReflect.Descriptor instead.
 func (*DeleteWebhookSourceResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{17}
+	return file_configv1_config_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *DeleteWebhookSourceResponse) GetTableRevision() uint64 {
@@ -920,7 +1105,7 @@ type ListWebhookSourcesRequest struct {
 
 func (x *ListWebhookSourcesRequest) Reset() {
 	*x = ListWebhookSourcesRequest{}
-	mi := &file_configv1_config_proto_msgTypes[18]
+	mi := &file_configv1_config_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -932,7 +1117,7 @@ func (x *ListWebhookSourcesRequest) String() string {
 func (*ListWebhookSourcesRequest) ProtoMessage() {}
 
 func (x *ListWebhookSourcesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[18]
+	mi := &file_configv1_config_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -945,7 +1130,7 @@ func (x *ListWebhookSourcesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWebhookSourcesRequest.ProtoReflect.Descriptor instead.
 func (*ListWebhookSourcesRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{18}
+	return file_configv1_config_proto_rawDescGZIP(), []int{22}
 }
 
 type ListWebhookSourcesResponse struct {
@@ -958,7 +1143,7 @@ type ListWebhookSourcesResponse struct {
 
 func (x *ListWebhookSourcesResponse) Reset() {
 	*x = ListWebhookSourcesResponse{}
-	mi := &file_configv1_config_proto_msgTypes[19]
+	mi := &file_configv1_config_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -970,7 +1155,7 @@ func (x *ListWebhookSourcesResponse) String() string {
 func (*ListWebhookSourcesResponse) ProtoMessage() {}
 
 func (x *ListWebhookSourcesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[19]
+	mi := &file_configv1_config_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -983,7 +1168,7 @@ func (x *ListWebhookSourcesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWebhookSourcesResponse.ProtoReflect.Descriptor instead.
 func (*ListWebhookSourcesResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{19}
+	return file_configv1_config_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ListWebhookSourcesResponse) GetSources() []*enginev1.WebhookSourceRecord {
@@ -1012,7 +1197,7 @@ type UpsertSecretRequest struct {
 
 func (x *UpsertSecretRequest) Reset() {
 	*x = UpsertSecretRequest{}
-	mi := &file_configv1_config_proto_msgTypes[20]
+	mi := &file_configv1_config_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1024,7 +1209,7 @@ func (x *UpsertSecretRequest) String() string {
 func (*UpsertSecretRequest) ProtoMessage() {}
 
 func (x *UpsertSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[20]
+	mi := &file_configv1_config_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1037,7 +1222,7 @@ func (x *UpsertSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertSecretRequest.ProtoReflect.Descriptor instead.
 func (*UpsertSecretRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{20}
+	return file_configv1_config_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *UpsertSecretRequest) GetRecord() *enginev1.SecretRecord {
@@ -1063,7 +1248,7 @@ type UpsertSecretResponse struct {
 
 func (x *UpsertSecretResponse) Reset() {
 	*x = UpsertSecretResponse{}
-	mi := &file_configv1_config_proto_msgTypes[21]
+	mi := &file_configv1_config_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1075,7 +1260,7 @@ func (x *UpsertSecretResponse) String() string {
 func (*UpsertSecretResponse) ProtoMessage() {}
 
 func (x *UpsertSecretResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[21]
+	mi := &file_configv1_config_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1088,7 +1273,7 @@ func (x *UpsertSecretResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertSecretResponse.ProtoReflect.Descriptor instead.
 func (*UpsertSecretResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{21}
+	return file_configv1_config_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *UpsertSecretResponse) GetTableRevision() uint64 {
@@ -1108,7 +1293,7 @@ type DeleteSecretRequest struct {
 
 func (x *DeleteSecretRequest) Reset() {
 	*x = DeleteSecretRequest{}
-	mi := &file_configv1_config_proto_msgTypes[22]
+	mi := &file_configv1_config_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1120,7 +1305,7 @@ func (x *DeleteSecretRequest) String() string {
 func (*DeleteSecretRequest) ProtoMessage() {}
 
 func (x *DeleteSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[22]
+	mi := &file_configv1_config_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1133,7 +1318,7 @@ func (x *DeleteSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSecretRequest.ProtoReflect.Descriptor instead.
 func (*DeleteSecretRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{22}
+	return file_configv1_config_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *DeleteSecretRequest) GetName() string {
@@ -1159,7 +1344,7 @@ type DeleteSecretResponse struct {
 
 func (x *DeleteSecretResponse) Reset() {
 	*x = DeleteSecretResponse{}
-	mi := &file_configv1_config_proto_msgTypes[23]
+	mi := &file_configv1_config_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1171,7 +1356,7 @@ func (x *DeleteSecretResponse) String() string {
 func (*DeleteSecretResponse) ProtoMessage() {}
 
 func (x *DeleteSecretResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[23]
+	mi := &file_configv1_config_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1184,7 +1369,7 @@ func (x *DeleteSecretResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSecretResponse.ProtoReflect.Descriptor instead.
 func (*DeleteSecretResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{23}
+	return file_configv1_config_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *DeleteSecretResponse) GetTableRevision() uint64 {
@@ -1202,7 +1387,7 @@ type ListSecretsRequest struct {
 
 func (x *ListSecretsRequest) Reset() {
 	*x = ListSecretsRequest{}
-	mi := &file_configv1_config_proto_msgTypes[24]
+	mi := &file_configv1_config_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1214,7 +1399,7 @@ func (x *ListSecretsRequest) String() string {
 func (*ListSecretsRequest) ProtoMessage() {}
 
 func (x *ListSecretsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[24]
+	mi := &file_configv1_config_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1227,7 +1412,7 @@ func (x *ListSecretsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSecretsRequest.ProtoReflect.Descriptor instead.
 func (*ListSecretsRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{24}
+	return file_configv1_config_proto_rawDescGZIP(), []int{28}
 }
 
 type ListSecretsResponse struct {
@@ -1240,7 +1425,7 @@ type ListSecretsResponse struct {
 
 func (x *ListSecretsResponse) Reset() {
 	*x = ListSecretsResponse{}
-	mi := &file_configv1_config_proto_msgTypes[25]
+	mi := &file_configv1_config_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1252,7 +1437,7 @@ func (x *ListSecretsResponse) String() string {
 func (*ListSecretsResponse) ProtoMessage() {}
 
 func (x *ListSecretsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[25]
+	mi := &file_configv1_config_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1265,7 +1450,7 @@ func (x *ListSecretsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSecretsResponse.ProtoReflect.Descriptor instead.
 func (*ListSecretsResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{25}
+	return file_configv1_config_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ListSecretsResponse) GetRecords() []*enginev1.SecretRecord {
@@ -1294,7 +1479,7 @@ type UpsertCARootRequest struct {
 
 func (x *UpsertCARootRequest) Reset() {
 	*x = UpsertCARootRequest{}
-	mi := &file_configv1_config_proto_msgTypes[26]
+	mi := &file_configv1_config_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1306,7 +1491,7 @@ func (x *UpsertCARootRequest) String() string {
 func (*UpsertCARootRequest) ProtoMessage() {}
 
 func (x *UpsertCARootRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[26]
+	mi := &file_configv1_config_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1319,7 +1504,7 @@ func (x *UpsertCARootRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertCARootRequest.ProtoReflect.Descriptor instead.
 func (*UpsertCARootRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{26}
+	return file_configv1_config_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *UpsertCARootRequest) GetRecord() *enginev1.CARootRecord {
@@ -1345,7 +1530,7 @@ type UpsertCARootResponse struct {
 
 func (x *UpsertCARootResponse) Reset() {
 	*x = UpsertCARootResponse{}
-	mi := &file_configv1_config_proto_msgTypes[27]
+	mi := &file_configv1_config_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1357,7 +1542,7 @@ func (x *UpsertCARootResponse) String() string {
 func (*UpsertCARootResponse) ProtoMessage() {}
 
 func (x *UpsertCARootResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[27]
+	mi := &file_configv1_config_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1370,7 +1555,7 @@ func (x *UpsertCARootResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertCARootResponse.ProtoReflect.Descriptor instead.
 func (*UpsertCARootResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{27}
+	return file_configv1_config_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *UpsertCARootResponse) GetTableRevision() uint64 {
@@ -1390,7 +1575,7 @@ type DeleteCARootRequest struct {
 
 func (x *DeleteCARootRequest) Reset() {
 	*x = DeleteCARootRequest{}
-	mi := &file_configv1_config_proto_msgTypes[28]
+	mi := &file_configv1_config_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1402,7 +1587,7 @@ func (x *DeleteCARootRequest) String() string {
 func (*DeleteCARootRequest) ProtoMessage() {}
 
 func (x *DeleteCARootRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[28]
+	mi := &file_configv1_config_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1415,7 +1600,7 @@ func (x *DeleteCARootRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteCARootRequest.ProtoReflect.Descriptor instead.
 func (*DeleteCARootRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{28}
+	return file_configv1_config_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *DeleteCARootRequest) GetName() string {
@@ -1441,7 +1626,7 @@ type DeleteCARootResponse struct {
 
 func (x *DeleteCARootResponse) Reset() {
 	*x = DeleteCARootResponse{}
-	mi := &file_configv1_config_proto_msgTypes[29]
+	mi := &file_configv1_config_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1453,7 +1638,7 @@ func (x *DeleteCARootResponse) String() string {
 func (*DeleteCARootResponse) ProtoMessage() {}
 
 func (x *DeleteCARootResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[29]
+	mi := &file_configv1_config_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1466,7 +1651,7 @@ func (x *DeleteCARootResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteCARootResponse.ProtoReflect.Descriptor instead.
 func (*DeleteCARootResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{29}
+	return file_configv1_config_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *DeleteCARootResponse) GetTableRevision() uint64 {
@@ -1484,7 +1669,7 @@ type ListCARootsRequest struct {
 
 func (x *ListCARootsRequest) Reset() {
 	*x = ListCARootsRequest{}
-	mi := &file_configv1_config_proto_msgTypes[30]
+	mi := &file_configv1_config_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1496,7 +1681,7 @@ func (x *ListCARootsRequest) String() string {
 func (*ListCARootsRequest) ProtoMessage() {}
 
 func (x *ListCARootsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[30]
+	mi := &file_configv1_config_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1509,7 +1694,7 @@ func (x *ListCARootsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCARootsRequest.ProtoReflect.Descriptor instead.
 func (*ListCARootsRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{30}
+	return file_configv1_config_proto_rawDescGZIP(), []int{34}
 }
 
 type ListCARootsResponse struct {
@@ -1522,7 +1707,7 @@ type ListCARootsResponse struct {
 
 func (x *ListCARootsResponse) Reset() {
 	*x = ListCARootsResponse{}
-	mi := &file_configv1_config_proto_msgTypes[31]
+	mi := &file_configv1_config_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1534,7 +1719,7 @@ func (x *ListCARootsResponse) String() string {
 func (*ListCARootsResponse) ProtoMessage() {}
 
 func (x *ListCARootsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[31]
+	mi := &file_configv1_config_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1547,7 +1732,7 @@ func (x *ListCARootsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCARootsResponse.ProtoReflect.Descriptor instead.
 func (*ListCARootsResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{31}
+	return file_configv1_config_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ListCARootsResponse) GetRecords() []*enginev1.CARootRecord {
@@ -1579,7 +1764,7 @@ type LeaderHint struct {
 
 func (x *LeaderHint) Reset() {
 	*x = LeaderHint{}
-	mi := &file_configv1_config_proto_msgTypes[32]
+	mi := &file_configv1_config_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1591,7 +1776,7 @@ func (x *LeaderHint) String() string {
 func (*LeaderHint) ProtoMessage() {}
 
 func (x *LeaderHint) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[32]
+	mi := &file_configv1_config_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1604,7 +1789,7 @@ func (x *LeaderHint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaderHint.ProtoReflect.Descriptor instead.
 func (*LeaderHint) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{32}
+	return file_configv1_config_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *LeaderHint) GetNodeId() uint64 {
@@ -1648,7 +1833,7 @@ type ListAuditLogRequest struct {
 
 func (x *ListAuditLogRequest) Reset() {
 	*x = ListAuditLogRequest{}
-	mi := &file_configv1_config_proto_msgTypes[33]
+	mi := &file_configv1_config_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1660,7 +1845,7 @@ func (x *ListAuditLogRequest) String() string {
 func (*ListAuditLogRequest) ProtoMessage() {}
 
 func (x *ListAuditLogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[33]
+	mi := &file_configv1_config_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1673,7 +1858,7 @@ func (x *ListAuditLogRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAuditLogRequest.ProtoReflect.Descriptor instead.
 func (*ListAuditLogRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{33}
+	return file_configv1_config_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ListAuditLogRequest) GetSinceMs() uint64 {
@@ -1724,7 +1909,7 @@ type ListAuditLogResponse struct {
 
 func (x *ListAuditLogResponse) Reset() {
 	*x = ListAuditLogResponse{}
-	mi := &file_configv1_config_proto_msgTypes[34]
+	mi := &file_configv1_config_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1736,7 +1921,7 @@ func (x *ListAuditLogResponse) String() string {
 func (*ListAuditLogResponse) ProtoMessage() {}
 
 func (x *ListAuditLogResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[34]
+	mi := &file_configv1_config_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1749,7 +1934,7 @@ func (x *ListAuditLogResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAuditLogResponse.ProtoReflect.Descriptor instead.
 func (*ListAuditLogResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{34}
+	return file_configv1_config_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ListAuditLogResponse) GetRecords() []*enginev1.AuditLogRecord {
@@ -1795,7 +1980,7 @@ type CreateJoinTokenRequest struct {
 
 func (x *CreateJoinTokenRequest) Reset() {
 	*x = CreateJoinTokenRequest{}
-	mi := &file_configv1_config_proto_msgTypes[35]
+	mi := &file_configv1_config_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1807,7 +1992,7 @@ func (x *CreateJoinTokenRequest) String() string {
 func (*CreateJoinTokenRequest) ProtoMessage() {}
 
 func (x *CreateJoinTokenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[35]
+	mi := &file_configv1_config_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1820,7 +2005,7 @@ func (x *CreateJoinTokenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateJoinTokenRequest.ProtoReflect.Descriptor instead.
 func (*CreateJoinTokenRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{35}
+	return file_configv1_config_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *CreateJoinTokenRequest) GetKind() enginev1.JoinTokenKind {
@@ -1864,7 +2049,7 @@ type CreateJoinTokenResponse struct {
 
 func (x *CreateJoinTokenResponse) Reset() {
 	*x = CreateJoinTokenResponse{}
-	mi := &file_configv1_config_proto_msgTypes[36]
+	mi := &file_configv1_config_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1876,7 +2061,7 @@ func (x *CreateJoinTokenResponse) String() string {
 func (*CreateJoinTokenResponse) ProtoMessage() {}
 
 func (x *CreateJoinTokenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[36]
+	mi := &file_configv1_config_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1889,7 +2074,7 @@ func (x *CreateJoinTokenResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateJoinTokenResponse.ProtoReflect.Descriptor instead.
 func (*CreateJoinTokenResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{36}
+	return file_configv1_config_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *CreateJoinTokenResponse) GetToken() string {
@@ -1924,7 +2109,7 @@ type DeleteJoinTokenRequest struct {
 
 func (x *DeleteJoinTokenRequest) Reset() {
 	*x = DeleteJoinTokenRequest{}
-	mi := &file_configv1_config_proto_msgTypes[37]
+	mi := &file_configv1_config_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1936,7 +2121,7 @@ func (x *DeleteJoinTokenRequest) String() string {
 func (*DeleteJoinTokenRequest) ProtoMessage() {}
 
 func (x *DeleteJoinTokenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[37]
+	mi := &file_configv1_config_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1949,7 +2134,7 @@ func (x *DeleteJoinTokenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteJoinTokenRequest.ProtoReflect.Descriptor instead.
 func (*DeleteJoinTokenRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{37}
+	return file_configv1_config_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *DeleteJoinTokenRequest) GetTokenHash() []byte {
@@ -1975,7 +2160,7 @@ type DeleteJoinTokenResponse struct {
 
 func (x *DeleteJoinTokenResponse) Reset() {
 	*x = DeleteJoinTokenResponse{}
-	mi := &file_configv1_config_proto_msgTypes[38]
+	mi := &file_configv1_config_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1987,7 +2172,7 @@ func (x *DeleteJoinTokenResponse) String() string {
 func (*DeleteJoinTokenResponse) ProtoMessage() {}
 
 func (x *DeleteJoinTokenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[38]
+	mi := &file_configv1_config_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2000,7 +2185,7 @@ func (x *DeleteJoinTokenResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteJoinTokenResponse.ProtoReflect.Descriptor instead.
 func (*DeleteJoinTokenResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{38}
+	return file_configv1_config_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *DeleteJoinTokenResponse) GetTableRevision() uint64 {
@@ -2018,7 +2203,7 @@ type ListJoinTokensRequest struct {
 
 func (x *ListJoinTokensRequest) Reset() {
 	*x = ListJoinTokensRequest{}
-	mi := &file_configv1_config_proto_msgTypes[39]
+	mi := &file_configv1_config_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2030,7 +2215,7 @@ func (x *ListJoinTokensRequest) String() string {
 func (*ListJoinTokensRequest) ProtoMessage() {}
 
 func (x *ListJoinTokensRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[39]
+	mi := &file_configv1_config_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2043,7 +2228,7 @@ func (x *ListJoinTokensRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListJoinTokensRequest.ProtoReflect.Descriptor instead.
 func (*ListJoinTokensRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{39}
+	return file_configv1_config_proto_rawDescGZIP(), []int{43}
 }
 
 type ListJoinTokensResponse struct {
@@ -2056,7 +2241,7 @@ type ListJoinTokensResponse struct {
 
 func (x *ListJoinTokensResponse) Reset() {
 	*x = ListJoinTokensResponse{}
-	mi := &file_configv1_config_proto_msgTypes[40]
+	mi := &file_configv1_config_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2068,7 +2253,7 @@ func (x *ListJoinTokensResponse) String() string {
 func (*ListJoinTokensResponse) ProtoMessage() {}
 
 func (x *ListJoinTokensResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[40]
+	mi := &file_configv1_config_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2081,7 +2266,7 @@ func (x *ListJoinTokensResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListJoinTokensResponse.ProtoReflect.Descriptor instead.
 func (*ListJoinTokensResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{40}
+	return file_configv1_config_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *ListJoinTokensResponse) GetRecords() []*enginev1.JoinTokenRecord {
@@ -2115,7 +2300,7 @@ type IssueOperatorRequest struct {
 
 func (x *IssueOperatorRequest) Reset() {
 	*x = IssueOperatorRequest{}
-	mi := &file_configv1_config_proto_msgTypes[41]
+	mi := &file_configv1_config_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2127,7 +2312,7 @@ func (x *IssueOperatorRequest) String() string {
 func (*IssueOperatorRequest) ProtoMessage() {}
 
 func (x *IssueOperatorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[41]
+	mi := &file_configv1_config_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2140,7 +2325,7 @@ func (x *IssueOperatorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IssueOperatorRequest.ProtoReflect.Descriptor instead.
 func (*IssueOperatorRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{41}
+	return file_configv1_config_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *IssueOperatorRequest) GetCsrDer() []byte {
@@ -2168,7 +2353,7 @@ type IssueOperatorResponse struct {
 
 func (x *IssueOperatorResponse) Reset() {
 	*x = IssueOperatorResponse{}
-	mi := &file_configv1_config_proto_msgTypes[42]
+	mi := &file_configv1_config_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2180,7 +2365,7 @@ func (x *IssueOperatorResponse) String() string {
 func (*IssueOperatorResponse) ProtoMessage() {}
 
 func (x *IssueOperatorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[42]
+	mi := &file_configv1_config_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2193,7 +2378,7 @@ func (x *IssueOperatorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IssueOperatorResponse.ProtoReflect.Descriptor instead.
 func (*IssueOperatorResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{42}
+	return file_configv1_config_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *IssueOperatorResponse) GetCertPem() []byte {
@@ -2256,6 +2441,17 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\x17ListEventSourcesRequest\"\x80\x01\n" +
 	"\x18ListEventSourcesResponse\x12=\n" +
 	"\asources\x18\x01 \x03(\v2#.reflow.engine.v1.EventSourceRecordR\asources\x12%\n" +
+	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"s\n" +
+	"\x1fUpsertClusterAuthzPolicyRequest\x12\x1f\n" +
+	"\vpolicy_text\x18\x01 \x01(\tR\n" +
+	"policyText\x12/\n" +
+	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"I\n" +
+	" UpsertClusterAuthzPolicyResponse\x12%\n" +
+	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"\x1e\n" +
+	"\x1cGetClusterAuthzPolicyRequest\"g\n" +
+	"\x1dGetClusterAuthzPolicyResponse\x12\x1f\n" +
+	"\vpolicy_text\x18\x01 \x01(\tR\n" +
+	"policyText\x12%\n" +
 	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"\x8c\x01\n" +
 	"\x1aUpsertWebhookSourceRequest\x12=\n" +
 	"\x06record\x18\x01 \x01(\v2%.reflow.engine.v1.WebhookSourceRecordR\x06record\x12/\n" +
@@ -2342,7 +2538,7 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\bcert_pem\x18\x01 \x01(\fR\acertPem\x12 \n" +
 	"\fca_chain_pem\x18\x02 \x01(\fR\n" +
 	"caChainPem\x12%\n" +
-	"\x0eca_fingerprint\x18\x03 \x01(\tR\rcaFingerprint2\x87\x11\n" +
+	"\x0eca_fingerprint\x18\x03 \x01(\tR\rcaFingerprint2\x85\x13\n" +
 	"\x06Config\x12o\n" +
 	"\x12RegisterDeployment\x12+.reflow.config.v1.RegisterDeploymentRequest\x1a,.reflow.config.v1.RegisterDeploymentResponse\x12f\n" +
 	"\x0fListDeployments\x12(.reflow.config.v1.ListDeploymentsRequest\x1a).reflow.config.v1.ListDeploymentsResponse\x12o\n" +
@@ -2364,7 +2560,9 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\x0fCreateJoinToken\x12(.reflow.config.v1.CreateJoinTokenRequest\x1a).reflow.config.v1.CreateJoinTokenResponse\x12f\n" +
 	"\x0fDeleteJoinToken\x12(.reflow.config.v1.DeleteJoinTokenRequest\x1a).reflow.config.v1.DeleteJoinTokenResponse\x12c\n" +
 	"\x0eListJoinTokens\x12'.reflow.config.v1.ListJoinTokensRequest\x1a(.reflow.config.v1.ListJoinTokensResponse\x12`\n" +
-	"\rIssueOperator\x12&.reflow.config.v1.IssueOperatorRequest\x1a'.reflow.config.v1.IssueOperatorResponseB3Z1github.com/twinfer/reflow/proto/configv1;configv1b\x06proto3"
+	"\rIssueOperator\x12&.reflow.config.v1.IssueOperatorRequest\x1a'.reflow.config.v1.IssueOperatorResponse\x12\x81\x01\n" +
+	"\x18UpsertClusterAuthzPolicy\x121.reflow.config.v1.UpsertClusterAuthzPolicyRequest\x1a2.reflow.config.v1.UpsertClusterAuthzPolicyResponse\x12x\n" +
+	"\x15GetClusterAuthzPolicy\x12..reflow.config.v1.GetClusterAuthzPolicyRequest\x1a/.reflow.config.v1.GetClusterAuthzPolicyResponseB3Z1github.com/twinfer/reflow/proto/configv1;configv1b\x06proto3"
 
 var (
 	file_configv1_config_proto_rawDescOnce sync.Once
@@ -2378,74 +2576,78 @@ func file_configv1_config_proto_rawDescGZIP() []byte {
 	return file_configv1_config_proto_rawDescData
 }
 
-var file_configv1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 43)
+var file_configv1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
 var file_configv1_config_proto_goTypes = []any{
-	(*RegisterDeploymentRequest)(nil),    // 0: reflow.config.v1.RegisterDeploymentRequest
-	(*RegisterDeploymentResponse)(nil),   // 1: reflow.config.v1.RegisterDeploymentResponse
-	(*ListDeploymentsRequest)(nil),       // 2: reflow.config.v1.ListDeploymentsRequest
-	(*ListDeploymentsResponse)(nil),      // 3: reflow.config.v1.ListDeploymentsResponse
-	(*DescribeDeploymentRequest)(nil),    // 4: reflow.config.v1.DescribeDeploymentRequest
-	(*DescribeDeploymentResponse)(nil),   // 5: reflow.config.v1.DescribeDeploymentResponse
-	(*DeleteDeploymentRequest)(nil),      // 6: reflow.config.v1.DeleteDeploymentRequest
-	(*DeleteDeploymentResponse)(nil),     // 7: reflow.config.v1.DeleteDeploymentResponse
-	(*UpsertEventSourceRequest)(nil),     // 8: reflow.config.v1.UpsertEventSourceRequest
-	(*UpsertEventSourceResponse)(nil),    // 9: reflow.config.v1.UpsertEventSourceResponse
-	(*DeleteEventSourceRequest)(nil),     // 10: reflow.config.v1.DeleteEventSourceRequest
-	(*DeleteEventSourceResponse)(nil),    // 11: reflow.config.v1.DeleteEventSourceResponse
-	(*ListEventSourcesRequest)(nil),      // 12: reflow.config.v1.ListEventSourcesRequest
-	(*ListEventSourcesResponse)(nil),     // 13: reflow.config.v1.ListEventSourcesResponse
-	(*UpsertWebhookSourceRequest)(nil),   // 14: reflow.config.v1.UpsertWebhookSourceRequest
-	(*UpsertWebhookSourceResponse)(nil),  // 15: reflow.config.v1.UpsertWebhookSourceResponse
-	(*DeleteWebhookSourceRequest)(nil),   // 16: reflow.config.v1.DeleteWebhookSourceRequest
-	(*DeleteWebhookSourceResponse)(nil),  // 17: reflow.config.v1.DeleteWebhookSourceResponse
-	(*ListWebhookSourcesRequest)(nil),    // 18: reflow.config.v1.ListWebhookSourcesRequest
-	(*ListWebhookSourcesResponse)(nil),   // 19: reflow.config.v1.ListWebhookSourcesResponse
-	(*UpsertSecretRequest)(nil),          // 20: reflow.config.v1.UpsertSecretRequest
-	(*UpsertSecretResponse)(nil),         // 21: reflow.config.v1.UpsertSecretResponse
-	(*DeleteSecretRequest)(nil),          // 22: reflow.config.v1.DeleteSecretRequest
-	(*DeleteSecretResponse)(nil),         // 23: reflow.config.v1.DeleteSecretResponse
-	(*ListSecretsRequest)(nil),           // 24: reflow.config.v1.ListSecretsRequest
-	(*ListSecretsResponse)(nil),          // 25: reflow.config.v1.ListSecretsResponse
-	(*UpsertCARootRequest)(nil),          // 26: reflow.config.v1.UpsertCARootRequest
-	(*UpsertCARootResponse)(nil),         // 27: reflow.config.v1.UpsertCARootResponse
-	(*DeleteCARootRequest)(nil),          // 28: reflow.config.v1.DeleteCARootRequest
-	(*DeleteCARootResponse)(nil),         // 29: reflow.config.v1.DeleteCARootResponse
-	(*ListCARootsRequest)(nil),           // 30: reflow.config.v1.ListCARootsRequest
-	(*ListCARootsResponse)(nil),          // 31: reflow.config.v1.ListCARootsResponse
-	(*LeaderHint)(nil),                   // 32: reflow.config.v1.LeaderHint
-	(*ListAuditLogRequest)(nil),          // 33: reflow.config.v1.ListAuditLogRequest
-	(*ListAuditLogResponse)(nil),         // 34: reflow.config.v1.ListAuditLogResponse
-	(*CreateJoinTokenRequest)(nil),       // 35: reflow.config.v1.CreateJoinTokenRequest
-	(*CreateJoinTokenResponse)(nil),      // 36: reflow.config.v1.CreateJoinTokenResponse
-	(*DeleteJoinTokenRequest)(nil),       // 37: reflow.config.v1.DeleteJoinTokenRequest
-	(*DeleteJoinTokenResponse)(nil),      // 38: reflow.config.v1.DeleteJoinTokenResponse
-	(*ListJoinTokensRequest)(nil),        // 39: reflow.config.v1.ListJoinTokensRequest
-	(*ListJoinTokensResponse)(nil),       // 40: reflow.config.v1.ListJoinTokensResponse
-	(*IssueOperatorRequest)(nil),         // 41: reflow.config.v1.IssueOperatorRequest
-	(*IssueOperatorResponse)(nil),        // 42: reflow.config.v1.IssueOperatorResponse
-	(*enginev1.DeploymentRecord)(nil),    // 43: reflow.engine.v1.DeploymentRecord
-	(*enginev1.EventSourceRecord)(nil),   // 44: reflow.engine.v1.EventSourceRecord
-	(*enginev1.WebhookSourceRecord)(nil), // 45: reflow.engine.v1.WebhookSourceRecord
-	(*enginev1.SecretRecord)(nil),        // 46: reflow.engine.v1.SecretRecord
-	(*enginev1.CARootRecord)(nil),        // 47: reflow.engine.v1.CARootRecord
-	(*enginev1.AuditLogRecord)(nil),      // 48: reflow.engine.v1.AuditLogRecord
-	(enginev1.JoinTokenKind)(0),          // 49: reflow.engine.v1.JoinTokenKind
-	(*enginev1.JoinTokenRecord)(nil),     // 50: reflow.engine.v1.JoinTokenRecord
+	(*RegisterDeploymentRequest)(nil),        // 0: reflow.config.v1.RegisterDeploymentRequest
+	(*RegisterDeploymentResponse)(nil),       // 1: reflow.config.v1.RegisterDeploymentResponse
+	(*ListDeploymentsRequest)(nil),           // 2: reflow.config.v1.ListDeploymentsRequest
+	(*ListDeploymentsResponse)(nil),          // 3: reflow.config.v1.ListDeploymentsResponse
+	(*DescribeDeploymentRequest)(nil),        // 4: reflow.config.v1.DescribeDeploymentRequest
+	(*DescribeDeploymentResponse)(nil),       // 5: reflow.config.v1.DescribeDeploymentResponse
+	(*DeleteDeploymentRequest)(nil),          // 6: reflow.config.v1.DeleteDeploymentRequest
+	(*DeleteDeploymentResponse)(nil),         // 7: reflow.config.v1.DeleteDeploymentResponse
+	(*UpsertEventSourceRequest)(nil),         // 8: reflow.config.v1.UpsertEventSourceRequest
+	(*UpsertEventSourceResponse)(nil),        // 9: reflow.config.v1.UpsertEventSourceResponse
+	(*DeleteEventSourceRequest)(nil),         // 10: reflow.config.v1.DeleteEventSourceRequest
+	(*DeleteEventSourceResponse)(nil),        // 11: reflow.config.v1.DeleteEventSourceResponse
+	(*ListEventSourcesRequest)(nil),          // 12: reflow.config.v1.ListEventSourcesRequest
+	(*ListEventSourcesResponse)(nil),         // 13: reflow.config.v1.ListEventSourcesResponse
+	(*UpsertClusterAuthzPolicyRequest)(nil),  // 14: reflow.config.v1.UpsertClusterAuthzPolicyRequest
+	(*UpsertClusterAuthzPolicyResponse)(nil), // 15: reflow.config.v1.UpsertClusterAuthzPolicyResponse
+	(*GetClusterAuthzPolicyRequest)(nil),     // 16: reflow.config.v1.GetClusterAuthzPolicyRequest
+	(*GetClusterAuthzPolicyResponse)(nil),    // 17: reflow.config.v1.GetClusterAuthzPolicyResponse
+	(*UpsertWebhookSourceRequest)(nil),       // 18: reflow.config.v1.UpsertWebhookSourceRequest
+	(*UpsertWebhookSourceResponse)(nil),      // 19: reflow.config.v1.UpsertWebhookSourceResponse
+	(*DeleteWebhookSourceRequest)(nil),       // 20: reflow.config.v1.DeleteWebhookSourceRequest
+	(*DeleteWebhookSourceResponse)(nil),      // 21: reflow.config.v1.DeleteWebhookSourceResponse
+	(*ListWebhookSourcesRequest)(nil),        // 22: reflow.config.v1.ListWebhookSourcesRequest
+	(*ListWebhookSourcesResponse)(nil),       // 23: reflow.config.v1.ListWebhookSourcesResponse
+	(*UpsertSecretRequest)(nil),              // 24: reflow.config.v1.UpsertSecretRequest
+	(*UpsertSecretResponse)(nil),             // 25: reflow.config.v1.UpsertSecretResponse
+	(*DeleteSecretRequest)(nil),              // 26: reflow.config.v1.DeleteSecretRequest
+	(*DeleteSecretResponse)(nil),             // 27: reflow.config.v1.DeleteSecretResponse
+	(*ListSecretsRequest)(nil),               // 28: reflow.config.v1.ListSecretsRequest
+	(*ListSecretsResponse)(nil),              // 29: reflow.config.v1.ListSecretsResponse
+	(*UpsertCARootRequest)(nil),              // 30: reflow.config.v1.UpsertCARootRequest
+	(*UpsertCARootResponse)(nil),             // 31: reflow.config.v1.UpsertCARootResponse
+	(*DeleteCARootRequest)(nil),              // 32: reflow.config.v1.DeleteCARootRequest
+	(*DeleteCARootResponse)(nil),             // 33: reflow.config.v1.DeleteCARootResponse
+	(*ListCARootsRequest)(nil),               // 34: reflow.config.v1.ListCARootsRequest
+	(*ListCARootsResponse)(nil),              // 35: reflow.config.v1.ListCARootsResponse
+	(*LeaderHint)(nil),                       // 36: reflow.config.v1.LeaderHint
+	(*ListAuditLogRequest)(nil),              // 37: reflow.config.v1.ListAuditLogRequest
+	(*ListAuditLogResponse)(nil),             // 38: reflow.config.v1.ListAuditLogResponse
+	(*CreateJoinTokenRequest)(nil),           // 39: reflow.config.v1.CreateJoinTokenRequest
+	(*CreateJoinTokenResponse)(nil),          // 40: reflow.config.v1.CreateJoinTokenResponse
+	(*DeleteJoinTokenRequest)(nil),           // 41: reflow.config.v1.DeleteJoinTokenRequest
+	(*DeleteJoinTokenResponse)(nil),          // 42: reflow.config.v1.DeleteJoinTokenResponse
+	(*ListJoinTokensRequest)(nil),            // 43: reflow.config.v1.ListJoinTokensRequest
+	(*ListJoinTokensResponse)(nil),           // 44: reflow.config.v1.ListJoinTokensResponse
+	(*IssueOperatorRequest)(nil),             // 45: reflow.config.v1.IssueOperatorRequest
+	(*IssueOperatorResponse)(nil),            // 46: reflow.config.v1.IssueOperatorResponse
+	(*enginev1.DeploymentRecord)(nil),        // 47: reflow.engine.v1.DeploymentRecord
+	(*enginev1.EventSourceRecord)(nil),       // 48: reflow.engine.v1.EventSourceRecord
+	(*enginev1.WebhookSourceRecord)(nil),     // 49: reflow.engine.v1.WebhookSourceRecord
+	(*enginev1.SecretRecord)(nil),            // 50: reflow.engine.v1.SecretRecord
+	(*enginev1.CARootRecord)(nil),            // 51: reflow.engine.v1.CARootRecord
+	(*enginev1.AuditLogRecord)(nil),          // 52: reflow.engine.v1.AuditLogRecord
+	(enginev1.JoinTokenKind)(0),              // 53: reflow.engine.v1.JoinTokenKind
+	(*enginev1.JoinTokenRecord)(nil),         // 54: reflow.engine.v1.JoinTokenRecord
 }
 var file_configv1_config_proto_depIdxs = []int32{
-	43, // 0: reflow.config.v1.ListDeploymentsResponse.deployments:type_name -> reflow.engine.v1.DeploymentRecord
-	43, // 1: reflow.config.v1.DescribeDeploymentResponse.deployment:type_name -> reflow.engine.v1.DeploymentRecord
-	44, // 2: reflow.config.v1.UpsertEventSourceRequest.record:type_name -> reflow.engine.v1.EventSourceRecord
-	44, // 3: reflow.config.v1.ListEventSourcesResponse.sources:type_name -> reflow.engine.v1.EventSourceRecord
-	45, // 4: reflow.config.v1.UpsertWebhookSourceRequest.record:type_name -> reflow.engine.v1.WebhookSourceRecord
-	45, // 5: reflow.config.v1.ListWebhookSourcesResponse.sources:type_name -> reflow.engine.v1.WebhookSourceRecord
-	46, // 6: reflow.config.v1.UpsertSecretRequest.record:type_name -> reflow.engine.v1.SecretRecord
-	46, // 7: reflow.config.v1.ListSecretsResponse.records:type_name -> reflow.engine.v1.SecretRecord
-	47, // 8: reflow.config.v1.UpsertCARootRequest.record:type_name -> reflow.engine.v1.CARootRecord
-	47, // 9: reflow.config.v1.ListCARootsResponse.records:type_name -> reflow.engine.v1.CARootRecord
-	48, // 10: reflow.config.v1.ListAuditLogResponse.records:type_name -> reflow.engine.v1.AuditLogRecord
-	49, // 11: reflow.config.v1.CreateJoinTokenRequest.kind:type_name -> reflow.engine.v1.JoinTokenKind
-	50, // 12: reflow.config.v1.ListJoinTokensResponse.records:type_name -> reflow.engine.v1.JoinTokenRecord
+	47, // 0: reflow.config.v1.ListDeploymentsResponse.deployments:type_name -> reflow.engine.v1.DeploymentRecord
+	47, // 1: reflow.config.v1.DescribeDeploymentResponse.deployment:type_name -> reflow.engine.v1.DeploymentRecord
+	48, // 2: reflow.config.v1.UpsertEventSourceRequest.record:type_name -> reflow.engine.v1.EventSourceRecord
+	48, // 3: reflow.config.v1.ListEventSourcesResponse.sources:type_name -> reflow.engine.v1.EventSourceRecord
+	49, // 4: reflow.config.v1.UpsertWebhookSourceRequest.record:type_name -> reflow.engine.v1.WebhookSourceRecord
+	49, // 5: reflow.config.v1.ListWebhookSourcesResponse.sources:type_name -> reflow.engine.v1.WebhookSourceRecord
+	50, // 6: reflow.config.v1.UpsertSecretRequest.record:type_name -> reflow.engine.v1.SecretRecord
+	50, // 7: reflow.config.v1.ListSecretsResponse.records:type_name -> reflow.engine.v1.SecretRecord
+	51, // 8: reflow.config.v1.UpsertCARootRequest.record:type_name -> reflow.engine.v1.CARootRecord
+	51, // 9: reflow.config.v1.ListCARootsResponse.records:type_name -> reflow.engine.v1.CARootRecord
+	52, // 10: reflow.config.v1.ListAuditLogResponse.records:type_name -> reflow.engine.v1.AuditLogRecord
+	53, // 11: reflow.config.v1.CreateJoinTokenRequest.kind:type_name -> reflow.engine.v1.JoinTokenKind
+	54, // 12: reflow.config.v1.ListJoinTokensResponse.records:type_name -> reflow.engine.v1.JoinTokenRecord
 	0,  // 13: reflow.config.v1.Config.RegisterDeployment:input_type -> reflow.config.v1.RegisterDeploymentRequest
 	2,  // 14: reflow.config.v1.Config.ListDeployments:input_type -> reflow.config.v1.ListDeploymentsRequest
 	4,  // 15: reflow.config.v1.Config.DescribeDeployment:input_type -> reflow.config.v1.DescribeDeploymentRequest
@@ -2453,43 +2655,47 @@ var file_configv1_config_proto_depIdxs = []int32{
 	8,  // 17: reflow.config.v1.Config.UpsertEventSource:input_type -> reflow.config.v1.UpsertEventSourceRequest
 	10, // 18: reflow.config.v1.Config.DeleteEventSource:input_type -> reflow.config.v1.DeleteEventSourceRequest
 	12, // 19: reflow.config.v1.Config.ListEventSources:input_type -> reflow.config.v1.ListEventSourcesRequest
-	14, // 20: reflow.config.v1.Config.UpsertWebhookSource:input_type -> reflow.config.v1.UpsertWebhookSourceRequest
-	16, // 21: reflow.config.v1.Config.DeleteWebhookSource:input_type -> reflow.config.v1.DeleteWebhookSourceRequest
-	18, // 22: reflow.config.v1.Config.ListWebhookSources:input_type -> reflow.config.v1.ListWebhookSourcesRequest
-	20, // 23: reflow.config.v1.Config.UpsertSecret:input_type -> reflow.config.v1.UpsertSecretRequest
-	22, // 24: reflow.config.v1.Config.DeleteSecret:input_type -> reflow.config.v1.DeleteSecretRequest
-	24, // 25: reflow.config.v1.Config.ListSecrets:input_type -> reflow.config.v1.ListSecretsRequest
-	33, // 26: reflow.config.v1.Config.ListAuditLog:input_type -> reflow.config.v1.ListAuditLogRequest
-	26, // 27: reflow.config.v1.Config.UpsertCARoot:input_type -> reflow.config.v1.UpsertCARootRequest
-	28, // 28: reflow.config.v1.Config.DeleteCARoot:input_type -> reflow.config.v1.DeleteCARootRequest
-	30, // 29: reflow.config.v1.Config.ListCARoots:input_type -> reflow.config.v1.ListCARootsRequest
-	35, // 30: reflow.config.v1.Config.CreateJoinToken:input_type -> reflow.config.v1.CreateJoinTokenRequest
-	37, // 31: reflow.config.v1.Config.DeleteJoinToken:input_type -> reflow.config.v1.DeleteJoinTokenRequest
-	39, // 32: reflow.config.v1.Config.ListJoinTokens:input_type -> reflow.config.v1.ListJoinTokensRequest
-	41, // 33: reflow.config.v1.Config.IssueOperator:input_type -> reflow.config.v1.IssueOperatorRequest
-	1,  // 34: reflow.config.v1.Config.RegisterDeployment:output_type -> reflow.config.v1.RegisterDeploymentResponse
-	3,  // 35: reflow.config.v1.Config.ListDeployments:output_type -> reflow.config.v1.ListDeploymentsResponse
-	5,  // 36: reflow.config.v1.Config.DescribeDeployment:output_type -> reflow.config.v1.DescribeDeploymentResponse
-	7,  // 37: reflow.config.v1.Config.DeleteDeployment:output_type -> reflow.config.v1.DeleteDeploymentResponse
-	9,  // 38: reflow.config.v1.Config.UpsertEventSource:output_type -> reflow.config.v1.UpsertEventSourceResponse
-	11, // 39: reflow.config.v1.Config.DeleteEventSource:output_type -> reflow.config.v1.DeleteEventSourceResponse
-	13, // 40: reflow.config.v1.Config.ListEventSources:output_type -> reflow.config.v1.ListEventSourcesResponse
-	15, // 41: reflow.config.v1.Config.UpsertWebhookSource:output_type -> reflow.config.v1.UpsertWebhookSourceResponse
-	17, // 42: reflow.config.v1.Config.DeleteWebhookSource:output_type -> reflow.config.v1.DeleteWebhookSourceResponse
-	19, // 43: reflow.config.v1.Config.ListWebhookSources:output_type -> reflow.config.v1.ListWebhookSourcesResponse
-	21, // 44: reflow.config.v1.Config.UpsertSecret:output_type -> reflow.config.v1.UpsertSecretResponse
-	23, // 45: reflow.config.v1.Config.DeleteSecret:output_type -> reflow.config.v1.DeleteSecretResponse
-	25, // 46: reflow.config.v1.Config.ListSecrets:output_type -> reflow.config.v1.ListSecretsResponse
-	34, // 47: reflow.config.v1.Config.ListAuditLog:output_type -> reflow.config.v1.ListAuditLogResponse
-	27, // 48: reflow.config.v1.Config.UpsertCARoot:output_type -> reflow.config.v1.UpsertCARootResponse
-	29, // 49: reflow.config.v1.Config.DeleteCARoot:output_type -> reflow.config.v1.DeleteCARootResponse
-	31, // 50: reflow.config.v1.Config.ListCARoots:output_type -> reflow.config.v1.ListCARootsResponse
-	36, // 51: reflow.config.v1.Config.CreateJoinToken:output_type -> reflow.config.v1.CreateJoinTokenResponse
-	38, // 52: reflow.config.v1.Config.DeleteJoinToken:output_type -> reflow.config.v1.DeleteJoinTokenResponse
-	40, // 53: reflow.config.v1.Config.ListJoinTokens:output_type -> reflow.config.v1.ListJoinTokensResponse
-	42, // 54: reflow.config.v1.Config.IssueOperator:output_type -> reflow.config.v1.IssueOperatorResponse
-	34, // [34:55] is the sub-list for method output_type
-	13, // [13:34] is the sub-list for method input_type
+	18, // 20: reflow.config.v1.Config.UpsertWebhookSource:input_type -> reflow.config.v1.UpsertWebhookSourceRequest
+	20, // 21: reflow.config.v1.Config.DeleteWebhookSource:input_type -> reflow.config.v1.DeleteWebhookSourceRequest
+	22, // 22: reflow.config.v1.Config.ListWebhookSources:input_type -> reflow.config.v1.ListWebhookSourcesRequest
+	24, // 23: reflow.config.v1.Config.UpsertSecret:input_type -> reflow.config.v1.UpsertSecretRequest
+	26, // 24: reflow.config.v1.Config.DeleteSecret:input_type -> reflow.config.v1.DeleteSecretRequest
+	28, // 25: reflow.config.v1.Config.ListSecrets:input_type -> reflow.config.v1.ListSecretsRequest
+	37, // 26: reflow.config.v1.Config.ListAuditLog:input_type -> reflow.config.v1.ListAuditLogRequest
+	30, // 27: reflow.config.v1.Config.UpsertCARoot:input_type -> reflow.config.v1.UpsertCARootRequest
+	32, // 28: reflow.config.v1.Config.DeleteCARoot:input_type -> reflow.config.v1.DeleteCARootRequest
+	34, // 29: reflow.config.v1.Config.ListCARoots:input_type -> reflow.config.v1.ListCARootsRequest
+	39, // 30: reflow.config.v1.Config.CreateJoinToken:input_type -> reflow.config.v1.CreateJoinTokenRequest
+	41, // 31: reflow.config.v1.Config.DeleteJoinToken:input_type -> reflow.config.v1.DeleteJoinTokenRequest
+	43, // 32: reflow.config.v1.Config.ListJoinTokens:input_type -> reflow.config.v1.ListJoinTokensRequest
+	45, // 33: reflow.config.v1.Config.IssueOperator:input_type -> reflow.config.v1.IssueOperatorRequest
+	14, // 34: reflow.config.v1.Config.UpsertClusterAuthzPolicy:input_type -> reflow.config.v1.UpsertClusterAuthzPolicyRequest
+	16, // 35: reflow.config.v1.Config.GetClusterAuthzPolicy:input_type -> reflow.config.v1.GetClusterAuthzPolicyRequest
+	1,  // 36: reflow.config.v1.Config.RegisterDeployment:output_type -> reflow.config.v1.RegisterDeploymentResponse
+	3,  // 37: reflow.config.v1.Config.ListDeployments:output_type -> reflow.config.v1.ListDeploymentsResponse
+	5,  // 38: reflow.config.v1.Config.DescribeDeployment:output_type -> reflow.config.v1.DescribeDeploymentResponse
+	7,  // 39: reflow.config.v1.Config.DeleteDeployment:output_type -> reflow.config.v1.DeleteDeploymentResponse
+	9,  // 40: reflow.config.v1.Config.UpsertEventSource:output_type -> reflow.config.v1.UpsertEventSourceResponse
+	11, // 41: reflow.config.v1.Config.DeleteEventSource:output_type -> reflow.config.v1.DeleteEventSourceResponse
+	13, // 42: reflow.config.v1.Config.ListEventSources:output_type -> reflow.config.v1.ListEventSourcesResponse
+	19, // 43: reflow.config.v1.Config.UpsertWebhookSource:output_type -> reflow.config.v1.UpsertWebhookSourceResponse
+	21, // 44: reflow.config.v1.Config.DeleteWebhookSource:output_type -> reflow.config.v1.DeleteWebhookSourceResponse
+	23, // 45: reflow.config.v1.Config.ListWebhookSources:output_type -> reflow.config.v1.ListWebhookSourcesResponse
+	25, // 46: reflow.config.v1.Config.UpsertSecret:output_type -> reflow.config.v1.UpsertSecretResponse
+	27, // 47: reflow.config.v1.Config.DeleteSecret:output_type -> reflow.config.v1.DeleteSecretResponse
+	29, // 48: reflow.config.v1.Config.ListSecrets:output_type -> reflow.config.v1.ListSecretsResponse
+	38, // 49: reflow.config.v1.Config.ListAuditLog:output_type -> reflow.config.v1.ListAuditLogResponse
+	31, // 50: reflow.config.v1.Config.UpsertCARoot:output_type -> reflow.config.v1.UpsertCARootResponse
+	33, // 51: reflow.config.v1.Config.DeleteCARoot:output_type -> reflow.config.v1.DeleteCARootResponse
+	35, // 52: reflow.config.v1.Config.ListCARoots:output_type -> reflow.config.v1.ListCARootsResponse
+	40, // 53: reflow.config.v1.Config.CreateJoinToken:output_type -> reflow.config.v1.CreateJoinTokenResponse
+	42, // 54: reflow.config.v1.Config.DeleteJoinToken:output_type -> reflow.config.v1.DeleteJoinTokenResponse
+	44, // 55: reflow.config.v1.Config.ListJoinTokens:output_type -> reflow.config.v1.ListJoinTokensResponse
+	46, // 56: reflow.config.v1.Config.IssueOperator:output_type -> reflow.config.v1.IssueOperatorResponse
+	15, // 57: reflow.config.v1.Config.UpsertClusterAuthzPolicy:output_type -> reflow.config.v1.UpsertClusterAuthzPolicyResponse
+	17, // 58: reflow.config.v1.Config.GetClusterAuthzPolicy:output_type -> reflow.config.v1.GetClusterAuthzPolicyResponse
+	36, // [36:59] is the sub-list for method output_type
+	13, // [13:36] is the sub-list for method input_type
 	13, // [13:13] is the sub-list for extension type_name
 	13, // [13:13] is the sub-list for extension extendee
 	0,  // [0:13] is the sub-list for field type_name
@@ -2506,7 +2712,7 @@ func file_configv1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_configv1_config_proto_rawDesc), len(file_configv1_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   43,
+			NumMessages:   47,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

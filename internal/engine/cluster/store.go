@@ -283,6 +283,41 @@ func (t RevisionTable) Bump(b storage.Batch, tableName string, nowMs uint64) (ui
 	return next, nil
 }
 
+// PlatformConfigTable persists the cluster-wide PlatformConfigRecord
+// singleton on shard 0. The per-node authz Reconciler SyncRead-loads it on
+// each TableNotifier wake to recompile the live Cedar policy set.
+type PlatformConfigTable struct{ S storage.Reader }
+
+// Get returns the PlatformConfigRecord singleton, or (nil, nil) when unset.
+func (t PlatformConfigTable) Get() (*enginev1.PlatformConfigRecord, error) {
+	val, closer, err := t.S.Get(PlatformConfigKey())
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer closer.Close()
+	var rec enginev1.PlatformConfigRecord
+	if err := proto.Unmarshal(val, &rec); err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+// Put replaces the singleton (last-writer-wins; CAS is enforced by the apply
+// arm's precondition check, not here).
+func (t PlatformConfigTable) Put(b storage.Batch, rec *enginev1.PlatformConfigRecord) error {
+	if rec == nil {
+		return errors.New("PlatformConfigTable.Put: nil record")
+	}
+	buf, err := proto.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return b.Set(PlatformConfigKey(), buf)
+}
+
 // EventSourceTable persists EventSourceRecord rows keyed by name. Lives
 // on shard 0 alongside DeploymentTable. The Reconciler on every node
 // SyncRead-iterates this table on each TableNotifier wake to converge

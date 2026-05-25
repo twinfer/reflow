@@ -94,7 +94,9 @@ action "ListCARoots"     in [Action::"PlatformConfigActions"] appliesTo { princi
 action "CreateJoinToken" in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 action "DeleteJoinToken" in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 action "ListJoinTokens"  in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
-action "IssueOperator"   in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
+action "IssueOperator"            in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
+action "UpsertClusterAuthzPolicy" in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
+action "GetClusterAuthzPolicy"    in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 
 // ===================== ClusterCtl: tenant-lifecycle (operator only) =====================
 action "UpsertTenant"    in [Action::"TenantLifecycleActions"] appliesTo { principal: [ClusterOperator], resource: TenantRecord };

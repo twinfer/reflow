@@ -73,6 +73,7 @@ type Notifiers struct {
 	TenantDEKTable      *TableNotifier
 	CARootTable         *TableNotifier
 	JoinTokenTable      *TableNotifier
+	PlatformConfigTable *TableNotifier
 }
 
 // FSM is the dragonboat IOnDiskStateMachine for shard 0. It accepts only
@@ -313,6 +314,8 @@ func (f *FSM) applyCommand(
 		return f.applyUpsertEventSource(batch, env, k.UpsertEventSource, raftIndex)
 	case *enginev1.Command_DeleteEventSource:
 		return f.applyDeleteEventSource(batch, env, k.DeleteEventSource, raftIndex)
+	case *enginev1.Command_UpsertPlatformConfig:
+		return f.applyUpsertPlatformConfig(batch, env, k.UpsertPlatformConfig, raftIndex)
 	case *enginev1.Command_UpsertWebhookSource:
 		return f.applyUpsertWebhookSource(batch, env, k.UpsertWebhookSource, raftIndex)
 	case *enginev1.Command_DeleteWebhookSource:
@@ -528,6 +531,40 @@ func (f *FSM) applyUpsertEventSource(
 		return nil, fmt.Errorf("cluster: bump eventsrc revision: %w", err)
 	}
 	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.EventSourceTable}}, nil
+}
+
+// applyUpsertPlatformConfig replaces the PlatformConfigRecord singleton and
+// bumps the table's CAS revision. Honors Envelope.precondition: on mismatch
+// returns (nil, nil) so Update stamps ResultValueFailedPrecondition. Fires
+// Notifiers.PlatformConfigTable post-commit so each node's authz Reconciler
+// recompiles the live Cedar policy set.
+func (f *FSM) applyUpsertPlatformConfig(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.UpsertPlatformConfig,
+	raftIndex uint64,
+) (*applyResult, error) {
+	rec := cmd.GetRecord()
+	if rec == nil {
+		f.cfg.Log.Warn("cluster: UpsertPlatformConfig missing record; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTablePlatformConfig)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load platformconfig revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	if err := (PlatformConfigTable{S: batch}).Put(batch, rec); err != nil {
+		return nil, fmt.Errorf("cluster: write platform config: %w", err)
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTablePlatformConfig, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump platformconfig revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.PlatformConfigTable}}, nil
 }
 
 // applyDeleteEventSource removes the named row (no-op if absent) and
@@ -1728,6 +1765,12 @@ type (
 	// Reconciler calls this on each TableNotifier wake.
 	LookupSecrets struct{}
 
+	// LookupPlatformConfig returns *PlatformConfigResult — the
+	// PlatformConfigRecord singleton (nil Record when unset) plus the
+	// platform-config table's CAS revision. The authz Reconciler calls this
+	// on each PlatformConfigTable notifier wake to recompile the policy set.
+	LookupPlatformConfig struct{}
+
 	// LookupLPOwners returns *LPOwnersList — every LPOwnerRecord on
 	// shard 0 plus the table's CAS revision in one SyncRead. The
 	// per-node routing Reconciler calls this on each TableNotifier wake.
@@ -1801,6 +1844,13 @@ type DeploymentList struct {
 // IndexedBatch view).
 type EventSourceList struct {
 	Sources       []*enginev1.EventSourceRecord
+	TableRevision uint64
+}
+
+// PlatformConfigResult bundles the PlatformConfigRecord singleton (nil Record
+// when unset) with the platform-config table's CAS revision.
+type PlatformConfigResult struct {
+	Record        *enginev1.PlatformConfigRecord
 	TableRevision uint64
 }
 
@@ -1954,6 +2004,16 @@ func (f *FSM) Lookup(query any) (any, error) {
 			return nil, err
 		}
 		return &EventSourceList{Sources: sources, TableRevision: rev}, nil
+	case LookupPlatformConfig:
+		rec, err := (PlatformConfigTable{S: store}).Get()
+		if err != nil {
+			return nil, err
+		}
+		rev, err := (RevisionTable{S: store}).Get(RevisionTablePlatformConfig)
+		if err != nil {
+			return nil, err
+		}
+		return &PlatformConfigResult{Record: rec, TableRevision: rev}, nil
 	case LookupWebhookSources:
 		sources, err := (WebhookSourceTable{S: store}).List()
 		if err != nil {

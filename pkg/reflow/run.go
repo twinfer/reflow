@@ -149,6 +149,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	rebalanceDrainNotifier := cluster.NewTableNotifier()
 	tenantNotifier := cluster.NewTableNotifier()
 	tenantDEKNotifier := cluster.NewTableNotifier()
+	platformConfigNotifier := cluster.NewTableNotifier()
 
 	// TenantDEKResolver constructed before HostConfig so the per-shard
 	// StoreFactory closures pick it up. defaultAEAD is nil today —
@@ -186,6 +187,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			RebalanceDrainTable: rebalanceDrainNotifier,
 			TenantTable:         tenantNotifier,
 			TenantDEKTable:      tenantDEKNotifier,
+			PlatformConfigTable: platformConfigNotifier,
 		},
 		TenantDEKResolver: tenantDEKs,
 		Rebalance: rebalance.Config{
@@ -331,6 +333,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		handlerSigner:          handlerSigner,
 		httpAuthMW:             httpAuthMW,
 		authzInterceptor:       authzInterceptor,
+		authzEngine:            authzEngine,
 		authCloser:             httpAuthCloser,
 		metricsCloser:          metricsCloser,
 		metricsRegisterer:      metricsRegisterer,
@@ -344,6 +347,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		lpOwnersNotifier:       lpOwnersNotifier,
 		tenantNotifier:         tenantNotifier,
 		tenantDEKNotifier:      tenantDEKNotifier,
+		platformConfigNotifier: platformConfigNotifier,
 		tenantDEKs:             tenantDEKs,
 		tenantOIDC:             tenantOIDC,
 		logger:                 logger,
@@ -499,6 +503,7 @@ type startupDeps struct {
 	handlerSigner          *creds.Signer
 	httpAuthMW             func(http.Handler) http.Handler
 	authzInterceptor       connect.Interceptor
+	authzEngine            *authz.Engine
 	authCloser             func() error
 	metricsCloser          func() error
 	metricsRegisterer      prometheus.Registerer
@@ -512,6 +517,7 @@ type startupDeps struct {
 	lpOwnersNotifier       *cluster.TableNotifier
 	tenantNotifier         *cluster.TableNotifier
 	tenantDEKNotifier      *cluster.TableNotifier
+	platformConfigNotifier *cluster.TableNotifier
 	tenantDEKs             *secretstore.TenantDEKResolver
 	tenantOIDC             *auth.TenantOIDCReconciler
 	logger                 *slog.Logger
@@ -533,6 +539,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	handlerSigner := d.handlerSigner
 	httpAuthMW := d.httpAuthMW
 	authzInterceptor := d.authzInterceptor
+	authzEngine := d.authzEngine
 	authCloser := d.authCloser
 	metricsCloser := d.metricsCloser
 	metricsRegisterer := d.metricsRegisterer
@@ -542,6 +549,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	webhookSourceNotifier := d.webhookSourceNotifier
 	secretNotifier := d.secretNotifier
 	lpOwnersNotifier := d.lpOwnersNotifier
+	platformConfigNotifier := d.platformConfigNotifier
 	logger := d.logger
 	// Joiners register themselves with shard 0 BEFORE starting any
 	// local shards: dragonboat's StartOnDiskReplica(nil, join=true,...)
@@ -734,6 +742,17 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		reader := lpOwnersReader{host: eh}
 		if rerr := routing.RunReconciler(ctx, lpOwnersNotifier.Subscribe(), reader, eh.PartitionerRef(), logger); rerr != nil && !errors.Is(rerr, context.Canceled) {
 			logger.Warn("reflow: routing reconcile loop exited", "err", rerr)
+		}
+	}()
+
+	// Authz Reconciler converges the Cedar engine's live policy set with
+	// shard 0's PlatformConfigRecord. Empty row keeps the in-binary
+	// foundational set; a policy that fails to compile keeps the previous one
+	// — a bad reconcile can neither open the cluster up nor lock it out.
+	go func() {
+		reader := clusterAuthzReader{host: eh}
+		if rerr := authzEngine.RunReconciler(ctx, platformConfigNotifier.Subscribe(), reader, logger); rerr != nil && !errors.Is(rerr, context.Canceled) {
+			logger.Warn("reflow: authz reconcile loop exited", "err", rerr)
 		}
 	}()
 
@@ -1010,6 +1029,24 @@ func (r webhookSourceReader) ListWebhookSources(ctx context.Context) ([]*enginev
 // secretReader is the Reader adapter the SecretStore reconciler uses
 // to pull desired state. Mirrors webhookSourceReader — same SyncRead
 // timeout, same proto pass-through.
+type clusterAuthzReader struct {
+	host *engine.Host
+}
+
+func (r clusterAuthzReader) ClusterAuthzPolicy(ctx context.Context) (string, uint64, error) {
+	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	res, err := r.host.ClusterAuthzPolicy(readCtx)
+	if err != nil {
+		return "", 0, err
+	}
+	var text string
+	if res.Record != nil {
+		text = res.Record.GetClusterAuthzPolicyText()
+	}
+	return text, res.TableRevision, nil
+}
+
 type secretReader struct {
 	host *engine.Host
 }

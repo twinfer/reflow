@@ -19,8 +19,7 @@ import (
 //   - LPOwnersTable revision is 1 (single batch).
 //   - All 4096 LPs are present, mapping lp → planner.PlanAll()[lp] where
 //     the planner is built from the bootstrap PartitionTable's shard ids
-//     (= 1..len(Peers) for the static-assignment path, not HostConfig.
-//     NumPartitionShards).
+//     (= 1..NumPartitionShards; here S=1).
 //   - The Partitioner agrees with the seed for arbitrary partition_keys
 //     (once the reconciler runs; PR 1 wires it in pkg/reflow/run.go, so
 //     this engine-level test installs the snapshot manually).
@@ -78,9 +77,9 @@ func TestIntegration_LPOwnersBootstrapSeed(t *testing.T) {
 		// proved the commit happened.
 	}
 
-	// Recover the bootstrap PartitionTable shard ids (driven by len(Peers)
-	// in buildBootstrapTable, not HostConfig.NumPartitionShards) so we
-	// can rebuild the same planner the metadata leader used.
+	// Recover the bootstrap PartitionTable shard ids (driven by
+	// HostConfig.NumPartitionShards in buildBootstrapTable) so we can
+	// rebuild the same planner the metadata leader used.
 	pt, err := h.PartitionTable(ctx)
 	if err != nil {
 		t.Fatalf("h.PartitionTable: %v", err)

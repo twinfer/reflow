@@ -41,6 +41,10 @@ type MetadataRunner struct {
 	// drives the bootstrap UpdatePartitionTable + RegisterNode proposals.
 	peers []Peer
 
+	// numPartitionShards is the cluster-wide partition shard count (ids
+	// 1..S), independent of peer count. Drives buildBootstrapTable.
+	numPartitionShards uint64
+
 	// host is the back-reference handed in by Host.StartMetadataShard so
 	// the rebalancer can call dragonboat membership APIs + Host helpers
 	// (PartitionTable, Membership, nodeHostIDOf).
@@ -205,7 +209,7 @@ func (r *MetadataRunner) bootstrap(ctx context.Context) {
 	}
 	existing, _ := (cluster.PartitionTableTable{S: store}).Get()
 	release()
-	pt := buildBootstrapTable(r.peers, existing, r.leadership.LeaderEpoch())
+	pt := buildBootstrapTable(r.peers, r.numPartitionShards, existing, r.leadership.LeaderEpoch())
 	cmd := &enginev1.Command{
 		Kind: &enginev1.Command_UpdatePartitionTable{
 			UpdatePartitionTable: &enginev1.UpdatePartitionTable{Table: pt},
@@ -309,9 +313,10 @@ func (r *MetadataRunner) seedLPOwners(ctx context.Context, pt *enginev1.Partitio
 // preserves whatever the rebalance pipeline has done since boot);
 // otherwise seed from the static peer set (the fresh-bootstrap path).
 //
-// The static assignment creates one partition shard per peer index
-// (shard ids 1..N), replicated on every peer.
-func buildBootstrapTable(peers []Peer, existing *enginev1.PartitionTable, leaderEpoch uint64) *enginev1.PartitionTable {
+// The static assignment creates numShards partition shards (ids 1..S),
+// each replicated on every peer (RF=N). Shard count is independent of
+// peer count — peers sets only the replica set.
+func buildBootstrapTable(peers []Peer, numShards uint64, existing *enginev1.PartitionTable, leaderEpoch uint64) *enginev1.PartitionTable {
 	pt := &enginev1.PartitionTable{AssignmentEpoch: leaderEpoch}
 	replicas := make([]uint64, 0, len(peers))
 	for _, p := range peers {
@@ -320,9 +325,9 @@ func buildBootstrapTable(peers []Peer, existing *enginev1.PartitionTable, leader
 	if existing != nil && len(existing.GetShards()) > 0 {
 		pt.Shards = existing.GetShards()
 	} else {
-		pt.Shards = make(map[uint64]*enginev1.ReplicaSet, len(peers))
-		for i := range peers {
-			shardID := uint64(i + 1)
+		pt.Shards = make(map[uint64]*enginev1.ReplicaSet, numShards)
+		for i := range numShards {
+			shardID := i + 1
 			// Defensive copy so future mutations don't alias.
 			rs := append([]uint64(nil), replicas...)
 			pt.Shards[shardID] = &enginev1.ReplicaSet{NodeIds: rs}

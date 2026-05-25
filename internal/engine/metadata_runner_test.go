@@ -17,7 +17,7 @@ func TestBuildBootstrapTable_FreshBootstrapSeedsFromPeers(t *testing.T) {
 		{NodeID: 2, RaftAddr: "10.0.0.2:9091"},
 		{NodeID: 3, RaftAddr: "10.0.0.3:9091"},
 	}
-	got := buildBootstrapTable(peers, nil, 7)
+	got := buildBootstrapTable(peers, 3, nil, 7)
 
 	if got.GetAssignmentEpoch() != 7 {
 		t.Errorf("assignment_epoch = %d; want 7", got.GetAssignmentEpoch())
@@ -36,6 +36,39 @@ func TestBuildBootstrapTable_FreshBootstrapSeedsFromPeers(t *testing.T) {
 	slices.Sort(metaIDs)
 	if !slices.Equal(metaIDs, []uint64{1, 2, 3}) {
 		t.Errorf("meta_replicas = %v; want [1 2 3]", metaIDs)
+	}
+}
+
+// TestBuildBootstrapTable_ShardCountDecoupledFromPeers verifies shallow
+// 1(b): the partition shard count is numShards, independent of peer
+// count, while every shard is still replicated on all peers (RF=N).
+func TestBuildBootstrapTable_ShardCountDecoupledFromPeers(t *testing.T) {
+	peers := []Peer{
+		{NodeID: 1, RaftAddr: "10.0.0.1:9091"},
+		{NodeID: 2, RaftAddr: "10.0.0.2:9091"},
+		{NodeID: 3, RaftAddr: "10.0.0.3:9091"},
+	}
+	// More shards than peers.
+	got := buildBootstrapTable(peers, 5, nil, 1)
+	if len(got.GetShards()) != 5 {
+		t.Fatalf("len(shards) = %d; want 5 (numShards, not peer count)", len(got.GetShards()))
+	}
+	for sh := uint64(1); sh <= 5; sh++ {
+		ids := got.GetShards()[sh].GetNodeIds()
+		slices.Sort(ids)
+		if !slices.Equal(ids, []uint64{1, 2, 3}) {
+			t.Errorf("shards[%d].NodeIds = %v; want all peers [1 2 3] (RF=N)", sh, ids)
+		}
+	}
+	// Fewer shards than peers (the e2e smoke case: S=1, N=3).
+	one := buildBootstrapTable(peers, 1, nil, 1)
+	if len(one.GetShards()) != 1 {
+		t.Fatalf("len(shards) = %d; want 1", len(one.GetShards()))
+	}
+	ids := one.GetShards()[1].GetNodeIds()
+	slices.Sort(ids)
+	if !slices.Equal(ids, []uint64{1, 2, 3}) {
+		t.Errorf("shards[1].NodeIds = %v; want [1 2 3] (RF=N)", ids)
 	}
 }
 
@@ -61,7 +94,7 @@ func TestBuildBootstrapTable_PreservesRuntimeAddedShardMembers(t *testing.T) {
 		},
 		MetaReplicas: &enginev1.ReplicaSet{NodeIds: []uint64{1, 2, 3, 4}},
 	}
-	got := buildBootstrapTable(peers, existing, 13)
+	got := buildBootstrapTable(peers, 3, existing, 13)
 
 	// AssignmentEpoch reflects the NEW leader epoch (UpdatePartitionTable
 	// is a full overwrite — the proposer is the source of truth for that
@@ -97,7 +130,7 @@ func TestBuildBootstrapTable_EmptyExistingFallsBackToPeers(t *testing.T) {
 		{NodeID: 2, RaftAddr: "10.0.0.2:9091"},
 	}
 	existing := &enginev1.PartitionTable{AssignmentEpoch: 5}
-	got := buildBootstrapTable(peers, existing, 6)
+	got := buildBootstrapTable(peers, 2, existing, 6)
 
 	if len(got.GetShards()) != 2 {
 		t.Errorf("len(shards) = %d; want 2 (peer-seeded fallback)", len(got.GetShards()))
@@ -117,8 +150,8 @@ func TestBuildBootstrapTable_DeterministicAcrossReplicas(t *testing.T) {
 		{NodeID: 2, RaftAddr: "10.0.0.2:9091"},
 		{NodeID: 3, RaftAddr: "10.0.0.3:9091"},
 	}
-	a := buildBootstrapTable(peers, nil, 1)
-	b := buildBootstrapTable(peers, nil, 1)
+	a := buildBootstrapTable(peers, 3, nil, 1)
+	b := buildBootstrapTable(peers, 3, nil, 1)
 	// Direct field-by-field comparison: Shards map ordering is
 	// non-deterministic in Go iteration, but the proto-level value is.
 	// We compare the per-shard NodeIds slices after sort to sidestep

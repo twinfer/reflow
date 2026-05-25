@@ -525,13 +525,14 @@ func (h *Host) StartMetadataShard() (*MetadataRunner, error) {
 	})
 
 	runner := &MetadataRunner{
-		ShardID:     shardID,
-		snapshotter: snap,
-		proposer:    proposer,
-		leadership:  leadership,
-		log:         h.log,
-		peers:       append([]Peer(nil), h.cfg.Peers...),
-		host:        h,
+		ShardID:            shardID,
+		snapshotter:        snap,
+		proposer:           proposer,
+		leadership:         leadership,
+		log:                h.log,
+		peers:              append([]Peer(nil), h.cfg.Peers...),
+		numPartitionShards: h.cfg.NumPartitionShards,
+		host:               h,
 	}
 	leadership.SetCallbacks(runner.onBecomeLeader, runner.onStepDown)
 

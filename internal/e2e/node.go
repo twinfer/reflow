@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"sync"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/twinfer/reflow/internal/loadgen"
 	"github.com/twinfer/reflow/pkg/ingressclient"
+	"github.com/twinfer/reflow/pkg/reflow/creds"
 	"github.com/twinfer/reflow/pkg/reflowclient"
 	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -29,10 +31,12 @@ import (
 // compile-time check at the bottom of this file.
 type ContainerNode struct {
 	nodeID          uint64
-	raftAddr        string // docker-internal advertised value (host:port)
-	adminEndpoint   string // docker-internal admin advertised value (host:port)
-	ingressURL      string // http://localhost:<mapped> — used by ingressCli
-	adminURLForTest string // http://localhost:<mapped> — used by RegisterHandler
+	raftAddr        string      // docker-internal advertised value (host:port)
+	adminEndpoint   string      // docker-internal admin advertised value (host:port)
+	ingressURL      string      // http://localhost:<mapped> — used by ingressCli
+	adminURLForTest string      // http://localhost:<mapped> — used by RegisterHandler
+	operatorCreds   creds.Spec  // operator/e2e mTLS creds for admin-port dials
+	ingressTLS      *tls.Config // operator/e2e mTLS client config for the ingress port
 
 	mu         sync.Mutex
 	container  testcontainers.Container
@@ -50,27 +54,64 @@ type ContainerNode struct {
 	paused     bool
 }
 
-// SubmitInvocation routes through Ingress.SubmitInvocation on this node;
-// the server mints the invocation id and forwards to the destination
-// shard via its Partitioner.
-func (n *ContainerNode) SubmitInvocation(ctx context.Context, service, handler, objectKey string, input []byte) (*enginev1.InvocationId, error) {
-	cli, err := n.ingress()
-	if err != nil {
-		return nil, err
-	}
-	resp, err := cli.SubmitInvocation(ctx, connect.NewRequest(&ingressv1.SubmitInvocationRequest{
-		Service:   service,
-		Handler:   handler,
-		ObjectKey: objectKey,
-		Input:     input,
-	}))
-	if err != nil {
-		return nil, err
-	}
-	return resp.Msg.GetInvocationId(), nil
+// ingressRetryable reports whether an ingress RPC error is a transient
+// transport hiccup worth redialing for. Docker Desktop's port proxy
+// occasionally drops the first stream on a freshly-dialed mTLS HTTP/2
+// connection ("unexpected EOF" → CodeUnavailable); a fresh dial then
+// succeeds. The retrying callers (RegisterHandler, the leadership probe)
+// already absorb this; single-shot ingress calls need to as well.
+func ingressRetryable(err error) bool {
+	return connect.CodeOf(err) == connect.CodeUnavailable
 }
 
-// DescribeInvocation queries the non-blocking ingress endpoint.
+// dropIngress closes + clears the cached ingress client so the next call
+// redials a fresh connection. Safe to call when no client is cached.
+func (n *ContainerNode) dropIngress() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.ingressCli != nil {
+		_ = n.ingressCli.Close()
+		n.ingressCli = nil
+	}
+}
+
+// SubmitInvocation routes through Ingress.SubmitInvocation on this node;
+// the server mints the invocation id and forwards to the destination
+// shard via its Partitioner. Retries on a transient transport error with a
+// fresh connection (see ingressRetryable).
+func (n *ContainerNode) SubmitInvocation(ctx context.Context, service, handler, objectKey string, input []byte) (*enginev1.InvocationId, error) {
+	var lastErr error
+	for attempt := 0; attempt < 4; attempt++ {
+		cli, err := n.ingress()
+		if err != nil {
+			return nil, err
+		}
+		resp, err := cli.SubmitInvocation(ctx, connect.NewRequest(&ingressv1.SubmitInvocationRequest{
+			Service:   service,
+			Handler:   handler,
+			ObjectKey: objectKey,
+			Input:     input,
+		}))
+		if err == nil {
+			return resp.Msg.GetInvocationId(), nil
+		}
+		lastErr = err
+		if !ingressRetryable(err) {
+			return nil, err
+		}
+		n.dropIngress()
+		select {
+		case <-time.After(250 * time.Millisecond):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return nil, lastErr
+}
+
+// DescribeInvocation queries the non-blocking ingress endpoint. On a
+// transient transport error it drops the cached client so the caller's
+// next poll redials fresh.
 func (n *ContainerNode) DescribeInvocation(ctx context.Context, id *enginev1.InvocationId) (*enginev1.InvocationStatus, error) {
 	cli, err := n.ingress()
 	if err != nil {
@@ -80,6 +121,9 @@ func (n *ContainerNode) DescribeInvocation(ctx context.Context, id *enginev1.Inv
 		InvocationIdProto: id,
 	}))
 	if err != nil {
+		if ingressRetryable(err) {
+			n.dropIngress()
+		}
 		return nil, err
 	}
 	return resp.Msg.GetStatus(), nil
@@ -92,7 +136,7 @@ func (n *ContainerNode) DescribeInvocation(ctx context.Context, id *enginev1.Inv
 // the operator admin surface (see ClusterCtl/NodeLeadership), so this dials
 // the admin URL rather than the ingress client.
 func (n *ContainerNode) ListPartitions(ctx context.Context) ([]loadgen.PartitionInfo, error) {
-	cli, err := reflowclient.Dial(ctx, reflowclient.DialOptions{Addr: stripScheme(n.AdminURLForTest())})
+	cli, err := reflowclient.Dial(ctx, reflowclient.DialOptions{Addr: stripScheme(n.AdminURLForTest()), Creds: n.operatorCreds})
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +378,7 @@ func (n *ContainerNode) ingress() (*ingressclient.Client, error) {
 	if n.ingressCli != nil {
 		return n.ingressCli, nil
 	}
-	cli, err := ingressclient.Dial(ingressclient.Options{BaseURL: n.ingressURL})
+	cli, err := ingressclient.Dial(ingressclient.Options{BaseURL: n.ingressURL, TLS: n.ingressTLS})
 	if err != nil {
 		return nil, fmt.Errorf("e2e: dial ingress %s: %w", n.ingressURL, err)
 	}
@@ -350,6 +394,14 @@ func resolveHostMapped(t testing.TB, ctx context.Context, c testcontainers.Conta
 	host, err := c.Host(ctx)
 	if err != nil {
 		t.Fatalf("e2e: container host: %v", err)
+	}
+	// Docker Desktop publishes mapped ports on the IPv4 loopback only;
+	// dialing "localhost" can resolve to [::1] first and hit a flaky /
+	// refusing IPv6 path through the port proxy (intermittent EOF or
+	// connection-refused). Pin IPv4 so every host dial — ingress and
+	// admin — is deterministic.
+	if host == "localhost" {
+		host = "127.0.0.1"
 	}
 	mapped, err := c.MappedPort(ctx, containerPort)
 	if err != nil {

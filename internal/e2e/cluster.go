@@ -22,6 +22,7 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/loadgen"
+	"github.com/twinfer/reflow/pkg/reflow/creds"
 )
 
 // Internal container ports — every reflowd container listens on these.
@@ -57,11 +58,18 @@ type ContainerCluster struct {
 	// IssuedInvocation.ShardID. Construction mirrors loadgen.Cluster
 	// (routing.NewPartitioner(NumPartitionShards)).
 	Partitioner routing.Partitioner
+
+	// certs is the cluster's mesh PKI (CA + operator/e2e leaf). The test
+	// process dials the admin port as operator/* via certs.operatorSpec();
+	// each node mounts its own node/<id> leaf for the mTLS delivery mesh.
+	certs *meshCerts
 }
 
-// NewContainerCluster brings up an insecure reflowd cluster with N
-// nodes on a fresh docker network. Defaults: N=3, NumShards=1. mTLS
-// and Toxiproxy land additively in later PRs.
+// NewContainerCluster brings up an mTLS reflowd cluster with N nodes on a
+// fresh docker network. Defaults: N=3, NumShards=1. Delivery + admin run mTLS
+// off a per-cluster CA (node/<id> + operator/e2e leaves) so the foundational
+// Cedar policy authorizes the mesh + admin without a permissive bootstrap
+// policy; ingress stays plaintext (anonymous SubmitInvocation is open).
 //
 // Blocks until every container's ingress listener accepts TCP and
 // some node reports shard 0 as having a leader (the metadata leader
@@ -81,7 +89,17 @@ func NewContainerCluster(t *testing.T, opts ContainerClusterOptions) *ContainerC
 
 	nw := newDockerNetwork(t)
 	cfgPath := writeClusterConfigYAML(t, opts.N, opts.NumShards, opts.WithToxiproxy)
-	policyPath := writePermissivePolicy(t)
+	// Mesh PKI: the cluster runs full mTLS so the foundational Cedar policy
+	// authorizes node/* (delivery mesh) and operator/* (admin) without a
+	// permissive bootstrap policy. Per-node leaves are minted here on the test
+	// goroutine — t.Fatalf isn't safe from the parallel start goroutines below.
+	certs := newMeshCerts(t)
+	ingressTLS := certs.operatorClientTLS(t)
+	nodeCertPaths := make([][2]string, opts.N)
+	for i := 0; i < opts.N; i++ {
+		crt, key := certs.nodeLeaf(t, uint64(i+1))
+		nodeCertPaths[i] = [2]string{crt, key}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -114,7 +132,7 @@ func NewContainerCluster(t *testing.T, opts ContainerClusterOptions) *ContainerC
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			n, err := startReflowdContainer(ctx, t, image, nw, cfgPath, policyPath, nodeID, opts.WithToxiproxy, opts.ExtraEnv)
+			n, err := startReflowdContainer(ctx, t, image, nw, cfgPath, certs.caCertPath, nodeCertPaths[i][0], nodeCertPaths[i][1], nodeID, opts.WithToxiproxy, opts.ExtraEnv, certs.operatorSpec())
 			startMu.Lock()
 			defer startMu.Unlock()
 			if err != nil {
@@ -133,10 +151,19 @@ func NewContainerCluster(t *testing.T, opts ContainerClusterOptions) *ContainerC
 		Nodes:       nodes,
 		Tx:          tx,
 		Partitioner: *routing.NewPartitioner(opts.NumShards),
+		certs:       certs,
 	}
 	t.Cleanup(cluster.Close)
 	if firstErr != nil {
 		t.Fatalf("e2e: cluster bring-up: %v", firstErr)
+	}
+	// Ingress runs mTLS too (see operatorClientTLS) — hand each node the
+	// operator client config so SubmitInvocation / DescribeInvocation dial the
+	// ingress port over HTTP/2-over-TLS rather than h2c.
+	for _, n := range cluster.Nodes {
+		if n != nil {
+			n.ingressTLS = ingressTLS
+		}
 	}
 
 	// Wait until some partition shard reports a leader. We can't observe
@@ -252,6 +279,7 @@ func (c *ContainerCluster) PeerIDs() []uint64 {
 // were committed (partitions can't elect before that).
 func (c *ContainerCluster) AwaitAnyPartitionLeader(ctx context.Context, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	var lastErr error // last NodeLeadership probe error, surfaced on timeout
 	for time.Now().Before(deadline) {
 		for _, n := range c.Nodes {
 			if n == nil {
@@ -261,6 +289,7 @@ func (c *ContainerCluster) AwaitAnyPartitionLeader(ctx context.Context, timeout 
 			parts, err := n.ListPartitions(pctx)
 			cancel()
 			if err != nil {
+				lastErr = err
 				continue
 			}
 			for _, p := range parts {
@@ -274,6 +303,13 @@ func (c *ContainerCluster) AwaitAnyPartitionLeader(ctx context.Context, timeout 
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+	}
+	// Surface the last probe error: a non-nil one means the NodeLeadership
+	// admin-mTLS dial is failing (so the cluster's leadership is unobservable,
+	// not necessarily absent); a nil one means probes succeeded but no
+	// partition shard ever reported a leader (a real election failure).
+	if lastErr != nil {
+		return fmt.Errorf("no partition leader observed within %s; last NodeLeadership probe error: %w", timeout, lastErr)
 	}
 	return fmt.Errorf("no partition leader elected within %s", timeout)
 }
@@ -290,7 +326,7 @@ func (c *ContainerCluster) AwaitAnyPartitionLeader(ctx context.Context, timeout 
 // entries route every peer-target-* hostname to this node's sidecar
 // IP so dragonboat's outbound raft dials land on tox-from-N's
 // per-target proxies.
-func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *testcontainers.DockerNetwork, cfgPath, policyPath string, nodeID uint64, withToxiproxy bool, extraEnv map[string]string) (*ContainerNode, error) {
+func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *testcontainers.DockerNetwork, cfgPath, caCertPath, nodeCertPath, nodeKeyPath string, nodeID uint64, withToxiproxy bool, extraEnv map[string]string, operatorCreds creds.Spec) (*ContainerNode, error) {
 	t.Helper()
 	alias := fmt.Sprintf("reflowd-node%d", nodeID)
 	ip := nodeIP(nodeID)
@@ -323,23 +359,16 @@ func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *
 			"REFLOW_INGRESS_ADDR":          fmt.Sprintf("0.0.0.0:%s", ingressPort),
 			"REFLOW_ADMIN_ADDR":            fmt.Sprintf("0.0.0.0:%s", adminPort),
 			"REFLOW_METRICS_DISABLED":      "true",
-			// Permissive policy lets the test process call Config and
-			// ClusterCtl RPCs without an operator-SPIFFE cert. Insecure
-			// e2e only — the mTLS variant (later PR) uses an issued
-			// operator/* cert and the starter policy unchanged.
-			"REFLOW_AUTH_POLICY_FILE": "/etc/reflowd/auth-policy.json",
 		},
 		Files: []testcontainers.ContainerFile{
-			{
-				HostFilePath:      cfgPath,
-				ContainerFilePath: "/etc/reflowd/config.yaml",
-				FileMode:          0o644,
-			},
-			{
-				HostFilePath:      policyPath,
-				ContainerFilePath: "/etc/reflowd/auth-policy.json",
-				FileMode:          0o644,
-			},
+			{HostFilePath: cfgPath, ContainerFilePath: "/etc/reflowd/config.yaml", FileMode: 0o644},
+			{HostFilePath: caCertPath, ContainerFilePath: containerCAPath, FileMode: 0o644},
+			{HostFilePath: nodeCertPath, ContainerFilePath: containerCrtPath, FileMode: 0o644},
+			// World-readable: testcontainers copies mounts as root, but reflowd
+			// runs as the nonroot image user — a 0600 key would be unreadable
+			// and delivery/admin creds.Build would bail at startup. Ephemeral
+			// throwaway test key, so 0644 inside the container is fine.
+			{HostFilePath: nodeKeyPath, ContainerFilePath: containerKeyPath, FileMode: 0o644},
 		},
 		WaitingFor: wait.ForListeningPort(ingressPort + "/tcp").
 			WithStartupTimeout(2 * time.Minute),
@@ -390,7 +419,7 @@ func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *
 		return nil, fmt.Errorf("start: %w", err)
 	}
 
-	ingressURL := resolveHostMapped(t, ctx, c, ingressPort+"/tcp")
+	ingressURL := "https://" + stripScheme(resolveHostMapped(t, ctx, c, ingressPort+"/tcp"))
 	adminURL := resolveHostMapped(t, ctx, c, adminPort+"/tcp")
 	return &ContainerNode{
 		nodeID:          nodeID,
@@ -399,6 +428,7 @@ func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *
 		ingressURL:      ingressURL,
 		adminURLForTest: adminURL,
 		container:       c,
+		operatorCreds:   operatorCreds,
 	}, nil
 }
 
@@ -459,32 +489,6 @@ func (c *tLogConsumer) Accept(l testcontainers.Log) {
 	c.t.Logf("[%s %s] %s", c.prefix, l.LogType, string(l.Content))
 }
 
-// writePermissivePolicy emits a JSON authz policy that allows every
-// reflow surface unconditionally. Used by the insecure e2e tier so the
-// test process can hit Config / ClusterCtl RPCs without an operator
-// SPIFFE cert. The mTLS variant (later PR) keeps the embedded starter
-// policy and issues an operator/* leaf instead.
-func writePermissivePolicy(t *testing.T) string {
-	t.Helper()
-	const body = `{
-  "name": "reflow_e2e_permissive",
-  "deny_rules": [],
-  "allow_rules": [
-    {"name": "ingress",    "request": {"paths": ["/reflow.ingress.v1.Ingress/*"]}},
-    {"name": "delivery",   "request": {"paths": ["/reflow.delivery.v1.Delivery/*"]}},
-    {"name": "config",     "request": {"paths": ["/reflow.config.v1.Config/*"]}},
-    {"name": "clusterctl", "request": {"paths": ["/reflow.clusterctl.v1.ClusterCtl/*"]}},
-    {"name": "webhooks",   "request": {"paths": ["/webhooks/*", "/webhooks/*/*", "/webhooks/*/*/*"]}},
-    {"name": "rest_v1",    "request": {"paths": ["/v1/*", "/v1/*/*", "/v1/*/*/*", "/v1/*/*/*/*"]}}
-  ]
-}`
-	path := filepath.Join(t.TempDir(), "auth-policy.json")
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatalf("e2e: write policy file: %v", err)
-	}
-	return path
-}
-
 const clusterConfigTmpl = `cluster:
   shards: [{{range $i, $s := .Shards}}{{if $i}}, {{end}}{{$s}}{{end}}]
   peers:
@@ -493,4 +497,25 @@ const clusterConfigTmpl = `cluster:
       raft_addr: {{.Raft}}
       gossip_addr: {{.Gossip}}
 {{- end}}
+ingress:
+  creds:
+    driver: tls
+    tls:
+      ca_file: /etc/reflowd/certs/ca.crt
+      cert_file: /etc/reflowd/certs/node.crt
+      key_file: /etc/reflowd/certs/node.key
+delivery:
+  creds:
+    driver: tls
+    tls:
+      ca_file: /etc/reflowd/certs/ca.crt
+      cert_file: /etc/reflowd/certs/node.crt
+      key_file: /etc/reflowd/certs/node.key
+admin:
+  creds:
+    driver: tls
+    tls:
+      ca_file: /etc/reflowd/certs/ca.crt
+      cert_file: /etc/reflowd/certs/node.crt
+      key_file: /etc/reflowd/certs/node.key
 `

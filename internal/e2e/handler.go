@@ -15,6 +15,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"github.com/twinfer/reflow/pkg/reflow/creds"
 	"github.com/twinfer/reflow/pkg/reflowclient"
 	configv1 "github.com/twinfer/reflow/proto/configv1"
 )
@@ -103,7 +104,7 @@ func RegisterHandler(ctx context.Context, cluster *ContainerCluster, h *HandlerC
 			if node == nil {
 				continue
 			}
-			err := registerOnce(ctx, node.AdminURLForTest(), h.URL)
+			err := registerOnce(ctx, node.AdminURLForTest(), h.URL, cluster.certs.operatorSpec())
 			if err == nil {
 				return nil
 			}
@@ -132,11 +133,11 @@ func RegisterHandler(ctx context.Context, cluster *ContainerCluster, h *HandlerC
 // registerOnce dials the given admin URL (http://host:port) and issues
 // one RegisterDeployment call. Returns Connect errors verbatim so the
 // caller can route on connect.Code.
-func registerOnce(ctx context.Context, adminURL, deploymentURL string) error {
+func registerOnce(ctx context.Context, adminURL, deploymentURL string, opCreds creds.Spec) error {
 	// reflowclient.Dial takes host:port + creds. Strip the scheme since
 	// the dialer derives http:// for insecure / https:// for TLS.
 	addr := stripScheme(adminURL)
-	cli, err := reflowclient.Dial(ctx, reflowclient.DialOptions{Addr: addr})
+	cli, err := reflowclient.Dial(ctx, reflowclient.DialOptions{Addr: addr, Creds: opCreds})
 	if err != nil {
 		return fmt.Errorf("dial admin %s: %w", addr, err)
 	}

@@ -9,7 +9,9 @@ import (
 	"github.com/twinfer/reflow/internal/auth"
 )
 
-// Procedure-path action ids (full Connect paths, matching schema.cedar).
+// Procedure-path keys into procMap (what the interceptor receives). The Cedar
+// action id is the bare method name (procmap.go); evalReq and ic.authorize both
+// resolve these through actionEntity.
 const (
 	actUpsertEventSource = "/reflow.config.v1.Config/UpsertEventSource"
 	actAddNode           = "/reflow.clusterctl.v1.ClusterCtl/AddNode"
@@ -29,20 +31,27 @@ func mustEngine(t *testing.T, policies string) *Engine {
 }
 
 // evalReq builds a single-principal, single-resource request and authorizes
-// it. Every principal maps to a typed entity (anonymous -> Anonymous).
-func evalReq(e *Engine, action string, p auth.Principal, resType cedar.EntityType, resID string, resAttrs types.RecordMap) cedar.Decision {
+// it. The action (and its plane-group parents) is resolved from the procedure
+// through actionEntity, exactly as the interceptor does. Every principal maps
+// to a typed entity (anonymous -> Anonymous).
+func evalReq(e *Engine, procedure string, p auth.Principal, resType cedar.EntityType, resID string, resAttrs types.RecordMap) cedar.Decision {
 	pUID, pEnt := PrincipalEntity(p)
+	aUID, aEnt, ok := actionEntity(procedure)
+	if !ok {
+		return cedar.Deny // unmapped procedure: interceptor default-denies
+	}
 	if resAttrs == nil {
 		resAttrs = types.RecordMap{}
 	}
 	rUID := cedar.NewEntityUID(resType, cedar.String(resID))
 	em := types.EntityMap{
 		pUID: pEnt,
+		aUID: aEnt,
 		rUID: types.Entity{UID: rUID, Attributes: types.NewRecord(resAttrs)},
 	}
 	dec, _ := e.Authorize(cedar.Request{
 		Principal: pUID,
-		Action:    cedar.NewEntityUID("Action", cedar.String(action)),
+		Action:    aUID,
 		Resource:  rUID,
 	}, em)
 	return dec
@@ -130,7 +139,7 @@ func TestPrincipalEntity_Mapping(t *testing.T) {
 // be a principal for AddNode (operator-only). Caught at compile, not eval.
 func TestCompileAndValidate_RejectsAppliesToViolation(t *testing.T) {
 	e := mustEngine(t, FoundationalClusterPolicies)
-	bad := `permit (principal is TenantAdmin, action == Action::"/reflow.clusterctl.v1.ClusterCtl/AddNode", resource);`
+	bad := `permit (principal is TenantAdmin, action == Action::"AddNode", resource);`
 	if _, err := e.CompileAndValidate([]byte(bad)); err == nil {
 		t.Fatal("expected schema validation to reject TenantAdmin on AddNode")
 	}
@@ -143,7 +152,7 @@ func TestTenantIsolation_ValidatesAndEnforces(t *testing.T) {
 	tenantPolicy := `
 permit (
     principal is TenantAdmin,
-    action == Action::"` + actUpsertEventSource + `",
+    action == Action::"UpsertEventSource",
     resource
 ) when { resource.tenant_id == principal.tenant_id && principal.tenant_id > 0 };
 `

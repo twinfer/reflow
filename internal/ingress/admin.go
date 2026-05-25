@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 
 	connect "connectrpc.com/connect"
 
@@ -12,22 +11,6 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
-
-// ListPartitions returns the partitions hosted on this node and their
-// per-partition leadership state. Sorted by shard_id ascending.
-func (s *Server) ListPartitions(_ context.Context, _ *connect.Request[ingressv1.ListPartitionsRequest]) (*connect.Response[ingressv1.ListPartitionsResponse], error) {
-	parts := s.host.Partitions()
-	out := make([]*ingressv1.PartitionInfo, 0, len(parts))
-	for shardID, runner := range parts {
-		out = append(out, &ingressv1.PartitionInfo{
-			ShardId:     shardID,
-			IsLeader:    runner.Leadership().IsLeader(),
-			LeaderEpoch: runner.Leadership().LeaderEpoch(),
-		})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ShardId < out[j].ShardId })
-	return connect.NewResponse(&ingressv1.ListPartitionsResponse{Partitions: out}), nil
-}
 
 // DescribeInvocation returns the current status of an invocation
 // without blocking on completion.

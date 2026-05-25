@@ -59,27 +59,43 @@ func NewFoundationalInterceptor(log *slog.Logger, bearerEnabled bool) (*Intercep
 }
 
 // authorize evaluates one procedure call against the live policy set. The
-// action is the full Connect procedure path; the principal comes from the
-// context. For now the resource is a single PlatformConfig sentinel —
-// foundational policies leave resource unconstrained and cedar.Authorize never
-// consults the schema at eval. Per-record resource extraction (with tenant_id)
-// arrives in PR4 via a procedure->resource map.
+// action is the procedure's Cedar action id plus its plane-group parents
+// (procmap.actionEntity); the principal comes from the context. An unmapped
+// procedure is default-denied — a new RPC must be classified in procMap before
+// it is reachable (procmap_test enforces coverage). For now the resource is a
+// single PlatformConfig sentinel: foundational policies leave resource
+// unconstrained and cedar.Authorize never consults the schema at eval.
+// Per-record resource extraction (with tenant_id) arrives in PR4.
 func (i *Interceptor) authorize(ctx context.Context, procedure string) error {
 	principal, _ := auth.PrincipalFromContext(ctx)
 	pUID, pEnt := PrincipalEntity(principal)
+	aUID, aEnt, ok := actionEntity(procedure)
+	if !ok {
+		i.log.Warn("authz: denied unmapped procedure", "procedure", procedure, "principal", principal.String())
+		return i.deny(principal)
+	}
 	entities := types.EntityMap{
 		pUID:              pEnt,
+		aUID:              aEnt,
 		PlatformConfigUID: {UID: PlatformConfigUID},
 	}
 	decision, _ := i.engine.Authorize(cedar.Request{
 		Principal: pUID,
-		Action:    cedar.NewEntityUID("Action", cedar.String(procedure)),
+		Action:    aUID,
 		Resource:  PlatformConfigUID,
 	}, entities)
 	if decision == cedar.Allow {
 		return nil
 	}
 	i.log.Warn("authz: denied", "procedure", procedure, "principal", principal.String())
+	return i.deny(principal)
+}
+
+// deny maps a denial to the right Connect code: anonymous callers get
+// Unauthenticated (plus a WWW-Authenticate: Bearer challenge when an OIDC path
+// exists), known principals get PermissionDenied. Messages are opaque so authz
+// leaks neither which procedure nor which principal was rejected.
+func (i *Interceptor) deny(principal auth.Principal) error {
 	if principal.IsAnonymous() {
 		err := connect.NewError(connect.CodeUnauthenticated, errUnauthenticated)
 		if i.bearerEnabled {

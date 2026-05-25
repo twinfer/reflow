@@ -74,6 +74,9 @@ const (
 	// ClusterCtlListPartitionsProcedure is the fully-qualified name of the ClusterCtl's ListPartitions
 	// RPC.
 	ClusterCtlListPartitionsProcedure = "/reflow.clusterctl.v1.ClusterCtl/ListPartitions"
+	// ClusterCtlNodeLeadershipProcedure is the fully-qualified name of the ClusterCtl's NodeLeadership
+	// RPC.
+	ClusterCtlNodeLeadershipProcedure = "/reflow.clusterctl.v1.ClusterCtl/NodeLeadership"
 	// ClusterCtlCreateSnapshotProcedure is the fully-qualified name of the ClusterCtl's CreateSnapshot
 	// RPC.
 	ClusterCtlCreateSnapshotProcedure = "/reflow.clusterctl.v1.ClusterCtl/CreateSnapshot"
@@ -137,6 +140,13 @@ type ClusterCtlClient interface {
 	ListNodes(context.Context, *connect.Request[clusterctlv1.ListNodesRequest]) (*connect.Response[clusterctlv1.ListNodesResponse], error)
 	// ListPartitions returns the current PartitionTable from shard 0.
 	ListPartitions(context.Context, *connect.Request[clusterctlv1.ListPartitionsRequest]) (*connect.Response[clusterctlv1.ListPartitionsResponse], error)
+	// NodeLeadership returns the partition shards this node currently
+	// hosts and their live Raft leadership state, read from the node's own
+	// runtime view (Host.Partitions) — distinct from ListPartitions, which
+	// returns shard 0's assignment table and cannot reflect a live election.
+	// Read-only; the chaos/e2e harness uses it to locate a shard's live
+	// leader.
+	NodeLeadership(context.Context, *connect.Request[clusterctlv1.NodeLeadershipRequest]) (*connect.Response[clusterctlv1.NodeLeadershipResponse], error)
 	// CreateSnapshot kicks off an Exported snapshot of the requested
 	// partition shard and archives the result via the local
 	// SnapshotRepository. Returns the snapshot index.
@@ -256,6 +266,12 @@ func NewClusterCtlClient(httpClient connect.HTTPClient, baseURL string, opts ...
 			connect.WithSchema(clusterCtlMethods.ByName("ListPartitions")),
 			connect.WithClientOptions(opts...),
 		),
+		nodeLeadership: connect.NewClient[clusterctlv1.NodeLeadershipRequest, clusterctlv1.NodeLeadershipResponse](
+			httpClient,
+			baseURL+ClusterCtlNodeLeadershipProcedure,
+			connect.WithSchema(clusterCtlMethods.ByName("NodeLeadership")),
+			connect.WithClientOptions(opts...),
+		),
 		createSnapshot: connect.NewClient[clusterctlv1.CreateSnapshotRequest, clusterctlv1.CreateSnapshotResponse](
 			httpClient,
 			baseURL+ClusterCtlCreateSnapshotProcedure,
@@ -350,6 +366,7 @@ type clusterCtlClient struct {
 	removeNode      *connect.Client[clusterctlv1.RemoveNodeRequest, clusterctlv1.RemoveNodeResponse]
 	listNodes       *connect.Client[clusterctlv1.ListNodesRequest, clusterctlv1.ListNodesResponse]
 	listPartitions  *connect.Client[clusterctlv1.ListPartitionsRequest, clusterctlv1.ListPartitionsResponse]
+	nodeLeadership  *connect.Client[clusterctlv1.NodeLeadershipRequest, clusterctlv1.NodeLeadershipResponse]
 	createSnapshot  *connect.Client[clusterctlv1.CreateSnapshotRequest, clusterctlv1.CreateSnapshotResponse]
 	listSnapshots   *connect.Client[clusterctlv1.ListSnapshotsRequest, clusterctlv1.ListSnapshotsResponse]
 	deleteSnapshot  *connect.Client[clusterctlv1.DeleteSnapshotRequest, clusterctlv1.DeleteSnapshotResponse]
@@ -389,6 +406,11 @@ func (c *clusterCtlClient) ListNodes(ctx context.Context, req *connect.Request[c
 // ListPartitions calls reflow.clusterctl.v1.ClusterCtl.ListPartitions.
 func (c *clusterCtlClient) ListPartitions(ctx context.Context, req *connect.Request[clusterctlv1.ListPartitionsRequest]) (*connect.Response[clusterctlv1.ListPartitionsResponse], error) {
 	return c.listPartitions.CallUnary(ctx, req)
+}
+
+// NodeLeadership calls reflow.clusterctl.v1.ClusterCtl.NodeLeadership.
+func (c *clusterCtlClient) NodeLeadership(ctx context.Context, req *connect.Request[clusterctlv1.NodeLeadershipRequest]) (*connect.Response[clusterctlv1.NodeLeadershipResponse], error) {
+	return c.nodeLeadership.CallUnary(ctx, req)
 }
 
 // CreateSnapshot calls reflow.clusterctl.v1.ClusterCtl.CreateSnapshot.
@@ -484,6 +506,13 @@ type ClusterCtlHandler interface {
 	ListNodes(context.Context, *connect.Request[clusterctlv1.ListNodesRequest]) (*connect.Response[clusterctlv1.ListNodesResponse], error)
 	// ListPartitions returns the current PartitionTable from shard 0.
 	ListPartitions(context.Context, *connect.Request[clusterctlv1.ListPartitionsRequest]) (*connect.Response[clusterctlv1.ListPartitionsResponse], error)
+	// NodeLeadership returns the partition shards this node currently
+	// hosts and their live Raft leadership state, read from the node's own
+	// runtime view (Host.Partitions) — distinct from ListPartitions, which
+	// returns shard 0's assignment table and cannot reflect a live election.
+	// Read-only; the chaos/e2e harness uses it to locate a shard's live
+	// leader.
+	NodeLeadership(context.Context, *connect.Request[clusterctlv1.NodeLeadershipRequest]) (*connect.Response[clusterctlv1.NodeLeadershipResponse], error)
 	// CreateSnapshot kicks off an Exported snapshot of the requested
 	// partition shard and archives the result via the local
 	// SnapshotRepository. Returns the snapshot index.
@@ -599,6 +628,12 @@ func NewClusterCtlHandler(svc ClusterCtlHandler, opts ...connect.HandlerOption) 
 		connect.WithSchema(clusterCtlMethods.ByName("ListPartitions")),
 		connect.WithHandlerOptions(opts...),
 	)
+	clusterCtlNodeLeadershipHandler := connect.NewUnaryHandler(
+		ClusterCtlNodeLeadershipProcedure,
+		svc.NodeLeadership,
+		connect.WithSchema(clusterCtlMethods.ByName("NodeLeadership")),
+		connect.WithHandlerOptions(opts...),
+	)
 	clusterCtlCreateSnapshotHandler := connect.NewUnaryHandler(
 		ClusterCtlCreateSnapshotProcedure,
 		svc.CreateSnapshot,
@@ -695,6 +730,8 @@ func NewClusterCtlHandler(svc ClusterCtlHandler, opts ...connect.HandlerOption) 
 			clusterCtlListNodesHandler.ServeHTTP(w, r)
 		case ClusterCtlListPartitionsProcedure:
 			clusterCtlListPartitionsHandler.ServeHTTP(w, r)
+		case ClusterCtlNodeLeadershipProcedure:
+			clusterCtlNodeLeadershipHandler.ServeHTTP(w, r)
 		case ClusterCtlCreateSnapshotProcedure:
 			clusterCtlCreateSnapshotHandler.ServeHTTP(w, r)
 		case ClusterCtlListSnapshotsProcedure:
@@ -750,6 +787,10 @@ func (UnimplementedClusterCtlHandler) ListNodes(context.Context, *connect.Reques
 
 func (UnimplementedClusterCtlHandler) ListPartitions(context.Context, *connect.Request[clusterctlv1.ListPartitionsRequest]) (*connect.Response[clusterctlv1.ListPartitionsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.ListPartitions is not implemented"))
+}
+
+func (UnimplementedClusterCtlHandler) NodeLeadership(context.Context, *connect.Request[clusterctlv1.NodeLeadershipRequest]) (*connect.Response[clusterctlv1.NodeLeadershipResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.NodeLeadership is not implemented"))
 }
 
 func (UnimplementedClusterCtlHandler) CreateSnapshot(context.Context, *connect.Request[clusterctlv1.CreateSnapshotRequest]) (*connect.Response[clusterctlv1.CreateSnapshotResponse], error) {

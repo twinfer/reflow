@@ -30,8 +30,8 @@ import (
 )
 
 // PartitionInfo summarizes one shard's leadership state from a single
-// node's point of view. Mirrors ingressv1.PartitionInfo but lives in
-// the loadgen package so callers don't need to import the proto for
+// node's point of view. Mirrors clusterctlv1.PartitionLeadership but lives
+// in the loadgen package so callers don't need to import the proto for
 // the bring-up await loop.
 type PartitionInfo struct {
 	ShardID     uint64
@@ -137,7 +137,8 @@ func (n *InProcessNode) DescribeInvocation(ctx context.Context, id *enginev1.Inv
 }
 
 // ListPartitions returns leadership state for every partition shard
-// hosted by this node. Mirrors ingressv1.Ingress.ListPartitions.
+// hosted by this node. Mirrors ClusterCtl/NodeLeadership (the in-process
+// counterpart of the containerized harness's admin-port probe).
 func (n *InProcessNode) ListPartitions(_ context.Context) ([]PartitionInfo, error) {
 	parts := n.Host.Partitions()
 	out := make([]PartitionInfo, 0, len(parts))

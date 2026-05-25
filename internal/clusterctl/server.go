@@ -15,6 +15,7 @@
 package clusterctl
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -302,6 +303,27 @@ func (s *Server) ListPartitions(ctx context.Context, _ *connect.Request[clusterc
 			fmt.Errorf("clusterctl: read partition table: %w", err))
 	}
 	return connect.NewResponse(&clusterctlv1.ListPartitionsResponse{Table: pt}), nil
+}
+
+// NodeLeadership returns this node's live, runtime view of the partition
+// shards it hosts and whether it currently leads each — read straight from
+// Host.Partitions(), so it reflects an in-progress election that the shard-0
+// assignment table (ListPartitions) cannot. Not leader-gated: it is a
+// node-local read answered by whichever node is dialed.
+func (s *Server) NodeLeadership(_ context.Context, _ *connect.Request[clusterctlv1.NodeLeadershipRequest]) (*connect.Response[clusterctlv1.NodeLeadershipResponse], error) {
+	parts := s.host.Partitions()
+	out := make([]*clusterctlv1.PartitionLeadership, 0, len(parts))
+	for shardID, runner := range parts {
+		out = append(out, &clusterctlv1.PartitionLeadership{
+			ShardId:     shardID,
+			IsLeader:    runner.Leadership().IsLeader(),
+			LeaderEpoch: runner.Leadership().LeaderEpoch(),
+		})
+	}
+	slices.SortFunc(out, func(a, b *clusterctlv1.PartitionLeadership) int {
+		return cmp.Compare(a.ShardId, b.ShardId)
+	})
+	return connect.NewResponse(&clusterctlv1.NodeLeadershipResponse{Partitions: out}), nil
 }
 
 // CreateSnapshot delegates to snapshot.SnapshotOnce. Leader-only: every

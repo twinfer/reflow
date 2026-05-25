@@ -50,8 +50,6 @@ const (
 	// IngressResolveAwakeableProcedure is the fully-qualified name of the Ingress's ResolveAwakeable
 	// RPC.
 	IngressResolveAwakeableProcedure = "/reflow.ingress.v1.Ingress/ResolveAwakeable"
-	// IngressListPartitionsProcedure is the fully-qualified name of the Ingress's ListPartitions RPC.
-	IngressListPartitionsProcedure = "/reflow.ingress.v1.Ingress/ListPartitions"
 	// IngressDescribeInvocationProcedure is the fully-qualified name of the Ingress's
 	// DescribeInvocation RPC.
 	IngressDescribeInvocationProcedure = "/reflow.ingress.v1.Ingress/DescribeInvocation"
@@ -84,9 +82,6 @@ type IngressClient interface {
 	// created by a handler via ctx.Awakeable(). Routes to the owning
 	// partition by looking up the awakeable directory.
 	ResolveAwakeable(context.Context, *connect.Request[ingressv1.ResolveAwakeableRequest]) (*connect.Response[ingressv1.ResolveAwakeableResponse], error)
-	// ListPartitions reports the partitions hosted on this node and
-	// their leadership state. Read-only debug endpoint.
-	ListPartitions(context.Context, *connect.Request[ingressv1.ListPartitionsRequest]) (*connect.Response[ingressv1.ListPartitionsResponse], error)
 	// DescribeInvocation returns the current status of an invocation
 	// without blocking. Read-only debug endpoint.
 	DescribeInvocation(context.Context, *connect.Request[ingressv1.DescribeInvocationRequest]) (*connect.Response[ingressv1.DescribeInvocationResponse], error)
@@ -150,12 +145,6 @@ func NewIngressClient(httpClient connect.HTTPClient, baseURL string, opts ...con
 			connect.WithSchema(ingressMethods.ByName("ResolveAwakeable")),
 			connect.WithClientOptions(opts...),
 		),
-		listPartitions: connect.NewClient[ingressv1.ListPartitionsRequest, ingressv1.ListPartitionsResponse](
-			httpClient,
-			baseURL+IngressListPartitionsProcedure,
-			connect.WithSchema(ingressMethods.ByName("ListPartitions")),
-			connect.WithClientOptions(opts...),
-		),
 		describeInvocation: connect.NewClient[ingressv1.DescribeInvocationRequest, ingressv1.DescribeInvocationResponse](
 			httpClient,
 			baseURL+IngressDescribeInvocationProcedure,
@@ -200,7 +189,6 @@ type ingressClient struct {
 	submitInvocation       *connect.Client[ingressv1.SubmitInvocationRequest, ingressv1.SubmitInvocationResponse]
 	awaitInvocation        *connect.Client[ingressv1.AwaitInvocationRequest, ingressv1.AwaitInvocationResponse]
 	resolveAwakeable       *connect.Client[ingressv1.ResolveAwakeableRequest, ingressv1.ResolveAwakeableResponse]
-	listPartitions         *connect.Client[ingressv1.ListPartitionsRequest, ingressv1.ListPartitionsResponse]
 	describeInvocation     *connect.Client[ingressv1.DescribeInvocationRequest, ingressv1.DescribeInvocationResponse]
 	attachInvocation       *connect.Client[ingressv1.AttachInvocationRequest, ingressv1.AttachInvocationResponse]
 	getInvocationOutput    *connect.Client[ingressv1.GetInvocationOutputRequest, ingressv1.GetInvocationOutputResponse]
@@ -222,11 +210,6 @@ func (c *ingressClient) AwaitInvocation(ctx context.Context, req *connect.Reques
 // ResolveAwakeable calls reflow.ingress.v1.Ingress.ResolveAwakeable.
 func (c *ingressClient) ResolveAwakeable(ctx context.Context, req *connect.Request[ingressv1.ResolveAwakeableRequest]) (*connect.Response[ingressv1.ResolveAwakeableResponse], error) {
 	return c.resolveAwakeable.CallUnary(ctx, req)
-}
-
-// ListPartitions calls reflow.ingress.v1.Ingress.ListPartitions.
-func (c *ingressClient) ListPartitions(ctx context.Context, req *connect.Request[ingressv1.ListPartitionsRequest]) (*connect.Response[ingressv1.ListPartitionsResponse], error) {
-	return c.listPartitions.CallUnary(ctx, req)
 }
 
 // DescribeInvocation calls reflow.ingress.v1.Ingress.DescribeInvocation.
@@ -272,9 +255,6 @@ type IngressHandler interface {
 	// created by a handler via ctx.Awakeable(). Routes to the owning
 	// partition by looking up the awakeable directory.
 	ResolveAwakeable(context.Context, *connect.Request[ingressv1.ResolveAwakeableRequest]) (*connect.Response[ingressv1.ResolveAwakeableResponse], error)
-	// ListPartitions reports the partitions hosted on this node and
-	// their leadership state. Read-only debug endpoint.
-	ListPartitions(context.Context, *connect.Request[ingressv1.ListPartitionsRequest]) (*connect.Response[ingressv1.ListPartitionsResponse], error)
 	// DescribeInvocation returns the current status of an invocation
 	// without blocking. Read-only debug endpoint.
 	DescribeInvocation(context.Context, *connect.Request[ingressv1.DescribeInvocationRequest]) (*connect.Response[ingressv1.DescribeInvocationResponse], error)
@@ -334,12 +314,6 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 		connect.WithSchema(ingressMethods.ByName("ResolveAwakeable")),
 		connect.WithHandlerOptions(opts...),
 	)
-	ingressListPartitionsHandler := connect.NewUnaryHandler(
-		IngressListPartitionsProcedure,
-		svc.ListPartitions,
-		connect.WithSchema(ingressMethods.ByName("ListPartitions")),
-		connect.WithHandlerOptions(opts...),
-	)
 	ingressDescribeInvocationHandler := connect.NewUnaryHandler(
 		IngressDescribeInvocationProcedure,
 		svc.DescribeInvocation,
@@ -384,8 +358,6 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 			ingressAwaitInvocationHandler.ServeHTTP(w, r)
 		case IngressResolveAwakeableProcedure:
 			ingressResolveAwakeableHandler.ServeHTTP(w, r)
-		case IngressListPartitionsProcedure:
-			ingressListPartitionsHandler.ServeHTTP(w, r)
 		case IngressDescribeInvocationProcedure:
 			ingressDescribeInvocationHandler.ServeHTTP(w, r)
 		case IngressAttachInvocationProcedure:
@@ -417,10 +389,6 @@ func (UnimplementedIngressHandler) AwaitInvocation(context.Context, *connect.Req
 
 func (UnimplementedIngressHandler) ResolveAwakeable(context.Context, *connect.Request[ingressv1.ResolveAwakeableRequest]) (*connect.Response[ingressv1.ResolveAwakeableResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.ResolveAwakeable is not implemented"))
-}
-
-func (UnimplementedIngressHandler) ListPartitions(context.Context, *connect.Request[ingressv1.ListPartitionsRequest]) (*connect.Response[ingressv1.ListPartitionsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.ListPartitions is not implemented"))
 }
 
 func (UnimplementedIngressHandler) DescribeInvocation(context.Context, *connect.Request[ingressv1.DescribeInvocationRequest]) (*connect.Response[ingressv1.DescribeInvocationResponse], error) {

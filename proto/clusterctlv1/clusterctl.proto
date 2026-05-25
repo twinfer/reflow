@@ -58,6 +58,13 @@ service ClusterCtl {
   rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
   // ListPartitions returns the current PartitionTable from shard 0.
   rpc ListPartitions(ListPartitionsRequest) returns (ListPartitionsResponse);
+  // NodeLeadership returns the partition shards this node currently
+  // hosts and their live Raft leadership state, read from the node's own
+  // runtime view (Host.Partitions) — distinct from ListPartitions, which
+  // returns shard 0's assignment table and cannot reflect a live election.
+  // Read-only; the chaos/e2e harness uses it to locate a shard's live
+  // leader.
+  rpc NodeLeadership(NodeLeadershipRequest) returns (NodeLeadershipResponse);
   // CreateSnapshot kicks off an Exported snapshot of the requested
   // partition shard and archives the result via the local
   // SnapshotRepository. Returns the snapshot index.
@@ -166,6 +173,16 @@ message ListNodesResponse {
 message ListPartitionsRequest {}
 message ListPartitionsResponse {
   reflow.engine.v1.PartitionTable table = 1;
+}
+
+message NodeLeadershipRequest {}
+message NodeLeadershipResponse {
+  repeated PartitionLeadership partitions = 1;
+}
+message PartitionLeadership {
+  uint64 shard_id = 1;
+  bool is_leader = 2;
+  uint64 leader_epoch = 3;
 }
 
 message CreateSnapshotRequest {

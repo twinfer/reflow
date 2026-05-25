@@ -49,6 +49,10 @@ func PrincipalEntity(p auth.Principal) (cedar.EntityUID, types.Entity) {
 			"node_id": types.Long(parseNodeID(p.Subject)),
 		})}
 	case "tenant":
+		// tenant_id is server-bound, not self-asserted: TenantIDFromPrincipal
+		// reads the id stamped by the per-tenant OIDC reconciler when the
+		// caller's token validated against that tenant's operator-registered
+		// issuer (TenantRecord.oidc_issuers). It is never read from a token claim.
 		uid := cedar.NewEntityUID(TypeTenantAdmin, cedar.String(p.Subject))
 		return uid, types.Entity{UID: uid, Attributes: types.NewRecord(types.RecordMap{
 			"tenant_id": types.Long(int64(auth.TenantIDFromPrincipal(p))),

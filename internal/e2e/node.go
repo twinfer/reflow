@@ -16,6 +16,8 @@ import (
 
 	"github.com/twinfer/reflow/internal/loadgen"
 	"github.com/twinfer/reflow/pkg/ingressclient"
+	"github.com/twinfer/reflow/pkg/reflowclient"
+	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
@@ -83,15 +85,19 @@ func (n *ContainerNode) DescribeInvocation(ctx context.Context, id *enginev1.Inv
 	return resp.Msg.GetStatus(), nil
 }
 
-// ListPartitions queries Ingress.ListPartitions and projects the proto
-// into the loadgen-local PartitionInfo shape so chaos primitives that
-// drive the loadgen.Node surface work unchanged.
+// ListPartitions queries ClusterCtl.NodeLeadership on this node's admin
+// port and projects the proto into the loadgen-local PartitionInfo shape so
+// chaos primitives that drive the loadgen.Node surface work unchanged. The
+// node-local live-leadership read moved off the public ingress plane onto
+// the operator admin surface (see ClusterCtl/NodeLeadership), so this dials
+// the admin URL rather than the ingress client.
 func (n *ContainerNode) ListPartitions(ctx context.Context) ([]loadgen.PartitionInfo, error) {
-	cli, err := n.ingress()
+	cli, err := reflowclient.Dial(ctx, reflowclient.DialOptions{Addr: stripScheme(n.AdminURLForTest())})
 	if err != nil {
 		return nil, err
 	}
-	resp, err := cli.ListPartitions(ctx, connect.NewRequest(&ingressv1.ListPartitionsRequest{}))
+	defer cli.Close()
+	resp, err := cli.Cluster.NodeLeadership(ctx, connect.NewRequest(&clusterctlv1.NodeLeadershipRequest{}))
 	if err != nil {
 		return nil, err
 	}

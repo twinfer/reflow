@@ -193,10 +193,10 @@ func TestIngress_SubmitAndAwaitEcho(t *testing.T) {
 	}
 }
 
-// TestIngress_DescribeAndListPartitions covers the read-only admin
-// endpoints: ListPartitions surfaces shard 1 as leader, DescribeInvocation
-// reports Completed for a finished invocation.
-func TestIngress_DescribeAndListPartitions(t *testing.T) {
+// TestIngress_DescribeInvocation covers the read-only DescribeInvocation
+// admin endpoint: it reports Completed for a finished invocation. Live
+// per-node leadership reads moved off ingress to ClusterCtl/NodeLeadership.
+func TestIngress_DescribeInvocation(t *testing.T) {
 	reg := handler.NewRegistry()
 	if err := reg.RegisterService("Echo", "echo", func(_ handler.Context, in []byte) ([]byte, error) {
 		return in, nil
@@ -204,18 +204,6 @@ func TestIngress_DescribeAndListPartitions(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 	_, _, cli := bringUpHostWithIngress(t, reg)
-
-	listResp, err := cli.ListPartitions(context.Background(), connect.NewRequest(&ingressv1.ListPartitionsRequest{}))
-	if err != nil {
-		t.Fatalf("ListPartitions: %v", err)
-	}
-	parts := listResp.Msg.GetPartitions()
-	if len(parts) != 1 || parts[0].GetShardId() != 1 {
-		t.Fatalf("ListPartitions: got %+v", parts)
-	}
-	if !parts[0].GetIsLeader() {
-		t.Errorf("shard 1 should be leader; got %+v", parts[0])
-	}
 
 	submitResp, err := cli.SubmitInvocation(context.Background(), connect.NewRequest(&ingressv1.SubmitInvocationRequest{
 		Service: "Echo",

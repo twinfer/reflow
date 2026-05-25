@@ -29,10 +29,6 @@ service Ingress {
   // partition by looking up the awakeable directory.
   rpc ResolveAwakeable(ResolveAwakeableRequest) returns (ResolveAwakeableResponse);
 
-  // ListPartitions reports the partitions hosted on this node and
-  // their leadership state. Read-only debug endpoint.
-  rpc ListPartitions(ListPartitionsRequest) returns (ListPartitionsResponse);
-
   // DescribeInvocation returns the current status of an invocation
   // without blocking. Read-only debug endpoint.
   rpc DescribeInvocation(DescribeInvocationRequest) returns (DescribeInvocationResponse);
@@ -130,18 +126,6 @@ message ResolveAwakeableRequest {
 
 message ResolveAwakeableResponse {
   bool resolved = 1;
-}
-
-message ListPartitionsRequest {}
-
-message ListPartitionsResponse {
-  repeated PartitionInfo partitions = 1;
-}
-
-message PartitionInfo {
-  uint64 shard_id = 1;
-  bool is_leader = 2;
-  uint64 leader_epoch = 3;
 }
 
 message DescribeInvocationRequest {

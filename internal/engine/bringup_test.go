@@ -22,7 +22,7 @@ import (
 // the same integration coverage.
 func testIngressMiddleware(t *testing.T) func(http.Handler) http.Handler {
 	t.Helper()
-	mw, _, _, err := auth.HTTPMiddleware(auth.Config{}, nil)
+	mw, _, err := auth.HTTPMiddleware(nil)
 	if err != nil {
 		t.Fatalf("auth.HTTPMiddleware: %v", err)
 	}

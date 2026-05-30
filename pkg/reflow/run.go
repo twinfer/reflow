@@ -264,13 +264,12 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		return nil, err
 	}
 
-	mw, mwCloser, jwtVerifier, mwErr := auth.HTTPMiddleware(buildAuthConfig(cfg.Auth), logger)
+	mw, mwCloser, mwErr := auth.HTTPMiddleware(logger)
 	if mwErr != nil {
 		return bail(fmt.Errorf("reflow: auth middleware: %w", mwErr))
 	}
 	httpAuthMW = mw
 	httpAuthCloser = mwCloser
-	tenantOIDC := auth.NewTenantOIDCReconciler(jwtVerifier, buildAuthConfig(cfg.Auth).OIDC, logger)
 
 	// Cedar authorization engine, shared by every Connect service via the
 	// authz interceptor. Seeded with the in-binary foundational policies
@@ -279,7 +278,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	if azErr != nil {
 		return bail(fmt.Errorf("reflow: authz engine: %w", azErr))
 	}
-	authzInterceptor := authz.NewInterceptor(authzEngine, logger, len(cfg.Auth.OIDC) > 0)
+	authzInterceptor := authz.NewInterceptor(authzEngine, logger, false)
 
 	if crossShard {
 		dc, derr := creds.Build(cfg.Delivery.Creds, logger)
@@ -343,7 +342,6 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		tenantDEKNotifier:      tenantDEKNotifier,
 		platformConfigNotifier: platformConfigNotifier,
 		tenantDEKs:             tenantDEKs,
-		tenantOIDC:             tenantOIDC,
 		logger:                 logger,
 	})
 	if herr != nil {
@@ -486,7 +484,6 @@ type startupDeps struct {
 	tenantDEKNotifier      *cluster.TableNotifier
 	platformConfigNotifier *cluster.TableNotifier
 	tenantDEKs             *secretstore.TenantDEKResolver
-	tenantOIDC             *auth.TenantOIDCReconciler
 	logger                 *slog.Logger
 }
 
@@ -813,27 +810,9 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		}
 	}()
 
-	// TenantTable wake fan-out. TableNotifier is single-subscriber by
-	// design — the propose-then-Subscribe test pattern relies on the
-	// buffered-1 channel (see internal/engine/cluster/notifier.go).
-	// When multiple consumers need the same wake (TenantTable drives
-	// both the OIDC reconciler and the quota reconciler), pkg/reflow
-	// subscribes once and relays to N dedicated buffered-1 channels.
-	tenantWakeOIDC := make(chan struct{}, 1)
+	// TenantTable wake drives the quota reconciler.
 	tenantWakeQuota := make(chan struct{}, 1)
-	go relayWake(ctx, d.tenantNotifier.Subscribe(), tenantWakeOIDC, tenantWakeQuota)
-
-	// TenantOIDCReconciler keeps the jwtVerifier's byIssuer snapshot
-	// aligned with the union of cluster-default issuers and per-tenant
-	// issuers carried on TenantRecord.OidcIssuers. Reconciler is a
-	// no-op when jwtVerifier is nil (no cluster-default OIDC and no
-	// tenants yet — possible in SPIFFE-only deployments).
-	go func() {
-		reader := tenantReader{host: eh}
-		if rerr := d.tenantOIDC.RunReconciler(ctx, tenantWakeOIDC, reader); rerr != nil && !errors.Is(rerr, context.Canceled) {
-			logger.Warn("reflow: tenant_oidc reconcile loop exited", "err", rerr)
-		}
-	}()
+	go relayWake(ctx, d.tenantNotifier.Subscribe(), tenantWakeQuota)
 
 	// Construct the quota Manager before the ingress listener so the
 	// Enforcer can be threaded into ingress.Config. NoopEnforcer is the

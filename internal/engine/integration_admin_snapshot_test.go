@@ -262,7 +262,7 @@ func TestAdminMutualTLS_RejectsUnsignedClient(t *testing.T) {
 		}
 	}()
 
-	mw, authCloser, _, err := auth.HTTPMiddleware(auth.Config{}, nil)
+	mw, authCloser, err := auth.HTTPMiddleware(nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}

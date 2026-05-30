@@ -17,7 +17,7 @@ import (
 
 func newTestMW(t *testing.T) func(http.Handler) http.Handler {
 	t.Helper()
-	mw, closer, _, err := HTTPMiddleware(Config{}, nil)
+	mw, closer, err := HTTPMiddleware(nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}

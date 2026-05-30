@@ -12,7 +12,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 )
 
@@ -232,83 +231,13 @@ type BootstrapConfig struct {
 }
 
 // AuthConfig drives the authentication + authorization interceptor
-// stack shared by Admin, Delivery, and Ingress listeners.
-//
-// Two authenticators chain at the HTTP layer below Connect's protocol
-// dispatch: mesh-leaf mTLS (principal from leaf CN), then OIDC Bearer
-// JWT (from OIDC). mTLS wins when both are presented on the same
-// request. A request with neither produces an anonymous principal;
-// the Cedar authorization interceptor (internal/authz) decides whether
-// anonymous is acceptable for each procedure.
-//
-// OIDC config is not hot-reloaded; issuer or audience changes require
-// a node restart (same as TLS material).
-type AuthConfig struct {
-	// OIDC is the list of Bearer-JWT issuers reflow accepts. Empty
-	// disables bearer authentication (SPIFFE mTLS still works). Per-
-	// request issuer routing is by the JWT `iss` claim, so issuer URLs
-	// must be unique across the slice.
-	//
-	// Note: slice configs are file-only (YAML/JSON) — the env-var
-	// provider can't express the slice index. Env-driven single-issuer
-	// configs aren't supported; use a config file.
-	OIDC []OIDCIssuer `koanf:"oidc"`
-}
-
-// OIDCIssuer configures one trusted JWT issuer. IssuerURL is required;
-// JWKSFile is an optional override for key sourcing (air-gapped mode).
-type OIDCIssuer struct {
-	// Name is an operator label surfaced in audit logs. Optional;
-	// defaults to IssuerURL.
-	Name string `koanf:"name"`
-	// IssuerURL is the expected `iss` claim value on inbound tokens
-	// AND, when JWKSFile is empty, the base URL whose
-	// /.well-known/openid-configuration reveals the JWKS endpoint.
-	// Required. Discovery is lazy by default (first request triggers
-	// fetch) so a transient IdP outage doesn't block reflow.Run; set
-	// EagerDiscovery to fail-fast on startup.
-	IssuerURL string `koanf:"issuer_url"`
-	// JWKSFile is the path to a static JSON Web Key Set file used in
-	// place of OIDC discovery. Air-gapped deployments and tests pin
-	// keys this way. When set, IssuerURL is still used to validate
-	// the `iss` claim; only key sourcing is replaced. The file is
-	// read once at startup; rotation requires a restart.
-	JWKSFile string `koanf:"jwks_file"`
-	// Audiences lists the `aud` claim values accepted on inbound
-	// tokens. A token with any matching `aud` is allowed. Required
-	// (an empty slice rejects every token to fail closed).
-	Audiences []string `koanf:"audiences"`
-	// PrincipalClaim names the JWT claim mapped to Principal.Subject.
-	// Default "sub". Use "preferred_username", "email", or a custom
-	// claim for IdPs whose `sub` is opaque.
-	PrincipalClaim string `koanf:"principal_claim"`
-	// PrincipalKind is the Principal.Kind value for this issuer.
-	// Default "user". Operators with multiple issuers should pick
-	// distinct kinds so policy globs can distinguish them (e.g.
-	// "user", "service-account", "ci-bot").
-	PrincipalKind string `koanf:"principal_kind"`
-	// KindClaim, when set, overrides PrincipalKind with the named
-	// claim's value (sanitized of `/`). Lets an IdP carry the kind
-	// inline (e.g. token role = "admin" or "operator").
-	KindClaim string `koanf:"kind_claim"`
-	// RequiredClaims is a literal-equality gate applied after
-	// signature/audience/issuer verification. Every entry must match
-	// or the token is rejected. Cheap defense-in-depth.
-	RequiredClaims map[string]string `koanf:"required_claims"`
-	// AllowedClaims names claims to copy into Principal.Claims for
-	// downstream consumers (e.g. future OPA integration). Empty means
-	// nothing is copied — never blanket-copy the whole token (PII,
-	// context bloat).
-	AllowedClaims []string `koanf:"allowed_claims"`
-	// ClockSkew is the allowed leeway on `exp` / `nbf` / `iat` claims.
-	// Default 30s.
-	ClockSkew time.Duration `koanf:"clock_skew"`
-	// EagerDiscovery forces OIDC discovery + JWKS fetch at startup.
-	// Default false (lazy). Useful in environments with strict
-	// health-check gating where a partially-functional auth is worse
-	// than a failed-to-start node. Ignored when JWKSFile is set.
-	EagerDiscovery bool `koanf:"eager_discovery"`
-}
+// stack shared by Admin, Delivery, and Ingress listeners. Authentication
+// is mesh-leaf mTLS (principal from the verified leaf CN); a request with
+// no client cert produces an anonymous principal, and the Cedar
+// authorization interceptor (internal/authz) decides whether anonymous is
+// acceptable for each procedure. The struct is currently empty — per-
+// listener transport security is configured via the *.Creds fields.
+type AuthConfig struct{}
 
 // SnapshotConfig configures the per-partition DR snapshot producer,
 // the archive repository, and the retention reaper.
@@ -421,33 +350,6 @@ const (
 	RebalanceModeAdvisory = "advisory"
 	RebalanceModeAuto     = "auto"
 )
-
-// buildAuthConfig translates the public AuthConfig into the internal
-// auth.Config consumed by auth.HTTPMiddleware. Lives at the
-// pkg → internal boundary so internal/auth never imports pkg/reflow.
-func buildAuthConfig(c AuthConfig) auth.Config {
-	out := auth.Config{}
-	if len(c.OIDC) == 0 {
-		return out
-	}
-	out.OIDC = make([]auth.OIDCIssuerConfig, len(c.OIDC))
-	for i, ic := range c.OIDC {
-		out.OIDC[i] = auth.OIDCIssuerConfig{
-			Name:           ic.Name,
-			IssuerURL:      ic.IssuerURL,
-			JWKSFile:       ic.JWKSFile,
-			Audiences:      ic.Audiences,
-			PrincipalClaim: ic.PrincipalClaim,
-			PrincipalKind:  ic.PrincipalKind,
-			KindClaim:      ic.KindClaim,
-			RequiredClaims: ic.RequiredClaims,
-			AllowedClaims:  ic.AllowedClaims,
-			ClockSkew:      ic.ClockSkew,
-			EagerDiscovery: ic.EagerDiscovery,
-		}
-	}
-	return out
-}
 
 // NodeConfig identifies this node in the cluster.
 type NodeConfig struct {

@@ -29,23 +29,6 @@
 //	                                   autonomous rebalancer subtracts
 //	                                   drained shards from the planner's
 //	                                   input set)
-//	tenant/<4-byte BE id>           -> TenantRecord (id=0 reserved for
-//	                                   the default-tenant sentinel and
-//	                                   never persisted)
-//	tenant_name_idx/<name>          -> 4-byte BE tenant_id (name → id
-//	                                   secondary index; the Config
-//	                                   server resolves create-vs-update
-//	                                   by reading this on the leader
-//	                                   before propose)
-//	tenant_dek/<4-byte BE tenant_id> -> TenantDEKRecord (per-tenant
-//	                                   data-encryption-key reference;
-//	                                   per-node TenantDEKResolver
-//	                                   SyncRead-iterates this on each
-//	                                   table notifier wake to refresh
-//	                                   the in-memory tenant_id→AEAD
-//	                                   map; the DEK plaintext never
-//	                                   leaves the resolving node's
-//	                                   process memory)
 //	auditlog/<8-byte BE raft_index> -> AuditLogRecord (append-only
 //	                                   config-change audit; written
 //	                                   in the same Batch as the
@@ -89,9 +72,6 @@ const (
 	lpOwnerPrefix         = "lpowner/"
 	lpTransferPrefix      = "lptransfer/"
 	rebalanceDrainPrefix  = "rebalance_drain/"
-	tenantPrefix          = "tenant/"
-	tenantNameIndexPrefix = "tenant_name_idx/"
-	tenantDEKPrefix       = "tenant_dek/"
 	auditLogPrefix        = "auditlog/"
 	caRootPrefix          = "caroot/"
 	joinTokenPrefix       = "jointoken/"
@@ -107,8 +87,6 @@ const (
 	RevisionTableLPOwners       = "lpowners"
 	RevisionTableLPTransfers    = "lptransfers"
 	RevisionTableRebalanceDrain = "rebalance_drain"
-	RevisionTableTenant         = "tenant"
-	RevisionTableTenantDEK      = "tenant_dek"
 	RevisionTableCARoot         = "caroot"
 	RevisionTableJoinToken      = "jointoken"
 	RevisionTablePlatformConfig = "platformconfig"
@@ -246,55 +224,6 @@ func RebalanceDrainKey(shardID uint64) []byte {
 	return append(out, buf[:]...)
 }
 
-// TenantPrefix returns the tenant/ namespace prefix. Used for forward
-// range iteration; rows sort in id order because the 4-byte BE encoding
-// of id follows the prefix.
-func TenantPrefix() []byte { return []byte(tenantPrefix) }
-
-// TenantKey returns tenant/<4-byte BE id>. Big-endian so lexicographic
-// byte order matches numeric id order. id==0 is the default-tenant
-// sentinel and must never be persisted (the FSM rejects it).
-func TenantKey(id uint32) []byte {
-	out := make([]byte, 0, len(tenantPrefix)+4)
-	out = append(out, tenantPrefix...)
-	var buf [4]byte
-	binary.BigEndian.PutUint32(buf[:], id)
-	return append(out, buf[:]...)
-}
-
-// TenantNameIndexPrefix returns the tenant_name_idx/ namespace prefix.
-// Used for iteration; the Config server scans this to resolve a
-// create-vs-update decision by name without loading every full
-// TenantRecord row.
-func TenantNameIndexPrefix() []byte { return []byte(tenantNameIndexPrefix) }
-
-// TenantNameIndexKey returns tenant_name_idx/<name>. Value is the
-// 4-byte BE tenant_id. Maintained by the UpsertTenant/DeleteTenant
-// apply arms; the FSM trusts the Config server to have validated
-// uniqueness via the read-then-CAS round-trip.
-func TenantNameIndexKey(name string) []byte {
-	out := make([]byte, 0, len(tenantNameIndexPrefix)+len(name))
-	out = append(out, tenantNameIndexPrefix...)
-	return append(out, name...)
-}
-
-// TenantDEKPrefix returns the tenant_dek/ namespace prefix. Used for
-// forward range iteration; rows sort in tenant_id order because the
-// 4-byte BE encoding of tenant_id follows the prefix.
-func TenantDEKPrefix() []byte { return []byte(tenantDEKPrefix) }
-
-// TenantDEKKey returns tenant_dek/<4-byte BE tenant_id>. Big-endian
-// so lexicographic byte order matches numeric id order. tenant_id==0
-// is the default-tenant sentinel and must never be persisted here —
-// the default tenant uses a built-in cluster-wide AEAD, not a
-// resolver-fetched DEK.
-func TenantDEKKey(tenantID uint32) []byte {
-	out := make([]byte, 0, len(tenantDEKPrefix)+4)
-	out = append(out, tenantDEKPrefix...)
-	var buf [4]byte
-	binary.BigEndian.PutUint32(buf[:], tenantID)
-	return append(out, buf[:]...)
-}
 
 // AuditLogPrefix returns the auditlog/ namespace prefix. Forward
 // range iteration yields rows in raft_index ascending order because

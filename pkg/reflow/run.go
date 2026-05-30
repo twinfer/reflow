@@ -29,7 +29,6 @@ import (
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	"github.com/twinfer/reflow/internal/ingress"
-	"github.com/twinfer/reflow/internal/ingress/quota"
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/secretstore"
 	hcvaultkms "github.com/twinfer/reflow/pkg/kms/hcvault"
@@ -145,18 +144,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	joinTokenNotifier := cluster.NewTableNotifier()
 	lpOwnersNotifier := cluster.NewTableNotifier()
 	rebalanceDrainNotifier := cluster.NewTableNotifier()
-	tenantNotifier := cluster.NewTableNotifier()
-	tenantDEKNotifier := cluster.NewTableNotifier()
 	platformConfigNotifier := cluster.NewTableNotifier()
-
-	// TenantDEKResolver constructed before HostConfig so the per-shard
-	// StoreFactory closures pick it up. defaultAEAD is nil today —
-	// tenant_id=0 (anonymous / single-tenant traffic) passes through
-	// the encstore wrapper as plaintext. Encryption-at-rest for tenant
-	// 0 would need a bootstrap KMS pointer; deferred until operators
-	// have a use case. RunReconciler is started further down, after
-	// engine.NewHost so the Reader adapter has a live *engine.Host.
-	tenantDEKs := secretstore.NewTenantDEKResolver(metricsRegisterer, logger, nil)
 
 	hcfg := engine.HostConfig{
 		NodeID:             cfg.Node.ID,
@@ -181,11 +169,8 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			JoinTokenTable:      joinTokenNotifier,
 			LPOwnersTable:       lpOwnersNotifier,
 			RebalanceDrainTable: rebalanceDrainNotifier,
-			TenantTable:         tenantNotifier,
-			TenantDEKTable:      tenantDEKNotifier,
 			PlatformConfigTable: platformConfigNotifier,
 		},
-		TenantDEKResolver: tenantDEKs,
 		Rebalance: rebalance.Config{
 			Mode:                       cfg.Rebalance.Mode,
 			MaxConcurrentTransfers:     cfg.Rebalance.MaxConcurrentTransfers,
@@ -338,10 +323,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		caRootNotifier:         caRootNotifier,
 		joinTokenNotifier:      joinTokenNotifier,
 		lpOwnersNotifier:       lpOwnersNotifier,
-		tenantNotifier:         tenantNotifier,
-		tenantDEKNotifier:      tenantDEKNotifier,
 		platformConfigNotifier: platformConfigNotifier,
-		tenantDEKs:             tenantDEKs,
 		logger:                 logger,
 	})
 	if herr != nil {
@@ -418,7 +400,6 @@ func startIngressListener(
 	mw func(http.Handler) http.Handler,
 	authzIc connect.Interceptor,
 	secrets *secretstore.Resolver,
-	enforcer quota.Enforcer,
 	metrics *observability.Metrics,
 	metricsRegisterer prometheus.Registerer,
 	logger *slog.Logger,
@@ -441,7 +422,6 @@ func startIngressListener(
 		Log:              logger,
 		Middleware:       mw,
 		AuthzInterceptor: authzIc,
-		Enforcer:         enforcer,
 	}
 	rt, err := ingress.Start(ctx, eh, icfg)
 	if err != nil {
@@ -480,10 +460,7 @@ type startupDeps struct {
 	caRootNotifier         *cluster.TableNotifier
 	joinTokenNotifier      *cluster.TableNotifier
 	lpOwnersNotifier       *cluster.TableNotifier
-	tenantNotifier         *cluster.TableNotifier
-	tenantDEKNotifier      *cluster.TableNotifier
 	platformConfigNotifier *cluster.TableNotifier
-	tenantDEKs             *secretstore.TenantDEKResolver
 	logger                 *slog.Logger
 }
 
@@ -797,36 +774,8 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		}
 	}
 
-	// TenantDEKResolver was constructed pre-HostConfig and handed to
-	// the encstore wrapper at the StoreFactory closures. The reconcile
-	// loop starts here so the Reader adapter has a live *engine.Host.
-	// Until the first reconcile completes, encstore.Lookup returns
-	// ErrTenantDEKUnavailable for any non-default tenant — apply path
-	// reads observe Unavailable instead of corruption.
-	go func() {
-		reader := tenantDEKReader{host: eh}
-		if rerr := d.tenantDEKs.RunReconciler(ctx, d.tenantDEKNotifier.Subscribe(), reader); rerr != nil && !errors.Is(rerr, context.Canceled) {
-			logger.Warn("reflow: tenant_dek reconcile loop exited", "err", rerr)
-		}
-	}()
-
-	// TenantTable wake drives the quota reconciler.
-	tenantWakeQuota := make(chan struct{}, 1)
-	go relayWake(ctx, d.tenantNotifier.Subscribe(), tenantWakeQuota)
-
-	// Construct the quota Manager before the ingress listener so the
-	// Enforcer can be threaded into ingress.Config. NoopEnforcer is the
-	// fallback when something downstream short-circuits.
-	quotaMgr := quota.New(metricsRegisterer, logger)
-	go func() {
-		reader := tenantReader{host: eh}
-		if rerr := quotaMgr.RunReconciler(ctx, tenantWakeQuota, reader, eh); rerr != nil && !errors.Is(rerr, context.Canceled) {
-			logger.Warn("reflow: quota reconcile loop exited", "err", rerr)
-		}
-	}()
-
 	multiNode := len(cfg.Cluster.Peers) > 1
-	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, authzInterceptor, secrets, quotaMgr, metrics, metricsRegisterer, logger)
+	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, authzInterceptor, secrets, metrics, metricsRegisterer, logger)
 	if err != nil {
 		if snapshotCxl != nil {
 			snapshotCxl()
@@ -932,63 +881,6 @@ func (r caRootReader) CARoots(ctx context.Context) ([]*enginev1.CARootRecord, ui
 		return nil, 0, err
 	}
 	return list.Records, list.TableRevision, nil
-}
-
-// tenantDEKReader is the Reader adapter the TenantDEKResolver uses
-// to pull the latest set of TenantDEKRecord rows from shard 0.
-type tenantDEKReader struct {
-	host *engine.Host
-}
-
-func (r tenantDEKReader) ListTenantDEKs(ctx context.Context) ([]*enginev1.TenantDEKRecord, uint64, error) {
-	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	list, err := r.host.TenantDEKs(readCtx)
-	if err != nil {
-		return nil, 0, err
-	}
-	return list.Records, list.TableRevision, nil
-}
-
-// relayWake forwards each receive on src to a non-blocking send on
-// every out channel. Used when a single TableNotifier needs to feed
-// multiple consumer goroutines (TableNotifier is single-subscriber
-// by design — see internal/engine/cluster/notifier.go — so the
-// fan-out lives at this layer where the consumers are wired). Each
-// out channel must be buffered-1 to preserve the coalesce-bursts
-// contract; the relay drops sends when the consumer hasn't yet
-// drained, identical to TableNotifier.Bump semantics. Exits on ctx
-// cancel.
-func relayWake(ctx context.Context, src <-chan struct{}, out ...chan<- struct{}) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-src:
-			for _, c := range out {
-				select {
-				case c <- struct{}{}:
-				default:
-				}
-			}
-		}
-	}
-}
-
-// tenantReader is the Reader adapter the TenantOIDCReconciler uses to
-// pull the latest set of TenantRecord rows from shard 0.
-type tenantReader struct {
-	host *engine.Host
-}
-
-func (r tenantReader) ListTenants(ctx context.Context) ([]*enginev1.TenantRecord, uint64, error) {
-	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	list, err := r.host.Tenants(readCtx)
-	if err != nil {
-		return nil, 0, err
-	}
-	return list.Tenants, list.TableRevision, nil
 }
 
 // partitionTableReader is the Reader adapter the PartitionTable

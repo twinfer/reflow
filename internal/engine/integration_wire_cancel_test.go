@@ -155,7 +155,7 @@ func TestWireDispatch_HTTP2_CancelInvocation(t *testing.T) {
 	_ = awaitSuspended(t, host, shardID, id, 10*time.Second)
 
 	// Build an ingress server and call CancelInvocation through it.
-	ingSrv := ingress.NewServer(host, nil, nil)
+	ingSrv := ingress.NewServer(host, nil)
 	cancelCtx, cancelCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelCancel()
 	resp, err := ingSrv.CancelInvocation(cancelCtx, connect.NewRequest(&ingressv1.CancelInvocationRequest{

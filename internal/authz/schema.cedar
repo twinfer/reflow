@@ -38,7 +38,6 @@ entity Anonymous;                        // no verified identity — open-ingres
 // leave resource unconstrained), so resource attributes are not yet read.
 entity SecretRecord        { tenant_id: Long, name: String };
 entity DeploymentRecord    { tenant_id: Long, name: String };
-entity TenantRecord        { tenant_id: Long };
 entity Invocation          { tenant_id: Long, service: String };
 entity PlatformConfig;                   // cluster-scoped sentinel resource
 
@@ -47,7 +46,6 @@ action IngressActions;          // data plane (open by default)
 action TenantConfigActions;     // tenant-config writes (tenant-scoped in PR5)
 action ConfigReadActions;       // tenant-config reads (tenant-scoped in PR5)
 action PlatformConfigActions;   // platform plane — operator only
-action TenantLifecycleActions;  // tenant-lifecycle plane — operator only
 action ClusterAdminActions;     // cluster topology / DR / rebalance — operator only
 action MeshActions;             // inter-node mesh — node only
 
@@ -89,15 +87,6 @@ action "ListJoinTokens"  in [Action::"PlatformConfigActions"] appliesTo { princi
 action "IssueOperator"            in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 action "UpsertClusterAuthzPolicy" in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 action "GetClusterAuthzPolicy"    in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
-
-// ===================== ClusterCtl: tenant-lifecycle (operator only) =====================
-action "UpsertTenant"    in [Action::"TenantLifecycleActions"] appliesTo { principal: [ClusterOperator], resource: TenantRecord };
-action "DeleteTenant"    in [Action::"TenantLifecycleActions"] appliesTo { principal: [ClusterOperator], resource: TenantRecord };
-action "ListTenants"     in [Action::"TenantLifecycleActions"] appliesTo { principal: [ClusterOperator], resource: TenantRecord };
-action "DescribeTenant"  in [Action::"TenantLifecycleActions"] appliesTo { principal: [ClusterOperator], resource: TenantRecord };
-action "UpsertTenantDEK" in [Action::"TenantLifecycleActions"] appliesTo { principal: [ClusterOperator], resource: TenantRecord };
-action "DeleteTenantDEK" in [Action::"TenantLifecycleActions"] appliesTo { principal: [ClusterOperator], resource: TenantRecord };
-action "ListTenantDEKs"  in [Action::"TenantLifecycleActions"] appliesTo { principal: [ClusterOperator], resource: TenantRecord };
 
 // ===================== ClusterCtl: cluster admin (operator only) =====================
 action "AddNode"         in [Action::"ClusterAdminActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };

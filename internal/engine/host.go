@@ -26,7 +26,6 @@ import (
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/storage"
-	"github.com/twinfer/reflow/internal/storage/encstore"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -169,13 +168,6 @@ type HostConfig struct {
 	// onBecomeLeader. pkg/reflow.withDefaults defaults Mode to "off",
 	// so the production default is also disabled.
 	Rebalance rebalance.Config
-
-	// TenantDEKResolver, when non-nil, wraps every per-shard
-	// storage.Store with internal/storage/encstore.NewStore so values
-	// under LP-prefixed namespaces are AEAD-encrypted at rest with the
-	// tenant's data-encryption key. Nil disables the wrapper for the
-	// whole host (single-tenant deployments, tests, chaos suites).
-	TenantDEKResolver encstore.Resolver
 
 	// Audit configures the cluster-FSM config-change audit log
 	// (internal/audit). Logger nil disables slog fan-out; the durable
@@ -500,10 +492,7 @@ func (h *Host) StartMetadataShard() (*MetadataRunner, error) {
 		if oerr != nil {
 			return nil, oerr
 		}
-		if h.cfg.TenantDEKResolver == nil {
-			return raw, nil
-		}
-		return encstore.NewStore(raw, h.cfg.TenantDEKResolver), nil
+		return raw, nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("host: open metadata store: %w", err)
@@ -803,43 +792,6 @@ func (h *Host) RebalanceDrains(ctx context.Context) (*cluster.RebalanceDrainList
 	return out, nil
 }
 
-// Tenants SyncReads every TenantRecord from shard 0 plus the table's
-// CAS revision. Used by the Config server's Upsert/Delete RPCs to
-// pre-allocate ids + check the table revision in one round-trip, and
-// by per-node tenant reconcilers in later PRs.
-func (h *Host) Tenants(ctx context.Context) (*cluster.TenantList, error) {
-	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupTenants{})
-	if err != nil {
-		return nil, err
-	}
-	if res == nil {
-		return &cluster.TenantList{}, nil
-	}
-	out, ok := res.(*cluster.TenantList)
-	if !ok {
-		return nil, fmt.Errorf("host: Tenants: unexpected lookup type %T", res)
-	}
-	return out, nil
-}
-
-// TenantDEKs SyncReads every TenantDEKRecord from shard 0 plus the
-// table's CAS revision. Used by the per-node
-// internal/secretstore.TenantDEKResolver on each TableNotifier wake
-// and by the cluster admin RPCs.
-func (h *Host) TenantDEKs(ctx context.Context) (*cluster.TenantDEKList, error) {
-	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupTenantDEKs{})
-	if err != nil {
-		return nil, err
-	}
-	if res == nil {
-		return &cluster.TenantDEKList{}, nil
-	}
-	out, ok := res.(*cluster.TenantDEKList)
-	if !ok {
-		return nil, fmt.Errorf("host: TenantDEKs: unexpected lookup type %T", res)
-	}
-	return out, nil
-}
 
 // AuditLog SyncReads AuditLogRecord rows from shard 0's AuditLogTable
 // matching the supplied filter (see cluster.LookupAuditLog field doc
@@ -857,25 +809,6 @@ func (h *Host) AuditLog(ctx context.Context, q cluster.LookupAuditLog) (*cluster
 	out, ok := res.(*cluster.AuditLogList)
 	if !ok {
 		return nil, fmt.Errorf("host: AuditLog: unexpected lookup type %T", res)
-	}
-	return out, nil
-}
-
-// TenantByName SyncReads the TenantRecord for the named tenant via the
-// shard-0 TenantNameIndexTable, or nil when no row exists. Used by the
-// Config server's UpsertTenant flow to resolve create-vs-update without
-// scanning the entire TenantTable.
-func (h *Host) TenantByName(ctx context.Context, name string) (*enginev1.TenantRecord, error) {
-	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupTenantByName{Name: name})
-	if err != nil {
-		return nil, err
-	}
-	if res == nil {
-		return nil, nil
-	}
-	out, ok := res.(*enginev1.TenantRecord)
-	if !ok {
-		return nil, fmt.Errorf("host: TenantByName: unexpected lookup type %T", res)
 	}
 	return out, nil
 }
@@ -936,10 +869,7 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		if oerr != nil {
 			return nil, oerr
 		}
-		if h.cfg.TenantDEKResolver == nil {
-			return raw, nil
-		}
-		return encstore.NewStore(raw, h.cfg.TenantDEKResolver), nil
+		return raw, nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("host: open partition store: %w", err)
@@ -1286,21 +1216,6 @@ func (h *Host) LookupInvocationStatus(ctx context.Context, shardID uint64, id *e
 	return s, nil
 }
 
-// LookupActiveInvocationCount returns the number of non-terminal
-// (Scheduled/Invoked/Suspended) invocations for tenantID on the given
-// partition shard. Source of truth for the ingress quota reconciler's
-// drift correction.
-func (h *Host) LookupActiveInvocationCount(ctx context.Context, shardID uint64, tenantID uint32) (int64, error) {
-	res, err := h.nh.SyncRead(ctx, shardID, LookupActiveInvocationCount{TenantID: tenantID})
-	if err != nil {
-		return 0, err
-	}
-	n, ok := res.(int64)
-	if !ok {
-		return 0, fmt.Errorf("lookup returned unexpected type %T", res)
-	}
-	return n, nil
-}
 
 // NumPartitionShards returns the routing modulus the host was started
 // with. Quota and other cross-shard reconcilers iterate 1..N when fanning

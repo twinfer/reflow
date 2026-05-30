@@ -2,7 +2,6 @@ package engine
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -2362,15 +2361,6 @@ type LookupWorkflowRun struct {
 
 func (LookupWorkflowRun) isLookup() {}
 
-// LookupActiveInvocationCount returns the number of non-terminal invocation
-// statuses (Scheduled, Invoked, Suspended) on this partition for the given
-// tenant. Free and Completed rows are excluded. Result is int64. Used by
-// the ingress quota reconciler to overwrite per-tenant in-flight counters
-// with the authoritative cross-partition sum.
-type LookupActiveInvocationCount struct{ TenantID uint32 }
-
-func (LookupActiveInvocationCount) isLookup() {}
-
 // LookupState resolves a single state value. Result is StateLookupResult
 // so callers can distinguish "absent" (Present=false) from "present-but-
 // empty" (Present=true, len(Value)==0).
@@ -2419,24 +2409,6 @@ func (p *Partition) Lookup(query any) (any, error) {
 	case LookupWorkflowRun:
 		lp := keys.LPFromPartitionKey(routing.PartitionKey(q.Service, q.WorkflowKey))
 		return (tables.WorkflowRunTable{S: store}).Get(lp, keys.TenantDefault, q.Service, q.WorkflowKey)
-	case LookupActiveInvocationCount:
-		var n int64
-		err := (tables.InvocationTable{S: store}).ScanAll(context.Background(), func(tenant uint32, _ *enginev1.InvocationId, s *enginev1.InvocationStatus) error {
-			if tenant != q.TenantID {
-				return nil
-			}
-			switch s.GetStatus().(type) {
-			case *enginev1.InvocationStatus_Scheduled,
-				*enginev1.InvocationStatus_Invoked,
-				*enginev1.InvocationStatus_Suspended:
-				n++
-			}
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-		return n, nil
 	default:
 		return nil, fmt.Errorf("partition: unknown lookup type %T", query)
 	}

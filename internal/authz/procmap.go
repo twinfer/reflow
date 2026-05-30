@@ -20,7 +20,6 @@ const (
 	groupTenantConfig    = "TenantConfigActions"
 	groupConfigRead      = "ConfigReadActions"
 	groupPlatformConfig  = "PlatformConfigActions"
-	groupTenantLifecycle = "TenantLifecycleActions"
 	groupClusterAdmin    = "ClusterAdminActions"
 	groupMesh            = "MeshActions"
 )
@@ -81,15 +80,6 @@ var procMap = map[string]procEntry{
 	configv1connect.ConfigIssueOperatorProcedure:            {"IssueOperator", []string{groupPlatformConfig}},
 	configv1connect.ConfigUpsertClusterAuthzPolicyProcedure: {"UpsertClusterAuthzPolicy", []string{groupPlatformConfig}},
 	configv1connect.ConfigGetClusterAuthzPolicyProcedure:    {"GetClusterAuthzPolicy", []string{groupPlatformConfig}},
-
-	// ----- ClusterCtl: tenant-lifecycle (operator only) -----
-	clusterctlv1connect.ClusterCtlUpsertTenantProcedure:    {"UpsertTenant", []string{groupTenantLifecycle}},
-	clusterctlv1connect.ClusterCtlDeleteTenantProcedure:    {"DeleteTenant", []string{groupTenantLifecycle}},
-	clusterctlv1connect.ClusterCtlListTenantsProcedure:     {"ListTenants", []string{groupTenantLifecycle}},
-	clusterctlv1connect.ClusterCtlDescribeTenantProcedure:  {"DescribeTenant", []string{groupTenantLifecycle}},
-	clusterctlv1connect.ClusterCtlUpsertTenantDEKProcedure: {"UpsertTenantDEK", []string{groupTenantLifecycle}},
-	clusterctlv1connect.ClusterCtlDeleteTenantDEKProcedure: {"DeleteTenantDEK", []string{groupTenantLifecycle}},
-	clusterctlv1connect.ClusterCtlListTenantDEKsProcedure:  {"ListTenantDEKs", []string{groupTenantLifecycle}},
 
 	// ----- ClusterCtl: cluster admin (operator only) -----
 	clusterctlv1connect.ClusterCtlAddNodeProcedure:         {"AddNode", []string{groupClusterAdmin}},

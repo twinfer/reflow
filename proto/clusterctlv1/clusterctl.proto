@@ -96,53 +96,6 @@ service ClusterCtl {
   // if_table_revision_eq; mismatch returns FailedPrecondition.
   // Leader-only.
   rpc RebalanceDrain(RebalanceDrainRequest) returns (RebalanceDrainResponse);
-
-  // UpsertTenant inserts or replaces one row in shard 0's TenantTable.
-  // The server pre-allocates record.id by reading the current
-  // TenantList: if a row with record.name already exists, it reuses
-  // that id (update path); otherwise it allocates max(existing.id)+1
-  // (create path). On create, the assigned id is returned in
-  // UpsertTenantResponse.tenant_id. CAS via if_table_revision_eq
-  // (caller must pass the revision they read in the same
-  // ListTenants call so a racing operator's concurrent edit
-  // reproducibly conflicts). Leader-only. Tenants live alongside
-  // membership/partitions on the ClusterCtl surface because they are
-  // a platform-admin concern; tenant-scoped app config (deployments,
-  // event sources, webhooks, secrets) lives on the Config service.
-  rpc UpsertTenant(UpsertTenantRequest) returns (UpsertTenantResponse);
-  // DeleteTenant removes one row from shard 0's TenantTable by id.
-  // Same CAS semantics as UpsertTenant. Delete-of-absent succeeds
-  // (and bumps the revision so the operator's CLI sees the proposal
-  // landed). Does NOT cascade-delete the tenant's data (invocations,
-  // journal entries, DEK record) — operators clean up via a follow-up
-  // TenantDEK delete + per-tenant range-delete pass. Leader-only.
-  rpc DeleteTenant(DeleteTenantRequest) returns (DeleteTenantResponse);
-  // ListTenants returns every TenantRecord plus the table's CAS
-  // revision in one SyncRead. Reads from any peer.
-  rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse);
-  // DescribeTenant returns one TenantRecord by id, or CodeNotFound.
-  // Reads via SyncRead.
-  rpc DescribeTenant(DescribeTenantRequest) returns (DescribeTenantResponse);
-
-  // UpsertTenantDEK inserts or replaces one row in shard 0's
-  // TenantDEKTable. The DEK plaintext never traverses Raft — the
-  // record carries a gocloud.dev/blob URI for the ciphertext and a
-  // Tink KMS URI for the KEK that unwraps it. Per-node
-  // internal/secretstore.TenantDEKResolver fetches + decrypts at
-  // reconcile time and materializes a tink.AEAD primitive cached
-  // under record.tenant_id. CAS via if_table_revision_eq. Leader-only.
-  // Server rejects record.tenant_id == 0 (the default tenant uses a
-  // built-in cluster-wide AEAD, not a TenantDEKTable row).
-  rpc UpsertTenantDEK(UpsertTenantDEKRequest) returns (UpsertTenantDEKResponse);
-  // DeleteTenantDEK removes one row from shard 0's TenantDEKTable.
-  // Same CAS semantics as UpsertTenantDEK. Delete-of-absent succeeds
-  // (and bumps the revision). This is the second of the two-step
-  // tenant-wipe procedure — running it makes the tenant's data
-  // permanently unrecoverable (the DEK is gone). Leader-only.
-  rpc DeleteTenantDEK(DeleteTenantDEKRequest) returns (DeleteTenantDEKResponse);
-  // ListTenantDEKs returns every TenantDEKRecord plus the table's CAS
-  // revision in one SyncRead. Reads from any peer.
-  rpc ListTenantDEKs(ListTenantDEKsRequest) returns (ListTenantDEKsResponse);
 }
 
 message AddNodeRequest {
@@ -285,68 +238,6 @@ message RebalanceDrainResponse {
   // table_revision is the post-apply RebalanceDrainTable revision so
   // callers can chain CAS roundtrips.
   uint64 table_revision = 1;
-}
-
-// UpsertTenantRequest carries one TenantRecord plus an optional CAS
-// guard. record.id may be 0 (the server allocates an id from
-// max(existing.id)+1 before propose) or non-zero (update). name must
-// be non-empty.
-message UpsertTenantRequest {
-  reflow.engine.v1.TenantRecord record = 1;
-  uint64 if_table_revision_eq = 2;
-}
-// UpsertTenantResponse echoes the assigned tenant_id (always populated,
-// even on update) and the post-apply table revision.
-message UpsertTenantResponse {
-  uint32 tenant_id = 1;
-  uint64 table_revision = 2;
-}
-
-message DeleteTenantRequest {
-  uint32 tenant_id = 1;
-  uint64 if_table_revision_eq = 2;
-}
-message DeleteTenantResponse {
-  uint64 table_revision = 1;
-}
-
-message ListTenantsRequest {}
-message ListTenantsResponse {
-  repeated reflow.engine.v1.TenantRecord tenants = 1;
-  uint64 table_revision = 2;
-}
-
-message DescribeTenantRequest {
-  uint32 tenant_id = 1;
-}
-message DescribeTenantResponse {
-  reflow.engine.v1.TenantRecord tenant = 1;
-}
-
-// UpsertTenantDEKRequest carries one TenantDEKRecord plus an optional
-// CAS guard. record.tenant_id must be non-zero (the FSM rejects 0).
-// record.name is the AAD used for KEK→DEK unwrap; rotation writes a
-// new record with a new name and a new ciphertext blob.
-message UpsertTenantDEKRequest {
-  reflow.engine.v1.TenantDEKRecord record = 1;
-  uint64 if_table_revision_eq = 2;
-}
-message UpsertTenantDEKResponse {
-  uint64 table_revision = 1;
-}
-
-message DeleteTenantDEKRequest {
-  uint32 tenant_id = 1;
-  uint64 if_table_revision_eq = 2;
-}
-message DeleteTenantDEKResponse {
-  uint64 table_revision = 1;
-}
-
-message ListTenantDEKsRequest {}
-message ListTenantDEKsResponse {
-  repeated reflow.engine.v1.TenantDEKRecord tenant_deks = 1;
-  uint64 table_revision = 2;
 }
 
 // LeaderHint is attached as a connect.Error detail on

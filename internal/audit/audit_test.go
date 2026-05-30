@@ -22,38 +22,6 @@ func TestKindAndTarget_AllAuditableCommands(t *testing.T) {
 		wantTarget string
 	}{
 		{
-			name: "UpsertTenant uses record.name as target",
-			cmd: &enginev1.Command{Kind: &enginev1.Command_UpsertTenant{
-				UpsertTenant: &enginev1.UpsertTenant{Record: &enginev1.TenantRecord{Id: 42, Name: "acme"}},
-			}},
-			wantKind:   "UpsertTenant",
-			wantTarget: "acme",
-		},
-		{
-			name: "DeleteTenant stringifies id",
-			cmd: &enginev1.Command{Kind: &enginev1.Command_DeleteTenant{
-				DeleteTenant: &enginev1.DeleteTenant{Id: 42},
-			}},
-			wantKind:   "DeleteTenant",
-			wantTarget: "42",
-		},
-		{
-			name: "UpsertTenantDEK uses record.name",
-			cmd: &enginev1.Command{Kind: &enginev1.Command_UpsertTenantDek{
-				UpsertTenantDek: &enginev1.UpsertTenantDEK{Record: &enginev1.TenantDEKRecord{TenantId: 7, Name: "dek-v1"}},
-			}},
-			wantKind:   "UpsertTenantDEK",
-			wantTarget: "dek-v1",
-		},
-		{
-			name: "DeleteTenantDEK stringifies tenant_id",
-			cmd: &enginev1.Command{Kind: &enginev1.Command_DeleteTenantDek{
-				DeleteTenantDek: &enginev1.DeleteTenantDEK{TenantId: 7},
-			}},
-			wantKind:   "DeleteTenantDEK",
-			wantTarget: "7",
-		},
-		{
 			name: "UpsertSecret uses record.name",
 			cmd: &enginev1.Command{Kind: &enginev1.Command_UpsertSecret{
 				UpsertSecret: &enginev1.UpsertSecret{Record: &enginev1.SecretRecord{Name: "stripe-webhook-key"}},

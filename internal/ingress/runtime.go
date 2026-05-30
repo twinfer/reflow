@@ -12,7 +12,6 @@ import (
 
 	"github.com/twinfer/reflow/internal/connectserver"
 	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/internal/ingress/quota"
 	"github.com/twinfer/reflow/proto/ingressv1/ingressv1connect"
 )
 
@@ -49,11 +48,6 @@ type Config struct {
 	// middleware (the same instance passed in Middleware); Start does
 	// not double-wrap.
 	ExtraRoutes func(srv *Server) []connectserver.Route
-	// Enforcer gates SubmitInvocation against per-tenant in-flight
-	// quotas. When nil, NewServer installs a NoopEnforcer (no
-	// enforcement). Wired by pkg/reflow to the quota.Manager whose
-	// reconciler tracks the TenantTable.
-	Enforcer quota.Enforcer
 }
 
 // Runtime is a started ingress server. Close it to stop the listener
@@ -83,7 +77,7 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	srv := NewServer(host, cfg.Log, cfg.Enforcer)
+	srv := NewServer(host, cfg.Log)
 	path, handler := ingressv1connect.NewIngressHandler(srv,
 		connect.WithInterceptors(cfg.AuthzInterceptor, withDefaultDeadline(defaultLookupTimeout)),
 	)

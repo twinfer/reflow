@@ -19,7 +19,6 @@ const (
 
 	TypeSecretRecord        cedar.EntityType = "SecretRecord"
 	TypeDeploymentRecord    cedar.EntityType = "DeploymentRecord"
-	TypeTenantRecord        cedar.EntityType = "TenantRecord"
 	TypeInvocation          cedar.EntityType = "Invocation"
 	TypePlatformConfig      cedar.EntityType = "PlatformConfig"
 )

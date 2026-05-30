@@ -96,14 +96,6 @@ func KindAndTarget(cmd *enginev1.Command) (kind, target string) {
 		return "UpsertSecret", k.UpsertSecret.GetRecord().GetName()
 	case *enginev1.Command_DeleteSecret:
 		return "DeleteSecret", k.DeleteSecret.GetName()
-	case *enginev1.Command_UpsertTenant:
-		return "UpsertTenant", k.UpsertTenant.GetRecord().GetName()
-	case *enginev1.Command_DeleteTenant:
-		return "DeleteTenant", tenantIDTarget(k.DeleteTenant.GetId())
-	case *enginev1.Command_UpsertTenantDek:
-		return "UpsertTenantDEK", k.UpsertTenantDek.GetRecord().GetName()
-	case *enginev1.Command_DeleteTenantDek:
-		return "DeleteTenantDEK", tenantIDTarget(k.DeleteTenantDek.GetTenantId())
 	case *enginev1.Command_UpsertLpOwner:
 		return "UpsertLPOwner", lpTarget(k.UpsertLpOwner.GetRecord().GetLp())
 	case *enginev1.Command_DeleteLpOwner:
@@ -143,7 +135,6 @@ func KindAndTarget(cmd *enginev1.Command) (kind, target string) {
 // without pulling in strconv at every call site. Targets are
 // human-facing identifiers; the audit consumer wants "42" not "0x2A".
 
-func tenantIDTarget(id uint32) string { return uint32String(id) }
 func lpTarget(lp uint32) string       { return uint32String(lp) }
 func nodeIDTarget(id uint64) string   { return uint64String(id) }
 func shardIDTarget(id uint64) string  { return uint64String(id) }

@@ -318,74 +318,8 @@ func (t PlatformConfigTable) Put(b storage.Batch, rec *enginev1.PlatformConfigRe
 	return b.Set(PlatformConfigKey(), buf)
 }
 
-// EventSourceTable persists EventSourceRecord rows keyed by name. Lives
-// on shard 0 alongside DeploymentTable. The Reconciler on every node
-// SyncRead-iterates this table on each TableNotifier wake to converge
-// the local dispatcher set.
-type EventSourceTable struct{ S storage.Reader }
-
-func (t EventSourceTable) Get(name string) (*enginev1.EventSourceRecord, error) {
-	val, closer, err := t.S.Get(EventSourceKey(name))
-	if err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer closer.Close()
-	var rec enginev1.EventSourceRecord
-	if err := proto.Unmarshal(val, &rec); err != nil {
-		return nil, err
-	}
-	return &rec, nil
-}
-
-func (t EventSourceTable) Put(b storage.Batch, rec *enginev1.EventSourceRecord) error {
-	if rec.GetName() == "" {
-		return errors.New("EventSourceTable.Put: empty name")
-	}
-	buf, err := proto.Marshal(rec)
-	if err != nil {
-		return err
-	}
-	return b.Set(EventSourceKey(rec.GetName()), buf)
-}
-
-// Delete removes the row for name. Delete-of-absent is a no-op (Pebble's
-// Delete tolerates missing keys); callers still bump the table revision
-// so the operator's CAS-roundtrip CLI observes progress.
-func (t EventSourceTable) Delete(b storage.Batch, name string) error {
-	if name == "" {
-		return errors.New("EventSourceTable.Delete: empty name")
-	}
-	return b.Delete(EventSourceKey(name))
-}
-
-// List returns every EventSourceRecord in lexicographic name order.
-func (t EventSourceTable) List() ([]*enginev1.EventSourceRecord, error) {
-	prefix := EventSourcePrefix()
-	upper := prefixUpperBound(prefix)
-	iter, err := t.S.NewIter(prefix, upper)
-	if err != nil {
-		return nil, err
-	}
-	defer iter.Close()
-	var out []*enginev1.EventSourceRecord
-	for ok := iter.First(); ok; ok = iter.Next() {
-		if !bytes.HasPrefix(iter.Key(), prefix) {
-			continue
-		}
-		var rec enginev1.EventSourceRecord
-		if err := proto.Unmarshal(iter.Value(), &rec); err != nil {
-			return nil, err
-		}
-		out = append(out, &rec)
-	}
-	return out, iter.Error()
-}
-
 // WebhookSourceTable persists WebhookSourceRecord rows keyed by name.
-// Lives on shard 0 alongside EventSourceTable. The Reconciler on every
+// Lives on shard 0 alongside DeploymentTable. The Reconciler on every
 // node SyncRead-iterates this table on each TableNotifier wake to
 // converge the local route-snapshot.
 type WebhookSourceTable struct{ S storage.Reader }

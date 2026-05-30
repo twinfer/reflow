@@ -15,7 +15,6 @@
 //	partition_table                 -> PartitionTable singleton
 //	deployment/<deployment_id ascii> -> DeploymentRecord
 //	deployment_idx/<service>\x00<handler> -> deployment_id (ascii)
-//	eventsrc/<name>                 -> EventSourceRecord
 //	webhooksrc/<name>               -> WebhookSourceRecord
 //	secret/<name>                   -> SecretRecord
 //	lpowner/<4-byte BE lp>          -> LPOwnerRecord (lp → shard_id
@@ -87,7 +86,6 @@ const (
 	platformConfigKey     = "platform_config"
 	deploymentPrefix      = "deployment/"
 	deploymentIndexPrefix = "deployment_idx/"
-	eventSourcePrefix     = "eventsrc/"
 	webhookSourcePrefix   = "webhooksrc/"
 	secretPrefix          = "secret/"
 	lpOwnerPrefix         = "lpowner/"
@@ -107,7 +105,6 @@ const (
 // upgrade-incompat change.
 const (
 	RevisionTableDeployment     = "deployment"
-	RevisionTableEventSource    = "eventsrc"
 	RevisionTableWebhookSource  = "webhooksrc"
 	RevisionTableSecret         = "secret"
 	RevisionTableLPOwners       = "lpowners"
@@ -163,18 +160,6 @@ func DeploymentIndexKey(service, handler string) []byte {
 	out = append(out, service...)
 	out = append(out, 0x00)
 	return append(out, handler...)
-}
-
-// EventSourcePrefix returns the eventsrc/ namespace prefix. Used for
-// iteration via a forward range scan.
-func EventSourcePrefix() []byte { return []byte(eventSourcePrefix) }
-
-// EventSourceKey returns eventsrc/<name>. Name uniqueness is enforced
-// by the admin RPC validator; the apply arm trusts it.
-func EventSourceKey(name string) []byte {
-	out := make([]byte, 0, len(eventSourcePrefix)+len(name))
-	out = append(out, eventSourcePrefix...)
-	return append(out, name...)
 }
 
 // WebhookSourcePrefix returns the webhooksrc/ namespace prefix.

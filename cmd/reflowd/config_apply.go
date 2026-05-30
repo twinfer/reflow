@@ -41,7 +41,7 @@ type resourceMetadata struct {
 // (per Reconcile's sourceConfigsEqual check) but still bumps the
 // revision because the FSM bumps unconditionally on Upsert.
 //
-// Supported kinds: EventSource, WebhookSource, Tenant.
+// Supported kinds: WebhookSource, Tenant.
 func cmdApply(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)
@@ -76,8 +76,6 @@ func cmdApply(ctx context.Context, args []string) error {
 
 func applyOneDoc(ctx context.Context, cli *reflowclient.Client, doc resourceDoc) error {
 	switch doc.Kind {
-	case "EventSource":
-		return applyEventSource(ctx, cli, doc)
 	case "WebhookSource":
 		return applyWebhookSource(ctx, cli, doc)
 	case "Tenant":
@@ -85,7 +83,7 @@ func applyOneDoc(ctx context.Context, cli *reflowclient.Client, doc resourceDoc)
 	case "":
 		return errors.New("missing kind")
 	default:
-		return fmt.Errorf("unknown kind %q (supported: EventSource, WebhookSource, Tenant)", doc.Kind)
+		return fmt.Errorf("unknown kind %q (supported: WebhookSource, Tenant)", doc.Kind)
 	}
 }
 
@@ -174,57 +172,6 @@ func decodeWebhookSourceSpec(spec map[string]any) (*enginev1.WebhookSourceRecord
 	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
 	if err := opts.Unmarshal(jsonBytes, &rec); err != nil {
 		return nil, fmt.Errorf("decode WebhookSource spec: %w", err)
-	}
-	return &rec, nil
-}
-
-func applyEventSource(ctx context.Context, cli *reflowclient.Client, doc resourceDoc) error {
-	if doc.Metadata.Name == "" {
-		return errors.New("metadata.name is required")
-	}
-	rec, err := decodeEventSourceSpec(doc.Spec)
-	if err != nil {
-		return err
-	}
-	// metadata.name is the canonical key; stamp it onto the record so
-	// the spec doesn't need to repeat it.
-	rec.Name = doc.Metadata.Name
-
-	// Fetch the current revision so the CAS guard is fresh. A separate
-	// operator editing the same table between our read and write will
-	// reproducibly conflict.
-	list, err := cli.Config.ListEventSources(ctx, connect.NewRequest(&configv1.ListEventSourcesRequest{}))
-	if err != nil {
-		return fmt.Errorf("read revision: %w", err)
-	}
-	resp, err := cli.Config.UpsertEventSource(ctx, connect.NewRequest(&configv1.UpsertEventSourceRequest{
-		Record:            rec,
-		IfTableRevisionEq: list.Msg.GetTableRevision(),
-	}))
-	if err != nil {
-		return err
-	}
-	fmt.Printf("eventsource upserted (name=%s, table_revision=%d)\n",
-		rec.GetName(), resp.Msg.GetTableRevision())
-	return nil
-}
-
-// decodeEventSourceSpec round-trips the spec map through JSON +
-// protojson so the proto definition stays the single source of truth
-// for field names + types. sigs.k8s.io/yaml already does this for
-// top-level YAML; we do the same trick for spec.
-func decodeEventSourceSpec(spec map[string]any) (*enginev1.EventSourceRecord, error) {
-	if spec == nil {
-		return nil, errors.New("spec is required")
-	}
-	jsonBytes, err := json.Marshal(spec)
-	if err != nil {
-		return nil, fmt.Errorf("marshal spec: %w", err)
-	}
-	var rec enginev1.EventSourceRecord
-	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
-	if err := opts.Unmarshal(jsonBytes, &rec); err != nil {
-		return nil, fmt.Errorf("decode EventSource spec: %w", err)
 	}
 	return &rec, nil
 }

@@ -45,11 +45,65 @@ lint:
 
 # Named goroutine roots for reverse_trace ("which entry can reach this?").
 # apply_path: the raft state-machine apply loop. dispatchActions runs on the
-# runner goroutine after Update returns Actions. leadership: dragonboat
-# RaftEventListener callback that drives the two-phase leader handoff.
+# runner goroutine after Update returns Actions. leader_services: the three
+# services PartitionRunner.onBecomeLeader spawns when this node wins leadership.
+# leadership: dragonboat RaftEventListener callback that drives the two-phase
+# leader handoff. ingress_rpc / admin_rpc / delivery_rpc: Connect/gRPC handlers
+# — every external API call lands in one of these. ingress_http: REST gateway
+# handlers. webhook_ingress: vendor webhook receiver. background_loops:
+# long-running goroutines off the request path (rebalancer, session watcher,
+# event source dispatcher).
 entry_points:
   apply_path:
     - "(*github.com/twinfer/reflow/internal/engine.Partition).Update"
     - "(*github.com/twinfer/reflow/internal/engine.PartitionRunner).dispatchActions"
+  leader_services:
+    - "(*github.com/twinfer/reflow/internal/engine.TimerService).Run"
+    - "(*github.com/twinfer/reflow/internal/engine.OutboxService).Run"
+    - "(*github.com/twinfer/reflow/internal/engine.WorkflowReapService).Run"
   leadership:
     - "(*github.com/twinfer/reflow/internal/engine.Leadership).OnRaftLeaderChange"
+  ingress_rpc:
+    - "(*github.com/twinfer/reflow/internal/ingress.Server).SubmitInvocation"
+    - "(*github.com/twinfer/reflow/internal/ingress.Server).DescribeInvocation"
+    - "(*github.com/twinfer/reflow/internal/ingress.Server).GetObjectState"
+    - "(*github.com/twinfer/reflow/internal/ingress.Server).ListPartitions"
+  admin_rpc:
+    - "(*github.com/twinfer/reflow/internal/admin.Server).AddNode"
+    - "(*github.com/twinfer/reflow/internal/admin.Server).SelfJoin"
+    - "(*github.com/twinfer/reflow/internal/admin.Server).RemoveNode"
+    - "(*github.com/twinfer/reflow/internal/admin.Server).ListNodes"
+    - "(*github.com/twinfer/reflow/internal/admin.Server).ListPartitions"
+    - "(*github.com/twinfer/reflow/internal/admin.Server).CreateSnapshot"
+    - "(*github.com/twinfer/reflow/internal/admin.Server).DeleteSnapshot"
+    - "(*github.com/twinfer/reflow/internal/admin.Server).ListSnapshots"
+    - "(*github.com/twinfer/reflow/internal/admin.Server).RegisterDeployment"
+    - "(*github.com/twinfer/reflow/internal/admin.Server).UpsertEventSource"
+    - "(*github.com/twinfer/reflow/internal/admin.Server).DeleteEventSource"
+    - "(*github.com/twinfer/reflow/internal/admin.Server).ListEventSources"
+    - "(*github.com/twinfer/reflow/internal/admin.Server).UpsertWebhookSource"
+    - "(*github.com/twinfer/reflow/internal/admin.Server).DeleteWebhookSource"
+    - "(*github.com/twinfer/reflow/internal/admin.Server).ListWebhookSources"
+    - "(*github.com/twinfer/reflow/internal/admin.Server).UpsertSecret"
+    - "(*github.com/twinfer/reflow/internal/admin.Server).DeleteSecret"
+    - "(*github.com/twinfer/reflow/internal/admin.Server).ListSecrets"
+  delivery_rpc:
+    - "(*github.com/twinfer/reflow/internal/engine/delivery.Server).Deliver"
+  ingress_http:
+    - "(*github.com/twinfer/reflow/internal/ingress/http.restHandlers).call"
+    - "(*github.com/twinfer/reflow/internal/ingress/http.restHandlers).callKeyed"
+    - "(*github.com/twinfer/reflow/internal/ingress/http.restHandlers).send"
+    - "(*github.com/twinfer/reflow/internal/ingress/http.restHandlers).sendKeyed"
+    - "(*github.com/twinfer/reflow/internal/ingress/http.restHandlers).attach"
+    - "(*github.com/twinfer/reflow/internal/ingress/http.restHandlers).output"
+    - "(*github.com/twinfer/reflow/internal/ingress/http.restHandlers).cancel"
+    - "(*github.com/twinfer/reflow/internal/ingress/http.restHandlers).resolveAwakeable"
+    - "(*github.com/twinfer/reflow/internal/ingress/http.restHandlers).resolveWorkflowPromise"
+    - "(*github.com/twinfer/reflow/internal/ingress/http.restHandlers).getState"
+  webhook_ingress:
+    - "(*github.com/twinfer/reflow/internal/ingress/webhook.Manager).serve"
+  background_loops:
+    - "(*github.com/twinfer/reflow/internal/engine.metadataRebalancer).failureLoop"
+    - "(*github.com/twinfer/reflow/internal/engine.metadataRebalancer).stepLoop"
+    - "(*github.com/twinfer/reflow/internal/engine/invoker.Invoker).watchSession"
+    - "(*github.com/twinfer/reflow/internal/ingress/eventsource.Dispatcher).Run"

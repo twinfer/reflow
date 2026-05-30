@@ -25,11 +25,11 @@ import (
 //	reflowd config get --kind=<k> --name=<n>
 //
 // kind is case-insensitive in the positional form to match `kubectl
-// get <kind>` ergonomics ("eventsource" → EventSource).
+// get <kind>` ergonomics ("webhook" → WebhookSource).
 func cmdGet(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("get", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)
-	kindFlag := fs.String("kind", "", "resource kind (EventSource|WebhookSource)")
+	kindFlag := fs.String("kind", "", "resource kind (WebhookSource)")
 	nameFlag := fs.String("name", "", "resource name")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -49,38 +49,21 @@ func cmdGet(ctx context.Context, args []string) error {
 	}
 	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
 		switch kind {
-		case "EventSource":
-			return getEventSource(ctx, cli, name)
 		case "WebhookSource":
 			return getWebhookSource(ctx, cli, name)
 		default:
-			return fmt.Errorf("unknown kind %q (supported: EventSource, WebhookSource)", kind)
+			return fmt.Errorf("unknown kind %q (supported: WebhookSource)", kind)
 		}
 	})
 }
 
 func normalizeKind(s string) string {
 	switch strings.ToLower(s) {
-	case "eventsource", "eventsources":
-		return "EventSource"
 	case "webhooksource", "webhooksources", "webhook", "webhooks":
 		return "WebhookSource"
 	default:
 		return s
 	}
-}
-
-func getEventSource(ctx context.Context, cli *reflowclient.Client, name string) error {
-	resp, err := cli.Config.ListEventSources(ctx, connect.NewRequest(&configv1.ListEventSourcesRequest{}))
-	if err != nil {
-		return err
-	}
-	for _, rec := range resp.Msg.GetSources() {
-		if rec.GetName() == name {
-			return writeEventSourceDoc(os.Stdout, rec)
-		}
-	}
-	return fmt.Errorf("EventSource %q: not found", name)
 }
 
 func getWebhookSource(ctx context.Context, cli *reflowclient.Client, name string) error {

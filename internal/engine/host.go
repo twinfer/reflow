@@ -675,29 +675,9 @@ func (h *Host) Deployments(ctx context.Context) (*cluster.DeploymentList, error)
 	return out, nil
 }
 
-// EventSources performs a linearizable read of shard 0's
-// EventSourceTable, returning every row plus the table's CAS revision.
-// Used by the admin List/Upsert/Delete RPCs and by the per-node
-// Reconciler. Returns an empty list with revision 0 before the table
-// has ever been written.
-func (h *Host) EventSources(ctx context.Context) (*cluster.EventSourceList, error) {
-	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupEventSources{})
-	if err != nil {
-		return nil, err
-	}
-	if res == nil {
-		return &cluster.EventSourceList{}, nil
-	}
-	out, ok := res.(*cluster.EventSourceList)
-	if !ok {
-		return nil, fmt.Errorf("host: EventSources: unexpected lookup type %T", res)
-	}
-	return out, nil
-}
-
 // WebhookSources SyncReads every WebhookSourceRecord from shard 0 plus
-// the table's CAS revision. Symmetric to EventSources; used by the
-// admin RPCs and the per-node webhook Reconciler.
+// the table's CAS revision. Used by the admin RPCs and the per-node
+// webhook Reconciler.
 func (h *Host) WebhookSources(ctx context.Context) (*cluster.WebhookSourceList, error) {
 	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupWebhookSources{})
 	if err != nil {

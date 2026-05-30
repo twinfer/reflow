@@ -63,21 +63,6 @@ service Config {
   // for active references.
   rpc DeleteDeployment(DeleteDeploymentRequest) returns (DeleteDeploymentResponse);
 
-  // UpsertEventSource inserts or replaces one row in shard 0's
-  // EventSourceTable. if_table_revision_eq=0 disables CAS; non-zero
-  // requires the table revision to match (CodeFailedPrecondition on
-  // mismatch). Returns the post-apply table revision. Leader-only.
-  rpc UpsertEventSource(UpsertEventSourceRequest) returns (UpsertEventSourceResponse);
-  // DeleteEventSource removes one row from shard 0's EventSourceTable.
-  // Same CAS semantics as UpsertEventSource. Delete-of-absent
-  // succeeds (and bumps the revision). Leader-only.
-  rpc DeleteEventSource(DeleteEventSourceRequest) returns (DeleteEventSourceResponse);
-  // ListEventSources returns the current EventSourceTable rows plus
-  // the table revision. Reads via SyncRead against shard 0 — any
-  // peer can serve. Operators use the returned revision as
-  // if_table_revision_eq on subsequent Upsert/Delete calls.
-  rpc ListEventSources(ListEventSourcesRequest) returns (ListEventSourcesResponse);
-
   // UpsertWebhookSource / DeleteWebhookSource / ListWebhookSources
   // mirror the event-source trio against shard 0's
   // WebhookSourceTable. The record's secret_name references a row in
@@ -190,30 +175,6 @@ message DeleteDeploymentRequest {
 }
 message DeleteDeploymentResponse {
   uint64 table_revision = 1;
-}
-
-// UpsertEventSourceRequest carries one EventSourceRecord plus an
-// optional CAS guard. if_table_revision_eq=0 disables CAS.
-message UpsertEventSourceRequest {
-  reflow.engine.v1.EventSourceRecord record = 1;
-  uint64 if_table_revision_eq = 2;
-}
-message UpsertEventSourceResponse {
-  uint64 table_revision = 1;
-}
-
-message DeleteEventSourceRequest {
-  string name = 1;
-  uint64 if_table_revision_eq = 2;
-}
-message DeleteEventSourceResponse {
-  uint64 table_revision = 1;
-}
-
-message ListEventSourcesRequest {}
-message ListEventSourcesResponse {
-  repeated reflow.engine.v1.EventSourceRecord sources = 1;
-  uint64 table_revision = 2;
 }
 
 // Cluster authz policy (PlatformConfigRecord.cluster_authz_policy_text).

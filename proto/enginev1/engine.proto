@@ -161,17 +161,6 @@ message Command {
     // workflow_run row, and the invocation's inv/journal/signal_*
     // rows. Accepted only by shardID >= 1.
     ReapWorkflow reap_workflow = 20;
-    // UpsertEventSource inserts or replaces one row in shard 0's
-    // EventSourceTable. Honors Envelope.precondition.if_table_revision_eq
-    // when set. Apply arm writes the row, bumps the table revision
-    // singleton, and fires the EventSourceTable notifier so each node's
-    // local Reconciler wakes and converges. Accepted only by shardID=0.
-    UpsertEventSource upsert_event_source = 21;
-    // DeleteEventSource removes one row from shard 0's EventSourceTable.
-    // Same CAS + notifier semantics as UpsertEventSource. Delete-of-absent
-    // is a no-op (still bumps the revision so the operator's CAS-roundtrip
-    // CLI observes progress). Accepted only by shardID=0.
-    DeleteEventSource delete_event_source = 22;
     // UpsertWebhookSource / DeleteWebhookSource carry shard-0 webhook
     // source config — mirror the event-source pair (CAS via
     // Envelope.precondition, notifier fan-out via the WebhookSourceTable
@@ -1198,72 +1187,6 @@ message DeleteDeployment {
   string id = 1;
 }
 
-// EventSourceRecord is the persisted shape of one broker→handler binding
-// in shard 0's EventSourceTable. Mirrors
-// internal/ingress/eventsource.SourceConfig 1:1; the per-node Reconciler
-// converts the proto back into SourceConfig on apply.
-//
-// Backend.settings is the untyped bag passed to the factory; broker
-// credentials live here (operators wanting credentials off-cluster use
-// the Phase-C webhook-style secret_ref pattern in a follow-up).
-message EventSourceRecord {
-  string name = 1;
-  string type = 2;
-  string topic = 3;
-  string service = 4;
-  string handler = 5;
-  EventSourceExtractor object_key = 6;
-  EventSourceExtractor idempotency = 7;
-  EventSourceRetry retry = 8;
-  EventSourceDLQ dlq = 9;
-  EventSourceBackend backend = 10;
-}
-
-// EventSourceExtractor selects how a per-message string is pulled from
-// an inbound broker message. Maps to eventsource.ExtractorConfig.
-message EventSourceExtractor {
-  string from = 1;  // uuid | const | header | json
-  string value = 2;
-}
-
-// EventSourceRetry tunes the exponential-backoff retry middleware. ms
-// intervals are int64 milliseconds; multiplier is a float64.
-message EventSourceRetry {
-  uint32 max_retries = 1;
-  int64 initial_interval_ms = 2;
-  int64 max_interval_ms = 3;
-  double multiplier = 4;
-}
-
-// EventSourceDLQ wires the PoisonQueue middleware. Empty topic disables
-// the DLQ entirely.
-message EventSourceDLQ {
-  string topic = 1;
-  EventSourceRequeuer requeuer = 2;
-}
-
-// EventSourceRequeuer configures the optional components/requeuer.
-message EventSourceRequeuer {
-  bool enabled = 1;
-  int64 delay_ms = 2;
-  uint32 max_tries = 3;
-}
-
-// EventSourceBackend is the untyped settings bag passed to the factory
-// (Kafka/NATS/SQS/...).
-message EventSourceBackend {
-  map<string, string> settings = 1;
-}
-
-// UpsertEventSource is the Command_UpsertEventSource payload. Proposed
-// by the admin UpsertEventSource RPC (or by the bootstrap-seed path on
-// shard-0 leader gain when the table is empty and a config file lists
-// sources). Apply arm CAS-checks Envelope.precondition, writes
-// EventSourceTable[record.name] = record, and bumps the table revision.
-message UpsertEventSource {
-  EventSourceRecord record = 1;
-}
-
 // PlatformConfigRecord is shard 0's cluster-wide platform-config singleton
 // (one row). It carries fleet policy every node reconciles locally. v1 holds
 // only the Cedar cluster authz policy text; the other platform knobs from SAD
@@ -1277,14 +1200,6 @@ message PlatformConfigRecord {
 // PlatformConfigRecord singleton (last-writer-wins under CAS).
 message UpsertPlatformConfig {
   PlatformConfigRecord record = 1;
-}
-
-// DeleteEventSource is the Command_DeleteEventSource payload. Apply arm
-// CAS-checks Envelope.precondition, removes EventSourceTable[name],
-// and bumps the table revision (even when the row was absent — the
-// revision bump is the operator's signal that the proposal landed).
-message DeleteEventSource {
-  string name = 1;
 }
 
 // WebhookSourceRecord is the persisted shape of one webhook source in

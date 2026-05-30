@@ -25,27 +25,24 @@ import (
 //
 // --kind selects one of:
 //
-//	EventSource    — dumps every EventSourceTable row.
 //	WebhookSource  — dumps every WebhookSourceTable row.
-//	all            — dumps every cluster-managed table in stable order
-//	                 (EventSource then WebhookSource). Good for backup.
+//	all            — dumps every cluster-managed table in stable order.
+//	                 Good for backup.
 func cmdExport(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)
-	kind := fs.String("kind", "EventSource", "resource kind to export (EventSource|WebhookSource|all)")
+	kind := fs.String("kind", "WebhookSource", "resource kind to export (WebhookSource|all)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
 		switch *kind {
-		case "EventSource":
-			return exportEventSources(ctx, cli, os.Stdout)
 		case "WebhookSource":
 			return exportWebhookSources(ctx, cli, os.Stdout)
 		case "all":
 			return exportAllKinds(ctx, cli, os.Stdout)
 		default:
-			return fmt.Errorf("unknown kind %q (supported: EventSource, WebhookSource, all)", *kind)
+			return fmt.Errorf("unknown kind %q (supported: WebhookSource, all)", *kind)
 		}
 	})
 }
@@ -63,7 +60,6 @@ func exportAllKinds(ctx context.Context, cli *reflowclient.Client, w io.Writer) 
 		name string
 		run  func(context.Context, *reflowclient.Client, io.Writer) error
 	}{
-		{"EventSource", exportEventSources},
 		{"WebhookSource", exportWebhookSources},
 	}
 	for _, e := range exporters {
@@ -107,29 +103,6 @@ func (c *captureWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 func (c *captureWriter) bytes() []byte { return c.buf }
-
-func exportEventSources(ctx context.Context, cli *reflowclient.Client, w io.Writer) error {
-	resp, err := cli.Config.ListEventSources(ctx, connect.NewRequest(&configv1.ListEventSourcesRequest{}))
-	if err != nil {
-		return err
-	}
-	first := true
-	for _, rec := range resp.Msg.GetSources() {
-		if !first {
-			if _, err := fmt.Fprintln(w, "---"); err != nil {
-				return err
-			}
-		}
-		first = false
-		if err := writeEventSourceDoc(w, rec); err != nil {
-			return err
-		}
-	}
-	if first {
-		return errEmpty
-	}
-	return nil
-}
 
 func exportWebhookSources(ctx context.Context, cli *reflowclient.Client, w io.Writer) error {
 	resp, err := cli.Config.ListWebhookSources(ctx, connect.NewRequest(&configv1.ListWebhookSourcesRequest{}))
@@ -182,35 +155,3 @@ func writeWebhookSourceDoc(w io.Writer, rec *enginev1.WebhookSourceRecord) error
 	return nil
 }
 
-func writeEventSourceDoc(w io.Writer, rec *enginev1.EventSourceRecord) error {
-	specJSON, err := protojson.MarshalOptions{
-		EmitUnpopulated: false,
-		UseProtoNames:   true,
-	}.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("marshal record: %w", err)
-	}
-	var specMap map[string]any
-	if err := json.Unmarshal(specJSON, &specMap); err != nil {
-		return fmt.Errorf("decode record json: %w", err)
-	}
-	// The "name" field lives on metadata.name in the export envelope,
-	// not on spec — strip it out of spec to avoid duplication after a
-	// round-trip apply.
-	delete(specMap, "name")
-	doc := map[string]any{
-		"kind":     "EventSource",
-		"metadata": map[string]any{"name": rec.GetName()},
-		"spec":     specMap,
-	}
-	out, err := yaml.Marshal(doc)
-	if err != nil {
-		return fmt.Errorf("marshal yaml: %w", err)
-	}
-	// yaml.Marshal already terminates with a newline; trim trailing
-	// runs to keep the document separator clean.
-	if _, err := io.WriteString(w, strings.TrimRight(string(out), "\n")+"\n"); err != nil {
-		return err
-	}
-	return nil
-}

@@ -63,7 +63,6 @@ type Config struct {
 // applyResult.notify.
 type Notifiers struct {
 	PartitionTable      *TableNotifier
-	EventSourceTable    *TableNotifier
 	WebhookSourceTable  *TableNotifier
 	SecretTable         *TableNotifier
 	LPOwnersTable       *TableNotifier
@@ -310,10 +309,6 @@ func (f *FSM) applyCommand(
 		return f.applyRegisterDeployment(batch, env, k.RegisterDeployment, raftIndex)
 	case *enginev1.Command_DeleteDeployment:
 		return f.applyDeleteDeployment(batch, env, k.DeleteDeployment, raftIndex)
-	case *enginev1.Command_UpsertEventSource:
-		return f.applyUpsertEventSource(batch, env, k.UpsertEventSource, raftIndex)
-	case *enginev1.Command_DeleteEventSource:
-		return f.applyDeleteEventSource(batch, env, k.DeleteEventSource, raftIndex)
 	case *enginev1.Command_UpsertPlatformConfig:
 		return f.applyUpsertPlatformConfig(batch, env, k.UpsertPlatformConfig, raftIndex)
 	case *enginev1.Command_UpsertWebhookSource:
@@ -500,39 +495,6 @@ func (f *FSM) applyDeleteDeployment(
 	return &applyResult{}, nil
 }
 
-// applyUpsertEventSource writes the EventSourceRecord and bumps the
-// table's CAS revision. Honors Envelope.precondition: on mismatch
-// returns (nil, nil) so Update stamps ResultValueFailedPrecondition.
-// Fires Notifiers.EventSourceTable post-commit via the returned slice.
-func (f *FSM) applyUpsertEventSource(
-	batch storage.Batch,
-	env *enginev1.Envelope,
-	cmd *enginev1.UpsertEventSource,
-	raftIndex uint64,
-) (*applyResult, error) {
-	rec := cmd.GetRecord()
-	if rec == nil || rec.GetName() == "" {
-		f.cfg.Log.Warn("cluster: UpsertEventSource missing record or name; ignoring",
-			"raft_index", raftIndex)
-		return &applyResult{}, nil
-	}
-	ok, err := f.checkPrecondition(batch, env, RevisionTableEventSource)
-	if err != nil {
-		return nil, fmt.Errorf("cluster: load eventsrc revision: %w", err)
-	}
-	if !ok {
-		return nil, nil
-	}
-	if err := (EventSourceTable{S: batch}).Put(batch, rec); err != nil {
-		return nil, fmt.Errorf("cluster: write event source: %w", err)
-	}
-	nowMs := env.GetHeader().GetCreatedAtMs()
-	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableEventSource, nowMs); err != nil {
-		return nil, fmt.Errorf("cluster: bump eventsrc revision: %w", err)
-	}
-	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.EventSourceTable}}, nil
-}
-
 // applyUpsertPlatformConfig replaces the PlatformConfigRecord singleton and
 // bumps the table's CAS revision. Honors Envelope.precondition: on mismatch
 // returns (nil, nil) so Update stamps ResultValueFailedPrecondition. Fires
@@ -567,42 +529,9 @@ func (f *FSM) applyUpsertPlatformConfig(
 	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.PlatformConfigTable}}, nil
 }
 
-// applyDeleteEventSource removes the named row (no-op if absent) and
-// bumps the table revision. Same CAS semantics as Upsert. The revision
-// bump happens even on delete-of-absent so the operator's CAS-roundtrip
-// CLI observes that the proposal landed.
-func (f *FSM) applyDeleteEventSource(
-	batch storage.Batch,
-	env *enginev1.Envelope,
-	cmd *enginev1.DeleteEventSource,
-	raftIndex uint64,
-) (*applyResult, error) {
-	name := cmd.GetName()
-	if name == "" {
-		f.cfg.Log.Warn("cluster: DeleteEventSource missing name; ignoring",
-			"raft_index", raftIndex)
-		return &applyResult{}, nil
-	}
-	ok, err := f.checkPrecondition(batch, env, RevisionTableEventSource)
-	if err != nil {
-		return nil, fmt.Errorf("cluster: load eventsrc revision: %w", err)
-	}
-	if !ok {
-		return nil, nil
-	}
-	if err := (EventSourceTable{S: batch}).Delete(batch, name); err != nil {
-		return nil, fmt.Errorf("cluster: delete event source: %w", err)
-	}
-	nowMs := env.GetHeader().GetCreatedAtMs()
-	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableEventSource, nowMs); err != nil {
-		return nil, fmt.Errorf("cluster: bump eventsrc revision: %w", err)
-	}
-	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.EventSourceTable}}, nil
-}
-
 // applyUpsertWebhookSource writes the WebhookSourceRecord and bumps
-// the table revision. CAS + notifier semantics mirror
-// applyUpsertEventSource exactly.
+// the table revision. CAS + notifier semantics mirror the other
+// shard-0 config tables exactly.
 func (f *FSM) applyUpsertWebhookSource(
 	batch storage.Batch,
 	env *enginev1.Envelope,
@@ -1749,12 +1678,6 @@ type (
 	// a record lookup; saves callers a second SyncRead.
 	LookupHandlerInfo struct{ Service, Handler string }
 
-	// LookupEventSources returns *EventSourceList — every
-	// EventSourceRecord on shard 0 plus the table's CAS revision in one
-	// SyncRead. The Reconciler calls this on each TableNotifier wake to
-	// converge local dispatcher state.
-	LookupEventSources struct{}
-
 	// LookupWebhookSources returns *WebhookSourceList — every
 	// WebhookSourceRecord on shard 0 plus the table's CAS revision in
 	// one SyncRead. The Reconciler calls this on each TableNotifier wake.
@@ -1836,14 +1759,6 @@ type (
 // CAS revision, atomic w.r.t. the read snapshot.
 type DeploymentList struct {
 	Records       []*enginev1.DeploymentRecord
-	TableRevision uint64
-}
-
-// EventSourceList bundles every row in EventSourceTable with the
-// table's CAS revision, atomic w.r.t. the read snapshot (single
-// IndexedBatch view).
-type EventSourceList struct {
-	Sources       []*enginev1.EventSourceRecord
 	TableRevision uint64
 }
 
@@ -1994,16 +1909,6 @@ func (f *FSM) Lookup(query any) (any, error) {
 			return nil, err
 		}
 		return &DeploymentList{Records: records, TableRevision: rev}, nil
-	case LookupEventSources:
-		sources, err := (EventSourceTable{S: store}).List()
-		if err != nil {
-			return nil, err
-		}
-		rev, err := (RevisionTable{S: store}).Get(RevisionTableEventSource)
-		if err != nil {
-			return nil, err
-		}
-		return &EventSourceList{Sources: sources, TableRevision: rev}, nil
 	case LookupPlatformConfig:
 		rec, err := (PlatformConfigTable{S: store}).Get()
 		if err != nil {

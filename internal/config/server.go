@@ -37,7 +37,6 @@ import (
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/cluster"
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
-	"github.com/twinfer/reflow/internal/ingress/eventsource"
 	"github.com/twinfer/reflow/pkg/webhook"
 	configv1 "github.com/twinfer/reflow/proto/configv1"
 	"github.com/twinfer/reflow/proto/configv1/configv1connect"
@@ -380,97 +379,6 @@ func discoverConnect(ctx context.Context, rawURL string, plaintextH2C bool, sign
 	return resp.Msg, nil
 }
 
-// UpsertEventSource inserts or replaces one row in shard 0's
-// EventSourceTable. Validates the record, then proposes
-// Command_UpsertEventSource with the operator-supplied CAS guard. After
-// the proposal lands, returns the new table revision (re-reads via
-// SyncRead — the FSM bumps the revision on apply, but the proposer
-// has no direct view of post-apply state).
-func (s *Server) UpsertEventSource(ctx context.Context, req *connect.Request[configv1.UpsertEventSourceRequest]) (*connect.Response[configv1.UpsertEventSourceResponse], error) {
-	if err := s.requireLeader(); err != nil {
-		return nil, err
-	}
-	rec := req.Msg.GetRecord()
-	if rec == nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("config: record required"))
-	}
-	if err := validateEventSourceRecord(rec); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	cmd := &enginev1.Command{
-		Kind: &enginev1.Command_UpsertEventSource{
-			UpsertEventSource: &enginev1.UpsertEventSource{Record: rec},
-		},
-	}
-	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
-	defer cancel()
-	if err := s.proposeCAS(callCtx, cmd, req.Msg.GetIfTableRevisionEq()); err != nil {
-		return nil, err
-	}
-	newRev, err := s.readEventSourceRevision(callCtx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal,
-			fmt.Errorf("config: read post-apply revision: %w", err))
-	}
-	return connect.NewResponse(&configv1.UpsertEventSourceResponse{TableRevision: newRev}), nil
-}
-
-// DeleteEventSource removes the named row. CAS via if_table_revision_eq.
-// Delete-of-absent still bumps the revision so the operator's CLI sees
-// the proposal landed.
-func (s *Server) DeleteEventSource(ctx context.Context, req *connect.Request[configv1.DeleteEventSourceRequest]) (*connect.Response[configv1.DeleteEventSourceResponse], error) {
-	if err := s.requireLeader(); err != nil {
-		return nil, err
-	}
-	name := req.Msg.GetName()
-	if name == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("config: name required"))
-	}
-	cmd := &enginev1.Command{
-		Kind: &enginev1.Command_DeleteEventSource{
-			DeleteEventSource: &enginev1.DeleteEventSource{Name: name},
-		},
-	}
-	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
-	defer cancel()
-	if err := s.proposeCAS(callCtx, cmd, req.Msg.GetIfTableRevisionEq()); err != nil {
-		return nil, err
-	}
-	newRev, err := s.readEventSourceRevision(callCtx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal,
-			fmt.Errorf("config: read post-apply revision: %w", err))
-	}
-	return connect.NewResponse(&configv1.DeleteEventSourceResponse{TableRevision: newRev}), nil
-}
-
-// ListEventSources returns every EventSourceRecord plus the table's
-// current CAS revision. No leader gate — SyncRead routes to the local
-// shard-0 replica, so any peer can serve.
-func (s *Server) ListEventSources(ctx context.Context, _ *connect.Request[configv1.ListEventSourcesRequest]) (*connect.Response[configv1.ListEventSourcesResponse], error) {
-	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
-	defer cancel()
-	list, err := s.host.EventSources(callCtx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable,
-			fmt.Errorf("config: read event sources: %w", err))
-	}
-	return connect.NewResponse(&configv1.ListEventSourcesResponse{
-		Sources:       list.Sources,
-		TableRevision: list.TableRevision,
-	}), nil
-}
-
-// readEventSourceRevision is a SyncRead helper used by Upsert/Delete to
-// echo the post-apply revision back to the operator.
-func (s *Server) readEventSourceRevision(ctx context.Context) (uint64, error) {
-	list, err := s.host.EventSources(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return list.TableRevision, nil
-}
-
 // UpsertClusterAuthzPolicy validates policy_text against the Cedar schema
 // (layer 1) and, on success, proposes it as the cluster-wide
 // PlatformConfigRecord. An invalid policy is rejected at upload
@@ -529,64 +437,6 @@ func (s *Server) GetClusterAuthzPolicy(ctx context.Context, _ *connect.Request[c
 		PolicyText:    text,
 		TableRevision: res.TableRevision,
 	}), nil
-}
-
-// AutoSeedEventSource is the in-process bootstrap entrypoint for
-// pkg/reflow/run.go's seed loop. Same body as UpsertEventSource minus
-// the leader gate (callers wait for leadership themselves) and pinned
-// to if_table_revision_eq=0 (only succeeds when the table is empty,
-// so a racing operator-Apply at the same instant gets the conflict
-// instead of silently losing).
-func (s *Server) AutoSeedEventSource(ctx context.Context, rec *enginev1.EventSourceRecord) error {
-	if rec == nil {
-		return errors.New("config: record required")
-	}
-	if err := validateEventSourceRecord(rec); err != nil {
-		return err
-	}
-	cmd := &enginev1.Command{
-		Kind: &enginev1.Command_UpsertEventSource{
-			UpsertEventSource: &enginev1.UpsertEventSource{Record: rec},
-		},
-	}
-	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
-	defer cancel()
-	return s.proposeCAS(callCtx, cmd, 0)
-}
-
-// validateEventSourceRecord enforces the same minimum-field rules the
-// in-process Manager applies to a koanf-loaded SourceConfig. The
-// factory-type check is the only one that can change at runtime (an
-// operator could `import _ "custom/factory"` from their handler binary),
-// so it lives here rather than in the proto definition.
-func validateEventSourceRecord(rec *enginev1.EventSourceRecord) error {
-	if rec.GetName() == "" {
-		return errors.New("name is required")
-	}
-	if rec.GetType() == "" {
-		return errors.New("type is required")
-	}
-	if !eventsource.HasFactory(rec.GetType()) {
-		return fmt.Errorf("unknown backend type %q (registered: %v)",
-			rec.GetType(), eventsource.RegisteredTypes())
-	}
-	if rec.GetTopic() == "" {
-		return errors.New("topic is required")
-	}
-	if rec.GetService() == "" {
-		return errors.New("service is required")
-	}
-	if rec.GetHandler() == "" {
-		return errors.New("handler is required")
-	}
-	backend := eventsource.BackendConfig{}
-	if b := rec.GetBackend(); b != nil {
-		backend.Settings = b.GetSettings()
-	}
-	if err := eventsource.Validate(rec.GetType(), rec.GetTopic(), backend); err != nil {
-		return err
-	}
-	return nil
 }
 
 // UpsertWebhookSource validates the record (incl. path uniqueness

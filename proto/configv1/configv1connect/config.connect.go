@@ -70,14 +70,6 @@ const (
 	ConfigDescribeDeploymentProcedure = "/reflow.config.v1.Config/DescribeDeployment"
 	// ConfigDeleteDeploymentProcedure is the fully-qualified name of the Config's DeleteDeployment RPC.
 	ConfigDeleteDeploymentProcedure = "/reflow.config.v1.Config/DeleteDeployment"
-	// ConfigUpsertEventSourceProcedure is the fully-qualified name of the Config's UpsertEventSource
-	// RPC.
-	ConfigUpsertEventSourceProcedure = "/reflow.config.v1.Config/UpsertEventSource"
-	// ConfigDeleteEventSourceProcedure is the fully-qualified name of the Config's DeleteEventSource
-	// RPC.
-	ConfigDeleteEventSourceProcedure = "/reflow.config.v1.Config/DeleteEventSource"
-	// ConfigListEventSourcesProcedure is the fully-qualified name of the Config's ListEventSources RPC.
-	ConfigListEventSourcesProcedure = "/reflow.config.v1.Config/ListEventSources"
 	// ConfigUpsertWebhookSourceProcedure is the fully-qualified name of the Config's
 	// UpsertWebhookSource RPC.
 	ConfigUpsertWebhookSourceProcedure = "/reflow.config.v1.Config/UpsertWebhookSource"
@@ -144,20 +136,6 @@ type ConfigClient interface {
 	// risk" acknowledgement; reflow does not currently scan partitions
 	// for active references.
 	DeleteDeployment(context.Context, *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error)
-	// UpsertEventSource inserts or replaces one row in shard 0's
-	// EventSourceTable. if_table_revision_eq=0 disables CAS; non-zero
-	// requires the table revision to match (CodeFailedPrecondition on
-	// mismatch). Returns the post-apply table revision. Leader-only.
-	UpsertEventSource(context.Context, *connect.Request[configv1.UpsertEventSourceRequest]) (*connect.Response[configv1.UpsertEventSourceResponse], error)
-	// DeleteEventSource removes one row from shard 0's EventSourceTable.
-	// Same CAS semantics as UpsertEventSource. Delete-of-absent
-	// succeeds (and bumps the revision). Leader-only.
-	DeleteEventSource(context.Context, *connect.Request[configv1.DeleteEventSourceRequest]) (*connect.Response[configv1.DeleteEventSourceResponse], error)
-	// ListEventSources returns the current EventSourceTable rows plus
-	// the table revision. Reads via SyncRead against shard 0 — any
-	// peer can serve. Operators use the returned revision as
-	// if_table_revision_eq on subsequent Upsert/Delete calls.
-	ListEventSources(context.Context, *connect.Request[configv1.ListEventSourcesRequest]) (*connect.Response[configv1.ListEventSourcesResponse], error)
 	// UpsertWebhookSource / DeleteWebhookSource / ListWebhookSources
 	// mirror the event-source trio against shard 0's
 	// WebhookSourceTable. The record's secret_name references a row in
@@ -257,24 +235,6 @@ func NewConfigClient(httpClient connect.HTTPClient, baseURL string, opts ...conn
 			httpClient,
 			baseURL+ConfigDeleteDeploymentProcedure,
 			connect.WithSchema(configMethods.ByName("DeleteDeployment")),
-			connect.WithClientOptions(opts...),
-		),
-		upsertEventSource: connect.NewClient[configv1.UpsertEventSourceRequest, configv1.UpsertEventSourceResponse](
-			httpClient,
-			baseURL+ConfigUpsertEventSourceProcedure,
-			connect.WithSchema(configMethods.ByName("UpsertEventSource")),
-			connect.WithClientOptions(opts...),
-		),
-		deleteEventSource: connect.NewClient[configv1.DeleteEventSourceRequest, configv1.DeleteEventSourceResponse](
-			httpClient,
-			baseURL+ConfigDeleteEventSourceProcedure,
-			connect.WithSchema(configMethods.ByName("DeleteEventSource")),
-			connect.WithClientOptions(opts...),
-		),
-		listEventSources: connect.NewClient[configv1.ListEventSourcesRequest, configv1.ListEventSourcesResponse](
-			httpClient,
-			baseURL+ConfigListEventSourcesProcedure,
-			connect.WithSchema(configMethods.ByName("ListEventSources")),
 			connect.WithClientOptions(opts...),
 		),
 		upsertWebhookSource: connect.NewClient[configv1.UpsertWebhookSourceRequest, configv1.UpsertWebhookSourceResponse](
@@ -382,9 +342,6 @@ type configClient struct {
 	listDeployments          *connect.Client[configv1.ListDeploymentsRequest, configv1.ListDeploymentsResponse]
 	describeDeployment       *connect.Client[configv1.DescribeDeploymentRequest, configv1.DescribeDeploymentResponse]
 	deleteDeployment         *connect.Client[configv1.DeleteDeploymentRequest, configv1.DeleteDeploymentResponse]
-	upsertEventSource        *connect.Client[configv1.UpsertEventSourceRequest, configv1.UpsertEventSourceResponse]
-	deleteEventSource        *connect.Client[configv1.DeleteEventSourceRequest, configv1.DeleteEventSourceResponse]
-	listEventSources         *connect.Client[configv1.ListEventSourcesRequest, configv1.ListEventSourcesResponse]
 	upsertWebhookSource      *connect.Client[configv1.UpsertWebhookSourceRequest, configv1.UpsertWebhookSourceResponse]
 	deleteWebhookSource      *connect.Client[configv1.DeleteWebhookSourceRequest, configv1.DeleteWebhookSourceResponse]
 	listWebhookSources       *connect.Client[configv1.ListWebhookSourcesRequest, configv1.ListWebhookSourcesResponse]
@@ -421,21 +378,6 @@ func (c *configClient) DescribeDeployment(ctx context.Context, req *connect.Requ
 // DeleteDeployment calls reflow.config.v1.Config.DeleteDeployment.
 func (c *configClient) DeleteDeployment(ctx context.Context, req *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error) {
 	return c.deleteDeployment.CallUnary(ctx, req)
-}
-
-// UpsertEventSource calls reflow.config.v1.Config.UpsertEventSource.
-func (c *configClient) UpsertEventSource(ctx context.Context, req *connect.Request[configv1.UpsertEventSourceRequest]) (*connect.Response[configv1.UpsertEventSourceResponse], error) {
-	return c.upsertEventSource.CallUnary(ctx, req)
-}
-
-// DeleteEventSource calls reflow.config.v1.Config.DeleteEventSource.
-func (c *configClient) DeleteEventSource(ctx context.Context, req *connect.Request[configv1.DeleteEventSourceRequest]) (*connect.Response[configv1.DeleteEventSourceResponse], error) {
-	return c.deleteEventSource.CallUnary(ctx, req)
-}
-
-// ListEventSources calls reflow.config.v1.Config.ListEventSources.
-func (c *configClient) ListEventSources(ctx context.Context, req *connect.Request[configv1.ListEventSourcesRequest]) (*connect.Response[configv1.ListEventSourcesResponse], error) {
-	return c.listEventSources.CallUnary(ctx, req)
 }
 
 // UpsertWebhookSource calls reflow.config.v1.Config.UpsertWebhookSource.
@@ -545,20 +487,6 @@ type ConfigHandler interface {
 	// risk" acknowledgement; reflow does not currently scan partitions
 	// for active references.
 	DeleteDeployment(context.Context, *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error)
-	// UpsertEventSource inserts or replaces one row in shard 0's
-	// EventSourceTable. if_table_revision_eq=0 disables CAS; non-zero
-	// requires the table revision to match (CodeFailedPrecondition on
-	// mismatch). Returns the post-apply table revision. Leader-only.
-	UpsertEventSource(context.Context, *connect.Request[configv1.UpsertEventSourceRequest]) (*connect.Response[configv1.UpsertEventSourceResponse], error)
-	// DeleteEventSource removes one row from shard 0's EventSourceTable.
-	// Same CAS semantics as UpsertEventSource. Delete-of-absent
-	// succeeds (and bumps the revision). Leader-only.
-	DeleteEventSource(context.Context, *connect.Request[configv1.DeleteEventSourceRequest]) (*connect.Response[configv1.DeleteEventSourceResponse], error)
-	// ListEventSources returns the current EventSourceTable rows plus
-	// the table revision. Reads via SyncRead against shard 0 — any
-	// peer can serve. Operators use the returned revision as
-	// if_table_revision_eq on subsequent Upsert/Delete calls.
-	ListEventSources(context.Context, *connect.Request[configv1.ListEventSourcesRequest]) (*connect.Response[configv1.ListEventSourcesResponse], error)
 	// UpsertWebhookSource / DeleteWebhookSource / ListWebhookSources
 	// mirror the event-source trio against shard 0's
 	// WebhookSourceTable. The record's secret_name references a row in
@@ -654,24 +582,6 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 		ConfigDeleteDeploymentProcedure,
 		svc.DeleteDeployment,
 		connect.WithSchema(configMethods.ByName("DeleteDeployment")),
-		connect.WithHandlerOptions(opts...),
-	)
-	configUpsertEventSourceHandler := connect.NewUnaryHandler(
-		ConfigUpsertEventSourceProcedure,
-		svc.UpsertEventSource,
-		connect.WithSchema(configMethods.ByName("UpsertEventSource")),
-		connect.WithHandlerOptions(opts...),
-	)
-	configDeleteEventSourceHandler := connect.NewUnaryHandler(
-		ConfigDeleteEventSourceProcedure,
-		svc.DeleteEventSource,
-		connect.WithSchema(configMethods.ByName("DeleteEventSource")),
-		connect.WithHandlerOptions(opts...),
-	)
-	configListEventSourcesHandler := connect.NewUnaryHandler(
-		ConfigListEventSourcesProcedure,
-		svc.ListEventSources,
-		connect.WithSchema(configMethods.ByName("ListEventSources")),
 		connect.WithHandlerOptions(opts...),
 	)
 	configUpsertWebhookSourceHandler := connect.NewUnaryHandler(
@@ -780,12 +690,6 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 			configDescribeDeploymentHandler.ServeHTTP(w, r)
 		case ConfigDeleteDeploymentProcedure:
 			configDeleteDeploymentHandler.ServeHTTP(w, r)
-		case ConfigUpsertEventSourceProcedure:
-			configUpsertEventSourceHandler.ServeHTTP(w, r)
-		case ConfigDeleteEventSourceProcedure:
-			configDeleteEventSourceHandler.ServeHTTP(w, r)
-		case ConfigListEventSourcesProcedure:
-			configListEventSourcesHandler.ServeHTTP(w, r)
 		case ConfigUpsertWebhookSourceProcedure:
 			configUpsertWebhookSourceHandler.ServeHTTP(w, r)
 		case ConfigDeleteWebhookSourceProcedure:
@@ -841,18 +745,6 @@ func (UnimplementedConfigHandler) DescribeDeployment(context.Context, *connect.R
 
 func (UnimplementedConfigHandler) DeleteDeployment(context.Context, *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DeleteDeployment is not implemented"))
-}
-
-func (UnimplementedConfigHandler) UpsertEventSource(context.Context, *connect.Request[configv1.UpsertEventSourceRequest]) (*connect.Response[configv1.UpsertEventSourceResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.UpsertEventSource is not implemented"))
-}
-
-func (UnimplementedConfigHandler) DeleteEventSource(context.Context, *connect.Request[configv1.DeleteEventSourceRequest]) (*connect.Response[configv1.DeleteEventSourceResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DeleteEventSource is not implemented"))
-}
-
-func (UnimplementedConfigHandler) ListEventSources(context.Context, *connect.Request[configv1.ListEventSourcesRequest]) (*connect.Response[configv1.ListEventSourcesResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.ListEventSources is not implemented"))
 }
 
 func (UnimplementedConfigHandler) UpsertWebhookSource(context.Context, *connect.Request[configv1.UpsertWebhookSourceRequest]) (*connect.Response[configv1.UpsertWebhookSourceResponse], error) {

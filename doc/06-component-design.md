@@ -1944,16 +1944,36 @@ The `appliesTo` clauses are the *first* line of tenant isolation: a
 parser rejects the policy at upload time. No interceptor code
 enforces this; the schema does.
 
+**Attributes vs. tags.** Every match in this design is on a
+schema-declared *attribute* (`tenant_id`, `name`) reached by literal
+key — which is exactly what lets layer-1 schema validation and the
+layer-2 AST lint reason about a policy statically. Cedar's `[]`
+accessor is **literal-key only** (`resource["tenant_id"]`, never
+`resource[expr]` — the `ast` accessor `Access(attr types.String)` takes
+a literal, not an expression), so there is no dynamic attribute lookup
+that could slip past that analysis. The one thing this leaves
+unmodeled is matching on a label whose *key* isn't known at
+schema-design time (free-form deployment metadata, per-record env
+labels). Those would live in an entity's `Tags` record
+(`types.Entity.Tags`) and match via `resource.getTag(k)` / `hasTag(k)`,
+whose key *may* be a computed expression (`GetTag(rhs Node)` takes a
+node, unlike `Access`). Tags are deliberately out of scope for v1 —
+the fixed `tenant_id` attribute carries the whole isolation guarantee
+— but they are the forward path the day a tenant policy needs
+arbitrary-label matching, with the caveat that tags are weakly-typed
+(the schema doesn't enumerate their keys) and would need a dedicated
+structural-lint rule rather than riding the existing attribute checks.
+
 **The four foundational cluster policies
 (`PlatformConfigTable.cluster_authz_policy_text`):**
 
 ```cedar
 // 1. Cluster operators have god-mode.
-permit (principal in ClusterOperator::"*", action, resource);
+permit (principal is ClusterOperator, action, resource);
 
 // 2. Nodes can only call inter-node Delivery RPCs.
 permit (
-    principal in Node::"*",
+    principal is Node,
     action in [Action::"DeliveryDeliver", Action::"DeliveryListUndelivered"],
     resource
 );
@@ -1968,7 +1988,7 @@ permit (
 // 4. THE tenant-isolation rule. The entire cross-tenant guarantee
 //    lives on this when-clause.
 permit (
-    principal in TenantAdmin::"*",
+    principal is TenantAdmin,
     action in TenantConfigActions,        // see schema
     resource
 )
@@ -1986,6 +2006,17 @@ entire cross-tenant guarantee — replaces ~15 hand-written
 checks that would otherwise have to live in every config-plane
 handler.
 
+Note the `principal is ClusterOperator` / `is Node` / `is TenantAdmin`
+scope form: Cedar has **no wildcard on entity ids** — `ClusterOperator::"*"`
+is an entity whose literal id is the character `*`, not a glob. "Match
+any principal of this type" is the `is` type-test operator (`PrincipalIs`
+in `cedar-go/ast`); the only `*` wildcard Cedar offers is `types.Wildcard`
+inside a string `Pattern` for the `like` operator, which matches string
+*attributes* in a `when` clause (`principal.subject like "ci-bot@*"`),
+never UIDs. `==` against a fully-qualified id (`TenantAdmin::"ci-bot@t12"`,
+`AnonymousJoiner::"joiner"`) is the right form when pinning one specific
+entity.
+
 **Per-tenant policies (`TenantRecord.tenant_authz_policy_text`)**
 are optional Cedar text that *restricts* the cluster policy further
 — never escalates. Common shape:
@@ -2000,7 +2031,7 @@ permit (
 when { resource.tenant_id == 12 };
 
 forbid (
-    principal in TenantAdmin::"*",
+    principal is TenantAdmin,
     action in [Action::"UpsertDeployment", Action::"DeleteDeployment"],
     resource
 )
@@ -2069,7 +2100,7 @@ microseconds against prepared policies.
 | Layer | What it catches | Cedar-go primitive |
 |---|---|---|
 | **(1) Schema validation** | Policy references a field that doesn't exist (e.g., `resource.secret_kek_uri` when the resource is `EventSourceRecord`). Policy violates an `appliesTo` clause (TenantAdmin on AddNode). | `x/exp/schema/validate.Validator` — ships in v1.6.2 |
-| **(2) AST structural lint** | Tenant policy without `resource.tenant_id == principal.tenant_id` in its `when` clause; tenant policy referencing a principal other than `TenantAdmin`; tenant policy referencing a resource type whose schema lacks `tenant_id`; tenant policy using `principal in ClusterOperator::"*"`. | Walks the `cedar/ast.PolicySet`; ~150 LOC. Reflow-specific. Caches the proven invariant at upload, so runtime eval doesn't need to re-prove it. |
+| **(2) AST structural lint** | Tenant policy without `resource.tenant_id == principal.tenant_id` in its `when` clause; tenant policy referencing a principal other than `TenantAdmin`; tenant policy referencing a resource type whose schema lacks `tenant_id`; tenant policy using `principal is ClusterOperator`. | Walks the `cedar/ast.PolicySet`; ~150 LOC. Reflow-specific. Caches the proven invariant at upload, so runtime eval doesn't need to re-prove it. |
 | **(3) Property-based invariant test** | On policy commit, generates *N* synthetic `(principal, resource)` pairs with mismatched `tenant_id`s via `rapid` (matches `internal/engine/pbt_test.go` style), asserts every result is `Deny`. Runs in CI on every `cluster_authz_policy_text` mutation; runs as a fast sample (~50 pairs) on every tenant policy upload. | `x/exp/batch.Authorize` for sweeping; `pgregory.net/rapid` for generation. |
 
 Honest caveat: cedar-go v1.6.2 does not ship the formal SMT-based

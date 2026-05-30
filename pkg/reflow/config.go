@@ -13,14 +13,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/twinfer/reflow/internal/auth"
-	"github.com/twinfer/reflow/internal/ingress/eventsource"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 )
-
-// EventSourcesConfig is re-exported from internal/ingress/eventsource so
-// the public Config surface stays in pkg/reflow while the implementation
-// lives next to its consumers.
-type EventSourcesConfig = eventsource.Config
 
 // Config is the typed configuration for a reflow node. All fields are
 // optional except Node.ID, Node.RaftAddr, and Storage.DataDir. Defaults
@@ -46,7 +40,6 @@ type Config struct {
 	Auth         AuthConfig         `koanf:"auth"`
 	Snapshot     SnapshotConfig     `koanf:"snapshot"`
 	Handlers     HandlersConfig     `koanf:"handlers"`
-	EventSources EventSourcesConfig `koanf:"event_sources"`
 	KMS          KMSConfig          `koanf:"kms"`
 	PKI          PKIConfig          `koanf:"pki"`
 	Rebalance    RebalanceConfig    `koanf:"rebalance"`

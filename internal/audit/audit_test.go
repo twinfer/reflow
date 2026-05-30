@@ -70,22 +70,6 @@ func TestKindAndTarget_AllAuditableCommands(t *testing.T) {
 			wantTarget: "stripe-webhook-key",
 		},
 		{
-			name: "UpsertEventSource uses record.name",
-			cmd: &enginev1.Command{Kind: &enginev1.Command_UpsertEventSource{
-				UpsertEventSource: &enginev1.UpsertEventSource{Record: &enginev1.EventSourceRecord{Name: "orders-kafka"}},
-			}},
-			wantKind:   "UpsertEventSource",
-			wantTarget: "orders-kafka",
-		},
-		{
-			name: "DeleteEventSource uses name",
-			cmd: &enginev1.Command{Kind: &enginev1.Command_DeleteEventSource{
-				DeleteEventSource: &enginev1.DeleteEventSource{Name: "orders-kafka"},
-			}},
-			wantKind:   "DeleteEventSource",
-			wantTarget: "orders-kafka",
-		},
-		{
 			name: "UpsertWebhookSource uses record.name",
 			cmd: &enginev1.Command{Kind: &enginev1.Command_UpsertWebhookSource{
 				UpsertWebhookSource: &enginev1.UpsertWebhookSource{Record: &enginev1.WebhookSourceRecord{Name: "github-app"}},

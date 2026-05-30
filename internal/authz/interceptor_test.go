@@ -30,13 +30,13 @@ func TestInterceptor_Authorize(t *testing.T) {
 		procedure string
 		wantCode  connect.Code // 0 => allowed (nil error)
 	}{
-		{"operator-config-allow", ctx(operator), actUpsertEventSource, 0},
+		{"operator-config-allow", ctx(operator), actUpsertWebhookSource, 0},
 		{"operator-addnode-allow", ctx(operator), actAddNode, 0},
 		{"node-deliver-allow", ctx(node), actDeliver, 0},
 		{"node-selfjoin-allow", ctx(node), actSelfJoin, 0},
-		{"node-config-denied", ctx(node), actUpsertEventSource, connect.CodePermissionDenied},
+		{"node-config-denied", ctx(node), actUpsertWebhookSource, connect.CodePermissionDenied},
 		{"anon-submit-open", context.Background(), actSubmitInvocation, 0},
-		{"anon-config-unauth", context.Background(), actUpsertEventSource, connect.CodeUnauthenticated},
+		{"anon-config-unauth", context.Background(), actUpsertWebhookSource, connect.CodeUnauthenticated},
 		{"anon-addnode-unauth", context.Background(), actAddNode, connect.CodeUnauthenticated},
 	}
 	for _, c := range cases {
@@ -64,12 +64,12 @@ func TestInterceptor_AnonymousChallenge(t *testing.T) {
 	var ce *connect.Error
 
 	withBearer := NewInterceptor(e, nil, true)
-	if err := withBearer.authorize(anon, actUpsertEventSource); !errors.As(err, &ce) || ce.Meta().Get("WWW-Authenticate") != "Bearer" {
+	if err := withBearer.authorize(anon, actUpsertWebhookSource); !errors.As(err, &ce) || ce.Meta().Get("WWW-Authenticate") != "Bearer" {
 		t.Errorf("bearer-enabled: missing WWW-Authenticate challenge (err=%v)", err)
 	}
 
 	noBearer := NewInterceptor(e, nil, false)
-	if err := noBearer.authorize(anon, actUpsertEventSource); errors.As(err, &ce) && ce.Meta().Get("WWW-Authenticate") != "" {
+	if err := noBearer.authorize(anon, actUpsertWebhookSource); errors.As(err, &ce) && ce.Meta().Get("WWW-Authenticate") != "" {
 		t.Errorf("bearer-disabled: unexpected WWW-Authenticate challenge")
 	}
 }

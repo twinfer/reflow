@@ -60,8 +60,6 @@ var procMap = map[string]procEntry{
 	clusterctlv1connect.ClusterCtlSelfJoinProcedure:        {"SelfJoin", []string{groupMesh}},
 
 	// ----- Config: tenant-config writes -----
-	configv1connect.ConfigUpsertEventSourceProcedure:   {"UpsertEventSource", []string{groupTenantConfig}},
-	configv1connect.ConfigDeleteEventSourceProcedure:   {"DeleteEventSource", []string{groupTenantConfig}},
 	configv1connect.ConfigUpsertWebhookSourceProcedure: {"UpsertWebhookSource", []string{groupTenantConfig}},
 	configv1connect.ConfigDeleteWebhookSourceProcedure: {"DeleteWebhookSource", []string{groupTenantConfig}},
 	configv1connect.ConfigUpsertSecretProcedure:        {"UpsertSecret", []string{groupTenantConfig}},
@@ -72,7 +70,6 @@ var procMap = map[string]procEntry{
 	// ----- Config: tenant-config reads -----
 	configv1connect.ConfigListDeploymentsProcedure:    {"ListDeployments", []string{groupConfigRead}},
 	configv1connect.ConfigDescribeDeploymentProcedure: {"DescribeDeployment", []string{groupConfigRead}},
-	configv1connect.ConfigListEventSourcesProcedure:   {"ListEventSources", []string{groupConfigRead}},
 	configv1connect.ConfigListWebhookSourcesProcedure: {"ListWebhookSources", []string{groupConfigRead}},
 	configv1connect.ConfigListSecretsProcedure:        {"ListSecrets", []string{groupConfigRead}},
 

@@ -39,8 +39,6 @@
 //	reflowd config list-deployments     --admin=ANY:PORT
 //	reflowd config describe-deployment  --admin=ANY:PORT --id=DEPLOYMENT_ID
 //	reflowd config delete-deployment    --admin=ANY:PORT --id=DEPLOYMENT_ID --force
-//	reflowd config eventsources list    --admin=ANY:PORT
-//	reflowd config eventsources delete  --admin=ANY:PORT --name=NAME
 //	reflowd config webhooks list        --admin=ANY:PORT
 //	reflowd config webhooks delete      --admin=ANY:PORT --name=NAME
 //	reflowd config apply -f <file>      --admin=ANY:PORT
@@ -179,12 +177,10 @@ Config (Config RPCs; app config; --admin can be ANY node):
   config list-deployments       List every DeploymentRecord.
   config describe-deployment    Describe one DeploymentRecord by id.
   config delete-deployment      Delete a DeploymentRecord (requires --force).
-  config eventsources list      List configured event sources.
-  config eventsources delete    Delete an event source by name.
   config webhooks list          List configured webhook sources.
   config webhooks delete        Delete a webhook source by name.
   config apply -f <file>        Apply a multi-doc YAML file
-                                (kinds: EventSource, WebhookSource).
+                                (kinds: WebhookSource, Tenant).
   config export --kind=<k>      Dump a kind (or 'all') as multi-doc YAML.
   config get <kind> <name>      Fetch one record as YAML.
   config init-kek               Create a fresh BlobKMS KEK blob.

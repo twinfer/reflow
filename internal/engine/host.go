@@ -675,24 +675,6 @@ func (h *Host) Deployments(ctx context.Context) (*cluster.DeploymentList, error)
 	return out, nil
 }
 
-// WebhookSources SyncReads every WebhookSourceRecord from shard 0 plus
-// the table's CAS revision. Used by the admin RPCs and the per-node
-// webhook Reconciler.
-func (h *Host) WebhookSources(ctx context.Context) (*cluster.WebhookSourceList, error) {
-	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupWebhookSources{})
-	if err != nil {
-		return nil, err
-	}
-	if res == nil {
-		return &cluster.WebhookSourceList{}, nil
-	}
-	out, ok := res.(*cluster.WebhookSourceList)
-	if !ok {
-		return nil, fmt.Errorf("host: WebhookSources: unexpected lookup type %T", res)
-	}
-	return out, nil
-}
-
 // Secrets SyncReads every SecretRecord from shard 0 plus the table's
 // CAS revision. Used by the admin RPCs and the per-node SecretStore
 // Reconciler.

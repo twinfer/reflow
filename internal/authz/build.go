@@ -17,7 +17,6 @@ const (
 	TypeUser            cedar.EntityType = "User"
 	TypeAnonymous       cedar.EntityType = "Anonymous"
 
-	TypeWebhookSourceRecord cedar.EntityType = "WebhookSourceRecord"
 	TypeSecretRecord        cedar.EntityType = "SecretRecord"
 	TypeDeploymentRecord    cedar.EntityType = "DeploymentRecord"
 	TypeTenantRecord        cedar.EntityType = "TenantRecord"

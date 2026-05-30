@@ -249,59 +249,6 @@ func cmdDecryptSecret(ctx context.Context, args []string) error {
 	return nil
 }
 
-// cmdUpsertWebhook proposes Config.UpsertWebhookSource for a webhook
-// record that references an existing SecretRecord by name. The secret
-// itself is created separately via `config create-secret`.
-func cmdUpsertWebhook(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("upsert-webhook", flag.ContinueOnError)
-	tls := registerTLSFlags(fs)
-	name := fs.String("name", "", "webhook name (required)")
-	path := fs.String("path", "", "webhook URL path (required)")
-	verifier := fs.String("verifier", "", "verifier name (required)")
-	secretName := fs.String("secret", "", "SecretTable row name to resolve the HMAC secret from (required)")
-	service := fs.String("service", "", "target service (required)")
-	handler := fs.String("handler", "", "target handler (required)")
-	objectKey := fs.String("object-key", "", "target object key (optional)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if err := checkRequired(map[string]string{
-		"--name":     *name,
-		"--path":     *path,
-		"--verifier": *verifier,
-		"--secret":   *secretName,
-		"--service":  *service,
-		"--handler":  *handler,
-	}); err != nil {
-		return err
-	}
-	rec := &enginev1.WebhookSourceRecord{
-		Name:       *name,
-		Path:       *path,
-		Verifier:   *verifier,
-		SecretName: *secretName,
-		Service:    *service,
-		Handler:    *handler,
-		ObjectKey:  *objectKey,
-	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
-		list, err := cli.Config.ListWebhookSources(rctx, connect.NewRequest(&configv1.ListWebhookSourcesRequest{}))
-		if err != nil {
-			return fmt.Errorf("read revision: %w", err)
-		}
-		resp, err := cli.Config.UpsertWebhookSource(rctx, connect.NewRequest(&configv1.UpsertWebhookSourceRequest{
-			Record:            rec,
-			IfTableRevisionEq: list.Msg.GetTableRevision(),
-		}))
-		if err != nil {
-			return fmt.Errorf("UpsertWebhookSource: %w", err)
-		}
-		fmt.Fprintf(os.Stderr, "webhook upserted (name=%s, table_revision=%d)\n",
-			rec.GetName(), resp.Msg.GetTableRevision())
-		return nil
-	})
-}
-
 // encryptToBlob encrypts plaintext with the KEK at kekURI (AAD = name)
 // and writes the ciphertext to blobURI via gocloud.dev/blob. Split out
 // of cmdCreateSecret so tests can exercise the file ops in isolation,

@@ -13,7 +13,7 @@ import (
 // action id is the bare method name (procmap.go); evalReq and ic.authorize both
 // resolve these through actionEntity.
 const (
-	actUpsertWebhookSource = "/reflow.config.v1.Config/UpsertWebhookSource"
+	actRegisterDeployment = "/reflow.config.v1.Config/RegisterDeployment"
 	actAddNode           = "/reflow.clusterctl.v1.ClusterCtl/AddNode"
 	actSelfJoin          = "/reflow.clusterctl.v1.ClusterCtl/SelfJoin"
 	actDeliver           = "/reflow.delivery.v1.Delivery/Deliver"
@@ -81,16 +81,16 @@ func TestAuthorize_PlaneSeparation(t *testing.T) {
 		resID   string
 		want    cedar.Decision
 	}{
-		{"operator-config", operator, actUpsertWebhookSource, TypeWebhookSourceRecord, "kafka", cedar.Allow},
+		{"operator-config", operator, actRegisterDeployment, TypeDeploymentRecord, "kafka", cedar.Allow},
 		{"operator-addnode", operator, actAddNode, TypePlatformConfig, "cluster", cedar.Allow},
 		{"operator-submit", operator, actSubmitInvocation, TypeInvocation, "svc", cedar.Allow},
 		{"node-deliver", node, actDeliver, TypePlatformConfig, "cluster", cedar.Allow},
 		{"node-upload-sst", node, actUploadSST, TypePlatformConfig, "cluster", cedar.Allow},
 		{"node-selfjoin", node, actSelfJoin, TypePlatformConfig, "cluster", cedar.Allow},
-		{"node-config-denied", node, actUpsertWebhookSource, TypeWebhookSourceRecord, "kafka", cedar.Deny},
+		{"node-config-denied", node, actRegisterDeployment, TypeDeploymentRecord, "kafka", cedar.Deny},
 		{"node-addnode-denied", node, actAddNode, TypePlatformConfig, "cluster", cedar.Deny},
 		{"anon-submit-open", anon, actSubmitInvocation, TypeInvocation, "svc", cedar.Allow},
-		{"anon-config-denied", anon, actUpsertWebhookSource, TypeWebhookSourceRecord, "kafka", cedar.Deny},
+		{"anon-config-denied", anon, actRegisterDeployment, TypeDeploymentRecord, "kafka", cedar.Deny},
 		{"anon-addnode-denied", anon, actAddNode, TypePlatformConfig, "cluster", cedar.Deny},
 	}
 	for _, c := range cases {
@@ -152,18 +152,18 @@ func TestTenantIsolation_ValidatesAndEnforces(t *testing.T) {
 	tenantPolicy := `
 permit (
     principal is TenantAdmin,
-    action == Action::"UpsertWebhookSource",
+    action == Action::"RegisterDeployment",
     resource
 ) when { resource.tenant_id == principal.tenant_id && principal.tenant_id > 0 };
 `
 	e := mustEngine(t, FoundationalClusterPolicies+tenantPolicy)
 	tenant12 := auth.Principal{Kind: "tenant", Subject: "12/alice"}
 
-	if got := evalReq(e, actUpsertWebhookSource, tenant12, TypeWebhookSourceRecord, "kafka",
+	if got := evalReq(e, actRegisterDeployment, tenant12, TypeDeploymentRecord, "kafka",
 		types.RecordMap{"tenant_id": types.Long(12), "name": types.String("kafka")}); got != cedar.Allow {
 		t.Errorf("same-tenant: got %v want Allow", got)
 	}
-	if got := evalReq(e, actUpsertWebhookSource, tenant12, TypeWebhookSourceRecord, "kafka",
+	if got := evalReq(e, actRegisterDeployment, tenant12, TypeDeploymentRecord, "kafka",
 		types.RecordMap{"tenant_id": types.Long(99), "name": types.String("kafka")}); got != cedar.Deny {
 		t.Errorf("cross-tenant: got %v want Deny", got)
 	}

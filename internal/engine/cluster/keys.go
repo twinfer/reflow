@@ -15,7 +15,6 @@
 //	partition_table                 -> PartitionTable singleton
 //	deployment/<deployment_id ascii> -> DeploymentRecord
 //	deployment_idx/<service>\x00<handler> -> deployment_id (ascii)
-//	webhooksrc/<name>               -> WebhookSourceRecord
 //	secret/<name>                   -> SecretRecord
 //	lpowner/<4-byte BE lp>          -> LPOwnerRecord (lp → shard_id
 //	                                   routing entry; per-node reconcilers
@@ -86,7 +85,6 @@ const (
 	platformConfigKey     = "platform_config"
 	deploymentPrefix      = "deployment/"
 	deploymentIndexPrefix = "deployment_idx/"
-	webhookSourcePrefix   = "webhooksrc/"
 	secretPrefix          = "secret/"
 	lpOwnerPrefix         = "lpowner/"
 	lpTransferPrefix      = "lptransfer/"
@@ -105,7 +103,6 @@ const (
 // upgrade-incompat change.
 const (
 	RevisionTableDeployment     = "deployment"
-	RevisionTableWebhookSource  = "webhooksrc"
 	RevisionTableSecret         = "secret"
 	RevisionTableLPOwners       = "lpowners"
 	RevisionTableLPTransfers    = "lptransfers"
@@ -162,17 +159,6 @@ func DeploymentIndexKey(service, handler string) []byte {
 	return append(out, handler...)
 }
 
-// WebhookSourcePrefix returns the webhooksrc/ namespace prefix.
-func WebhookSourcePrefix() []byte { return []byte(webhookSourcePrefix) }
-
-// WebhookSourceKey returns webhooksrc/<name>. Name uniqueness (and
-// path uniqueness across rows) is enforced by the admin RPC validator;
-// the apply arm trusts it.
-func WebhookSourceKey(name string) []byte {
-	out := make([]byte, 0, len(webhookSourcePrefix)+len(name))
-	out = append(out, webhookSourcePrefix...)
-	return append(out, name...)
-}
 
 // SecretPrefix returns the secret/ namespace prefix. Used for iteration.
 func SecretPrefix() []byte { return []byte(secretPrefix) }

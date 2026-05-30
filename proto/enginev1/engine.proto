@@ -161,15 +161,6 @@ message Command {
     // workflow_run row, and the invocation's inv/journal/signal_*
     // rows. Accepted only by shardID >= 1.
     ReapWorkflow reap_workflow = 20;
-    // UpsertWebhookSource / DeleteWebhookSource carry shard-0 webhook
-    // source config — mirror the event-source pair (CAS via
-    // Envelope.precondition, notifier fan-out via the WebhookSourceTable
-    // TableNotifier). Webhook secrets never appear in this command:
-    // the persisted record only references them by env-var-name or
-    // file-path; per-node Reconcilers resolve at reconcile time.
-    // Accepted only by shardID=0.
-    UpsertWebhookSource upsert_webhook_source = 23;
-    DeleteWebhookSource delete_webhook_source = 24;
     // UpsertSecret / DeleteSecret carry shard-0 SecretStore records —
     // named ciphertext + KEK pointers shared across webhook (and
     // future) consumers. Same CAS + notifier semantics as the
@@ -1202,32 +1193,6 @@ message UpsertPlatformConfig {
   PlatformConfigRecord record = 1;
 }
 
-// WebhookSourceRecord is the persisted shape of one webhook source in
-// shard 0's WebhookSourceTable. Mirrors
-// internal/ingress/webhook.SourceConfig in field semantics.
-//
-// `name` is the operator-facing key (separate from `path` so a mount
-// can be renamed in YAML without renaming the row). `path` must start
-// with `/` and is the absolute URL path the listener matches; the
-// catch-all subtree handler at /webhooks/ does the lookup.
-//
-// `secret_name` references a row in the shard-0 SecretTable. The
-// plaintext secret itself never appears in this record (or in any
-// shard-0 row) — per-node SecretStore Reconcilers resolve the named
-// SecretRecord at reconcile time and surface the bytes via in-memory
-// Lookup. Multiple webhooks may share a secret_name (and therefore
-// share a single ciphertext+KEK).
-message WebhookSourceRecord {
-  string name = 1;
-  string path = 2;
-  string verifier = 3;
-  string secret_name = 4;
-  string service = 5;
-  string handler = 6;
-  string object_key = 7;
-  map<string, string> metadata = 8;
-}
-
 // SecretRecord is the persisted shape of one named secret in shard 0's
 // SecretTable. The plaintext itself is never a field — Raft snapshots
 // and commit logs would leak it. Each SecretRecord carries a pointer
@@ -1502,23 +1467,6 @@ message UpsertTenantDEK {
 // the DEK intact so a delete-misclick is recoverable.
 message DeleteTenantDEK {
   uint32 tenant_id = 1;
-}
-
-// UpsertWebhookSource is the Command_UpsertWebhookSource payload.
-// Apply arm CAS-checks Envelope.precondition, writes
-// WebhookSourceTable[record.name] = record, bumps the table revision,
-// and fires the WebhookSourceTable notifier so each node's local
-// Reconciler wakes and converges.
-message UpsertWebhookSource {
-  WebhookSourceRecord record = 1;
-}
-
-// DeleteWebhookSource is the Command_DeleteWebhookSource payload. Same
-// CAS + notifier semantics as Upsert. Delete-of-absent is a no-op (the
-// revision still bumps so the operator's CAS-roundtrip CLI observes
-// progress).
-message DeleteWebhookSource {
-  string name = 1;
 }
 
 // LPOwnerRecord is the persisted shape of one (lp → shard_id) entry in

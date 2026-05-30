@@ -63,7 +63,6 @@ type Config struct {
 // applyResult.notify.
 type Notifiers struct {
 	PartitionTable      *TableNotifier
-	WebhookSourceTable  *TableNotifier
 	SecretTable         *TableNotifier
 	LPOwnersTable       *TableNotifier
 	LPTransfersTable    *TableNotifier
@@ -311,10 +310,6 @@ func (f *FSM) applyCommand(
 		return f.applyDeleteDeployment(batch, env, k.DeleteDeployment, raftIndex)
 	case *enginev1.Command_UpsertPlatformConfig:
 		return f.applyUpsertPlatformConfig(batch, env, k.UpsertPlatformConfig, raftIndex)
-	case *enginev1.Command_UpsertWebhookSource:
-		return f.applyUpsertWebhookSource(batch, env, k.UpsertWebhookSource, raftIndex)
-	case *enginev1.Command_DeleteWebhookSource:
-		return f.applyDeleteWebhookSource(batch, env, k.DeleteWebhookSource, raftIndex)
 	case *enginev1.Command_UpsertSecret:
 		return f.applyUpsertSecret(batch, env, k.UpsertSecret, raftIndex)
 	case *enginev1.Command_DeleteSecret:
@@ -529,71 +524,8 @@ func (f *FSM) applyUpsertPlatformConfig(
 	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.PlatformConfigTable}}, nil
 }
 
-// applyUpsertWebhookSource writes the WebhookSourceRecord and bumps
-// the table revision. CAS + notifier semantics mirror the other
-// shard-0 config tables exactly.
-func (f *FSM) applyUpsertWebhookSource(
-	batch storage.Batch,
-	env *enginev1.Envelope,
-	cmd *enginev1.UpsertWebhookSource,
-	raftIndex uint64,
-) (*applyResult, error) {
-	rec := cmd.GetRecord()
-	if rec == nil || rec.GetName() == "" {
-		f.cfg.Log.Warn("cluster: UpsertWebhookSource missing record or name; ignoring",
-			"raft_index", raftIndex)
-		return &applyResult{}, nil
-	}
-	ok, err := f.checkPrecondition(batch, env, RevisionTableWebhookSource)
-	if err != nil {
-		return nil, fmt.Errorf("cluster: load webhooksrc revision: %w", err)
-	}
-	if !ok {
-		return nil, nil
-	}
-	if err := (WebhookSourceTable{S: batch}).Put(batch, rec); err != nil {
-		return nil, fmt.Errorf("cluster: write webhook source: %w", err)
-	}
-	nowMs := env.GetHeader().GetCreatedAtMs()
-	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableWebhookSource, nowMs); err != nil {
-		return nil, fmt.Errorf("cluster: bump webhooksrc revision: %w", err)
-	}
-	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.WebhookSourceTable}}, nil
-}
-
-// applyDeleteWebhookSource removes the named row (no-op if absent)
-// and bumps the table revision. Same CAS semantics as Upsert.
-func (f *FSM) applyDeleteWebhookSource(
-	batch storage.Batch,
-	env *enginev1.Envelope,
-	cmd *enginev1.DeleteWebhookSource,
-	raftIndex uint64,
-) (*applyResult, error) {
-	name := cmd.GetName()
-	if name == "" {
-		f.cfg.Log.Warn("cluster: DeleteWebhookSource missing name; ignoring",
-			"raft_index", raftIndex)
-		return &applyResult{}, nil
-	}
-	ok, err := f.checkPrecondition(batch, env, RevisionTableWebhookSource)
-	if err != nil {
-		return nil, fmt.Errorf("cluster: load webhooksrc revision: %w", err)
-	}
-	if !ok {
-		return nil, nil
-	}
-	if err := (WebhookSourceTable{S: batch}).Delete(batch, name); err != nil {
-		return nil, fmt.Errorf("cluster: delete webhook source: %w", err)
-	}
-	nowMs := env.GetHeader().GetCreatedAtMs()
-	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableWebhookSource, nowMs); err != nil {
-		return nil, fmt.Errorf("cluster: bump webhooksrc revision: %w", err)
-	}
-	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.WebhookSourceTable}}, nil
-}
-
 // applyUpsertSecret writes the SecretRecord and bumps the table
-// revision. CAS + notifier semantics mirror the event-source / webhook
+// revision. CAS + notifier semantics mirror the other shard-0 config
 // arms.
 func (f *FSM) applyUpsertSecret(
 	batch storage.Batch,
@@ -1678,11 +1610,6 @@ type (
 	// a record lookup; saves callers a second SyncRead.
 	LookupHandlerInfo struct{ Service, Handler string }
 
-	// LookupWebhookSources returns *WebhookSourceList — every
-	// WebhookSourceRecord on shard 0 plus the table's CAS revision in
-	// one SyncRead. The Reconciler calls this on each TableNotifier wake.
-	LookupWebhookSources struct{}
-
 	// LookupSecrets returns *SecretList — every SecretRecord on shard 0
 	// plus the table's CAS revision in one SyncRead. The SecretStore
 	// Reconciler calls this on each TableNotifier wake.
@@ -1766,13 +1693,6 @@ type DeploymentList struct {
 // when unset) with the platform-config table's CAS revision.
 type PlatformConfigResult struct {
 	Record        *enginev1.PlatformConfigRecord
-	TableRevision uint64
-}
-
-// WebhookSourceList bundles every row in WebhookSourceTable with the
-// table's CAS revision, atomic w.r.t. the read snapshot.
-type WebhookSourceList struct {
-	Sources       []*enginev1.WebhookSourceRecord
 	TableRevision uint64
 }
 
@@ -1919,16 +1839,6 @@ func (f *FSM) Lookup(query any) (any, error) {
 			return nil, err
 		}
 		return &PlatformConfigResult{Record: rec, TableRevision: rev}, nil
-	case LookupWebhookSources:
-		sources, err := (WebhookSourceTable{S: store}).List()
-		if err != nil {
-			return nil, err
-		}
-		rev, err := (RevisionTable{S: store}).Get(RevisionTableWebhookSource)
-		if err != nil {
-			return nil, err
-		}
-		return &WebhookSourceList{Sources: sources, TableRevision: rev}, nil
 	case LookupSecrets:
 		records, err := (SecretTable{S: store}).List()
 		if err != nil {

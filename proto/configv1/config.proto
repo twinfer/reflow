@@ -63,16 +63,6 @@ service Config {
   // for active references.
   rpc DeleteDeployment(DeleteDeploymentRequest) returns (DeleteDeploymentResponse);
 
-  // UpsertWebhookSource / DeleteWebhookSource / ListWebhookSources
-  // mirror the event-source trio against shard 0's
-  // WebhookSourceTable. The record's secret_name references a row in
-  // the shard-0 SecretTable (UpsertSecret below); the webhook record
-  // carries no ciphertext or KMS material itself. Leader-only for
-  // mutating calls; List is SyncRead from any peer.
-  rpc UpsertWebhookSource(UpsertWebhookSourceRequest) returns (UpsertWebhookSourceResponse);
-  rpc DeleteWebhookSource(DeleteWebhookSourceRequest) returns (DeleteWebhookSourceResponse);
-  rpc ListWebhookSources(ListWebhookSourcesRequest) returns (ListWebhookSourcesResponse);
-
   // UpsertSecret / DeleteSecret / ListSecrets mirror the same trio
   // against shard 0's SecretTable. Each SecretRecord references a
   // ciphertext blob (gocloud.dev/blob URI) and a KEK (Tink KMS URI);
@@ -191,29 +181,6 @@ message GetClusterAuthzPolicyResponse {
   uint64 table_revision = 2;
 }
 
-// UpsertWebhookSourceRequest carries one WebhookSourceRecord plus an
-// optional CAS guard. if_table_revision_eq=0 disables CAS.
-message UpsertWebhookSourceRequest {
-  reflow.engine.v1.WebhookSourceRecord record = 1;
-  uint64 if_table_revision_eq = 2;
-}
-message UpsertWebhookSourceResponse {
-  uint64 table_revision = 1;
-}
-
-message DeleteWebhookSourceRequest {
-  string name = 1;
-  uint64 if_table_revision_eq = 2;
-}
-message DeleteWebhookSourceResponse {
-  uint64 table_revision = 1;
-}
-
-message ListWebhookSourcesRequest {}
-message ListWebhookSourcesResponse {
-  repeated reflow.engine.v1.WebhookSourceRecord sources = 1;
-  uint64 table_revision = 2;
-}
 
 // UpsertSecretRequest carries one SecretRecord plus an optional CAS
 // guard. if_table_revision_eq=0 disables CAS.

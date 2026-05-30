@@ -30,7 +30,6 @@ import (
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/internal/ingress/quota"
-	internalwebhook "github.com/twinfer/reflow/internal/ingress/webhook"
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/secretstore"
 	hcvaultkms "github.com/twinfer/reflow/pkg/kms/hcvault"
@@ -137,11 +136,10 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	}
 
 	// Shard-0 TableNotifiers fan out apply-path commits to local
-	// subsystems (webhook Reconciler). Constructed before
+	// subsystems (secret + authz Reconcilers). Constructed before
 	// engine.NewHost so the FSM picks them up at start; their
 	// Subscribe() ends are handed to subsystem goroutines later.
 	partitionTableNotifier := cluster.NewTableNotifier()
-	webhookSourceNotifier := cluster.NewTableNotifier()
 	secretNotifier := cluster.NewTableNotifier()
 	caRootNotifier := cluster.NewTableNotifier()
 	joinTokenNotifier := cluster.NewTableNotifier()
@@ -178,7 +176,6 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		EagerStateMaxBytes: cfg.Handlers.EagerStateMaxBytes,
 		ClusterNotifiers: cluster.Notifiers{
 			PartitionTable:      partitionTableNotifier,
-			WebhookSourceTable:  webhookSourceNotifier,
 			SecretTable:         secretNotifier,
 			CARootTable:         caRootNotifier,
 			JoinTokenTable:      joinTokenNotifier,
@@ -338,7 +335,6 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		metricsRegisterer:      metricsRegisterer,
 		metrics:                metrics,
 		partitionTableNotifier: partitionTableNotifier,
-		webhookSourceNotifier:  webhookSourceNotifier,
 		secretNotifier:         secretNotifier,
 		caRootNotifier:         caRootNotifier,
 		joinTokenNotifier:      joinTokenNotifier,
@@ -428,23 +424,19 @@ func startIngressListener(
 	metrics *observability.Metrics,
 	metricsRegisterer prometheus.Registerer,
 	logger *slog.Logger,
-) (*ingress.Runtime, *creds.ListenerCreds, *internalwebhook.Manager, error) {
+) (*ingress.Runtime, *creds.ListenerCreds, error) {
 	if cfg.Ingress.Disabled {
 		logger.Info("reflow: ingress disabled (cfg.ingress.disabled=true); clients must use a separate ingress fleet")
-		return nil, nil, nil, nil
+		return nil, nil, nil
 	}
 	lc, err := creds.Build(cfg.Ingress.Creds, logger)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("reflow: ingress creds: %w", err)
+		return nil, nil, fmt.Errorf("reflow: ingress creds: %w", err)
 	}
 	recordListenerSecurity(metrics, "ingress", lc)
 	if multiNode && lc.SecurityLevel == credentials.NoSecurity {
 		logger.Warn("reflow: ingress is running on an insecure listener — multi-node deployments should configure cfg.Ingress.Creds")
 	}
-	// Manager is constructed inside ExtraRoutes (needs srv as the
-	// Submitter) and captured here so finishStartup can spawn the
-	// reconciler against it.
-	var webhookMgr *internalwebhook.Manager
 	icfg := ingress.Config{
 		Addr:             cfg.Ingress.Addr,
 		TLS:              lc.ServerTLSConfig,
@@ -453,36 +445,15 @@ func startIngressListener(
 		AuthzInterceptor: authzIc,
 		Enforcer:         enforcer,
 	}
-	icfg.ExtraRoutes = func(srv *ingress.Server) []connectserver.Route {
-		var routes []connectserver.Route
-		// Always mount the /webhooks/ catch-all even when no sources
-		// are configured — an empty snapshot 404s every request, so
-		// the route is harmless and gives operators a stable mount
-		// point to add sources at runtime via `cluster apply`.
-		m, merr := internalwebhook.New(srv, secrets, metricsRegisterer, logger)
-		if merr != nil {
-			// New only fails on nil submitter; srv is non-nil here.
-			logger.Error("reflow: webhook Manager init failed", "err", merr)
-			return routes
-		}
-		webhookMgr = m
-		for _, r := range m.Routes() {
-			routes = append(routes, connectserver.Route{
-				Path:    r.Path,
-				Handler: mw(r.Handler),
-			})
-		}
-		return routes
-	}
 	rt, err := ingress.Start(ctx, eh, icfg)
 	if err != nil {
 		_ = creds.CloseAll(lc)
-		return nil, nil, nil, fmt.Errorf("reflow: ingress start: %w", err)
+		return nil, nil, fmt.Errorf("reflow: ingress start: %w", err)
 	}
 	logger.Info("reflow: ingress listening",
 		"addr", rt.Addr(),
 		"driver", string(lc.Driver))
-	return rt, lc, webhookMgr, nil
+	return rt, lc, nil
 }
 
 // startupDeps bundles the resources Run hands to finishStartup. The
@@ -507,7 +478,6 @@ type startupDeps struct {
 	metricsRegisterer      prometheus.Registerer
 	metrics                *observability.Metrics
 	partitionTableNotifier *cluster.TableNotifier
-	webhookSourceNotifier  *cluster.TableNotifier
 	secretNotifier         *cluster.TableNotifier
 	caRootNotifier         *cluster.TableNotifier
 	joinTokenNotifier      *cluster.TableNotifier
@@ -542,7 +512,6 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	metricsRegisterer := d.metricsRegisterer
 	metrics := d.metrics
 	partitionTableNotifier := d.partitionTableNotifier
-	webhookSourceNotifier := d.webhookSourceNotifier
 	secretNotifier := d.secretNotifier
 	lpOwnersNotifier := d.lpOwnersNotifier
 	platformConfigNotifier := d.platformConfigNotifier
@@ -878,7 +847,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	}()
 
 	multiNode := len(cfg.Cluster.Peers) > 1
-	ingressRT, ingressCreds, webhookMgr, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, authzInterceptor, secrets, quotaMgr, metrics, metricsRegisterer, logger)
+	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, authzInterceptor, secrets, quotaMgr, metrics, metricsRegisterer, logger)
 	if err != nil {
 		if snapshotCxl != nil {
 			snapshotCxl()
@@ -892,15 +861,6 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		return nil, err
 	}
 
-	if webhookMgr != nil {
-		reader := webhookSourceReader{host: eh}
-		go func() {
-			if rerr := webhookMgr.RunReconciler(ctx, webhookSourceNotifier.Subscribe(), reader); rerr != nil && !errors.Is(rerr, context.Canceled) {
-				logger.Warn("reflow: webhook reconcile loop exited", "err", rerr)
-			}
-		}()
-	}
-
 	// Auto-seed remote-handler deployments from config. Spawned AFTER
 	// the last error-returning step so a failed Run doesn't leave this
 	// goroutine running with no Host to attach to. Each failure inside
@@ -909,10 +869,6 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	if len(cfg.Handlers.Endpoints) > 0 {
 		go autoSeedEndpoints(ctx, configSrv, runner, cfg.Handlers.Endpoints, logger)
 	}
-	// Webhook sources have no koanf bootstrap path — secrets are
-	// operator-supplied (encrypted blobs + KEK URIs); operators register
-	// webhooks post-start via `reflowd config create-secret` +
-	// `reflowd config upsert-webhook ...`, or `reflowd config apply -f`.
 
 	return &Host{
 		engine:         eh,
@@ -930,32 +886,11 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		snapshotCxl:    snapshotCxl,
 		snapshotRepo:   snapshotRepo,
 		handlerSigner:  handlerSigner,
-		webhookSources: webhookMgr,
 	}, nil
 }
 
-// webhookSourceReader is the Reader adapter the webhook reconcile loop
-// uses to pull desired state. Returns the raw proto records — secret
-// bytes are looked up via the SecretStore Resolver inside the loop.
-type webhookSourceReader struct {
-	host *engine.Host
-}
-
-func (r webhookSourceReader) ListWebhookSources(ctx context.Context) ([]*enginev1.WebhookSourceRecord, uint64, error) {
-	// dragonboat's SyncRead rejects deadlineless contexts; pin a short
-	// timeout so the reconcile loop never blocks indefinitely.
-	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	list, err := r.host.WebhookSources(readCtx)
-	if err != nil {
-		return nil, 0, err
-	}
-	return list.Sources, list.TableRevision, nil
-}
-
-// secretReader is the Reader adapter the SecretStore reconciler uses
-// to pull desired state. Mirrors webhookSourceReader — same SyncRead
-// timeout, same proto pass-through.
+// clusterAuthzReader is the Reader adapter the cluster authz policy
+// reconciler uses to pull desired state.
 type clusterAuthzReader struct {
 	host *engine.Host
 }

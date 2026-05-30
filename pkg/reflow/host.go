@@ -9,7 +9,6 @@ import (
 	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/engine/snapshot"
 	"github.com/twinfer/reflow/internal/ingress"
-	internalwebhook "github.com/twinfer/reflow/internal/ingress/webhook"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -34,7 +33,6 @@ type Host struct {
 	snapshotCxl    context.CancelFunc
 	snapshotRepo   *snapshot.BlobRepository
 	handlerSigner  *creds.Signer
-	webhookSources *internalwebhook.Manager
 }
 
 // Close stops every partition and the underlying NodeHost. Idempotent.
@@ -49,12 +47,6 @@ func (h *Host) Close() error {
 			firstErr = err
 		}
 		h.ingressRT = nil
-	}
-	if h.webhookSources != nil {
-		if err := h.webhookSources.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		h.webhookSources = nil
 	}
 	if h.snapshotCxl != nil {
 		h.snapshotCxl()

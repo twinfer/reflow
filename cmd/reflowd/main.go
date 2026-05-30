@@ -39,17 +39,12 @@
 //	reflowd config list-deployments     --admin=ANY:PORT
 //	reflowd config describe-deployment  --admin=ANY:PORT --id=DEPLOYMENT_ID
 //	reflowd config delete-deployment    --admin=ANY:PORT --id=DEPLOYMENT_ID --force
-//	reflowd config webhooks list        --admin=ANY:PORT
-//	reflowd config webhooks delete      --admin=ANY:PORT --name=NAME
 //	reflowd config apply -f <file>      --admin=ANY:PORT
-//	reflowd config export --kind=K      --admin=ANY:PORT
-//	reflowd config get <kind> <name>    --admin=ANY:PORT
 //	reflowd config init-kek             --blob-uri=...
 //	reflowd config create-secret        --admin=ANY:PORT --name=N --kek-uri=... --blob-uri=...
 //	reflowd config delete-secret        --admin=ANY:PORT --name=N
 //	reflowd config list-secrets         --admin=ANY:PORT
 //	reflowd config decrypt-secret       --name=N --kek-uri=... --blob-uri=...
-//	reflowd config upsert-webhook       --admin=ANY:PORT --name=N --path=... --verifier=... --secret=N --service=... --handler=...
 //
 // Cluster and config subcommands need the operator TLS flags (or
 // matching env vars):
@@ -177,23 +172,16 @@ Config (Config RPCs; app config; --admin can be ANY node):
   config list-deployments       List every DeploymentRecord.
   config describe-deployment    Describe one DeploymentRecord by id.
   config delete-deployment      Delete a DeploymentRecord (requires --force).
-  config webhooks list          List configured webhook sources.
-  config webhooks delete        Delete a webhook source by name.
-  config apply -f <file>        Apply a multi-doc YAML file
-                                (kinds: WebhookSource, Tenant).
-  config export --kind=<k>      Dump a kind (or 'all') as multi-doc YAML.
-  config get <kind> <name>      Fetch one record as YAML.
+  config apply -f <file>        Apply a multi-doc YAML file (kinds: Tenant).
   config init-kek               Create a fresh BlobKMS KEK blob.
   config create-secret          Encrypt + write blob + UpsertSecret in
                                 shard 0's SecretTable in one command.
-                                Webhook (and future) records reference
-                                the resulting row by --name.
+                                Consumers reference the resulting row
+                                by --name.
   config delete-secret          Remove a SecretRecord from shard 0.
   config list-secrets           List SecretRecords (no plaintext).
   config decrypt-secret         Decrypt a secret blob to stdout
                                 (operator self-verification only).
-  config upsert-webhook         Register a webhook source referencing
-                                an existing secret by --secret=NAME.
   config ca init                Generate a cluster CA, KEK-wrap the key
                                 to a blob, and register both in shard 0
                                 (UpsertSecret then UpsertCARoot).

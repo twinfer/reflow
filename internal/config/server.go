@@ -37,7 +37,6 @@ import (
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/cluster"
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
-	"github.com/twinfer/reflow/pkg/webhook"
 	configv1 "github.com/twinfer/reflow/proto/configv1"
 	"github.com/twinfer/reflow/proto/configv1/configv1connect"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
@@ -439,130 +438,6 @@ func (s *Server) GetClusterAuthzPolicy(ctx context.Context, _ *connect.Request[c
 	}), nil
 }
 
-// UpsertWebhookSource validates the record (incl. path uniqueness
-// across other rows), then proposes Command_UpsertWebhookSource with
-// the operator-supplied CAS guard. Returns the post-apply revision.
-func (s *Server) UpsertWebhookSource(ctx context.Context, req *connect.Request[configv1.UpsertWebhookSourceRequest]) (*connect.Response[configv1.UpsertWebhookSourceResponse], error) {
-	if err := s.requireLeader(); err != nil {
-		return nil, err
-	}
-	rec := req.Msg.GetRecord()
-	if rec == nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("config: record required"))
-	}
-	if err := validateWebhookSourceRecord(rec); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
-	defer cancel()
-	if err := s.checkWebhookPathUnique(callCtx, rec); err != nil {
-		return nil, err
-	}
-	cmd := &enginev1.Command{
-		Kind: &enginev1.Command_UpsertWebhookSource{
-			UpsertWebhookSource: &enginev1.UpsertWebhookSource{Record: rec},
-		},
-	}
-	if err := s.proposeCAS(callCtx, cmd, req.Msg.GetIfTableRevisionEq()); err != nil {
-		return nil, err
-	}
-	newRev, err := s.readWebhookSourceRevision(callCtx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal,
-			fmt.Errorf("config: read post-apply revision: %w", err))
-	}
-	return connect.NewResponse(&configv1.UpsertWebhookSourceResponse{TableRevision: newRev}), nil
-}
-
-// DeleteWebhookSource removes the named row. CAS via if_table_revision_eq.
-func (s *Server) DeleteWebhookSource(ctx context.Context, req *connect.Request[configv1.DeleteWebhookSourceRequest]) (*connect.Response[configv1.DeleteWebhookSourceResponse], error) {
-	if err := s.requireLeader(); err != nil {
-		return nil, err
-	}
-	name := req.Msg.GetName()
-	if name == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("config: name required"))
-	}
-	cmd := &enginev1.Command{
-		Kind: &enginev1.Command_DeleteWebhookSource{
-			DeleteWebhookSource: &enginev1.DeleteWebhookSource{Name: name},
-		},
-	}
-	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
-	defer cancel()
-	if err := s.proposeCAS(callCtx, cmd, req.Msg.GetIfTableRevisionEq()); err != nil {
-		return nil, err
-	}
-	newRev, err := s.readWebhookSourceRevision(callCtx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal,
-			fmt.Errorf("config: read post-apply revision: %w", err))
-	}
-	return connect.NewResponse(&configv1.DeleteWebhookSourceResponse{TableRevision: newRev}), nil
-}
-
-// ListWebhookSources returns every WebhookSourceRecord plus the
-// table's current CAS revision. No leader gate.
-func (s *Server) ListWebhookSources(ctx context.Context, _ *connect.Request[configv1.ListWebhookSourcesRequest]) (*connect.Response[configv1.ListWebhookSourcesResponse], error) {
-	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
-	defer cancel()
-	list, err := s.host.WebhookSources(callCtx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable,
-			fmt.Errorf("config: read webhook sources: %w", err))
-	}
-	return connect.NewResponse(&configv1.ListWebhookSourcesResponse{
-		Sources:       list.Sources,
-		TableRevision: list.TableRevision,
-	}), nil
-}
-
-// readWebhookSourceRevision is a SyncRead helper used by Upsert/Delete.
-func (s *Server) readWebhookSourceRevision(ctx context.Context) (uint64, error) {
-	list, err := s.host.WebhookSources(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return list.TableRevision, nil
-}
-
-// validateWebhookSourceRecord enforces shape rules; path uniqueness is
-// checked separately via checkWebhookPathUnique because it needs a
-// fresh SyncRead and is therefore expensive to inline.
-func validateWebhookSourceRecord(rec *enginev1.WebhookSourceRecord) error {
-	if rec.GetName() == "" {
-		return errors.New("name is required")
-	}
-	path := rec.GetPath()
-	if path == "" {
-		return errors.New("path is required")
-	}
-	if !strings.HasPrefix(path, "/") {
-		return fmt.Errorf("path must start with '/' (got %q)", path)
-	}
-	if rec.GetVerifier() == "" {
-		return errors.New("verifier is required")
-	}
-	if _, err := webhook.LookupVerifier(rec.GetVerifier()); err != nil {
-		return fmt.Errorf("unknown verifier %q (registered: %v)",
-			rec.GetVerifier(), webhook.RegisteredNames())
-	}
-	if rec.GetService() == "" {
-		return errors.New("service is required")
-	}
-	if rec.GetHandler() == "" {
-		return errors.New("handler is required")
-	}
-	if rec.GetSecretName() == "" {
-		return errors.New("secret_name is required (reference a row in the SecretTable via UpsertSecret)")
-	}
-	// Existence-check of the named secret is intentionally NOT done here:
-	// the admin RPC and SecretStore reconciler can race against fresh
-	// clusters where webhook upsert lands before the secret upsert.
-	// Resolve failure on next reconcile surfaces via metrics + log.
-	return nil
-}
-
 // hasKnownBlobScheme returns true when uri starts with a gocloud.dev/blob
 // scheme that Reflow links by default. Operators registering additional
 // schemes from their main package can extend this list — keeping the
@@ -574,31 +449,6 @@ func hasKnownBlobScheme(uri string) bool {
 		}
 	}
 	return false
-}
-
-// checkWebhookPathUnique returns a CodeAlreadyExists error when some
-// other named row claims the same path. The check is best-effort: a
-// concurrent operator-Apply against the same revision can race, but the
-// CAS guard closes the window from each operator's perspective and the
-// per-node Reconciler's sort-by-name + drop-on-collision keeps local
-// state identical across nodes even if a duplicate slipped through.
-func (s *Server) checkWebhookPathUnique(ctx context.Context, rec *enginev1.WebhookSourceRecord) error {
-	list, err := s.host.WebhookSources(ctx)
-	if err != nil {
-		return connect.NewError(connect.CodeUnavailable,
-			fmt.Errorf("config: read webhook sources: %w", err))
-	}
-	for _, existing := range list.Sources {
-		if existing.GetName() == rec.GetName() {
-			continue
-		}
-		if existing.GetPath() == rec.GetPath() {
-			return connect.NewError(connect.CodeAlreadyExists,
-				fmt.Errorf("path %q already in use by webhook %q",
-					rec.GetPath(), existing.GetName()))
-		}
-	}
-	return nil
 }
 
 // UpsertSecret validates the record then proposes Command_UpsertSecret

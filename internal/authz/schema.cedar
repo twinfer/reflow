@@ -36,7 +36,6 @@ entity Anonymous;                        // no verified identity — open-ingres
 // tenant-isolation when-clause activates in PR5. Today every request evaluates
 // against a single PlatformConfig sentinel resource (foundational policies
 // leave resource unconstrained), so resource attributes are not yet read.
-entity WebhookSourceRecord { tenant_id: Long, name: String };
 entity SecretRecord        { tenant_id: Long, name: String };
 entity DeploymentRecord    { tenant_id: Long, name: String };
 entity TenantRecord        { tenant_id: Long };
@@ -69,8 +68,6 @@ action "UploadLPTransferSST" in [Action::"MeshActions"] appliesTo { principal: [
 action "SelfJoin"            in [Action::"MeshActions"] appliesTo { principal: [Node], resource: PlatformConfig };
 
 // ===================== Config: tenant-config writes =====================
-action "UpsertWebhookSource" in [Action::"TenantConfigActions"] appliesTo { principal: [ClusterOperator, TenantAdmin], resource: WebhookSourceRecord };
-action "DeleteWebhookSource" in [Action::"TenantConfigActions"] appliesTo { principal: [ClusterOperator, TenantAdmin], resource: WebhookSourceRecord };
 action "UpsertSecret"        in [Action::"TenantConfigActions"] appliesTo { principal: [ClusterOperator, TenantAdmin], resource: SecretRecord };
 action "DeleteSecret"        in [Action::"TenantConfigActions"] appliesTo { principal: [ClusterOperator, TenantAdmin], resource: SecretRecord };
 action "RegisterDeployment"  in [Action::"TenantConfigActions"] appliesTo { principal: [ClusterOperator, TenantAdmin], resource: DeploymentRecord };
@@ -79,7 +76,6 @@ action "DeleteDeployment"    in [Action::"TenantConfigActions"] appliesTo { prin
 // ===================== Config: tenant-config reads =====================
 action "ListDeployments"    in [Action::"ConfigReadActions"] appliesTo { principal: [ClusterOperator, TenantAdmin], resource: DeploymentRecord };
 action "DescribeDeployment" in [Action::"ConfigReadActions"] appliesTo { principal: [ClusterOperator, TenantAdmin], resource: DeploymentRecord };
-action "ListWebhookSources" in [Action::"ConfigReadActions"] appliesTo { principal: [ClusterOperator, TenantAdmin], resource: WebhookSourceRecord };
 action "ListSecrets"        in [Action::"ConfigReadActions"] appliesTo { principal: [ClusterOperator, TenantAdmin], resource: SecretRecord };
 
 // ===================== Config: platform plane (operator only) =====================

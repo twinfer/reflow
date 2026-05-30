@@ -92,10 +92,6 @@ func KindAndTarget(cmd *enginev1.Command) (kind, target string) {
 		return "RegisterDeployment", k.RegisterDeployment.GetRecord().GetId()
 	case *enginev1.Command_DeleteDeployment:
 		return "DeleteDeployment", k.DeleteDeployment.GetId()
-	case *enginev1.Command_UpsertWebhookSource:
-		return "UpsertWebhookSource", k.UpsertWebhookSource.GetRecord().GetName()
-	case *enginev1.Command_DeleteWebhookSource:
-		return "DeleteWebhookSource", k.DeleteWebhookSource.GetName()
 	case *enginev1.Command_UpsertSecret:
 		return "UpsertSecret", k.UpsertSecret.GetRecord().GetName()
 	case *enginev1.Command_DeleteSecret:

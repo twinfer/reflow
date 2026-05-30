@@ -16,7 +16,6 @@ import (
 
 	"github.com/twinfer/reflow/pkg/reflowclient"
 	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -76,14 +75,12 @@ func cmdApply(ctx context.Context, args []string) error {
 
 func applyOneDoc(ctx context.Context, cli *reflowclient.Client, doc resourceDoc) error {
 	switch doc.Kind {
-	case "WebhookSource":
-		return applyWebhookSource(ctx, cli, doc)
 	case "Tenant":
 		return applyTenant(ctx, cli, doc)
 	case "":
 		return errors.New("missing kind")
 	default:
-		return fmt.Errorf("unknown kind %q (supported: WebhookSource, Tenant)", doc.Kind)
+		return fmt.Errorf("unknown kind %q (supported: Tenant)", doc.Kind)
 	}
 }
 
@@ -128,50 +125,6 @@ func decodeTenantSpec(spec map[string]any) (*enginev1.TenantRecord, error) {
 	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
 	if err := opts.Unmarshal(jsonBytes, &rec); err != nil {
 		return nil, fmt.Errorf("decode Tenant spec: %w", err)
-	}
-	return &rec, nil
-}
-
-func applyWebhookSource(ctx context.Context, cli *reflowclient.Client, doc resourceDoc) error {
-	if doc.Metadata.Name == "" {
-		return errors.New("metadata.name is required")
-	}
-	rec, err := decodeWebhookSourceSpec(doc.Spec)
-	if err != nil {
-		return err
-	}
-	rec.Name = doc.Metadata.Name
-	list, err := cli.Config.ListWebhookSources(ctx, connect.NewRequest(&configv1.ListWebhookSourcesRequest{}))
-	if err != nil {
-		return fmt.Errorf("read revision: %w", err)
-	}
-	resp, err := cli.Config.UpsertWebhookSource(ctx, connect.NewRequest(&configv1.UpsertWebhookSourceRequest{
-		Record:            rec,
-		IfTableRevisionEq: list.Msg.GetTableRevision(),
-	}))
-	if err != nil {
-		return err
-	}
-	fmt.Printf("webhook upserted (name=%s, table_revision=%d)\n",
-		rec.GetName(), resp.Msg.GetTableRevision())
-	return nil
-}
-
-// decodeWebhookSourceSpec round-trips spec → JSON → protojson into a
-// WebhookSourceRecord. protojson handles the SecretRef oneof natively:
-// either {env_var_name: "..."} or {file_path: "..."}.
-func decodeWebhookSourceSpec(spec map[string]any) (*enginev1.WebhookSourceRecord, error) {
-	if spec == nil {
-		return nil, errors.New("spec is required")
-	}
-	jsonBytes, err := json.Marshal(spec)
-	if err != nil {
-		return nil, fmt.Errorf("marshal spec: %w", err)
-	}
-	var rec enginev1.WebhookSourceRecord
-	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
-	if err := opts.Unmarshal(jsonBytes, &rec); err != nil {
-		return nil, fmt.Errorf("decode WebhookSource spec: %w", err)
 	}
 	return &rec, nil
 }

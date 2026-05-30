@@ -70,15 +70,6 @@ const (
 	ConfigDescribeDeploymentProcedure = "/reflow.config.v1.Config/DescribeDeployment"
 	// ConfigDeleteDeploymentProcedure is the fully-qualified name of the Config's DeleteDeployment RPC.
 	ConfigDeleteDeploymentProcedure = "/reflow.config.v1.Config/DeleteDeployment"
-	// ConfigUpsertWebhookSourceProcedure is the fully-qualified name of the Config's
-	// UpsertWebhookSource RPC.
-	ConfigUpsertWebhookSourceProcedure = "/reflow.config.v1.Config/UpsertWebhookSource"
-	// ConfigDeleteWebhookSourceProcedure is the fully-qualified name of the Config's
-	// DeleteWebhookSource RPC.
-	ConfigDeleteWebhookSourceProcedure = "/reflow.config.v1.Config/DeleteWebhookSource"
-	// ConfigListWebhookSourcesProcedure is the fully-qualified name of the Config's ListWebhookSources
-	// RPC.
-	ConfigListWebhookSourcesProcedure = "/reflow.config.v1.Config/ListWebhookSources"
 	// ConfigUpsertSecretProcedure is the fully-qualified name of the Config's UpsertSecret RPC.
 	ConfigUpsertSecretProcedure = "/reflow.config.v1.Config/UpsertSecret"
 	// ConfigDeleteSecretProcedure is the fully-qualified name of the Config's DeleteSecret RPC.
@@ -136,15 +127,6 @@ type ConfigClient interface {
 	// risk" acknowledgement; reflow does not currently scan partitions
 	// for active references.
 	DeleteDeployment(context.Context, *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error)
-	// UpsertWebhookSource / DeleteWebhookSource / ListWebhookSources
-	// mirror the event-source trio against shard 0's
-	// WebhookSourceTable. The record's secret_name references a row in
-	// the shard-0 SecretTable (UpsertSecret below); the webhook record
-	// carries no ciphertext or KMS material itself. Leader-only for
-	// mutating calls; List is SyncRead from any peer.
-	UpsertWebhookSource(context.Context, *connect.Request[configv1.UpsertWebhookSourceRequest]) (*connect.Response[configv1.UpsertWebhookSourceResponse], error)
-	DeleteWebhookSource(context.Context, *connect.Request[configv1.DeleteWebhookSourceRequest]) (*connect.Response[configv1.DeleteWebhookSourceResponse], error)
-	ListWebhookSources(context.Context, *connect.Request[configv1.ListWebhookSourcesRequest]) (*connect.Response[configv1.ListWebhookSourcesResponse], error)
 	// UpsertSecret / DeleteSecret / ListSecrets mirror the same trio
 	// against shard 0's SecretTable. Each SecretRecord references a
 	// ciphertext blob (gocloud.dev/blob URI) and a KEK (Tink KMS URI);
@@ -237,24 +219,6 @@ func NewConfigClient(httpClient connect.HTTPClient, baseURL string, opts ...conn
 			connect.WithSchema(configMethods.ByName("DeleteDeployment")),
 			connect.WithClientOptions(opts...),
 		),
-		upsertWebhookSource: connect.NewClient[configv1.UpsertWebhookSourceRequest, configv1.UpsertWebhookSourceResponse](
-			httpClient,
-			baseURL+ConfigUpsertWebhookSourceProcedure,
-			connect.WithSchema(configMethods.ByName("UpsertWebhookSource")),
-			connect.WithClientOptions(opts...),
-		),
-		deleteWebhookSource: connect.NewClient[configv1.DeleteWebhookSourceRequest, configv1.DeleteWebhookSourceResponse](
-			httpClient,
-			baseURL+ConfigDeleteWebhookSourceProcedure,
-			connect.WithSchema(configMethods.ByName("DeleteWebhookSource")),
-			connect.WithClientOptions(opts...),
-		),
-		listWebhookSources: connect.NewClient[configv1.ListWebhookSourcesRequest, configv1.ListWebhookSourcesResponse](
-			httpClient,
-			baseURL+ConfigListWebhookSourcesProcedure,
-			connect.WithSchema(configMethods.ByName("ListWebhookSources")),
-			connect.WithClientOptions(opts...),
-		),
 		upsertSecret: connect.NewClient[configv1.UpsertSecretRequest, configv1.UpsertSecretResponse](
 			httpClient,
 			baseURL+ConfigUpsertSecretProcedure,
@@ -342,9 +306,6 @@ type configClient struct {
 	listDeployments          *connect.Client[configv1.ListDeploymentsRequest, configv1.ListDeploymentsResponse]
 	describeDeployment       *connect.Client[configv1.DescribeDeploymentRequest, configv1.DescribeDeploymentResponse]
 	deleteDeployment         *connect.Client[configv1.DeleteDeploymentRequest, configv1.DeleteDeploymentResponse]
-	upsertWebhookSource      *connect.Client[configv1.UpsertWebhookSourceRequest, configv1.UpsertWebhookSourceResponse]
-	deleteWebhookSource      *connect.Client[configv1.DeleteWebhookSourceRequest, configv1.DeleteWebhookSourceResponse]
-	listWebhookSources       *connect.Client[configv1.ListWebhookSourcesRequest, configv1.ListWebhookSourcesResponse]
 	upsertSecret             *connect.Client[configv1.UpsertSecretRequest, configv1.UpsertSecretResponse]
 	deleteSecret             *connect.Client[configv1.DeleteSecretRequest, configv1.DeleteSecretResponse]
 	listSecrets              *connect.Client[configv1.ListSecretsRequest, configv1.ListSecretsResponse]
@@ -378,21 +339,6 @@ func (c *configClient) DescribeDeployment(ctx context.Context, req *connect.Requ
 // DeleteDeployment calls reflow.config.v1.Config.DeleteDeployment.
 func (c *configClient) DeleteDeployment(ctx context.Context, req *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error) {
 	return c.deleteDeployment.CallUnary(ctx, req)
-}
-
-// UpsertWebhookSource calls reflow.config.v1.Config.UpsertWebhookSource.
-func (c *configClient) UpsertWebhookSource(ctx context.Context, req *connect.Request[configv1.UpsertWebhookSourceRequest]) (*connect.Response[configv1.UpsertWebhookSourceResponse], error) {
-	return c.upsertWebhookSource.CallUnary(ctx, req)
-}
-
-// DeleteWebhookSource calls reflow.config.v1.Config.DeleteWebhookSource.
-func (c *configClient) DeleteWebhookSource(ctx context.Context, req *connect.Request[configv1.DeleteWebhookSourceRequest]) (*connect.Response[configv1.DeleteWebhookSourceResponse], error) {
-	return c.deleteWebhookSource.CallUnary(ctx, req)
-}
-
-// ListWebhookSources calls reflow.config.v1.Config.ListWebhookSources.
-func (c *configClient) ListWebhookSources(ctx context.Context, req *connect.Request[configv1.ListWebhookSourcesRequest]) (*connect.Response[configv1.ListWebhookSourcesResponse], error) {
-	return c.listWebhookSources.CallUnary(ctx, req)
 }
 
 // UpsertSecret calls reflow.config.v1.Config.UpsertSecret.
@@ -487,15 +433,6 @@ type ConfigHandler interface {
 	// risk" acknowledgement; reflow does not currently scan partitions
 	// for active references.
 	DeleteDeployment(context.Context, *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error)
-	// UpsertWebhookSource / DeleteWebhookSource / ListWebhookSources
-	// mirror the event-source trio against shard 0's
-	// WebhookSourceTable. The record's secret_name references a row in
-	// the shard-0 SecretTable (UpsertSecret below); the webhook record
-	// carries no ciphertext or KMS material itself. Leader-only for
-	// mutating calls; List is SyncRead from any peer.
-	UpsertWebhookSource(context.Context, *connect.Request[configv1.UpsertWebhookSourceRequest]) (*connect.Response[configv1.UpsertWebhookSourceResponse], error)
-	DeleteWebhookSource(context.Context, *connect.Request[configv1.DeleteWebhookSourceRequest]) (*connect.Response[configv1.DeleteWebhookSourceResponse], error)
-	ListWebhookSources(context.Context, *connect.Request[configv1.ListWebhookSourcesRequest]) (*connect.Response[configv1.ListWebhookSourcesResponse], error)
 	// UpsertSecret / DeleteSecret / ListSecrets mirror the same trio
 	// against shard 0's SecretTable. Each SecretRecord references a
 	// ciphertext blob (gocloud.dev/blob URI) and a KEK (Tink KMS URI);
@@ -582,24 +519,6 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 		ConfigDeleteDeploymentProcedure,
 		svc.DeleteDeployment,
 		connect.WithSchema(configMethods.ByName("DeleteDeployment")),
-		connect.WithHandlerOptions(opts...),
-	)
-	configUpsertWebhookSourceHandler := connect.NewUnaryHandler(
-		ConfigUpsertWebhookSourceProcedure,
-		svc.UpsertWebhookSource,
-		connect.WithSchema(configMethods.ByName("UpsertWebhookSource")),
-		connect.WithHandlerOptions(opts...),
-	)
-	configDeleteWebhookSourceHandler := connect.NewUnaryHandler(
-		ConfigDeleteWebhookSourceProcedure,
-		svc.DeleteWebhookSource,
-		connect.WithSchema(configMethods.ByName("DeleteWebhookSource")),
-		connect.WithHandlerOptions(opts...),
-	)
-	configListWebhookSourcesHandler := connect.NewUnaryHandler(
-		ConfigListWebhookSourcesProcedure,
-		svc.ListWebhookSources,
-		connect.WithSchema(configMethods.ByName("ListWebhookSources")),
 		connect.WithHandlerOptions(opts...),
 	)
 	configUpsertSecretHandler := connect.NewUnaryHandler(
@@ -690,12 +609,6 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 			configDescribeDeploymentHandler.ServeHTTP(w, r)
 		case ConfigDeleteDeploymentProcedure:
 			configDeleteDeploymentHandler.ServeHTTP(w, r)
-		case ConfigUpsertWebhookSourceProcedure:
-			configUpsertWebhookSourceHandler.ServeHTTP(w, r)
-		case ConfigDeleteWebhookSourceProcedure:
-			configDeleteWebhookSourceHandler.ServeHTTP(w, r)
-		case ConfigListWebhookSourcesProcedure:
-			configListWebhookSourcesHandler.ServeHTTP(w, r)
 		case ConfigUpsertSecretProcedure:
 			configUpsertSecretHandler.ServeHTTP(w, r)
 		case ConfigDeleteSecretProcedure:
@@ -745,18 +658,6 @@ func (UnimplementedConfigHandler) DescribeDeployment(context.Context, *connect.R
 
 func (UnimplementedConfigHandler) DeleteDeployment(context.Context, *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DeleteDeployment is not implemented"))
-}
-
-func (UnimplementedConfigHandler) UpsertWebhookSource(context.Context, *connect.Request[configv1.UpsertWebhookSourceRequest]) (*connect.Response[configv1.UpsertWebhookSourceResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.UpsertWebhookSource is not implemented"))
-}
-
-func (UnimplementedConfigHandler) DeleteWebhookSource(context.Context, *connect.Request[configv1.DeleteWebhookSourceRequest]) (*connect.Response[configv1.DeleteWebhookSourceResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DeleteWebhookSource is not implemented"))
-}
-
-func (UnimplementedConfigHandler) ListWebhookSources(context.Context, *connect.Request[configv1.ListWebhookSourcesRequest]) (*connect.Response[configv1.ListWebhookSourcesResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.ListWebhookSources is not implemented"))
 }
 
 func (UnimplementedConfigHandler) UpsertSecret(context.Context, *connect.Request[configv1.UpsertSecretRequest]) (*connect.Response[configv1.UpsertSecretResponse], error) {

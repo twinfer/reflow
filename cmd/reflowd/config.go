@@ -18,7 +18,7 @@ import (
 // hosted on the same admin Connect listener as ClusterCtl.
 func dispatchConfig(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: reflowd config {register-deployment|list-deployments|describe-deployment|delete-deployment|webhooks|apply|export|get|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|upsert-webhook|audit|ca|create-join-token|list-join-tokens|delete-join-token|issue-operator|upsert-cluster-authz-policy|get-cluster-authz-policy} [flags]")
+		return fmt.Errorf("usage: reflowd config {register-deployment|list-deployments|describe-deployment|delete-deployment|apply|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|audit|ca|create-join-token|list-join-tokens|delete-join-token|issue-operator|upsert-cluster-authz-policy|get-cluster-authz-policy} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -31,14 +31,8 @@ func dispatchConfig(ctx context.Context, args []string) error {
 		return cmdDescribeDeployment(ctx, rest)
 	case "delete-deployment":
 		return cmdDeleteDeployment(ctx, rest)
-	case "webhooks":
-		return cmdWebhooks(ctx, rest)
 	case "apply":
 		return cmdApply(ctx, rest)
-	case "export":
-		return cmdExport(ctx, rest)
-	case "get":
-		return cmdGet(ctx, rest)
 	case "init-kek":
 		return cmdInitKEK(ctx, rest)
 	case "create-secret":
@@ -49,8 +43,6 @@ func dispatchConfig(ctx context.Context, args []string) error {
 		return cmdListSecrets(ctx, rest)
 	case "decrypt-secret":
 		return cmdDecryptSecret(ctx, rest)
-	case "upsert-webhook":
-		return cmdUpsertWebhook(ctx, rest)
 	case "audit":
 		return cmdAudit(ctx, rest)
 	case "ca":

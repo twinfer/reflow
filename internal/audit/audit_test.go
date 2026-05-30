@@ -70,22 +70,6 @@ func TestKindAndTarget_AllAuditableCommands(t *testing.T) {
 			wantTarget: "stripe-webhook-key",
 		},
 		{
-			name: "UpsertWebhookSource uses record.name",
-			cmd: &enginev1.Command{Kind: &enginev1.Command_UpsertWebhookSource{
-				UpsertWebhookSource: &enginev1.UpsertWebhookSource{Record: &enginev1.WebhookSourceRecord{Name: "github-app"}},
-			}},
-			wantKind:   "UpsertWebhookSource",
-			wantTarget: "github-app",
-		},
-		{
-			name: "DeleteWebhookSource uses name",
-			cmd: &enginev1.Command{Kind: &enginev1.Command_DeleteWebhookSource{
-				DeleteWebhookSource: &enginev1.DeleteWebhookSource{Name: "github-app"},
-			}},
-			wantKind:   "DeleteWebhookSource",
-			wantTarget: "github-app",
-		},
-		{
 			name: "RegisterDeployment uses record.id",
 			cmd: &enginev1.Command{Kind: &enginev1.Command_RegisterDeployment{
 				RegisterDeployment: &enginev1.RegisterDeployment{Record: &enginev1.DeploymentRecord{Id: "dep-abc"}},

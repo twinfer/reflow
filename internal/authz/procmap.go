@@ -70,7 +70,6 @@ var procMap = map[string]procEntry{
 	configv1connect.ConfigListSecretsProcedure:        {"ListSecrets", []string{groupConfigRead}},
 
 	// ----- Config: platform plane (operator only) -----
-	configv1connect.ConfigListAuditLogProcedure:             {"ListAuditLog", []string{groupPlatformConfig}},
 	configv1connect.ConfigUpsertCARootProcedure:             {"UpsertCARoot", []string{groupPlatformConfig}},
 	configv1connect.ConfigDeleteCARootProcedure:             {"DeleteCARoot", []string{groupPlatformConfig}},
 	configv1connect.ConfigListCARootsProcedure:              {"ListCARoots", []string{groupPlatformConfig}},

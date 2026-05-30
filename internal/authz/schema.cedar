@@ -77,7 +77,6 @@ action "DescribeDeployment" in [Action::"ConfigReadActions"] appliesTo { princip
 action "ListSecrets"        in [Action::"ConfigReadActions"] appliesTo { principal: [ClusterOperator, TenantAdmin], resource: SecretRecord };
 
 // ===================== Config: platform plane (operator only) =====================
-action "ListAuditLog"    in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 action "UpsertCARoot"    in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 action "DeleteCARoot"    in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 action "ListCARoots"     in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };

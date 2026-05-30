@@ -76,8 +76,6 @@ const (
 	ConfigDeleteSecretProcedure = "/reflow.config.v1.Config/DeleteSecret"
 	// ConfigListSecretsProcedure is the fully-qualified name of the Config's ListSecrets RPC.
 	ConfigListSecretsProcedure = "/reflow.config.v1.Config/ListSecrets"
-	// ConfigListAuditLogProcedure is the fully-qualified name of the Config's ListAuditLog RPC.
-	ConfigListAuditLogProcedure = "/reflow.config.v1.Config/ListAuditLog"
 	// ConfigUpsertCARootProcedure is the fully-qualified name of the Config's UpsertCARoot RPC.
 	ConfigUpsertCARootProcedure = "/reflow.config.v1.Config/UpsertCARoot"
 	// ConfigDeleteCARootProcedure is the fully-qualified name of the Config's DeleteCARoot RPC.
@@ -137,14 +135,6 @@ type ConfigClient interface {
 	UpsertSecret(context.Context, *connect.Request[configv1.UpsertSecretRequest]) (*connect.Response[configv1.UpsertSecretResponse], error)
 	DeleteSecret(context.Context, *connect.Request[configv1.DeleteSecretRequest]) (*connect.Response[configv1.DeleteSecretResponse], error)
 	ListSecrets(context.Context, *connect.Request[configv1.ListSecretsRequest]) (*connect.Response[configv1.ListSecretsResponse], error)
-	// Audit log read access. Operator-facing query over shard 0's
-	// AuditLogTable; rows are written from the FSM apply path in the
-	// same Batch as the config mutation they audit. SyncRead — any peer
-	// can serve. Returns rows in raft_index ascending order; the caller
-	// narrows via since_ms / until_ms / tenant_id / action_kind filters
-	// and the optional limit. A returned `more` flag indicates the
-	// limit was reached before the filter range was exhausted.
-	ListAuditLog(context.Context, *connect.Request[configv1.ListAuditLogRequest]) (*connect.Response[configv1.ListAuditLogResponse], error)
 	// UpsertCARoot / DeleteCARoot / ListCARoots mirror the secret trio
 	// against shard 0's CARootTable. Each CARootRecord carries a CA
 	// cert (PEM) plus a pointer to the SecretTable row holding the
@@ -237,12 +227,6 @@ func NewConfigClient(httpClient connect.HTTPClient, baseURL string, opts ...conn
 			connect.WithSchema(configMethods.ByName("ListSecrets")),
 			connect.WithClientOptions(opts...),
 		),
-		listAuditLog: connect.NewClient[configv1.ListAuditLogRequest, configv1.ListAuditLogResponse](
-			httpClient,
-			baseURL+ConfigListAuditLogProcedure,
-			connect.WithSchema(configMethods.ByName("ListAuditLog")),
-			connect.WithClientOptions(opts...),
-		),
 		upsertCARoot: connect.NewClient[configv1.UpsertCARootRequest, configv1.UpsertCARootResponse](
 			httpClient,
 			baseURL+ConfigUpsertCARootProcedure,
@@ -309,7 +293,6 @@ type configClient struct {
 	upsertSecret             *connect.Client[configv1.UpsertSecretRequest, configv1.UpsertSecretResponse]
 	deleteSecret             *connect.Client[configv1.DeleteSecretRequest, configv1.DeleteSecretResponse]
 	listSecrets              *connect.Client[configv1.ListSecretsRequest, configv1.ListSecretsResponse]
-	listAuditLog             *connect.Client[configv1.ListAuditLogRequest, configv1.ListAuditLogResponse]
 	upsertCARoot             *connect.Client[configv1.UpsertCARootRequest, configv1.UpsertCARootResponse]
 	deleteCARoot             *connect.Client[configv1.DeleteCARootRequest, configv1.DeleteCARootResponse]
 	listCARoots              *connect.Client[configv1.ListCARootsRequest, configv1.ListCARootsResponse]
@@ -354,11 +337,6 @@ func (c *configClient) DeleteSecret(ctx context.Context, req *connect.Request[co
 // ListSecrets calls reflow.config.v1.Config.ListSecrets.
 func (c *configClient) ListSecrets(ctx context.Context, req *connect.Request[configv1.ListSecretsRequest]) (*connect.Response[configv1.ListSecretsResponse], error) {
 	return c.listSecrets.CallUnary(ctx, req)
-}
-
-// ListAuditLog calls reflow.config.v1.Config.ListAuditLog.
-func (c *configClient) ListAuditLog(ctx context.Context, req *connect.Request[configv1.ListAuditLogRequest]) (*connect.Response[configv1.ListAuditLogResponse], error) {
-	return c.listAuditLog.CallUnary(ctx, req)
 }
 
 // UpsertCARoot calls reflow.config.v1.Config.UpsertCARoot.
@@ -443,14 +421,6 @@ type ConfigHandler interface {
 	UpsertSecret(context.Context, *connect.Request[configv1.UpsertSecretRequest]) (*connect.Response[configv1.UpsertSecretResponse], error)
 	DeleteSecret(context.Context, *connect.Request[configv1.DeleteSecretRequest]) (*connect.Response[configv1.DeleteSecretResponse], error)
 	ListSecrets(context.Context, *connect.Request[configv1.ListSecretsRequest]) (*connect.Response[configv1.ListSecretsResponse], error)
-	// Audit log read access. Operator-facing query over shard 0's
-	// AuditLogTable; rows are written from the FSM apply path in the
-	// same Batch as the config mutation they audit. SyncRead — any peer
-	// can serve. Returns rows in raft_index ascending order; the caller
-	// narrows via since_ms / until_ms / tenant_id / action_kind filters
-	// and the optional limit. A returned `more` flag indicates the
-	// limit was reached before the filter range was exhausted.
-	ListAuditLog(context.Context, *connect.Request[configv1.ListAuditLogRequest]) (*connect.Response[configv1.ListAuditLogResponse], error)
 	// UpsertCARoot / DeleteCARoot / ListCARoots mirror the secret trio
 	// against shard 0's CARootTable. Each CARootRecord carries a CA
 	// cert (PEM) plus a pointer to the SecretTable row holding the
@@ -539,12 +509,6 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 		connect.WithSchema(configMethods.ByName("ListSecrets")),
 		connect.WithHandlerOptions(opts...),
 	)
-	configListAuditLogHandler := connect.NewUnaryHandler(
-		ConfigListAuditLogProcedure,
-		svc.ListAuditLog,
-		connect.WithSchema(configMethods.ByName("ListAuditLog")),
-		connect.WithHandlerOptions(opts...),
-	)
 	configUpsertCARootHandler := connect.NewUnaryHandler(
 		ConfigUpsertCARootProcedure,
 		svc.UpsertCARoot,
@@ -615,8 +579,6 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 			configDeleteSecretHandler.ServeHTTP(w, r)
 		case ConfigListSecretsProcedure:
 			configListSecretsHandler.ServeHTTP(w, r)
-		case ConfigListAuditLogProcedure:
-			configListAuditLogHandler.ServeHTTP(w, r)
 		case ConfigUpsertCARootProcedure:
 			configUpsertCARootHandler.ServeHTTP(w, r)
 		case ConfigDeleteCARootProcedure:
@@ -670,10 +632,6 @@ func (UnimplementedConfigHandler) DeleteSecret(context.Context, *connect.Request
 
 func (UnimplementedConfigHandler) ListSecrets(context.Context, *connect.Request[configv1.ListSecretsRequest]) (*connect.Response[configv1.ListSecretsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.ListSecrets is not implemented"))
-}
-
-func (UnimplementedConfigHandler) ListAuditLog(context.Context, *connect.Request[configv1.ListAuditLogRequest]) (*connect.Response[configv1.ListAuditLogResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.ListAuditLog is not implemented"))
 }
 
 func (UnimplementedConfigHandler) UpsertCARoot(context.Context, *connect.Request[configv1.UpsertCARootRequest]) (*connect.Response[configv1.UpsertCARootResponse], error) {

@@ -6,12 +6,10 @@ import (
 	"io"
 	"log/slog"
 	"slices"
-	"time"
 
 	"github.com/lni/dragonboat/v4/statemachine"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/twinfer/reflow/internal/audit"
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/keys"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -41,14 +39,6 @@ type Config struct {
 	Snapshotter SnapshotterRef
 	Leadership  LeadershipObserver
 	Log         *slog.Logger
-	// AuditLogger receives a structured audit record (action_kind,
-	// target, tenant_id, principal, raft_index, ts_ms) for every
-	// successfully-applied operator-initiated mutation. Nil = slog
-	// emission disabled; the AuditLogTable Pebble write is always
-	// performed and remains the source of truth. Operators fan out
-	// via slog.NewMultiHandler — Reflow ships no sink. See
-	// internal/audit for the recipe.
-	AuditLogger *slog.Logger
 	// Notifiers carry per-table change signals into local subsystems
 	// (event-source Reconciler, etc.). Each one fires at most once per
 	// Update batch and only when an apply arm actually touched the
@@ -166,12 +156,6 @@ func (f *FSM) Update(entries []statemachine.Entry) ([]statemachine.Entry, error)
 		notifySet = append(notifySet, n)
 	}
 
-	// deferAudit collects records to emit to the slog logger AFTER
-	// batch.Commit succeeds. Emitting before commit would risk surfacing
-	// an audit record for a write that ultimately failed (the in-batch
-	// AuditLogTable row would roll back; the slog record would not).
-	var deferAudit []*enginev1.AuditLogRecord
-
 	for i, ent := range entries {
 		entries[i].Result = statemachine.Result{Value: uint64(len(ent.Cmd))}
 
@@ -198,15 +182,6 @@ func (f *FSM) Update(entries []statemachine.Entry) ([]statemachine.Entry, error)
 			for _, n := range applied.notify {
 				noteOnce(n)
 			}
-			// Audit (config-change log). Writes into the same batch as the
-			// apply so the audit row and the audited mutation commit
-			// atomically; also emits to the operator-supplied slog logger
-			// when wired. Skipped on precondition-failure (applied == nil)
-			// and on non-auditable variants (recordAudit checks kind == "").
-			pendingAudit := f.recordAudit(batch, &env, ent.Index)
-			if pendingAudit != nil {
-				deferAudit = append(deferAudit, pendingAudit)
-			}
 		} else if env.GetPrecondition() != nil &&
 			env.GetPrecondition().GetIfTableRevisionEq() != 0 {
 			// applyCommand returned nil because precondition failed.
@@ -231,12 +206,6 @@ func (f *FSM) Update(entries []statemachine.Entry) ([]statemachine.Entry, error)
 	// Subscribers wake on their own goroutines, SyncRead, and converge.
 	for _, n := range notifySet {
 		n.Bump()
-	}
-	// Slog audit fan-out runs on the FSM apply goroutine, post-commit.
-	// audit.Emit is nil-safe; the AuditLogTable Pebble write inside the
-	// batch is the durable record either way.
-	for _, rec := range deferAudit {
-		audit.Emit(f.cfg.AuditLogger, rec)
 	}
 	return entries, nil
 }
@@ -332,8 +301,6 @@ func (f *FSM) applyCommand(
 		return f.applyCompleteRebalanceStep(batch, k.CompleteRebalanceStep, raftIndex)
 	case *enginev1.Command_SetRebalanceDrain:
 		return f.applySetRebalanceDrain(batch, env, k.SetRebalanceDrain, raftIndex)
-	case *enginev1.Command_GcAuditLog:
-		return f.applyGcAuditLog(batch, k.GcAuditLog, raftIndex)
 	case *enginev1.Command_UpsertCaRoot:
 		return f.applyUpsertCARoot(batch, env, k.UpsertCaRoot, raftIndex)
 	case *enginev1.Command_DeleteCaRoot:
@@ -1471,20 +1438,6 @@ type (
 	// bootstrap server calls this to locate a redeemed token by hash on
 	// each MeshSign call; admin RPC List paths read the same shape.
 	LookupJoinTokens struct{}
-
-	// LookupAuditLog returns *AuditLogList — AuditLogRecord rows
-	// matching the supplied filters in raft_index ascending order, plus
-	// a More flag set when the limit was reached before the filter
-	// range was exhausted. Filter semantics match
-	// AuditLogTable.List (see internal/engine/cluster/store.go). The
-	// Config server's ListAuditLog RPC is the only caller today.
-	LookupAuditLog struct {
-		SinceMs      uint64
-		UntilMs      uint64
-		TenantFilter uint32
-		ActionFilter string
-		Limit        int
-	}
 )
 
 // DeploymentList bundles every row in DeploymentTable with the table's
@@ -1541,16 +1494,6 @@ type LPTransfersList struct {
 type RebalanceDrainList struct {
 	Records       []*enginev1.RebalanceDrainRecord
 	TableRevision uint64
-}
-
-// AuditLogList bundles the AuditLogTable rows matching a LookupAuditLog
-// filter. More is true when the limit was reached before the filter
-// range was exhausted; callers narrow the time window or raise the
-// limit and re-issue. No table revision: AuditLogTable is append-only
-// and has no CAS gate, so a revision counter would carry no signal.
-type AuditLogList struct {
-	Records []*enginev1.AuditLogRecord
-	More    bool
 }
 
 // HandlerInfo is the result of LookupHandlerInfo — the (service, handler)
@@ -1690,27 +1633,6 @@ func (f *FSM) Lookup(query any) (any, error) {
 			return nil, err
 		}
 		return &RebalanceDrainList{Records: records, TableRevision: rev}, nil
-	case LookupAuditLog:
-		// Filter at the table layer; cap result size with the
-		// server-side ceiling (handler also applies its own cap). The
-		// More flag reflects whether the limit clamped the response;
-		// AuditLogTable.List itself doesn't report this so we ask for
-		// limit+1 and trim, exactly like the typical "is there more"
-		// pattern.
-		ask := q.Limit
-		if ask > 0 {
-			ask++
-		}
-		records, err := (AuditLogTable{S: store}).List(q.SinceMs, q.UntilMs, q.TenantFilter, q.ActionFilter, ask)
-		if err != nil {
-			return nil, err
-		}
-		more := false
-		if q.Limit > 0 && len(records) > q.Limit {
-			records = records[:q.Limit]
-			more = true
-		}
-		return &AuditLogList{Records: records, More: more}, nil
 	default:
 		return nil, fmt.Errorf("cluster: unknown lookup type %T", query)
 	}
@@ -1750,77 +1672,3 @@ func (f *FSM) Close() error {
 	return nil
 }
 
-// applyGcAuditLog deletes AuditLogTable rows whose ts_ms is strictly
-// less than before_ts_ms. Idempotent: re-applying with the same or an
-// earlier bound is a no-op. The arm itself is auditable (recordAudit
-// emits a "GcAuditLog" record with empty target), so operators can
-// see the retention pass land — including the post-deletion row count
-// indirectly via raft_index gaps.
-func (f *FSM) applyGcAuditLog(batch storage.Batch, cmd *enginev1.GcAuditLog, raftIndex uint64) (*applyResult, error) {
-	before := cmd.GetBeforeTsMs()
-	if before == 0 {
-		f.cfg.Log.Warn("cluster: GcAuditLog missing before_ts_ms; ignoring",
-			"raft_index", raftIndex)
-		return &applyResult{}, nil
-	}
-	deleted, err := (AuditLogTable{S: batch}).DeleteOlderThan(batch, before)
-	if err != nil {
-		return nil, fmt.Errorf("cluster: gc audit log: %w", err)
-	}
-	if deleted > 0 {
-		f.cfg.Log.Info("cluster: audit log GC",
-			"raft_index", raftIndex, "before_ts_ms", before, "deleted", deleted)
-	}
-	return &applyResult{}, nil
-}
-
-// recordAudit builds and persists one AuditLogRecord into batch for the
-// given (envelope, raftIndex). Returns the record so the Update loop
-// can fan it out to the slog logger AFTER batch.Commit succeeds.
-//
-// Returns nil when the command kind is not auditable (AnnounceLeader,
-// partition-only commands that never reach shard 0, empty command);
-// audit.KindAndTarget signals this by returning an empty kind. Returns
-// nil and warns when the AuditLogTable Put fails — failing the whole
-// apply for an audit-side error would halt the shard (dragonboat
-// disk.go:113), which is worse than missing one audit row.
-//
-// ts_ms is sourced from Header.created_at_ms (deterministic, set by
-// the proposer, agrees across replicas — same pattern as the rest of
-// the apply path per internal/engine/CLAUDE.md). Falls back to the
-// FSM apply-path wall clock only when the header is unset (engine-
-// self-proposed commands from a path that forgot to stamp; rare).
-//
-// principal "engine" is substituted for empty Header.principal — by
-// convention, FSM-self-proposed commands (rebalancer, lp-mover, audit
-// GC) leave it empty.
-func (f *FSM) recordAudit(batch storage.Batch, env *enginev1.Envelope, raftIndex uint64) *enginev1.AuditLogRecord {
-	cmd := env.GetCommand()
-	kind, target := audit.KindAndTarget(cmd)
-	if kind == "" {
-		return nil
-	}
-	hdr := env.GetHeader()
-	ts := hdr.GetCreatedAtMs()
-	if ts == 0 {
-		ts = uint64(time.Now().UnixMilli())
-	}
-	principal := hdr.GetPrincipal()
-	if principal == "" {
-		principal = audit.EnginePrincipal
-	}
-	rec := &enginev1.AuditLogRecord{
-		RaftIndex:  raftIndex,
-		TsMs:       ts,
-		ActionKind: kind,
-		Target:     target,
-		TenantId:   hdr.GetTenantId(),
-		Principal:  principal,
-	}
-	if err := (AuditLogTable{S: batch}).Put(batch, rec); err != nil {
-		f.cfg.Log.Warn("cluster: audit log write failed; continuing",
-			"raft_index", raftIndex, "action_kind", kind, "err", err)
-		return nil
-	}
-	return rec
-}

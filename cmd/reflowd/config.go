@@ -18,7 +18,7 @@ import (
 // hosted on the same admin Connect listener as ClusterCtl.
 func dispatchConfig(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: reflowd config {register-deployment|list-deployments|describe-deployment|delete-deployment|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|audit|ca|create-join-token|list-join-tokens|delete-join-token|issue-operator|upsert-cluster-authz-policy|get-cluster-authz-policy} [flags]")
+		return fmt.Errorf("usage: reflowd config {register-deployment|list-deployments|describe-deployment|delete-deployment|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|ca|create-join-token|list-join-tokens|delete-join-token|issue-operator|upsert-cluster-authz-policy|get-cluster-authz-policy} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -41,8 +41,6 @@ func dispatchConfig(ctx context.Context, args []string) error {
 		return cmdListSecrets(ctx, rest)
 	case "decrypt-secret":
 		return cmdDecryptSecret(ctx, rest)
-	case "audit":
-		return cmdAudit(ctx, rest)
 	case "ca":
 		return dispatchCA(ctx, rest)
 	case "create-join-token":

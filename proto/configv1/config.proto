@@ -74,15 +74,6 @@ service Config {
   rpc DeleteSecret(DeleteSecretRequest) returns (DeleteSecretResponse);
   rpc ListSecrets(ListSecretsRequest) returns (ListSecretsResponse);
 
-  // Audit log read access. Operator-facing query over shard 0's
-  // AuditLogTable; rows are written from the FSM apply path in the
-  // same Batch as the config mutation they audit. SyncRead — any peer
-  // can serve. Returns rows in raft_index ascending order; the caller
-  // narrows via since_ms / until_ms / tenant_id / action_kind filters
-  // and the optional limit. A returned `more` flag indicates the
-  // limit was reached before the filter range was exhausted.
-  rpc ListAuditLog(ListAuditLogRequest) returns (ListAuditLogResponse);
-
   // UpsertCARoot / DeleteCARoot / ListCARoots mirror the secret trio
   // against shard 0's CARootTable. Each CARootRecord carries a CA
   // cert (PEM) plus a pointer to the SecretTable row holding the
@@ -240,35 +231,6 @@ message LeaderHint {
   string admin_endpoint = 2;
 }
 
-// ListAuditLogRequest narrows the AuditLogTable scan. All filters are
-// optional: zero-valued fields disable that filter dimension.
-//   - since_ms / until_ms: ts_ms inclusive lower / exclusive upper bound.
-//     0 means "no bound on that side".
-//   - tenant_id: when non-zero, return only rows scoped to this tenant
-//     (including audit rows for that tenant's own UpsertTenant /
-//     UpsertTenantDEK / ... events). 0 returns every tenant including
-//     the default-tenant sentinel and engine-self-proposed rows.
-//   - action_kind: when non-empty, return only rows whose action_kind
-//     exactly matches (e.g. "UpsertTenant").
-//   - limit: cap the response size. 0 means "no caller-side cap" — the
-//     server still applies a hard ceiling (configurable; see the
-//     handler implementation) to keep one query from monopolizing
-//     a SyncRead.
-message ListAuditLogRequest {
-  uint64 since_ms = 1;
-  uint64 until_ms = 2;
-  uint32 tenant_id = 3;
-  string action_kind = 4;
-  uint32 limit = 5;
-}
-
-message ListAuditLogResponse {
-  repeated reflow.engine.v1.AuditLogRecord records = 1;
-  // more is true when the server-side limit (caller's or the handler's
-  // hard ceiling) cut the response short. Clients narrow the time
-  // window or increase limit and re-issue.
-  bool more = 2;
-}
 
 // CreateJoinTokenRequest configures a one-time bootstrap credential.
 //   - kind: NODE for a `reflowd run --join` flow, OPERATOR for

@@ -42,44 +42,6 @@ type Config struct {
 	KMS          KMSConfig          `koanf:"kms"`
 	PKI          PKIConfig          `koanf:"pki"`
 	Rebalance    RebalanceConfig    `koanf:"rebalance"`
-	Audit        AuditConfig        `koanf:"audit"`
-}
-
-// AuditConfig configures the cluster-FSM config-change audit log.
-// Every operator-initiated mutation on shard 0 (Upsert*, Delete*, ...)
-// is written into an append-only AuditLogTable in the same Pebble
-// batch as the mutation, and optionally pushed to Logger for SIEM
-// fan-out. The durable Pebble write is always performed; Logger is
-// the slog escape hatch.
-//
-// Reflow ships no sink. Operators wire Logger themselves and compose
-// fan-out via Go 1.26 stdlib slog.NewMultiHandler — see
-// internal/audit for the recipe. The retention loop on the metadata
-// leader periodically range-deletes rows older than RetentionDuration
-// via a Raft-proposed Command_GcAuditLog; the cadence is GcInterval
-// (default 1h).
-type AuditConfig struct {
-	// Logger is programmatic-only: operators wanting slog fan-out
-	// inject a *slog.Logger after loading koanf config. Nil disables
-	// the slog path; the durable AuditLogTable Pebble write is
-	// unconditional.
-	Logger *slog.Logger `koanf:"-"`
-
-	// RetentionDuration bounds how long audit rows persist on shard 0.
-	// The metadata leader proposes Command_GcAuditLog{before_ts_ms}
-	// every GcInterval to delete older rows.
-	//
-	// Pointer to disambiguate "unset" (nil → withDefaults fills 90d)
-	// from "explicit 0" (non-nil pointer to 0 → retention disabled,
-	// rows accumulate indefinitely — fine for tests). Same convention
-	// as RebalanceConfig.MinSecondsBetweenTransfers.
-	RetentionDuration *time.Duration `koanf:"retention_duration"`
-
-	// GcInterval is the cadence at which the leader-scoped GC
-	// goroutine proposes a retention pass. Zero defaults to 1 hour.
-	// Retention precision is bounded by GcInterval, not by the storage
-	// layer.
-	GcInterval time.Duration `koanf:"gc_interval"`
 }
 
 // KMSConfig configures the KMS providers Reflow registers in Tink's

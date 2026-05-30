@@ -629,38 +629,6 @@ func (s *Server) readCARootRevision(ctx context.Context) (uint64, error) {
 // asks for no limit (request.limit == 0). Keeps one operator query
 // from monopolizing the shard-0 SyncRead — operators with deeper
 // queries narrow the time window and paginate.
-const auditLogHardLimit = 10_000
-
-// ListAuditLog SyncReads AuditLogRecord rows from shard 0 matching
-// the request filter. Operator-only read; no leader gate (SyncRead
-// routes to the local node when this peer is current, else round-trips
-// to the leader via dragonboat). The handler caps the limit at
-// auditLogHardLimit even when the request asks for more.
-func (s *Server) ListAuditLog(ctx context.Context, req *connect.Request[configv1.ListAuditLogRequest]) (*connect.Response[configv1.ListAuditLogResponse], error) {
-	in := req.Msg
-	limit := int(in.GetLimit())
-	if limit <= 0 || limit > auditLogHardLimit {
-		limit = auditLogHardLimit
-	}
-	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
-	defer cancel()
-	out, err := s.host.AuditLog(callCtx, cluster.LookupAuditLog{
-		SinceMs:      in.GetSinceMs(),
-		UntilMs:      in.GetUntilMs(),
-		TenantFilter: in.GetTenantId(),
-		ActionFilter: in.GetActionKind(),
-		Limit:        limit,
-	})
-	if err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable,
-			fmt.Errorf("config: read audit log: %w", err))
-	}
-	return connect.NewResponse(&configv1.ListAuditLogResponse{
-		Records: out.Records,
-		More:    out.More,
-	}), nil
-}
-
 // validateCARootRecord enforces shape rules on a CARootRecord. The
 // signing key is NOT loaded here: the per-node ClusterIssuer surfaces
 // resolve errors via reflow_pki_ca_sign_errors_total, and coupling

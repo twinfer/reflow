@@ -29,15 +29,6 @@
 //	                                   autonomous rebalancer subtracts
 //	                                   drained shards from the planner's
 //	                                   input set)
-//	auditlog/<8-byte BE raft_index> -> AuditLogRecord (append-only
-//	                                   config-change audit; written
-//	                                   in the same Batch as the
-//	                                   audited mutation. raft_index
-//	                                   is monotonic and unique across
-//	                                   the cluster lifetime, so the
-//	                                   key never collides. Retention
-//	                                   GC range-deletes by raft_index
-//	                                   span derived from ts_ms.)
 //	caroot/<name>                   -> CARootRecord (one row per
 //	                                   cluster CA root; "active" is
 //	                                   the conventional row name).
@@ -72,7 +63,6 @@ const (
 	lpOwnerPrefix         = "lpowner/"
 	lpTransferPrefix      = "lptransfer/"
 	rebalanceDrainPrefix  = "rebalance_drain/"
-	auditLogPrefix        = "auditlog/"
 	caRootPrefix          = "caroot/"
 	joinTokenPrefix       = "jointoken/"
 	tableRevisionPrefix   = "tablerev/"
@@ -225,22 +215,6 @@ func RebalanceDrainKey(shardID uint64) []byte {
 }
 
 
-// AuditLogPrefix returns the auditlog/ namespace prefix. Forward
-// range iteration yields rows in raft_index ascending order because
-// the 8-byte BE encoding of raft_index follows the prefix.
-func AuditLogPrefix() []byte { return []byte(auditLogPrefix) }
-
-// AuditLogKey returns auditlog/<8-byte BE raft_index>. raft_index is
-// the dragonboat entry index that produced the audited mutation;
-// monotonic and unique across the cluster lifetime, so the key never
-// collides.
-func AuditLogKey(raftIndex uint64) []byte {
-	out := make([]byte, 0, len(auditLogPrefix)+8)
-	out = append(out, auditLogPrefix...)
-	var buf [8]byte
-	binary.BigEndian.PutUint64(buf[:], raftIndex)
-	return append(out, buf[:]...)
-}
 
 // RevisionKey returns the CAS singleton key for a table identified by
 // its canonical short name (e.g. RevisionTableEventSource). Lives in a

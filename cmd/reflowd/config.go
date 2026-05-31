@@ -64,14 +64,25 @@ func cmdRegisterDeployment(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("register-deployment", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)
 	rawURL := fs.String("url", "", "handler deployment URL (http:// or https://)")
+	maxJournal := fs.Uint("max-journal-entries", 0, "per-invocation journal-entry cap (0 = engine default 10_000, ceiling 100_000)")
+	invRetention := fs.Duration("invocation-retention", 0, "retention before a Completed plain invocation is reaped (e.g. 24h; 0 = engine default 24h, ceiling 365 days)")
+	wfRetention := fs.Duration("workflow-retention", 0, "retention before a Completed workflow run is reaped (e.g. 168h; 0 = engine default 7d, ceiling 365 days)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *rawURL == "" {
 		return errors.New("--url is required")
 	}
+	if *invRetention < 0 || *wfRetention < 0 {
+		return errors.New("retention durations must be non-negative")
+	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
-		resp, err := cli.Config.RegisterDeployment(rctx, connect.NewRequest(&configv1.RegisterDeploymentRequest{Url: *rawURL}))
+		resp, err := cli.Config.RegisterDeployment(rctx, connect.NewRequest(&configv1.RegisterDeploymentRequest{
+			Url:                   *rawURL,
+			MaxJournalEntries:     uint32(*maxJournal),
+			InvocationRetentionMs: uint64(invRetention.Milliseconds()),
+			WorkflowRetentionMs:   uint64(wfRetention.Milliseconds()),
+		}))
 		if err != nil {
 			return err
 		}

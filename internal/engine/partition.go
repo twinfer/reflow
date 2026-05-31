@@ -1638,7 +1638,18 @@ func (p *Partition) applyTerminalCompletion(
 	// an idempotent replay (already Completed); skip so we don't double-
 	// schedule.
 	if completedTarget != nil {
-		retention := limits.DefaultInvocationRetentionMs
+		// Window: the invoker stamps the completing deployment's resolved
+		// invocation/workflow windows onto InvocationCompleted (this apply
+		// path can't read shard-0's DeploymentRecord). Zero → fall back to
+		// the engine limits default (the cancel-synthesis path has no
+		// invoker). Workflow window applies only when this invocation is
+		// still the workflow run for its (service, object_key) — the
+		// workflow_run match is the Kind discriminator without persisting
+		// Kind on InvocationStatus.
+		retention := completed.GetInvocationRetentionMs()
+		if retention == 0 {
+			retention = limits.DefaultInvocationRetentionMs
+		}
 		if completedTarget.GetObjectKey() != "" {
 			runT := tables.WorkflowRunTable{S: batch}
 			runLP := keys.LPFromPartitionKey(routing.PartitionKey(completedTarget.GetServiceName(), completedTarget.GetObjectKey()))
@@ -1647,7 +1658,10 @@ func (p *Partition) applyTerminalCompletion(
 				return next, actions, fmt.Errorf("applyTerminalCompletion: workflow_run lookup: %w", rerr)
 			}
 			if runRow != nil && runRow.GetPartitionKey() == id.GetPartitionKey() && bytes.Equal(runRow.GetUuid(), id.GetUuid()) {
-				retention = limits.DefaultWorkflowRetentionMs
+				retention = completed.GetWorkflowRetentionMs()
+				if retention == 0 {
+					retention = limits.DefaultWorkflowRetentionMs
+				}
 			}
 		}
 		fireAt := nowMs + retention

@@ -49,10 +49,18 @@ var procMap = map[string]procEntry{
 	ingressv1connect.IngressGetInvocationOutputProcedure:    {"GetInvocationOutput", []string{groupIngress}},
 	ingressv1connect.IngressDescribeInvocationProcedure:     {"DescribeInvocation", []string{groupIngress}},
 	ingressv1connect.IngressCancelInvocationProcedure:       {"CancelInvocation", []string{groupIngress}},
-	ingressv1connect.IngressPurgeInvocationProcedure:        {"PurgeInvocation", []string{groupIngress}},
 	ingressv1connect.IngressResolveAwakeableProcedure:       {"ResolveAwakeable", []string{groupIngress}},
 	ingressv1connect.IngressResolveWorkflowPromiseProcedure: {"ResolveWorkflowPromise", []string{groupIngress}},
 	ingressv1connect.IngressGetObjectStateProcedure:         {"GetObjectState", []string{groupIngress}},
+
+	// ----- Ingress: operator-only maintenance (no open plane) -----
+	// PurgeInvocation permanently deletes a Completed invocation's durable
+	// rows. It rides the ingress listener (it needs that server's partition
+	// routing) but is deliberately NOT in IngressActions — the foundational
+	// policy opens that plane to anonymous, and a destructive purge must
+	// not be. With no group it's reachable only by the operator god-mode
+	// rule; node/anonymous principals are default-denied.
+	ingressv1connect.IngressPurgeInvocationProcedure: {"PurgeInvocation", nil},
 
 	// ----- Delivery + SelfJoin: node mesh -----
 	deliveryv1connect.DeliveryDeliverProcedure:             {"Deliver", []string{groupMesh}},

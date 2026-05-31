@@ -128,11 +128,15 @@ Wake path is respawn-based, not notification-based: a `Suspended → Invoked` ar
 
 ## Retention reap (one path, keyed by invocation id)
 
-Every Completed invocation — plain, virtual-object, or workflow run — schedules exactly **one** reap row (`reap/<fire_at>/<inv_id>`, `ReapTable`) in `applyTerminalCompletion`. The window is `limits.DefaultWorkflowRetentionMs` when the invocation still owns the `workflow_run` pointer for its key, else `limits.DefaultInvocationRetentionMs`. The leader-only `ReapService` (`reap.go`, mirrors `TimerService`) drains in fire order and proposes `Command_ReapInvocation` via `ProposeSelf`.
+Every Completed invocation — plain, virtual-object, or workflow run — schedules exactly **one** reap row (`reap/<fire_at>/<inv_id>`, `ReapTable`) in `applyTerminalCompletion`. The window is the workflow window when the invocation still owns the `workflow_run` pointer for its key, else the invocation window. The leader-only `ReapService` (`reap.go`, mirrors `TimerService`) drains in fire order and proposes `Command_ReapInvocation` via `ProposeSelf`.
+
+**Window resolution is per-deployment, carried in, not looked up.** The window comes from the completing invocation's `DeploymentRecord` (`invocation_retention_ms` / `workflow_retention_ms`, clamped by `limits.Effective{Invocation,Workflow}RetentionMs`, ceiling 365d). The partition apply path can't read shard-0's `DeploymentTable`, so the **invoker stamps both resolved windows onto `InvocationCompleted`** (`completeTerminal`); `applyTerminalCompletion` reads them and picks by the `workflow_run` match. A zero field (the apply-side cancel synthesis, which has no invoker) falls back to the engine `limits.Default*RetentionMs`.
 
 `onReap` (apply path) always deletes the originating reap row, then — if the invocation is in a purgeable (`Completed`/`Free`) state — calls the shared **`purgeInvocationRows`** helper (inv + journal + signal_inbox/awaiter). It additionally clears the entity-scoped rows (`state` / `promise` / `promise_awaiter` / `workflow_run`) **only** when `workflow_run` for the completed target still points at this id — the guard that stops a re-claimed virtual-object / workflow key from losing the new run's state.
 
-There is no separate workflow reaper. `Command_Purge` (operator `Ingress.PurgeInvocation`) is the *immediate* trigger and shares the same `purgeInvocationRows` body; Reap is the *timed* trigger. Two triggers, one mechanism — don't reintroduce a kind-specific reap pipeline. "Workflow" is a target classification, not a separate runtime entity (see repo-root CLAUDE.md).
+**Count-cap backstop.** TTL is the primary bound; `ReapService.fireOverflow` is the second. When the in-memory heap exceeds `limits.DefaultMaxPendingReaps` (per-partition, default 1M) it reaps the soonest-to-expire entries early down to the cap, so a burst can't accumulate rows for the full window. It's a flood valve, not a routine sweep — crossing it WARN-logs. Set `ReapServiceOptions.MaxPending` negative to disable.
+
+There is no separate workflow reaper. `Command_Purge` (operator-only `Ingress.PurgeInvocation`, gated out of the anonymous `IngressActions` plane) is the *immediate* trigger and shares the same `purgeInvocationRows` body; Reap is the *timed* trigger. Two triggers, one mechanism — don't reintroduce a kind-specific reap pipeline. "Workflow" is a target classification, not a separate runtime entity (see repo-root CLAUDE.md).
 
 ## Things that look fine and aren't
 

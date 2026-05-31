@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/twinfer/reflow/internal/engine/limits"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -52,10 +53,11 @@ func (h *reapHeap) Pop() any {
 // workflow runs — because every Completed invocation schedules a row
 // here; the apply arm decides whether to also sweep entity-scoped state.
 type ReapService struct {
-	table    tables.ReapTable
-	proposer Proposer
-	now      func() uint64
-	log      *slog.Logger
+	table      tables.ReapTable
+	proposer   Proposer
+	now        func() uint64
+	log        *slog.Logger
+	maxPending int
 
 	mu   sync.Mutex
 	heap reapHeap
@@ -69,6 +71,10 @@ type ReapService struct {
 type ReapServiceOptions struct {
 	Now func() uint64 // injected wall clock; defaults to time.Now()
 	Log *slog.Logger
+	// MaxPending caps how many pending reaps the heap holds before the
+	// soonest-to-expire are fired early (the count-cap backstop). 0 →
+	// limits.DefaultMaxPendingReaps. Negative disables the backstop.
+	MaxPending int
 }
 
 // NewReapService constructs the service. proposer may be nil on
@@ -80,14 +86,18 @@ func NewReapService(table tables.ReapTable, proposer Proposer, opts ReapServiceO
 	if opts.Log == nil {
 		opts.Log = slog.Default()
 	}
+	if opts.MaxPending == 0 {
+		opts.MaxPending = limits.DefaultMaxPendingReaps
+	}
 	return &ReapService{
-		table:    table,
-		proposer: proposer,
-		now:      opts.Now,
-		log:      opts.Log,
-		wake:     make(chan struct{}, 1),
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+		table:      table,
+		proposer:   proposer,
+		now:        opts.Now,
+		log:        opts.Log,
+		maxPending: opts.MaxPending,
+		wake:       make(chan struct{}, 1),
+		stop:       make(chan struct{}),
+		done:       make(chan struct{}),
 	}
 }
 
@@ -144,6 +154,13 @@ func (s *ReapService) Run(ctx context.Context) error {
 			continue
 		}
 
+		// Count-cap backstop: if the standing pending set exceeds the cap,
+		// reap the soonest-to-expire entries early regardless of window so
+		// a burst can't accumulate rows for the full retention window.
+		if s.fireOverflow(ctx) {
+			continue
+		}
+
 		var waitDur time.Duration
 		switch {
 		case nextFire == 0:
@@ -190,29 +207,58 @@ func (s *ReapService) signalWake() {
 }
 
 // fireDue pops every due entry and proposes a ReapInvocation for each.
-// Mutex is NOT held across the Propose call. Transient failures re-push
-// the entry so the retention sweep is not lost; shutdown-class errors
-// drop on the floor (the persistent row survives, next leader rebuild
-// picks it up).
 func (s *ReapService) fireDue(ctx context.Context) {
-	if s.proposer == nil {
-		s.log.Warn("reap service has no proposer; dropping fires", "now_ms", s.now())
-		s.mu.Lock()
-		s.heap = s.heap[:0]
-		s.mu.Unlock()
+	if s.dropIfNoProposer() {
 		return
 	}
-
 	now := s.now()
 	var due []reapHeapEntry
 	s.mu.Lock()
 	for len(s.heap) > 0 && s.heap[0].fireAtMs <= now {
-		e := heap.Pop(&s.heap).(reapHeapEntry)
-		due = append(due, e)
+		due = append(due, heap.Pop(&s.heap).(reapHeapEntry))
 	}
 	s.mu.Unlock()
+	s.proposeReaps(ctx, due)
+}
 
-	for _, e := range due {
+// fireOverflow reaps the soonest-to-expire entries early when the pending
+// set exceeds maxPending. Returns true if it fired anything (so Run loops
+// again). The early reap is logged once per overflow event — it's a flood
+// signal, not a routine sweep, so it must not be silent.
+func (s *ReapService) fireOverflow(ctx context.Context) bool {
+	if s.maxPending <= 0 {
+		return false
+	}
+	s.mu.Lock()
+	excess := len(s.heap) - s.maxPending
+	s.mu.Unlock()
+	if excess <= 0 {
+		return false
+	}
+	if s.dropIfNoProposer() {
+		return true
+	}
+
+	s.mu.Lock()
+	over := make([]reapHeapEntry, 0, excess)
+	for i := 0; i < excess && len(s.heap) > 0; i++ {
+		over = append(over, heap.Pop(&s.heap).(reapHeapEntry))
+	}
+	remaining := len(s.heap)
+	s.mu.Unlock()
+
+	s.log.Warn("reap count-cap exceeded; reaping soonest-to-expire early",
+		"max_pending", s.maxPending, "reaped_early", len(over), "remaining", remaining)
+	s.proposeReaps(ctx, over)
+	return true
+}
+
+// proposeReaps proposes a ReapInvocation for each entry. Mutex is NOT held
+// across the Propose call. Transient failures re-push the entry so the
+// retention sweep is not lost; shutdown-class errors drop on the floor
+// (the persistent row survives, next leader rebuild picks it up).
+func (s *ReapService) proposeReaps(ctx context.Context, entries []reapHeapEntry) {
+	for _, e := range entries {
 		cmd := &enginev1.Command{
 			Kind: &enginev1.Command_ReapInvocation{
 				ReapInvocation: &enginev1.ReapInvocation{
@@ -239,4 +285,18 @@ func (s *ReapService) fireDue(ctx context.Context) {
 			"partition_key", e.id.GetPartitionKey(),
 		)
 	}
+}
+
+// dropIfNoProposer clears the heap on a follower (no proposer) so a leader
+// loss doesn't leave stale fires queued. Returns true when there's no
+// proposer and the caller should stop.
+func (s *ReapService) dropIfNoProposer() bool {
+	if s.proposer != nil {
+		return false
+	}
+	s.log.Warn("reap service has no proposer; dropping fires", "now_ms", s.now())
+	s.mu.Lock()
+	s.heap = s.heap[:0]
+	s.mu.Unlock()
+	return true
 }

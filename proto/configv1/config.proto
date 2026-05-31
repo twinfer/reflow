@@ -125,6 +125,12 @@ message RegisterDeploymentRequest {
   // deployment. 0 = engine default (10_000). The engine clamps to a
   // hard ceiling (100_000).
   uint32 max_journal_entries = 2;
+  // Optional per-deployment retention windows (ms) before a Completed
+  // invocation's durable rows are reaped. 0 = engine default (24h
+  // invocations / 7d workflows). The engine clamps to a hard ceiling
+  // (365d).
+  uint64 invocation_retention_ms = 3;
+  uint64 workflow_retention_ms = 4;
 }
 
 message RegisterDeploymentResponse {

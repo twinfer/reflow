@@ -59,8 +59,14 @@ type RegisterDeploymentRequest struct {
 	// deployment. 0 = engine default (10_000). The engine clamps to a
 	// hard ceiling (100_000).
 	MaxJournalEntries uint32 `protobuf:"varint,2,opt,name=max_journal_entries,json=maxJournalEntries,proto3" json:"max_journal_entries,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Optional per-deployment retention windows (ms) before a Completed
+	// invocation's durable rows are reaped. 0 = engine default (24h
+	// invocations / 7d workflows). The engine clamps to a hard ceiling
+	// (365d).
+	InvocationRetentionMs uint64 `protobuf:"varint,3,opt,name=invocation_retention_ms,json=invocationRetentionMs,proto3" json:"invocation_retention_ms,omitempty"`
+	WorkflowRetentionMs   uint64 `protobuf:"varint,4,opt,name=workflow_retention_ms,json=workflowRetentionMs,proto3" json:"workflow_retention_ms,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *RegisterDeploymentRequest) Reset() {
@@ -103,6 +109,20 @@ func (x *RegisterDeploymentRequest) GetUrl() string {
 func (x *RegisterDeploymentRequest) GetMaxJournalEntries() uint32 {
 	if x != nil {
 		return x.MaxJournalEntries
+	}
+	return 0
+}
+
+func (x *RegisterDeploymentRequest) GetInvocationRetentionMs() uint64 {
+	if x != nil {
+		return x.InvocationRetentionMs
+	}
+	return 0
+}
+
+func (x *RegisterDeploymentRequest) GetWorkflowRetentionMs() uint64 {
+	if x != nil {
+		return x.WorkflowRetentionMs
 	}
 	return 0
 }
@@ -1697,10 +1717,12 @@ var File_configv1_config_proto protoreflect.FileDescriptor
 
 const file_configv1_config_proto_rawDesc = "" +
 	"\n" +
-	"\x15configv1/config.proto\x12\x10reflow.config.v1\x1a\x15enginev1/engine.proto\"]\n" +
+	"\x15configv1/config.proto\x12\x10reflow.config.v1\x1a\x15enginev1/engine.proto\"\xc9\x01\n" +
 	"\x19RegisterDeploymentRequest\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12.\n" +
-	"\x13max_journal_entries\x18\x02 \x01(\rR\x11maxJournalEntries\"A\n" +
+	"\x13max_journal_entries\x18\x02 \x01(\rR\x11maxJournalEntries\x126\n" +
+	"\x17invocation_retention_ms\x18\x03 \x01(\x04R\x15invocationRetentionMs\x122\n" +
+	"\x15workflow_retention_ms\x18\x04 \x01(\x04R\x13workflowRetentionMs\"A\n" +
 	"\x1aRegisterDeploymentResponse\x12#\n" +
 	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\"\x18\n" +
 	"\x16ListDeploymentsRequest\"\x86\x01\n" +

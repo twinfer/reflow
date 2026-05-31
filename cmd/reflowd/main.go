@@ -88,6 +88,8 @@ func main() {
 		err = dispatchCluster(ctx, args)
 	case "config":
 		err = dispatchConfig(ctx, args)
+	case "purge-invocation":
+		err = cmdPurgeInvocation(ctx, args)
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 		return
@@ -184,6 +186,12 @@ Config (Config RPCs; app config; --admin can be ANY node):
   config delete-join-token      Revoke a pending join token by --hash.
   config issue-operator         Mint an operator client cert against the
                                 active cluster CA (--name=<operator>).
+
+Maintenance (Ingress RPC; operator-only; --ingress targets a node hosting
+the invocation's shard):
+  purge-invocation              Immediately delete a Completed invocation's
+                                durable rows (status, journal, signals)
+                                instead of waiting for the retention reaper.
 
 Run any subcommand with --help for its specific flags.
 `)

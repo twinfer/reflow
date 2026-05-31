@@ -23,6 +23,7 @@ import (
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	"github.com/twinfer/reflow/proto/clusterctlv1/clusterctlv1connect"
 	"github.com/twinfer/reflow/proto/configv1/configv1connect"
+	"github.com/twinfer/reflow/proto/ingressv1/ingressv1connect"
 )
 
 // DialOptions configures Dial. Addr is host:port of the admin endpoint
@@ -33,11 +34,15 @@ type DialOptions struct {
 	Creds creds.Spec
 }
 
-// Client wraps both typed sub-clients (Cluster + Config) over a single
-// HTTP/2 transport plus credential lifecycle.
+// Client wraps the typed sub-clients over a single HTTP/2 transport plus
+// credential lifecycle. Cluster + Config live on the admin listener;
+// Ingress lives on the separate ingress listener — a Client built against
+// an admin Addr can't reach Ingress and vice versa, so dial the listener
+// matching the RPC you intend to call.
 type Client struct {
 	Cluster clusterctlv1connect.ClusterCtlClient
 	Config  configv1connect.ConfigClient
+	Ingress ingressv1connect.IngressClient
 
 	addr    string
 	baseURL string
@@ -81,6 +86,7 @@ func Dial(_ context.Context, opts DialOptions) (*Client, error) {
 	return &Client{
 		Cluster: clusterctlv1connect.NewClusterCtlClient(hc, trimmed),
 		Config:  configv1connect.NewConfigClient(hc, trimmed),
+		Ingress: ingressv1connect.NewIngressClient(hc, trimmed),
 		addr:    opts.Addr,
 		baseURL: baseURL,
 		tr:      tr,

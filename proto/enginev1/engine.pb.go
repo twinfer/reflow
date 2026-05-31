@@ -2536,9 +2536,18 @@ type InvocationCompleted struct {
 	//
 	//	9001 = step budget exhausted
 	//	9002 = invocation cancelled
-	FailureCode   uint32 `protobuf:"varint,3,opt,name=failure_code,json=failureCode,proto3" json:"failure_code,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	FailureCode uint32 `protobuf:"varint,3,opt,name=failure_code,json=failureCode,proto3" json:"failure_code,omitempty"`
+	// Retention windows (ms) resolved by the invoker from the completing
+	// invocation's DeploymentRecord. The partition apply path can't read
+	// shard-0's DeploymentTable, so the invoker carries the effective
+	// windows here; applyTerminalCompletion picks invocation_retention_ms
+	// or workflow_retention_ms by the workflow_run match and schedules the
+	// reap. 0 (e.g. the apply-side cancel synthesis, which has no invoker)
+	// falls back to the engine limits default.
+	InvocationRetentionMs uint64 `protobuf:"varint,4,opt,name=invocation_retention_ms,json=invocationRetentionMs,proto3" json:"invocation_retention_ms,omitempty"`
+	WorkflowRetentionMs   uint64 `protobuf:"varint,5,opt,name=workflow_retention_ms,json=workflowRetentionMs,proto3" json:"workflow_retention_ms,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *InvocationCompleted) Reset() {
@@ -2588,6 +2597,20 @@ func (x *InvocationCompleted) GetFailureMessage() string {
 func (x *InvocationCompleted) GetFailureCode() uint32 {
 	if x != nil {
 		return x.FailureCode
+	}
+	return 0
+}
+
+func (x *InvocationCompleted) GetInvocationRetentionMs() uint64 {
+	if x != nil {
+		return x.InvocationRetentionMs
+	}
+	return 0
+}
+
+func (x *InvocationCompleted) GetWorkflowRetentionMs() uint64 {
+	if x != nil {
+		return x.WorkflowRetentionMs
 	}
 	return 0
 }
@@ -6641,8 +6664,16 @@ type DeploymentRecord struct {
 	// operator misconfig can't request unbounded — runaway handlers on
 	// keyed virtual objects would poison the VO queue indefinitely.
 	MaxJournalEntries uint32 `protobuf:"varint,6,opt,name=max_journal_entries,json=maxJournalEntries,proto3" json:"max_journal_entries,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Per-deployment retention windows (ms) before a Completed invocation's
+	// durable rows are reaped. 0 = engine default (24h invocations /
+	// 7d workflows). The engine clamps to a hard ceiling (365d). The
+	// invoker stamps the resolved windows onto InvocationCompleted so the
+	// partition apply path — which can't read this shard-0 row — picks the
+	// right window per completion.
+	InvocationRetentionMs uint64 `protobuf:"varint,7,opt,name=invocation_retention_ms,json=invocationRetentionMs,proto3" json:"invocation_retention_ms,omitempty"`
+	WorkflowRetentionMs   uint64 `protobuf:"varint,8,opt,name=workflow_retention_ms,json=workflowRetentionMs,proto3" json:"workflow_retention_ms,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *DeploymentRecord) Reset() {
@@ -6706,6 +6737,20 @@ func (x *DeploymentRecord) GetRegisteredAtMs() uint64 {
 func (x *DeploymentRecord) GetMaxJournalEntries() uint32 {
 	if x != nil {
 		return x.MaxJournalEntries
+	}
+	return 0
+}
+
+func (x *DeploymentRecord) GetInvocationRetentionMs() uint64 {
+	if x != nil {
+		return x.InvocationRetentionMs
+	}
+	return 0
+}
+
+func (x *DeploymentRecord) GetWorkflowRetentionMs() uint64 {
+	if x != nil {
+		return x.WorkflowRetentionMs
 	}
 	return 0
 }
@@ -9539,11 +9584,13 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"fire_at_ms\x18\x02 \x01(\x06R\bfireAtMs\"q\n" +
 	"\x14JournalEntryAppended\x12#\n" +
 	"\rcommand_index\x18\x01 \x01(\rR\fcommandIndex\x124\n" +
-	"\x05entry\x18\x02 \x01(\v2\x1e.reflow.engine.v1.JournalEntryR\x05entry\"y\n" +
+	"\x05entry\x18\x02 \x01(\v2\x1e.reflow.engine.v1.JournalEntryR\x05entry\"\xe5\x01\n" +
 	"\x13InvocationCompleted\x12\x16\n" +
 	"\x06output\x18\x01 \x01(\fR\x06output\x12'\n" +
 	"\x0ffailure_message\x18\x02 \x01(\tR\x0efailureMessage\x12!\n" +
-	"\ffailure_code\x18\x03 \x01(\rR\vfailureCode\"6\n" +
+	"\ffailure_code\x18\x03 \x01(\rR\vfailureCode\x126\n" +
+	"\x17invocation_retention_ms\x18\x04 \x01(\x04R\x15invocationRetentionMs\x122\n" +
+	"\x15workflow_retention_ms\x18\x05 \x01(\x04R\x13workflowRetentionMs\"6\n" +
 	"\x13InvocationSuspended\x12\x1f\n" +
 	"\vawaiting_on\x18\x01 \x03(\tR\n" +
 	"awaitingOn\"\xb0\x0e\n" +
@@ -9816,13 +9863,15 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\rcreated_at_ms\x18\x06 \x01(\x06R\vcreatedAtMs\"Z\n" +
 	"\fNodeHostMeta\x12#\n" +
 	"\rgrpc_endpoint\x18\x01 \x01(\tR\fgrpcEndpoint\x12%\n" +
-	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint\"\xcf\x01\n" +
+	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint\"\xbb\x02\n" +
 	"\x10DeploymentRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12?\n" +
 	"\bhandlers\x18\x04 \x03(\v2#.reflow.engine.v1.DeploymentHandlerR\bhandlers\x12(\n" +
 	"\x10registered_at_ms\x18\x05 \x01(\x06R\x0eregisteredAtMs\x12.\n" +
-	"\x13max_journal_entries\x18\x06 \x01(\rR\x11maxJournalEntries\"[\n" +
+	"\x13max_journal_entries\x18\x06 \x01(\rR\x11maxJournalEntries\x126\n" +
+	"\x17invocation_retention_ms\x18\a \x01(\x04R\x15invocationRetentionMs\x122\n" +
+	"\x15workflow_retention_ms\x18\b \x01(\x04R\x13workflowRetentionMs\"[\n" +
 	"\x11DeploymentHandler\x12\x18\n" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12\x18\n" +
 	"\ahandler\x18\x02 \x01(\tR\ahandler\x12\x12\n" +

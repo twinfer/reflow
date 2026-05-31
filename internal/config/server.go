@@ -198,10 +198,12 @@ func (s *Server) registerDeployment(ctx context.Context, req *configv1.RegisterD
 
 	deploymentID := uuid.NewString()
 	rec := &enginev1.DeploymentRecord{
-		Id:                deploymentID,
-		Url:               raw,
-		RegisteredAtMs:    uint64(time.Now().UnixMilli()),
-		MaxJournalEntries: req.GetMaxJournalEntries(),
+		Id:                    deploymentID,
+		Url:                   raw,
+		RegisteredAtMs:        uint64(time.Now().UnixMilli()),
+		MaxJournalEntries:     req.GetMaxJournalEntries(),
+		InvocationRetentionMs: req.GetInvocationRetentionMs(),
+		WorkflowRetentionMs:   req.GetWorkflowRetentionMs(),
 	}
 	for _, h := range resp.GetHandlers() {
 		for _, name := range h.GetHandlerNames() {

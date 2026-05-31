@@ -19,6 +19,7 @@ const (
 	actDeliver            = "/reflow.delivery.v1.Delivery/Deliver"
 	actUploadSST          = "/reflow.delivery.v1.Delivery/UploadLPTransferSST"
 	actSubmitInvocation   = "/reflow.ingress.v1.Ingress/SubmitInvocation"
+	actPurgeInvocation    = "/reflow.ingress.v1.Ingress/PurgeInvocation"
 )
 
 func mustEngine(t *testing.T, policies string) *Engine {
@@ -92,6 +93,12 @@ func TestAuthorize_PlaneSeparation(t *testing.T) {
 		{"anon-submit-open", anon, actSubmitInvocation, TypeInvocation, "svc", cedar.Allow},
 		{"anon-config-denied", anon, actRegisterDeployment, TypeDeploymentRecord, "kafka", cedar.Deny},
 		{"anon-addnode-denied", anon, actAddNode, TypePlatformConfig, "cluster", cedar.Deny},
+		// PurgeInvocation rides the ingress listener but is operator-only:
+		// out of IngressActions, so only the operator god-mode rule reaches
+		// it — anonymous/node are denied even though SubmitInvocation isn't.
+		{"operator-purge", operator, actPurgeInvocation, TypeInvocation, "svc", cedar.Allow},
+		{"anon-purge-denied", anon, actPurgeInvocation, TypeInvocation, "svc", cedar.Deny},
+		{"node-purge-denied", node, actPurgeInvocation, TypeInvocation, "svc", cedar.Deny},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

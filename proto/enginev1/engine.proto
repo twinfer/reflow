@@ -439,6 +439,15 @@ message InvocationCompleted {
   //   9001 = step budget exhausted
   //   9002 = invocation cancelled
   uint32 failure_code = 3;
+  // Retention windows (ms) resolved by the invoker from the completing
+  // invocation's DeploymentRecord. The partition apply path can't read
+  // shard-0's DeploymentTable, so the invoker carries the effective
+  // windows here; applyTerminalCompletion picks invocation_retention_ms
+  // or workflow_retention_ms by the workflow_run match and schedules the
+  // reap. 0 (e.g. the apply-side cancel synthesis, which has no invoker)
+  // falls back to the engine limits default.
+  uint64 invocation_retention_ms = 4;
+  uint64 workflow_retention_ms = 5;
 }
 
 message InvocationSuspended {
@@ -1117,6 +1126,14 @@ message DeploymentRecord {
   // operator misconfig can't request unbounded — runaway handlers on
   // keyed virtual objects would poison the VO queue indefinitely.
   uint32 max_journal_entries = 6;
+  // Per-deployment retention windows (ms) before a Completed invocation's
+  // durable rows are reaped. 0 = engine default (24h invocations /
+  // 7d workflows). The engine clamps to a hard ceiling (365d). The
+  // invoker stamps the resolved windows onto InvocationCompleted so the
+  // partition apply path — which can't read this shard-0 row — picks the
+  // right window per completion.
+  uint64 invocation_retention_ms = 7;
+  uint64 workflow_retention_ms = 8;
 }
 
 // DeploymentHandler is one (service, handler, kind) entry in a

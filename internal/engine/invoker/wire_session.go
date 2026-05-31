@@ -1110,6 +1110,11 @@ func (s *wireSession) completeTerminal(output []byte, failureMsg string, failure
 				Output:         output,
 				FailureMessage: failureMsg,
 				FailureCode:    failureCode,
+				// Carry the deployment's resolved retention windows to the
+				// apply path, which can't read this shard-0 DeploymentRecord.
+				// nil-safe: a missing rec yields the engine defaults.
+				InvocationRetentionMs: limits.EffectiveInvocationRetentionMs(s.rec),
+				WorkflowRetentionMs:   limits.EffectiveWorkflowRetentionMs(s.rec),
 			},
 		},
 	}

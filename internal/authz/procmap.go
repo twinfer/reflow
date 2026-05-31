@@ -16,12 +16,12 @@ import (
 // cedar.Authorize ignores the schema, so actionEntity stamps them as the
 // action's parent edges.
 const (
-	groupIngress         = "IngressActions"
-	groupTenantConfig    = "TenantConfigActions"
-	groupConfigRead      = "ConfigReadActions"
-	groupPlatformConfig  = "PlatformConfigActions"
-	groupClusterAdmin    = "ClusterAdminActions"
-	groupMesh            = "MeshActions"
+	groupIngress        = "IngressActions"
+	groupTenantConfig   = "TenantConfigActions"
+	groupConfigRead     = "ConfigReadActions"
+	groupPlatformConfig = "PlatformConfigActions"
+	groupClusterAdmin   = "ClusterAdminActions"
+	groupMesh           = "MeshActions"
 )
 
 // actionType is Cedar's reserved entity type for actions (`Action::"…"`).
@@ -49,6 +49,7 @@ var procMap = map[string]procEntry{
 	ingressv1connect.IngressGetInvocationOutputProcedure:    {"GetInvocationOutput", []string{groupIngress}},
 	ingressv1connect.IngressDescribeInvocationProcedure:     {"DescribeInvocation", []string{groupIngress}},
 	ingressv1connect.IngressCancelInvocationProcedure:       {"CancelInvocation", []string{groupIngress}},
+	ingressv1connect.IngressPurgeInvocationProcedure:        {"PurgeInvocation", []string{groupIngress}},
 	ingressv1connect.IngressResolveAwakeableProcedure:       {"ResolveAwakeable", []string{groupIngress}},
 	ingressv1connect.IngressResolveWorkflowPromiseProcedure: {"ResolveWorkflowPromise", []string{groupIngress}},
 	ingressv1connect.IngressGetObjectStateProcedure:         {"GetObjectState", []string{groupIngress}},
@@ -59,10 +60,10 @@ var procMap = map[string]procEntry{
 	clusterctlv1connect.ClusterCtlSelfJoinProcedure:        {"SelfJoin", []string{groupMesh}},
 
 	// ----- Config: tenant-config writes -----
-	configv1connect.ConfigUpsertSecretProcedure:        {"UpsertSecret", []string{groupTenantConfig}},
-	configv1connect.ConfigDeleteSecretProcedure:        {"DeleteSecret", []string{groupTenantConfig}},
-	configv1connect.ConfigRegisterDeploymentProcedure:  {"RegisterDeployment", []string{groupTenantConfig}},
-	configv1connect.ConfigDeleteDeploymentProcedure:    {"DeleteDeployment", []string{groupTenantConfig}},
+	configv1connect.ConfigUpsertSecretProcedure:       {"UpsertSecret", []string{groupTenantConfig}},
+	configv1connect.ConfigDeleteSecretProcedure:       {"DeleteSecret", []string{groupTenantConfig}},
+	configv1connect.ConfigRegisterDeploymentProcedure: {"RegisterDeployment", []string{groupTenantConfig}},
+	configv1connect.ConfigDeleteDeploymentProcedure:   {"DeleteDeployment", []string{groupTenantConfig}},
 
 	// ----- Config: tenant-config reads -----
 	configv1connect.ConfigListDeploymentsProcedure:    {"ListDeployments", []string{groupConfigRead}},

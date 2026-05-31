@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"container/heap"
 	"context"
 	"errors"
@@ -13,12 +14,11 @@ import (
 )
 
 // reapHeapEntry is a single scheduled retention sweep ordered by
-// fire_at_ms. Tie-breaking by (service, workflow_key) lex order keeps
-// ordering deterministic across replicas.
+// fire_at_ms. Tie-breaking by (partition_key, uuid) keeps ordering
+// deterministic across replicas.
 type reapHeapEntry struct {
-	fireAtMs    uint64
-	service     string
-	workflowKey string
+	fireAtMs uint64
+	id       *enginev1.InvocationId
 }
 
 type reapHeap []reapHeapEntry
@@ -28,10 +28,10 @@ func (h reapHeap) Less(i, j int) bool {
 	if h[i].fireAtMs != h[j].fireAtMs {
 		return h[i].fireAtMs < h[j].fireAtMs
 	}
-	if h[i].service != h[j].service {
-		return h[i].service < h[j].service
+	if pi, pj := h[i].id.GetPartitionKey(), h[j].id.GetPartitionKey(); pi != pj {
+		return pi < pj
 	}
-	return h[i].workflowKey < h[j].workflowKey
+	return bytes.Compare(h[i].id.GetUuid(), h[j].id.GetUuid()) < 0
 }
 func (h reapHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
 func (h *reapHeap) Push(x any)   { *h = append(*h, x.(reapHeapEntry)) }
@@ -43,14 +43,16 @@ func (h *reapHeap) Pop() any {
 	return x
 }
 
-// WorkflowReapService is the leader-only loop that drives workflow
-// retention cleanup. Mirrors TimerService: an in-memory heap of
-// (fire_at_ms, service, workflow_key) entries persisted in
-// WorkflowReapTable. On leader gain Rebuild reloads the heap; the
-// Run loop wakes at the head's fire_at_ms and proposes
-// Command.ReapWorkflow against the local apply path.
-type WorkflowReapService struct {
-	table    tables.WorkflowReapTable
+// ReapService is the leader-only loop that drives invocation retention
+// cleanup. Mirrors TimerService: an in-memory heap of (fire_at_ms,
+// inv_id) entries persisted in ReapTable. On leader gain Rebuild reloads
+// the heap; the Run loop wakes at the head's fire_at_ms and proposes
+// Command.ReapInvocation against the local apply path. One service
+// reaps every kind — plain invocations, virtual-object calls, and
+// workflow runs — because every Completed invocation schedules a row
+// here; the apply arm decides whether to also sweep entity-scoped state.
+type ReapService struct {
+	table    tables.ReapTable
 	proposer Proposer
 	now      func() uint64
 	log      *slog.Logger
@@ -63,22 +65,22 @@ type WorkflowReapService struct {
 	done chan struct{}
 }
 
-// WorkflowReapServiceOptions tunes a WorkflowReapService for tests.
-type WorkflowReapServiceOptions struct {
+// ReapServiceOptions tunes a ReapService for tests.
+type ReapServiceOptions struct {
 	Now func() uint64 // injected wall clock; defaults to time.Now()
 	Log *slog.Logger
 }
 
-// NewWorkflowReapService constructs the service. proposer may be nil
-// on followers; firing is a no-op then.
-func NewWorkflowReapService(table tables.WorkflowReapTable, proposer Proposer, opts WorkflowReapServiceOptions) *WorkflowReapService {
+// NewReapService constructs the service. proposer may be nil on
+// followers; firing is a no-op then.
+func NewReapService(table tables.ReapTable, proposer Proposer, opts ReapServiceOptions) *ReapService {
 	if opts.Now == nil {
 		opts.Now = func() uint64 { return uint64(time.Now().UnixMilli()) }
 	}
 	if opts.Log == nil {
 		opts.Log = slog.Default()
 	}
-	return &WorkflowReapService{
+	return &ReapService{
 		table:    table,
 		proposer: proposer,
 		now:      opts.Now,
@@ -89,16 +91,12 @@ func NewWorkflowReapService(table tables.WorkflowReapTable, proposer Proposer, o
 	}
 }
 
-// Rebuild reloads the in-memory heap from the persistent table.
-// Called on leader gain.
-func (s *WorkflowReapService) Rebuild() error {
+// Rebuild reloads the in-memory heap from the persistent table. Called
+// on leader gain.
+func (s *ReapService) Rebuild() error {
 	loaded := make(reapHeap, 0)
 	if err := s.table.ScanAll(func(r tables.ReapRow) error {
-		loaded = append(loaded, reapHeapEntry{
-			fireAtMs:    r.FireAtMs,
-			service:     r.Service,
-			workflowKey: r.WorkflowKey,
-		})
+		loaded = append(loaded, reapHeapEntry{fireAtMs: r.FireAtMs, id: r.ID})
 		return nil
 	}); err != nil {
 		return err
@@ -112,20 +110,16 @@ func (s *WorkflowReapService) Rebuild() error {
 }
 
 // Push enqueues a freshly-written reap row. Called inline from the
-// runner's dispatchActions handler for ActScheduleWorkflowReap.
-func (s *WorkflowReapService) Push(fireAtMs uint64, service, workflowKey string) {
+// runner's dispatchActions handler for ActScheduleReap.
+func (s *ReapService) Push(fireAtMs uint64, id *enginev1.InvocationId) {
 	s.mu.Lock()
-	heap.Push(&s.heap, reapHeapEntry{
-		fireAtMs:    fireAtMs,
-		service:     service,
-		workflowKey: workflowKey,
-	})
+	heap.Push(&s.heap, reapHeapEntry{fireAtMs: fireAtMs, id: id})
 	s.mu.Unlock()
 	s.signalWake()
 }
 
 // Run drives the heap. Blocks until ctx is canceled or Stop is called.
-func (s *WorkflowReapService) Run(ctx context.Context) error {
+func (s *ReapService) Run(ctx context.Context) error {
 	defer close(s.done)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -176,7 +170,7 @@ func (s *WorkflowReapService) Run(ctx context.Context) error {
 }
 
 // Stop signals Run to return. Idempotent.
-func (s *WorkflowReapService) Stop() {
+func (s *ReapService) Stop() {
 	select {
 	case <-s.stop:
 		return
@@ -186,23 +180,23 @@ func (s *WorkflowReapService) Stop() {
 }
 
 // Done returns a channel closed when Run has returned.
-func (s *WorkflowReapService) Done() <-chan struct{} { return s.done }
+func (s *ReapService) Done() <-chan struct{} { return s.done }
 
-func (s *WorkflowReapService) signalWake() {
+func (s *ReapService) signalWake() {
 	select {
 	case s.wake <- struct{}{}:
 	default:
 	}
 }
 
-// fireDue pops every due entry and proposes a ReapWorkflow for each.
-// Mutex is NOT held across the Propose call. Transient failures
-// re-push the entry so the retention sweep is not lost; shutdown-class
-// errors drop on the floor (the persistent row survives, next leader
-// rebuild picks it up).
-func (s *WorkflowReapService) fireDue(ctx context.Context) {
+// fireDue pops every due entry and proposes a ReapInvocation for each.
+// Mutex is NOT held across the Propose call. Transient failures re-push
+// the entry so the retention sweep is not lost; shutdown-class errors
+// drop on the floor (the persistent row survives, next leader rebuild
+// picks it up).
+func (s *ReapService) fireDue(ctx context.Context) {
 	if s.proposer == nil {
-		s.log.Warn("workflow reap service has no proposer; dropping fires", "now_ms", s.now())
+		s.log.Warn("reap service has no proposer; dropping fires", "now_ms", s.now())
 		s.mu.Lock()
 		s.heap = s.heap[:0]
 		s.mu.Unlock()
@@ -220,11 +214,10 @@ func (s *WorkflowReapService) fireDue(ctx context.Context) {
 
 	for _, e := range due {
 		cmd := &enginev1.Command{
-			Kind: &enginev1.Command_ReapWorkflow{
-				ReapWorkflow: &enginev1.ReapWorkflow{
-					Service:     e.service,
-					WorkflowKey: e.workflowKey,
-					FireAtMs:    e.fireAtMs,
+			Kind: &enginev1.Command_ReapInvocation{
+				ReapInvocation: &enginev1.ReapInvocation{
+					InvocationId: e.id,
+					FireAtMs:     e.fireAtMs,
 				},
 			},
 		}
@@ -240,11 +233,10 @@ func (s *WorkflowReapService) fireDue(ctx context.Context) {
 		s.mu.Lock()
 		heap.Push(&s.heap, e)
 		s.mu.Unlock()
-		s.log.Warn("workflow reap propose failed; re-queued",
+		s.log.Warn("reap propose failed; re-queued",
 			"err", err,
 			"fire_at_ms", e.fireAtMs,
-			"service", e.service,
-			"workflow_key", e.workflowKey,
+			"partition_key", e.id.GetPartitionKey(),
 		)
 	}
 }

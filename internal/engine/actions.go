@@ -55,17 +55,17 @@ type ActDispatchOutbox struct {
 
 func (ActDispatchOutbox) isAction() {}
 
-// ActScheduleWorkflowReap hands a freshly-written workflow_reap row to
-// the leader's WorkflowReapService. The reaper fires at FireAtMs by
-// proposing Command.ReapWorkflow against the apply path, which range-
-// deletes the workflow run's per-key data.
-type ActScheduleWorkflowReap struct {
-	FireAtMs    uint64
-	Service     string
-	WorkflowKey string
+// ActScheduleReap hands a freshly-written reap row to the leader's
+// ReapService. The reaper fires at FireAtMs by proposing
+// Command.ReapInvocation against the apply path, which deletes the
+// invocation's per-invocation rows and, for a workflow run, its
+// entity-scoped state / promise / workflow_run rows.
+type ActScheduleReap struct {
+	FireAtMs uint64
+	ID       *enginev1.InvocationId
 }
 
-func (ActScheduleWorkflowReap) isAction() {}
+func (ActScheduleReap) isAction() {}
 
 // ActStartLPTransferScan is emitted by onBeginLPTransfer (source side)
 // after the freeze row is durable. The runner hands it to the leader-

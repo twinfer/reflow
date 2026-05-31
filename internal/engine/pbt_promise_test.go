@@ -11,7 +11,7 @@ package engine
 //   - wfSpecs           []invSpec (workflow + workflow-shared subset)
 //   - promisePool       []string
 //
-// Generator pool init and ReapWorkflow's promise cleanup remain in
+// Generator pool init and ReapInvocation's promise cleanup remain in
 // pbt_test.go (they touch other subsystems too). The Check skeleton
 // calls checkPromiseInvariants below.
 

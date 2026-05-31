@@ -37,7 +37,7 @@
 //	timer/<8-byte BE fire_at_ms>/<24-byte id>                     -> uint32 sleep_index (primary; fire_at order)
 //	outbox/<8-byte BE seq>                                        -> OutboxEnvelope (FIFO)
 //	dedup/self/<8-byte BE leader_epoch>/<8-byte BE seq>           -> DedupEntry (shard-scoped to leader epoch)
-//	workflow_reap/<8-byte BE fire_at_ms>/<service>/<workflow_key> -> empty (fire_at order)
+//	reap/<8-byte BE fire_at_ms>/<24-byte inv_id>                 -> empty (fire_at order)
 //	lp_freeze/<lp:4>                                              -> LPFreezeRow (PR 3 freeze gate)
 //	lp_staging/<transfer_id>                                      -> LPStagingRow (PR 3 dest staging)
 //
@@ -119,7 +119,7 @@ const (
 	workflowRunPrefix    = "workflow_run/"
 	promisePrefix        = "promise/"
 	promiseAwaiterPrefix = "promise_awaiter/"
-	workflowReapPrefix   = "workflow_reap/"
+	reapPrefix           = "reap/"
 	lpFreezePrefix       = "lp_freeze/"
 	lpStagingPrefix      = "lp_staging/"
 )
@@ -765,46 +765,38 @@ func PromiseAwaiterPrefixForWorkflow(lp, tenant uint32, service, workflowKey str
 	return append(out, '/')
 }
 
-// WorkflowReapKey returns
-// workflow_reap/<8-byte BE fire_at_ms>/<service>/<workflow_key>. The
+// ReapKey returns reap/<8-byte BE fire_at_ms>/<24-byte inv_id>. The
 // fire_at_ms prefix gives lexicographic ordering matching numeric order
 // so the leader's reap service drains in due-order (same shape as
 // timer/<fire_at_ms>/...). LP-agnostic (ordering-sensitive, see TimerKey).
-func WorkflowReapKey(fireAtMs uint64, service, workflowKey string) []byte {
-	out := make([]byte, 0, len(workflowReapPrefix)+8+len(service)+1+len(workflowKey))
-	out = append(out, workflowReapPrefix...)
+// Keyed by invocation id: every Completed invocation — plain, virtual
+// object, or workflow run — schedules exactly one reap row here.
+func ReapKey(fireAtMs uint64, id *enginev1.InvocationId) ([]byte, error) {
+	raw, err := EncodeInvocationID(id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(reapPrefix)+8+invocationIDLen)
+	out = append(out, reapPrefix...)
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], fireAtMs)
 	out = append(out, buf[:]...)
-	out = append(out, service...)
-	out = append(out, '/')
-	return append(out, workflowKey...)
+	return append(out, raw...), nil
 }
 
-// WorkflowReapPrefix returns the workflow_reap/ namespace prefix.
-func WorkflowReapPrefix() []byte { return []byte(workflowReapPrefix) }
+// ReapPrefix returns the reap/ namespace prefix.
+func ReapPrefix() []byte { return []byte(reapPrefix) }
 
-// DecodeWorkflowReapKey extracts (fireAtMs, service, workflow_key) from
-// a workflow_reap key. Returns an error if the key shape doesn't match.
-func DecodeWorkflowReapKey(key []byte) (uint64, string, string, error) {
-	minLen := len(workflowReapPrefix) + 8 + 1 // at minimum: prefix + fire + '/'
-	if len(key) < minLen {
-		return 0, "", "", fmt.Errorf("workflow_reap key too short: len=%d", len(key))
+// DecodeReapKey extracts (fireAtMs, invocation_id) from a reap key.
+func DecodeReapKey(key []byte) (uint64, *enginev1.InvocationId, error) {
+	want := len(reapPrefix) + 8 + invocationIDLen
+	if len(key) != want {
+		return 0, nil, fmt.Errorf("reap key length = %d; want %d", len(key), want)
 	}
-	body := key[len(workflowReapPrefix):]
-	fireAt := binary.BigEndian.Uint64(body[:8])
-	rest := body[8:]
-	sep := -1
-	for i, c := range rest {
-		if c == '/' {
-			sep = i
-			break
-		}
-	}
-	if sep < 0 {
-		return 0, "", "", fmt.Errorf("workflow_reap key missing service/key separator")
-	}
-	return fireAt, string(rest[:sep]), string(rest[sep+1:]), nil
+	p := len(reapPrefix)
+	fireAt := binary.BigEndian.Uint64(key[p : p+8])
+	id, err := DecodeInvocationID(key[p+8:])
+	return fireAt, id, err
 }
 
 // PrefixUpperBound returns the smallest key strictly greater than every key

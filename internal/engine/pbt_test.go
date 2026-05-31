@@ -716,12 +716,13 @@ func (m *engineMachine) TimerFired(t *rapid.T) {
 	}
 }
 
-// ReapWorkflow synthesises Command.ReapWorkflow against the workflow's
-// owning shard, simulating the WorkflowReapService firing. Only fires
-// for a Completed KIND_WORKFLOW run — model + SUT both no-op
-// otherwise. On success the model wipes the workflow's promise +
-// awaiter rows and resets the run invocation to Free.
-func (m *engineMachine) ReapWorkflow(t *rapid.T) {
+// ReapInvocation synthesises Command.ReapInvocation against a Completed
+// KIND_WORKFLOW run's owning shard, simulating the ReapService firing.
+// The model mirrors the unified apply arm: the per-invocation rows are
+// purged and, because the run still owns the workflow_run pointer, the
+// entity-scoped state + promise + awaiter rows are wiped too. On success
+// the run invocation is reset to Free.
+func (m *engineMachine) ReapInvocation(t *rapid.T) {
 	// Collect candidates: workflow_run entries whose owning invocation
 	// is currently Completed in the model.
 	type cand struct {
@@ -751,21 +752,20 @@ func (m *engineMachine) ReapWorkflow(t *rapid.T) {
 	})
 	pick := rapid.SampledFrom(sortedCands).Draw(t, "reap_candidate")
 
-	shard := m.partitioner.ShardForTarget(&enginev1.InvocationTarget{
-		ServiceName: pick.wfk.service,
-		ObjectKey:   pick.wfk.objectKey,
-	})
-	m.apply(t, shard, &enginev1.Command{
-		Kind: &enginev1.Command_ReapWorkflow{ReapWorkflow: &enginev1.ReapWorkflow{
-			Service:     pick.wfk.service,
-			WorkflowKey: pick.wfk.objectKey,
-			FireAtMs:    0, // synthetic — no matching reap row needed
+	runInv := m.invs[pick.idHexs]
+	if runInv == nil {
+		return
+	}
+	m.apply(t, m.shardOf(runInv.id), &enginev1.Command{
+		Kind: &enginev1.Command_ReapInvocation{ReapInvocation: &enginev1.ReapInvocation{
+			InvocationId: runInv.id,
+			FireAtMs:     0, // synthetic — no matching reap row needed
 		}},
 	})
 
-	// Mirror the apply arm in the model. onReapWorkflow range-deletes
-	// every per-key namespace (state, promise, promise_awaiter,
-	// workflow_run) and the per-invocation rows for the workflow run id.
+	// Mirror the unified apply arm in the model. onReap purges the per-
+	// invocation rows and, for the workflow run, range-deletes every
+	// per-key namespace (state, promise, promise_awaiter, workflow_run).
 	delete(m.workflowRuns, pick.wfk)
 	delete(m.state, pick.wfk)
 	for pk := range m.promises {

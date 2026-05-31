@@ -15,8 +15,8 @@ Pretty much every bug that's ever hidden in this package was a goroutine-affinit
 | `OnSnapshotPersisted` | dragonboat snapshot goroutine | Non-blocking send into a buffered-1 channel. That's it. |
 | `Leadership.OnRaftLeaderChange` | dragonboat `RaftEventListener` goroutine | MUST NOT block. Any propose work is dispatched to a background goroutine. |
 | `Leadership.OnAnnounceLeader` | FSM apply path | This is where the real `Follower↔Leader` transition fires `onBecomeLeader` / `onStepDown`. The raft-event-listener path only kicks off candidacy. |
-| `onBecomeLeader` / `onStepDown` | serial w.r.t. each other (called from `OnAnnounceLeader`) | May spawn leader-scoped goroutines. `onBecomeLeader` rebuilds timer + outbox from storage; `onStepDown` cancels `leaderCtx`, stops the invoker, then waits for timer + outbox `done` channels. |
-| `TimerService.Run`, `OutboxService.Run` | leader-scoped goroutines (one each, lifetime = current leader epoch) | May `ProposeSelf` / `ProposeIngress` (SyncPropose blocks until commit). |
+| `onBecomeLeader` / `onStepDown` | serial w.r.t. each other (called from `OnAnnounceLeader`) | May spawn leader-scoped goroutines. `onBecomeLeader` rebuilds timer + outbox + reap + lpTransfer from storage; `onStepDown` cancels `leaderCtx`, stops the invoker, then waits for every service `done` channel. |
+| `TimerService.Run`, `OutboxService.Run`, `ReapService.Run`, `LPTransferService.Run` | leader-scoped goroutines (one each, lifetime = current leader epoch) | May `ProposeSelf` / `ProposeIngress` (SyncPropose blocks until commit). |
 | `metadataRebalancer.failureLoop` / `stepLoop` | leader-scoped goroutines on shard 0 only | Drives dragonboat membership APIs + proposes shard-0 commands. |
 | `raftEventListener` (host.go) | dragonboat event goroutine | Forwards leader-change events to the right `Leadership`. Non-blocking. |
 
@@ -65,12 +65,12 @@ Both are commented in `OnRaftLeaderChange`; mirror that level of comment density
 
 ## Leader-only services lifecycle
 
-`TimerService` and `OutboxService` instances are **recreated on every leader gain** because their `done` channels are single-use (a second `defer close(done)` panics). The runner pattern:
+`TimerService`, `OutboxService`, `ReapService`, and `LPTransferService` instances are **recreated on every leader gain** because their `done` channels are single-use (a second `defer close(done)` panics). The runner pattern:
 
-1. `onBecomeLeader` constructs fresh `TimerService` + `OutboxService` against `snapshotter.Store()`, rebinds the invoker's tables, calls `Rebuild` on each (reloads heap / queue from storage), starts the invoker, then spawns the two `Run` goroutines under a fresh `leaderCtx`.
-2. `onStepDown` cancels `leaderCtx`, calls `invoker.Stop` (drains running sessions; once stopped no new timer/outbox actions arrive), then waits on `timerDone` + `outboxDone`. The old instances are then dropped on the floor.
+1. `onBecomeLeader` constructs fresh instances against `snapshotter.Store()`, rebinds the invoker's tables, calls `Rebuild` on each (reloads heap / queue from storage), starts the invoker, then spawns one `Run` goroutine per service under a fresh `leaderCtx`.
+2. `onStepDown` cancels `leaderCtx`, calls `invoker.Stop` (drains running sessions; once stopped no new timer/outbox/reap actions arrive), then waits on every `*Done` channel (`timerDone`, `outboxDone`, `reapDone`, `lpTransferDone`). The old instances are then dropped on the floor.
 
-Don't reuse a stale `TimerService` / `OutboxService`. Don't hold a reference past the `onStepDown` return.
+Don't reuse a stale service instance. Don't hold a reference past the `onStepDown` return.
 
 Apply-on-startup edge case: when a node opens its store, the FSM may apply pre-existing committed entries whose `ActInvoke` actions go through `dispatchActions` while the Invoker is not yet started — those calls are dropped. The new leader's `onBecomeLeader` therefore calls `invoker.ResumeNonTerminal(InvocationTable)` to re-spawn sessions from disk. Preserve that call.
 
@@ -126,12 +126,20 @@ The transitions are pure functions returning `(newStatus, []Action, error)`. The
 
 Wake path is respawn-based, not notification-based: a `Suspended → Invoked` arrow on any journal append emits `ActInvoke` to start a fresh session. The session reads the journal from disk and replays. This is the deliberate divergence from restate's notification-channel model and the reason several of restate's Action variants are absent here.
 
+## Retention reap (one path, keyed by invocation id)
+
+Every Completed invocation — plain, virtual-object, or workflow run — schedules exactly **one** reap row (`reap/<fire_at>/<inv_id>`, `ReapTable`) in `applyTerminalCompletion`. The window is `limits.DefaultWorkflowRetentionMs` when the invocation still owns the `workflow_run` pointer for its key, else `limits.DefaultInvocationRetentionMs`. The leader-only `ReapService` (`reap.go`, mirrors `TimerService`) drains in fire order and proposes `Command_ReapInvocation` via `ProposeSelf`.
+
+`onReap` (apply path) always deletes the originating reap row, then — if the invocation is in a purgeable (`Completed`/`Free`) state — calls the shared **`purgeInvocationRows`** helper (inv + journal + signal_inbox/awaiter). It additionally clears the entity-scoped rows (`state` / `promise` / `promise_awaiter` / `workflow_run`) **only** when `workflow_run` for the completed target still points at this id — the guard that stops a re-claimed virtual-object / workflow key from losing the new run's state.
+
+There is no separate workflow reaper. `Command_Purge` (operator `Ingress.PurgeInvocation`) is the *immediate* trigger and shares the same `purgeInvocationRows` body; Reap is the *timed* trigger. Two triggers, one mechanism — don't reintroduce a kind-specific reap pipeline. "Workflow" is a target classification, not a separate runtime entity (see repo-root CLAUDE.md).
+
 ## Things that look fine and aren't
 
 - Reading `snapshotter.Store()` inside `Update` — use the `Batch`.
 - Calling `proposer.ProposeSelf` from `dispatchActions` or `OnSnapshotPersisted` or `OnRaftLeaderChange` — wrong goroutine, deadlocks or stalls dragonboat.
 - Returning an error from `Update` on a malformed envelope or unknown command — that halts the whole shard. Bump `applied_index` and continue.
-- Holding a reference to `TimerService` / `OutboxService` past `onStepDown`.
+- Holding a reference to a leader-scoped service (`TimerService` / `OutboxService` / `ReapService` / `LPTransferService`) past `onStepDown`.
 - Bumping `leaderEpoch` past only `l.leaderEpoch` — must also clear `latestAnnouncedEpoch` (see leadership notes above).
 - Allocating a new SelfProposal seq without `SetEpoch` resetting on leader transition — duplicates get silently dedup'd.
 - Adding a callback without saying which goroutine it fires on and what's banned in it.

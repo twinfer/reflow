@@ -43,7 +43,17 @@ func EffectiveMaxJournalEntries(rec *enginev1.DeploymentRecord) uint32 {
 
 // DefaultWorkflowRetentionMs is how long a Completed workflow run's
 // data (inv, journal, state, promise, workflow_run, signal_*) lives
-// after the Completed transition before the workflow reaper sweeps
-// it. 7 days — long enough for downstream readers to fetch terminal
-// outputs without flooding the partition with orphaned rows.
+// after the Completed transition before the reaper sweeps it. 7 days —
+// long enough for downstream readers to fetch terminal outputs and
+// entity state without flooding the partition with orphaned rows.
 const DefaultWorkflowRetentionMs uint64 = 7 * 24 * 60 * 60 * 1000
+
+// DefaultInvocationRetentionMs is how long a Completed non-workflow
+// invocation's per-invocation rows (inv, journal, signal_*) live after
+// the Completed transition before the reaper sweeps them. 24h — long
+// enough for callers to fetch terminal output via AwaitInvocation /
+// GetInvocationOutput, short enough that high-volume invocation traffic
+// doesn't accumulate journals without bound. Shorter than the workflow
+// window because a plain invocation carries no queryable entity state —
+// only its own result, which is typically consumed promptly.
+const DefaultInvocationRetentionMs uint64 = 24 * 60 * 60 * 1000

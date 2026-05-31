@@ -11,6 +11,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/twinfer/reflow/internal/engine/limits"
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/storage"
@@ -168,6 +169,104 @@ func TestPartition_ApplyInvokeAndJournal(t *testing.T) {
 	}
 }
 
+// TestPartition_ReapPurgesPlainInvocation covers the unified reap on a
+// plain (non-workflow, unkeyed) invocation: completion schedules a reap
+// at the shorter DefaultInvocationRetentionMs window, and onReap purges
+// the per-invocation rows without touching any entity state (there is
+// none). This is the path the old workflow-only reaper never exercised.
+func TestPartition_ReapPurgesPlainInvocation(t *testing.T) {
+	p, _, col := newTestPartition(t)
+
+	id := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("plain-reap-id-16")}
+	target := &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"} // unkeyed → not a workflow run
+
+	mustUpdate := func(idx uint64, cmd *enginev1.Command) {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatalf("update idx=%d: %v", idx, err)
+		}
+	}
+
+	// Invoke -> JournalAppended(Input) -> Completed.
+	mustUpdate(1, &enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
+		InvocationId: id, Target: target, Input: []byte("in"),
+	}}})
+	col.Drain()
+	mustUpdate(2, &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+		InvocationId: id,
+		Kind: &enginev1.InvokerEffect_JournalAppended{JournalAppended: &enginev1.JournalEntryAppended{
+			Entry: &enginev1.JournalEntry{Index: 0, Entry: &enginev1.JournalEntry_Input{Input: &enginev1.JEInput{Value: []byte("in")}}},
+		}},
+	}}})
+	col.Drain()
+	mustUpdate(3, &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+		InvocationId: id,
+		Kind:         &enginev1.InvokerEffect_Completed{Completed: &enginev1.InvocationCompleted{Output: []byte("ok")}},
+	}}})
+
+	// Completion must schedule a reap at the plain-invocation window.
+	wantFire := testEnvelopeNowMs + limits.DefaultInvocationRetentionMs
+	var sched *ActScheduleReap
+	for _, a := range col.Drain() {
+		if sr, ok := a.(ActScheduleReap); ok {
+			sr := sr
+			sched = &sr
+		}
+	}
+	if sched == nil {
+		t.Fatalf("completion emitted no ActScheduleReap")
+	}
+	if sched.FireAtMs != wantFire {
+		t.Errorf("reap fire_at = %d; want %d (DefaultInvocationRetentionMs)", sched.FireAtMs, wantFire)
+	}
+	if sched.ID.GetPartitionKey() != id.GetPartitionKey() || !bytes.Equal(sched.ID.GetUuid(), id.GetUuid()) {
+		t.Errorf("reap scheduled for wrong id: %+v", sched.ID)
+	}
+
+	// And a durable reap row at that fire.
+	store := p.cfg.Snapshotter.Store()
+	var rows []tables.ReapRow
+	if err := (tables.ReapTable{S: store}).ScanAll(func(r tables.ReapRow) error {
+		rows = append(rows, r)
+		return nil
+	}); err != nil {
+		t.Fatalf("reap scan: %v", err)
+	}
+	if len(rows) != 1 || rows[0].FireAtMs != wantFire {
+		t.Fatalf("reap rows = %+v; want one at fire=%d", rows, wantFire)
+	}
+
+	// Fire the reap synthetically. No workflow_run row exists, so onReap
+	// purges only the per-invocation rows.
+	mustUpdate(4, &enginev1.Command{Kind: &enginev1.Command_ReapInvocation{ReapInvocation: &enginev1.ReapInvocation{
+		InvocationId: id, FireAtMs: wantFire,
+	}}})
+
+	// Status row gone (Get synthesises Free), journal empty, reap row gone.
+	got, err := p.Lookup(LookupInvocation{ID: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, free := got.(*enginev1.InvocationStatus).GetStatus().(*enginev1.InvocationStatus_Free); !free {
+		t.Errorf("status after reap = %T; want Free", got.(*enginev1.InvocationStatus).GetStatus())
+	}
+	store = p.cfg.Snapshotter.Store()
+	jPrefix, _ := keys.JournalPrefix(keys.TenantDefault, id)
+	iter, err := store.NewIter(jPrefix, keys.PrefixUpperBound(jPrefix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer iter.Close()
+	if iter.First() {
+		t.Errorf("journal rows survived reap (key=%x)", iter.Key())
+	}
+	reapLeft := 0
+	_ = (tables.ReapTable{S: store}).ScanAll(func(tables.ReapRow) error { reapLeft++; return nil })
+	if reapLeft != 0 {
+		t.Errorf("reap rows survived: %d", reapLeft)
+	}
+}
+
 func TestPartition_FollowerDropsActions(t *testing.T) {
 	p, lead, col := newTestPartition(t)
 	lead.leader.Store(false)
@@ -220,10 +319,6 @@ func TestLPFromCommand(t *testing.T) {
 	const wantLP7 uint32 = 7
 	id := &enginev1.InvocationId{PartitionKey: pkLP7, Uuid: []byte("0123456789abcdef")}
 
-	// ReapWorkflow uses (service, workflow_key) → routing.PartitionKey → LP.
-	reapSvc, reapKey := "Svc", "wfA"
-	reapLP := keys.LPFromPartitionKey(routing.PartitionKey(reapSvc, reapKey))
-
 	cases := []struct {
 		name string
 		cmd  *enginev1.Command
@@ -272,11 +367,11 @@ func TestLPFromCommand(t *testing.T) {
 			wantLP7,
 		},
 		{
-			"ReapWorkflow",
-			&enginev1.Command{Kind: &enginev1.Command_ReapWorkflow{ReapWorkflow: &enginev1.ReapWorkflow{
-				Service: reapSvc, WorkflowKey: reapKey,
+			"ReapInvocation",
+			&enginev1.Command{Kind: &enginev1.Command_ReapInvocation{ReapInvocation: &enginev1.ReapInvocation{
+				InvocationId: id,
 			}}},
-			reapLP,
+			wantLP7,
 		},
 		{
 			"BeginLPTransfer",

@@ -1306,23 +1306,29 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 	})
 
-	t.Run(name+"/WorkflowReap_PutScanDelete", func(t *testing.T) {
+	t.Run(name+"/Reap_PutScanDelete", func(t *testing.T) {
 		s := open(t)
 		defer s.Close()
-		rt := tables.WorkflowReapTable{S: s}
+		rt := tables.ReapTable{S: s}
+
+		mkID := func(n byte) *enginev1.InvocationId {
+			u := make([]byte, 16)
+			u[15] = n
+			return &enginev1.InvocationId{PartitionKey: uint64(n), Uuid: u}
+		}
+		idA, idB, idC := mkID(1), mkID(2), mkID(3)
 
 		// Insert out-of-order; scan must yield in fire_at_ms order.
 		b := s.NewBatch()
 		for _, row := range []struct {
 			fire uint64
-			svc  string
-			key  string
+			id   *enginev1.InvocationId
 		}{
-			{fire: 300, svc: "Wf", key: "ord-c"},
-			{fire: 100, svc: "Wf", key: "ord-a"},
-			{fire: 200, svc: "Wf", key: "ord-b"},
+			{fire: 300, id: idC},
+			{fire: 100, id: idA},
+			{fire: 200, id: idB},
 		} {
-			if err := rt.Put(b, row.fire, row.svc, row.key); err != nil {
+			if err := rt.Put(b, row.fire, row.id); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -1339,17 +1345,17 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 			t.Fatalf("scan returned %d rows; want 3", len(got))
 		}
 		wantFires := []uint64{100, 200, 300}
-		wantKeys := []string{"ord-a", "ord-b", "ord-c"}
+		wantPKs := []uint64{1, 2, 3}
 		for i, r := range got {
-			if r.FireAtMs != wantFires[i] || r.WorkflowKey != wantKeys[i] {
-				t.Errorf("row %d: got fire=%d key=%s; want fire=%d key=%s",
-					i, r.FireAtMs, r.WorkflowKey, wantFires[i], wantKeys[i])
+			if r.FireAtMs != wantFires[i] || r.ID.GetPartitionKey() != wantPKs[i] {
+				t.Errorf("row %d: got fire=%d pk=%d; want fire=%d pk=%d",
+					i, r.FireAtMs, r.ID.GetPartitionKey(), wantFires[i], wantPKs[i])
 			}
 		}
 
 		// Delete the middle one; scan returns the remaining two.
 		b2 := s.NewBatch()
-		if err := rt.Delete(b2, 200, "Wf", "ord-b"); err != nil {
+		if err := rt.Delete(b2, 200, idB); err != nil {
 			t.Fatal(err)
 		}
 		commit(t, b2)

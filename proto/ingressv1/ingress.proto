@@ -66,6 +66,15 @@ service Ingress {
   // against already-completed promises: succeeded=false signals
   // "promise already completed" without an error status.
   rpc ResolveWorkflowPromise(ResolveWorkflowPromiseRequest) returns (ResolveWorkflowPromiseResponse);
+
+  // PurgeInvocation deletes a Completed invocation's durable rows (inv
+  // status, journal, signal inbox/awaiter) immediately, instead of
+  // waiting for the retention reaper. Routes by the partition_key encoded
+  // in the invocation id. Idempotent and no-op-safe: purging an absent or
+  // not-yet-Completed invocation is accepted but changes nothing (the
+  // apply arm requires a Completed/Free → Free transition). Does not touch
+  // virtual-object state or workflow promise rows.
+  rpc PurgeInvocation(PurgeInvocationRequest) returns (PurgeInvocationResponse);
 }
 
 message SubmitInvocationRequest {
@@ -196,6 +205,18 @@ message CancelInvocationResponse {
   // proposed. It does not wait for the receiver to apply — callers that
   // need to confirm termination should poll AwaitInvocation /
   // GetInvocationOutput.
+  bool accepted = 1;
+}
+
+message PurgeInvocationRequest {
+  // Either a stringified id (preferred) or the raw struct.
+  string invocation_id = 1;
+  reflow.engine.v1.InvocationId invocation_id_proto = 2;
+}
+
+message PurgeInvocationResponse {
+  // accepted is true when the purge was routed and proposed. It does not
+  // wait for apply; the rows are gone once the proposal commits.
   bool accepted = 1;
 }
 

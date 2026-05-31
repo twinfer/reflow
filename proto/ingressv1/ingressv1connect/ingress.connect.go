@@ -67,6 +67,8 @@ const (
 	// IngressResolveWorkflowPromiseProcedure is the fully-qualified name of the Ingress's
 	// ResolveWorkflowPromise RPC.
 	IngressResolveWorkflowPromiseProcedure = "/reflow.ingress.v1.Ingress/ResolveWorkflowPromise"
+	// IngressPurgeInvocationProcedure is the fully-qualified name of the Ingress's PurgeInvocation RPC.
+	IngressPurgeInvocationProcedure = "/reflow.ingress.v1.Ingress/PurgeInvocation"
 )
 
 // IngressClient is a client for the reflow.ingress.v1.Ingress service.
@@ -114,6 +116,14 @@ type IngressClient interface {
 	// against already-completed promises: succeeded=false signals
 	// "promise already completed" without an error status.
 	ResolveWorkflowPromise(context.Context, *connect.Request[ingressv1.ResolveWorkflowPromiseRequest]) (*connect.Response[ingressv1.ResolveWorkflowPromiseResponse], error)
+	// PurgeInvocation deletes a Completed invocation's durable rows (inv
+	// status, journal, signal inbox/awaiter) immediately, instead of
+	// waiting for the retention reaper. Routes by the partition_key encoded
+	// in the invocation id. Idempotent and no-op-safe: purging an absent or
+	// not-yet-Completed invocation is accepted but changes nothing (the
+	// apply arm requires a Completed/Free → Free transition). Does not touch
+	// virtual-object state or workflow promise rows.
+	PurgeInvocation(context.Context, *connect.Request[ingressv1.PurgeInvocationRequest]) (*connect.Response[ingressv1.PurgeInvocationResponse], error)
 }
 
 // NewIngressClient constructs a client for the reflow.ingress.v1.Ingress service. By default, it
@@ -181,6 +191,12 @@ func NewIngressClient(httpClient connect.HTTPClient, baseURL string, opts ...con
 			connect.WithSchema(ingressMethods.ByName("ResolveWorkflowPromise")),
 			connect.WithClientOptions(opts...),
 		),
+		purgeInvocation: connect.NewClient[ingressv1.PurgeInvocationRequest, ingressv1.PurgeInvocationResponse](
+			httpClient,
+			baseURL+IngressPurgeInvocationProcedure,
+			connect.WithSchema(ingressMethods.ByName("PurgeInvocation")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -195,6 +211,7 @@ type ingressClient struct {
 	getObjectState         *connect.Client[ingressv1.GetObjectStateRequest, ingressv1.GetObjectStateResponse]
 	cancelInvocation       *connect.Client[ingressv1.CancelInvocationRequest, ingressv1.CancelInvocationResponse]
 	resolveWorkflowPromise *connect.Client[ingressv1.ResolveWorkflowPromiseRequest, ingressv1.ResolveWorkflowPromiseResponse]
+	purgeInvocation        *connect.Client[ingressv1.PurgeInvocationRequest, ingressv1.PurgeInvocationResponse]
 }
 
 // SubmitInvocation calls reflow.ingress.v1.Ingress.SubmitInvocation.
@@ -242,6 +259,11 @@ func (c *ingressClient) ResolveWorkflowPromise(ctx context.Context, req *connect
 	return c.resolveWorkflowPromise.CallUnary(ctx, req)
 }
 
+// PurgeInvocation calls reflow.ingress.v1.Ingress.PurgeInvocation.
+func (c *ingressClient) PurgeInvocation(ctx context.Context, req *connect.Request[ingressv1.PurgeInvocationRequest]) (*connect.Response[ingressv1.PurgeInvocationResponse], error) {
+	return c.purgeInvocation.CallUnary(ctx, req)
+}
+
 // IngressHandler is an implementation of the reflow.ingress.v1.Ingress service.
 type IngressHandler interface {
 	// SubmitInvocation enqueues a new invocation. Returns the minted
@@ -287,6 +309,14 @@ type IngressHandler interface {
 	// against already-completed promises: succeeded=false signals
 	// "promise already completed" without an error status.
 	ResolveWorkflowPromise(context.Context, *connect.Request[ingressv1.ResolveWorkflowPromiseRequest]) (*connect.Response[ingressv1.ResolveWorkflowPromiseResponse], error)
+	// PurgeInvocation deletes a Completed invocation's durable rows (inv
+	// status, journal, signal inbox/awaiter) immediately, instead of
+	// waiting for the retention reaper. Routes by the partition_key encoded
+	// in the invocation id. Idempotent and no-op-safe: purging an absent or
+	// not-yet-Completed invocation is accepted but changes nothing (the
+	// apply arm requires a Completed/Free → Free transition). Does not touch
+	// virtual-object state or workflow promise rows.
+	PurgeInvocation(context.Context, *connect.Request[ingressv1.PurgeInvocationRequest]) (*connect.Response[ingressv1.PurgeInvocationResponse], error)
 }
 
 // NewIngressHandler builds an HTTP handler from the service implementation. It returns the path on
@@ -350,6 +380,12 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 		connect.WithSchema(ingressMethods.ByName("ResolveWorkflowPromise")),
 		connect.WithHandlerOptions(opts...),
 	)
+	ingressPurgeInvocationHandler := connect.NewUnaryHandler(
+		IngressPurgeInvocationProcedure,
+		svc.PurgeInvocation,
+		connect.WithSchema(ingressMethods.ByName("PurgeInvocation")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/reflow.ingress.v1.Ingress/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case IngressSubmitInvocationProcedure:
@@ -370,6 +406,8 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 			ingressCancelInvocationHandler.ServeHTTP(w, r)
 		case IngressResolveWorkflowPromiseProcedure:
 			ingressResolveWorkflowPromiseHandler.ServeHTTP(w, r)
+		case IngressPurgeInvocationProcedure:
+			ingressPurgeInvocationHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -413,4 +451,8 @@ func (UnimplementedIngressHandler) CancelInvocation(context.Context, *connect.Re
 
 func (UnimplementedIngressHandler) ResolveWorkflowPromise(context.Context, *connect.Request[ingressv1.ResolveWorkflowPromiseRequest]) (*connect.Response[ingressv1.ResolveWorkflowPromiseResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.ResolveWorkflowPromise is not implemented"))
+}
+
+func (UnimplementedIngressHandler) PurgeInvocation(context.Context, *connect.Request[ingressv1.PurgeInvocationRequest]) (*connect.Response[ingressv1.PurgeInvocationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.PurgeInvocation is not implemented"))
 }

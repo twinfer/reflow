@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -14,18 +15,20 @@ import (
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
-// TestWorkflowReap_PurgesStateAndPromise drives the workflow retention
+// TestReap_PurgesWorkflowStateAndPromise drives the unified retention
 // reaper directly: submit a workflow that resolves a promise, ingress-
-// complete the run, then propose Command.ReapWorkflow synthetically
-// (bypassing the time-based WorkflowReapService) and assert every
-// per-key row is gone — state, promise, promise_awaiter, workflow_run,
-// inv, journal, signal_*.
+// complete the run, then propose Command.ReapInvocation synthetically
+// (bypassing the time-based ReapService) and assert every per-key row is
+// gone — state, promise, promise_awaiter, workflow_run, inv, journal,
+// signal_*. The workflow run exercises onReap's entity-cleanup arm; the
+// per-invocation purge it shares with plain invocations is covered by
+// onPurge.
 //
 // Bypassing the timer service keeps the test deterministic. The service
 // itself is exercised by the unit-level table test
-// (TestTables/.../WorkflowReap_PutScanDelete) plus the propose path
-// shared with TimerService.
-func TestWorkflowReap_PurgesStateAndPromise(t *testing.T) {
+// (TestTables/.../Reap_PutScanDelete) plus the propose path shared with
+// TimerService.
+func TestReap_PurgesWorkflowStateAndPromise(t *testing.T) {
 	const promisePayload = "reap-resolved"
 	awaiter := &fakeHandlerPromiseAwaiter{
 		service:     "Orders",
@@ -104,9 +107,10 @@ func TestWorkflowReap_PurgesStateAndPromise(t *testing.T) {
 		t.Fatalf("output = %q; want %q", got, promisePayload)
 	}
 
-	// At this point the apply arm has written a workflow_reap row with
-	// fire_at_ms = Completed.completed_at_ms + DefaultWorkflowRetentionMs.
-	// Snapshotter store is the source of truth — confirm before reap.
+	// At this point the apply arm has written a reap row keyed by the
+	// run's invocation id with fire_at_ms = Completed.completed_at_ms +
+	// DefaultWorkflowRetentionMs. Snapshotter store is the source of
+	// truth — confirm before reap.
 	store := pr.Snapshotter().Store()
 	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
 	runRow, err := (tables.WorkflowRunTable{S: store}).Get(lp, keys.TenantDefault, target.GetServiceName(), target.GetObjectKey())
@@ -116,31 +120,30 @@ func TestWorkflowReap_PurgesStateAndPromise(t *testing.T) {
 	if runRow == nil {
 		t.Fatalf("workflow_run row missing before reap")
 	}
-	// Find the workflow_reap row to learn its fire_at_ms so the synthetic
-	// command targets the right key.
+	// Find the reap row to learn its fire_at_ms so the synthetic command
+	// targets the right key.
 	var reapRow tables.ReapRow
 	foundReap := false
-	if err := (tables.WorkflowReapTable{S: store}).ScanAll(func(r tables.ReapRow) error {
-		if r.Service == target.GetServiceName() && r.WorkflowKey == target.GetObjectKey() {
+	if err := (tables.ReapTable{S: store}).ScanAll(func(r tables.ReapRow) error {
+		if r.ID.GetPartitionKey() == id.GetPartitionKey() && bytes.Equal(r.ID.GetUuid(), id.GetUuid()) {
 			reapRow = r
 			foundReap = true
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("workflow_reap scan: %v", err)
+		t.Fatalf("reap scan: %v", err)
 	}
 	if !foundReap {
-		t.Fatalf("workflow_reap row missing for (%s, %s)", target.GetServiceName(), target.GetObjectKey())
+		t.Fatalf("reap row missing for invocation %x", id.GetUuid())
 	}
 
-	// Bypass the time-based service: propose ReapWorkflow synthetically.
+	// Bypass the time-based service: propose ReapInvocation synthetically.
 	reapCtx, reapCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer reapCancel()
 	if err := pr.Proposer().ProposeIngress(reapCtx, "test/reap-now", shardID, &enginev1.Command{
-		Kind: &enginev1.Command_ReapWorkflow{ReapWorkflow: &enginev1.ReapWorkflow{
-			Service:     target.GetServiceName(),
-			WorkflowKey: target.GetObjectKey(),
-			FireAtMs:    reapRow.FireAtMs,
+		Kind: &enginev1.Command_ReapInvocation{ReapInvocation: &enginev1.ReapInvocation{
+			InvocationId: id,
+			FireAtMs:     reapRow.FireAtMs,
 		}},
 	}); err != nil {
 		t.Fatalf("ProposeIngress reap: %v", err)
@@ -176,16 +179,16 @@ func TestWorkflowReap_PurgesStateAndPromise(t *testing.T) {
 	if awaiters != 0 {
 		t.Errorf("promise_awaiter rows survived reap: %d", awaiters)
 	}
-	// Confirm workflow_reap row also cleared.
+	// Confirm reap row also cleared.
 	reapStill := false
-	_ = (tables.WorkflowReapTable{S: store}).ScanAll(func(r tables.ReapRow) error {
-		if r.Service == target.GetServiceName() && r.WorkflowKey == target.GetObjectKey() {
+	_ = (tables.ReapTable{S: store}).ScanAll(func(r tables.ReapRow) error {
+		if r.ID.GetPartitionKey() == id.GetPartitionKey() && bytes.Equal(r.ID.GetUuid(), id.GetUuid()) {
 			reapStill = true
 		}
 		return nil
 	})
 	if reapStill {
-		t.Errorf("workflow_reap row survived reap")
+		t.Errorf("reap row survived reap")
 	}
 
 	// Journal prefix should be empty.

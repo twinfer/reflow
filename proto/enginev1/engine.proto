@@ -155,12 +155,14 @@ message Command {
     // journal at result_completion_id and wakes the resolver. Accepted
     // only by shardID >= 1.
     PromiseCompletionAck promise_completion_ack = 19;
-    // ReapWorkflow is proposed by the leader-only WorkflowReapService
-    // when a Completed workflow's retention window has elapsed. Apply
-    // arm range-deletes the workflow run's per-key state, promise rows,
-    // workflow_run row, and the invocation's inv/journal/signal_*
-    // rows. Accepted only by shardID >= 1.
-    ReapWorkflow reap_workflow = 20;
+    // ReapInvocation is proposed by the leader-only ReapService when a
+    // Completed invocation's retention window elapses. Apply arm deletes
+    // the invocation's inv/journal/signal_* rows (the shared purge body)
+    // and the originating reap row; if the invocation is a workflow run
+    // it additionally clears the entity-scoped state / promise /
+    // workflow_run rows for its (service, key). Accepted only by
+    // shardID >= 1.
+    ReapInvocation reap_invocation = 20;
     // UpsertSecret / DeleteSecret carry shard-0 SecretStore records —
     // named ciphertext + KEK pointers shared across webhook (and
     // future) consumers. Same CAS + notifier semantics as the
@@ -404,20 +406,22 @@ message PromiseCompletionAck {
   string failure_message = 4;
 }
 
-// ReapWorkflow tells the apply path to purge a Completed workflow
-// run's per-key data: state/<svc>/<key>/..., promise/<svc>/<key>/...,
-// promise_awaiter/<svc>/<key>/..., workflow_run/<svc>/<key>, the
-// invocation's inv/journal/signal_* rows, and the corresponding
-// workflow_reap row that fired this command. Proposed only by the
-// leader's WorkflowReapService when the retention window elapses;
-// idempotent (re-application finds workflow_run absent and exits).
-message ReapWorkflow {
-  string service = 1;
-  string workflow_key = 2;
-  // fire_at_ms identifies the originating workflow_reap row so the
-  // apply arm can delete it in the same batch. Echoed from the
-  // service's scan.
-  fixed64 fire_at_ms = 3;
+// ReapInvocation tells the apply path to purge a Completed invocation's
+// durable footprint when its retention window elapses. Always deletes
+// the per-invocation rows — inv/<id>, journal/<id>/*, signal_inbox /
+// signal_awaiter for the id — plus the originating reap/<fire_at>/<id>
+// row. If the invocation is the workflow run for its (service, key)
+// (workflow_run still points at this id), it additionally clears the
+// entity-scoped state/<svc>/<key>/..., promise/..., promise_awaiter/...,
+// and workflow_run/<svc>/<key> rows. Proposed only by the leader's
+// ReapService; idempotent (re-application finds the row already Free and
+// the reap row gone). State for a plain invocation or a re-claimed
+// virtual-object key is left untouched.
+message ReapInvocation {
+  InvocationId invocation_id = 1;
+  // fire_at_ms identifies the originating reap row so the apply arm can
+  // delete it in the same batch. Echoed from the service's scan.
+  fixed64 fire_at_ms = 2;
 }
 
 message JournalEntryAppended {

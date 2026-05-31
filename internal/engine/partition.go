@@ -341,8 +341,8 @@ func commandKindLabel(cmd *enginev1.Command) string {
 		return "OutboxAck"
 	case *enginev1.Command_PromiseCompletionAck:
 		return "PromiseCompletionAck"
-	case *enginev1.Command_ReapWorkflow:
-		return "ReapWorkflow"
+	case *enginev1.Command_ReapInvocation:
+		return "ReapInvocation"
 	case *enginev1.Command_BeginLpTransfer:
 		return "BeginLPTransfer"
 	case *enginev1.Command_ApplyLpTransferSst:
@@ -459,8 +459,8 @@ func lpFromCommand(cmd *enginev1.Command) uint32 {
 		return keys.LPFromPartitionKey(k.Purge.GetInvocationId().GetPartitionKey())
 	case *enginev1.Command_PromiseCompletionAck:
 		return keys.LPFromPartitionKey(k.PromiseCompletionAck.GetCallerId().GetPartitionKey())
-	case *enginev1.Command_ReapWorkflow:
-		return keys.LPFromPartitionKey(routing.PartitionKey(k.ReapWorkflow.GetService(), k.ReapWorkflow.GetWorkflowKey()))
+	case *enginev1.Command_ReapInvocation:
+		return keys.LPFromPartitionKey(k.ReapInvocation.GetInvocationId().GetPartitionKey())
 	case *enginev1.Command_BeginLpTransfer:
 		return k.BeginLpTransfer.GetLp()
 	case *enginev1.Command_ApplyLpTransferSst:
@@ -553,8 +553,8 @@ func (p *Partition) applyCommand(
 		return p.onOutboxAck(batch, k.OutboxAck)
 	case *enginev1.Command_PromiseCompletionAck:
 		return p.onPromiseCompletionAck(batch, k.PromiseCompletionAck, inv, journal, now, isLeader)
-	case *enginev1.Command_ReapWorkflow:
-		return p.onReapWorkflow(batch, k.ReapWorkflow, inv, journal)
+	case *enginev1.Command_ReapInvocation:
+		return p.onReap(batch, k.ReapInvocation, inv, journal)
 	case *enginev1.Command_BeginLpTransfer:
 		return p.onBeginLPTransfer(batch, k.BeginLpTransfer, now, isLeader)
 	case *enginev1.Command_ApplyLpTransferSst:
@@ -1628,30 +1628,34 @@ func (p *Partition) applyTerminalCompletion(
 			}
 		}
 	}
-	// Workflow retention: if this invocation IS the workflow run for its
-	// (service, object_key), schedule a retention sweep. WorkflowRunTable
-	// only carries a row for KIND_WORKFLOW Run handlers, so a hit + id
-	// match is the safe Kind discriminator without persisting Kind on
-	// InvocationStatus.
-	if completedTarget != nil && completedTarget.GetObjectKey() != "" {
-		runT := tables.WorkflowRunTable{S: batch}
-		runLP := keys.LPFromPartitionKey(routing.PartitionKey(completedTarget.GetServiceName(), completedTarget.GetObjectKey()))
-		runRow, rerr := runT.Get(runLP, keys.TenantDefault, completedTarget.GetServiceName(), completedTarget.GetObjectKey())
-		if rerr != nil {
-			return next, actions, fmt.Errorf("applyTerminalCompletion: workflow_run lookup: %w", rerr)
+	// Retention: every Completed invocation schedules exactly one reap
+	// keyed by its invocation id. The window is the longer workflow
+	// retention when this invocation is still the workflow run for its
+	// (service, object_key) — WorkflowRunTable only carries a row for
+	// KIND_WORKFLOW Run handlers, so a hit + id match is the safe Kind
+	// discriminator without persisting Kind on InvocationStatus — and the
+	// shorter invocation retention otherwise. completedTarget==nil marks
+	// an idempotent replay (already Completed); skip so we don't double-
+	// schedule.
+	if completedTarget != nil {
+		retention := limits.DefaultInvocationRetentionMs
+		if completedTarget.GetObjectKey() != "" {
+			runT := tables.WorkflowRunTable{S: batch}
+			runLP := keys.LPFromPartitionKey(routing.PartitionKey(completedTarget.GetServiceName(), completedTarget.GetObjectKey()))
+			runRow, rerr := runT.Get(runLP, keys.TenantDefault, completedTarget.GetServiceName(), completedTarget.GetObjectKey())
+			if rerr != nil {
+				return next, actions, fmt.Errorf("applyTerminalCompletion: workflow_run lookup: %w", rerr)
+			}
+			if runRow != nil && runRow.GetPartitionKey() == id.GetPartitionKey() && bytes.Equal(runRow.GetUuid(), id.GetUuid()) {
+				retention = limits.DefaultWorkflowRetentionMs
+			}
 		}
-		if runRow != nil && runRow.GetPartitionKey() == id.GetPartitionKey() && bytes.Equal(runRow.GetUuid(), id.GetUuid()) {
-			fireAt := nowMs + limits.DefaultWorkflowRetentionMs
-			if werr := (tables.WorkflowReapTable{S: batch}).Put(batch, fireAt, completedTarget.GetServiceName(), completedTarget.GetObjectKey()); werr != nil {
-				return next, actions, fmt.Errorf("applyTerminalCompletion: workflow_reap put: %w", werr)
-			}
-			if isLeader {
-				actions = append(actions, ActScheduleWorkflowReap{
-					FireAtMs:    fireAt,
-					Service:     completedTarget.GetServiceName(),
-					WorkflowKey: completedTarget.GetObjectKey(),
-				})
-			}
+		fireAt := nowMs + retention
+		if werr := (tables.ReapTable{S: batch}).Put(batch, fireAt, id); werr != nil {
+			return next, actions, fmt.Errorf("applyTerminalCompletion: reap put: %w", werr)
+		}
+		if isLeader {
+			actions = append(actions, ActScheduleReap{FireAtMs: fireAt, ID: id})
 		}
 	}
 	return next, actions, nil
@@ -1957,85 +1961,78 @@ func (p *Partition) onPromiseCompletionAck(
 // second Completed apply pass (which finds cur already Completed) never
 // enters this function.
 
-// onReapWorkflow range-deletes every per-key row that lives past a
-// Completed workflow run: state, promise, promise_awaiter, workflow_run,
-// the run's inv/journal/signal_*, and the workflow_reap row that fired
-// this command. Idempotent: if workflow_run is absent (already reaped)
-// the apply is a no-op.
+// onReap deletes the durable footprint of a Completed invocation whose
+// retention window has elapsed. Always: the originating reap row + the
+// per-invocation rows (purgeInvocationRows). If this id is still the
+// workflow run for its (service, key) — workflow_run points at it — it
+// additionally clears the entity-scoped state / promise /
+// promise_awaiter / workflow_run rows for that key.
 //
-// Replicas always remove the workflow_reap row in the same batch — even
-// if the workflow_run lookup misses — so a duplicate ReapWorkflow
-// proposal from a stale leader can never re-add the row indefinitely.
-func (p *Partition) onReapWorkflow(
+// Idempotent: the reap row is removed in the same batch even on a no-op
+// apply, so a duplicate proposal from a stale leader can't re-add it.
+// The entity-cleanup arm is guarded by the workflow_run pointer so a
+// re-claimed key's fresh run keeps its state.
+func (p *Partition) onReap(
 	batch storage.Batch,
-	cmd *enginev1.ReapWorkflow,
+	cmd *enginev1.ReapInvocation,
 	inv tables.InvocationTable,
 	journal tables.JournalTable,
 ) error {
-	svc := cmd.GetService()
-	wfKey := cmd.GetWorkflowKey()
-	if svc == "" || wfKey == "" {
-		p.cfg.Log.Warn("partition: ReapWorkflow with empty scope", "service", svc, "workflow_key", wfKey)
+	id := cmd.GetInvocationId()
+	if id == nil {
+		p.cfg.Log.Warn("partition: ReapInvocation with nil id")
 		return nil
 	}
-	if err := p.checkLPFreeze(batch, routing.PartitionKey(svc, wfKey)); err != nil {
+	if err := p.checkLPFreeze(batch, id.GetPartitionKey()); err != nil {
 		return err
 	}
-	reapT := tables.WorkflowReapTable{S: batch}
 	// Always delete the originating reap row — even on a no-op apply.
-	if err := reapT.Delete(batch, cmd.GetFireAtMs(), svc, wfKey); err != nil {
-		return fmt.Errorf("onReapWorkflow: workflow_reap delete: %w", err)
+	if err := (tables.ReapTable{S: batch}).Delete(batch, cmd.GetFireAtMs(), id); err != nil {
+		return fmt.Errorf("onReap: reap row delete: %w", err)
 	}
-	runT := tables.WorkflowRunTable{S: batch}
-	lpW := keys.LPFromPartitionKey(routing.PartitionKey(svc, wfKey))
-	invID, rerr := runT.Get(lpW, keys.TenantDefault, svc, wfKey)
-	if rerr != nil {
-		return fmt.Errorf("onReapWorkflow: workflow_run lookup: %w", rerr)
+	cur, err := inv.Get(keys.TenantDefault, id)
+	if err != nil {
+		return fmt.Errorf("onReap: load status: %w", err)
 	}
-	if invID == nil {
-		// Already reaped (operator-driven Purge ran first, or a duplicate
-		// ReapWorkflow proposal). No-op.
+	if _, _, terr := transitionOnPurge(id, cur); terr != nil {
+		// Not in a purgeable state (Completed/Free). A row can't normally
+		// leave Completed, so this is a stale/duplicate fire; leave rows.
+		p.cfg.Log.Warn("partition: Reap on non-purgeable status; skipping",
+			"status", fmt.Sprintf("%T", cur.GetStatus()))
 		return nil
 	}
-	cur, gerr := inv.Get(keys.TenantDefault, invID)
-	if gerr != nil {
-		return fmt.Errorf("onReapWorkflow: load status: %w", gerr)
+
+	// Entity-scoped cleanup: only when this id is still the workflow run
+	// for its (service, key). Plain invocations and virtual-object calls
+	// own no workflow_run row; a re-claimed key points workflow_run at a
+	// newer run, so deleting here would clobber the new run's state.
+	if c := cur.GetCompleted(); c != nil {
+		if target := c.GetTarget(); target != nil && target.GetObjectKey() != "" {
+			svc, wfKey := target.GetServiceName(), target.GetObjectKey()
+			lpW := keys.LPFromPartitionKey(routing.PartitionKey(svc, wfKey))
+			runT := tables.WorkflowRunTable{S: batch}
+			runRow, rerr := runT.Get(lpW, keys.TenantDefault, svc, wfKey)
+			if rerr != nil {
+				return fmt.Errorf("onReap: workflow_run lookup: %w", rerr)
+			}
+			if runRow != nil && runRow.GetPartitionKey() == id.GetPartitionKey() && bytes.Equal(runRow.GetUuid(), id.GetUuid()) {
+				if err := (tables.StateTable{S: batch}).ClearObject(batch, lpW, keys.TenantDefault, &enginev1.InvocationTarget{ServiceName: svc, ObjectKey: wfKey}); err != nil {
+					return fmt.Errorf("onReap: state clear-object: %w", err)
+				}
+				if err := (tables.PromiseTable{S: batch}).DeleteAllForWorkflow(batch, lpW, keys.TenantDefault, svc, wfKey); err != nil {
+					return fmt.Errorf("onReap: promise delete-all: %w", err)
+				}
+				if err := (tables.PromiseAwaiterTable{S: batch}).DeleteAllForWorkflow(batch, lpW, keys.TenantDefault, svc, wfKey); err != nil {
+					return fmt.Errorf("onReap: promise_awaiter delete-all: %w", err)
+				}
+				if err := runT.Delete(batch, lpW, keys.TenantDefault, svc, wfKey); err != nil {
+					return fmt.Errorf("onReap: workflow_run delete: %w", err)
+				}
+			}
+		}
 	}
-	if cur.GetCompleted() == nil {
-		// Race with re-submit: the prior run's reap row fired but a fresh
-		// workflow run has since claimed this (service, workflow_key) and
-		// is not yet Completed. Leave its rows alone.
-		p.cfg.Log.Warn("partition: ReapWorkflow on non-Completed status; skipping",
-			"service", svc, "workflow_key", wfKey, "status", fmt.Sprintf("%T", cur.GetStatus()))
-		return nil
-	}
-	// Range-delete every per-key namespace.
-	if err := (tables.StateTable{S: batch}).ClearObject(batch, lpW, keys.TenantDefault, &enginev1.InvocationTarget{ServiceName: svc, ObjectKey: wfKey}); err != nil {
-		return fmt.Errorf("onReapWorkflow: state clear-object: %w", err)
-	}
-	if err := (tables.PromiseTable{S: batch}).DeleteAllForWorkflow(batch, lpW, keys.TenantDefault, svc, wfKey); err != nil {
-		return fmt.Errorf("onReapWorkflow: promise delete-all: %w", err)
-	}
-	if err := (tables.PromiseAwaiterTable{S: batch}).DeleteAllForWorkflow(batch, lpW, keys.TenantDefault, svc, wfKey); err != nil {
-		return fmt.Errorf("onReapWorkflow: promise_awaiter delete-all: %w", err)
-	}
-	if err := runT.Delete(batch, lpW, keys.TenantDefault, svc, wfKey); err != nil {
-		return fmt.Errorf("onReapWorkflow: workflow_run delete: %w", err)
-	}
-	// Per-invocation rows: subsume onPurge for this id.
-	if err := inv.Delete(batch, keys.TenantDefault, invID); err != nil {
-		return fmt.Errorf("onReapWorkflow: inv delete: %w", err)
-	}
-	if err := journal.DeletePrefix(batch, keys.TenantDefault, invID); err != nil {
-		return fmt.Errorf("onReapWorkflow: journal delete-prefix: %w", err)
-	}
-	if err := (tables.SignalInboxTable{S: batch}).DeleteAllForInvocation(batch, keys.TenantDefault, invID); err != nil {
-		return fmt.Errorf("onReapWorkflow: signal_inbox delete-all: %w", err)
-	}
-	if err := (tables.SignalAwaiterTable{S: batch}).DeleteAllForInvocation(batch, keys.TenantDefault, invID); err != nil {
-		return fmt.Errorf("onReapWorkflow: signal_awaiter delete-all: %w", err)
-	}
-	return nil
+
+	return p.purgeInvocationRows(batch, id, inv, journal)
 }
 
 func (p *Partition) releaseKeyLease(batch storage.Batch, target *enginev1.InvocationTarget) ([]Action, error) {
@@ -2262,6 +2259,45 @@ func (p *Partition) onTimerFired(batch storage.Batch, cmd *enginev1.TimerFired, 
 	return nil
 }
 
+// purgeInvocationRows deletes the per-invocation rows for id: the
+// InvocationStatus, the journal, and the signal inbox/awaiter rows.
+// Shared by the operator-driven onPurge and the retention-driven onReap.
+//
+// State rows (state/<svc>/<key>/...) are intentionally NOT deleted here:
+// they are addressed by (service, object_key), not invocation_id, and
+// outlive any single invocation (a virtual object's state persists
+// across invocations on the same key). Entity-scoped cleanup for a
+// workflow run is onReap's separate, conditional concern. Signal
+// inbox/awaiter rows ARE deleted because they are keyed by inv_id and
+// aren't cleared by the Completed transition (the inbox can carry
+// signals that arrived between Suspend and Complete). Pending timers are
+// already cleared on the Invoked/Suspended → Completed transition, and
+// both callers gate on a Completed/Free status, so none survive here.
+func (p *Partition) purgeInvocationRows(
+	batch storage.Batch,
+	id *enginev1.InvocationId,
+	inv tables.InvocationTable,
+	journal tables.JournalTable,
+) error {
+	if err := inv.Delete(batch, keys.TenantDefault, id); err != nil {
+		return fmt.Errorf("purge inv: %w", err)
+	}
+	if err := journal.DeletePrefix(batch, keys.TenantDefault, id); err != nil {
+		return fmt.Errorf("purge journal: %w", err)
+	}
+	if err := (tables.SignalInboxTable{S: batch}).DeleteAllForInvocation(batch, keys.TenantDefault, id); err != nil {
+		return fmt.Errorf("purge signal inbox: %w", err)
+	}
+	if err := (tables.SignalAwaiterTable{S: batch}).DeleteAllForInvocation(batch, keys.TenantDefault, id); err != nil {
+		return fmt.Errorf("purge signal awaiter: %w", err)
+	}
+	return nil
+}
+
+// onPurge is the operator-driven immediate cleanup of a Completed
+// invocation's per-invocation rows (the ingress PurgeInvocation RPC).
+// No-op when the invocation isn't in a purgeable (Completed/Free) state.
+// The timed counterpart is onReap.
 func (p *Partition) onPurge(
 	batch storage.Batch,
 	cmd *enginev1.PurgeInvocation,
@@ -2280,38 +2316,7 @@ func (p *Partition) onPurge(
 		p.cfg.Log.Warn("partition: invalid Purge transition", "err", err)
 		return nil
 	}
-	if err := inv.Delete(batch, keys.TenantDefault, id); err != nil {
-		return fmt.Errorf("onPurge: delete inv: %w", err)
-	}
-	if err := journal.DeletePrefix(batch, keys.TenantDefault, id); err != nil {
-		return fmt.Errorf("onPurge: delete journal: %w", err)
-	}
-	// Signal inbox/awaiter rows live keyed by inv_id but aren't reaped
-	// by the Completed transition (the inbox could legitimately carry
-	// signals that arrived between Suspend and Complete). Purge is the
-	// definitive cleanup point.
-	if err := (tables.SignalInboxTable{S: batch}).DeleteAllForInvocation(batch, keys.TenantDefault, id); err != nil {
-		return fmt.Errorf("onPurge: signal inbox cleanup: %w", err)
-	}
-	if err := (tables.SignalAwaiterTable{S: batch}).DeleteAllForInvocation(batch, keys.TenantDefault, id); err != nil {
-		return fmt.Errorf("onPurge: signal awaiter cleanup: %w", err)
-	}
-	// State rows (state/<service>/<key>/...) are *not* deleted here.
-	// They are addressed by (service, object_key), not invocation_id, and
-	// outlive any single invocation: an object's state persists across
-	// invocations on the same key, and a workflow's state must survive
-	// the run for downstream readers. Cleanup for workflow state +
-	// workflow_run + promise rows is the workflow retention reaper's job
-	// (onReapWorkflow apply arm, driven by WorkflowReapService — fires
-	// limits.DefaultWorkflowRetentionMs after the Completed transition).
-	// Promise rows (promise/<svc>/<key>/<name>) and awaiter rows
-	// (promise_awaiter/<svc>/<key>/<name>/<entry_index>) follow the same
-	// retention model — the reaper sweeps them together with state when
-	// the workflow's retention window elapses.
-	// Timer rows are reaped on the Invoked/Suspended → Completed
-	// transition (see InvokerEffect_Completed apply arm); transitionOnPurge
-	// requires Completed, so no pending timer can survive into Purge.
-	return nil
+	return p.purgeInvocationRows(batch, id, inv, journal)
 }
 
 // Lookup is the sealed marker interface for linearizable-read query types

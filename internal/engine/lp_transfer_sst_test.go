@@ -69,7 +69,7 @@ func TestBuildLPSSTs_PopulatedLP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lpk, err := keys.TimerLPKey(lp, keys.TenantDefault, 1700000000123, id)
+	lpk, err := keys.TimerLPKey(lp, 1700000000123, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func seedNamespaceRow(t *testing.T, store *storage.PebbleStore, ns keys.LPNamesp
 		// row keyed by the same (fire, id).
 		id := &enginev1.InvocationId{PartitionKey: 42, Uuid: bytes.Repeat([]byte{0xAB}, 16)}
 		const fireAt uint64 = 1_700_000_000_000
-		lpk, err := keys.TimerLPKey(lp, keys.TenantDefault, fireAt, id)
+		lpk, err := keys.TimerLPKey(lp, fireAt, id)
 		if err != nil {
 			t.Fatalf("TimerLPKey: %v", err)
 		}

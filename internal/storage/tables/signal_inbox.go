@@ -16,8 +16,8 @@ import (
 type SignalInboxTable struct{ S storage.Reader }
 
 // Put writes a buffered signal entry. The name must not contain "/".
-func (t SignalInboxTable) Put(b storage.Batch, tenant uint32, id *enginev1.InvocationId, name string, entry *enginev1.SignalInboxEntry) error {
-	k, err := keys.SignalInboxKey(tenant, id, name)
+func (t SignalInboxTable) Put(b storage.Batch, id *enginev1.InvocationId, name string, entry *enginev1.SignalInboxEntry) error {
+	k, err := keys.SignalInboxKey(id, name)
 	if err != nil {
 		return err
 	}
@@ -27,8 +27,8 @@ func (t SignalInboxTable) Put(b storage.Batch, tenant uint32, id *enginev1.Invoc
 // Get returns the buffered signal for (id, name), or (nil, nil) when
 // absent. Distinguishing "absent" from "error" lets the apply arm
 // branch on whether to stitch synchronously vs write an awaiter row.
-func (t SignalInboxTable) Get(tenant uint32, id *enginev1.InvocationId, name string) (*enginev1.SignalInboxEntry, error) {
-	k, err := keys.SignalInboxKey(tenant, id, name)
+func (t SignalInboxTable) Get(id *enginev1.InvocationId, name string) (*enginev1.SignalInboxEntry, error) {
+	k, err := keys.SignalInboxKey(id, name)
 	if err != nil {
 		return nil, err
 	}
@@ -43,8 +43,8 @@ func (t SignalInboxTable) Get(tenant uint32, id *enginev1.InvocationId, name str
 }
 
 // Delete removes the buffered entry.
-func (t SignalInboxTable) Delete(b storage.Batch, tenant uint32, id *enginev1.InvocationId, name string) error {
-	k, err := keys.SignalInboxKey(tenant, id, name)
+func (t SignalInboxTable) Delete(b storage.Batch, id *enginev1.InvocationId, name string) error {
+	k, err := keys.SignalInboxKey(id, name)
 	if err != nil {
 		return err
 	}
@@ -54,8 +54,8 @@ func (t SignalInboxTable) Delete(b storage.Batch, tenant uint32, id *enginev1.In
 // DeleteAllForInvocation range-deletes every buffered signal under
 // (inv_id). Called by onPurge so a completed invocation's inbox doesn't
 // leak. Cost is independent of the number of rows.
-func (t SignalInboxTable) DeleteAllForInvocation(b storage.Batch, tenant uint32, id *enginev1.InvocationId) error {
-	prefix, err := keys.SignalInboxPrefixForInvocation(tenant, id)
+func (t SignalInboxTable) DeleteAllForInvocation(b storage.Batch, id *enginev1.InvocationId) error {
+	prefix, err := keys.SignalInboxPrefixForInvocation(id)
 	if err != nil {
 		return err
 	}

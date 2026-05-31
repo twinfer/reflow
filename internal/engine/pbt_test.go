@@ -222,10 +222,10 @@ func (m *engineMachine) init(t *rapid.T) {
 	}
 	m.idemKs = []string{"", "req-0", "req-1", "req-2"}
 	m.awkPool = []string{
-		"awk_aaaaaaaaaaaaaaaaaaaaaa",
-		"awk_bbbbbbbbbbbbbbbbbbbbbb",
-		"awk_cccccccccccccccccccccc",
-		"awk_dddddddddddddddddddddd",
+		"awk_aaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"awk_bbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"awk_ccccccccccccccccccccccccccc",
+		"awk_ddddddddddddddddddddddddddd",
 	}
 	m.sigPool = []string{"sig-0", "sig-1", "sig-2", "sig-3"}
 	m.promisePool = []string{"prom-0", "prom-1"}
@@ -1032,7 +1032,7 @@ func (m *engineMachine) Check(t *rapid.T) {
 			continue
 		}
 		shard := m.shardOf(owner.id)
-		row, err := (tables.AwakeableTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(keys.TenantDefault, awk)
+		row, err := (tables.AwakeableTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(awk)
 		if err != nil {
 			t.Fatalf("AwakeableTable.Get shard=%d %q: %v", shard, awk, err)
 		}

@@ -214,9 +214,9 @@ type StartMessage struct {
 	// Handler classification — echoes the deployment registration.
 	Kind Kind `protobuf:"varint,13,opt,name=kind,proto3,enum=reflow.protocol.v1.Kind" json:"kind,omitempty"`
 	// Owner invocation's partition_key. Reflow-specific routing hint —
-	// wireContext.Awakeable mints awakeable ids whose first 8 bytes
-	// encode this value so ingress.ResolveAwakeable can route to the
-	// owning shard with a single read.
+	// wireContext.Awakeable mints awakeable ids whose body encodes this
+	// value (after a 4-byte tenant prefix) so ingress.ResolveAwakeable can
+	// route to the owning shard with a single read.
 	PartitionKey uint64 `protobuf:"fixed64,14,opt,name=partition_key,json=partitionKey,proto3" json:"partition_key,omitempty"`
 	// Per-invocation cap on journal entries (steps). Echoed from the
 	// resolved DeploymentRecord (engine default 10_000 when the
@@ -224,8 +224,13 @@ type StartMessage struct {
 	// this so handlers see a clean *Failure rather than a torn-down
 	// session when the budget is exhausted.
 	MaxJournalEntries uint32 `protobuf:"varint,15,opt,name=max_journal_entries,json=maxJournalEntries,proto3" json:"max_journal_entries,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Owner invocation's tenant id. Reflow-specific; lets the handler-side
+	// wireContext.Awakeable embed tenant in minted awakeable ids
+	// ([4B tenant][8B partition_key][8B random]) so ingress.ResolveAwakeable
+	// keys the awakeable directory row under the owner's tenant.
+	OwnerTenant   uint32 `protobuf:"varint,16,opt,name=owner_tenant,json=ownerTenant,proto3" json:"owner_tenant,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StartMessage) Reset() {
@@ -352,6 +357,13 @@ func (x *StartMessage) GetPartitionKey() uint64 {
 func (x *StartMessage) GetMaxJournalEntries() uint32 {
 	if x != nil {
 		return x.MaxJournalEntries
+	}
+	return 0
+}
+
+func (x *StartMessage) GetOwnerTenant() uint32 {
+	if x != nil {
+		return x.OwnerTenant
 	}
 	return 0
 }
@@ -3801,7 +3813,7 @@ const file_protocolv1_protocol_proto_rawDesc = "" +
 	"\x05Frame\x12\x16\n" +
 	"\x06header\x18\x01 \x01(\x04R\x06header\x12\x18\n" +
 	"\apayload\x18\x02 \x01(\fR\apayload\x12\x12\n" +
-	"\x04slot\x18\x03 \x01(\rR\x04slot\"\x94\x05\n" +
+	"\x04slot\x18\x03 \x01(\rR\x04slot\"\xb7\x05\n" +
 	"\fStartMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\fR\x02id\x12\x19\n" +
 	"\bdebug_id\x18\x02 \x01(\tR\adebugId\x12#\n" +
@@ -3818,7 +3830,8 @@ const file_protocolv1_protocol_proto_rawDesc = "" +
 	"\fhandler_name\x18\v \x01(\tR\vhandlerName\x12,\n" +
 	"\x04kind\x18\r \x01(\x0e2\x18.reflow.protocol.v1.KindR\x04kind\x12#\n" +
 	"\rpartition_key\x18\x0e \x01(\x06R\fpartitionKey\x12.\n" +
-	"\x13max_journal_entries\x18\x0f \x01(\rR\x11maxJournalEntries\x1a4\n" +
+	"\x13max_journal_entries\x18\x0f \x01(\rR\x11maxJournalEntries\x12!\n" +
+	"\fowner_tenant\x18\x10 \x01(\rR\vownerTenant\x1a4\n" +
 	"\n" +
 	"StateEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +

@@ -28,11 +28,14 @@ func TestEncodeDecodeInvocationID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(raw) != 24 {
-		t.Fatalf("raw length = %d; want 24", len(raw))
+	if len(raw) != 28 {
+		t.Fatalf("raw length = %d; want 28", len(raw))
 	}
-	if binary.BigEndian.Uint64(raw[:8]) != 0xDEADBEEFCAFEBABE {
-		t.Errorf("partition_key not big-endian")
+	if binary.BigEndian.Uint32(raw[:4]) != 0 {
+		t.Errorf("default tenant not at raw[:4]")
+	}
+	if binary.BigEndian.Uint64(raw[4:12]) != 0xDEADBEEFCAFEBABE {
+		t.Errorf("partition_key not big-endian at raw[4:12]")
 	}
 	decoded, err := DecodeInvocationID(raw)
 	if err != nil {
@@ -78,15 +81,15 @@ func TestLPFromPartitionKey_Bounds(t *testing.T) {
 
 func TestInvocationKey_LPPrefix(t *testing.T) {
 	id := testID(t, 0x123, "0123456789abcdef")
-	k, err := InvocationKey(TenantDefault, id)
+	k, err := InvocationKey(id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.HasPrefix(k, []byte("inv/")) {
 		t.Errorf("bad prefix: %q", k)
 	}
-	if len(k) != len("inv/")+LPLen+TenantLen+24 {
-		t.Errorf("len = %d; want %d", len(k), len("inv/")+LPLen+TenantLen+24)
+	if len(k) != len("inv/")+LPLen+invocationIDLen {
+		t.Errorf("len = %d; want %d", len(k), len("inv/")+LPLen+invocationIDLen)
 	}
 	// LP encoded directly after the namespace prefix.
 	wantLP := LPFromPartitionKey(0x123)
@@ -99,8 +102,9 @@ func TestInvocationKey_LPPrefix(t *testing.T) {
 	if gotTenant != TenantDefault {
 		t.Errorf("encoded tenant = %d; want %d", gotTenant, TenantDefault)
 	}
-	// The invocation id body follows the LP+tenant.
-	decoded, err := DecodeInvocationID(k[len("inv/")+LPLen+TenantLen:])
+	// The 28-byte invocation id (whose leading 4 bytes are the tenant)
+	// follows the LP.
+	decoded, err := DecodeInvocationID(k[len("inv/")+LPLen:])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,9 +118,10 @@ func TestInvocationKey_TenantIsolation(t *testing.T) {
 	// across tenants on the same LP). Load-bearing invariant for the
 	// value-encryption layer in PR 4 and for the per-tenant data
 	// isolation the multi-tenancy refactor is built on.
-	id := testID(t, 0x42, "0123456789abcdef")
-	kA, _ := InvocationKey(1, id)
-	kB, _ := InvocationKey(2, id)
+	idA := &enginev1.InvocationId{TenantId: 1, PartitionKey: 0x42, Uuid: []byte("0123456789abcdef")}
+	idB := &enginev1.InvocationId{TenantId: 2, PartitionKey: 0x42, Uuid: []byte("0123456789abcdef")}
+	kA, _ := InvocationKey(idA)
+	kB, _ := InvocationKey(idB)
 	if bytes.Equal(kA, kB) {
 		t.Fatalf("tenant 1 and tenant 2 produced the same key for the same id: %x", kA)
 	}
@@ -141,8 +146,8 @@ func TestInvocationLPPrefix_ScanBoundary(t *testing.T) {
 		// with any reasonable LPCount. Defensive: just skip if they collide.
 		t.Skipf("test partition_keys collided on LP: %d", lpA)
 	}
-	kA, _ := InvocationKey(TenantDefault, idA)
-	kB, _ := InvocationKey(TenantDefault, idB)
+	kA, _ := InvocationKey(idA)
+	kB, _ := InvocationKey(idB)
 	pfxA := InvocationLPPrefix(lpA)
 	pfxB := InvocationLPPrefix(lpB)
 	if !bytes.HasPrefix(kA, pfxA) {
@@ -165,7 +170,8 @@ func TestInvocationLPPrefix_CapturesAllTenantsOnLP(t *testing.T) {
 	lp := LPFromPartitionKey(0x42)
 	pfx := InvocationLPPrefix(lp)
 	for _, tenant := range []uint32{0, 1, 42, ^uint32(0)} {
-		k, _ := InvocationKey(tenant, id)
+		id.TenantId = tenant
+		k, _ := InvocationKey(id)
 		if !bytes.HasPrefix(k, pfx) {
 			t.Errorf("tenant=%d key not under InvocationLPPrefix(%d): %x", tenant, lp, k)
 		}
@@ -175,18 +181,19 @@ func TestInvocationLPPrefix_CapturesAllTenantsOnLP(t *testing.T) {
 func TestJournalKeyOrdering(t *testing.T) {
 	// Same id (so same LP), increasing index — must sort by index.
 	id := testID(t, 1, "0123456789abcdef")
-	k0, _ := JournalKey(TenantDefault, id, 0)
-	k1, _ := JournalKey(TenantDefault, id, 1)
-	k2, _ := JournalKey(TenantDefault, id, 256)
+	k0, _ := JournalKey(id, 0)
+	k1, _ := JournalKey(id, 1)
+	k2, _ := JournalKey(id, 256)
 	if bytes.Compare(k0, k1) >= 0 || bytes.Compare(k1, k2) >= 0 {
 		t.Errorf("journal keys not ordered: %x %x %x", k0, k1, k2)
 	}
 }
 
 func TestJournalKey_TenantIsolation(t *testing.T) {
-	id := testID(t, 1, "0123456789abcdef")
-	kA, _ := JournalKey(1, id, 0)
-	kB, _ := JournalKey(2, id, 0)
+	idA := &enginev1.InvocationId{TenantId: 1, PartitionKey: 1, Uuid: []byte("0123456789abcdef")}
+	idB := &enginev1.InvocationId{TenantId: 2, PartitionKey: 1, Uuid: []byte("0123456789abcdef")}
+	kA, _ := JournalKey(idA, 0)
+	kB, _ := JournalKey(idB, 0)
 	if bytes.Equal(kA, kB) {
 		t.Fatalf("distinct tenants must produce distinct journal keys")
 	}
@@ -257,8 +264,8 @@ func TestTimerKeyRoundtrip(t *testing.T) {
 func TestTimerLPKey_RoundtripAndPerLPScan(t *testing.T) {
 	lp := uint32(42)
 	const tenant uint32 = 7
-	id := testID(t, 0x100, "abcdefghijklmnop")
-	k, err := TimerLPKey(lp, tenant, 9999, id)
+	id := &enginev1.InvocationId{TenantId: tenant, PartitionKey: 0x100, Uuid: []byte("abcdefghijklmnop")}
+	k, err := TimerLPKey(lp, 9999, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +291,8 @@ func TestTimerLPKey_RoundtripAndPerLPScan(t *testing.T) {
 	}
 	// Distinct tenant under the same LP+id+fire must yield a distinct
 	// key (no cross-tenant aliasing).
-	k2, _ := TimerLPKey(lp, tenant+1, 9999, id)
+	id2 := &enginev1.InvocationId{TenantId: tenant + 1, PartitionKey: 0x100, Uuid: []byte("abcdefghijklmnop")}
+	k2, _ := TimerLPKey(lp, 9999, id2)
 	if bytes.Equal(k, k2) {
 		t.Fatalf("distinct tenants must produce distinct timer_lp keys")
 	}
@@ -294,7 +302,7 @@ func TestTimerIdxKey_RoundtripAndPrefix(t *testing.T) {
 	idA := testID(t, 0x42, "abcdefghijklmnop")
 	idB := testID(t, 0x42, "zyxwvutsrqponmlk")
 
-	k, err := TimerIdxKey(TenantDefault, idA, 1234567)
+	k, err := TimerIdxKey(idA, 1234567)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,18 +322,20 @@ func TestTimerIdxKey_RoundtripAndPrefix(t *testing.T) {
 
 	// Two ids with the same partition_key must produce disjoint prefixes;
 	// a prefix scan over idA's range must not see idB's rows.
-	pa, _ := TimerIdxPrefixForID(TenantDefault, idA)
-	pb, _ := TimerIdxPrefixForID(TenantDefault, idB)
+	pa, _ := TimerIdxPrefixForID(idA)
+	pb, _ := TimerIdxPrefixForID(idB)
 	if bytes.Equal(pa, pb) {
 		t.Fatalf("prefix collision between distinct ids")
 	}
-	kB, _ := TimerIdxKey(TenantDefault, idB, 999)
+	kB, _ := TimerIdxKey(idB, 999)
 	if bytes.HasPrefix(kB, pa) {
 		t.Errorf("idB key falls within idA prefix scan range")
 	}
 	// Distinct tenants must produce disjoint scan ranges for the same id.
-	tenantAPfx, _ := TimerIdxPrefixForID(1, idA)
-	tenantBPfx, _ := TimerIdxPrefixForID(2, idA)
+	idAt1 := &enginev1.InvocationId{TenantId: 1, PartitionKey: 0x42, Uuid: idA.GetUuid()}
+	idAt2 := &enginev1.InvocationId{TenantId: 2, PartitionKey: 0x42, Uuid: idA.GetUuid()}
+	tenantAPfx, _ := TimerIdxPrefixForID(idAt1)
+	tenantBPfx, _ := TimerIdxPrefixForID(idAt2)
 	if bytes.Equal(tenantAPfx, tenantBPfx) {
 		t.Fatalf("distinct tenants must produce distinct timer_idx prefixes")
 	}
@@ -423,15 +433,15 @@ func TestDedupKeys(t *testing.T) {
 func TestNamespacesDistinct(t *testing.T) {
 	id := testID(t, 1, "0123456789abcdef")
 	const lp uint32 = 7
-	invK, _ := InvocationKey(TenantDefault, id)
-	jouK, _ := JournalKey(TenantDefault, id, 0)
+	invK, _ := InvocationKey(id)
+	jouK, _ := JournalKey(id, 0)
 	timK, _ := TimerKey(0, id)
 	stateK := StateKey(lp, TenantDefault, "Svc", "obj", "key")
 	outK := OutboxKey(1)
-	awkK := AwakeableKey(lp, TenantDefault, "awk_AAAAAAAAAAAAAAAAAAAAAA")
+	awkK := AwakeableKey(lp, TenantDefault, "awk_ABCDEFGHIJKLMNOPQRSTUVWXYZ0")
 	leaseK := KeyLeaseKey(lp, TenantDefault, "Svc", "obj")
 	idemK := IdempotencyKey(lp, TenantDefault, "Svc", "h", "obj", "ikey")
-	timLP, _ := TimerLPKey(lp, TenantDefault, 0, id)
+	timLP, _ := TimerLPKey(lp, 0, id)
 	all := [][]byte{invK, jouK, timK, stateK, outK, awkK, leaseK, idemK, timLP}
 	for i := range all {
 		for j := i + 1; j < len(all); j++ {
@@ -541,7 +551,7 @@ func TestOutboxKey_Roundtrip(t *testing.T) {
 
 func TestAwakeableKey_RoundtripAndPrefix(t *testing.T) {
 	const lp uint32 = 21
-	id := "awk_ABCDEFGHIJKLMNOPQRSTUV" // 26 chars, all valid
+	id := "awk_ABCDEFGHIJKLMNOPQRSTUVWXYZ0" // 31 chars, all valid
 	if err := ValidateAwakeableID(id); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
@@ -549,8 +559,8 @@ func TestAwakeableKey_RoundtripAndPrefix(t *testing.T) {
 	if !bytes.HasPrefix(k, AwakeablePrefix()) {
 		t.Errorf("bad prefix: %q", k)
 	}
-	if len(k) != len("awakeable/")+LPLen+TenantLen+26 {
-		t.Errorf("len=%d want %d", len(k), len("awakeable/")+LPLen+TenantLen+26)
+	if len(k) != len("awakeable/")+LPLen+TenantLen+awakeableIDLen {
+		t.Errorf("len=%d want %d", len(k), len("awakeable/")+LPLen+TenantLen+awakeableIDLen)
 	}
 	// LP is BE-encoded right after namespace; tenant immediately after.
 	if gotLP := binary.BigEndian.Uint32(k[len("awakeable/") : len("awakeable/")+LPLen]); gotLP != lp {
@@ -610,10 +620,12 @@ func TestIdempotencyKey_DeterministicAndSensitive(t *testing.T) {
 
 func TestAwakeableOwnerPartitionKey_Roundtrip(t *testing.T) {
 	for _, pk := range []uint64{0, 1, 42, 1 << 31, 1<<63 + 17, ^uint64(0)} {
-		var body [16]byte
-		binary.BigEndian.PutUint64(body[:8], pk)
+		const tenant uint32 = 7
+		var body [20]byte
+		binary.BigEndian.PutUint32(body[:4], tenant)
+		binary.BigEndian.PutUint64(body[4:12], pk)
 		// Last 8 bytes are random in production; the decoder ignores them.
-		body[8], body[15] = 0xDE, 0xAD
+		body[12], body[19] = 0xDE, 0xAD
 		id := "awk_" + base64.RawURLEncoding.EncodeToString(body[:])
 		got, err := AwakeableOwnerPartitionKey(id)
 		if err != nil {
@@ -621,6 +633,13 @@ func TestAwakeableOwnerPartitionKey_Roundtrip(t *testing.T) {
 		}
 		if got != pk {
 			t.Errorf("pk roundtrip: got %d, want %d", got, pk)
+		}
+		gotTenant, err := AwakeableOwnerTenant(id)
+		if err != nil {
+			t.Fatalf("pk=%d: tenant decode: %v", pk, err)
+		}
+		if gotTenant != tenant {
+			t.Errorf("tenant roundtrip: got %d, want %d", gotTenant, tenant)
 		}
 	}
 }
@@ -644,15 +663,15 @@ func TestValidateAwakeableID(t *testing.T) {
 		id    string
 		valid bool
 	}{
-		{"awk_ABCDEFGHIJKLMNOPQRSTUV", true},
-		{"awk_0123456789_-abcdefghij", true},
-		{"awk_aaaaaaaaaaaaaaaaaaaaaa", true},
+		{"awk_ABCDEFGHIJKLMNOPQRSTUVWXYZ0", true},
+		{"awk_0123456789_-abcdefghijklmno", true},
+		{"awk_aaaaaaaaaaaaaaaaaaaaaaaaaaa", true},
 		{"", false},
 		{"awk_short", false},
-		{"bad_ABCDEFGHIJKLMNOPQRSTUV", false},
-		{"awk_ABCDEFGHIJKLMNOPQRSTU/", false}, // '/' is illegal
-		{"awk_ABCDEFGHIJKLMNOPQRSTU!", false},
-		{"awk_ABCDEFGHIJKLMNOPQRSTUV ", false}, // trailing space → wrong len
+		{"bad_ABCDEFGHIJKLMNOPQRSTUVWXYZ0", false},
+		{"awk_ABCDEFGHIJKLMNOPQRSTUVWXYZ/", false}, // '/' is illegal
+		{"awk_ABCDEFGHIJKLMNOPQRSTUVWXYZ!", false},
+		{"awk_ABCDEFGHIJKLMNOPQRSTUVWXYZ0 ", false}, // trailing space → wrong len
 	}
 	for _, c := range cases {
 		err := ValidateAwakeableID(c.id)

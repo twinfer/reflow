@@ -155,7 +155,7 @@ func TestReap_PurgesWorkflowStateAndPromise(t *testing.T) {
 	for {
 		store := pr.Snapshotter().Store()
 		runRow, _ := (tables.WorkflowRunTable{S: store}).Get(lp, keys.TenantDefault, target.GetServiceName(), target.GetObjectKey())
-		invRow, _ := (tables.InvocationTable{S: store}).Get(keys.TenantDefault, id)
+		invRow, _ := (tables.InvocationTable{S: store}).Get(id)
 		_, invFree := invRow.GetStatus().(*enginev1.InvocationStatus_Free)
 		if runRow == nil && invFree {
 			break
@@ -192,7 +192,7 @@ func TestReap_PurgesWorkflowStateAndPromise(t *testing.T) {
 	}
 
 	// Journal prefix should be empty.
-	jPrefix, _ := keys.JournalPrefix(keys.TenantDefault, id)
+	jPrefix, _ := keys.JournalPrefix(id)
 	iter, err := store.NewIter(jPrefix, keys.PrefixUpperBound(jPrefix))
 	if err != nil {
 		t.Fatalf("journal scan: %v", err)

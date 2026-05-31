@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -253,7 +252,7 @@ func (i *Invoker) installSessionLocked(id *enginev1.InvocationId, target *engine
 		return nil, false
 	}
 
-	status, err := i.invocationTable.Get(keys.TenantDefault, id)
+	status, err := i.invocationTable.Get(id)
 	if err != nil {
 		i.log.Warn("invoker: load status for dispatch failed",
 			"id", invocationIDString(id), "err", err)

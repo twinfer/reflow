@@ -106,6 +106,7 @@ func runSession(
 	invID := &enginev1.InvocationId{
 		Uuid:         start.GetId(),
 		PartitionKey: start.GetPartitionKey(),
+		TenantId:     start.GetOwnerTenant(),
 	}
 	stateCache := stateMapToCache(start.GetStateMap())
 	wctx := newWireContext(

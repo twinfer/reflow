@@ -83,6 +83,53 @@ func envelopeWithDedup(t *testing.T, d *enginev1.Dedup, cmd *enginev1.Command) [
 	return buf
 }
 
+// TestPartition_TenantOnIdDrivesKeyPlacement proves the core invariant of
+// the tenant-on-identity refactor: the tenant carried INSIDE an InvocationId
+// (no separate command field) drives ID-keyed row placement through the apply
+// path. An Invoke whose id.TenantId=7 lands its InvocationStatus under tenant
+// 7; the same (partition_key, uuid) under tenant 0 is a distinct, absent key.
+// (Behavior is identical at tenant 0 today — this exercises the mechanism with
+// a non-zero tenant the production principal path doesn't yet produce.)
+func TestPartition_TenantOnIdDrivesKeyPlacement(t *testing.T) {
+	p, _, _ := newTestPartition(t)
+
+	const tenant uint32 = 7
+	id := &enginev1.InvocationId{TenantId: tenant, PartitionKey: 1, Uuid: []byte("0123456789abcdef")}
+	target := &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h"}
+
+	invCmd := envelope(t, &enginev1.Command{
+		Kind: &enginev1.Command_Invoke{
+			Invoke: &enginev1.InvokeCommand{InvocationId: id, Target: target, Input: []byte("in")},
+		},
+	})
+	if _, err := p.Update([]statemachine.Entry{{Index: 1, Cmd: invCmd}}); err != nil {
+		t.Fatal(err)
+	}
+
+	inv := tables.InvocationTable{S: p.cfg.Snapshotter.Store()}
+
+	// The row is found via the tenant-7-bearing id.
+	st, err := inv.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.GetScheduled() == nil {
+		t.Fatalf("tenant-7 invocation not Scheduled: %T", st.GetStatus())
+	}
+
+	// The same (partition_key, uuid) under tenant 0 is a DIFFERENT key — so it
+	// reads absent (Free). This proves the row was placed under the id's
+	// tenant, not the default sentinel.
+	id0 := &enginev1.InvocationId{TenantId: 0, PartitionKey: 1, Uuid: []byte("0123456789abcdef")}
+	st0, err := inv.Get(id0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st0.GetFree() == nil {
+		t.Fatalf("tenant-0 lookup should be absent (Free), got %T", st0.GetStatus())
+	}
+}
+
 func TestPartition_ApplyInvokeAndJournal(t *testing.T) {
 	p, _, col := newTestPartition(t)
 
@@ -251,7 +298,7 @@ func TestPartition_ReapPurgesPlainInvocation(t *testing.T) {
 		t.Errorf("status after reap = %T; want Free", got.(*enginev1.InvocationStatus).GetStatus())
 	}
 	store = p.cfg.Snapshotter.Store()
-	jPrefix, _ := keys.JournalPrefix(keys.TenantDefault, id)
+	jPrefix, _ := keys.JournalPrefix(id)
 	iter, err := store.NewIter(jPrefix, keys.PrefixUpperBound(jPrefix))
 	if err != nil {
 		t.Fatal(err)
@@ -630,7 +677,7 @@ func TestPartition_RunProposal_TerminalWritesJERun(t *testing.T) {
 
 	// Journal entry at index 1 has retryable=false + value=ok.
 	journal := tables.JournalTable{S: p.cfg.Snapshotter.Store()}
-	got, err := journal.Read(keys.TenantDefault, id, 1)
+	got, err := journal.Read(id, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -705,7 +752,7 @@ func TestPartition_RunProposal_RetryableSchedulesTimer(t *testing.T) {
 
 	// Journal entry is JERun{retryable=true}.
 	journal := tables.JournalTable{S: p.cfg.Snapshotter.Store()}
-	got, err := journal.Read(keys.TenantDefault, id, 1)
+	got, err := journal.Read(id, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -783,7 +830,7 @@ func TestPartition_RunProposal_ExhaustedPolicyDemotesToTerminal(t *testing.T) {
 	}
 
 	journal := tables.JournalTable{S: p.cfg.Snapshotter.Store()}
-	got, err := journal.Read(keys.TenantDefault, id, 1)
+	got, err := journal.Read(id, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

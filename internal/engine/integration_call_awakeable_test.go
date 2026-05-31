@@ -13,7 +13,6 @@ import (
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflow/internal/engine/routing"
-	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/pkg/handler"
 	"github.com/twinfer/reflow/pkg/ingressclient"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -245,7 +244,7 @@ func TestOutgoingCallSurvivesRestart(t *testing.T) {
 	// (Caller journal: Input=0, Call=1, CallResult=2, Output=3.)
 	store := h2.Partition(1).Snapshotter().Store()
 	jt := journalTableFor(store)
-	entry, err := jt.Read(keys.TenantDefault, callerID, 2)
+	entry, err := jt.Read(callerID, 2)
 	if err != nil {
 		t.Fatalf("caller journal read at idx 2: %v", err)
 	}

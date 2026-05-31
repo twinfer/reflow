@@ -28,12 +28,12 @@ func (r *JournalReader) Rebind(t tables.JournalTable) {
 	r.table = t
 }
 
-// Load returns every journal entry for (tenant, id) in ascending index
-// order. An empty journal returns ([]*JournalEntry{}, nil) — distinct
-// from an error, which signals storage corruption.
-func (r *JournalReader) Load(tenant uint32, id *enginev1.InvocationId) ([]*enginev1.JournalEntry, error) {
+// Load returns every journal entry for id in ascending index order. An
+// empty journal returns ([]*JournalEntry{}, nil) — distinct from an error,
+// which signals storage corruption.
+func (r *JournalReader) Load(id *enginev1.InvocationId) ([]*enginev1.JournalEntry, error) {
 	var entries []*enginev1.JournalEntry
-	if err := r.table.Scan(tenant, id, func(e *enginev1.JournalEntry) error {
+	if err := r.table.Scan(id, func(e *enginev1.JournalEntry) error {
 		entries = append(entries, e)
 		return nil
 	}); err != nil {

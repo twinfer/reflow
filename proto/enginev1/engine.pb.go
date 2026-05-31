@@ -272,9 +272,16 @@ func (RebalanceStep_Kind) EnumDescriptor() ([]byte, []int) {
 // InvocationId carries the partition_key inside the ID so routing never needs
 // to re-parse the target. Mirrors restate types/identifiers.rs:456-461.
 type InvocationId struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	PartitionKey  uint64                 `protobuf:"fixed64,1,opt,name=partition_key,json=partitionKey,proto3" json:"partition_key,omitempty"`
-	Uuid          []byte                 `protobuf:"bytes,2,opt,name=uuid,proto3" json:"uuid,omitempty"` // 16 bytes
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	PartitionKey uint64                 `protobuf:"fixed64,1,opt,name=partition_key,json=partitionKey,proto3" json:"partition_key,omitempty"`
+	Uuid         []byte                 `protobuf:"bytes,2,opt,name=uuid,proto3" json:"uuid,omitempty"` // 16 bytes
+	// tenant_id scopes the invocation to its owning tenant; 0 is the reserved
+	// default-tenant sentinel. Stamped once at ingress mint from the caller's
+	// auth principal (auth.TenantIDFromPrincipal) and carried inside the id
+	// everywhere it travels. The raw 28-byte key encoding is
+	// [4B tenant][8B partition_key][16B uuid], so any holder of the id (or of a
+	// key that embeds it) recovers the tenant without a separate field.
+	TenantId      uint32 `protobuf:"varint,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -321,6 +328,13 @@ func (x *InvocationId) GetUuid() []byte {
 		return x.Uuid
 	}
 	return nil
+}
+
+func (x *InvocationId) GetTenantId() uint32 {
+	if x != nil {
+		return x.TenantId
+	}
+	return 0
 }
 
 type InvocationTarget struct {
@@ -751,13 +765,6 @@ type Header struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	Dedup       *Dedup                 `protobuf:"bytes,1,opt,name=dedup,proto3" json:"dedup,omitempty"`
 	CreatedAtMs uint64                 `protobuf:"fixed64,2,opt,name=created_at_ms,json=createdAtMs,proto3" json:"created_at_ms,omitempty"`
-	// tenant_id scopes the command to its owning tenant. 0 is the
-	// default-tenant sentinel (anonymous traffic, internal probes,
-	// single-tenant deployments). Set on inbound commands at the
-	// ingress boundary from auth.Principal; copied onto outbound
-	// OutboxEnvelopes by the partition so cross-shard hops carry the
-	// tenant through to the receiving shard.
-	TenantId uint32 `protobuf:"varint,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	// principal is the auth principal that originated this command,
 	// captured at the admin/config Connect propose sites from
 	// auth.PrincipalFromContext (e.g. "operator/alice", "tenant/42",
@@ -769,7 +776,7 @@ type Header struct {
 	// principal="engine" in that case. Partition-shard commands
 	// (Invoke, TimerFired, ...) do not populate this field; invocation
 	// submits are metrics, not audit signal, and the per-tenant binding
-	// already flows via tenant_id.
+	// already flows via InvocationId.tenant_id.
 	Principal     string `protobuf:"bytes,4,opt,name=principal,proto3" json:"principal,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -815,13 +822,6 @@ func (x *Header) GetDedup() *Dedup {
 func (x *Header) GetCreatedAtMs() uint64 {
 	if x != nil {
 		return x.CreatedAtMs
-	}
-	return 0
-}
-
-func (x *Header) GetTenantId() uint32 {
-	if x != nil {
-		return x.TenantId
 	}
 	return 0
 }
@@ -1662,13 +1662,7 @@ type InvokeCommand struct {
 	// apply arm copies this onto JEInput.metadata so the SDK can read it
 	// via ctx.Metadata() on replay. The engine itself never interprets
 	// the values.
-	Metadata map[string]string `protobuf:"bytes,8,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// tenant_id is captured at submit time from the caller's auth
-	// principal (see internal/auth.TenantIDFromPrincipal). The apply
-	// arm copies it onto Scheduled; the invoker copies it onto the
-	// slot-0 JEInput so the durable journal carries the tenant. 0 is
-	// the default-tenant sentinel.
-	TenantId      uint32 `protobuf:"varint,9,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Metadata      map[string]string `protobuf:"bytes,8,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1757,13 +1751,6 @@ func (x *InvokeCommand) GetMetadata() map[string]string {
 		return x.Metadata
 	}
 	return nil
-}
-
-func (x *InvokeCommand) GetTenantId() uint32 {
-	if x != nil {
-		return x.TenantId
-	}
-	return 0
 }
 
 // ParentLink references the parent invocation that spawned a callee via
@@ -3192,14 +3179,7 @@ type JEInput struct {
 	// via ctx.Metadata() inside the handler. Stable across replays —
 	// JEInput is the slot-0 journal entry and the only place metadata
 	// is persisted.
-	Metadata map[string]string `protobuf:"bytes,2,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// tenant_id is the durable journal-side home for the invocation's
-	// tenant assignment. Copied from InvocationStatus.tenant_id by the
-	// invoker on first activation; reread from the journal on every
-	// replay so consumers that only have the journal (snapshot replay,
-	// out-of-band tooling) can recover the tenant without joining
-	// against the status row. 0 is the default-tenant sentinel.
-	TenantId      uint32 `protobuf:"varint,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Metadata      map[string]string `protobuf:"bytes,2,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3246,13 +3226,6 @@ func (x *JEInput) GetMetadata() map[string]string {
 		return x.Metadata
 	}
 	return nil
-}
-
-func (x *JEInput) GetTenantId() uint32 {
-	if x != nil {
-		return x.TenantId
-	}
-	return 0
 }
 
 type JESleep struct {
@@ -5358,15 +5331,7 @@ type InvocationStatus struct {
 	// kind mirrors protocolv1.Kind (see InvokeCommand.kind). Pinned at the
 	// Free→Scheduled transition like deployment_id; lifecycle code (purge,
 	// workflow retention reaper) consults it to decide what to clean up.
-	Kind uint32 `protobuf:"varint,7,opt,name=kind,proto3" json:"kind,omitempty"`
-	// tenant_id pins this invocation to its owning tenant. Stamped once
-	// on the Free→Scheduled transition (from InvokeCommand.tenant_id) and
-	// preserved across every subsequent transition. Consulted by the
-	// invoker (stamped onto slot-0 JEInput) and by the outbox path
-	// (stamped onto outbound OutboxEnvelope.Header on cross-shard Calls
-	// so the receiving shard's apply path stays tenant-scoped). 0 is the
-	// default-tenant sentinel.
-	TenantId      uint32 `protobuf:"varint,8,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Kind          uint32 `protobuf:"varint,7,opt,name=kind,proto3" json:"kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5463,13 +5428,6 @@ func (x *InvocationStatus) GetDeploymentId() string {
 func (x *InvocationStatus) GetKind() uint32 {
 	if x != nil {
 		return x.Kind
-	}
-	return 0
-}
-
-func (x *InvocationStatus) GetTenantId() uint32 {
-	if x != nil {
-		return x.TenantId
 	}
 	return 0
 }
@@ -9438,10 +9396,11 @@ var File_enginev1_engine_proto protoreflect.FileDescriptor
 
 const file_enginev1_engine_proto_rawDesc = "" +
 	"\n" +
-	"\x15enginev1/engine.proto\x12\x10reflow.engine.v1\"G\n" +
+	"\x15enginev1/engine.proto\x12\x10reflow.engine.v1\"d\n" +
 	"\fInvocationId\x12#\n" +
 	"\rpartition_key\x18\x01 \x01(\x06R\fpartitionKey\x12\x12\n" +
-	"\x04uuid\x18\x02 \x01(\fR\x04uuid\"w\n" +
+	"\x04uuid\x18\x02 \x01(\fR\x04uuid\x12\x1b\n" +
+	"\ttenant_id\x18\x03 \x01(\rR\btenantId\"w\n" +
 	"\x10InvocationTarget\x12!\n" +
 	"\fservice_name\x18\x01 \x01(\tR\vserviceName\x12!\n" +
 	"\fhandler_name\x18\x02 \x01(\tR\vhandlerName\x12\x1d\n" +
@@ -9466,11 +9425,10 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x14if_table_revision_eq\x18\x01 \x01(\x04R\x11ifTableRevisionEq\"O\n" +
 	"\rTableRevision\x12\x1a\n" +
 	"\brevision\x18\x01 \x01(\x04R\brevision\x12\"\n" +
-	"\rupdated_at_ms\x18\x02 \x01(\x06R\vupdatedAtMs\"\x96\x01\n" +
+	"\rupdated_at_ms\x18\x02 \x01(\x06R\vupdatedAtMs\"y\n" +
 	"\x06Header\x12-\n" +
 	"\x05dedup\x18\x01 \x01(\v2\x17.reflow.engine.v1.DedupR\x05dedup\x12\"\n" +
-	"\rcreated_at_ms\x18\x02 \x01(\x06R\vcreatedAtMs\x12\x1b\n" +
-	"\ttenant_id\x18\x03 \x01(\rR\btenantId\x12\x1c\n" +
+	"\rcreated_at_ms\x18\x02 \x01(\x06R\vcreatedAtMs\x12\x1c\n" +
 	"\tprincipal\x18\x04 \x01(\tR\tprincipal\"\xe2\x16\n" +
 	"\aCommand\x12K\n" +
 	"\x0fannounce_leader\x18\x01 \x01(\v2 .reflow.engine.v1.AnnounceLeaderH\x00R\x0eannounceLeader\x129\n" +
@@ -9518,7 +9476,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12!\n" +
 	"\fleader_epoch\x18\x02 \x01(\x04R\vleaderEpoch\x12.\n" +
 	"\x13partition_key_start\x18\x03 \x01(\x06R\x11partitionKeyStart\x12*\n" +
-	"\x11partition_key_end\x18\x04 \x01(\x06R\x0fpartitionKeyEnd\"\xec\x03\n" +
+	"\x11partition_key_end\x18\x04 \x01(\x06R\x0fpartitionKeyEnd\"\xcf\x03\n" +
 	"\rInvokeCommand\x12C\n" +
 	"\rinvocation_id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\finvocationId\x12:\n" +
 	"\x06target\x18\x02 \x01(\v2\".reflow.engine.v1.InvocationTargetR\x06target\x12\x14\n" +
@@ -9528,8 +9486,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"parentLink\x12#\n" +
 	"\rdeployment_id\x18\x06 \x01(\tR\fdeploymentId\x12\x12\n" +
 	"\x04kind\x18\a \x01(\rR\x04kind\x12I\n" +
-	"\bmetadata\x18\b \x03(\v2-.reflow.engine.v1.InvokeCommand.MetadataEntryR\bmetadata\x12\x1b\n" +
-	"\ttenant_id\x18\t \x01(\rR\btenantId\x1a;\n" +
+	"\bmetadata\x18\b \x03(\v2-.reflow.engine.v1.InvokeCommand.MetadataEntryR\bmetadata\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"h\n" +
@@ -9627,11 +9584,10 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x0eget_state_keys\x18\x1a \x01(\v2 .reflow.engine.v1.JEGetStateKeysH\x00R\fgetStateKeys\x12[\n" +
 	"\x15get_state_keys_result\x18\x1b \x01(\v2&.reflow.engine.v1.JEGetStateKeysResultH\x00R\x12getStateKeysResult\x12X\n" +
 	"\x14get_eager_state_keys\x18\x1c \x01(\v2%.reflow.engine.v1.JEGetEagerStateKeysH\x00R\x11getEagerStateKeysB\a\n" +
-	"\x05entry\"\xbe\x01\n" +
+	"\x05entry\"\xa1\x01\n" +
 	"\aJEInput\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\fR\x05value\x12C\n" +
-	"\bmetadata\x18\x02 \x03(\v2'.reflow.engine.v1.JEInput.MetadataEntryR\bmetadata\x12\x1b\n" +
-	"\ttenant_id\x18\x03 \x01(\rR\btenantId\x1a;\n" +
+	"\bmetadata\x18\x02 \x03(\v2'.reflow.engine.v1.JEInput.MetadataEntryR\bmetadata\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"'\n" +
@@ -9766,7 +9722,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\n" +
 	"fire_at_ms\x18\x03 \x01(\x04R\bfireAtMs\"V\n" +
 	"\x0fPurgeInvocation\x12C\n" +
-	"\rinvocation_id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\finvocationId\"\x8e\x03\n" +
+	"\rinvocation_id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\finvocationId\"\xf1\x02\n" +
 	"\x10InvocationStatus\x12,\n" +
 	"\x04free\x18\x01 \x01(\v2\x16.reflow.engine.v1.FreeH\x00R\x04free\x12;\n" +
 	"\tscheduled\x18\x02 \x01(\v2\x1b.reflow.engine.v1.ScheduledH\x00R\tscheduled\x125\n" +
@@ -9774,8 +9730,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\tsuspended\x18\x04 \x01(\v2\x1b.reflow.engine.v1.SuspendedH\x00R\tsuspended\x12;\n" +
 	"\tcompleted\x18\x05 \x01(\v2\x1b.reflow.engine.v1.CompletedH\x00R\tcompleted\x12#\n" +
 	"\rdeployment_id\x18\x06 \x01(\tR\fdeploymentId\x12\x12\n" +
-	"\x04kind\x18\a \x01(\rR\x04kind\x12\x1b\n" +
-	"\ttenant_id\x18\b \x01(\rR\btenantIdB\b\n" +
+	"\x04kind\x18\a \x01(\rR\x04kindB\b\n" +
 	"\x06status\"\x06\n" +
 	"\x04Free\"\xc4\x02\n" +
 	"\tScheduled\x12:\n" +

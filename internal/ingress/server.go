@@ -139,11 +139,12 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("mint invocation id: %w", err))
 	}
 
-	// Tenant scoping: the principal attached by the auth middleware maps
-	// to the default-tenant sentinel (0) under mesh-only auth.
-	var tenantID uint32
+	// Tenant scoping: stamp the tenant onto the invocation id so it travels
+	// inside the id everywhere (key placement, journal, cross-shard hops).
+	// The principal attached by the auth middleware maps to the
+	// default-tenant sentinel (0) under mesh-only auth.
 	if p, ok := auth.PrincipalFromContext(ctx); ok {
-		tenantID = auth.TenantIDFromPrincipal(p)
+		id.TenantId = auth.TenantIDFromPrincipal(p)
 	}
 
 	cmd := &enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
@@ -154,7 +155,6 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 		DeploymentId:   info.DeploymentID,
 		Kind:           info.Kind,
 		Metadata:       msg.GetMetadata(),
-		TenantId:       tenantID,
 	}}}
 	producerID := "http/" + FormatInvocationID(id)
 	if err := runner.Proposer().ProposeIngress(ctx, producerID, 1, cmd); err != nil {

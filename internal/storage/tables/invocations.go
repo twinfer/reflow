@@ -3,8 +3,6 @@ package tables
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
-	"errors"
 
 	"google.golang.org/protobuf/proto"
 
@@ -22,8 +20,8 @@ type InvocationTable struct{ S storage.Reader }
 // Get loads an invocation's status. Returns Free if the row is absent
 // ("default" convention — matches restate's default at
 // crates/storage-api/src/invocation_status_table/mod.rs:152-154).
-func (t InvocationTable) Get(tenant uint32, id *enginev1.InvocationId) (*enginev1.InvocationStatus, error) {
-	k, err := keys.InvocationKey(tenant, id)
+func (t InvocationTable) Get(id *enginev1.InvocationId) (*enginev1.InvocationStatus, error) {
+	k, err := keys.InvocationKey(id)
 	if err != nil {
 		return nil, err
 	}
@@ -39,16 +37,16 @@ func (t InvocationTable) Get(tenant uint32, id *enginev1.InvocationId) (*enginev
 	return &s, nil
 }
 
-func (t InvocationTable) Put(b storage.Batch, tenant uint32, id *enginev1.InvocationId, s *enginev1.InvocationStatus) error {
-	k, err := keys.InvocationKey(tenant, id)
+func (t InvocationTable) Put(b storage.Batch, id *enginev1.InvocationId, s *enginev1.InvocationStatus) error {
+	k, err := keys.InvocationKey(id)
 	if err != nil {
 		return err
 	}
 	return putProto(b, k, s)
 }
 
-func (t InvocationTable) Delete(b storage.Batch, tenant uint32, id *enginev1.InvocationId) error {
-	k, err := keys.InvocationKey(tenant, id)
+func (t InvocationTable) Delete(b storage.Batch, id *enginev1.InvocationId) error {
+	k, err := keys.InvocationKey(id)
 	if err != nil {
 		return err
 	}
@@ -117,7 +115,7 @@ func (t InvocationTable) ScanLP(ctx context.Context, lp uint32, fn func(tenant u
 			return err
 		}
 		key := iter.Key()
-		// key is inv/<lp:4><tenant:4><id:24>; lower covers inv/<lp:4>.
+		// key is inv/<lp:4><id:28>; lower covers inv/<lp:4>.
 		tenant, id, err := decodeInvKeyTenantAndID(key, len(lower))
 		if err != nil {
 			return err
@@ -143,18 +141,12 @@ func (t InvocationTable) ScanLP(ctx context.Context, lp uint32, fn func(tenant u
 func decodeInvKeyTenantAndID(key []byte, lpOrPrefixLen int) (uint32, *enginev1.InvocationId, error) {
 	tail := key[lpOrPrefixLen:]
 	if lpOrPrefixLen == len([]byte("inv/")) {
-		// ScanAll call site — `tail` is <lp:4><tenant:4><id:24>; skip lp.
+		// ScanAll call site — `tail` is <lp:4><id:28>; skip lp.
 		tail = tail[keys.LPLen:]
 	}
-	if len(tail) < keys.TenantLen {
-		return 0, nil, errInvKeyShape
-	}
-	tenant := binary.BigEndian.Uint32(tail[:keys.TenantLen])
-	id, err := keys.DecodeInvocationID(tail[keys.TenantLen:])
+	id, err := keys.DecodeInvocationID(tail)
 	if err != nil {
 		return 0, nil, err
 	}
-	return tenant, id, nil
+	return id.GetTenantId(), id, nil
 }
-
-var errInvKeyShape = errors.New("inv/ key shorter than tenant prefix")

@@ -113,9 +113,9 @@ message StartMessage {
   Kind kind = 13;
 
   // Owner invocation's partition_key. Reflow-specific routing hint —
-  // wireContext.Awakeable mints awakeable ids whose first 8 bytes
-  // encode this value so ingress.ResolveAwakeable can route to the
-  // owning shard with a single read.
+  // wireContext.Awakeable mints awakeable ids whose body encodes this
+  // value (after a 4-byte tenant prefix) so ingress.ResolveAwakeable can
+  // route to the owning shard with a single read.
   fixed64 partition_key = 14;
 
   // Per-invocation cap on journal entries (steps). Echoed from the
@@ -124,6 +124,12 @@ message StartMessage {
   // this so handlers see a clean *Failure rather than a torn-down
   // session when the budget is exhausted.
   uint32 max_journal_entries = 15;
+
+  // Owner invocation's tenant id. Reflow-specific; lets the handler-side
+  // wireContext.Awakeable embed tenant in minted awakeable ids
+  // ([4B tenant][8B partition_key][8B random]) so ingress.ResolveAwakeable
+  // keys the awakeable directory row under the owner's tenant.
+  uint32 owner_tenant = 16;
 }
 
 // Type: 0x0001

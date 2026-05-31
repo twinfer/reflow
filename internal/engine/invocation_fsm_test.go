@@ -306,7 +306,7 @@ func TestJournalAppend_NewEntryTypesAreNoOpFromInvoked(t *testing.T) {
 			Entry: &enginev1.JournalEntry_Run{Run: &enginev1.JERun{Value: []byte("v")}},
 		}},
 		{"JEAwakeable", &enginev1.JournalEntry{
-			Entry: &enginev1.JournalEntry_Awakeable{Awakeable: &enginev1.JEAwakeable{AwakeableId: "awk_AAAAAAAAAAAAAAAAAAAAAA"}},
+			Entry: &enginev1.JournalEntry_Awakeable{Awakeable: &enginev1.JEAwakeable{AwakeableId: "awk_AAAAAAAAAAAAAAAAAAAAAAAAAAA"}},
 		}},
 		{"JESignal", &enginev1.JournalEntry{
 			Entry: &enginev1.JournalEntry_Signal{Signal: &enginev1.JESignal{SignalName: "ping"}},
@@ -339,7 +339,7 @@ func TestJournalAppend_AwakeableResultWakesSuspended(t *testing.T) {
 	cur := suspendedStatus(target)
 	app := &enginev1.JournalEntryAppended{Entry: &enginev1.JournalEntry{
 		Entry: &enginev1.JournalEntry_AwakeableResult{
-			AwakeableResult: &enginev1.JEAwakeableResult{AwakeableId: "awk_AAAAAAAAAAAAAAAAAAAAAA", Value: []byte("v")},
+			AwakeableResult: &enginev1.JEAwakeableResult{AwakeableId: "awk_AAAAAAAAAAAAAAAAAAAAAAAAAAA", Value: []byte("v")},
 		},
 	}}
 	next, actions, err := transitionOnJournalAppend(id, cur, app, 350)

@@ -216,7 +216,7 @@ func (m *engineMachine) GetLazyState(t *rapid.T) {
 
 	// Assert the result entry was stamped at resultIdx with the right shape.
 	jt := tables.JournalTable{S: m.snaps[m.sIdx(shard)].Store()}
-	je, err := jt.Read(0, spec.id, resultIdx)
+	je, err := jt.Read(spec.id, resultIdx)
 	if err != nil {
 		t.Fatalf("GetLazyState: Journal.Read(idx=%d): %v", resultIdx, err)
 	}
@@ -304,7 +304,7 @@ func (m *engineMachine) GetLazyStateKeys(t *rapid.T) {
 	wakeOnAppend(cur)
 
 	jt := tables.JournalTable{S: m.snaps[m.sIdx(shard)].Store()}
-	je, err := jt.Read(0, spec.id, resultIdx)
+	je, err := jt.Read(spec.id, resultIdx)
 	if err != nil {
 		t.Fatalf("GetLazyStateKeys: Journal.Read(idx=%d): %v", resultIdx, err)
 	}
@@ -397,7 +397,7 @@ func (m *engineMachine) GetEagerStateKeys(t *rapid.T) {
 	wakeOnAppend(cur)
 
 	jt := tables.JournalTable{S: m.snaps[m.sIdx(shard)].Store()}
-	je, err := jt.Read(0, spec.id, idx)
+	je, err := jt.Read(spec.id, idx)
 	if err != nil {
 		t.Fatalf("GetEagerStateKeys: Journal.Read(idx=%d): %v", idx, err)
 	}
@@ -412,7 +412,7 @@ func (m *engineMachine) GetEagerStateKeys(t *rapid.T) {
 	}
 	// Single-slot — nothing must have been appended at idx+1 by the
 	// apply path on our behalf.
-	if next, err := jt.Read(0, spec.id, idx+1); err == nil && next != nil {
+	if next, err := jt.Read(spec.id, idx+1); err == nil && next != nil {
 		t.Fatalf("GetEagerStateKeys %+v: unexpected entry at idx+1 (%T); eager is single-slot",
 			lk, next.GetEntry())
 	}

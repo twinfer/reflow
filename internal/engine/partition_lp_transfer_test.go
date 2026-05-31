@@ -73,7 +73,7 @@ func TestPartition_LPFreeze_RejectsInvoke(t *testing.T) {
 	}
 	// No invocation row was written.
 	store := p.cfg.Snapshotter.Store()
-	status, err := (tables.InvocationTable{S: store}).Get(keys.TenantDefault, id)
+	status, err := (tables.InvocationTable{S: store}).Get(id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestPartition_FinishLPTransfer_RangeDeletesLPKeyspace(t *testing.T) {
 	p, _, _ := newTestPartition(t)
 	lp := uint32(11)
 	id := &enginev1.InvocationId{PartitionKey: uint64(lp), Uuid: []byte("0123456789abcdef")}
-	invKey, err := keys.InvocationKey(keys.TenantDefault, id)
+	invKey, err := keys.InvocationKey(id)
 	if err != nil {
 		t.Fatal(err)
 	}

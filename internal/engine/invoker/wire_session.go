@@ -184,7 +184,7 @@ func (s *wireSession) run() {
 // (in index order) for replay. Returns ok=false when the session should
 // bail (e.g. already Completed, status load failed, context cancelled).
 func (s *wireSession) loadJournal() ([]*enginev1.JournalEntry, bool) {
-	status, err := s.invocation.Get(keys.TenantDefault, s.id)
+	status, err := s.invocation.Get(s.id)
 	if err != nil {
 		s.log.Warn("invoker.wire: load status failed",
 			"id", invocationIDString(s.id), "err", err)
@@ -200,7 +200,6 @@ func (s *wireSession) loadJournal() ([]*enginev1.JournalEntry, bool) {
 				Input: &enginev1.JEInput{
 					Value:    st.Scheduled.GetInput(),
 					Metadata: st.Scheduled.GetMetadata(),
-					TenantId: status.GetTenantId(),
 				},
 			},
 		}
@@ -218,7 +217,7 @@ func (s *wireSession) loadJournal() ([]*enginev1.JournalEntry, bool) {
 		return []*enginev1.JournalEntry{entry}, true
 	case *enginev1.InvocationStatus_Invoked, *enginev1.InvocationStatus_Suspended:
 		// Already past Scheduled: pull the full journal for replay.
-		entries, err := s.journal.Load(keys.TenantDefault, s.id)
+		entries, err := s.journal.Load(s.id)
 		if err != nil {
 			s.log.Warn("invoker.wire: load journal failed",
 				"id", invocationIDString(s.id), "err", err)
@@ -265,6 +264,7 @@ func (s *wireSession) sendStartAndReplay(stream handlerclient.Stream, entries []
 		HandlerName:       s.target.GetHandlerName(),
 		KnownEntries:      uint32(len(frames)),
 		PartitionKey:      s.id.GetPartitionKey(),
+		OwnerTenant:       s.id.GetTenantId(),
 		MaxJournalEntries: limits.EffectiveMaxJournalEntries(s.rec),
 	}
 	start.Kind = s.kind

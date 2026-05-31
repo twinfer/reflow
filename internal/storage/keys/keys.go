@@ -3,41 +3,44 @@
 // a partition_id prefix — isolation is at the DB level.
 //
 // LP-prefixed namespaces carry a 4-byte big-endian Logical Partition (LP) id
-// immediately after the namespace string, followed by a 4-byte big-endian
-// tenant id. LP is `partition_key % LPCount`; tenant is the multi-tenant
-// owner (tenant=0 is the reserved default-tenant sentinel). The (lp, tenant)
-// pair lets:
-//   - LP-transfer range-scan `[ns/<lp>, ns/<lp+1>)` capture every tenant on
-//     one LP without filter overhead (the per-LP scan is byte-prefix wide
-//     enough to span all tenants on that LP).
-//   - Per-tenant code scope to `[ns/<lp>/<tenant>, ns/<lp>/<tenant+1>)` when
-//     a consumer only wants one tenant's rows on this LP.
+// immediately after the namespace string (LP is `partition_key % LPCount`).
+// Tenant scoping (tenant=0 is the reserved default-tenant sentinel) is carried
+// two ways:
+//   - ID-keyed namespaces embed the 28-byte invocation id, whose leading
+//     4 bytes ARE the tenant — so the on-disk layout still reads
+//     <lp:4><tenant:4>... with no separately-written tenant segment.
+//   - Entity-keyed namespaces (keyed by service/object_key, no id in hand)
+//     write an explicit 4-byte tenant segment immediately after the LP.
+//
+// In both cases the LP-transfer range-scan `[ns/<lp>, ns/<lp+1>)` spans every
+// tenant on one LP without filter overhead, and a per-tenant scope
+// `[ns/<lp>/<tenant>, ns/<lp>/<tenant+1>)` selects one tenant's rows.
 //
 // LP-prefixed namespaces (LP source in parentheses):
 //
-//	inv/<lp:4><tenant:4><24-byte inv_id>                                       -> InvocationStatus    (id.PartitionKey)
-//	journal/<lp:4><tenant:4><24-byte inv_id>/<4-byte BE u32 idx>               -> JournalEntry        (id.PartitionKey)
-//	timer_idx/<lp:4><tenant:4><24-byte id>/<8-byte BE fire_at_ms>              -> "" (secondary)     (id.PartitionKey)
-//	state/<lp:4><tenant:4><service>/<obj_key>/<state_key>                      -> bytes              (svc, obj)
-//	awakeable/<lp:4><tenant:4><26-byte id>                                     -> AwakeableEntry     (AwakeableOwnerPartitionKey)
-//	keylease/<lp:4><tenant:4><service>/<obj_key>                               -> KeyLeaseStatus     (svc, obj)
-//	idempotency/<lp:4><tenant:4><32-byte sha256>                               -> InvocationId       (svc, obj_key)
-//	signal_inbox/<lp:4><tenant:4><24-byte inv_id>/<name>                       -> SignalInboxEntry   (id.PartitionKey)
-//	signal_awaiter/<lp:4><tenant:4><24-byte inv_id>/<name>                     -> SignalAwaiter      (id.PartitionKey)
-//	workflow_run/<lp:4><tenant:4><service>/<workflow_key>                      -> InvocationId       (svc, wf_key)
-//	promise/<lp:4><tenant:4><service>/<workflow_key>/<name>                    -> PromiseValue       (svc, wf_key)
-//	promise_awaiter/<lp:4><tenant:4><service>/<workflow_key>/<name>/<idx:4>    -> PromiseAwaiter     (svc, wf_key)
-//	timer_lp/<lp:4><tenant:4><8-byte BE fire_at_ms>/<24-byte id>               -> uint32 sleep_index (id.PartitionKey)
-//	dedup/arbitrary/<lp:4><tenant:4><producer_id>/<8-byte BE seq>              -> DedupEntry         (command kind)
+//	inv/<lp:4><28-byte inv_id>                                                 -> InvocationStatus    (id.PartitionKey)  [ID-keyed]
+//	journal/<lp:4><28-byte inv_id>/<4-byte BE u32 idx>                         -> JournalEntry        (id.PartitionKey)  [ID-keyed]
+//	timer_idx/<lp:4><28-byte id>/<8-byte BE fire_at_ms>                        -> "" (secondary)      (id.PartitionKey)  [ID-keyed]
+//	state/<lp:4><tenant:4><service>/<obj_key>/<state_key>                      -> bytes               (svc, obj)         [entity-keyed]
+//	awakeable/<lp:4><tenant:4><31-byte id>                                     -> AwakeableEntry      (AwakeableOwnerPartitionKey)
+//	keylease/<lp:4><tenant:4><service>/<obj_key>                               -> KeyLeaseStatus      (svc, obj)         [entity-keyed]
+//	idempotency/<lp:4><tenant:4><32-byte sha256>                               -> InvocationId        (svc, obj_key)     [entity-keyed]
+//	signal_inbox/<lp:4><28-byte inv_id>/<name>                                 -> SignalInboxEntry    (id.PartitionKey)  [ID-keyed]
+//	signal_awaiter/<lp:4><28-byte inv_id>/<name>                               -> SignalAwaiter       (id.PartitionKey)  [ID-keyed]
+//	workflow_run/<lp:4><tenant:4><service>/<workflow_key>                      -> InvocationId        (svc, wf_key)      [entity-keyed]
+//	promise/<lp:4><tenant:4><service>/<workflow_key>/<name>                    -> PromiseValue        (svc, wf_key)      [entity-keyed]
+//	promise_awaiter/<lp:4><tenant:4><service>/<workflow_key>/<name>/<idx:4>    -> PromiseAwaiter      (svc, wf_key)      [entity-keyed]
+//	timer_lp/<lp:4><8-byte BE fire_at_ms>/<28-byte id>                         -> uint32 sleep_index  (id.PartitionKey)  [ID-keyed]
+//	dedup/arbitrary/<lp:4><tenant:4><producer_id>/<8-byte BE seq>              -> DedupEntry          (command kind)     [entity-keyed]
 //
 // LP-agnostic namespaces (singletons, ordering-sensitive, or shard-scoped):
 //
 //	meta                                                          -> PartitionMeta singleton
 //	format                                                        -> uint32 BE storage_format_version
-//	timer/<8-byte BE fire_at_ms>/<24-byte id>                     -> uint32 sleep_index (primary; fire_at order)
+//	timer/<8-byte BE fire_at_ms>/<28-byte id>                     -> uint32 sleep_index (primary; fire_at order)
 //	outbox/<8-byte BE seq>                                        -> OutboxEnvelope (FIFO)
 //	dedup/self/<8-byte BE leader_epoch>/<8-byte BE seq>           -> DedupEntry (shard-scoped to leader epoch)
-//	reap/<8-byte BE fire_at_ms>/<24-byte inv_id>                 -> empty (fire_at order)
+//	reap/<8-byte BE fire_at_ms>/<28-byte inv_id>                 -> empty (fire_at order)
 //	lp_freeze/<lp:4>                                              -> LPFreezeRow (PR 3 freeze gate)
 //	lp_staging/<transfer_id>                                      -> LPStagingRow (PR 3 dest staging)
 //
@@ -48,10 +51,10 @@
 // FinishLPTransfer.
 //
 // All multi-byte integers in keys are big-endian so lexicographic byte order
-// equals numeric order. Invocation IDs are encoded as a fixed 24-byte raw
-// form: 8-byte BE partition_key followed by 16-byte uuid. The fixed length is
-// what makes namespace boundaries unambiguous (no prefix can be longer than
-// the namespace + 24 bytes).
+// equals numeric order. Invocation IDs are encoded as a fixed 28-byte raw
+// form: 4-byte BE tenant_id, 8-byte BE partition_key, then 16-byte uuid. The
+// fixed length is what makes namespace boundaries unambiguous (no prefix can
+// be longer than the namespace + 28 bytes).
 package keys
 
 import (
@@ -65,16 +68,16 @@ import (
 )
 
 const (
-	invocationIDLen = 24 // 8-byte partition_key + 16-byte uuid
+	invocationIDLen = 28 // 4-byte tenant_id + 8-byte partition_key + 16-byte uuid
 
 	// awakeableIDLen is the fixed wire length of an awakeable identifier:
-	// 4-byte "awk_" prefix + 22-char base64url-encoded 16-byte body. The
-	// body's first 8 bytes are the owning invocation's partition_key
-	// (big-endian); the remaining 8 are random. Anchoring the length lets
-	// prefix scans on awakeable/ stay unambiguous and lets ingress derive
-	// the owner's shard from the id alone — no fan-out lookup needed.
-	awakeableIDLen   = 26
-	awakeableBodyLen = 16
+	// 4-byte "awk_" prefix + 27-char base64url-encoded 20-byte body. The
+	// body is [4-byte tenant_id][8-byte owner partition_key][8-byte random],
+	// all big-endian. Anchoring the length lets prefix scans on awakeable/
+	// stay unambiguous and lets ingress derive the owner's tenant + shard
+	// from the id alone — no fan-out lookup needed.
+	awakeableIDLen   = 31
+	awakeableBodyLen = 20
 
 	// LPCount is the forever-fixed number of Logical Partitions. Routing
 	// reduces `partition_key % LPCount` to an LP id; the LP is embedded as a
@@ -149,27 +152,34 @@ func appendTenant(out []byte, tenant uint32) []byte {
 	return append(out, b[:]...)
 }
 
-// EncodeInvocationID returns the canonical 24-byte raw form of an InvocationId.
+// EncodeInvocationID returns the canonical 28-byte raw form of an InvocationId:
+// [4-byte tenant_id][8-byte partition_key][16-byte uuid], all big-endian. The
+// tenant prefix makes the id self-describing — any holder recovers the tenant
+// without a separate field. For ID-keyed namespaces the raw id sits
+// immediately after the <lp:4> segment, so the on-disk layout reads
+// <lp:4><tenant:4><pk:8><uuid:16>.
 func EncodeInvocationID(id *enginev1.InvocationId) ([]byte, error) {
 	if len(id.GetUuid()) != 16 {
 		return nil, ErrInvalidInvocationID
 	}
 	out := make([]byte, invocationIDLen)
-	binary.BigEndian.PutUint64(out[:8], id.GetPartitionKey())
-	copy(out[8:], id.GetUuid())
+	binary.BigEndian.PutUint32(out[:4], id.GetTenantId())
+	binary.BigEndian.PutUint64(out[4:12], id.GetPartitionKey())
+	copy(out[12:], id.GetUuid())
 	return out, nil
 }
 
 // DecodeInvocationID is the inverse of EncodeInvocationID. The input must be
-// exactly the 24-byte body — callers reading from an LP-prefixed key slice the
+// exactly the 28-byte body — callers reading from an LP-prefixed key slice the
 // LP off first (e.g. `key[len("inv/")+LPLen:]`).
 func DecodeInvocationID(buf []byte) (*enginev1.InvocationId, error) {
 	if len(buf) != invocationIDLen {
 		return nil, fmt.Errorf("invocation id raw length = %d; want %d", len(buf), invocationIDLen)
 	}
 	return &enginev1.InvocationId{
-		PartitionKey: binary.BigEndian.Uint64(buf[:8]),
-		Uuid:         append([]byte(nil), buf[8:]...),
+		TenantId:     binary.BigEndian.Uint32(buf[:4]),
+		PartitionKey: binary.BigEndian.Uint64(buf[4:12]),
+		Uuid:         append([]byte(nil), buf[12:]...),
 	}, nil
 }
 
@@ -182,17 +192,17 @@ func MetaKey() []byte { return []byte(metaPrefix) }
 // to open a DB written by an incompatible binary.
 func FormatVersionKey() []byte { return []byte(formatPrefix) }
 
-// InvocationKey returns inv/<lp:4><tenant:4><24-byte id>.
-func InvocationKey(tenant uint32, id *enginev1.InvocationId) ([]byte, error) {
+// InvocationKey returns inv/<lp:4><28-byte id>. The id's leading 4 bytes are
+// the tenant, so the on-disk layout is inv/<lp:4><tenant:4><pk:8><uuid:16>.
+func InvocationKey(id *enginev1.InvocationId) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(invPrefix)+LPLen+TenantLen+invocationIDLen)
+	out := make([]byte, 0, len(invPrefix)+LPLen+invocationIDLen)
 	out = append(out, invPrefix...)
 	out = appendLP(out, lp)
-	out = appendTenant(out, tenant)
 	return append(out, raw...), nil
 }
 
@@ -205,34 +215,32 @@ func InvocationLPPrefix(lp uint32) []byte {
 	return appendLP(out, lp)
 }
 
-// JournalPrefix returns journal/<lp:4><tenant:4><24-byte id>/.
+// JournalPrefix returns journal/<lp:4><28-byte id>/.
 //
 // Use with PrefixUpperBound to scan every entry for an invocation.
-func JournalPrefix(tenant uint32, id *enginev1.InvocationId) ([]byte, error) {
+func JournalPrefix(id *enginev1.InvocationId) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(journalPrefix)+LPLen+TenantLen+invocationIDLen+1)
+	out := make([]byte, 0, len(journalPrefix)+LPLen+invocationIDLen+1)
 	out = append(out, journalPrefix...)
 	out = appendLP(out, lp)
-	out = appendTenant(out, tenant)
 	out = append(out, raw...)
 	return append(out, '/'), nil
 }
 
-// JournalKey returns journal/<lp:4><tenant:4><24-byte id>/<4-byte BE index>.
-func JournalKey(tenant uint32, id *enginev1.InvocationId, index uint32) ([]byte, error) {
+// JournalKey returns journal/<lp:4><28-byte id>/<4-byte BE index>.
+func JournalKey(id *enginev1.InvocationId, index uint32) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(journalPrefix)+LPLen+TenantLen+invocationIDLen+1+4)
+	out := make([]byte, 0, len(journalPrefix)+LPLen+invocationIDLen+1+4)
 	out = append(out, journalPrefix...)
 	out = appendLP(out, lp)
-	out = appendTenant(out, tenant)
 	out = append(out, raw...)
 	out = append(out, '/')
 	var idxBuf [4]byte
@@ -273,19 +281,18 @@ func DecodeTimerKey(key []byte) (uint64, *enginev1.InvocationId, error) {
 	return fireAt, id, err
 }
 
-// TimerLPKey returns timer_lp/<lp:4><tenant:4><8-byte BE fire_at>/<24-byte id>.
+// TimerLPKey returns timer_lp/<lp:4><8-byte BE fire_at>/<28-byte id>.
 // Pair-written with TimerKey so the LP transfer protocol can extract
 // every timer in an LP via a single bounded range scan. The value mirrors
-// the primary row (4-byte BE sleep_index).
-func TimerLPKey(lp, tenant uint32, fireAtMs uint64, id *enginev1.InvocationId) ([]byte, error) {
+// the primary row (4-byte BE sleep_index). Tenant rides the embedded id.
+func TimerLPKey(lp uint32, fireAtMs uint64, id *enginev1.InvocationId) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]byte, 0, len(timerLPPrefix)+LPLen+TenantLen+8+invocationIDLen)
+	out := make([]byte, 0, len(timerLPPrefix)+LPLen+8+invocationIDLen)
 	out = append(out, timerLPPrefix...)
 	out = appendLP(out, lp)
-	out = appendTenant(out, tenant)
 	var fireBuf [8]byte
 	binary.BigEndian.PutUint64(fireBuf[:], fireAtMs)
 	out = append(out, fireBuf[:]...)
@@ -304,36 +311,36 @@ func TimerLPPrefixForLP(lp uint32) []byte {
 }
 
 // DecodeTimerLPKey extracts (lp, tenant, fireAtMs, invocation_id) from a
-// timer_lp key.
+// timer_lp key. tenant is recovered from the embedded invocation id.
 func DecodeTimerLPKey(key []byte) (uint32, uint32, uint64, *enginev1.InvocationId, error) {
-	want := len(timerLPPrefix) + LPLen + TenantLen + 8 + invocationIDLen
+	want := len(timerLPPrefix) + LPLen + 8 + invocationIDLen
 	if len(key) != want {
 		return 0, 0, 0, nil, fmt.Errorf("timer_lp key length = %d; want %d", len(key), want)
 	}
 	p := len(timerLPPrefix)
 	lp := binary.BigEndian.Uint32(key[p : p+LPLen])
 	p += LPLen
-	tenant := binary.BigEndian.Uint32(key[p : p+TenantLen])
-	p += TenantLen
 	fireAt := binary.BigEndian.Uint64(key[p : p+8])
 	id, err := DecodeInvocationID(key[p+8:])
-	return lp, tenant, fireAt, id, err
+	if err != nil {
+		return 0, 0, 0, nil, err
+	}
+	return lp, id.GetTenantId(), fireAt, id, nil
 }
 
 // TimerIdxKey returns timer_idx/<lp:4><tenant:4><24-byte id>/<8-byte BE
 // fire_at>. The secondary index lets onPurge find every pending timer for
 // an invocation with a single bounded range scan instead of walking the
 // whole timer/ namespace.
-func TimerIdxKey(tenant uint32, id *enginev1.InvocationId, fireAtMs uint64) ([]byte, error) {
+func TimerIdxKey(id *enginev1.InvocationId, fireAtMs uint64) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(timerIdxPrefix)+LPLen+TenantLen+invocationIDLen+8)
+	out := make([]byte, 0, len(timerIdxPrefix)+LPLen+invocationIDLen+8)
 	out = append(out, timerIdxPrefix...)
 	out = appendLP(out, lp)
-	out = appendTenant(out, tenant)
 	out = append(out, raw...)
 	var fireBuf [8]byte
 	binary.BigEndian.PutUint64(fireBuf[:], fireAtMs)
@@ -347,35 +354,32 @@ func TimerIdxPrefix() []byte { return []byte(timerIdxPrefix) }
 // TimerIdxPrefixForID returns timer_idx/<lp:4><tenant:4><24-byte id>/,
 // suitable for a range scan over every secondary-index row for one
 // invocation.
-func TimerIdxPrefixForID(tenant uint32, id *enginev1.InvocationId) ([]byte, error) {
+func TimerIdxPrefixForID(id *enginev1.InvocationId) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(timerIdxPrefix)+LPLen+TenantLen+invocationIDLen)
+	out := make([]byte, 0, len(timerIdxPrefix)+LPLen+invocationIDLen)
 	out = append(out, timerIdxPrefix...)
 	out = appendLP(out, lp)
-	out = appendTenant(out, tenant)
 	return append(out, raw...), nil
 }
 
 // DecodeTimerIdxKey extracts (tenant, invocation_id, fireAtMs) from a
 // secondary-index key.
 func DecodeTimerIdxKey(key []byte) (uint32, *enginev1.InvocationId, uint64, error) {
-	want := len(timerIdxPrefix) + LPLen + TenantLen + invocationIDLen + 8
+	want := len(timerIdxPrefix) + LPLen + invocationIDLen + 8
 	if len(key) != want {
 		return 0, nil, 0, fmt.Errorf("timer_idx key length = %d; want %d", len(key), want)
 	}
 	p := len(timerIdxPrefix) + LPLen
-	tenant := binary.BigEndian.Uint32(key[p : p+TenantLen])
-	p += TenantLen
 	id, err := DecodeInvocationID(key[p : p+invocationIDLen])
 	if err != nil {
 		return 0, nil, 0, err
 	}
 	fireAt := binary.BigEndian.Uint64(key[p+invocationIDLen:])
-	return tenant, id, fireAt, nil
+	return id.GetTenantId(), id, fireAt, nil
 }
 
 // DedupSelfKey returns dedup/self/<8-byte BE leader_epoch>/<8-byte BE seq>.
@@ -498,7 +502,7 @@ func DecodeOutboxKey(key []byte) (uint64, error) {
 // AwakeablePrefix returns the awakeable/ namespace prefix.
 func AwakeablePrefix() []byte { return []byte(awakeablePrefix) }
 
-// AwakeableKey returns awakeable/<lp:4><tenant:4><26-byte id>. The caller
+// AwakeableKey returns awakeable/<lp:4><tenant:4><31-byte id>. The caller
 // is responsible for validating the id via ValidateAwakeableID before
 // constructing the key; passing a malformed id here produces a
 // syntactically valid key but risks collision with future namespace
@@ -556,25 +560,46 @@ func IdempotencyKey(lp, tenant uint32, service, handler, objectKey, idempotencyK
 	return append(out, sum...)
 }
 
-// AwakeableOwnerPartitionKey returns the owner invocation's partition_key
-// embedded in the awakeable id. Returns an error if the id is malformed or
-// the body isn't base64url-decodable to the expected 16 bytes — callers
-// should treat that as InvalidArgument.
-func AwakeableOwnerPartitionKey(id string) (uint64, error) {
+// awakeableBody decodes and length-checks the awakeable id body
+// [4-byte tenant_id][8-byte owner partition_key][8-byte random].
+func awakeableBody(id string) ([]byte, error) {
 	if err := ValidateAwakeableID(id); err != nil {
-		return 0, err
+		return nil, err
 	}
 	body, err := base64.RawURLEncoding.DecodeString(id[4:])
 	if err != nil {
-		return 0, fmt.Errorf("awakeable id body decode: %w", err)
+		return nil, fmt.Errorf("awakeable id body decode: %w", err)
 	}
 	if len(body) != awakeableBodyLen {
-		return 0, fmt.Errorf("awakeable id body length = %d; want %d", len(body), awakeableBodyLen)
+		return nil, fmt.Errorf("awakeable id body length = %d; want %d", len(body), awakeableBodyLen)
 	}
-	return binary.BigEndian.Uint64(body[:8]), nil
+	return body, nil
 }
 
-// ValidateAwakeableID enforces the awk_<22-char base64url> shape. Used at
+// AwakeableOwnerPartitionKey returns the owner invocation's partition_key
+// embedded in the awakeable id. Returns an error if the id is malformed or
+// the body isn't base64url-decodable to the expected 20 bytes — callers
+// should treat that as InvalidArgument.
+func AwakeableOwnerPartitionKey(id string) (uint64, error) {
+	body, err := awakeableBody(id)
+	if err != nil {
+		return 0, err
+	}
+	return binary.BigEndian.Uint64(body[4:12]), nil
+}
+
+// AwakeableOwnerTenant returns the owner invocation's tenant_id embedded in
+// the awakeable id (the body's leading 4 bytes). Same error semantics as
+// AwakeableOwnerPartitionKey.
+func AwakeableOwnerTenant(id string) (uint32, error) {
+	body, err := awakeableBody(id)
+	if err != nil {
+		return 0, err
+	}
+	return binary.BigEndian.Uint32(body[:4]), nil
+}
+
+// ValidateAwakeableID enforces the awk_<27-char base64url> shape. Used at
 // mint time (SDK) and resolution time (ingress) so prefix scans on the
 // awakeable/ namespace stay unambiguous and no awakeable ID can shadow a
 // nearby key.
@@ -598,71 +623,67 @@ func ValidateAwakeableID(id string) error {
 	return nil
 }
 
-// SignalInboxKey returns signal_inbox/<lp:4><tenant:4><inv_id>/<name>.
+// SignalInboxKey returns signal_inbox/<lp:4><28-byte inv_id>/<name>.
 // The name is a user-supplied UTF-8 string; callers must reject names
 // containing the "/" delimiter at the SDK boundary so prefix scans on
-// signal_inbox/<lp:4><tenant:4><inv_id>/ stay unambiguous.
-func SignalInboxKey(tenant uint32, id *enginev1.InvocationId, name string) ([]byte, error) {
+// signal_inbox/<lp:4><28-byte inv_id>/ stay unambiguous.
+func SignalInboxKey(id *enginev1.InvocationId, name string) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(signalInboxPrefix)+LPLen+TenantLen+invocationIDLen+1+len(name))
+	out := make([]byte, 0, len(signalInboxPrefix)+LPLen+invocationIDLen+1+len(name))
 	out = append(out, signalInboxPrefix...)
 	out = appendLP(out, lp)
-	out = appendTenant(out, tenant)
 	out = append(out, raw...)
 	out = append(out, '/')
 	return append(out, name...), nil
 }
 
 // SignalInboxPrefixForInvocation returns
-// signal_inbox/<lp:4><tenant:4><inv_id>/, used with PrefixUpperBound for
+// signal_inbox/<lp:4><28-byte inv_id>/, used with PrefixUpperBound for
 // range-delete on Purge.
-func SignalInboxPrefixForInvocation(tenant uint32, id *enginev1.InvocationId) ([]byte, error) {
+func SignalInboxPrefixForInvocation(id *enginev1.InvocationId) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(signalInboxPrefix)+LPLen+TenantLen+invocationIDLen+1)
+	out := make([]byte, 0, len(signalInboxPrefix)+LPLen+invocationIDLen+1)
 	out = append(out, signalInboxPrefix...)
 	out = appendLP(out, lp)
-	out = appendTenant(out, tenant)
 	out = append(out, raw...)
 	return append(out, '/'), nil
 }
 
-// SignalAwaiterKey returns signal_awaiter/<lp:4><tenant:4><inv_id>/<name>.
+// SignalAwaiterKey returns signal_awaiter/<lp:4><28-byte inv_id>/<name>.
 // Same shape as SignalInboxKey.
-func SignalAwaiterKey(tenant uint32, id *enginev1.InvocationId, name string) ([]byte, error) {
+func SignalAwaiterKey(id *enginev1.InvocationId, name string) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(signalAwaiterPrefix)+LPLen+TenantLen+invocationIDLen+1+len(name))
+	out := make([]byte, 0, len(signalAwaiterPrefix)+LPLen+invocationIDLen+1+len(name))
 	out = append(out, signalAwaiterPrefix...)
 	out = appendLP(out, lp)
-	out = appendTenant(out, tenant)
 	out = append(out, raw...)
 	out = append(out, '/')
 	return append(out, name...), nil
 }
 
 // SignalAwaiterPrefixForInvocation returns
-// signal_awaiter/<lp:4><tenant:4><inv_id>/.
-func SignalAwaiterPrefixForInvocation(tenant uint32, id *enginev1.InvocationId) ([]byte, error) {
+// signal_awaiter/<lp:4><28-byte inv_id>/.
+func SignalAwaiterPrefixForInvocation(id *enginev1.InvocationId) ([]byte, error) {
 	raw, err := EncodeInvocationID(id)
 	if err != nil {
 		return nil, err
 	}
 	lp := LPFromPartitionKey(id.GetPartitionKey())
-	out := make([]byte, 0, len(signalAwaiterPrefix)+LPLen+TenantLen+invocationIDLen+1)
+	out := make([]byte, 0, len(signalAwaiterPrefix)+LPLen+invocationIDLen+1)
 	out = append(out, signalAwaiterPrefix...)
 	out = appendLP(out, lp)
-	out = appendTenant(out, tenant)
 	out = append(out, raw...)
 	return append(out, '/'), nil
 }

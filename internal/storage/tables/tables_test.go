@@ -81,7 +81,7 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		s := open(t)
 		defer s.Close()
 		id := mkID(1, "0123456789abcdef")
-		st, err := tables.InvocationTable{S: s}.Get(testTenant, id)
+		st, err := tables.InvocationTable{S: s}.Get(id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -105,12 +105,12 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 			},
 		}
 		b := s.NewBatch()
-		if err := it.Put(b, testTenant, id, put); err != nil {
+		if err := it.Put(b, id, put); err != nil {
 			t.Fatal(err)
 		}
 		commit(t, b)
 
-		got, err := it.Get(testTenant, id)
+		got, err := it.Get(id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -123,12 +123,12 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 
 		b2 := s.NewBatch()
-		if err := it.Delete(b2, testTenant, id); err != nil {
+		if err := it.Delete(b2, id); err != nil {
 			t.Fatal(err)
 		}
 		commit(t, b2)
 
-		got2, err := it.Get(testTenant, id)
+		got2, err := it.Get(id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -145,12 +145,12 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		idB := mkID(2, "bbbbbbbbbbbbbbbb")
 
 		b := s.NewBatch()
-		_ = it.Put(b, testTenant, idA, &enginev1.InvocationStatus{
+		_ = it.Put(b, idA, &enginev1.InvocationStatus{
 			Status: &enginev1.InvocationStatus_Scheduled{
 				Scheduled: &enginev1.Scheduled{Target: &enginev1.InvocationTarget{ServiceName: "A"}},
 			},
 		})
-		_ = it.Put(b, testTenant, idB, &enginev1.InvocationStatus{
+		_ = it.Put(b, idB, &enginev1.InvocationStatus{
 			Status: &enginev1.InvocationStatus_Free{Free: &enginev1.Free{}},
 		})
 		commit(t, b)
@@ -189,7 +189,7 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 		b := s.NewBatch()
 		for _, id := range ids {
-			_ = it.Put(b, testTenant, id, &enginev1.InvocationStatus{
+			_ = it.Put(b, id, &enginev1.InvocationStatus{
 				Status: &enginev1.InvocationStatus_Scheduled{
 					Scheduled: &enginev1.Scheduled{Target: &enginev1.InvocationTarget{ServiceName: "S"}},
 				},
@@ -220,7 +220,7 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 
 		b := s.NewBatch()
 		for i := range uint32(5) {
-			if err := jt.Append(b, testTenant, id, &enginev1.JournalEntry{
+			if err := jt.Append(b, id, &enginev1.JournalEntry{
 				Index: i,
 				Entry: &enginev1.JournalEntry_Input{Input: &enginev1.JEInput{Value: []byte{byte(i)}}},
 			}); err != nil {
@@ -230,7 +230,7 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		commit(t, b)
 
 		// Read single
-		got, err := jt.Read(testTenant, id, 3)
+		got, err := jt.Read(id, 3)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -239,13 +239,13 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 
 		// Missing
-		if _, err := jt.Read(testTenant, id, 99); !errors.Is(err, storage.ErrNotFound) {
+		if _, err := jt.Read(id, 99); !errors.Is(err, storage.ErrNotFound) {
 			t.Errorf("expected ErrNotFound, got %v", err)
 		}
 
 		// Scan in order
 		var indexes []uint32
-		if err := jt.Scan(testTenant, id, func(e *enginev1.JournalEntry) error {
+		if err := jt.Scan(id, func(e *enginev1.JournalEntry) error {
 			indexes = append(indexes, e.GetIndex())
 			return nil
 		}); err != nil {
@@ -263,11 +263,11 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 
 		// Delete prefix
 		b2 := s.NewBatch()
-		if err := jt.DeletePrefix(b2, testTenant, id); err != nil {
+		if err := jt.DeletePrefix(b2, id); err != nil {
 			t.Fatal(err)
 		}
 		commit(t, b2)
-		if _, err := jt.Read(testTenant, id, 0); !errors.Is(err, storage.ErrNotFound) {
+		if _, err := jt.Read(id, 0); !errors.Is(err, storage.ErrNotFound) {
 			t.Errorf("expected NotFound after DeletePrefix, got %v", err)
 		}
 	})
@@ -294,19 +294,19 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 
 		// First apply.
 		b1 := s.NewBatch()
-		if err := jt.Append(b1, testTenant, id, entry); err != nil {
+		if err := jt.Append(b1, id, entry); err != nil {
 			t.Fatal(err)
 		}
 		commit(t, b1)
 
 		// Replay re-applies the same content.
 		b2 := s.NewBatch()
-		if err := jt.Append(b2, testTenant, id, entry); err != nil {
+		if err := jt.Append(b2, id, entry); err != nil {
 			t.Fatal(err)
 		}
 		commit(t, b2)
 
-		got, err := jt.Read(testTenant, id, 7)
+		got, err := jt.Read(id, 7)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -324,9 +324,9 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		idB := mkID(2, "bbbbbbbbbbbbbbbb")
 
 		b := s.NewBatch()
-		_ = tt.Insert(b, testTenant, 200, idB, 1)
-		_ = tt.Insert(b, testTenant, 100, idA, 0)
-		_ = tt.Insert(b, testTenant, 300, idA, 2)
+		_ = tt.Insert(b, 200, idB, 1)
+		_ = tt.Insert(b, 100, idA, 0)
+		_ = tt.Insert(b, 300, idA, 2)
 		commit(t, b)
 
 		// ScanAll yields all three in order
@@ -343,7 +343,7 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 
 		// Delete and rescan
 		b2 := s.NewBatch()
-		_ = tt.Delete(b2, testTenant, 200, idB)
+		_ = tt.Delete(b2, 200, idB)
 		commit(t, b2)
 		all = nil
 		_ = tt.ScanAll(func(e tables.TimerEntry) error {
@@ -366,8 +366,8 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		idB := mkID(0x2002, "bbbbbbbbbbbbbbbb")
 
 		b := s.NewBatch()
-		_ = tt.Insert(b, testTenant, 100, idA, 0)
-		_ = tt.Insert(b, testTenant, 200, idB, 1)
+		_ = tt.Insert(b, 100, idA, 0)
+		_ = tt.Insert(b, 200, idB, 1)
 		commit(t, b)
 
 		// Primary timer/ rows: should have two.
@@ -395,7 +395,7 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 
 		// Delete idA's timer: both primary and secondary indexes should drop.
 		b2 := s.NewBatch()
-		_ = tt.Delete(b2, testTenant, 100, idA)
+		_ = tt.Delete(b2, 100, idA)
 		commit(t, b2)
 
 		seenA = nil
@@ -791,22 +791,22 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		s := open(t)
 		defer s.Close()
 		at := tables.AwakeableTable{S: s}
-		id := "awk_AAAAAAAAAAAAAAAAAAAAAA"
+		id := "awk_AAAAAAAAAAAAAAAAAAAAAAAAAAA"
 		owner := mkID(42, "0123456789abcdef")
 		entry := &enginev1.AwakeableEntry{Owner: owner, EntryIndex: 7}
 
 		// Missing.
-		if _, err := at.Get(testTenant, id); !errors.Is(err, storage.ErrNotFound) {
+		if _, err := at.Get(id); !errors.Is(err, storage.ErrNotFound) {
 			t.Errorf("missing: %v; want ErrNotFound", err)
 		}
 
 		b := s.NewBatch()
-		if err := at.Put(b, testTenant, id, entry); err != nil {
+		if err := at.Put(b, id, entry); err != nil {
 			t.Fatal(err)
 		}
 		commit(t, b)
 
-		got, err := at.Get(testTenant, id)
+		got, err := at.Get(id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -815,11 +815,11 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 
 		b2 := s.NewBatch()
-		if err := at.Delete(b2, testTenant, id); err != nil {
+		if err := at.Delete(b2, id); err != nil {
 			t.Fatal(err)
 		}
 		commit(t, b2)
-		if _, err := at.Get(testTenant, id); !errors.Is(err, storage.ErrNotFound) {
+		if _, err := at.Get(id); !errors.Is(err, storage.ErrNotFound) {
 			t.Errorf("after delete: %v; want ErrNotFound", err)
 		}
 	})
@@ -831,7 +831,7 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		id := mkID(42, "0123456789abcdef")
 
 		// Missing returns (nil, nil) — distinguishes from ErrNotFound.
-		got, err := it.Get(testTenant, id, "ready")
+		got, err := it.Get(id, "ready")
 		if err != nil || got != nil {
 			t.Errorf("missing: got=%+v err=%v; want (nil, nil)", got, err)
 		}
@@ -842,12 +842,12 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 			DeliveredAtMs: 12345,
 		}
 		b := s.NewBatch()
-		if err := it.Put(b, testTenant, id, "ready", entry); err != nil {
+		if err := it.Put(b, id, "ready", entry); err != nil {
 			t.Fatal(err)
 		}
 		commit(t, b)
 
-		got, err = it.Get(testTenant, id, "ready")
+		got, err = it.Get(id, "ready")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -856,11 +856,11 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 
 		b2 := s.NewBatch()
-		if err := it.Delete(b2, testTenant, id, "ready"); err != nil {
+		if err := it.Delete(b2, id, "ready"); err != nil {
 			t.Fatal(err)
 		}
 		commit(t, b2)
-		got, err = it.Get(testTenant, id, "ready")
+		got, err = it.Get(id, "ready")
 		if err != nil || got != nil {
 			t.Errorf("after delete: got=%+v err=%v; want (nil, nil)", got, err)
 		}
@@ -875,31 +875,31 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 
 		b := s.NewBatch()
 		for _, name := range []string{"a", "b", "c"} {
-			if err := it.Put(b, testTenant, id, name, &enginev1.SignalInboxEntry{SignalName: name}); err != nil {
+			if err := it.Put(b, id, name, &enginev1.SignalInboxEntry{SignalName: name}); err != nil {
 				t.Fatal(err)
 			}
 		}
 		// Plant a row for a sibling invocation so we verify the
 		// range-delete doesn't bleed across.
-		if err := it.Put(b, testTenant, other, "z", &enginev1.SignalInboxEntry{SignalName: "z"}); err != nil {
+		if err := it.Put(b, other, "z", &enginev1.SignalInboxEntry{SignalName: "z"}); err != nil {
 			t.Fatal(err)
 		}
 		commit(t, b)
 
 		b2 := s.NewBatch()
-		if err := it.DeleteAllForInvocation(b2, testTenant, id); err != nil {
+		if err := it.DeleteAllForInvocation(b2, id); err != nil {
 			t.Fatal(err)
 		}
 		commit(t, b2)
 
 		for _, name := range []string{"a", "b", "c"} {
-			got, _ := it.Get(testTenant, id, name)
+			got, _ := it.Get(id, name)
 			if got != nil {
 				t.Errorf("name=%s: %+v survived range-delete", name, got)
 			}
 		}
 		// Sibling untouched.
-		got, _ := it.Get(testTenant, other, "z")
+		got, _ := it.Get(other, "z")
 		if got == nil {
 			t.Errorf("sibling invocation row z was deleted by mistake")
 		}
@@ -911,19 +911,19 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		at := tables.SignalAwaiterTable{S: s}
 		id := mkID(7, "0123456789abcdef")
 
-		got, err := at.Get(testTenant, id, "ready")
+		got, err := at.Get(id, "ready")
 		if err != nil || got != nil {
 			t.Errorf("missing: got=%+v err=%v; want (nil, nil)", got, err)
 		}
 
 		entry := &enginev1.SignalAwaiter{Owner: id, EntryIndex: 11}
 		b := s.NewBatch()
-		if err := at.Put(b, testTenant, id, "ready", entry); err != nil {
+		if err := at.Put(b, id, "ready", entry); err != nil {
 			t.Fatal(err)
 		}
 		commit(t, b)
 
-		got, err = at.Get(testTenant, id, "ready")
+		got, err = at.Get(id, "ready")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -932,11 +932,11 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		}
 
 		b2 := s.NewBatch()
-		if err := at.Delete(b2, testTenant, id, "ready"); err != nil {
+		if err := at.Delete(b2, id, "ready"); err != nil {
 			t.Fatal(err)
 		}
 		commit(t, b2)
-		got, _ = at.Get(testTenant, id, "ready")
+		got, _ = at.Get(id, "ready")
 		if got != nil {
 			t.Errorf("after delete: %+v; want nil", got)
 		}
@@ -1393,11 +1393,11 @@ func TestTimer_ScanByInvocation(t *testing.T) {
 
 	b := s.NewBatch()
 	for _, fireAt := range []uint64{200, 50, 100} {
-		if err := tt.Insert(b, testTenant, fireAt, idA, 7); err != nil {
+		if err := tt.Insert(b, fireAt, idA, 7); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := tt.Insert(b, testTenant, 75, idB, 9); err != nil {
+	if err := tt.Insert(b, 75, idB, 9); err != nil {
 		t.Fatal(err)
 	}
 	commit(t, b)
@@ -1405,7 +1405,7 @@ func TestTimer_ScanByInvocation(t *testing.T) {
 	// ScanByInvocation(idA) returns idA's three fire_at_ms in ascending
 	// order and ignores idB.
 	var got []uint64
-	if err := tt.ScanByInvocation(testTenant, idA, func(fireAt uint64) error {
+	if err := tt.ScanByInvocation(idA, func(fireAt uint64) error {
 		got = append(got, fireAt)
 		return nil
 	}); err != nil {
@@ -1424,13 +1424,13 @@ func TestTimer_ScanByInvocation(t *testing.T) {
 	// Delete one — both primary and secondary should drop, ScanByInvocation
 	// reflects it.
 	b2 := s.NewBatch()
-	if err := tt.Delete(b2, testTenant, 100, idA); err != nil {
+	if err := tt.Delete(b2, 100, idA); err != nil {
 		t.Fatal(err)
 	}
 	commit(t, b2)
 
 	got = got[:0]
-	_ = tt.ScanByInvocation(testTenant, idA, func(fireAt uint64) error {
+	_ = tt.ScanByInvocation(idA, func(fireAt uint64) error {
 		got = append(got, fireAt)
 		return nil
 	})
@@ -1456,7 +1456,7 @@ func TestTimer_RawValueIs4BytesBE(t *testing.T) {
 	tt := tables.TimerTable{S: s}
 	id := mkID(1, "0123456789abcdef")
 	b := s.NewBatch()
-	if err := tt.Insert(b, testTenant, 1, id, 0x01020304); err != nil {
+	if err := tt.Insert(b, 1, id, 0x01020304); err != nil {
 		t.Fatal(err)
 	}
 	commit(t, b)

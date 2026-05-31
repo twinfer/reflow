@@ -32,7 +32,7 @@ func TestPreloadEagerState_OverflowKeepsPartialCache(t *testing.T) {
 	// cap. Keys are alphabetically ordered so the scan visits them in
 	// (k0, k1, k2, k3) order; the cap should trip on k2 or k3.
 	big := strings.Repeat("x", 25*1024)
-	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(0, target.GetServiceName(), target.GetObjectKey()))
 	batch := store.NewBatch()
 	for i := range 4 {
 		key := fmt.Sprintf("k%d", i)
@@ -80,7 +80,7 @@ func TestPreloadEagerState_NoOverflowFullSnapshot(t *testing.T) {
 		"beta":  []byte("2"),
 		"gamma": []byte("3"),
 	}
-	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(0, target.GetServiceName(), target.GetObjectKey()))
 	batch := store.NewBatch()
 	for k, v := range want {
 		if err := st.Set(batch, lp, target, k, v); err != nil {
@@ -121,7 +121,7 @@ func TestPreloadEagerState_CustomCapHonored(t *testing.T) {
 	id := &enginev1.InvocationId{PartitionKey: 1, Uuid: []byte("0123456789ABCDEF")}
 
 	row := strings.Repeat("y", 3*1024)
-	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(0, target.GetServiceName(), target.GetObjectKey()))
 	batch := store.NewBatch()
 	for _, k := range []string{"a", "b"} {
 		if err := st.Set(batch, lp, target, k, []byte(row)); err != nil {
@@ -153,7 +153,7 @@ func TestPreloadEagerState_ZeroCapUsesDefault(t *testing.T) {
 
 	// 4 × 25 KiB = 100 KiB. Default cap is 64 KiB → overflow.
 	big := strings.Repeat("x", 25*1024)
-	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(0, target.GetServiceName(), target.GetObjectKey()))
 	batch := store.NewBatch()
 	for i := range 4 {
 		if err := st.Set(batch, lp, target, fmt.Sprintf("k%d", i), []byte(big)); err != nil {

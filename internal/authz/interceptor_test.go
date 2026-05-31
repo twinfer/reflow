@@ -41,7 +41,7 @@ func TestInterceptor_Authorize(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := ic.authorize(c.ctx, c.procedure)
+			err := ic.authorize(c.ctx, c.procedure, nil)
 			if c.wantCode == 0 {
 				if err != nil {
 					t.Fatalf("got error %v; want allow", err)
@@ -64,12 +64,12 @@ func TestInterceptor_AnonymousChallenge(t *testing.T) {
 	var ce *connect.Error
 
 	withBearer := NewInterceptor(e, nil, true)
-	if err := withBearer.authorize(anon, actRegisterDeployment); !errors.As(err, &ce) || ce.Meta().Get("WWW-Authenticate") != "Bearer" {
+	if err := withBearer.authorize(anon, actRegisterDeployment, nil); !errors.As(err, &ce) || ce.Meta().Get("WWW-Authenticate") != "Bearer" {
 		t.Errorf("bearer-enabled: missing WWW-Authenticate challenge (err=%v)", err)
 	}
 
 	noBearer := NewInterceptor(e, nil, false)
-	if err := noBearer.authorize(anon, actRegisterDeployment); errors.As(err, &ce) && ce.Meta().Get("WWW-Authenticate") != "" {
+	if err := noBearer.authorize(anon, actRegisterDeployment, nil); errors.As(err, &ce) && ce.Meta().Get("WWW-Authenticate") != "" {
 		t.Errorf("bearer-disabled: unexpected WWW-Authenticate challenge")
 	}
 }

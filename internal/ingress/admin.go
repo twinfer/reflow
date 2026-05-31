@@ -53,10 +53,15 @@ func (s *Server) GetObjectState(ctx context.Context, req *connect.Request[ingres
 		ServiceName: msg.GetService(),
 		ObjectKey:   msg.GetObjectKey(),
 	}
-	shardID := s.host.Partitioner().ShardForTarget(target)
+	tenant, terr := principalTenant(ctx)
+	if terr != nil {
+		return nil, terr
+	}
+	shardID := s.host.Partitioner().ShardForTarget(tenant, target)
 	res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupState{
 		Target: target,
 		Key:    msg.GetStateKey(),
+		Tenant: tenant,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup state: %w", err))

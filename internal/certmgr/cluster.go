@@ -82,6 +82,7 @@ type LeafKind int
 const (
 	LeafNode LeafKind = iota
 	LeafOperator
+	LeafTenant
 )
 
 type activeCA struct {
@@ -345,7 +346,7 @@ func (c *ClusterIssuer) IssueForPrincipal(
 		template.ExtKeyUsage = []x509.ExtKeyUsage{
 			x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth,
 		}
-	case LeafOperator:
+	case LeafOperator, LeafTenant:
 		template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
 	}
 	for _, h := range hosts {
@@ -460,6 +461,8 @@ func parsePrincipalRaw(raw string) (LeafKind, string, bool) {
 			return LeafNode, raw[i+1:], true
 		case "operator":
 			return LeafOperator, raw[i+1:], true
+		case "tenant":
+			return LeafTenant, raw[i+1:], true
 		default:
 			return 0, "", false
 		}

@@ -109,11 +109,11 @@ func TestRebalance_DrainShard_DrainsProgressively(t *testing.T) {
 	// Poll for measurable drain progress on shard 2. The lpMover saga
 	// is the rate-limiting step: each LP transfer is a multi-phase
 	// Raft + cross-shard sequence, so observable progress is on the
-	// order of single-digit LPs per ten seconds. We assert a modest
-	// drop (1% of initial, floor 5 LPs) within a generous deadline —
-	// enough to prove the autonomous loop reacted, not to wait for
-	// full convergence.
-	minDrop := max(initialOnShard2/100, 5)
+	// order of single-digit LPs per ten seconds — a rate independent of
+	// LPCount. We assert a small fixed drop within a generous deadline,
+	// enough to prove the autonomous loop reacted; full convergence (and
+	// any LPCount-proportional target) would take far longer.
+	minDrop := 5
 	targetMax := initialOnShard2 - minDrop
 	deadline := time.Now().Add(60 * time.Second)
 	var lastCount = initialOnShard2

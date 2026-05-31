@@ -84,6 +84,7 @@ action "CreateJoinToken" in [Action::"PlatformConfigActions"] appliesTo { princi
 action "DeleteJoinToken" in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 action "ListJoinTokens"  in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 action "IssueOperator"            in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
+action "IssueTenant"              in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 action "UpsertClusterAuthzPolicy" in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 action "GetClusterAuthzPolicy"    in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 

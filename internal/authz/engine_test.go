@@ -19,6 +19,7 @@ const (
 	actDeliver            = "/reflow.delivery.v1.Delivery/Deliver"
 	actUploadSST          = "/reflow.delivery.v1.Delivery/UploadLPTransferSST"
 	actSubmitInvocation   = "/reflow.ingress.v1.Ingress/SubmitInvocation"
+	actAwaitInvocation    = "/reflow.ingress.v1.Ingress/AwaitInvocation"
 	actPurgeInvocation    = "/reflow.ingress.v1.Ingress/PurgeInvocation"
 )
 
@@ -43,6 +44,15 @@ func evalReq(e *Engine, procedure string, p auth.Principal, resType cedar.Entity
 	}
 	if resAttrs == nil {
 		resAttrs = types.RecordMap{}
+	}
+	// Ingress resources always carry tenant_id in production (the interceptor
+	// builds an Invocation with the principal's/recovered band). Default it to
+	// band 0 so the tenant-isolation when-clause evaluates rather than erroring
+	// on a missing attribute. Tests exercising tenant!=0 pass it explicitly.
+	if resType == TypeInvocation {
+		if _, ok := resAttrs["tenant_id"]; !ok {
+			resAttrs["tenant_id"] = types.Long(0)
+		}
 	}
 	rUID := cedar.NewEntityUID(resType, cedar.String(resID))
 	em := types.EntityMap{
@@ -106,6 +116,46 @@ func TestAuthorize_PlaneSeparation(t *testing.T) {
 				t.Errorf("action=%s principal=%q: got %v want %v", c.action, c.p.Raw, got, c.want)
 			}
 		})
+	}
+}
+
+// TestAuthorize_TenantIsolation is the data-plane isolation fixture: a tenant
+// principal may act only within its own band, anonymous/user only on the
+// default band (0), and the operator god-mode spans all bands. The resource's
+// tenant_id is what the interceptor builds (the routed band for by-target RPCs,
+// the band recovered from the request id for by-id RPCs).
+func TestAuthorize_TenantIsolation(t *testing.T) {
+	e := mustEngine(t, FoundationalClusterPolicies)
+	tenant7 := auth.Principal{Kind: "tenant", Subject: "7", Raw: "tenant/7"}
+	anon := auth.Principal{}
+	operator := auth.Principal{Kind: "operator", Subject: "alice", Raw: "operator/alice"}
+
+	band := func(n int64) types.RecordMap {
+		return types.RecordMap{"tenant_id": types.Long(n), "service": types.String("svc")}
+	}
+	cases := []struct {
+		name      string
+		p         auth.Principal
+		resTenant int64
+		want      cedar.Decision
+	}{
+		{"tenant7-own-band", tenant7, 7, cedar.Allow},
+		{"tenant7-other-band", tenant7, 5, cedar.Deny},   // cross-tenant by-id read
+		{"tenant7-default-band", tenant7, 0, cedar.Deny}, // can't reach untenanted
+		{"anon-default-band", anon, 0, cedar.Allow},
+		{"anon-tenant-band", anon, 7, cedar.Deny}, // anonymous can't reach a tenant
+		{"operator-any-band", operator, 7, cedar.Allow},
+	}
+	for _, c := range cases {
+		for _, action := range []string{actSubmitInvocation, actAwaitInvocation} {
+			t.Run(c.name, func(t *testing.T) {
+				got := evalReq(e, action, c.p, TypeInvocation, "request", band(c.resTenant))
+				if got != c.want {
+					t.Errorf("action=%s principal=%q resTenant=%d: got %v want %v",
+						action, c.p.Raw, c.resTenant, got, c.want)
+				}
+			})
+		}
 	}
 }
 

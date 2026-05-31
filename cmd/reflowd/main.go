@@ -186,6 +186,9 @@ Config (Config RPCs; app config; --admin can be ANY node):
   config delete-join-token      Revoke a pending join token by --hash.
   config issue-operator         Mint an operator client cert against the
                                 active cluster CA (--name=<operator>).
+  config issue-tenant           Mint a tenant client cert against the active
+                                cluster CA (--tenant-id=<1..255>); the source
+                                identity for LP-band tenancy.
 
 Maintenance (Ingress RPC; operator-only; --ingress targets a node hosting
 the invocation's shard):

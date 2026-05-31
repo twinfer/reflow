@@ -1,6 +1,8 @@
 package authz
 
 import (
+	"slices"
+
 	"github.com/cedar-policy/cedar-go"
 	"github.com/cedar-policy/cedar-go/types"
 
@@ -86,6 +88,7 @@ var procMap = map[string]procEntry{
 	configv1connect.ConfigDeleteJoinTokenProcedure:          {"DeleteJoinToken", []string{groupPlatformConfig}},
 	configv1connect.ConfigListJoinTokensProcedure:           {"ListJoinTokens", []string{groupPlatformConfig}},
 	configv1connect.ConfigIssueOperatorProcedure:            {"IssueOperator", []string{groupPlatformConfig}},
+	configv1connect.ConfigIssueTenantProcedure:              {"IssueTenant", []string{groupPlatformConfig}},
 	configv1connect.ConfigUpsertClusterAuthzPolicyProcedure: {"UpsertClusterAuthzPolicy", []string{groupPlatformConfig}},
 	configv1connect.ConfigGetClusterAuthzPolicyProcedure:    {"GetClusterAuthzPolicy", []string{groupPlatformConfig}},
 
@@ -102,6 +105,17 @@ var procMap = map[string]procEntry{
 	clusterctlv1connect.ClusterCtlListLPTransfersProcedure: {"ListLPTransfers", []string{groupClusterAdmin}},
 	clusterctlv1connect.ClusterCtlRebalanceAdviseProcedure: {"RebalanceAdvise", []string{groupClusterAdmin}},
 	clusterctlv1connect.ClusterCtlRebalanceDrainProcedure:  {"RebalanceDrain", []string{groupClusterAdmin}},
+}
+
+// isIngressProcedure reports whether procedure is in the ingress data plane —
+// the procedures whose resource is a tenant-scoped Invocation rather than the
+// PlatformConfig sentinel. Drives the interceptor's per-request resource build.
+func isIngressProcedure(procedure string) bool {
+	e, ok := procMap[procedure]
+	if !ok {
+		return false
+	}
+	return slices.Contains(e.groups, groupIngress)
 }
 
 // actionEntity returns the Cedar action UID for a procedure plus its entity

@@ -144,10 +144,13 @@ func TestAdvise_AtCapacity_Skips(t *testing.T) {
 func TestAdvise_Hysteresis_StayEngagedAboveDisengage(t *testing.T) {
 	// Start from the converged 4-shard plan, then re-spoil ~10% of
 	// LPs by re-assigning them to shard 1 to land inside the
-	// hysteresis band (disengage=8, engage=15).
+	// hysteresis band (disengage=8, engage=15). The spoil count is a
+	// fraction of LPCount so the resulting skew tracks the band
+	// regardless of the LP-space size.
 	owners := plannedOwners([]uint64{1, 2, 3, 4})
 	spoiled := 0
-	for lp := uint32(0); lp < keys.LPCount && spoiled < 410; lp++ {
+	spoilTarget := int(keys.LPCount) / 10
+	for lp := uint32(0); lp < keys.LPCount && spoiled < spoilTarget; lp++ {
 		if owners[lp] != 1 {
 			owners[lp] = 1
 			spoiled++

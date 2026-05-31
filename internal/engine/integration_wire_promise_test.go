@@ -167,7 +167,7 @@ func TestWireDispatch_HTTP2_PromiseIngressResolve(t *testing.T) {
 		HandlerName: awaiter.handler,
 		ObjectKey:   "order-1",
 	}
-	pk := routing.PartitionKey(target.GetServiceName(), target.GetObjectKey())
+	pk := routing.PartitionKey(0, target.GetServiceName(), target.GetObjectKey())
 	id := buildID(pk, "wire-promise-id1")
 	shardID := host.Partitioner().ShardForInvocation(id)
 	pr := host.Partition(shardID)

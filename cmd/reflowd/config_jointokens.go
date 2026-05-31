@@ -15,10 +15,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	connect "connectrpc.com/connect"
 
+	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/pkg/reflowclient"
 	configv1 "github.com/twinfer/reflow/proto/configv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -187,6 +189,83 @@ func cmdIssueOperator(ctx context.Context, args []string) error {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "operator credential written:\n")
+		fmt.Fprintf(os.Stderr, "  %s\n", certPath)
+		fmt.Fprintf(os.Stderr, "  %s\n", keyPath)
+		fmt.Fprintf(os.Stderr, "  %s\n", caPath)
+		fmt.Fprintf(os.Stderr, "trust anchor pin: %s\n", resp.Msg.GetCaFingerprint())
+		return nil
+	})
+}
+
+// cmdIssueTenant generates an ECDSA-P256 keypair locally, sends a CSR with
+// CN=tenant/<id> to the cluster, and writes the signed leaf + key + CA chain
+// into --out. The tenant leaf is the source identity for LP-band tenancy: a
+// gateway (or the tenant's own service) presents it on the mesh, and ingress
+// bands that tenant's invocations into its LP range.
+func cmdIssueTenant(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("issue-tenant", flag.ContinueOnError)
+	tlsFlags := registerTLSFlags(fs)
+	id := fs.Uint("tenant-id", 0, "tenant band id in [1,255] (required); becomes CN=tenant/<id>")
+	out := fs.String("out", "", "output directory for tenant-<id>.{crt,key,ca.crt}; default: ~/.reflow/tenant-<id>")
+	validity := fs.Duration("validity", 30*24*time.Hour, "leaf validity (clamped by server)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *id == 0 || *id >= uint(keys.MaxTenantBand) {
+		return fmt.Errorf("--tenant-id must be in [1,%d) (band 0 is reserved for untenanted traffic)", keys.MaxTenantBand)
+	}
+	idStr := strconv.FormatUint(uint64(*id), 10)
+	outDir := *out
+	if outDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("resolve home dir: %w", err)
+		}
+		outDir = filepath.Join(home, ".reflow", "tenant-"+idStr)
+	}
+	if err := os.MkdirAll(outDir, 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", outDir, err)
+	}
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate key: %w", err)
+	}
+	csrTpl := &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "tenant/" + idStr},
+	}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, csrTpl, key)
+	if err != nil {
+		return fmt.Errorf("build CSR: %w", err)
+	}
+
+	return tlsFlags.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+		resp, err := cli.Config.IssueTenant(rctx, connect.NewRequest(&configv1.IssueTenantRequest{
+			CsrDer:          csrDER,
+			ValiditySeconds: uint64(validity.Seconds()),
+		}))
+		if err != nil {
+			return err
+		}
+		keyDER, err := x509.MarshalECPrivateKey(key)
+		if err != nil {
+			return err
+		}
+		certPath := filepath.Join(outDir, "tenant-"+idStr+".crt")
+		keyPath := filepath.Join(outDir, "tenant-"+idStr+".key")
+		caPath := filepath.Join(outDir, "ca.crt")
+		if err := os.WriteFile(certPath, resp.Msg.GetCertPem(), 0o644); err != nil {
+			return err
+		}
+		if err := os.WriteFile(keyPath,
+			pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
+			0o600); err != nil {
+			return err
+		}
+		if err := os.WriteFile(caPath, resp.Msg.GetCaChainPem(), 0o644); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "tenant credential written:\n")
 		fmt.Fprintf(os.Stderr, "  %s\n", certPath)
 		fmt.Fprintf(os.Stderr, "  %s\n", keyPath)
 		fmt.Fprintf(os.Stderr, "  %s\n", caPath)

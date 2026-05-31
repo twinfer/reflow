@@ -495,6 +495,62 @@ func TestPartition_IdempotencyKey_FirstInvokeWinsSecondDropped(t *testing.T) {
 	}
 }
 
+func TestPartition_ApplyPathBandsByTenant(t *testing.T) {
+	// Two invokes with the SAME (service, handler, object_key, idempotency_key)
+	// but ids in different tenant bands must NOT collide — banding places their
+	// idempotency rows under disjoint LPs, so both win. A band-dropping bug in
+	// the apply path (writing under a bare hash / band 0 instead of the id's
+	// band) would dedup the second against the first; that bug is invisible at
+	// tenant 0, so this tenant!=0 test is its only guard.
+	p, _, _ := newTestPartition(t)
+
+	target := &enginev1.InvocationTarget{ServiceName: "Cart", HandlerName: "add", ObjectKey: "obj"}
+	mkID := func(tenant uint32, uuid string) *enginev1.InvocationId {
+		return &enginev1.InvocationId{
+			PartitionKey: routing.PartitionKey(tenant, target.GetServiceName(), target.GetObjectKey()),
+			Uuid:         []byte(uuid),
+		}
+	}
+	id0 := mkID(0, "0000000000000000")
+	id7 := mkID(7, "7777777777777777")
+	if keys.TenantFromPartitionKey(id0.GetPartitionKey()) != 0 || keys.TenantFromPartitionKey(id7.GetPartitionKey()) != 7 {
+		t.Fatalf("test ids not banded as expected: %d, %d",
+			keys.TenantFromPartitionKey(id0.GetPartitionKey()), keys.TenantFromPartitionKey(id7.GetPartitionKey()))
+	}
+
+	mkInvoke := func(id *enginev1.InvocationId) []byte {
+		return envelope(t, &enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
+			InvocationId:   id,
+			Target:         target,
+			IdempotencyKey: "k",
+		}}})
+	}
+	if _, err := p.Update([]statemachine.Entry{{Index: 1, Cmd: mkInvoke(id0)}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Update([]statemachine.Entry{{Index: 2, Cmd: mkInvoke(id7)}}); err != nil {
+		t.Fatal(err)
+	}
+
+	lookup := func(tenant uint32) *enginev1.InvocationId {
+		res, err := p.Lookup(LookupIdempotency{
+			Service: target.GetServiceName(), Handler: target.GetHandlerName(),
+			ObjectKey: target.GetObjectKey(), IdempotencyKey: "k", Tenant: tenant,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := res.(*enginev1.InvocationId)
+		return id
+	}
+	if got := lookup(0); got == nil || !bytes.Equal(got.GetUuid(), id0.GetUuid()) {
+		t.Errorf("tenant 0 idempotency = %v; want id0", got)
+	}
+	if got := lookup(7); got == nil || !bytes.Equal(got.GetUuid(), id7.GetUuid()) {
+		t.Errorf("tenant 7 idempotency = %v; want id7 (a band-dropping write bug misses here or returns id0)", got)
+	}
+}
+
 func TestPartition_ClearAllState_WipesAllRowsForObject(t *testing.T) {
 	p, _, col := newTestPartition(t)
 
@@ -507,8 +563,8 @@ func TestPartition_ClearAllState_WipesAllRowsForObject(t *testing.T) {
 	// tuple (matches the apply path's writes).
 	store := p.cfg.Snapshotter.Store()
 	st := tables.StateTable{S: store}
-	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
-	otherLP := keys.LPFromPartitionKey(routing.PartitionKey(otherTarget.GetServiceName(), otherTarget.GetObjectKey()))
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(0, target.GetServiceName(), target.GetObjectKey()))
+	otherLP := keys.LPFromPartitionKey(routing.PartitionKey(0, otherTarget.GetServiceName(), otherTarget.GetObjectKey()))
 	b := store.NewBatch()
 	for _, k := range []string{"a", "b", "c"} {
 		if err := st.Set(b, lp, target, k, []byte(k+"-val")); err != nil {

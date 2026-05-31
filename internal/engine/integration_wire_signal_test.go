@@ -169,7 +169,7 @@ func TestWireDispatch_HTTP2_SignalAwaitArrives(t *testing.T) {
 		HandlerName: awaiter.handler,
 		ObjectKey:   "alice",
 	}
-	pk := routing.PartitionKey(target.GetServiceName(), target.GetObjectKey())
+	pk := routing.PartitionKey(0, target.GetServiceName(), target.GetObjectKey())
 	id := buildID(pk, "wire-signal-id1")
 	shardID := host.Partitioner().ShardForInvocation(id)
 	pr := host.Partition(shardID)
@@ -262,7 +262,7 @@ func TestWireDispatch_HTTP2_SignalBufferedBeforeAwait(t *testing.T) {
 		HandlerName: awaiter.handler,
 		ObjectKey:   "alice-buffered",
 	}
-	pk := routing.PartitionKey(target.GetServiceName(), target.GetObjectKey())
+	pk := routing.PartitionKey(0, target.GetServiceName(), target.GetObjectKey())
 	id := buildID(pk, "wire-buffered-id1")
 	shardID := host.Partitioner().ShardForInvocation(id)
 	pr := host.Partition(shardID)

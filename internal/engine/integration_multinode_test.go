@@ -224,8 +224,8 @@ func TestMultiNode_CrossPartition_CallDelivery(t *testing.T) {
 	defer loadgen.StartEmbeddedHandlers(t, c, reg)()
 	p := c.Partitioner
 
-	shardA := p.ShardForTarget(&enginev1.InvocationTarget{ServiceName: callerSvc})
-	shardB := p.ShardForTarget(&enginev1.InvocationTarget{ServiceName: calleeSvc})
+	shardA := p.ShardForTarget(0, &enginev1.InvocationTarget{ServiceName: callerSvc})
+	shardB := p.ShardForTarget(0, &enginev1.InvocationTarget{ServiceName: calleeSvc})
 	if shardA == shardB {
 		t.Fatalf("%s and %s hash to same shard (%d); test setup expected distinct shards", callerSvc, calleeSvc, shardA)
 	}
@@ -236,7 +236,7 @@ func TestMultiNode_CrossPartition_CallDelivery(t *testing.T) {
 		t.Fatalf("no leader for shard %d", shardA)
 	}
 	callerID := &enginev1.InvocationId{
-		PartitionKey: routing.PartitionKey(callerSvc, ""),
+		PartitionKey: routing.PartitionKey(0, callerSvc, ""),
 		Uuid:         []byte("phase41-caller!!"),
 	}
 	target := &enginev1.InvocationTarget{ServiceName: callerSvc, HandlerName: "go"}

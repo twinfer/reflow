@@ -98,12 +98,17 @@ func (p Partitioner) LPOwnersSnapshot() map[uint32]uint64 {
 	return *mp
 }
 
-// PartitionKey returns the canonical 64-bit partition key for a (service,
-// object_key) tuple. The tuple is hashed with FNV-1a so the result is
-// platform-independent and identical across nodes. Empty object_key (used
-// for unkeyed services) hashes consistently — every invocation of the same
-// unkeyed service routes to the same shard.
-func PartitionKey(service, objectKey string) uint64 {
+// PartitionKey returns the canonical 64-bit banded partition key for a
+// (tenant, service, object_key) tuple. The (service, object_key) tuple is
+// hashed with FNV-1a so the result is platform-independent and identical
+// across nodes; the tenant band is then folded into the low log2(LPCount)
+// bits — the LP region — so the LP (and thus every key prefix) isolates the
+// tenant. The high bits keep the hash entropy that uuid-derivation, the
+// invoker sessionKey, and idempotency keying rely on for collision-freedom.
+// tenant 0 = the default/untenanted band. Empty object_key (unkeyed services)
+// hashes consistently — every invocation of the same unkeyed service within a
+// tenant routes to the same shard.
+func PartitionKey(tenant uint32, service, objectKey string) uint64 {
 	h := fnv.New64a()
 	// Length-prefix each component so adjacent fields cannot collide
 	// (e.g. ("ab","c") vs ("a","bc")). We use a single 0x00 separator
@@ -112,7 +117,8 @@ func PartitionKey(service, objectKey string) uint64 {
 	h.Write([]byte(service))
 	h.Write([]byte{0})
 	h.Write([]byte(objectKey))
-	return h.Sum64()
+	sum := h.Sum64()
+	return sum&^uint64(keys.LPCount-1) | uint64(keys.BandLP(tenant, sum))
 }
 
 // ShardForKey maps an InvocationId.PartitionKey to its owning shard id.
@@ -141,10 +147,12 @@ func (p Partitioner) ShardForKey(partitionKey uint64) uint64 {
 	return 1
 }
 
-// ShardForTarget is a convenience for callers that have an
-// InvocationTarget rather than a raw partition key.
-func (p Partitioner) ShardForTarget(t *enginev1.InvocationTarget) uint64 {
-	return p.ShardForKey(PartitionKey(t.GetServiceName(), t.GetObjectKey()))
+// ShardForTarget is a convenience for callers that have an InvocationTarget
+// rather than a raw partition key. tenant is the band to route under — from
+// the ingress principal at submit, or the sender/parent invocation's band for
+// forward-carried routing (signals, callees).
+func (p Partitioner) ShardForTarget(tenant uint32, t *enginev1.InvocationTarget) uint64 {
+	return p.ShardForKey(PartitionKey(tenant, t.GetServiceName(), t.GetObjectKey()))
 }
 
 // ShardForInvocation extracts the partition key already stamped on the

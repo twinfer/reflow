@@ -1713,6 +1713,124 @@ func (x *IssueOperatorResponse) GetCaFingerprint() string {
 	return ""
 }
 
+// IssueTenantRequest carries an operator-generated CSR for a tenant leaf.
+// The keypair never leaves the operator's machine; the server signs only
+// the public key after validating the CN.
+type IssueTenantRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// DER-encoded x509.CertificateRequest. Subject.CommonName must be
+	// "tenant/<n>" with n a decimal integer in [1,255] (band 0 is reserved
+	// for untenanted traffic). validity is clamped to the server ceiling.
+	CsrDer          []byte `protobuf:"bytes,1,opt,name=csr_der,json=csrDer,proto3" json:"csr_der,omitempty"`
+	ValiditySeconds uint64 `protobuf:"varint,2,opt,name=validity_seconds,json=validitySeconds,proto3" json:"validity_seconds,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *IssueTenantRequest) Reset() {
+	*x = IssueTenantRequest{}
+	mi := &file_configv1_config_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IssueTenantRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IssueTenantRequest) ProtoMessage() {}
+
+func (x *IssueTenantRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IssueTenantRequest.ProtoReflect.Descriptor instead.
+func (*IssueTenantRequest) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *IssueTenantRequest) GetCsrDer() []byte {
+	if x != nil {
+		return x.CsrDer
+	}
+	return nil
+}
+
+func (x *IssueTenantRequest) GetValiditySeconds() uint64 {
+	if x != nil {
+		return x.ValiditySeconds
+	}
+	return 0
+}
+
+type IssueTenantResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CertPem       []byte                 `protobuf:"bytes,1,opt,name=cert_pem,json=certPem,proto3" json:"cert_pem,omitempty"`
+	CaChainPem    []byte                 `protobuf:"bytes,2,opt,name=ca_chain_pem,json=caChainPem,proto3" json:"ca_chain_pem,omitempty"`
+	CaFingerprint string                 `protobuf:"bytes,3,opt,name=ca_fingerprint,json=caFingerprint,proto3" json:"ca_fingerprint,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IssueTenantResponse) Reset() {
+	*x = IssueTenantResponse{}
+	mi := &file_configv1_config_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IssueTenantResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IssueTenantResponse) ProtoMessage() {}
+
+func (x *IssueTenantResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IssueTenantResponse.ProtoReflect.Descriptor instead.
+func (*IssueTenantResponse) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *IssueTenantResponse) GetCertPem() []byte {
+	if x != nil {
+		return x.CertPem
+	}
+	return nil
+}
+
+func (x *IssueTenantResponse) GetCaChainPem() []byte {
+	if x != nil {
+		return x.CaChainPem
+	}
+	return nil
+}
+
+func (x *IssueTenantResponse) GetCaFingerprint() string {
+	if x != nil {
+		return x.CaFingerprint
+	}
+	return ""
+}
+
 var File_configv1_config_proto protoreflect.FileDescriptor
 
 const file_configv1_config_proto_rawDesc = "" +
@@ -1813,7 +1931,15 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\bcert_pem\x18\x01 \x01(\fR\acertPem\x12 \n" +
 	"\fca_chain_pem\x18\x02 \x01(\fR\n" +
 	"caChainPem\x12%\n" +
-	"\x0eca_fingerprint\x18\x03 \x01(\tR\rcaFingerprint2\x86\r\n" +
+	"\x0eca_fingerprint\x18\x03 \x01(\tR\rcaFingerprint\"X\n" +
+	"\x12IssueTenantRequest\x12\x17\n" +
+	"\acsr_der\x18\x01 \x01(\fR\x06csrDer\x12)\n" +
+	"\x10validity_seconds\x18\x02 \x01(\x04R\x0fvaliditySeconds\"y\n" +
+	"\x13IssueTenantResponse\x12\x19\n" +
+	"\bcert_pem\x18\x01 \x01(\fR\acertPem\x12 \n" +
+	"\fca_chain_pem\x18\x02 \x01(\fR\n" +
+	"caChainPem\x12%\n" +
+	"\x0eca_fingerprint\x18\x03 \x01(\tR\rcaFingerprint2\xe2\r\n" +
 	"\x06Config\x12o\n" +
 	"\x12RegisterDeployment\x12+.reflow.config.v1.RegisterDeploymentRequest\x1a,.reflow.config.v1.RegisterDeploymentResponse\x12f\n" +
 	"\x0fListDeployments\x12(.reflow.config.v1.ListDeploymentsRequest\x1a).reflow.config.v1.ListDeploymentsResponse\x12o\n" +
@@ -1828,7 +1954,8 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\x0fCreateJoinToken\x12(.reflow.config.v1.CreateJoinTokenRequest\x1a).reflow.config.v1.CreateJoinTokenResponse\x12f\n" +
 	"\x0fDeleteJoinToken\x12(.reflow.config.v1.DeleteJoinTokenRequest\x1a).reflow.config.v1.DeleteJoinTokenResponse\x12c\n" +
 	"\x0eListJoinTokens\x12'.reflow.config.v1.ListJoinTokensRequest\x1a(.reflow.config.v1.ListJoinTokensResponse\x12`\n" +
-	"\rIssueOperator\x12&.reflow.config.v1.IssueOperatorRequest\x1a'.reflow.config.v1.IssueOperatorResponse\x12\x81\x01\n" +
+	"\rIssueOperator\x12&.reflow.config.v1.IssueOperatorRequest\x1a'.reflow.config.v1.IssueOperatorResponse\x12Z\n" +
+	"\vIssueTenant\x12$.reflow.config.v1.IssueTenantRequest\x1a%.reflow.config.v1.IssueTenantResponse\x12\x81\x01\n" +
 	"\x18UpsertClusterAuthzPolicy\x121.reflow.config.v1.UpsertClusterAuthzPolicyRequest\x1a2.reflow.config.v1.UpsertClusterAuthzPolicyResponse\x12x\n" +
 	"\x15GetClusterAuthzPolicy\x12..reflow.config.v1.GetClusterAuthzPolicyRequest\x1a/.reflow.config.v1.GetClusterAuthzPolicyResponseB3Z1github.com/twinfer/reflow/proto/configv1;configv1b\x06proto3"
 
@@ -1844,7 +1971,7 @@ func file_configv1_config_proto_rawDescGZIP() []byte {
 	return file_configv1_config_proto_rawDescData
 }
 
-var file_configv1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
+var file_configv1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_configv1_config_proto_goTypes = []any{
 	(*RegisterDeploymentRequest)(nil),        // 0: reflow.config.v1.RegisterDeploymentRequest
 	(*RegisterDeploymentResponse)(nil),       // 1: reflow.config.v1.RegisterDeploymentResponse
@@ -1879,21 +2006,23 @@ var file_configv1_config_proto_goTypes = []any{
 	(*ListJoinTokensResponse)(nil),           // 30: reflow.config.v1.ListJoinTokensResponse
 	(*IssueOperatorRequest)(nil),             // 31: reflow.config.v1.IssueOperatorRequest
 	(*IssueOperatorResponse)(nil),            // 32: reflow.config.v1.IssueOperatorResponse
-	(*enginev1.DeploymentRecord)(nil),        // 33: reflow.engine.v1.DeploymentRecord
-	(*enginev1.SecretRecord)(nil),            // 34: reflow.engine.v1.SecretRecord
-	(*enginev1.CARootRecord)(nil),            // 35: reflow.engine.v1.CARootRecord
-	(enginev1.JoinTokenKind)(0),              // 36: reflow.engine.v1.JoinTokenKind
-	(*enginev1.JoinTokenRecord)(nil),         // 37: reflow.engine.v1.JoinTokenRecord
+	(*IssueTenantRequest)(nil),               // 33: reflow.config.v1.IssueTenantRequest
+	(*IssueTenantResponse)(nil),              // 34: reflow.config.v1.IssueTenantResponse
+	(*enginev1.DeploymentRecord)(nil),        // 35: reflow.engine.v1.DeploymentRecord
+	(*enginev1.SecretRecord)(nil),            // 36: reflow.engine.v1.SecretRecord
+	(*enginev1.CARootRecord)(nil),            // 37: reflow.engine.v1.CARootRecord
+	(enginev1.JoinTokenKind)(0),              // 38: reflow.engine.v1.JoinTokenKind
+	(*enginev1.JoinTokenRecord)(nil),         // 39: reflow.engine.v1.JoinTokenRecord
 }
 var file_configv1_config_proto_depIdxs = []int32{
-	33, // 0: reflow.config.v1.ListDeploymentsResponse.deployments:type_name -> reflow.engine.v1.DeploymentRecord
-	33, // 1: reflow.config.v1.DescribeDeploymentResponse.deployment:type_name -> reflow.engine.v1.DeploymentRecord
-	34, // 2: reflow.config.v1.UpsertSecretRequest.record:type_name -> reflow.engine.v1.SecretRecord
-	34, // 3: reflow.config.v1.ListSecretsResponse.records:type_name -> reflow.engine.v1.SecretRecord
-	35, // 4: reflow.config.v1.UpsertCARootRequest.record:type_name -> reflow.engine.v1.CARootRecord
-	35, // 5: reflow.config.v1.ListCARootsResponse.records:type_name -> reflow.engine.v1.CARootRecord
-	36, // 6: reflow.config.v1.CreateJoinTokenRequest.kind:type_name -> reflow.engine.v1.JoinTokenKind
-	37, // 7: reflow.config.v1.ListJoinTokensResponse.records:type_name -> reflow.engine.v1.JoinTokenRecord
+	35, // 0: reflow.config.v1.ListDeploymentsResponse.deployments:type_name -> reflow.engine.v1.DeploymentRecord
+	35, // 1: reflow.config.v1.DescribeDeploymentResponse.deployment:type_name -> reflow.engine.v1.DeploymentRecord
+	36, // 2: reflow.config.v1.UpsertSecretRequest.record:type_name -> reflow.engine.v1.SecretRecord
+	36, // 3: reflow.config.v1.ListSecretsResponse.records:type_name -> reflow.engine.v1.SecretRecord
+	37, // 4: reflow.config.v1.UpsertCARootRequest.record:type_name -> reflow.engine.v1.CARootRecord
+	37, // 5: reflow.config.v1.ListCARootsResponse.records:type_name -> reflow.engine.v1.CARootRecord
+	38, // 6: reflow.config.v1.CreateJoinTokenRequest.kind:type_name -> reflow.engine.v1.JoinTokenKind
+	39, // 7: reflow.config.v1.ListJoinTokensResponse.records:type_name -> reflow.engine.v1.JoinTokenRecord
 	0,  // 8: reflow.config.v1.Config.RegisterDeployment:input_type -> reflow.config.v1.RegisterDeploymentRequest
 	2,  // 9: reflow.config.v1.Config.ListDeployments:input_type -> reflow.config.v1.ListDeploymentsRequest
 	4,  // 10: reflow.config.v1.Config.DescribeDeployment:input_type -> reflow.config.v1.DescribeDeploymentRequest
@@ -1908,26 +2037,28 @@ var file_configv1_config_proto_depIdxs = []int32{
 	27, // 19: reflow.config.v1.Config.DeleteJoinToken:input_type -> reflow.config.v1.DeleteJoinTokenRequest
 	29, // 20: reflow.config.v1.Config.ListJoinTokens:input_type -> reflow.config.v1.ListJoinTokensRequest
 	31, // 21: reflow.config.v1.Config.IssueOperator:input_type -> reflow.config.v1.IssueOperatorRequest
-	8,  // 22: reflow.config.v1.Config.UpsertClusterAuthzPolicy:input_type -> reflow.config.v1.UpsertClusterAuthzPolicyRequest
-	10, // 23: reflow.config.v1.Config.GetClusterAuthzPolicy:input_type -> reflow.config.v1.GetClusterAuthzPolicyRequest
-	1,  // 24: reflow.config.v1.Config.RegisterDeployment:output_type -> reflow.config.v1.RegisterDeploymentResponse
-	3,  // 25: reflow.config.v1.Config.ListDeployments:output_type -> reflow.config.v1.ListDeploymentsResponse
-	5,  // 26: reflow.config.v1.Config.DescribeDeployment:output_type -> reflow.config.v1.DescribeDeploymentResponse
-	7,  // 27: reflow.config.v1.Config.DeleteDeployment:output_type -> reflow.config.v1.DeleteDeploymentResponse
-	13, // 28: reflow.config.v1.Config.UpsertSecret:output_type -> reflow.config.v1.UpsertSecretResponse
-	15, // 29: reflow.config.v1.Config.DeleteSecret:output_type -> reflow.config.v1.DeleteSecretResponse
-	17, // 30: reflow.config.v1.Config.ListSecrets:output_type -> reflow.config.v1.ListSecretsResponse
-	19, // 31: reflow.config.v1.Config.UpsertCARoot:output_type -> reflow.config.v1.UpsertCARootResponse
-	21, // 32: reflow.config.v1.Config.DeleteCARoot:output_type -> reflow.config.v1.DeleteCARootResponse
-	23, // 33: reflow.config.v1.Config.ListCARoots:output_type -> reflow.config.v1.ListCARootsResponse
-	26, // 34: reflow.config.v1.Config.CreateJoinToken:output_type -> reflow.config.v1.CreateJoinTokenResponse
-	28, // 35: reflow.config.v1.Config.DeleteJoinToken:output_type -> reflow.config.v1.DeleteJoinTokenResponse
-	30, // 36: reflow.config.v1.Config.ListJoinTokens:output_type -> reflow.config.v1.ListJoinTokensResponse
-	32, // 37: reflow.config.v1.Config.IssueOperator:output_type -> reflow.config.v1.IssueOperatorResponse
-	9,  // 38: reflow.config.v1.Config.UpsertClusterAuthzPolicy:output_type -> reflow.config.v1.UpsertClusterAuthzPolicyResponse
-	11, // 39: reflow.config.v1.Config.GetClusterAuthzPolicy:output_type -> reflow.config.v1.GetClusterAuthzPolicyResponse
-	24, // [24:40] is the sub-list for method output_type
-	8,  // [8:24] is the sub-list for method input_type
+	33, // 22: reflow.config.v1.Config.IssueTenant:input_type -> reflow.config.v1.IssueTenantRequest
+	8,  // 23: reflow.config.v1.Config.UpsertClusterAuthzPolicy:input_type -> reflow.config.v1.UpsertClusterAuthzPolicyRequest
+	10, // 24: reflow.config.v1.Config.GetClusterAuthzPolicy:input_type -> reflow.config.v1.GetClusterAuthzPolicyRequest
+	1,  // 25: reflow.config.v1.Config.RegisterDeployment:output_type -> reflow.config.v1.RegisterDeploymentResponse
+	3,  // 26: reflow.config.v1.Config.ListDeployments:output_type -> reflow.config.v1.ListDeploymentsResponse
+	5,  // 27: reflow.config.v1.Config.DescribeDeployment:output_type -> reflow.config.v1.DescribeDeploymentResponse
+	7,  // 28: reflow.config.v1.Config.DeleteDeployment:output_type -> reflow.config.v1.DeleteDeploymentResponse
+	13, // 29: reflow.config.v1.Config.UpsertSecret:output_type -> reflow.config.v1.UpsertSecretResponse
+	15, // 30: reflow.config.v1.Config.DeleteSecret:output_type -> reflow.config.v1.DeleteSecretResponse
+	17, // 31: reflow.config.v1.Config.ListSecrets:output_type -> reflow.config.v1.ListSecretsResponse
+	19, // 32: reflow.config.v1.Config.UpsertCARoot:output_type -> reflow.config.v1.UpsertCARootResponse
+	21, // 33: reflow.config.v1.Config.DeleteCARoot:output_type -> reflow.config.v1.DeleteCARootResponse
+	23, // 34: reflow.config.v1.Config.ListCARoots:output_type -> reflow.config.v1.ListCARootsResponse
+	26, // 35: reflow.config.v1.Config.CreateJoinToken:output_type -> reflow.config.v1.CreateJoinTokenResponse
+	28, // 36: reflow.config.v1.Config.DeleteJoinToken:output_type -> reflow.config.v1.DeleteJoinTokenResponse
+	30, // 37: reflow.config.v1.Config.ListJoinTokens:output_type -> reflow.config.v1.ListJoinTokensResponse
+	32, // 38: reflow.config.v1.Config.IssueOperator:output_type -> reflow.config.v1.IssueOperatorResponse
+	34, // 39: reflow.config.v1.Config.IssueTenant:output_type -> reflow.config.v1.IssueTenantResponse
+	9,  // 40: reflow.config.v1.Config.UpsertClusterAuthzPolicy:output_type -> reflow.config.v1.UpsertClusterAuthzPolicyResponse
+	11, // 41: reflow.config.v1.Config.GetClusterAuthzPolicy:output_type -> reflow.config.v1.GetClusterAuthzPolicyResponse
+	25, // [25:42] is the sub-list for method output_type
+	8,  // [8:25] is the sub-list for method input_type
 	8,  // [8:8] is the sub-list for extension type_name
 	8,  // [8:8] is the sub-list for extension extendee
 	0,  // [0:8] is the sub-list for field type_name
@@ -1944,7 +2075,7 @@ func file_configv1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_configv1_config_proto_rawDesc), len(file_configv1_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   33,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

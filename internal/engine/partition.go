@@ -592,19 +592,31 @@ func (p *Partition) onAnnounceLeader(
 	return nil
 }
 
+// bandedEntityPK returns the partition_key for an entity row (idempotency,
+// workflow_run, keylease, state, promise) addressed by (service, objectKey),
+// banded under the owning invocation's tenant. The apply path and ingress
+// Lookup must agree on this LP; recomputing from the routing tuple — rather
+// than reading id's LP directly — keeps them aligned, bands an entity whose
+// (service, objectKey) differs from the invocation's own target (cross-workflow
+// promises), and stays robust to synthetic test ids that don't follow the mint
+// invariant id.pk == PartitionKey(tenant, svc, objKey).
+func bandedEntityPK(id *enginev1.InvocationId, service, objectKey string) uint64 {
+	return routing.PartitionKey(keys.TenantFromPartitionKey(id.GetPartitionKey()), service, objectKey)
+}
+
 func (p *Partition) onInvoke(batch storage.Batch, cmd *enginev1.InvokeCommand, nowMs uint64, inv tables.InvocationTable, isLeader bool) error {
 	id := cmd.GetInvocationId()
 	target := cmd.GetTarget()
 	// LP for the per-(service, object_key) namespaces (idempotency,
-	// workflow_run, keylease). Derive from the routing tuple so apply and
-	// Lookup agree even when the caller's id.PartitionKey is divergent
-	// (e.g., synthetic test ids); production ingress always mints
-	// id.PartitionKey == routing.PartitionKey(target.Svc, target.ObjKey).
-	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
+	// workflow_run, keylease) is banded under the invocation's tenant, so
+	// apply and ingress's optimistic Lookup* (which band the same tuple from
+	// the same principal) agree on the row.
+	epk := bandedEntityPK(id, target.GetServiceName(), target.GetObjectKey())
+	lp := keys.LPFromPartitionKey(epk)
 
 	// Freeze gate. Must run before any state write so a frozen LP
 	// rolls back cleanly via the Update loop's errLPFrozen handling.
-	if err := p.checkLPFreeze(batch, routing.PartitionKey(target.GetServiceName(), target.GetObjectKey())); err != nil {
+	if err := p.checkLPFreeze(batch, epk); err != nil {
 		return err
 	}
 
@@ -823,7 +835,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			// Persist state rows so eager preload on the next session start
 			// can serve GetState without a journal scan.
 			if t := statusTarget(cur); t != nil {
-				lpT := keys.LPFromPartitionKey(routing.PartitionKey(t.GetServiceName(), t.GetObjectKey()))
+				lpT := keys.LPFromPartitionKey(bandedEntityPK(id, t.GetServiceName(), t.GetObjectKey()))
 				if err := (tables.StateTable{S: batch}).Set(batch, lpT, t, e.SetState.GetKey(), e.SetState.GetValue()); err != nil {
 					return fmt.Errorf("onInvokerEffect: state set: %w", err)
 				}
@@ -833,7 +845,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			}
 		case *enginev1.JournalEntry_ClearState:
 			if t := statusTarget(cur); t != nil {
-				lpT := keys.LPFromPartitionKey(routing.PartitionKey(t.GetServiceName(), t.GetObjectKey()))
+				lpT := keys.LPFromPartitionKey(bandedEntityPK(id, t.GetServiceName(), t.GetObjectKey()))
 				if err := (tables.StateTable{S: batch}).Clear(batch, lpT, t, e.ClearState.GetKey()); err != nil {
 					return fmt.Errorf("onInvokerEffect: state clear: %w", err)
 				}
@@ -848,7 +860,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			// indicate a divergent SDK and is dropped with a warning (we
 			// still append the journal entry above for replay parity).
 			if t := statusTarget(cur); t != nil {
-				lpT := keys.LPFromPartitionKey(routing.PartitionKey(t.GetServiceName(), t.GetObjectKey()))
+				lpT := keys.LPFromPartitionKey(bandedEntityPK(id, t.GetServiceName(), t.GetObjectKey()))
 				if err := (tables.StateTable{S: batch}).ClearObject(batch, lpT, t); err != nil {
 					return fmt.Errorf("onInvokerEffect: state clear-all: %w", err)
 				}
@@ -867,7 +879,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 					"status", fmt.Sprintf("%T", cur.GetStatus()))
 				break
 			}
-			lpT := keys.LPFromPartitionKey(routing.PartitionKey(t.GetServiceName(), t.GetObjectKey()))
+			lpT := keys.LPFromPartitionKey(bandedEntityPK(id, t.GetServiceName(), t.GetObjectKey()))
 			key := e.GetState.GetKey()
 			resultIdx := e.GetState.GetResultCompletionId()
 			val, present, gerr := (tables.StateTable{S: batch}).Get(lpT, t, key)
@@ -903,7 +915,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			}
 			resultIdx := e.GetStateKeys.GetResultCompletionId()
 			var keysOut []string
-			lpT := keys.LPFromPartitionKey(routing.PartitionKey(t.GetServiceName(), t.GetObjectKey()))
+			lpT := keys.LPFromPartitionKey(bandedEntityPK(id, t.GetServiceName(), t.GetObjectKey()))
 			if err := (tables.StateTable{S: batch}).ScanObject(lpT, t, func(k string, _ []byte) error {
 				keysOut = append(keysOut, k)
 				return nil
@@ -933,12 +945,16 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			// not suspended (the answer was local) so no ActInvoke wake
 			// is needed.
 		case *enginev1.JournalEntry_Signal:
+			// A signal stays within the sender's tenant: route and key the
+			// target under the sender's band (forward-carried on SignalSend).
+			senderTenant := keys.TenantFromPartitionKey(id.GetPartitionKey())
 			env := &enginev1.OutboxEnvelope{
-				DestinationShardId: p.cfg.Partitioner.ShardForTarget(e.Signal.GetTarget()),
+				DestinationShardId: p.cfg.Partitioner.ShardForTarget(senderTenant, e.Signal.GetTarget()),
 				Kind: &enginev1.OutboxEnvelope_Signal{Signal: &enginev1.SignalSend{
 					Target:     e.Signal.GetTarget(),
 					SignalName: e.Signal.GetSignalName(),
 					Payload:    e.Signal.GetPayload(),
+					Tenant:     senderTenant,
 				}},
 			}
 			if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {
@@ -1030,7 +1046,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			// Promise LP is keyed on the workflow's (svc, wfKey), which may
 			// differ from the calling invocation's LP (cross-workflow
 			// WorkflowPromise.Result()).
-			lpP := keys.LPFromPartitionKey(routing.PartitionKey(svc, wfKey))
+			lpP := keys.LPFromPartitionKey(bandedEntityPK(id, svc, wfKey))
 			pv, perr := (tables.PromiseTable{S: batch}).Get(lpP, svc, wfKey, name)
 			if perr != nil {
 				return fmt.Errorf("onInvokerEffect: promise lookup: %w", perr)
@@ -1070,7 +1086,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 				break
 			}
 			name := e.PeekPromise.GetName()
-			lpP := keys.LPFromPartitionKey(routing.PartitionKey(svc, wfKey))
+			lpP := keys.LPFromPartitionKey(bandedEntityPK(id, svc, wfKey))
 			pv, perr := (tables.PromiseTable{S: batch}).Get(lpP, svc, wfKey, name)
 			if perr != nil {
 				return fmt.Errorf("onInvokerEffect: peek promise lookup: %w", perr)
@@ -1117,7 +1133,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			}
 			name := e.CompletePromise.GetName()
 			resultIdx := e.CompletePromise.GetResultCompletionId()
-			destShard := p.cfg.Partitioner.ShardForTarget(&enginev1.InvocationTarget{
+			destShard := p.cfg.Partitioner.ShardForTarget(keys.TenantFromPartitionKey(id.GetPartitionKey()), &enginev1.InvocationTarget{
 				ServiceName: svc,
 				ObjectKey:   wfKey,
 			})
@@ -1137,6 +1153,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 							FailureMessage:     e.CompletePromise.GetFailureMessage(),
 							CallerId:           id,
 							ResultCompletionId: resultIdx,
+							Tenant:             keys.TenantFromPartitionKey(id.GetPartitionKey()),
 						},
 					},
 				}
@@ -1151,7 +1168,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 
 			// Local apply path.
 			promiseT := tables.PromiseTable{S: batch}
-			lpP := keys.LPFromPartitionKey(routing.PartitionKey(svc, wfKey))
+			lpP := keys.LPFromPartitionKey(bandedEntityPK(id, svc, wfKey))
 			cur_pv, cerr := promiseT.Get(lpP, svc, wfKey, name)
 			if cerr != nil {
 				return fmt.Errorf("onInvokerEffect: promise lookup (complete): %w", cerr)
@@ -1165,7 +1182,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 				}
 				succeeded = true
 				conflictMsg = ""
-				if err := p.applyPromiseAwaiterScan(batch, inv, journal, svc, wfKey, name, newPV, false, isLeader, nowMs); err != nil {
+				if err := p.applyPromiseAwaiterScan(batch, inv, journal, keys.TenantFromPartitionKey(id.GetPartitionKey()), svc, wfKey, name, newPV, false, isLeader, nowMs); err != nil {
 					return err
 				}
 			}
@@ -1350,12 +1367,15 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			p.cfg.Log.Warn("partition: signal delivered for unkeyed target", "service", sigTarget.GetServiceName(), "handler", sigTarget.GetHandlerName())
 			return nil
 		}
-		// Freeze gate (Target-routed variant).
-		if err := p.checkLPFreeze(batch, routing.PartitionKey(sigTarget.GetServiceName(), sigTarget.GetObjectKey())); err != nil {
+		// Freeze gate (Target-routed variant). Band by the sender's tenant,
+		// forward-carried on SignalDelivered, so the key-lease lookup hits
+		// the same LP the target invocation was minted under.
+		sigTenant := k.SignalDelivered.GetTenant()
+		if err := p.checkLPFreeze(batch, routing.PartitionKey(sigTenant, sigTarget.GetServiceName(), sigTarget.GetObjectKey())); err != nil {
 			return err
 		}
 		klt := tables.KeyLeaseTable{S: batch}
-		sigLP := keys.LPFromPartitionKey(routing.PartitionKey(sigTarget.GetServiceName(), sigTarget.GetObjectKey()))
+		sigLP := keys.LPFromPartitionKey(routing.PartitionKey(sigTenant, sigTarget.GetServiceName(), sigTarget.GetObjectKey()))
 		lease, lerr := klt.Get(sigLP, sigTarget.GetServiceName(), sigTarget.GetObjectKey())
 		if lerr != nil {
 			return fmt.Errorf("onInvokerEffect: signal key-lease lookup: %w", lerr)
@@ -1469,12 +1489,15 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 				"service", svc, "key", wk, "name", name)
 			return nil
 		}
-		// Freeze gate ((service, workflow_key)-routed variant).
-		if err := p.checkLPFreeze(batch, routing.PartitionKey(svc, wk)); err != nil {
+		// Freeze gate ((service, workflow_key)-routed variant). Band by the
+		// forward-carried tenant so the promise/awaiter rows land under the
+		// workflow's LP band on this owner shard.
+		pcTenant := pc.GetTenant()
+		if err := p.checkLPFreeze(batch, routing.PartitionKey(pcTenant, svc, wk)); err != nil {
 			return err
 		}
 		promiseT := tables.PromiseTable{S: batch}
-		lpP := keys.LPFromPartitionKey(routing.PartitionKey(svc, wk))
+		lpP := keys.LPFromPartitionKey(routing.PartitionKey(pcTenant, svc, wk))
 		cur_pv, perr := promiseT.Get(lpP, svc, wk, name)
 		if perr != nil {
 			return fmt.Errorf("onInvokerEffect: promise lookup (ingress): %w", perr)
@@ -1488,7 +1511,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			}
 			succeeded = true
 			conflictMsg = ""
-			if err := p.applyPromiseAwaiterScan(batch, inv, journal, svc, wk, name, newPV, true, isLeader, nowMs); err != nil {
+			if err := p.applyPromiseAwaiterScan(batch, inv, journal, pcTenant, svc, wk, name, newPV, true, isLeader, nowMs); err != nil {
 				return err
 			}
 		}
@@ -1598,7 +1621,7 @@ func (p *Partition) applyTerminalCompletion(
 		actions = append(actions, parentActs...)
 	}
 	if completedTarget.GetObjectKey() != "" {
-		leaseActs, rerr := p.releaseKeyLease(batch, completedTarget)
+		leaseActs, rerr := p.releaseKeyLease(batch, keys.TenantFromPartitionKey(id.GetPartitionKey()), completedTarget)
 		if rerr != nil {
 			return next, actions, rerr
 		}
@@ -1645,7 +1668,7 @@ func (p *Partition) applyTerminalCompletion(
 		}
 		if completedTarget.GetObjectKey() != "" {
 			runT := tables.WorkflowRunTable{S: batch}
-			runLP := keys.LPFromPartitionKey(routing.PartitionKey(completedTarget.GetServiceName(), completedTarget.GetObjectKey()))
+			runLP := keys.LPFromPartitionKey(bandedEntityPK(id, completedTarget.GetServiceName(), completedTarget.GetObjectKey()))
 			runRow, rerr := runT.Get(runLP, completedTarget.GetServiceName(), completedTarget.GetObjectKey())
 			if rerr != nil {
 				return next, actions, fmt.Errorf("applyTerminalCompletion: workflow_run lookup: %w", rerr)
@@ -1693,6 +1716,7 @@ func (p *Partition) applyPromiseAwaiterScan(
 	batch storage.Batch,
 	inv tables.InvocationTable,
 	journal tables.JournalTable,
+	tenant uint32,
 	svc, workflowKey, name string,
 	newPV *enginev1.PromiseValue,
 	runFSM bool,
@@ -1700,7 +1724,7 @@ func (p *Partition) applyPromiseAwaiterScan(
 	nowMs uint64,
 ) error {
 	awaiterT := tables.PromiseAwaiterTable{S: batch}
-	lpP := keys.LPFromPartitionKey(routing.PartitionKey(svc, workflowKey))
+	lpP := keys.LPFromPartitionKey(routing.PartitionKey(tenant, svc, workflowKey))
 	var awaiters []*enginev1.PromiseAwaiter
 	if err := awaiterT.ScanForName(lpP, svc, workflowKey, name, func(a *enginev1.PromiseAwaiter) error {
 		awaiters = append(awaiters, proto.Clone(a).(*enginev1.PromiseAwaiter))
@@ -2016,7 +2040,7 @@ func (p *Partition) onReap(
 	if c := cur.GetCompleted(); c != nil {
 		if target := c.GetTarget(); target != nil && target.GetObjectKey() != "" {
 			svc, wfKey := target.GetServiceName(), target.GetObjectKey()
-			lpW := keys.LPFromPartitionKey(routing.PartitionKey(svc, wfKey))
+			lpW := keys.LPFromPartitionKey(bandedEntityPK(id, svc, wfKey))
 			runT := tables.WorkflowRunTable{S: batch}
 			runRow, rerr := runT.Get(lpW, svc, wfKey)
 			if rerr != nil {
@@ -2042,9 +2066,9 @@ func (p *Partition) onReap(
 	return p.purgeInvocationRows(batch, id, inv, journal)
 }
 
-func (p *Partition) releaseKeyLease(batch storage.Batch, target *enginev1.InvocationTarget) ([]Action, error) {
+func (p *Partition) releaseKeyLease(batch storage.Batch, tenant uint32, target *enginev1.InvocationTarget) ([]Action, error) {
 	klt := tables.KeyLeaseTable{S: batch}
-	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(tenant, target.GetServiceName(), target.GetObjectKey()))
 	cur, err := klt.Get(lp, target.GetServiceName(), target.GetObjectKey())
 	if err != nil {
 		return nil, fmt.Errorf("releaseKeyLease: load: %w", err)
@@ -2175,7 +2199,9 @@ func mintCalleeInvocationID(parent *enginev1.InvocationId, idx uint32, target *e
 	writeLP(target.GetObjectKey())
 	sum := h.Sum(nil)
 	return &enginev1.InvocationId{
-		PartitionKey: routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()),
+		// A call stays in the parent's tenant: band the callee's pk by the
+		// parent's band so the callee routes/keys within the same tenant.
+		PartitionKey: routing.PartitionKey(keys.TenantFromPartitionKey(parent.GetPartitionKey()), target.GetServiceName(), target.GetObjectKey()),
 		Uuid:         append([]byte(nil), sum[:16]...),
 	}
 }
@@ -2357,6 +2383,9 @@ type LookupIdempotency struct {
 	Handler        string
 	ObjectKey      string
 	IdempotencyKey string
+	// Tenant is the band of the requesting principal; the row LP must match
+	// what onInvoke wrote (banded by the invocation's pk).
+	Tenant uint32
 }
 
 func (LookupIdempotency) isLookup() {}
@@ -2369,6 +2398,8 @@ func (LookupIdempotency) isLookup() {}
 type LookupWorkflowRun struct {
 	Service     string
 	WorkflowKey string
+	// Tenant is the band of the requesting principal (see LookupIdempotency).
+	Tenant uint32
 }
 
 func (LookupWorkflowRun) isLookup() {}
@@ -2379,6 +2410,8 @@ func (LookupWorkflowRun) isLookup() {}
 type LookupState struct {
 	Target *enginev1.InvocationTarget
 	Key    string
+	// Tenant is the band of the requesting principal (see LookupIdempotency).
+	Tenant uint32
 }
 
 func (LookupState) isLookup() {}
@@ -2409,17 +2442,17 @@ func (p *Partition) Lookup(query any) (any, error) {
 	case LookupAwakeable:
 		return (tables.AwakeableTable{S: store}).Get(q.ID)
 	case LookupState:
-		lp := keys.LPFromPartitionKey(routing.PartitionKey(q.Target.GetServiceName(), q.Target.GetObjectKey()))
+		lp := keys.LPFromPartitionKey(routing.PartitionKey(q.Tenant, q.Target.GetServiceName(), q.Target.GetObjectKey()))
 		v, present, err := (tables.StateTable{S: store}).Get(lp, q.Target, q.Key)
 		if err != nil {
 			return nil, err
 		}
 		return StateLookupResult{Value: v, Present: present}, nil
 	case LookupIdempotency:
-		lp := keys.LPFromPartitionKey(routing.PartitionKey(q.Service, q.ObjectKey))
+		lp := keys.LPFromPartitionKey(routing.PartitionKey(q.Tenant, q.Service, q.ObjectKey))
 		return (tables.IdempotencyTable{S: store}).Get(lp, q.Service, q.Handler, q.ObjectKey, q.IdempotencyKey)
 	case LookupWorkflowRun:
-		lp := keys.LPFromPartitionKey(routing.PartitionKey(q.Service, q.WorkflowKey))
+		lp := keys.LPFromPartitionKey(routing.PartitionKey(q.Tenant, q.Service, q.WorkflowKey))
 		return (tables.WorkflowRunTable{S: store}).Get(lp, q.Service, q.WorkflowKey)
 	default:
 		return nil, fmt.Errorf("partition: unknown lookup type %T", query)

@@ -195,7 +195,7 @@ func TestWireDispatch_HTTP2_StateWrites(t *testing.T) {
 	// the apply path in order.
 	store := pr.Snapshotter().Store()
 	st := tables.StateTable{S: store}
-	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(0, target.GetServiceName(), target.GetObjectKey()))
 	count := 0
 	if err := st.ScanObject(lp, target, func(_ string, _ []byte) error {
 		count++

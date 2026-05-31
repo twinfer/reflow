@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/certmgr"
 	"github.com/twinfer/reflow/internal/engine/cluster"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	configv1 "github.com/twinfer/reflow/proto/configv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -196,6 +198,68 @@ func (s *Server) IssueOperator(
 			errors.New("config: active CA snapshot missing"))
 	}
 	return connect.NewResponse(&configv1.IssueOperatorResponse{
+		CertPem:       leafPEM,
+		CaChainPem:    caPEM,
+		CaFingerprint: spkiFingerprintPEM(caPEM),
+	}), nil
+}
+
+// IssueTenant signs a tenant-supplied CSR against the active cluster CA. The
+// CN must be "tenant/<n>" with n a decimal band id in [1, MaxTenantBand); band
+// 0 is reserved for untenanted traffic and is never issued as a leaf. Only the
+// public key is signed — the requester generates the keypair locally.
+func (s *Server) IssueTenant(
+	ctx context.Context,
+	req *connect.Request[configv1.IssueTenantRequest],
+) (*connect.Response[configv1.IssueTenantResponse], error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
+	if s.operatorIssuer == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("config: cluster CA not yet active; run `reflowd config ca init` first"))
+	}
+	csrDER := req.Msg.GetCsrDer()
+	if len(csrDER) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("config: csr_der is required"))
+	}
+	csr, err := x509.ParseCertificateRequest(csrDER)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("config: parse CSR: %w", err))
+	}
+	if err := csr.CheckSignature(); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("config: CSR signature invalid: %w", err))
+	}
+	cn := csr.Subject.CommonName
+	band, ok := strings.CutPrefix(cn, "tenant/")
+	if !ok {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("config: CSR CN %q must be tenant/<n>", cn))
+	}
+	n, perr := strconv.ParseUint(band, 10, 32)
+	if perr != nil || n == 0 || uint32(n) >= keys.MaxTenantBand {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("config: tenant band %q must be a decimal integer in [1,%d)", band, keys.MaxTenantBand))
+	}
+
+	validity := time.Duration(req.Msg.GetValiditySeconds()) * time.Second
+	if validity <= 0 || validity > operatorMaxValidity {
+		validity = operatorMaxValidity
+	}
+	leafPEM, err := s.operatorIssuer.IssueForPrincipal(csr, cn, certmgr.LeafTenant, nil, validity)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("config: sign tenant leaf: %w", err))
+	}
+	caPEM := s.operatorIssuer.ActiveCertPEM()
+	if len(caPEM) == 0 {
+		return nil, connect.NewError(connect.CodeInternal,
+			errors.New("config: active CA snapshot missing"))
+	}
+	return connect.NewResponse(&configv1.IssueTenantResponse{
 		CertPem:       leafPEM,
 		CaChainPem:    caPEM,
 		CaFingerprint: spkiFingerprintPEM(caPEM),

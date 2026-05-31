@@ -147,6 +147,7 @@ There is no separate workflow reaper. `Command_Purge` (operator-only `Ingress.Pu
 - Bumping `leaderEpoch` past only `l.leaderEpoch` — must also clear `latestAnnouncedEpoch` (see leadership notes above).
 - Allocating a new SelfProposal seq without `SetEpoch` resetting on leader transition — duplicates get silently dedup'd.
 - Adding a callback without saying which goroutine it fires on and what's banned in it.
+- Keying an entity row (state / idempotency / workflow_run / keylease / promise) off a bare `routing.PartitionKey(svc, key)` (drops the tenant band → band 0) or off `id.GetPartitionKey()` directly — use **`bandedEntityPK(id, svc, key)`** so the apply path and ingress `Lookup*` agree on the tenant-banded LP. ID-keyed rows (inv / journal / timer / signal_inbox / signal_awaiter) correctly use the id's own pk. For a `(svc,key)`-addressed cross-shard command applied where no id is in scope (`SignalDelivered`, `PromiseCompleted`), band from the forward-carried `tenant` field, not a re-hash.
 
 ## Tests
 

@@ -28,6 +28,13 @@ const (
 // Delivery*, UpsertPlatformConfig).
 var PlatformConfigUID = cedar.NewEntityUID(TypePlatformConfig, "cluster")
 
+// InvocationResourceUID is the singleton resource for ingress data-plane
+// authorization. The id is fixed — only its tenant_id attribute matters, set
+// per-request by the interceptor from the routed (by-target) or recovered
+// (by-id) tenant band. The tenant-isolation when-clause compares it to the
+// principal's band.
+var InvocationResourceUID = cedar.NewEntityUID(TypeInvocation, "request")
+
 // PrincipalEntity maps a server-verified auth.Principal to its Cedar
 // principal UID and entity, carrying the attributes the schema declares for
 // that type. Every principal — including the anonymous one — maps to a typed

@@ -106,6 +106,13 @@ service Config {
   // Replaces the deleted `reflowd pki issue-operator` flow.
   rpc IssueOperator(IssueOperatorRequest) returns (IssueOperatorResponse);
 
+  // IssueTenant mints a tenant client cert (CN "tenant/<n>", n in [1,255])
+  // against the active cluster CA — the source identity for LP-band tenancy.
+  // Same flow as IssueOperator (operator generates the keypair, sends the
+  // CSR, receives the signed leaf + CA chain); the server validates the CN's
+  // numeric tenant band and signs the public key. Operator-only, leader-only.
+  rpc IssueTenant(IssueTenantRequest) returns (IssueTenantResponse);
+
   // UpsertClusterAuthzPolicy replaces shard 0's cluster-wide Cedar authz
   // policy text (PlatformConfigRecord). The server runs layer-1 schema
   // validation before proposing, so an invalid policy is rejected at upload,
@@ -298,6 +305,23 @@ message IssueOperatorRequest {
 }
 
 message IssueOperatorResponse {
+  bytes cert_pem = 1;
+  bytes ca_chain_pem = 2;
+  string ca_fingerprint = 3;
+}
+
+// IssueTenantRequest carries an operator-generated CSR for a tenant leaf.
+// The keypair never leaves the operator's machine; the server signs only
+// the public key after validating the CN.
+message IssueTenantRequest {
+  // DER-encoded x509.CertificateRequest. Subject.CommonName must be
+  // "tenant/<n>" with n a decimal integer in [1,255] (band 0 is reserved
+  // for untenanted traffic). validity is clamped to the server ceiling.
+  bytes csr_der = 1;
+  uint64 validity_seconds = 2;
+}
+
+message IssueTenantResponse {
   bytes cert_pem = 1;
   bytes ca_chain_pem = 2;
   string ca_fingerprint = 3;

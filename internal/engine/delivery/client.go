@@ -315,13 +315,26 @@ func fileSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// errClientClosed is returned by dial once Close has run (conns == nil).
+// It surfaces during teardown when a leader-scoped OutboxService goroutine
+// races Close: Send wraps it and the OutboxService loop treats it like any
+// transient dispatch error — re-queue, then exit when leaderCtx cancels.
+// The alternative was a nil-map-assignment panic when dial wrote conns
+// after Close niled it.
+var errClientClosed = errors.New("delivery: client closed")
+
 // dial returns the pooled connection for endpoint, creating one on
 // first use. The base URL scheme is derived from ClientTLSConfig: https
-// when set, http (h2c) otherwise. Connections live until Close.
+// when set, http (h2c) otherwise. Connections live until Close; dial after
+// Close returns errClientClosed rather than panicking on the niled map.
 func (c *Client) dial(endpoint string) (*conn, error) {
 	baseURL := c.baseURL(endpoint)
 
 	c.mu.Lock()
+	if c.conns == nil {
+		c.mu.Unlock()
+		return nil, errClientClosed
+	}
 	if existing, ok := c.conns[baseURL]; ok {
 		c.mu.Unlock()
 		return existing, nil
@@ -341,6 +354,12 @@ func (c *Client) dial(endpoint string) (*conn, error) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Close may have run while we built the transport (no lock held there).
+	// Guard the write — conns is nil after Close, and `nil[k] = v` panics.
+	if c.conns == nil {
+		closeTransport(tr)
+		return nil, errClientClosed
+	}
 	if existing, ok := c.conns[baseURL]; ok {
 		// Lost the race: another goroutine inserted first. Discard ours.
 		closeTransport(tr)

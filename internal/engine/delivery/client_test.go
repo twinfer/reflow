@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"sync"
@@ -106,6 +107,50 @@ func startTestDelivery(t *testing.T, h *stubHandler) (*Client, func()) {
 		}
 	}
 	return cli, cleanup
+}
+
+// TestDeliveryClient_DialAfterClose asserts dial fails soft with
+// errClientClosed instead of panicking on the niled conns map. This is the
+// teardown race where a leader-scoped OutboxService goroutine dials after
+// the Client has been Closed.
+func TestDeliveryClient_DialAfterClose(t *testing.T) {
+	cli, err := NewClient(ClientConfig{Resolver: &stubResolver{}})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if err := cli.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := cli.dial("127.0.0.1:1"); !errors.Is(err, errClientClosed) {
+		t.Fatalf("dial after Close = %v; want errClientClosed", err)
+	}
+}
+
+// TestDeliveryClient_ConcurrentDialClose races many dials against Close.
+// Under -race this exercises the window between dial's two critical
+// sections (where the original nil-map-assignment panic lived): every dial
+// must either succeed or return errClientClosed — never panic.
+func TestDeliveryClient_ConcurrentDialClose(t *testing.T) {
+	cli, err := NewClient(ClientConfig{Resolver: &stubResolver{}})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	var wg sync.WaitGroup
+	for i := range 32 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			// Distinct endpoints so dials race on inserts, not just the
+			// dedup fast-path.
+			if _, derr := cli.dial(fmt.Sprintf("127.0.0.1:%d", 2000+i)); derr != nil && !errors.Is(derr, errClientClosed) {
+				t.Errorf("dial: unexpected err %v", derr)
+			}
+		}(i)
+	}
+	if err := cli.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	wg.Wait()
 }
 
 func TestDeliveryClient_Ack(t *testing.T) {

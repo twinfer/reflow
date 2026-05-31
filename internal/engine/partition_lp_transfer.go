@@ -313,7 +313,7 @@ func deleteLPTimers(batch storage.Batch, lp uint32) error {
 	}
 	defer iter.Close()
 	for ok := iter.First(); ok; ok = iter.Next() {
-		_, _, fireAt, id, derr := keys.DecodeTimerLPKey(iter.Key())
+		_, fireAt, id, derr := keys.DecodeTimerLPKey(iter.Key())
 		if derr != nil {
 			return fmt.Errorf("deleteLPTimers: decode timer_lp key: %w", derr)
 		}

@@ -28,14 +28,11 @@ func TestEncodeDecodeInvocationID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(raw) != 28 {
-		t.Fatalf("raw length = %d; want 28", len(raw))
+	if len(raw) != 24 {
+		t.Fatalf("raw length = %d; want 24", len(raw))
 	}
-	if binary.BigEndian.Uint32(raw[:4]) != 0 {
-		t.Errorf("default tenant not at raw[:4]")
-	}
-	if binary.BigEndian.Uint64(raw[4:12]) != 0xDEADBEEFCAFEBABE {
-		t.Errorf("partition_key not big-endian at raw[4:12]")
+	if binary.BigEndian.Uint64(raw[:8]) != 0xDEADBEEFCAFEBABE {
+		t.Errorf("partition_key not big-endian at raw[:8]")
 	}
 	decoded, err := DecodeInvocationID(raw)
 	if err != nil {
@@ -97,39 +94,13 @@ func TestInvocationKey_LPPrefix(t *testing.T) {
 	if gotLP != wantLP {
 		t.Errorf("encoded lp = %d; want %d", gotLP, wantLP)
 	}
-	// Tenant id immediately after the LP.
-	gotTenant := binary.BigEndian.Uint32(k[len("inv/")+LPLen : len("inv/")+LPLen+TenantLen])
-	if gotTenant != TenantDefault {
-		t.Errorf("encoded tenant = %d; want %d", gotTenant, TenantDefault)
-	}
-	// The 28-byte invocation id (whose leading 4 bytes are the tenant)
-	// follows the LP.
+	// The 24-byte invocation id follows the LP.
 	decoded, err := DecodeInvocationID(k[len("inv/")+LPLen:])
 	if err != nil {
 		t.Fatal(err)
 	}
 	if decoded.GetPartitionKey() != 0x123 {
 		t.Errorf("decoded pk = 0x%X; want 0x123", decoded.GetPartitionKey())
-	}
-}
-
-func TestInvocationKey_TenantIsolation(t *testing.T) {
-	// Same id, distinct tenant — must produce distinct keys (no aliasing
-	// across tenants on the same LP). Load-bearing invariant for the
-	// value-encryption layer in PR 4 and for the per-tenant data
-	// isolation the multi-tenancy refactor is built on.
-	idA := &enginev1.InvocationId{TenantId: 1, PartitionKey: 0x42, Uuid: []byte("0123456789abcdef")}
-	idB := &enginev1.InvocationId{TenantId: 2, PartitionKey: 0x42, Uuid: []byte("0123456789abcdef")}
-	kA, _ := InvocationKey(idA)
-	kB, _ := InvocationKey(idB)
-	if bytes.Equal(kA, kB) {
-		t.Fatalf("tenant 1 and tenant 2 produced the same key for the same id: %x", kA)
-	}
-	// Both keys live under the LP-wide prefix (LP-transfer captures all
-	// tenants on the LP with a single scan).
-	pfx := InvocationLPPrefix(LPFromPartitionKey(0x42))
-	if !bytes.HasPrefix(kA, pfx) || !bytes.HasPrefix(kB, pfx) {
-		t.Errorf("tenant-prefixed keys must still live under the LP-wide prefix")
 	}
 }
 
@@ -161,19 +132,17 @@ func TestInvocationLPPrefix_ScanBoundary(t *testing.T) {
 	}
 }
 
-func TestInvocationLPPrefix_CapturesAllTenantsOnLP(t *testing.T) {
+func TestInvocationLPPrefix_CapturesAllKeysOnLP(t *testing.T) {
 	// The LP-transfer scan range `[ns/<lp>, ns/<lp+1>)` must capture
-	// every tenant's rows on that LP — the LP-prefix builders return
-	// `<ns>/<lp:4>` (not `<ns>/<lp:4><tenant:4>`) precisely so the
-	// transfer scan is tenant-agnostic.
-	id := testID(t, 0x42, "0123456789abcdef")
+	// every row on that LP — the LP-prefix builders return `<ns>/<lp:4>`
+	// so the transfer scan is a single bounded range.
 	lp := LPFromPartitionKey(0x42)
 	pfx := InvocationLPPrefix(lp)
-	for _, tenant := range []uint32{0, 1, 42, ^uint32(0)} {
-		id.TenantId = tenant
+	for _, uuid := range []string{"0123456789abcdef", "ffffffffffffffff", "aaaaaaaaaaaaaaaa"} {
+		id := testID(t, 0x42, uuid)
 		k, _ := InvocationKey(id)
 		if !bytes.HasPrefix(k, pfx) {
-			t.Errorf("tenant=%d key not under InvocationLPPrefix(%d): %x", tenant, lp, k)
+			t.Errorf("uuid=%q key not under InvocationLPPrefix(%d): %x", uuid, lp, k)
 		}
 	}
 }
@@ -186,16 +155,6 @@ func TestJournalKeyOrdering(t *testing.T) {
 	k2, _ := JournalKey(id, 256)
 	if bytes.Compare(k0, k1) >= 0 || bytes.Compare(k1, k2) >= 0 {
 		t.Errorf("journal keys not ordered: %x %x %x", k0, k1, k2)
-	}
-}
-
-func TestJournalKey_TenantIsolation(t *testing.T) {
-	idA := &enginev1.InvocationId{TenantId: 1, PartitionKey: 1, Uuid: []byte("0123456789abcdef")}
-	idB := &enginev1.InvocationId{TenantId: 2, PartitionKey: 1, Uuid: []byte("0123456789abcdef")}
-	kA, _ := JournalKey(idA, 0)
-	kB, _ := JournalKey(idB, 0)
-	if bytes.Equal(kA, kB) {
-		t.Fatalf("distinct tenants must produce distinct journal keys")
 	}
 }
 
@@ -263,8 +222,7 @@ func TestTimerKeyRoundtrip(t *testing.T) {
 
 func TestTimerLPKey_RoundtripAndPerLPScan(t *testing.T) {
 	lp := uint32(42)
-	const tenant uint32 = 7
-	id := &enginev1.InvocationId{TenantId: tenant, PartitionKey: 0x100, Uuid: []byte("abcdefghijklmnop")}
+	id := &enginev1.InvocationId{PartitionKey: 0x100, Uuid: []byte("abcdefghijklmnop")}
 	k, err := TimerLPKey(lp, 9999, id)
 	if err != nil {
 		t.Fatal(err)
@@ -272,15 +230,14 @@ func TestTimerLPKey_RoundtripAndPerLPScan(t *testing.T) {
 	if !bytes.HasPrefix(k, TimerLPPrefix()) {
 		t.Errorf("missing timer_lp/ prefix: %q", k)
 	}
-	gotLP, gotTenant, gotFire, gotID, err := DecodeTimerLPKey(k)
+	gotLP, gotFire, gotID, err := DecodeTimerLPKey(k)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotLP != lp || gotTenant != tenant || gotFire != 9999 || gotID.GetPartitionKey() != 0x100 {
-		t.Errorf("roundtrip mismatch: lp=%d tenant=%d fire=%d pk=0x%X", gotLP, gotTenant, gotFire, gotID.GetPartitionKey())
+	if gotLP != lp || gotFire != 9999 || gotID.GetPartitionKey() != 0x100 {
+		t.Errorf("roundtrip mismatch: lp=%d fire=%d pk=0x%X", gotLP, gotFire, gotID.GetPartitionKey())
 	}
-	// Per-LP prefix isolates rows across LPs and captures all tenants on
-	// the LP (LP-transfer scan invariant).
+	// Per-LP prefix isolates rows across LPs (LP-transfer scan invariant).
 	pfx := TimerLPPrefixForLP(lp)
 	if !bytes.HasPrefix(k, pfx) {
 		t.Errorf("key not under per-LP prefix")
@@ -288,13 +245,6 @@ func TestTimerLPKey_RoundtripAndPerLPScan(t *testing.T) {
 	other := TimerLPPrefixForLP(lp + 1)
 	if bytes.HasPrefix(k, other) {
 		t.Errorf("key falls under neighbor LP prefix")
-	}
-	// Distinct tenant under the same LP+id+fire must yield a distinct
-	// key (no cross-tenant aliasing).
-	id2 := &enginev1.InvocationId{TenantId: tenant + 1, PartitionKey: 0x100, Uuid: []byte("abcdefghijklmnop")}
-	k2, _ := TimerLPKey(lp, 9999, id2)
-	if bytes.Equal(k, k2) {
-		t.Fatalf("distinct tenants must produce distinct timer_lp keys")
 	}
 }
 
@@ -306,15 +256,12 @@ func TestTimerIdxKey_RoundtripAndPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gotTenant, gotID, fireAt, err := DecodeTimerIdxKey(k)
+	gotID, fireAt, err := DecodeTimerIdxKey(k)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if fireAt != 1234567 {
 		t.Errorf("fireAt = %d; want 1234567", fireAt)
-	}
-	if gotTenant != TenantDefault {
-		t.Errorf("tenant roundtrip: got %d, want %d", gotTenant, TenantDefault)
 	}
 	if gotID.GetPartitionKey() != 0x42 || !bytes.Equal(gotID.GetUuid(), idA.GetUuid()) {
 		t.Errorf("id roundtrip failed: %+v", gotID)
@@ -330,14 +277,6 @@ func TestTimerIdxKey_RoundtripAndPrefix(t *testing.T) {
 	kB, _ := TimerIdxKey(idB, 999)
 	if bytes.HasPrefix(kB, pa) {
 		t.Errorf("idB key falls within idA prefix scan range")
-	}
-	// Distinct tenants must produce disjoint scan ranges for the same id.
-	idAt1 := &enginev1.InvocationId{TenantId: 1, PartitionKey: 0x42, Uuid: idA.GetUuid()}
-	idAt2 := &enginev1.InvocationId{TenantId: 2, PartitionKey: 0x42, Uuid: idA.GetUuid()}
-	tenantAPfx, _ := TimerIdxPrefixForID(idAt1)
-	tenantBPfx, _ := TimerIdxPrefixForID(idAt2)
-	if bytes.Equal(tenantAPfx, tenantBPfx) {
-		t.Fatalf("distinct tenants must produce distinct timer_idx prefixes")
 	}
 }
 
@@ -386,7 +325,7 @@ func TestDedupKeys(t *testing.T) {
 	if bytes.Equal(selfA0, selfA1) {
 		t.Errorf("dedup self keys at different seq must differ")
 	}
-	arb := DedupArbitraryKey(7, TenantDefault, "client-x", 0)
+	arb := DedupArbitraryKey(7, "client-x", 0)
 	if !bytes.HasPrefix(arb, []byte("dedup/arbitrary/")) {
 		t.Errorf("bad arbitrary prefix: %q", arb)
 	}
@@ -395,30 +334,20 @@ func TestDedupKeys(t *testing.T) {
 	if !bytes.HasPrefix(arb, wantLPPrefix) {
 		t.Errorf("arbitrary key %q missing 4-byte BE LP=7 prefix", arb)
 	}
-	arb1 := DedupArbitraryKey(7, TenantDefault, "client-x", 1)
+	arb1 := DedupArbitraryKey(7, "client-x", 1)
 	if bytes.Equal(arb, arb1) {
 		t.Errorf("dedup arbitrary keys at different seq must differ")
 	}
 	// Same (producer, seq) under a different LP is a distinct key — this
 	// is the load-bearing invariant for the LP-prefix refactor (PR 4).
-	arbLP8 := DedupArbitraryKey(8, TenantDefault, "client-x", 0)
+	arbLP8 := DedupArbitraryKey(8, "client-x", 0)
 	if bytes.Equal(arb, arbLP8) {
 		t.Errorf("arbitrary keys at different lp must differ")
 	}
-	// Same (lp, producer, seq) under different tenants is also distinct
-	// (per-tenant prefix isolates dedup state — load-bearing for the
-	// multi-tenancy LP-transfer flip).
-	arbTenantB := DedupArbitraryKey(7, 1, "client-x", 0)
-	if bytes.Equal(arb, arbTenantB) {
-		t.Errorf("arbitrary keys at different tenants must differ")
-	}
-	// The per-LP scan prefix is dedup/arbitrary/<lp:4> (tenant-agnostic).
+	// The per-LP scan prefix is dedup/arbitrary/<lp:4>.
 	lpPrefix := DedupArbitraryLPPrefix(7)
 	if !bytes.HasPrefix(arb, lpPrefix) {
 		t.Errorf("arb key %q not under DedupArbitraryLPPrefix(7) %q", arb, lpPrefix)
-	}
-	if !bytes.HasPrefix(arbTenantB, lpPrefix) {
-		t.Errorf("LP-7 tenant-1 arb key must still be under LP-7 prefix")
 	}
 	if bytes.HasPrefix(arbLP8, lpPrefix) {
 		t.Errorf("LP-8 key must not be under LP-7 prefix")
@@ -436,11 +365,11 @@ func TestNamespacesDistinct(t *testing.T) {
 	invK, _ := InvocationKey(id)
 	jouK, _ := JournalKey(id, 0)
 	timK, _ := TimerKey(0, id)
-	stateK := StateKey(lp, TenantDefault, "Svc", "obj", "key")
+	stateK := StateKey(lp, "Svc", "obj", "key")
 	outK := OutboxKey(1)
-	awkK := AwakeableKey(lp, TenantDefault, "awk_ABCDEFGHIJKLMNOPQRSTUVWXYZ0")
-	leaseK := KeyLeaseKey(lp, TenantDefault, "Svc", "obj")
-	idemK := IdempotencyKey(lp, TenantDefault, "Svc", "h", "obj", "ikey")
+	awkK := AwakeableKey(lp, "awk_ABCDEFGHIJKLMNOPQRSTUV")
+	leaseK := KeyLeaseKey(lp, "Svc", "obj")
+	idemK := IdempotencyKey(lp, "Svc", "h", "obj", "ikey")
 	timLP, _ := TimerLPKey(lp, 0, id)
 	all := [][]byte{invK, jouK, timK, stateK, outK, awkK, leaseK, idemK, timLP}
 	for i := range all {
@@ -455,8 +384,8 @@ func TestNamespacesDistinct(t *testing.T) {
 
 func TestStateKey_RoundtripAndPrefix(t *testing.T) {
 	const lp uint32 = 13
-	k := StateKey(lp, TenantDefault, "Greeter", "alice", "counter")
-	pfx := StatePrefixForObject(lp, TenantDefault, "Greeter", "alice")
+	k := StateKey(lp, "Greeter", "alice", "counter")
+	pfx := StatePrefixForObject(lp, "Greeter", "alice")
 	if !bytes.HasPrefix(k, pfx) {
 		t.Errorf("key %q not under prefix %q", k, pfx)
 	}
@@ -464,42 +393,33 @@ func TestStateKey_RoundtripAndPrefix(t *testing.T) {
 	if got := string(k[len(pfx):]); got != "counter" {
 		t.Errorf("state key suffix = %q; want %q", got, "counter")
 	}
-	// Prefix shape: "state/" + 4-byte LP + 4-byte tenant + "Greeter/alice/".
+	// Prefix shape: "state/" + 4-byte LP + "Greeter/alice/".
 	if !bytes.HasPrefix(pfx, StatePrefix()) {
 		t.Errorf("prefix missing state/ namespace")
 	}
 	if gotLP := binary.BigEndian.Uint32(pfx[len(StatePrefix()) : len(StatePrefix())+LPLen]); gotLP != lp {
 		t.Errorf("encoded LP = %d; want %d", gotLP, lp)
 	}
-	if gotTenant := binary.BigEndian.Uint32(pfx[len(StatePrefix())+LPLen : len(StatePrefix())+LPLen+TenantLen]); gotTenant != TenantDefault {
-		t.Errorf("encoded tenant = %d; want %d", gotTenant, TenantDefault)
-	}
 	// Unkeyed services: object_key = "".
-	uk := StateKey(lp, TenantDefault, "Unkeyed", "", "config")
-	upfx := StatePrefixForObject(lp, TenantDefault, "Unkeyed", "")
+	uk := StateKey(lp, "Unkeyed", "", "config")
+	upfx := StatePrefixForObject(lp, "Unkeyed", "")
 	if !bytes.HasPrefix(uk, upfx) {
 		t.Errorf("unkeyed key %q not under prefix %q", uk, upfx)
-	}
-	// Same (lp, service, obj, state_key) under different tenants must
-	// produce distinct keys — multi-tenant isolation.
-	kB := StateKey(lp, 1, "Greeter", "alice", "counter")
-	if bytes.Equal(k, kB) {
-		t.Fatalf("distinct tenants must produce distinct state keys")
 	}
 }
 
 func TestStateKey_PerObjectScanIsolation(t *testing.T) {
-	// Within one logical partition + one tenant, a per-object scan must
-	// isolate that object's rows from other objects in the same service.
+	// Within one logical partition, a per-object scan must isolate that
+	// object's rows from other objects in the same service.
 	const lp uint32 = 99
 	keys := [][]byte{
-		StateKey(lp, TenantDefault, "Svc", "alice", "balance"),
-		StateKey(lp, TenantDefault, "Svc", "alice", "name"),
-		StateKey(lp, TenantDefault, "Svc", "bob", "balance"),
-		StateKey(lp, TenantDefault, "Svc", "bob", "name"),
-		StateKey(lp, TenantDefault, "Svc", "carol", "name"),
+		StateKey(lp, "Svc", "alice", "balance"),
+		StateKey(lp, "Svc", "alice", "name"),
+		StateKey(lp, "Svc", "bob", "balance"),
+		StateKey(lp, "Svc", "bob", "name"),
+		StateKey(lp, "Svc", "carol", "name"),
 	}
-	aliceLo := StatePrefixForObject(lp, TenantDefault, "Svc", "alice")
+	aliceLo := StatePrefixForObject(lp, "Svc", "alice")
 	aliceHi := PrefixUpperBound(aliceLo)
 	for i, k := range keys {
 		inRange := bytes.Compare(k, aliceLo) >= 0 && bytes.Compare(k, aliceHi) < 0
@@ -551,81 +471,64 @@ func TestOutboxKey_Roundtrip(t *testing.T) {
 
 func TestAwakeableKey_RoundtripAndPrefix(t *testing.T) {
 	const lp uint32 = 21
-	id := "awk_ABCDEFGHIJKLMNOPQRSTUVWXYZ0" // 31 chars, all valid
+	id := "awk_ABCDEFGHIJKLMNOPQRSTUV" // 26 chars, all valid
 	if err := ValidateAwakeableID(id); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	k := AwakeableKey(lp, TenantDefault, id)
+	k := AwakeableKey(lp, id)
 	if !bytes.HasPrefix(k, AwakeablePrefix()) {
 		t.Errorf("bad prefix: %q", k)
 	}
-	if len(k) != len("awakeable/")+LPLen+TenantLen+awakeableIDLen {
-		t.Errorf("len=%d want %d", len(k), len("awakeable/")+LPLen+TenantLen+awakeableIDLen)
+	if len(k) != len("awakeable/")+LPLen+awakeableIDLen {
+		t.Errorf("len=%d want %d", len(k), len("awakeable/")+LPLen+awakeableIDLen)
 	}
-	// LP is BE-encoded right after namespace; tenant immediately after.
+	// LP is BE-encoded right after namespace.
 	if gotLP := binary.BigEndian.Uint32(k[len("awakeable/") : len("awakeable/")+LPLen]); gotLP != lp {
 		t.Errorf("encoded lp = %d; want %d", gotLP, lp)
-	}
-	if gotTenant := binary.BigEndian.Uint32(k[len("awakeable/")+LPLen : len("awakeable/")+LPLen+TenantLen]); gotTenant != TenantDefault {
-		t.Errorf("encoded tenant = %d; want %d", gotTenant, TenantDefault)
-	}
-	// Distinct tenants must produce distinct awakeable keys.
-	kB := AwakeableKey(lp, 1, id)
-	if bytes.Equal(k, kB) {
-		t.Fatalf("distinct tenants must produce distinct awakeable keys")
 	}
 }
 
 func TestIdempotencyKey_DeterministicAndSensitive(t *testing.T) {
 	const lp uint32 = 5
 	// Same tuple → same key.
-	a := IdempotencyKey(lp, TenantDefault, "Counter", "incr", "user-1", "req-7")
-	b := IdempotencyKey(lp, TenantDefault, "Counter", "incr", "user-1", "req-7")
+	a := IdempotencyKey(lp, "Counter", "incr", "user-1", "req-7")
+	b := IdempotencyKey(lp, "Counter", "incr", "user-1", "req-7")
 	if !bytes.Equal(a, b) {
 		t.Fatalf("non-deterministic key: %x vs %x", a, b)
 	}
-	// Length: prefix + LP + tenant + 32-byte sha256.
-	if len(a) != len("idempotency/")+LPLen+TenantLen+32 {
-		t.Errorf("len = %d, want %d", len(a), len("idempotency/")+LPLen+TenantLen+32)
+	// Length: prefix + LP + 32-byte sha256.
+	if len(a) != len("idempotency/")+LPLen+32 {
+		t.Errorf("len = %d, want %d", len(a), len("idempotency/")+LPLen+32)
 	}
 	// Adjacent components must not alias. ("ab","c") vs ("a","bc"). Same lp
 	// for both so the hash difference isn't masked by an lp difference.
-	k1 := IdempotencyKey(lp, TenantDefault, "ab", "c", "", "k")
-	k2 := IdempotencyKey(lp, TenantDefault, "a", "bc", "", "k")
+	k1 := IdempotencyKey(lp, "ab", "c", "", "k")
+	k2 := IdempotencyKey(lp, "a", "bc", "", "k")
 	if bytes.Equal(k1, k2) {
 		t.Errorf("adjacent-field aliasing: %x", k1)
 	}
 	// Distinct idempotency_keys differ.
 	if bytes.Equal(
-		IdempotencyKey(lp, TenantDefault, "S", "h", "o", "k1"),
-		IdempotencyKey(lp, TenantDefault, "S", "h", "o", "k2"),
+		IdempotencyKey(lp, "S", "h", "o", "k1"),
+		IdempotencyKey(lp, "S", "h", "o", "k2"),
 	) {
 		t.Errorf("distinct idempotency keys collided")
 	}
 	// Distinct LPs differ (same tuple, different LP → different key).
 	if bytes.Equal(
-		IdempotencyKey(0, TenantDefault, "S", "h", "o", "k"),
-		IdempotencyKey(1, TenantDefault, "S", "h", "o", "k"),
+		IdempotencyKey(0, "S", "h", "o", "k"),
+		IdempotencyKey(1, "S", "h", "o", "k"),
 	) {
 		t.Errorf("different LPs produced the same key")
-	}
-	// Distinct tenants differ (same tuple, different tenant → different key).
-	if bytes.Equal(
-		IdempotencyKey(lp, 1, "S", "h", "o", "k"),
-		IdempotencyKey(lp, 2, "S", "h", "o", "k"),
-	) {
-		t.Errorf("different tenants produced the same key")
 	}
 }
 
 func TestAwakeableOwnerPartitionKey_Roundtrip(t *testing.T) {
 	for _, pk := range []uint64{0, 1, 42, 1 << 31, 1<<63 + 17, ^uint64(0)} {
-		const tenant uint32 = 7
-		var body [20]byte
-		binary.BigEndian.PutUint32(body[:4], tenant)
-		binary.BigEndian.PutUint64(body[4:12], pk)
+		var body [16]byte
+		binary.BigEndian.PutUint64(body[:8], pk)
 		// Last 8 bytes are random in production; the decoder ignores them.
-		body[12], body[19] = 0xDE, 0xAD
+		body[8], body[15] = 0xDE, 0xAD
 		id := "awk_" + base64.RawURLEncoding.EncodeToString(body[:])
 		got, err := AwakeableOwnerPartitionKey(id)
 		if err != nil {
@@ -633,13 +536,6 @@ func TestAwakeableOwnerPartitionKey_Roundtrip(t *testing.T) {
 		}
 		if got != pk {
 			t.Errorf("pk roundtrip: got %d, want %d", got, pk)
-		}
-		gotTenant, err := AwakeableOwnerTenant(id)
-		if err != nil {
-			t.Fatalf("pk=%d: tenant decode: %v", pk, err)
-		}
-		if gotTenant != tenant {
-			t.Errorf("tenant roundtrip: got %d, want %d", gotTenant, tenant)
 		}
 	}
 }
@@ -663,15 +559,15 @@ func TestValidateAwakeableID(t *testing.T) {
 		id    string
 		valid bool
 	}{
-		{"awk_ABCDEFGHIJKLMNOPQRSTUVWXYZ0", true},
-		{"awk_0123456789_-abcdefghijklmno", true},
-		{"awk_aaaaaaaaaaaaaaaaaaaaaaaaaaa", true},
+		{"awk_ABCDEFGHIJKLMNOPQRSTUV", true},
+		{"awk_0123456789_-abcdefghij", true},
+		{"awk_aaaaaaaaaaaaaaaaaaaaaa", true},
 		{"", false},
 		{"awk_short", false},
-		{"bad_ABCDEFGHIJKLMNOPQRSTUVWXYZ0", false},
-		{"awk_ABCDEFGHIJKLMNOPQRSTUVWXYZ/", false}, // '/' is illegal
-		{"awk_ABCDEFGHIJKLMNOPQRSTUVWXYZ!", false},
-		{"awk_ABCDEFGHIJKLMNOPQRSTUVWXYZ0 ", false}, // trailing space → wrong len
+		{"bad_ABCDEFGHIJKLMNOPQRSTUV", false},
+		{"awk_ABCDEFGHIJKLMNOPQRSTU/", false}, // '/' is illegal
+		{"awk_ABCDEFGHIJKLMNOPQRSTU!", false},
+		{"awk_ABCDEFGHIJKLMNOPQRSTUV ", false}, // trailing space → wrong len
 	}
 	for _, c := range cases {
 		err := ValidateAwakeableID(c.id)

@@ -222,10 +222,10 @@ func (m *engineMachine) init(t *rapid.T) {
 	}
 	m.idemKs = []string{"", "req-0", "req-1", "req-2"}
 	m.awkPool = []string{
-		"awk_aaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"awk_bbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		"awk_ccccccccccccccccccccccccccc",
-		"awk_ddddddddddddddddddddddddddd",
+		"awk_aaaaaaaaaaaaaaaaaaaaaa",
+		"awk_bbbbbbbbbbbbbbbbbbbbbb",
+		"awk_cccccccccccccccccccccc",
+		"awk_dddddddddddddddddddddd",
 	}
 	m.sigPool = []string{"sig-0", "sig-1", "sig-2", "sig-3"}
 	m.promisePool = []string{"prom-0", "prom-1"}
@@ -915,7 +915,7 @@ func (m *engineMachine) Check(t *rapid.T) {
 		})
 		klt := tables.KeyLeaseTable{S: m.snaps[m.sIdx(shard)].Store()}
 		lp := keys.LPFromPartitionKey(routing.PartitionKey(lk.service, lk.objectKey))
-		got, err := klt.Get(lp, keys.TenantDefault, lk.service, lk.objectKey)
+		got, err := klt.Get(lp, lk.service, lk.objectKey)
 		if err != nil {
 			t.Fatalf("KeyLeaseTable.Get shard=%d %+v: %v", shard, lk, err)
 		}
@@ -980,7 +980,7 @@ func (m *engineMachine) Check(t *rapid.T) {
 			return nil
 		})
 		secondary := map[timerRow]struct{}{}
-		_ = tt.ScanAllIndex(func(_ uint32, id *enginev1.InvocationId, fireAtMs uint64) error {
+		_ = tt.ScanAllIndex(func(id *enginev1.InvocationId, fireAtMs uint64) error {
 			secondary[timerRow{idHex: idHex(id), fireAtMs: fireAtMs}] = struct{}{}
 			return nil
 		})
@@ -1057,7 +1057,7 @@ func (m *engineMachine) Check(t *rapid.T) {
 			ServiceName: lk.service, ObjectKey: lk.objectKey,
 		})
 		lp := keys.LPFromPartitionKey(routing.PartitionKey(lk.service, lk.objectKey))
-		got, err := (tables.WorkflowRunTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(lp, keys.TenantDefault, lk.service, lk.objectKey)
+		got, err := (tables.WorkflowRunTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(lp, lk.service, lk.objectKey)
 		if err != nil {
 			t.Fatalf("WorkflowRunTable.Get shard=%d %+v: %v", shard, lk, err)
 		}
@@ -1085,7 +1085,7 @@ func (m *engineMachine) Check(t *rapid.T) {
 		target := &enginev1.InvocationTarget{ServiceName: lk.service, ObjectKey: lk.objectKey}
 		lp := keys.LPFromPartitionKey(routing.PartitionKey(lk.service, lk.objectKey))
 		got := map[string][]byte{}
-		if err := (tables.StateTable{S: m.snaps[m.sIdx(shard)].Store()}).ScanObject(lp, keys.TenantDefault, target, func(k string, v []byte) error {
+		if err := (tables.StateTable{S: m.snaps[m.sIdx(shard)].Store()}).ScanObject(lp, target, func(k string, v []byte) error {
 			got[k] = append([]byte(nil), v...)
 			return nil
 		}); err != nil {

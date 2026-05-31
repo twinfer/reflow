@@ -23,9 +23,9 @@ type WorkflowRunTable struct{ S storage.Reader }
 
 // Get returns the prior InvocationId for the (service, workflow_key)
 // pair. Returns (nil, nil) when no run claimed this key.
-func (t WorkflowRunTable) Get(lp, tenant uint32, service, workflowKey string) (*enginev1.InvocationId, error) {
+func (t WorkflowRunTable) Get(lp uint32, service, workflowKey string) (*enginev1.InvocationId, error) {
 	var id enginev1.InvocationId
-	err := getProto(t.S, keys.WorkflowRunKey(lp, tenant, service, workflowKey), &id)
+	err := getProto(t.S, keys.WorkflowRunKey(lp, service, workflowKey), &id)
 	if errors.Is(err, storage.ErrNotFound) {
 		return nil, nil
 	}
@@ -37,12 +37,12 @@ func (t WorkflowRunTable) Get(lp, tenant uint32, service, workflowKey string) (*
 
 // Put records the InvocationId for (service, workflow_key). Called from
 // the apply path's onInvoke when a fresh workflow run is accepted.
-func (t WorkflowRunTable) Put(b storage.Batch, lp, tenant uint32, service, workflowKey string, id *enginev1.InvocationId) error {
-	return putProto(b, keys.WorkflowRunKey(lp, tenant, service, workflowKey), id)
+func (t WorkflowRunTable) Put(b storage.Batch, lp uint32, service, workflowKey string, id *enginev1.InvocationId) error {
+	return putProto(b, keys.WorkflowRunKey(lp, service, workflowKey), id)
 }
 
 // Delete removes the (service, workflow_key) → id mapping. Called by the
 // workflow retention reaper after a Completed run ages past its TTL.
-func (t WorkflowRunTable) Delete(b storage.Batch, lp, tenant uint32, service, workflowKey string) error {
-	return b.Delete(keys.WorkflowRunKey(lp, tenant, service, workflowKey))
+func (t WorkflowRunTable) Delete(b storage.Batch, lp uint32, service, workflowKey string) error {
+	return b.Delete(keys.WorkflowRunKey(lp, service, workflowKey))
 }

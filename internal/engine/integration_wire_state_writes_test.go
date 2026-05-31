@@ -197,7 +197,7 @@ func TestWireDispatch_HTTP2_StateWrites(t *testing.T) {
 	st := tables.StateTable{S: store}
 	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
 	count := 0
-	if err := st.ScanObject(lp, keys.TenantDefault, target, func(_ string, _ []byte) error {
+	if err := st.ScanObject(lp, target, func(_ string, _ []byte) error {
 		count++
 		return nil
 	}); err != nil {
@@ -238,7 +238,7 @@ func TestWireDispatch_HTTP2_StateWrites(t *testing.T) {
 	}
 	_ = awaitCompleted(t, host, 1, id2, 10*time.Second)
 
-	value, present, err := st.Get(lp, keys.TenantDefault, target, "counter")
+	value, present, err := st.Get(lp, target, "counter")
 	if err != nil {
 		t.Fatalf("StateTable.Get: %v", err)
 	}

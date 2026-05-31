@@ -22,15 +22,15 @@ type PromiseAwaiterTable struct{ S storage.Reader }
 // entry_index appears in both the key (so resolution can prefix-scan to
 // find all slots) and the value (so the apply arm has the journal slot
 // without re-parsing the key).
-func (t PromiseAwaiterTable) PutForSlot(b storage.Batch, lp, tenant uint32, service, workflowKey, name string, entry *enginev1.PromiseAwaiter) error {
-	return putProto(b, keys.PromiseAwaiterKey(lp, tenant, service, workflowKey, name, entry.GetEntryIndex()), entry)
+func (t PromiseAwaiterTable) PutForSlot(b storage.Batch, lp uint32, service, workflowKey, name string, entry *enginev1.PromiseAwaiter) error {
+	return putProto(b, keys.PromiseAwaiterKey(lp, service, workflowKey, name, entry.GetEntryIndex()), entry)
 }
 
 // ScanForName invokes fn for every awaiter row at
 // (service, workflow_key, name) in entry_index order. Returning a non-nil
 // error from fn aborts the scan and is returned.
-func (t PromiseAwaiterTable) ScanForName(lp, tenant uint32, service, workflowKey, name string, fn func(*enginev1.PromiseAwaiter) error) error {
-	prefix := keys.PromiseAwaiterPrefixForName(lp, tenant, service, workflowKey, name)
+func (t PromiseAwaiterTable) ScanForName(lp uint32, service, workflowKey, name string, fn func(*enginev1.PromiseAwaiter) error) error {
+	prefix := keys.PromiseAwaiterPrefixForName(lp, service, workflowKey, name)
 	upper := keys.PrefixUpperBound(prefix)
 	if upper == nil {
 		return nil
@@ -53,14 +53,14 @@ func (t PromiseAwaiterTable) ScanForName(lp, tenant uint32, service, workflowKey
 }
 
 // DeleteForSlot removes the directory row at (svc, key, name, entry_index).
-func (t PromiseAwaiterTable) DeleteForSlot(b storage.Batch, lp, tenant uint32, service, workflowKey, name string, entryIndex uint32) error {
-	return b.Delete(keys.PromiseAwaiterKey(lp, tenant, service, workflowKey, name, entryIndex))
+func (t PromiseAwaiterTable) DeleteForSlot(b storage.Batch, lp uint32, service, workflowKey, name string, entryIndex uint32) error {
+	return b.Delete(keys.PromiseAwaiterKey(lp, service, workflowKey, name, entryIndex))
 }
 
 // DeleteAllForWorkflow range-deletes every awaiter row under
 // (service, workflow_key). Used by the workflow retention reaper.
-func (t PromiseAwaiterTable) DeleteAllForWorkflow(b storage.Batch, lp, tenant uint32, service, workflowKey string) error {
-	prefix := keys.PromiseAwaiterPrefixForWorkflow(lp, tenant, service, workflowKey)
+func (t PromiseAwaiterTable) DeleteAllForWorkflow(b storage.Batch, lp uint32, service, workflowKey string) error {
+	prefix := keys.PromiseAwaiterPrefixForWorkflow(lp, service, workflowKey)
 	upper := keys.PrefixUpperBound(prefix)
 	if upper == nil {
 		return nil

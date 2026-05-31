@@ -101,7 +101,7 @@ func (f *fakeHandlerAwakeable) serveInvoke(t *testing.T, stream *connect.BidiStr
 	if !resolved {
 		// First invocation. Mint the awakeable id, journal it, surface
 		// via SetState, then suspend.
-		id, err := mintAwakeable(sm.GetOwnerTenant(), sm.GetPartitionKey())
+		id, err := mintAwakeable(sm.GetPartitionKey())
 		if err != nil {
 			return err
 		}
@@ -150,12 +150,11 @@ func (f *fakeHandlerAwakeable) serveInvoke(t *testing.T, stream *connect.BidiStr
 
 // mintAwakeable mirrors pkg/handler.mintAwakeableID for the test
 // fixture so we don't have to export the helper out of the public SDK
-// surface. Body layout: [4B tenant][8B owner partition_key][8B random].
-func mintAwakeable(tenant uint32, ownerPartitionKey uint64) (string, error) {
-	var buf [20]byte
-	binary.BigEndian.PutUint32(buf[:4], tenant)
-	binary.BigEndian.PutUint64(buf[4:12], ownerPartitionKey)
-	if _, err := rand.Read(buf[12:]); err != nil {
+// surface. Body layout: [8B owner partition_key][8B random].
+func mintAwakeable(ownerPartitionKey uint64) (string, error) {
+	var buf [16]byte
+	binary.BigEndian.PutUint64(buf[:8], ownerPartitionKey)
+	if _, err := rand.Read(buf[8:]); err != nil {
 		return "", fmt.Errorf("awakeable id rng: %w", err)
 	}
 	return "awk_" + base64.RawURLEncoding.EncodeToString(buf[:]), nil
@@ -240,7 +239,7 @@ func TestWireDispatch_HTTP2_Awakeable(t *testing.T) {
 	var awakeableID string
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		v, present, err := st.Get(lp, keys.TenantDefault, target, "awk_id")
+		v, present, err := st.Get(lp, target, "awk_id")
 		if err == nil && present {
 			awakeableID = string(v)
 			break
@@ -313,8 +312,8 @@ func awakeableOwnerPartitionKey(id string) (uint64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("decode awakeable id: %w", err)
 	}
-	if len(body) != 20 {
-		return 0, fmt.Errorf("awakeable id body len %d; want 20", len(body))
+	if len(body) != 16 {
+		return 0, fmt.Errorf("awakeable id body len %d; want 16", len(body))
 	}
-	return binary.BigEndian.Uint64(body[4:12]), nil
+	return binary.BigEndian.Uint64(body[:8]), nil
 }

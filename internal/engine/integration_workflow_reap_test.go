@@ -113,7 +113,7 @@ func TestReap_PurgesWorkflowStateAndPromise(t *testing.T) {
 	// truth — confirm before reap.
 	store := pr.Snapshotter().Store()
 	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
-	runRow, err := (tables.WorkflowRunTable{S: store}).Get(lp, keys.TenantDefault, target.GetServiceName(), target.GetObjectKey())
+	runRow, err := (tables.WorkflowRunTable{S: store}).Get(lp, target.GetServiceName(), target.GetObjectKey())
 	if err != nil {
 		t.Fatalf("workflow_run pre-reap: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestReap_PurgesWorkflowStateAndPromise(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		store := pr.Snapshotter().Store()
-		runRow, _ := (tables.WorkflowRunTable{S: store}).Get(lp, keys.TenantDefault, target.GetServiceName(), target.GetObjectKey())
+		runRow, _ := (tables.WorkflowRunTable{S: store}).Get(lp, target.GetServiceName(), target.GetObjectKey())
 		invRow, _ := (tables.InvocationTable{S: store}).Get(id)
 		_, invFree := invRow.GetStatus().(*enginev1.InvocationStatus_Free)
 		if runRow == nil && invFree {
@@ -168,11 +168,11 @@ func TestReap_PurgesWorkflowStateAndPromise(t *testing.T) {
 	}
 
 	store = pr.Snapshotter().Store()
-	if pv, _ := (tables.PromiseTable{S: store}).Get(lp, keys.TenantDefault, target.GetServiceName(), target.GetObjectKey(), awaiter.promiseName); pv != nil {
+	if pv, _ := (tables.PromiseTable{S: store}).Get(lp, target.GetServiceName(), target.GetObjectKey(), awaiter.promiseName); pv != nil {
 		t.Errorf("promise row survived reap: %+v", pv)
 	}
 	var awaiters int
-	_ = (tables.PromiseAwaiterTable{S: store}).ScanForName(lp, keys.TenantDefault, target.GetServiceName(), target.GetObjectKey(), awaiter.promiseName, func(*enginev1.PromiseAwaiter) error {
+	_ = (tables.PromiseAwaiterTable{S: store}).ScanForName(lp, target.GetServiceName(), target.GetObjectKey(), awaiter.promiseName, func(*enginev1.PromiseAwaiter) error {
 		awaiters++
 		return nil
 	})

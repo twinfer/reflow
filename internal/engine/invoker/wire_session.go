@@ -9,7 +9,6 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/engine/limits"
-	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -264,11 +263,10 @@ func (s *wireSession) sendStartAndReplay(stream handlerclient.Stream, entries []
 		HandlerName:       s.target.GetHandlerName(),
 		KnownEntries:      uint32(len(frames)),
 		PartitionKey:      s.id.GetPartitionKey(),
-		OwnerTenant:       s.id.GetTenantId(),
 		MaxJournalEntries: limits.EffectiveMaxJournalEntries(s.rec),
 	}
 	start.Kind = s.kind
-	cache, overflowed := preloadEagerState(s.stateTable, keys.TenantDefault, s.target, s.id, s.eagerStateMaxBytes, s.log)
+	cache, overflowed := preloadEagerState(s.stateTable, s.target, s.id, s.eagerStateMaxBytes, s.log)
 	if len(cache) > 0 {
 		stateEntries := make([]*protocolv1.StartMessage_StateEntry, 0, len(cache))
 		for k, v := range cache {

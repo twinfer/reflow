@@ -18,7 +18,6 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/routing"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -137,14 +136,6 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 	id, err := mintInvocationID(target)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("mint invocation id: %w", err))
-	}
-
-	// Tenant scoping: stamp the tenant onto the invocation id so it travels
-	// inside the id everywhere (key placement, journal, cross-shard hops).
-	// The principal attached by the auth middleware maps to the
-	// default-tenant sentinel (0) under mesh-only auth.
-	if p, ok := auth.PrincipalFromContext(ctx); ok {
-		id.TenantId = auth.TenantIDFromPrincipal(p)
 	}
 
 	cmd := &enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{

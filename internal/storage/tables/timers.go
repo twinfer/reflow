@@ -12,18 +12,18 @@ import (
 
 // TimerTable stores durable sleep timers.
 //
-// Primary keys are timer/<8-byte BE fire_at_ms>/<28-byte inv_id>; values
+// Primary keys are timer/<8-byte BE fire_at_ms>/<24-byte inv_id>; values
 // are the 4-byte BE journal index of the originating Sleep entry, so the
 // timer service can refer back to it when constructing the SleepResult. The
 // primary namespace is LP-agnostic — the live timer service drains in
 // fire_at order, which an LP discriminator would fragment.
 //
-// A secondary per-invocation index at timer_idx/<lp:4><28-byte id>/<8-byte BE
+// A secondary per-invocation index at timer_idx/<lp:4><24-byte id>/<8-byte BE
 // fire_at_ms> (empty value) is pair-written on every Insert/Delete so onPurge
 // can find every pending timer for one invocation with a bounded range scan.
 //
 // A second secondary per-LP index at timer_lp/<lp:4><8-byte BE fire_at_ms>/
-// <28-byte id> (value mirrors the primary) is pair-written too so the future
+// <24-byte id> (value mirrors the primary) is pair-written too so the future
 // cross-shard LP transfer protocol can extract every timer in an LP via a
 // single bounded range scan.
 //
@@ -35,10 +35,9 @@ import (
 type TimerTable struct{ S storage.Reader }
 
 // Insert writes a new timer (primary + per-invocation + per-LP indexes).
-// All three keys embed the 28-byte invocation id, whose leading 4 bytes
-// carry the tenant — so tenant identity rides every row without a separate
-// segment. The primary timer/<fire>/<id> namespace stays LP-agnostic so the
-// timer service drains in fire_at order across all tenants.
+// All three keys embed the 24-byte invocation id. The primary
+// timer/<fire>/<id> namespace stays LP-agnostic so the timer service drains
+// in fire_at order.
 func (t TimerTable) Insert(b storage.Batch, fireAtMs uint64, id *enginev1.InvocationId, sleepIdx uint32) error {
 	pk, err := keys.TimerKey(fireAtMs, id)
 	if err != nil {
@@ -86,14 +85,11 @@ func (t TimerTable) Delete(b storage.Batch, fireAtMs uint64, id *enginev1.Invoca
 	return b.Delete(lpk)
 }
 
-// TimerEntry is the decoded form yielded by scans. Tenant mirrors
-// ID.GetTenantId() — the invocation id embedded in every timer key
-// (primary and secondary) carries the tenant, so all scans recover it.
+// TimerEntry is the decoded form yielded by scans.
 type TimerEntry struct {
 	FireAtMs uint64
 	ID       *enginev1.InvocationId
 	SleepIdx uint32
-	Tenant   uint32
 }
 
 // ScanAll iterates every timer in (fire_at, id) order. Used on leader gain to
@@ -104,10 +100,9 @@ func (t TimerTable) ScanAll(fn func(TimerEntry) error) error {
 }
 
 // ScanAllIndex iterates every per-invocation secondary-index row in the
-// partition. Yields (tenant, id, fire_at_ms) tuples in encoded
-// (lp, tenant, id, fire_at_ms) order. Used by tests to assert the
-// primary↔secondary invariant.
-func (t TimerTable) ScanAllIndex(fn func(tenant uint32, id *enginev1.InvocationId, fireAtMs uint64) error) error {
+// partition. Yields (id, fire_at_ms) tuples in encoded (lp, id, fire_at_ms)
+// order. Used by tests to assert the primary↔secondary invariant.
+func (t TimerTable) ScanAllIndex(fn func(id *enginev1.InvocationId, fireAtMs uint64) error) error {
 	lower := keys.TimerIdxPrefix()
 	upper := keys.PrefixUpperBound(lower)
 	iter, err := t.S.NewIter(lower, upper)
@@ -116,11 +111,11 @@ func (t TimerTable) ScanAllIndex(fn func(tenant uint32, id *enginev1.InvocationI
 	}
 	defer iter.Close()
 	for ok := iter.First(); ok; ok = iter.Next() {
-		tenant, id, fireAt, err := keys.DecodeTimerIdxKey(iter.Key())
+		id, fireAt, err := keys.DecodeTimerIdxKey(iter.Key())
 		if err != nil {
 			return err
 		}
-		if err := fn(tenant, id, fireAt); err != nil {
+		if err := fn(id, fireAt); err != nil {
 			return err
 		}
 	}
@@ -143,7 +138,7 @@ func (t TimerTable) ScanByInvocation(id *enginev1.InvocationId, fn func(fireAtMs
 	}
 	defer iter.Close()
 	for ok := iter.First(); ok; ok = iter.Next() {
-		_, _, fireAt, err := keys.DecodeTimerIdxKey(iter.Key())
+		_, fireAt, err := keys.DecodeTimerIdxKey(iter.Key())
 		if err != nil {
 			return err
 		}
@@ -155,10 +150,8 @@ func (t TimerTable) ScanByInvocation(id *enginev1.InvocationId, fn func(fireAtMs
 }
 
 // ScanLP iterates every timer in one logical partition in (fire_at, id)
-// order via the per-LP secondary index. Captures EVERY tenant on the LP
-// (the LP-wide scan range covers all per-tenant subranges); the per-row
-// tenant id is surfaced via TimerEntry.Tenant. Used by the future
-// cross-shard LP transfer protocol.
+// order via the per-LP secondary index. Used by the cross-shard LP transfer
+// protocol.
 func (t TimerTable) ScanLP(lp uint32, fn func(TimerEntry) error) error {
 	lower := keys.TimerLPPrefixForLP(lp)
 	upper := keys.PrefixUpperBound(lower)
@@ -168,7 +161,7 @@ func (t TimerTable) ScanLP(lp uint32, fn func(TimerEntry) error) error {
 	}
 	defer iter.Close()
 	for ok := iter.First(); ok; ok = iter.Next() {
-		_, tenant, fireAt, id, err := keys.DecodeTimerLPKey(iter.Key())
+		_, fireAt, id, err := keys.DecodeTimerLPKey(iter.Key())
 		if err != nil {
 			return err
 		}
@@ -177,7 +170,7 @@ func (t TimerTable) ScanLP(lp uint32, fn func(TimerEntry) error) error {
 			return errors.New("timer_lp value has wrong length")
 		}
 		sleepIdx := binary.BigEndian.Uint32(val)
-		if err := fn(TimerEntry{FireAtMs: fireAt, ID: id, SleepIdx: sleepIdx, Tenant: tenant}); err != nil {
+		if err := fn(TimerEntry{FireAtMs: fireAt, ID: id, SleepIdx: sleepIdx}); err != nil {
 			return err
 		}
 	}
@@ -204,7 +197,7 @@ func (t TimerTable) scanRange(lower, upper []byte, fn func(TimerEntry) error) er
 			return errors.New("timer value has wrong length")
 		}
 		sleepIdx := binary.BigEndian.Uint32(val)
-		if err := fn(TimerEntry{FireAtMs: fireAt, ID: id, SleepIdx: sleepIdx, Tenant: id.GetTenantId()}); err != nil {
+		if err := fn(TimerEntry{FireAtMs: fireAt, ID: id, SleepIdx: sleepIdx}); err != nil {
 			return err
 		}
 	}

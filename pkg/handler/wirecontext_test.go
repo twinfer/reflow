@@ -1351,8 +1351,8 @@ func TestWireContext_Awakeable_FreshMintsAndSuspends(t *testing.T) {
 	if got := id[:4]; got != "awk_" {
 		t.Errorf("id prefix = %q; want awk_", got)
 	}
-	if len(id) != 31 {
-		t.Errorf("id len = %d; want 31 (awk_ + 27 base64url)", len(id))
+	if len(id) != 26 {
+		t.Errorf("id len = %d; want 26 (awk_ + 22 base64url)", len(id))
 	}
 	if _, err := fut.Result(); !errors.Is(err, ErrSuspended) {
 		t.Errorf("Awakeable future.Result err = %v; want ErrSuspended", err)
@@ -1383,14 +1383,14 @@ func TestWireContext_Awakeable_ReplayHitWithSignal(t *testing.T) {
 	codec := wire.DefaultCodec()
 	cmdPayload, err := codec.Marshal(&protocolv1.AwakeableCommandMessage{
 		ResultCompletionId: 2,
-		AwakeableId:        "awk_replayid12345678901234567",
+		AwakeableId:        "awk_replayid1234567890abcd",
 	})
 	if err != nil {
 		t.Fatalf("marshal AwakeableCommandMessage: %v", err)
 	}
 	signalPayload, err := codec.Marshal(&protocolv1.SignalNotificationMessage{
 		SignalId: &protocolv1.SignalNotificationMessage_Name{
-			Name: "awk_replayid12345678901234567",
+			Name: "awk_replayid1234567890abcd",
 		},
 		Result: &protocolv1.SignalNotificationMessage_Value{
 			Value: &protocolv1.Value{Content: []byte("resolved")},
@@ -1405,8 +1405,8 @@ func TestWireContext_Awakeable_ReplayHitWithSignal(t *testing.T) {
 	})
 
 	id, fut := wctx.Awakeable()
-	if id != "awk_replayid12345678901234567" {
-		t.Errorf("Awakeable id = %q; want %q", id, "awk_replayid12345678901234567")
+	if id != "awk_replayid1234567890abcd" {
+		t.Errorf("Awakeable id = %q; want %q", id, "awk_replayid1234567890abcd")
 	}
 	v, err := fut.Result()
 	if err != nil {
@@ -1427,7 +1427,7 @@ func TestWireContext_Awakeable_ReplayHitCmdOnlyStillSuspends(t *testing.T) {
 	codec := wire.DefaultCodec()
 	cmdPayload, err := codec.Marshal(&protocolv1.AwakeableCommandMessage{
 		ResultCompletionId: 2,
-		AwakeableId:        "awk_pending1234567890123456789",
+		AwakeableId:        "awk_pending1234567890abcde",
 	})
 	if err != nil {
 		t.Fatalf("marshal AwakeableCommandMessage: %v", err)
@@ -1437,7 +1437,7 @@ func TestWireContext_Awakeable_ReplayHitCmdOnlyStillSuspends(t *testing.T) {
 	})
 
 	id, fut := wctx.Awakeable()
-	if id != "awk_pending1234567890123456789" {
+	if id != "awk_pending1234567890abcde" {
 		t.Errorf("Awakeable id = %q; want cached id", id)
 	}
 	if _, err := fut.Result(); !errors.Is(err, ErrSuspended) {
@@ -1449,9 +1449,9 @@ func TestWireContext_Awakeable_ReplayHitCmdOnlyStillSuspends(t *testing.T) {
 }
 
 // TestWireContext_Awakeable_IDEmbedsPartitionKey asserts the minted id
-// encodes partitionKey at bytes [4:12] — the contract
+// encodes partitionKey at bytes [0:8] — the contract
 // ingress.ResolveAwakeable depends on for routing. Body layout is
-// [4B tenant][8B owner partition_key][8B random].
+// [8B owner partition_key][8B random].
 func TestWireContext_Awakeable_IDEmbedsPartitionKey(t *testing.T) {
 	wctx, _ := newTestWireContext(t, nil)
 	id, _ := wctx.Awakeable()
@@ -1463,10 +1463,10 @@ func TestWireContext_Awakeable_IDEmbedsPartitionKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode id body: %v", err)
 	}
-	if len(decoded) != 20 {
-		t.Fatalf("decoded len = %d; want 20", len(decoded))
+	if len(decoded) != 16 {
+		t.Fatalf("decoded len = %d; want 16", len(decoded))
 	}
-	got := binary.BigEndian.Uint64(decoded[4:12])
+	got := binary.BigEndian.Uint64(decoded[:8])
 	if got != 7 {
 		t.Errorf("decoded partition_key = %d; want 7 (the fixture's)", got)
 	}

@@ -286,7 +286,7 @@ func (m *engineMachine) checkPromiseInvariants(t *rapid.T) {
 			ServiceName: pk.service, ObjectKey: pk.workflowKey,
 		})
 		lp := keys.LPFromPartitionKey(routing.PartitionKey(pk.service, pk.workflowKey))
-		got, err := (tables.PromiseTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(lp, keys.TenantDefault, pk.service, pk.workflowKey, pk.name)
+		got, err := (tables.PromiseTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(lp, pk.service, pk.workflowKey, pk.name)
 		if err != nil {
 			t.Fatalf("PromiseTable.Get shard=%d %+v: %v", shard, pk, err)
 		}
@@ -321,7 +321,7 @@ func (m *engineMachine) checkPromiseInvariants(t *rapid.T) {
 		})
 		lp := keys.LPFromPartitionKey(routing.PartitionKey(pk.service, pk.workflowKey))
 		var got []*enginev1.PromiseAwaiter
-		if err := (tables.PromiseAwaiterTable{S: m.snaps[m.sIdx(shard)].Store()}).ScanForName(lp, keys.TenantDefault, pk.service, pk.workflowKey, pk.name, func(a *enginev1.PromiseAwaiter) error {
+		if err := (tables.PromiseAwaiterTable{S: m.snaps[m.sIdx(shard)].Store()}).ScanForName(lp, pk.service, pk.workflowKey, pk.name, func(a *enginev1.PromiseAwaiter) error {
 			got = append(got, proto.Clone(a).(*enginev1.PromiseAwaiter))
 			return nil
 		}); err != nil {

@@ -315,7 +315,7 @@ func TestPartition_DedupArbitrary_StagesAndFinishesWithLP(t *testing.T) {
 	// the LPNoLP sentinel-LP non-deletion behavior.
 	p, _, _ := newTestPartition(t)
 	lp := uint32(13)
-	dedupKey := keys.DedupArbitraryKey(lp, keys.TenantDefault, "outbox/p1", 42)
+	dedupKey := keys.DedupArbitraryKey(lp, "outbox/p1", 42)
 	dedupVal := []byte{0xAA, 0xBB, 0xCC}
 
 	// 1. Pre-seed the LP-prefixed dedup row directly (was previously
@@ -374,7 +374,7 @@ func TestPartition_DedupArbitrary_StagesAndFinishesWithLP(t *testing.T) {
 	// 3. The LPNoLP sentinel slot must NOT be touched — Finish only
 	// walks real LP prefixes (PrefixUpperBound(real lp) can never
 	// reach the sentinel).
-	sentinelKey := keys.DedupArbitraryKey(keys.LPNoLP, keys.TenantDefault, "outbox/p1", 99)
+	sentinelKey := keys.DedupArbitraryKey(keys.LPNoLP, "outbox/p1", 99)
 	sb := store.NewBatch()
 	if err := sb.Set(sentinelKey, []byte{0xFF}); err != nil {
 		t.Fatal(err)

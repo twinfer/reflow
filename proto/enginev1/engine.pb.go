@@ -272,16 +272,9 @@ func (RebalanceStep_Kind) EnumDescriptor() ([]byte, []int) {
 // InvocationId carries the partition_key inside the ID so routing never needs
 // to re-parse the target. Mirrors restate types/identifiers.rs:456-461.
 type InvocationId struct {
-	state        protoimpl.MessageState `protogen:"open.v1"`
-	PartitionKey uint64                 `protobuf:"fixed64,1,opt,name=partition_key,json=partitionKey,proto3" json:"partition_key,omitempty"`
-	Uuid         []byte                 `protobuf:"bytes,2,opt,name=uuid,proto3" json:"uuid,omitempty"` // 16 bytes
-	// tenant_id scopes the invocation to its owning tenant; 0 is the reserved
-	// default-tenant sentinel. Stamped once at ingress mint from the caller's
-	// auth principal (auth.TenantIDFromPrincipal) and carried inside the id
-	// everywhere it travels. The raw 28-byte key encoding is
-	// [4B tenant][8B partition_key][16B uuid], so any holder of the id (or of a
-	// key that embeds it) recovers the tenant without a separate field.
-	TenantId      uint32 `protobuf:"varint,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PartitionKey  uint64                 `protobuf:"fixed64,1,opt,name=partition_key,json=partitionKey,proto3" json:"partition_key,omitempty"`
+	Uuid          []byte                 `protobuf:"bytes,2,opt,name=uuid,proto3" json:"uuid,omitempty"` // 16 bytes
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -328,13 +321,6 @@ func (x *InvocationId) GetUuid() []byte {
 		return x.Uuid
 	}
 	return nil
-}
-
-func (x *InvocationId) GetTenantId() uint32 {
-	if x != nil {
-		return x.TenantId
-	}
-	return 0
 }
 
 type InvocationTarget struct {
@@ -775,8 +761,7 @@ type Header struct {
 	// partition timer/outbox) leave it empty — audit records carry
 	// principal="engine" in that case. Partition-shard commands
 	// (Invoke, TimerFired, ...) do not populate this field; invocation
-	// submits are metrics, not audit signal, and the per-tenant binding
-	// already flows via InvocationId.tenant_id.
+	// submits are metrics, not audit signal.
 	Principal     string `protobuf:"bytes,4,opt,name=principal,proto3" json:"principal,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -9396,11 +9381,10 @@ var File_enginev1_engine_proto protoreflect.FileDescriptor
 
 const file_enginev1_engine_proto_rawDesc = "" +
 	"\n" +
-	"\x15enginev1/engine.proto\x12\x10reflow.engine.v1\"d\n" +
+	"\x15enginev1/engine.proto\x12\x10reflow.engine.v1\"G\n" +
 	"\fInvocationId\x12#\n" +
 	"\rpartition_key\x18\x01 \x01(\x06R\fpartitionKey\x12\x12\n" +
-	"\x04uuid\x18\x02 \x01(\fR\x04uuid\x12\x1b\n" +
-	"\ttenant_id\x18\x03 \x01(\rR\btenantId\"w\n" +
+	"\x04uuid\x18\x02 \x01(\fR\x04uuid\"w\n" +
 	"\x10InvocationTarget\x12!\n" +
 	"\fservice_name\x18\x01 \x01(\tR\vserviceName\x12!\n" +
 	"\fhandler_name\x18\x02 \x01(\tR\vhandlerName\x12\x1d\n" +

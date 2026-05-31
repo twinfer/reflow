@@ -818,10 +818,9 @@ func (c *wireContext) Awakeable() (string, Future) {
 		return id, awakeableFuture{ctx: c, resultSlot: resultSlot, id: id}
 	}
 
-	// Fresh awakeable. Mint id locally embedding the owner tenant +
-	// partition_key so ingress.ResolveAwakeable can route to the owning
-	// shard and the engine can key the directory row under the tenant.
-	id, err := mintAwakeableID(c.invocationID.GetTenantId(), c.partitionKey)
+	// Fresh awakeable. Mint id locally embedding the owner partition_key
+	// so ingress.ResolveAwakeable can route to the owning shard.
+	id, err := mintAwakeableID(c.partitionKey)
 	if err != nil {
 		return "", errFuture{err: err}
 	}
@@ -854,17 +853,15 @@ func (c *wireContext) replayAwakeableID(slot uint32) string {
 	return cmd.GetAwakeableId()
 }
 
-// mintAwakeableID generates a fresh "awk_<27 base64url>" identifier whose
-// 20-byte body is [4B tenant][8B owner partition_key][8B random], all
-// big-endian. ingress.ResolveAwakeable uses the embedded partition_key to
-// route resolution to the owning shard, and the engine keys the awakeable
-// directory row under the embedded tenant — both recovered from the id
-// alone with a single read.
-func mintAwakeableID(tenant uint32, ownerPartitionKey uint64) (string, error) {
-	var buf [20]byte
-	binary.BigEndian.PutUint32(buf[:4], tenant)
-	binary.BigEndian.PutUint64(buf[4:12], ownerPartitionKey)
-	if _, err := rand.Read(buf[12:]); err != nil {
+// mintAwakeableID generates a fresh "awk_<22 base64url>" identifier whose
+// 16-byte body is [8B owner partition_key][8B random], all big-endian.
+// ingress.ResolveAwakeable uses the embedded partition_key to route
+// resolution to the owning shard — recovered from the id alone with a
+// single read.
+func mintAwakeableID(ownerPartitionKey uint64) (string, error) {
+	var buf [16]byte
+	binary.BigEndian.PutUint64(buf[:8], ownerPartitionKey)
+	if _, err := rand.Read(buf[8:]); err != nil {
 		return "", fmt.Errorf("reflow: awakeable id rng: %w", err)
 	}
 	return "awk_" + base64.RawURLEncoding.EncodeToString(buf[:]), nil

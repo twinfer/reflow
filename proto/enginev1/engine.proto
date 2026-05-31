@@ -17,13 +17,6 @@ option go_package = "github.com/twinfer/reflow/proto/enginev1;enginev1";
 message InvocationId {
   fixed64 partition_key = 1;
   bytes uuid = 2; // 16 bytes
-  // tenant_id scopes the invocation to its owning tenant; 0 is the reserved
-  // default-tenant sentinel. Stamped once at ingress mint from the caller's
-  // auth principal (auth.TenantIDFromPrincipal) and carried inside the id
-  // everywhere it travels. The raw 28-byte key encoding is
-  // [4B tenant][8B partition_key][16B uuid], so any holder of the id (or of a
-  // key that embeds it) recovers the tenant without a separate field.
-  uint32 tenant_id = 3;
 }
 
 message InvocationTarget {
@@ -99,8 +92,7 @@ message Header {
   // partition timer/outbox) leave it empty — audit records carry
   // principal="engine" in that case. Partition-shard commands
   // (Invoke, TimerFired, ...) do not populate this field; invocation
-  // submits are metrics, not audit signal, and the per-tenant binding
-  // already flows via InvocationId.tenant_id.
+  // submits are metrics, not audit signal.
   string principal = 4;
 }
 

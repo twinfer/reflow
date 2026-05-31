@@ -1671,4 +1671,3 @@ func (f *FSM) Close() error {
 	}
 	return nil
 }
-

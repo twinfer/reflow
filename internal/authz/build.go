@@ -17,10 +17,10 @@ const (
 	TypeUser            cedar.EntityType = "User"
 	TypeAnonymous       cedar.EntityType = "Anonymous"
 
-	TypeSecretRecord        cedar.EntityType = "SecretRecord"
-	TypeDeploymentRecord    cedar.EntityType = "DeploymentRecord"
-	TypeInvocation          cedar.EntityType = "Invocation"
-	TypePlatformConfig      cedar.EntityType = "PlatformConfig"
+	TypeSecretRecord     cedar.EntityType = "SecretRecord"
+	TypeDeploymentRecord cedar.EntityType = "DeploymentRecord"
+	TypeInvocation       cedar.EntityType = "Invocation"
+	TypePlatformConfig   cedar.EntityType = "PlatformConfig"
 )
 
 // PlatformConfigUID is the singleton cluster-scoped resource used by

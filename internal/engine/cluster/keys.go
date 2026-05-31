@@ -127,7 +127,6 @@ func DeploymentIndexKey(service, handler string) []byte {
 	return append(out, handler...)
 }
 
-
 // SecretPrefix returns the secret/ namespace prefix. Used for iteration.
 func SecretPrefix() []byte { return []byte(secretPrefix) }
 
@@ -213,8 +212,6 @@ func RebalanceDrainKey(shardID uint64) []byte {
 	binary.BigEndian.PutUint64(buf[:], shardID)
 	return append(out, buf[:]...)
 }
-
-
 
 // RevisionKey returns the CAS singleton key for a table identified by
 // its canonical short name (e.g. RevisionTableEventSource). Lives in a

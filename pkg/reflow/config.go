@@ -27,21 +27,21 @@ import (
 // spec is insecure. Multi-node deployments are allowed on insecure
 // transport but Run emits a WARN log.
 type Config struct {
-	Node         NodeConfig         `koanf:"node"`
-	Cluster      ClusterConfig      `koanf:"cluster"`
-	Storage      StorageConfig      `koanf:"storage"`
-	Ingress      IngressConfig      `koanf:"ingress"`
-	Metrics      MetricsConfig      `koanf:"metrics"`
-	Logging      LoggingConfig      `koanf:"logging"`
-	Delivery     DeliveryConfig     `koanf:"delivery"`
-	Admin        AdminConfig        `koanf:"admin"`
-	Bootstrap    BootstrapConfig    `koanf:"bootstrap"`
-	Auth         AuthConfig         `koanf:"auth"`
-	Snapshot     SnapshotConfig     `koanf:"snapshot"`
-	Handlers     HandlersConfig     `koanf:"handlers"`
-	KMS          KMSConfig          `koanf:"kms"`
-	PKI          PKIConfig          `koanf:"pki"`
-	Rebalance    RebalanceConfig    `koanf:"rebalance"`
+	Node      NodeConfig      `koanf:"node"`
+	Cluster   ClusterConfig   `koanf:"cluster"`
+	Storage   StorageConfig   `koanf:"storage"`
+	Ingress   IngressConfig   `koanf:"ingress"`
+	Metrics   MetricsConfig   `koanf:"metrics"`
+	Logging   LoggingConfig   `koanf:"logging"`
+	Delivery  DeliveryConfig  `koanf:"delivery"`
+	Admin     AdminConfig     `koanf:"admin"`
+	Bootstrap BootstrapConfig `koanf:"bootstrap"`
+	Auth      AuthConfig      `koanf:"auth"`
+	Snapshot  SnapshotConfig  `koanf:"snapshot"`
+	Handlers  HandlersConfig  `koanf:"handlers"`
+	KMS       KMSConfig       `koanf:"kms"`
+	PKI       PKIConfig       `koanf:"pki"`
+	Rebalance RebalanceConfig `koanf:"rebalance"`
 }
 
 // KMSConfig configures the KMS providers Reflow registers in Tink's

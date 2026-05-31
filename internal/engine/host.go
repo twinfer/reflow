@@ -763,8 +763,6 @@ func (h *Host) RebalanceDrains(ctx context.Context) (*cluster.RebalanceDrainList
 	return out, nil
 }
 
-
-
 // AwaitMetadataLeader blocks until shard 0 has a stable leader.
 func (h *Host) AwaitMetadataLeader(ctx context.Context) error {
 	tick := time.NewTicker(20 * time.Millisecond)
@@ -1167,7 +1165,6 @@ func (h *Host) LookupInvocationStatus(ctx context.Context, shardID uint64, id *e
 	}
 	return s, nil
 }
-
 
 // NumPartitionShards returns the routing modulus the host was started
 // with. Quota and other cross-shard reconcilers iterate 1..N when fanning

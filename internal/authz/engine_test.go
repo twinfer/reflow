@@ -14,11 +14,11 @@ import (
 // resolve these through actionEntity.
 const (
 	actRegisterDeployment = "/reflow.config.v1.Config/RegisterDeployment"
-	actAddNode           = "/reflow.clusterctl.v1.ClusterCtl/AddNode"
-	actSelfJoin          = "/reflow.clusterctl.v1.ClusterCtl/SelfJoin"
-	actDeliver           = "/reflow.delivery.v1.Delivery/Deliver"
-	actUploadSST         = "/reflow.delivery.v1.Delivery/UploadLPTransferSST"
-	actSubmitInvocation  = "/reflow.ingress.v1.Ingress/SubmitInvocation"
+	actAddNode            = "/reflow.clusterctl.v1.ClusterCtl/AddNode"
+	actSelfJoin           = "/reflow.clusterctl.v1.ClusterCtl/SelfJoin"
+	actDeliver            = "/reflow.delivery.v1.Delivery/Deliver"
+	actUploadSST          = "/reflow.delivery.v1.Delivery/UploadLPTransferSST"
+	actSubmitInvocation   = "/reflow.ingress.v1.Ingress/SubmitInvocation"
 )
 
 func mustEngine(t *testing.T, policies string) *Engine {

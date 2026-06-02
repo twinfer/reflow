@@ -52,7 +52,6 @@
 //	--client-cert   $REFLOW_CLIENT_CERT
 //	--client-key    $REFLOW_CLIENT_KEY
 //	--ca            $REFLOW_CA_CERT
-//	--trust-domain  $REFLOW_TRUST_DOMAIN  (defaults to "reflow.local")
 //
 // `reflowd run` reads layered configuration sources (later overrides
 // earlier):

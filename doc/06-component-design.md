@@ -14,7 +14,7 @@ separate code path, not part of ingress.
 - Parse invocation requests (Connect RPC over HTTP/2 — content-negotiates
   Connect / gRPC / gRPC-Web / HTTP-JSON on a single port). A REST-style
   facade at `/v1/*` (chi-based) is mounted on the same listener for
-  curl- and webhook-friendly URL shapes.
+  curl-friendly URL shapes.
 - Determine the target partition via consistent hashing on
   `(service_name, object_key)` through `Host.Partitioner`.
 - Propose invocation commands to the owning partition's leader
@@ -26,10 +26,9 @@ separate code path, not part of ingress.
   `Reflow-Meta-*` (REST) or the typed `SubmitInvocationRequest.metadata`
   field (Connect) flow through `InvokeCommand.metadata` → `Scheduled.metadata`
   → `JEInput.metadata` → `InputCommandMessage.headers` → `handler.Context.Metadata()`.
-  The engine never interprets the values. Designed for webhook adapters
-  that verify a vendor signature (Stripe, GitHub, …) in front of the
-  ingress and stash the verified facts here so the durable handler can
-  route without re-verifying.
+  The engine never interprets the values. Designed for operator middleware
+  that verifies a fact in front of the ingress and stashes it here so the
+  durable handler can route without re-verifying.
 
 **Routing:**
 ```
@@ -40,18 +39,18 @@ partition_id = hash(service_name + "/" + object_key) % num_partitions
 
 | Surface | Port (default) | Wire | Auth | Purpose |
 |--|--|--|--|--|
-| Connect ingress (`reflow.ingress.v1`) | 8080 | Connect/HTTP-2 | Anonymous via `ingress_open` policy rule; operator tightens via `cfg.Auth.PolicyFile` | Typed SDK clients submit invocations, await results, resolve awakeables/promises |
-| REST ingress (`/v1/*`) | 8080 (same listener) | HTTP/1.1+HTTP/2 + JSON envelope | Anonymous via `ingress_rest_open` policy rule | curl, webhooks, Restate-style URL ergonomics; delegates to the Connect handlers via the in-process `*ingress.Server` |
-| Delivery (`reflow.delivery.v1`) | 8081 | Connect/HTTP-2 | mTLS, `spiffe://<td>/node/*` | Cross-partition / cross-node command forwarding |
-| ClusterCtl (`reflow.clusterctl.v1`) | 8082 (shared) | Connect/HTTP-2 | mTLS, `spiffe://<td>/operator/*` (+ `node/*` carve-out on `SelfJoin`) | Fleet ops: add/remove node, list partitions, snapshot mgmt, LP transfers + autonomous rebalancer drain |
-| Config (`reflow.config.v1`) | 8082 (same listener as ClusterCtl) | Connect/HTTP-2 | mTLS, `spiffe://<td>/operator/*` | App config: deployments, event sources, webhooks, secrets — every kubectl-shaped admin operation operators run between deploys |
+| Connect ingress (`reflow.ingress.v1`) | 8080 | Connect/HTTP-2 | optional mTLS (`tenant/<n>` or `operator`) or anonymous; tenant-isolated by the Cedar policy (§6.15.8) | Typed SDK clients submit invocations, await results, resolve awakeables/promises |
+| REST ingress (`/v1/*`) | 8080 (same listener) | HTTP/1.1+HTTP/2 + JSON envelope | same as Connect ingress | curl, Restate-style URL ergonomics; delegates to the Connect handlers via the in-process `*ingress.Server` |
+| Delivery (`reflow.delivery.v1`) | 8081 | Connect/HTTP-2 | mTLS, leaf CN `node/*` | Cross-partition / cross-node command forwarding |
+| ClusterCtl (`reflow.clusterctl.v1`) | 8082 (shared) | Connect/HTTP-2 | mTLS, leaf CN `operator/*` (+ `node/*` carve-out on `SelfJoin`) | Fleet ops: add/remove node, list partitions, snapshot mgmt, LP transfers + autonomous rebalancer drain |
+| Config (`reflow.config.v1`) | 8082 (same listener as ClusterCtl) | Connect/HTTP-2 | mTLS, leaf CN `operator/*` | App config: deployments, secrets, CA roots, join tokens, cluster authz policy — every kubectl-shaped admin operation operators run between deploys |
 
 **Extension seam.** `ingress.Config.ExtraRoutes func(*Server) []connectserver.Route`
 mounts additional HTTP handlers on the Connect ingress listener without
 a second port/cert. The REST facade at `/v1/*` is the canonical caller;
-operator code (webhook adapters, custom REST endpoints) rides the same
+operator code (custom REST endpoints) rides the same
 seam. Each `ExtraRoute` is wrapped by the same auth middleware Connect
-uses — the SPIFFE policy is the authoritative gate.
+uses — the Cedar policy is the authoritative gate.
 
 **Operator infrastructure: `pkg/hostmux`.** Multi-tenant SaaS deployments
 that need per-tenant or per-vendor host-based routing wire `pkg/hostmux.Mux`
@@ -158,9 +157,9 @@ Each node, in order (`pkg/reflow/run.go:Run`):
    one HTTP/2 listener hosting both `reflow.clusterctl.v1.ClusterCtl`
    (fleet ops) and `reflow.config.v1.Config` (app config). Auth runs
    at the HTTP/Connect layer via `internal/auth.HTTPMiddleware`
-   (SPIFFE + OIDC chain). The naming mirrors Restate's
-   `cluster-ctrl` vs `admin` split, with `admin` flipped to `config`
-   to avoid the overloaded word.
+   (mesh mTLS leaf-CN principal + Cedar authz). The naming mirrors
+   Restate's `cluster-ctrl` vs `admin` split, with `admin` flipped to
+   `config` to avoid the overloaded word.
 
 After `Run` returns, the cluster forms organically. Each NodeHost has
 the full member list; once `floor(N/2)+1` of them can reach each other
@@ -197,7 +196,7 @@ reflowd cluster remove-node --node-id=2
   gossip-published `NodeHostMeta.admin_endpoint` and dials the
   leader's `ClusterCtl/SelfJoin` RPC before any local shard starts.
   `ClusterCtl/SelfJoin` shares `addNodeInternal` with the operator path
-  but gates on a `node/<req.node_id>` SPIFFE principal so a leaked
+  but gates on a `node/<req.node_id>` leaf-CN principal so a leaked
   cert can only self-register as its own node id. The joiner then
   calls `nh.StartOnDiskReplica(nil, join=true, ...)` on each shard,
   which dragonboat services via the snapshot+log catch-up path now
@@ -233,7 +232,7 @@ eventually-consistent gossip signal.
   requires a shard-0 proposal).
 
 **Partition shard count vs. LP count — two layers.** Reflow's routing
-is two-layer: a fixed pool of **4096 logical partitions (LPs)** maps to
+is two-layer: a fixed pool of **16384 logical partitions (LPs)** maps to
 **N partition shards** (default `len(cfg.Cluster.Shards)` falling back to
 1 single-node). Ingress hashes `(service, object_key)` to an LP; shard 0's
 `LPOwnersTable` maps each LP to a shard id. `N` is a hard design invariant
@@ -274,7 +273,7 @@ Reflow routes through two layers, not one:
 ```
 ingress request
   ↓
-hash(service, object_key) % 4096       → logical partition (LP)
+hash(service, object_key) % 16384      → logical partition (LP)
   ↓ LPOwnersTable[lp]                  (shard 0, atomic snapshot per node)
 shard_id ∈ [1, N]                      → dragonboat group on the owning node
 ```
@@ -300,7 +299,7 @@ shards" — never "split a shard."
   the move set in LP-ascending order — used by both the
   metadata-leader bootstrap seed and the autonomous rebalancer.
 - **`cluster.LPOwnersTable`** on shard 0 (`internal/engine/cluster/store.go`)
-  is the authoritative LP→shard mapping (4096 rows, one per LP).
+  is the authoritative LP→shard mapping (16384 rows, one per LP).
   Bootstrapped from the planner's `PlanAll()` output; mutated only via
   the LP transfer protocol below.
 
@@ -644,7 +643,7 @@ big-endian so lexicographic byte order equals numeric order.
 
 **LP-prefixing.** Most partition-shard rows live under
 `<namespace>/<4-byte BE lp>/...` where `lp = LPFromPartitionKey(pk) =
-pk mod 4096`. The LP prefix makes the entire LP keyspace a contiguous
+pk mod 16384`. The LP prefix makes the entire LP keyspace a contiguous
 byte range — the cross-shard LP transfer protocol (§6.2, "Two-layer
 routing") scans + ships these ranges and `FinishLPTransfer` range-
 deletes them on the source. Rows that are intrinsically LP-agnostic
@@ -653,12 +652,14 @@ workflow-reap due-time index) keep their original shape.
 
 ### Partition shards (1..N), `${DataDir}/p{shardID}/state/`
 
-Every LP-prefixed namespace embeds a 4-byte BE LP id followed by a
-4-byte BE tenant id (`<lp:4><tenant:4>`) immediately after the
-namespace string. The LP-transfer source scan keys on `[ns/<lp>,
-ns/<lp+1>)` and captures all tenants on that LP in one byte range;
-per-tenant consumers narrow further to `[ns/<lp>/<tenant>,
-ns/<lp>/<tenant+1>)`. See `internal/storage/keys/keys.go`.
+Every LP-prefixed namespace embeds a 4-byte BE LP id immediately after
+the namespace string (`<lp:4>`). Tenancy is folded into the LP itself —
+its high `TenantBandBits` (8) select the tenant band, its low
+`IntraLPBits` (6) carry the intra-tenant hash — so there is no separate
+tenant key segment. The LP-transfer source scan `[ns/<lp>, ns/<lp+1>)`
+already isolates one band, and a per-tenant range is just that band's
+contiguous run of LPs. See `internal/storage/keys/keys.go`
+(`BandLP` / `TenantFromPartitionKey`).
 
 ```
 Namespace            Key structure                                                          Value
@@ -666,28 +667,28 @@ Namespace            Key structure                                              
 meta                 meta                                                                   PartitionMeta
 format               format                                                                 uint32 (storage format marker)
 
-inv/                 inv/<lp:4><tenant:4><id:24>                                            InvocationStatus
-journal/             journal/<lp:4><tenant:4><id:24>/<idx:4>                                JournalEntry
+inv/                 inv/<lp:4><id:24>                                            InvocationStatus
+journal/             journal/<lp:4><id:24>/<idx:4>                                JournalEntry
 
 timer/               timer/<fire_at_ms:8>/<id:24>                                           uint32 sleep_index   (LP-agnostic primary)
-timer_lp/            timer_lp/<lp:4><tenant:4><fire_at_ms:8>/<id:24>                        uint32 sleep_index   (secondary index — rides LP transfer scan)
-timer_idx/           timer_idx/<lp:4><tenant:4><id:24>/<fire_at_ms:8>                       (empty)              (secondary index — fast per-invocation cancel)
+timer_lp/            timer_lp/<lp:4><fire_at_ms:8>/<id:24>                        uint32 sleep_index   (secondary index — rides LP transfer scan)
+timer_idx/           timer_idx/<lp:4><id:24>/<fire_at_ms:8>                       (empty)              (secondary index — fast per-invocation cancel)
 
-state/               state/<lp:4><tenant:4><service>/<obj_key>/<state_key>                  VObject K/V state
-keylease/            keylease/<lp:4><tenant:4><service>/<obj_key>                           KeyLeaseStatus
-idempotency/         idempotency/<lp:4><tenant:4><sha256:32>                                InvocationId         (sha256 of `(service, handler, obj_key, key)`)
+state/               state/<lp:4><service>/<obj_key>/<state_key>                  VObject K/V state
+keylease/            keylease/<lp:4><service>/<obj_key>                           KeyLeaseStatus
+idempotency/         idempotency/<lp:4><sha256:32>                                InvocationId         (sha256 of `(service, handler, obj_key, key)`)
 
-awakeable/           awakeable/<lp:4><tenant:4><id:26>                                      AwakeableEntry
-signal_inbox/        signal_inbox/<lp:4><tenant:4><id:24>/<name>                            SignalInboxEntry
-signal_awaiter/      signal_awaiter/<lp:4><tenant:4><id:24>/<name>                          SignalAwaiter
+awakeable/           awakeable/<lp:4><id:26>                                      AwakeableEntry
+signal_inbox/        signal_inbox/<lp:4><id:24>/<name>                            SignalInboxEntry
+signal_awaiter/      signal_awaiter/<lp:4><id:24>/<name>                          SignalAwaiter
 
-workflow_run/        workflow_run/<lp:4><tenant:4><service>/<wf_key>                        InvocationId
-promise/             promise/<lp:4><tenant:4><service>/<wf_key>/<name>                      PromiseValue
-promise_awaiter/     promise_awaiter/<lp:4><tenant:4><service>/<wf_key>/<name>/<idx:4>      PromiseAwaiter
+workflow_run/        workflow_run/<lp:4><service>/<wf_key>                        InvocationId
+promise/             promise/<lp:4><service>/<wf_key>/<name>                      PromiseValue
+promise_awaiter/     promise_awaiter/<lp:4><service>/<wf_key>/<name>/<idx:4>      PromiseAwaiter
 workflow_reap/       workflow_reap/<fire_at_ms:8>/<service>/<wf_key>                        (empty)              (LP-agnostic due-time index)
 
 dedup/self/          dedup/self/<leader_epoch:8>/<seq:8>                                    DedupEntry           (shard-scoped; GC'd per leader epoch)
-dedup/arbitrary/     dedup/arbitrary/<lp:4><tenant:4><producer_id>/<seq:8>                  DedupEntry           (LP-prefixed — rides LP transfer scan; LP-agnostic kinds key under LPNoLP=0xFFFF_FFFF)
+dedup/arbitrary/     dedup/arbitrary/<lp:4><producer_id>/<seq:8>                  DedupEntry           (LP-prefixed — rides LP transfer scan; LP-agnostic kinds key under LPNoLP=0xFFFF_FFFF)
 
 outbox/              outbox/<seq:8>                                                         OutboxEnvelope       (LP-agnostic; per-shard send sequence)
 
@@ -701,9 +702,9 @@ lp_staging/          lp_staging/<transfer_id>                                   
   prefix and simplifies snapshot / checkpoint isolation.
 - **LP-prefixed namespaces.** The 4-byte BE LP prefix gives the LP
   transfer's source-side scan and destination-side range-delete an
-  O(prefix-scan) shape per namespace. Per-tenant scoping (`<tenant:4>`)
-  sits inside the LP keyspace so tenants on one LP transfer together,
-  and per-tenant code can narrow to a tighter subrange. Adding a new
+  O(prefix-scan) shape per namespace. Tenancy folds into the LP band
+  (no separate key segment), so a tenant's rows form a contiguous LP
+  sub-range that transfers as a unit. Adding a new
   LP-prefixed namespace touches a single source of truth:
   `internal/storage/keys/lp_namespaces.go:AllLPNamespaces` — both the
   source-side transfer scan and the apply-path LP validators iterate
@@ -720,7 +721,7 @@ lp_staging/          lp_staging/<transfer_id>                                   
   an LP flip finds its row already present on the new owner. LP-
   agnostic kinds (today only `OutboxAck`) key under `keys.LPNoLP =
   0xFFFF_FFFF`, a sentinel that is never a real LP (real LPs are
-  < 4096) and is therefore never range-deleted by `FinishLPTransfer`.
+  < 16384) and is therefore never range-deleted by `FinishLPTransfer`.
 - **Journal indices** are monotonic per invocation, distinct from the
   Raft log index, so log truncation doesn't leave gaps in the journal
   index space.
@@ -743,15 +744,11 @@ partition_table      partition_table                     PartitionTable singleto
 deployment/          deployment/<deployment_id>          DeploymentRecord
 deployment_idx/      deployment_idx/<service>\0<handler> deployment_id (ascii) — (service, handler) → current owner
 
-eventsrc/            eventsrc/<name>                     EventSourceRecord
-webhooksrc/          webhooksrc/<name>                   WebhookSourceRecord
 secret/              secret/<name>                       SecretRecord (pointer fields only — blob_uri + kek_uri; plaintext never traverses Raft)
 
-tenant/              tenant/<tenant_id:4>                TenantRecord (id=0 reserved for default-tenant sentinel; never persisted)
-tenant_name_idx/     tenant_name_idx/<name>              4-byte BE tenant_id (name → id secondary index for create-vs-update resolution)
-tenant_dek/          tenant_dek/<tenant_id:4>            TenantDEKRecord (per-tenant data-encryption-key reference; per-node TenantDEKResolver iterates on each notifier wake)
-
-auditlog/            auditlog/<raft_index:8>             AuditLogRecord (append-only config-change audit; written in same Batch as the audited mutation; retention GC range-deletes by raft_index span derived from ts_ms)
+caroot/              caroot/<name>                       CARootRecord (mesh-CA trust roots — PEM bundle keyed by name)
+jointoken/           jointoken/<token_hash>              JoinTokenRecord (one-time SelfJoin tokens; plaintext shown once, only the SHA-256 hash is stored)
+platform_config      platform_config                    PlatformConfigRecord singleton (carries the cluster Cedar authz policy text — §6.15.8)
 
 lpowner/             lpowner/<lp:4>                      LPOwnerRecord  (the LP → shard_id routing table)
 lptransfer/          lptransfer/<transfer_id>            LPTransferRecord (in-flight LP transfer saga)
@@ -1175,325 +1172,71 @@ encryption is not currently supported.
 
 ## 6.13 Authentication & Authorization
 
-Reflow's HTTP/2 surfaces (Connect ingress, REST `/v1/*`, internal
-Admin/Delivery) share one inbound auth chain built on
-`connectrpc.com/authn`. Two identity planes coexist; they serve
-different purposes and are not interchangeable.
+Reflow's HTTP/2 surfaces (Connect ingress, REST `/v1/*`, Admin/Delivery)
+share one inbound auth chain built on `connectrpc.com/authn`.
+**Authentication is mesh-only mTLS; authorization is Cedar (§6.15.8).**
 
-**Two planes, one principal model:**
+**Identity — the leaf CN.** `composeAuthFunc` (`internal/auth/connect.go`)
+runs a single `meshAuthFunc` (`mesh_authfunc.go`): on a verified mTLS leaf
+it reads the principal from the leaf's Common Name via `creds.LeafPrincipal`
+— a bare `<kind>/<name>` with `kind ∈ {node, operator, tenant}` →
+`Principal{Kind, Subject, Raw}`. Mesh leaves carry **no URI SANs** and there
+is no trust-domain segment; the signing CA's SPKI fingerprint is the trust
+anchor. A request with no client cert (or a verified leaf with an empty CN)
+is the **anonymous** principal; a verified leaf whose CN is not a well-formed
+`<kind>/<name>` is a hard `connect.CodeUnauthenticated`. (The earlier
+SPIFFE-URI-SAN extractor and the OIDC bearer-JWT authenticator were removed
+on `strip-to-core`; there is no IdP path.)
 
-| Plane | Identity primitive | Issued by | Runtime dep | Used for |
-|---|---|---|---|---|
-| SPIFFE / mTLS | `spiffe://<td>/<kind>/<name>` URI SAN on the verified leaf | Reflow's offline CA (`reflowd pki`) | none | cluster mesh + ClusterCtl/Config/Delivery |
-| OIDC bearer | JWT with claims mapped to `Principal{Kind, Subject}` | Customer's IdP | IdP reachable | ingress + optionally ClusterCtl/Config via `kind=operator` |
+**Principal stamping.** The stamp handler (`policy_handler.go`) strips any
+forged inbound `X-Reflow-Principal` header, stamps the server-verified value,
+and attaches the `Principal` via `auth.ContextWithPrincipal`, so the authz
+interceptor and downstream handlers match on a trusted value without
+re-parsing.
 
-Both planes produce the same `auth.Principal{Kind, Subject, Raw, …}`
-shape, so the downstream policy match (`operator/*`, `node/*`) is
-identical regardless of how the principal was established.
+**Authorization — Cedar.** The `internal/authz` interceptor implements the
+full `connect.Interceptor` (streaming Delivery is gated too) and evaluates
+each procedure against the cluster Cedar policy (§6.15.8). The foundational
+policy: operators (`operator/*`) have full access; nodes (`node/*`) may call
+only the inter-node mesh actions (Deliver, UploadLPTransferSST, SelfJoin);
+the ingress data plane is tenant-isolated — a `tenant/<n>` principal acts
+only on its own LP band, while anonymous / non-tenant callers act only on
+band 0.
 
-**The auth chain (`internal/auth.HTTPMiddleware`):**
+**Per-surface enforcement:**
 
-1. **`authn.Middleware` runs an `AuthFunc`** that chains two
-   authenticators (`internal/auth/connect.go:composeAuthFunc`):
-   - `spiffeAuthFunc` inspects `r.TLS.VerifiedChains[0][0].URIs[0]`
-     and parses the SPIFFE URI. Verified leaf with one well-formed
-     `spiffe://<td>/<kind>/<name>` URI → `Principal{Kind, Subject}`.
-     No TLS / zero URIs → fall through. Malformed URI (wrong scheme,
-     wrong trust domain, missing segments, multiple URIs) → hard
-     `connect.CodeUnauthenticated`.
-   - `bearerAuthFunc` (active only when `cfg.Auth.OIDC` is
-     non-empty) pulls `Authorization: Bearer …`, dispatches by
-     unverified `iss` claim, then re-verifies signature + claims via
-     `github.com/coreos/go-oidc/v3`.
-   - **mTLS wins when both are present.** A leaked bearer token
-     cannot also forge a peer-verified TLS leaf. When mTLS yields a
-     non-anonymous principal, the bearer is ignored (debug-logged).
-
-2. **`policyHandler` enforces the path-glob policy** declared in
-   `starter_policy.json` (embedded default) or `cfg.Auth.PolicyFile`.
-   Denial emits Connect-coded errors via `connect.ErrorWriter`:
-   - `CodeUnauthenticated` (HTTP 401) for anonymous denials. The
-     response carries `WWW-Authenticate: Bearer` (RFC 7235) when
-     OIDC is wired, so non-mTLS clients know which scheme to try.
-   - `CodePermissionDenied` (HTTP 403) for known-but-rejected
-     principals. No `WWW-Authenticate` — they already authenticated.
-   - Bearer-token verification failures from the AuthFunc step add
-     `WWW-Authenticate: Bearer error="invalid_token"` (RFC 6750 §3)
-     so clients refresh the token rather than retrying with the
-     same bad one.
-
-3. **The wrapped handler runs** with the `Principal` attached via
-   `auth.ContextWithPrincipal`. The server-controlled
-   `X-Reflow-Principal` request header is stamped (any forged inbound
-   value is stripped first) so downstream handlers can match on a
-   trusted string without re-parsing.
-
-**Per-surface enforcement matrix:**
-
-| Surface | TLS | AuthFunc step | Policy |
-|--|--|--|--|
-| ClusterCtl (`reflow.clusterctl.v1.ClusterCtl`) | mTLS (operator), or via OIDC bearer | SPIFFE → operator/node; bearer → claim-mapped principal | `clusterctl_operator` rule allows `operator/*`; `clusterctl_node_selfjoin` carve-out allows `node/*` on the SelfJoin path (with `checkSelfJoinPrincipal` further requiring URI's `<id>` == `req.node_id`) |
-| Config (`reflow.config.v1.Config`) | mTLS (operator), or via OIDC bearer | SPIFFE → operator; bearer → claim-mapped principal | `config_operator` rule allows `operator/*` |
-| Delivery (`reflow.delivery.v1.Delivery`) | mTLS (node) | SPIFFE only; bearer ignored (no IdP path for streaming inter-node) | `delivery_node` rule allows `node/*` |
-| Connect ingress (`reflow.ingress.v1`) | Optional (h2c or TLS via `cfg.Ingress.Creds`) | Either; falls through to anonymous when neither present | `ingress_open` rule has no principal constraint by default; operators tighten via `cfg.Auth.PolicyFile` |
-| REST ingress (`/v1/*`) | Same listener as Connect ingress | Same as Connect ingress | `ingress_rest_open` rule covers `/v1/*` through `/v1/*/*/*/*/*` |
-| Engine → handler (`protocolv1`) | Out of scope here — owned by `pkg/reflow/creds` driver + `pkg/handler.Config` verifying via `RootCAs` / `AllowedSPIFFE` |
-
-**Why both planes:** dropping SPIFFE in favor of OIDC-only would break
-load-bearing pieces: (1) `ClusterCtl/SelfJoin`'s NodeID-binding gate
-requires identity bound to a key in node-X's secret store, which mTLS
-provides natively; (2) the dragonboat Raft transport and Delivery RPC
-are TCP/streaming surfaces with no header to put a bearer token on;
-(3) cluster admin must work when the IdP is unreachable, so the
-offline CA is the dependency-free credential path. Dropping OIDC in
-favor of SPIFFE-only is fine for closed deployments but limits
-ingress to either anonymous-via-policy or mTLS-only (no SaaS-friendly
-JWT path).
-
-### 6.13.1 OIDC as an operator credential
-
-The composed AuthFunc means a single `kind=operator` claim from an
-OIDC token produces the same `Principal{Kind: "operator", Subject:
-…}` value as an offline-CA `spiffe://td/operator/…` leaf. The
-`starter_policy.json` `clusterctl` and `config` rules both match on
-`operator/*` regardless of how the principal was established, so an
-OIDC-authenticated CI pipeline can run any `reflowd cluster ...` or
-`reflowd config ...` subcommand without ever holding an mTLS cert.
-
-Concrete example — let GitHub Actions or a similar CI run admin RPCs
-via OIDC instead of provisioning per-job certs:
-
-```yaml
-auth:
-  oidc:
-    - name: github-actions
-      issuer_url: https://token.actions.githubusercontent.com
-      audiences: [reflow]
-      principal_claim: sub                 # → repo:owner/repo:ref:…
-      kind_claim:      reflow_kind         # custom mapper claim
-      required_claims:
-        reflow_kind: operator              # only "operator"-shaped tokens
-      allowed_claims: [repository, workflow, ref]
-```
-
-A workflow that mints a GitHub OIDC token with a custom
-`reflow_kind: operator` mapper (and audience `reflow`) gets a
-`Principal{Kind: "operator", Subject: "repo_org_reflow_main_…"}` —
-matches `operator/*`, can hit `/reflow.clusterctl.v1.ClusterCtl/*`
-and `/reflow.config.v1.Config/*`. The `/` in the subject is
-sanitized to `_` to keep IdP-controlled values out of
-principal-glob traversal.
-
-When operating both planes simultaneously:
-- mTLS-presenting clients still win the composition, so a misconfigured
-  IdP can't downgrade an operator that already has a cert.
-- The 401 response on anonymous denial advertises `WWW-Authenticate:
-  Bearer` so a CI tool that has only a token (no cert) discovers the
-  scheme on the first attempt.
-- Token expiry/rotation is bounded by the IdP; if the IdP is offline,
-  `operator/*` mTLS certs still work for cluster recovery.
-
-**Out of scope today (additive later):**
-
-- Per-tenant ingress identity story for multi-tenant SaaS; today
-  operators discriminate tenants via `pkg/hostmux` + per-host
-  middleware that sets `Reflow-Meta-*` headers.
+| Surface | Identity | Authz |
+|--|--|--|
+| ClusterCtl (`reflow.clusterctl.v1.ClusterCtl`) | mTLS `operator/*` (or `node/*` on SelfJoin) | operator god-mode; `SelfJoin` carve-out allows `node/*`, with `checkSelfJoinPrincipal` requiring the CN's `<id>` == `req.node_id` |
+| Config (`reflow.config.v1.Config`) | mTLS `operator/*` | operator god-mode |
+| Delivery (`reflow.delivery.v1.Delivery`) | mTLS `node/*` | mesh actions (node only) |
+| Ingress (`reflow.ingress.v1`) | optional mTLS (`tenant/<n>` or `operator`) or anonymous | tenant-isolated: `tenant/<n>` → own band, anonymous → band 0; `PurgeInvocation` is operator-only |
+| Engine → handler (`protocolv1`) | out of scope here — owned by `pkg/reflow/creds` + `pkg/handler.Config` |
 
 ---
 
 ## 6.14 Webhook Ingress
 
-Reflow ships built-in inbound signature verifiers for common vendor
-webhooks. Config-driven mounting on the existing ingress listener
-means an operator can wire a Stripe / GitHub / Slack webhook by
-adding a YAML stanza — no per-vendor middleware to write.
-
-**Built-in verifiers** (`internal/ingress/webhook/factory_*.go`):
-
-| Vendor | Header | Algorithm | Replay window | Metadata stamped |
-|---|---|---|---|---|
-| Stripe | `Stripe-Signature: t=…,v1=…` | HMAC-SHA256 over `t + "." + body` | 5min (configurable per source) | `webhook_vendor`, `stripe_signed_timestamp` |
-| GitHub | `X-Hub-Signature-256: sha256=…` | HMAC-SHA256 over body | none (no signed timestamp; dedup via `X-GitHub-Delivery`) | `webhook_vendor`, `github_event`, `github_delivery`, `github_hook_target_type` |
-| Slack | `X-Slack-Signature: v0=…` + `X-Slack-Request-Timestamp` | HMAC-SHA256 over `"v0:" + ts + ":" + body` | 5min | `webhook_vendor`, `slack_signed_timestamp` |
-
-Each verifier registers at package `init()` via
-`pkg/webhook.RegisterVerifier`. Operators add custom vendors (Twilio,
-PayPal, internal HMAC schemes, …) by implementing the same
-`webhook.Verifier` interface and calling `RegisterVerifier` from their
-handler binary's `main` before `reflow.Run`.
-
-**Storage model — cluster-managed via shard 0.** Webhook sources are
-durable rows in shard 0's `WebhookSourceTable` (alongside deployments
-and event sources). Per-node `Manager` instances subscribe to a
-`TableNotifier`, pull a fresh snapshot on wake (5s ticker backstop),
-and atomically swap a path→source map (`atomic.Pointer`). One stable
-subtree route at `/webhooks/`; the handler reads `r.URL.Path` and
-looks up the live snapshot. Adding, rotating, or removing a webhook
-is an operator CLI call — `reflowd config webhooks list / delete`
-and `reflowd config apply -f <file>` (`kind: WebhookSource`) — propagated to
-every node via Raft, no cluster restart.
-
-**Config shape — operator workflow:**
-
-```yaml
-kind: WebhookSource
-metadata: { name: stripe-prod }
-spec:
-  path: /webhooks/stripe
-  verifier: stripe
-  secret_ref:
-    remote_encrypted:
-      blob_uri: s3://reflow-secrets/stripe.bin
-      kek_uri:  blobkms+s3://reflow-keys/master.key
-  invocation:
-    service: stripe-events
-    handler: receive
-    metadata: { environment: prod }
-```
-
-There is no koanf-bootstrap path for webhooks (unlike event sources,
-which retain a bootstrap seed). Operators always go through
-`reflowd config upsert-webhook` or `reflowd config apply -f <file>`
-post-start. Secrets are a separate problem from webhook routing and
-deserve their own admin surface — bundling them in koanf would mean a
-plaintext-secret seed file by default.
-
-**Secret resolution — by reference into a separate SecretTable.**
-`WebhookSourceRecord` carries a `secret_name` string referencing a
-row in shard 0's `SecretTable`. The webhook record contains NO
-ciphertext or KMS material; the SecretTable is the single source of
-truth for all named secrets in the cluster (used by webhooks today,
-and by future consumers — event-source vendor credentials, outbound
-HMAC signing keys, OIDC client secrets — without per-consumer
-duplication).
-
-Per-node `internal/secretstore` Resolvers reconcile the SecretTable
-on the same notifier/ticker pattern as every other shard-0 table
-(5s ticker backstop). Each pass fetches ciphertext for every row
-via `gocloud.dev/blob.ReadAll`, dispatches the KEK URI through Tink's
-process-global `KMSClient` registry, decrypts with `AAD = []byte
-(secret.name)`, and atomically swaps a fresh name→bytes map. The
-webhook Manager (and future consumers) call `Resolver.Lookup(name)`
-on each reconcile pass — single `atomic.Pointer.Load`, no per-call
-KMS trip. Resolve failure preserves the previously-resolved bytes so
-a transient blob/KMS hiccup doesn't knock dependent consumers offline.
-
-AAD binds ciphertext to row identity, not to the consumer. Multiple
-webhooks may share one `secret_name`; renaming the secret is a
-re-encrypt operation, by design.
-
-Four KMS providers ship in-binary at `pkg/kms/{blob,awskms,gcpkms,
-hcvault}/` (always-linked, config-gated, matching the event-source
-backends' pattern): BlobKMS (`blobkms+<gocloud-uri>` — the
-no-managed-KMS fallback), AWS KMS (`aws-kms://...`), GCP Cloud KMS
-(`gcp-kms://...`), HashiCorp Vault Transit (`hcvault://...`). The
-first three self-register from `init()` and pick credentials up from
-the host's environment (env vars, IAM role, workload identity, etc.);
-Vault opts in via `cfg.KMS.Vault.TokenFile`. Operators wiring
-additional providers register from `main` before `reflow.Run` — Tink
-dispatches by first-supporting URI prefix.
-
-BlobKMS' on-disk shape is `boot_key(32B) || serialized_encrypted_
-keyset` — the boot key encrypts a Tink AEAD keyset that's the
-operational KEK. This enables multi-key rotation (add new key to the
-keyset, mark primary; old ciphertexts still decrypt via non-primary
-entries) and primitive swap (`aead.New(handle)` today;
-`hybrid.NewHybridEncrypt(handle)` or `keyderivation.New(handle)`
-tomorrow) without a wire change.
-
-Operator workflow:
-
-```
-reflowd config init-kek --blob-uri=file:///etc/reflow/kek.bin
-echo -n "ghs_xxx" | reflowd config create-secret \
-  --name=github-hmac --kek-uri=blobkms+file:///etc/reflow/kek.bin \
-  --blob-uri=s3://reflow-secrets/github.bin
-reflowd config upsert-webhook \
-  --name=github-prod --path=/webhooks/github --verifier=github \
-  --secret=github-hmac --service=svc --handler=on
-```
-
-Resolve path is hand-instrumented via
-`reflow_secretstore_decrypt_total{kek_scheme}` /
-`_errors_total{kek_scheme,stage}` / `_seconds` because Tink's
-`monitoring.Client` is exported but `RegisterMonitoringClient` lives
-in `tink-go/v2/internal/internalregistry` (blocked from external
-import in v2.6). Per-secret detail is logged rather than labelled to
-keep counter cardinality bounded across operator-managed secret
-fleets.
-
-**Request flow:**
-
-1. POST arrives on the ingress listener at the configured path.
-2. Auth middleware runs first — the starter policy's
-   `webhooks_open` rule allows `/webhooks/*` anonymously (the
-   signature *is* the auth; tighten via `cfg.Auth.PolicyFile`
-   for per-vendor IP allowlists if needed).
-3. Manager dispatches to the registered verifier:
-   - Verifier reads the body (bounded at 1 MiB via
-     `http.MaxBytesReader`), computes HMAC, compares
-     constant-time, optionally enforces replay window.
-   - On success → `VerifiedEvent{Body, Metadata}`.
-   - On failure → `*connect.Error` with `CodeUnauthenticated`,
-     surfaced as HTTP 401.
-4. Manager merges static `Invocation.Metadata` with
-   verifier-stamped facts (verifier wins on collision so an
-   operator can't override `stripe_signed_timestamp` with a stale
-   literal), builds `SubmitInvocationRequest`, dispatches to the
-   in-process `*ingress.Server`.
-5. Response: 202 Accepted with the `invocation_id_str` body on
-   successful submit; HTTP-coded error on verifier or submit
-   failure.
-
-**Why ship verifiers built-in (vs. operator-writes-everything):** the
-Stripe / GitHub / Slack schemes have well-defined, stable specs (last
-breaking changes 2019, 2020, never). One audited implementation per
-vendor is safer than every operator re-implementing HMAC with
-`crypto/hmac` and hoping they got the timing-safe compare right. The
-3-vendor scope is deliberately small — the long tail (Twilio's
-URL+params reconstruction, PayPal's cert chain, AWS SNS) is heavier
-and lower-volume, and operators with those needs can write a
-`Verifier` impl and call `RegisterVerifier` without forking.
-
-**Out of scope today:**
-
-- Per-source rate limiting: webhook bursts (Stripe retries,
-  GitHub app installs) can saturate ingress; today the engine's
-  generic `cfg.Ingress.HTTP.MaxBodyBytes` + tcp-level limits are
-  the only knobs.
-- Outbound webhook delivery (Reflow → external system): handler
-  code can use `net/http` directly; durable retries are the
-  handler's responsibility via the SDK's `Run` combinator.
-- Asymmetric (hybrid) encryption for tenant-pushed secrets: the
-  current Tink-keyset shape accommodates `tink-go/v2/hybrid` as a
-  template-swap, but no concrete use case justifies the API
-  surface today. Lands when self-service-tenant or JWE-payload
-  vendors arrive.
-- Journal/state encryption-at-rest: sketched, not scheduled — uses
-  `tink-go/v2/keyderivation` to derive per-`object_key` AEADs
-  from a master keyset (itself encrypted by the same KEK pipeline
-  the SecretStore already uses). Pebble values today are plaintext;
-  disk-level encryption is the operator's concern.
+Removed on `strip-to-core`. Reflow no longer has webhook ingress; the historical design is preserved in git history.
 
 ---
 
 ## 6.15 Configuration Planes
 
-**Status: proposed.** Today every config knob lives in `pkg/reflow.Config`
-(koanf, file + env, restart-to-change). The recent multi-tenant work
-(`feat(cluster/tenants)`, `feat(auth): per-tenant OIDC`,
-`feat(engine/encstore): per-tenant DEK`, `feat(ingress/quota): per-tenant`,
-`feat(audit): durable config-change audit log`) has begun moving cluster
-state onto shard 0 with per-node reconcilers, but the public `Config`
-struct and CLI surface still conflate three distinct administrative
-planes. This section is the target architecture that the remaining
-migration is aimed at; current-state and migration gap are in the last
-subsection.
-
-The shape generalizes the cluster-managed-app-config pattern (§6.14, §11
-"Cluster-managed app config", §11 "Unified secret management") to *all*
-cluster policy, and bifurcates audit and identity along the same plane
-boundaries.
+**Status: superseded — retained as design history, does NOT describe the
+current system.** This section proposed a config-plane target architecture
+built on the pre-strip multi-tenant batteries (per-tenant OIDC, per-tenant
+encstore DEK, ingress quota, a durable audit log, and the logical-`TenantTable`
+tenant model). `strip-to-core` removed all of those, so the three-plane
+proposal below no longer reflects reality. What actually landed: koanf
+bootstrap config (`pkg/reflow.Config`, file + env) plus shard-0 tables
+(`DeploymentRecord`, `SecretRecord`, `CARootRecord`, `JoinTokenRecord`,
+`PlatformConfigRecord`) reconciled per node, the `ClusterCtl` (fleet ops) /
+`Config` (app config) RPC split, and Cedar authz (§6.15.8). In-cluster
+tenancy is LP-banding (§6.2), not the per-tenant planes described below.
+§6.15.1–§6.15.3 are that defunct proposal, preserved for historical context;
+§6.15.4 (PKI via CertMagic), §6.15.7 (join-token bootstrap), and §6.15.8
+(authz via Cedar) describe current, implemented behavior.
 
 ### 6.15.1 Three administrative planes
 
@@ -1501,7 +1244,7 @@ boundaries.
 |---|---|---|---|
 | **Platform** | Cluster operator | Bootstrap koanf + shard-0 `PlatformConfigTable` | Listener binds, mesh CA bundle, KMS provider enablement, audit retention, snapshot URL + interval + tiered retention, rebalance mode, ingress/admin behavior, default tenant quotas, cluster-default operator OIDC issuers |
 | **Tenant lifecycle** | Cluster operator, per-tenant | Shard-0 `TenantTable` via `ClusterCtl` RPCs | Create/delete tenant, quotas, BYOK KEK URI + credential ref, tenant audit retention + sink config, optional per-tenant handler CA bundle |
-| **Tenant config** | Tenant admin, scoped to own tenant | Shard-0 tenant-prefixed tables via `Config` RPCs (keyed by `tenant_id`) | Event sources, webhook sources, secrets, additional OIDC issuers, deployments, secret rotation |
+| **Tenant config** | Tenant admin, scoped to own tenant | Shard-0 tenant-banded tables via `Config` RPCs | Deployments, secrets + secret rotation, CA roots, join tokens, cluster authz policy (`PlatformConfig`) |
 
 Plane boundaries are enforced by the starter policy: platform and
 tenant-lifecycle mutations require an `operator/*` principal (with
@@ -1584,19 +1327,20 @@ out-of-band edits.
 
 ### 6.15.4 PKI via CertMagic + pluggable Issuer
 
-Today's offline `reflowd pki {init-ca|issue-cert|issue-operator}`
-subcommands, the `internal/pki` package, the per-node cert paths in
-koanf, the SPIFFE URI SAN extraction, and the operator's manual
-cert-rotation choreography all collapse into a CertMagic-managed
-lifecycle with a single configurable seam: `certmagic.Issuer`.
+PKI is a CertMagic-managed lifecycle (`internal/certmgr`) with a single
+configurable seam: `certmagic.Issuer`. CA bootstrap is
+`reflowd config ca {init|list|delete}` (mesh-CA trust roots live in
+shard 0's `CARootTable`); operator and tenant leaves are minted by
+`reflowd config issue-operator` / `issue-tenant`. Identity is the leaf
+CN (`<kind>/<name>`), not a SPIFFE URI SAN; per-node cert material is
+owned by CertMagic, not hand-managed cert paths.
 
 Three issuer modes ship in-binary, always-linked and config-gated —
-same pattern as KMS providers in `pkg/kms/{aws,gcp,blob,hcvault}/` and
-event-source backends in `internal/ingress/eventsource/factory_*.go`:
+same pattern as KMS providers in `pkg/kms/{aws,gcp,blob,hcvault}/`:
 
 | Mode | When to use | Implementation |
 |---|---|---|
-| **`builtin`** (default sub-mode `signing_mode = local`) | No external CA; the cluster is its own CA. Default for non-k8s deployments. A custom `certmagic.Issuer` impl that signs leaves with a cluster root key stored in shard 0 as a `SecretRecord` — Tink keyset, KMS-wrapped at rest through the existing SecretStore KEK pipeline (§6.14, `pkg/kms/{aws,gcp,blob,hcvault}/`). Per-node `SecretStore` Resolver decrypts at boot; plaintext `*ecdsa.PrivateKey` sits in `atomic.Pointer` and `crypto/x509.CreateCertificate` signs in-process. Every issuance is proposed through the FSM, so the audit log records every cert event (issuance, renewal, revocation). An opt-in `signing_mode = kms_remote` sub-mode keeps the private key inside the KMS HSM (see below). | `pkg/pki/builtin/` — `internal/pki`'s existing `crypto/x509` code refactored behind the `Issuer` interface. ~300 LOC. |
+| **`builtin`** (default sub-mode `signing_mode = local`) | No external CA; the cluster is its own CA. Default for non-k8s deployments. A custom `certmagic.Issuer` impl that signs leaves with a cluster root key stored in shard 0 as a `SecretRecord` — Tink keyset, KMS-wrapped at rest through the existing `internal/secretstore` KEK pipeline (`pkg/kms/{aws,gcp,blob,hcvault}/`). Per-node `SecretStore` Resolver decrypts at boot; plaintext `*ecdsa.PrivateKey` sits in `atomic.Pointer` and `crypto/x509.CreateCertificate` signs in-process. Every issuance is proposed through the FSM, so the audit log records every cert event (issuance, renewal, revocation). An opt-in `signing_mode = kms_remote` sub-mode keeps the private key inside the KMS HSM (see below). | `internal/certmgr` — `BuiltinIssuer` (`NewBuiltinIssuer`) wraps `crypto/x509` behind the `certmagic.Issuer` interface. |
 | **`acme`** | External ACME-compatible CA: Smallstep CA, HashiCorp Vault PKI's ACME endpoint, AWS Private CA, anything that speaks ACME. Best for organizations with an existing private-CA fleet. | `certmagic.ACMEIssuer` configured with `CA = <operator-provided-URL>`. Zero custom code; CertMagic already implements this. |
 | **`static-files`** | Kubernetes deployments using cert-manager (cert-manager-csi-driver, csi-driver-spiffe, trust-manager); operator-provisioned sidecar injection; any "the cert is already on disk and rotates externally" setup. | CertMagic's `CacheUnmanagedCertificatePEMFile` + a filesystem watcher that re-loads on cert change. ~50 LOC of wiring; no Issuer impl — the external system *is* the issuer, Reflow only consumes. |
 
@@ -1634,7 +1378,7 @@ become invalid. Not a runtime flip.
 
 The CertMagic `Issuer` interface, the FSM audit-log path, identity
 extraction, and the renewal/revocation RPCs are identical across
-sub-modes. Only signer construction in `pkg/pki/builtin/` changes.
+sub-modes. Only signer construction in `internal/certmgr` changes.
 `local` is the right v1 default; `kms_remote` is for the compliance
 case and is over-engineering otherwise (the memory-extraction threat
 implies host-root compromise, at which point the attacker has many
@@ -1655,131 +1399,44 @@ other things to steal).
   lifetimes instead; revocation propagates via `PlatformConfigTable`
   notifier).
 
-**Identity extraction (replaces SPIFFE URI SAN parsing):**
+**Identity extraction (leaf CN, via `creds.LeafPrincipal`):**
 
 - `CN=node/<id>` for cluster nodes. `ClusterCtl/AddNode` and
-  `ClusterCtl/SelfJoin` gate on `CN.id == req.node_id` — same
-  defense-in-depth as today's SPIFFE check (`checkSelfJoinPrincipal`),
-  just reading a different field on the leaf.
+  `ClusterCtl/SelfJoin` gate on `CN.id == req.node_id`
+  (`checkSelfJoinPrincipal`).
 - `CN=operator/<name>` for cluster operators authenticating via mTLS.
-- Tenant admins authenticate via OIDC only (per §6.15.1) — never via
-  cluster-CA-signed certs. Tenant ↔ engine handler RPCs use either
-  the cluster mesh CA (when tenants accept "use ours") or a per-tenant
-  CA bundle attached to the `TenantRecord` (BYO).
+- `CN=tenant/<n>` for tenant principals on the ingress data plane;
+  the Cedar policy (§6.15.8) isolates each tenant to its own LP band.
 
-**Removed by this rework:**
+**Removed on `strip-to-core`:**
 
-- `cmd/reflowd/pki.go` and the offline
-  `reflowd pki {init-ca,issue-cert,issue-operator}` subcommands.
-- `internal/pki/` (refactored into `pkg/pki/builtin/`).
-- `pkg/spiffe/` and the SPIFFE URI parsing in
-  `internal/auth/spiffe_authfunc.go` (renamed → `mesh_authfunc.go`,
-  switches to CN extraction).
-- `cfg.Auth.TrustDomain`, listener `--tls-cert-file` /
+- The offline `reflowd pki` subcommand and the `internal/pki` package
+  (the in-cluster CA + `BuiltinIssuer` live in `internal/certmgr`; CA
+  bootstrap is `reflowd config ca`).
+- SPIFFE URI SAN parsing; identity extraction is leaf-CN via
+  `creds.LeafPrincipal` (`internal/auth/mesh_authfunc.go`).
+- `--trust-domain` config, listener `--tls-cert-file` /
   `--tls-key-file` flags, manual per-node cert-path management.
-- The CA-bundle-file-in-koanf bootstrap step (replaced by the
-  join-token + optional pin dance in §6.15.7).
 
 The auth chain in §6.13 stays structurally identical — still
-"verify TLS chain + extract identity from leaf" — just with a
-different identity-extraction function and CertMagic owning the
-material lifecycle.
+"verify TLS chain + extract identity from leaf" — just with leaf-CN
+identity extraction and CertMagic owning the material lifecycle.
 
 ### 6.15.5 Audit bifurcation
 
-Mutations on the three planes route to two logical audit streams
-backed by one physical table:
-
-| Stream | Records | Retention controlled by | Sink controlled by |
-|---|---|---|---|
-| **Cluster audit** (`AuditLogTable`, `tenant_id=0`) | Platform + tenant-lifecycle plane mutations: create/delete tenant, set quota, change platform config, rotate mesh CA, upsert cluster-default OIDC, etc. | `PlatformConfig.audit.retention_duration` (currently `AuditConfig.RetentionDuration` in koanf — moves to Raft) | `PlatformConfig.audit.sink` (currently `AuditConfig.Logger` — moves to Raft as a sink descriptor; operator wires the concrete `slog.Handler` programmatically) |
-| **Tenant audit** (`AuditLogTable`, keyed by `tenant_id`) | Tenant-config plane mutations: upsert event source, rotate secret, add OIDC issuer, etc. | `TenantRecord.audit.retention_duration` (per-tenant) | `TenantRecord.audit.sink` (per-tenant — tenant admin pipes to their own SIEM) |
-
-One physical table keyed by `(tenant_id, ts_ms, seq)` is operationally
-simpler than two and matches the schema we already have:
-`AuditLogRecord.tenant_id` exists today (proto field 5). The
-access-control boundary is enforced by the Config service — a
-tenant-admin's read query is scoped by their principal's `tenant_id`.
-A two-table physical split is a defensive option if a tenant ever
-needs sovereignty over their audit (separate Pebble keyspace, separate
-retention loop) and is deferred until a real requirement appears.
-
-The retention GC pass on the metadata leader (`Command_GcAuditLog`)
-already accepts a `before_ts_ms` bound; extending it to a
-`(tenant_id, before_ts_ms)` tuple lets per-tenant retention land
-without changing the GC mechanic.
+Removed on `strip-to-core`. There is no audit subsystem (`auditLogHardLimit` in `internal/config` is just a per-request scan cap, not an audit log).
 
 ### 6.15.6 Current state and migration gap
 
-Landed (recent commits):
-
-- Shard-0 `TenantTable` with `ClusterCtl` CRUD + `tenant_name_idx`.
-- `tenant_id` propagated end-to-end through the apply path:
-  `InvokeCommand` → `Scheduled` (slot-0 transient) → `JEInput`
-  (durable) → `InputCommandMessage` headers → `ctx.Metadata()`.
-- Per-tenant `TenantDEKTable` + value-AEAD wrapper in
-  `internal/storage/encstore`.
-- Per-tenant OIDC reconciliation against `TenantTable` notifier
-  (`internal/auth/tenant_oidc_reconciler.go`) — cluster-default
-  issuers seed every snapshot, per-tenant issuers fold in on top.
-- Per-tenant in-flight invocation quota.
-- `AuditLogTable` on shard 0 with config-change audit log + retention
-  GC (cluster-audit stream is live; tenant-audit stream awaits the
-  per-tenant retention/sink wiring).
-
-Not yet landed (the work this section motivates):
-
-1. **`PlatformConfigTable` + bootstrap-seed path** — proto, FSM,
-   ClusterCtl RPCs, CLI (`reflowd config platform {get,set,describe}`),
-   per-node reconciler with the `atomic.Pointer`-swap pattern. The
-   biggest single piece.
-2. **`tenant_id` on `EventSourceRecord`, `WebhookSourceRecord`,
-   `SecretRecord`** — currently flat. Required for tenant-admin
-   authz to mean anything. Webhook path uniqueness becomes per-tenant
-   (`/webhooks/<tenant_id>/...` or virtual-host-keyed at the
-   `pkg/hostmux` seam).
-3. **CLI restructure** — `reflowd config eventsources` →
-   `reflowd config --tenant=<id> eventsources` (or
-   `reflowd tenant <id> eventsources`); top-level
-   `reflowd config platform ...` becomes the platform-only entry.
-4. **koanf removal entirely** — delete `pkg/reflow/config`, drop the
-   `koanf` + `koanf/providers/*` deps, replace with `flag` + env-var
-   read in `cmd/reflowd serve`. The `Config` struct on `pkg/reflow`
-   survives only as a programmatic embed-time type for SDK consumers
-   wanting to construct a Host without the CLI.
-5. **CertMagic adoption + `pkg/pki/{builtin,acme,static-files}/`** —
-   refactor `internal/pki` → `pkg/pki/builtin/` (implements
-   `certmagic.Issuer`), wire `acme` mode (no custom code beyond
-   reading the operator-provided URL out of `PlatformConfig`) and
-   `static-files` mode (filesystem watcher +
-   `CacheUnmanagedCertificatePEMFile`). Delete `cmd/reflowd/pki.go`
-   and `pkg/spiffe/`. Rename `internal/auth/spiffe_authfunc.go` →
-   `mesh_authfunc.go`, switch to CN extraction.
-6. **Join-token bootstrap** — `JoinTokenTable` on shard 0,
-   `reflowd cluster token issue` CLI subcommand, `ClusterCtl/SelfJoin`
-   rewritten to consume tokens + CSRs + mint leaves via the
-   configured Issuer. `ClusterCtl/RenewCert` for steady-state
-   renewal. `RevocationRecord` for revocation. See §6.15.7.
-7. **EventSources koanf bootstrap removed** — moot once koanf is
-   gone; event sources are tenant-admin-managed only.
-8. **Audit bifurcation wiring** — `AuditLogRecord.tenant_id` already
-   exists; add per-tenant retention duration on `TenantRecord` and
-   per-tenant sink descriptor, extend `Command_GcAuditLog` to the
-   `(tenant_id, before_ts_ms)` tuple.
-9. **Authz: path-glob → Cedar.** Embed Cedar schema at
-   `pkg/authz/schema.cedar`. Add `PlatformConfigTable.cluster_authz_policy_text`
-   and `TenantRecord.tenant_authz_policy_text` proto fields. Implement
-   `policyHandler` middleware against `cedar.Authorize` with a
-   procedure→resource-extractor map. Implement upload-time checks:
-   schema validation (cedar-go ships `x/exp/schema/validate`), AST
-   structural lint (~150 LOC), PBT invariant test in CI. Delete
-   `starter_policy.json`, `cfg.Auth.PolicyFile`, and the 30s polling
-   watcher. Per-node reconciler with `atomic.Pointer[*cedar.PolicySet]`
-   swap on `PlatformConfigTable` / `TenantTable` notifier wake. See
-   §6.15.8.
-
-Reflow is pre-production (per `CLAUDE.md`); each item lands as a
-non-backward-compatible refactor with no compat shims.
+The authz migration landed: the old path-glob policy
+(`starter_policy.json`, `cfg.Auth.PolicyFile`, the polling watcher) is
+gone, replaced by Cedar (`internal/authz`, §6.15.8) with the policy
+text stored on shard 0's `PlatformConfigTable` and reconciled per node
+via an `atomic.Pointer[*cedar.PolicySet]` swap. Mesh identity is the
+leaf CN (`creds.LeafPrincipal`); the CertMagic-based PKI lives in
+`internal/certmgr`. The broader multi-plane / tenant-table /
+event-source / quota / audit roadmap this section once motivated was
+dropped on `strip-to-core` — there is no remaining gap to migrate here.
 
 ### 6.15.7 Join-token bootstrap
 
@@ -1884,6 +1541,19 @@ reflowd serve --id=4 --data-dir=/var/lib/reflow \
   surface without the OCSP infrastructure.
 
 ### 6.15.8 Authz via Cedar
+
+> **Status: landed.** The Cedar migration described below is implemented
+> (`internal/authz`, `cedar-policy/cedar-go`); the path-glob
+> `starter_policy.json` is gone. The authoritative schema is
+> `internal/authz/schema.cedar` — principals `ClusterOperator` / `Node` /
+> `TenantAdmin` / `User` / `Anonymous`; resources `SecretRecord` /
+> `DeploymentRecord` / `Invocation` / `PlatformConfig`; actions are the bare
+> RPC method names grouped into planes (`IngressActions`, `MeshActions`,
+> `TenantConfigActions`, `ConfigReadActions`, `PlatformConfigActions`,
+> `ClusterAdminActions`). The schema/policy/code snippets below are the
+> original design illustration and pre-date `strip-to-core`: examples using
+> `EventSourceRecord` / `WebhookSourceRecord` / `AnonymousJoiner` are
+> illustrative only — those entities are not in the current schema.
 
 Today's path-glob policy (`internal/auth/starter_policy.json`) can
 express plane separation ("`operator/*` may call

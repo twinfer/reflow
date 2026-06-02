@@ -1,22 +1,22 @@
 # Solution Architecture Document
 # Durable Execution Engine in Go
 
-**Version:** 0.8 (Draft)
-**Date:** 2026-05-22
+**Version:** 0.9 (Draft)
+**Date:** 2026-06-01
 **Status:** Single-node foundation, Connect bidi wire protocol between
 engine and Go SDK (`pkg/handler`), Virtual Objects (single-writer gate,
 idempotency, retry policy, eager state, attach RPCs), combinator futures
 (`Promise.all` / `Promise.race`), multi-node replication (mTLS admin,
 dynamic membership including joiner-driven `SelfJoin`, DR snapshots),
-auth (SPIFFE mTLS for cluster mesh + OIDC bearer for ingress, embedded
-starter policy with hot reload), cluster-managed app config (shard-0
-tables for deployments, event sources, webhooks, secrets — Connect-RPC
-admin surface split into `ClusterCtl` for fleet ops + `Config` for app
-config, kubectl-shaped `reflowd config apply / get / export` CLI),
-two-layer routing (4096 logical partitions over N shards, consistent-hash
-planner, six-phase cross-shard LP transfer saga, autonomous LP rebalancer
-with `off | advisory | auto` modes + operator drain) all implemented.
-Non-Go SDKs outstanding.
+auth (mesh-only mTLS with leaf-CN identity — node / operator / tenant —
+and Cedar authorization), cluster-managed app config (shard-0 tables for
+deployments, secrets, CA roots, join tokens, and the cluster authz policy
+— Connect-RPC admin surface split into `ClusterCtl` for fleet ops +
+`Config` for app config), two-layer routing (16384 logical partitions over
+N shards, consistent-hash planner, six-phase cross-shard LP transfer saga,
+autonomous LP rebalancer with `off | advisory | auto` modes + operator
+drain), and in-cluster multi-tenancy via tenant LP-banding + Cedar
+isolation all implemented. Non-Go SDKs outstanding.
 
 ---
 
@@ -89,7 +89,9 @@ one process with one data directory.
 ## 3. Non-Goals
 
 - Replacing Kafka or general-purpose message brokers.
-- Multi-tenancy.
+- Multi-tenant SaaS parity (per-tenant billing, quotas, DR). In-cluster
+  tenant isolation — tenant LP-banding + Cedar — is implemented (see §6),
+  but a full SaaS control plane is not a goal.
 - WASM-based handler execution.
 - **Polyglot SDK parity with Restate.** Reflow's first-class SDK is Go;
   other languages are supported only via the wire protocol, on whatever
@@ -164,7 +166,8 @@ Each partition is an independent unit: one dragonboat Raft group, one Pebble ins
 | REST router (operator-facing `/v1/*` + ExtraRoutes) | `go-chi/chi/v5` | MIT |
 | Snapshot archival (filesystem + cloud blob) | `gocloud.dev/blob` | Apache 2.0 |
 | Serialization + IDL | `google.golang.org/protobuf` + `buf` v2 | BSD-3 / Apache 2.0 |
-| Authn/Authz | stdlib `crypto/tls`, custom SPIFFE URI mapper + proto-annotation authz (`internal/auth`) | — |
+| Authn | stdlib `crypto/tls`, mesh mTLS leaf-CN principal mapper (`internal/auth`) | — |
+| Authz | Cedar policy engine (`cedar-policy/cedar-go`, `internal/authz`) | Apache 2.0 |
 | Virtual-Object FSM | `qmuntal/stateless` v1.8.0 | BSD-2 |
 | Structured logging | `log/slog` (stdlib) | — |
 | Metrics | `prometheus/client_golang` | Apache 2.0 |

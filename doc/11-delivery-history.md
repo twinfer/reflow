@@ -417,3 +417,52 @@ wire SST upload RPC + dest Ingest end-to-end`.)
   Go SDK (§6.10). These ride on whatever effort the community
   contributes; reflow itself guarantees the wire-protocol surface, not
   the SDK quality across languages.
+
+---
+
+## Strip to core: mesh-only auth + Cedar, battery removal, in-cluster tenancy (done)
+
+A deliberate narrowing of the surface area. The auth model collapsed to
+mesh-only mTLS + Cedar, several "batteries" were removed wholesale (no
+proto service, no record type, no package left behind), the routing
+modulus widened, and multi-tenancy was re-grounded on LP-banding instead
+of the old logical-tenant model. Entries above that record SPIFFE-URI
+identity, the OIDC/Bearer authenticator, path-glob authz, event sources,
+and webhooks are accurate history of what those phases delivered; this
+entry records their removal.
+
+- **Auth → mesh-only mTLS leaf-CN + Cedar.** The `Principal` is now the
+  verified mTLS leaf's Common Name, a bare `<kind>/<name>` with
+  `kind ∈ {node, operator, tenant}` (`internal/auth/mesh_authfunc.go` →
+  `creds.LeafPrincipal`). Removed: SPIFFE URI SAN identity (no
+  trust-domain segment, no `--trust-domain` config), the Bearer-JWT /
+  OIDC-issuer authenticator (`jwt_authfunc.go` deleted), and the
+  path-glob `starter_policy.json`. A request with no client cert is
+  anonymous; the per-procedure decision is now Cedar's.
+- **Authz → Cedar.** `internal/authz` evaluates `cedar-policy/cedar-go`
+  policies, replacing the old path-glob / proto-annotation authz. The
+  foundational policy gates `/reflow.clusterctl.v1.ClusterCtl/*` and
+  `/reflow.config.v1.Config/*` to `operator/*` (one carve-out:
+  `SelfJoin` for `node/*`), and enforces full tenant isolation on the
+  ingress data plane.
+- **Batteries removed.** Event sources, webhooks, OIDC ingress, quota,
+  encstore, audit, and the old logical-tenant model are gone — no proto
+  service, no record type, no package. The offline CA path went with
+  them: the `reflowd pki` subcommand and `internal/pki` package were
+  deleted (in-cluster issuance via the `MeshSign` / `Config` services
+  is the only path now). Live proto services are exactly: `ClusterCtl`,
+  `Config`, `Delivery`, `DiscoveryService`, `HandlerService`, `Ingress`,
+  `MeshSign`.
+- **Routing modulus widened.** `keys.LPCount` went 4096 → 16384, giving
+  finer LP granularity for hot-spot relief and tenant banding.
+- **In-cluster multi-tenancy via tenant LP-banding.** A tenant folds
+  into `partition_key`'s LP band rather than being a key or id field:
+  the LP's high `TenantBandBits` (8) select the band, the low
+  `IntraLPBits` (6) carry the intra-tenant hash → 256 bands × 64 LPs
+  (`keys.BandLP` / `keys.TenantFromPartitionKey`). A per-tenant range is
+  just that band's contiguous LP prefix, so existing LP machinery
+  (transfer, dedup, range-delete) isolates tenants for free. Tenant
+  identity is a verified `tenant/<n>` mTLS leaf, issued via
+  `reflowd config issue-tenant` (CSR with `CN=tenant/<id>` →
+  `Config.IssueTenant`); Cedar enforces tenant isolation on the ingress
+  data plane.

@@ -456,10 +456,16 @@ func startIngressListener(
 	authzIc connect.Interceptor,
 	secrets *secretstore.Resolver,
 	metrics *observability.Metrics,
-	metricsRegisterer prometheus.Registerer,
 	logger *slog.Logger,
 ) (*ingress.Runtime, *creds.ListenerCreds, error) {
+	if err := validateWebhooks(cfg.Webhooks); err != nil {
+		return nil, nil, fmt.Errorf("reflow: webhook config: %w", err)
+	}
 	if cfg.Ingress.Disabled {
+		if len(cfg.Webhooks) > 0 {
+			logger.Warn("reflow: webhooks configured but ingress is disabled; webhook routes will not be served",
+				"count", len(cfg.Webhooks))
+		}
 		logger.Info("reflow: ingress disabled (cfg.ingress.disabled=true); clients must use a separate ingress fleet")
 		return nil, nil, nil
 	}
@@ -477,6 +483,9 @@ func startIngressListener(
 		Log:              logger,
 		Middleware:       mw,
 		AuthzInterceptor: authzIc,
+	}
+	if len(cfg.Webhooks) > 0 {
+		icfg.ExtraRoutes = webhookRoutes(cfg.Webhooks, secrets, logger)
 	}
 	rt, err := ingress.Start(ctx, eh, icfg)
 	if err != nil {
@@ -830,7 +839,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	}
 
 	multiNode := len(cfg.Cluster.Peers) > 1
-	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, authzInterceptor, secrets, metrics, metricsRegisterer, logger)
+	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, authzInterceptor, secrets, metrics, logger)
 	if err != nil {
 		if snapshotCxl != nil {
 			snapshotCxl()

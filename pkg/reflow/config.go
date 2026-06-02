@@ -43,6 +43,7 @@ type Config struct {
 	KMS       KMSConfig       `koanf:"kms"`
 	PKI       PKIConfig       `koanf:"pki"`
 	Rebalance RebalanceConfig `koanf:"rebalance"`
+	Webhooks  []WebhookConfig `koanf:"webhooks"`
 }
 
 // KMSConfig configures the KMS providers Reflow registers in Tink's
@@ -425,6 +426,37 @@ type IngressConfig struct {
 	// insecure; multi-node deployments emit a startup warning so the
 	// operator knows the client surface is unauthenticated.
 	Creds creds.Spec `koanf:"creds"`
+}
+
+// WebhookConfig declares one inbound vendor webhook mounted on the
+// ingress listener. Each entry adds a POST route at Path that verifies
+// the vendor signature (via the pkg/webhook verifier named Provider),
+// then submits an invocation of Service/Handler with the verified body
+// as input. The route authenticates by signature — it is mounted
+// outside the mesh auth/authz chain and submits on the untenanted band
+// (band 0). The verifier metadata + a best-effort idempotency key ride
+// through to the handler. See pkg/reflow/webhook.go.
+type WebhookConfig struct {
+	// Provider selects the registered verifier ("stripe", "github",
+	// "slack", or an operator-registered name). Required.
+	Provider string `koanf:"provider"`
+	// Path is the URL path the vendor POSTs to, e.g. "/webhooks/stripe".
+	// Must start with "/" and be unique across entries. Required.
+	Path string `koanf:"path"`
+	// SecretName is the secret-store key holding the signing secret
+	// (the HMAC key) handed to the verifier, resolved per request via
+	// the per-node secretstore.Resolver. Required.
+	SecretName string `koanf:"secret_name"`
+	// Service and Handler are the durable target the verified event is
+	// submitted to. The handler reads the raw body as input and the
+	// verifier facts via ctx.Metadata(); it typically parses and fans
+	// out (the event schema lives in the handler, not here). Required.
+	Service string `koanf:"service"`
+	Handler string `koanf:"handler"`
+	// ObjectKey optionally pins the target object key (for keyed
+	// services / virtual objects). Usually empty — the durable handler
+	// derives per-entity routing from the parsed event.
+	ObjectKey string `koanf:"object_key"`
 }
 
 // MetricsConfig configures the Prometheus collector and the optional

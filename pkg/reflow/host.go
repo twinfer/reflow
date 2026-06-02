@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/cockroachdb/pebble/v2"
+
 	"github.com/twinfer/reflow/internal/connectserver"
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/delivery"
@@ -33,6 +35,11 @@ type Host struct {
 	snapshotCxl    context.CancelFunc
 	snapshotRepo   *snapshot.BlobRepository
 	handlerSigner  *creds.Signer
+	// pebbleCache / pebbleFileCache are the node-global Pebble caches
+	// shared across every shard DB (built in Run). Close Unrefs them
+	// after the engine closes its DBs — see Close.
+	pebbleCache     *pebble.Cache
+	pebbleFileCache *pebble.FileCache
 }
 
 // Close stops every partition and the underlying NodeHost. Idempotent.
@@ -87,6 +94,18 @@ func (h *Host) Close() error {
 			firstErr = err
 		}
 		h.engine = nil
+	}
+	// Unref the node-global Pebble caches only after the engine — and
+	// therefore every shard DB that held a ref — has closed. Each is
+	// owned by exactly one ref here, so this drops the last one and frees
+	// the cache memory.
+	if h.pebbleCache != nil {
+		h.pebbleCache.Unref()
+		h.pebbleCache = nil
+	}
+	if h.pebbleFileCache != nil {
+		h.pebbleFileCache.Unref()
+		h.pebbleFileCache = nil
 	}
 	if h.authCloser != nil {
 		if err := h.authCloser(); err != nil && firstErr == nil {

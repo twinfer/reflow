@@ -105,25 +105,25 @@ Run:
 go test -tags=loadtest -timeout=10m -count=1 -run=TestLoad_SteadyState -v ./internal/loadgen/...
 ```
 
-Reference (commit `d849283`, 2026-05-16, Darwin/arm64 laptop):
+Reference (2026-06-02, branch `strip-to-core`, Darwin/arm64 laptop; post Tier-1 Pebble tuning — shared block+file cache, L0/memtable write-stall thresholds, 10s range-tombstone flush delay, now the default per-shard open path):
 
 ```
-- Issued: 440        # rate-limit + concurrency-cap interplay; not a deterministic target
-- Completed: 440
+- Issued: 494        # rate-limit + concurrency-cap interplay; not a deterministic target
+- Completed: 494
 - Failed: 1          # within the 1% cancelled-propose tolerance
 - InFlightAtEnd: 0
 - Duration: 20s
 
 Latency (end-to-end, µs)
-- p50:  108_735
-- p90:  200_831
-- p99:  308_223
-- p999: 403_199
-- max:  403_199
+- p50:  107_967
+- p90:  193_279
+- p99:  294_655
+- p999: 365_055
+- max:  365_055
 
 Pebble
-- peak L0 files (any shard, any node): 1
-- mean write-amp across samples:       1.025
+- peak L0 files (any shard, any node): 0
+- mean write-amp across samples:       1.022
 
 Invariants: all passed.
 ```
@@ -171,17 +171,17 @@ Run:
 go test -tags=loadtest -timeout=10m -count=1 -run=TestLoad_TransferUnderLoad -v ./internal/loadgen/...
 ```
 
-Reference (2026-06-02, branch `strip-to-core`, Darwin/arm64 laptop; seed 3000 rows × 512 B ≈ 1.5 MiB SST/hop, 30s workload):
+Reference (2026-06-02, branch `strip-to-core`, Darwin/arm64 laptop; seed 3000 rows × 512 B ≈ 1.5 MiB SST/hop, 30s workload; post Tier-1 Pebble tuning — now the default per-shard open path):
 
 ```
-- Workload: issued 572, completed 572, failed 1 (within the 1% tolerance)
+- Workload: issued 700, completed 697, failed 1 (within the 1% tolerance); 3 in flight at the cutoff
 - Transfers: 10 hops, 9 reached CLEANED, 1 cancelled at the 30s cutoff (mid-saga, FLIPPED)
-- peak dest L0 after ingest: 3 files
-- max dest write-amp after ingest: 1.255
-- continuous peak L0 (any shard/node): 3; mean write-amp: 1.159
+- peak dest L0 after ingest: 0 files
+- max dest write-amp after ingest: 1.549
+- continuous mean write-amp: 1.276
 ```
 
-Reading: ingesting ~1.5 MiB transfer SSTs into workload-busy dest shards barely perturbs L0 (peak 3) and leaves write-amp ~1.2 — at this scale plain `Ingest` shows no L0 pressure, so `IngestAndExcise` is not yet justified. Push `seedRows` / the LP count up to probe the threshold where L0 climbs into the dozens; that's the signal that would flip the decision.
+Reading: under the tuned per-shard options (L0CompactionThreshold=2 + 10s range-tombstone flush delay), ingesting ~1.5 MiB transfer SSTs into workload-busy dest shards leaves L0 at 0 — more aggressive L0 compaction trades a hair of write-amp (~1.5 vs the prior ~1.25) for no L0 pressure at all. Plain `Ingest` remains more than sufficient; `IngestAndExcise` is still not justified. Push `seedRows` / the LP count up to probe the threshold where L0 climbs into the dozens; that's the signal that would flip the decision.
 
 ## Conventions worth knowing before editing
 

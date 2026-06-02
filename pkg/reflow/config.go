@@ -383,6 +383,22 @@ type StorageConfig struct {
 	// DataDir holds per-partition state and dragonboat's Raft log.
 	// Layout: <DataDir>/raft/, <DataDir>/p{shardID}/state/.
 	DataDir string `koanf:"data_dir"`
+
+	// PebbleCacheBytes is the node-global Pebble block-cache budget,
+	// shared across every shard DB on the node. 0 falls back to
+	// storage.DefaultPebbleCacheBytes (256 MiB). One shared cache
+	// replaces Pebble's per-DB default, which on reflow's
+	// one-DB-per-shard layout would otherwise multiply by shard count
+	// and fragment the working set into N independent LRUs.
+	PebbleCacheBytes int64 `koanf:"pebble_cache_bytes"`
+
+	// MaxSyncDurationMs arms Pebble disk-stall detection: a disk
+	// operation that meets or exceeds it crashes the process (a wedged
+	// disk otherwise keeps the node in the Raft quorum while it silently
+	// stops applying). 0 (unset) defaults to 20000 ms; a negative value
+	// disables the crash entirely (events are still logged + counted).
+	// Mirrors cockroach storage.max_sync_duration.
+	MaxSyncDurationMs int64 `koanf:"max_sync_duration_ms"`
 }
 
 // IngressConfig configures the client-facing Connect listener. One

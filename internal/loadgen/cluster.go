@@ -26,8 +26,18 @@ import (
 	"github.com/twinfer/reflow/internal/engine/delivery"
 	"github.com/twinfer/reflow/internal/engine/rebalance"
 	"github.com/twinfer/reflow/internal/engine/routing"
+	"github.com/twinfer/reflow/internal/storage"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
+
+// loadgenPebbleCacheBytes is the per-node Pebble block-cache budget for
+// in-process clusters. Deliberately small (vs the 256 MiB production
+// default) to keep the many clusters a full integration run spins up
+// within reasonable memory — the cache *size* does not affect the
+// write-amp / L0 numbers the loadtests measure (those are write-path),
+// only read latency. The shared-cache + tuned-threshold *path* is what
+// the loadtests exercise, matching production.
+const loadgenPebbleCacheBytes int64 = 32 << 20 // 32 MiB
 
 // PartitionInfo summarizes one shard's leadership state from a single
 // node's point of view. Mirrors clusterctlv1.PartitionLeadership but lives
@@ -95,6 +105,11 @@ type InProcessNode struct {
 	// hold the local dragonboat NodeHost open and deadlock nh.Close.
 	deliveryCancel context.CancelFunc
 	raftAddr       string
+	// pebbleCache / pebbleFileCache are this node's shared Pebble caches
+	// (nil when the test supplied its own PebbleOptions). Unref'd in
+	// Close after Host.Close, mirroring the production pkg/reflow path.
+	pebbleCache     *pebble.Cache
+	pebbleFileCache *pebble.FileCache
 }
 
 // SubmitInvocation routes (service, objectKey) through the host's
@@ -178,6 +193,17 @@ func (n *InProcessNode) Close() {
 	}
 	if n.Host != nil {
 		_ = n.Host.Close()
+	}
+	// Unref the shared Pebble caches after Host.Close has closed every
+	// shard DB (each dropped its own ref). nil when the test supplied
+	// its own PebbleOptions.
+	if n.pebbleCache != nil {
+		n.pebbleCache.Unref()
+		n.pebbleCache = nil
+	}
+	if n.pebbleFileCache != nil {
+		n.pebbleFileCache.Unref()
+		n.pebbleFileCache = nil
 	}
 }
 
@@ -453,6 +479,30 @@ func (c *Cluster) FindPartitionLeader(ctx context.Context, shardID uint64) Node 
 func (c *Cluster) bringUpNode(t testing.TB, idx int) error {
 	t.Helper()
 	addrs := c.addrs[idx]
+
+	// Default to the production Pebble tuning (shared cache + tuned
+	// write-stall / flush knobs) so the loadtests measure the same path
+	// production runs. A test that supplies its own PebbleOptions (chaos
+	// slow-disk FS injection) overrides verbatim and gets no shared
+	// cache. No EventListener: tests must never crash on a simulated
+	// slow disk. The caches are adopted by the InProcessNode on success;
+	// the deferred cleanup Unrefs them on any early-return error (no
+	// shard DBs are open yet at bring-up, so our ref is the only one).
+	pebbleOpts := c.opts.PebbleOptions
+	var nodeCache *pebble.Cache
+	var nodeFileCache *pebble.FileCache
+	if pebbleOpts == nil {
+		nodeCache, nodeFileCache = storage.NewSharedCaches(loadgenPebbleCacheBytes, len(c.Nodes))
+		pebbleOpts = storage.PebbleTuning{Cache: nodeCache, FileCache: nodeFileCache}.Options
+	}
+	cachesAdopted := false
+	defer func() {
+		if !cachesAdopted && nodeCache != nil {
+			nodeCache.Unref()
+			nodeFileCache.Unref()
+		}
+	}()
+
 	h, err := engine.NewHost(t.Context(), engine.HostConfig{
 		NodeID:              uint64(idx + 1),
 		RaftAddr:            addrs.raft,
@@ -463,7 +513,7 @@ func (c *Cluster) bringUpNode(t testing.TB, idx int) error {
 		GossipBindAddr:      addrs.gossip,
 		GossipAdvAddr:       addrs.gossip,
 		GrpcEndpoint:        addrs.delivery,
-		PebbleOptions:       c.opts.PebbleOptions,
+		PebbleOptions:       pebbleOpts,
 		OnSnapshotPersisted: c.opts.OnSnapshotPersisted,
 		Rebalance:           c.opts.Rebalance,
 		ClusterNotifiers:    cluster.Notifiers{RebalanceDrainTable: cluster.NewTableNotifier()},
@@ -493,13 +543,16 @@ func (c *Cluster) bringUpNode(t testing.TB, idx int) error {
 		}
 	}()
 
+	cachesAdopted = true
 	c.Nodes[idx] = &InProcessNode{
-		Host:           h,
-		DeliveryServer: gs,
-		DeliveryLn:     ln,
-		DeliveryClient: dc,
-		deliveryCancel: deliveryCancel,
-		raftAddr:       addrs.raft,
+		Host:            h,
+		DeliveryServer:  gs,
+		DeliveryLn:      ln,
+		DeliveryClient:  dc,
+		deliveryCancel:  deliveryCancel,
+		raftAddr:        addrs.raft,
+		pebbleCache:     nodeCache,
+		pebbleFileCache: nodeFileCache,
 	}
 	return nil
 }

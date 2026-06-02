@@ -72,6 +72,22 @@ type Metrics struct {
 	// unreachable, a sha256/size mismatch fired, or the per-replica
 	// UploadTimeout (default 10m) elapsed.
 	LPTransferSSTUploadErrors prometheus.Counter
+
+	// PebbleCompactions counts completed Pebble compactions across every
+	// shard DB on this node. Populated by NewPebbleEventListener.
+	PebbleCompactions prometheus.Counter
+	// PebbleFlushes counts completed memtable flushes across every shard
+	// DB on this node.
+	PebbleFlushes prometheus.Counter
+	// PebbleWriteStalls counts write-stall onsets (memtable / L0
+	// back-pressure). A climbing rate means flushes or compactions are
+	// not keeping up with the apply path.
+	PebbleWriteStalls prometheus.Counter
+	// PebbleDiskSlow counts slow-disk events from Pebble's health checks
+	// (a write/sync exceeding Pebble's internal slow threshold). The
+	// disk-stall fatal (see NewPebbleEventListener) fires off the same
+	// events when one crosses the configured max-sync duration.
+	PebbleDiskSlow prometheus.Counter
 }
 
 // NewMetrics builds reflow's collectors. Pass nil to use the default
@@ -161,6 +177,22 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		LPTransferSSTUploadErrors: f.NewCounter(prometheus.CounterOpts{
 			Name: "reflow_lp_transfer_sst_upload_errors_total",
 			Help: "Fan-out upload failures from the source. A non-zero rate signals an unreachable replica, an integrity mismatch, or UploadTimeout elapse.",
+		}),
+		PebbleCompactions: f.NewCounter(prometheus.CounterOpts{
+			Name: "reflow_pebble_compactions_total",
+			Help: "Completed Pebble compactions across every shard DB on this node.",
+		}),
+		PebbleFlushes: f.NewCounter(prometheus.CounterOpts{
+			Name: "reflow_pebble_flushes_total",
+			Help: "Completed Pebble memtable flushes across every shard DB on this node.",
+		}),
+		PebbleWriteStalls: f.NewCounter(prometheus.CounterOpts{
+			Name: "reflow_pebble_write_stalls_total",
+			Help: "Pebble write-stall onsets (memtable / L0 back-pressure) across every shard DB on this node.",
+		}),
+		PebbleDiskSlow: f.NewCounter(prometheus.CounterOpts{
+			Name: "reflow_pebble_disk_slow_total",
+			Help: "Slow-disk events reported by Pebble health checks across every shard DB on this node.",
 		}),
 	}
 }

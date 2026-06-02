@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	connect "connectrpc.com/connect"
+	"github.com/cockroachdb/pebble/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc/credentials"
@@ -31,6 +34,7 @@ import (
 	"github.com/twinfer/reflow/internal/ingress"
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/secretstore"
+	"github.com/twinfer/reflow/internal/storage"
 	hcvaultkms "github.com/twinfer/reflow/pkg/kms/hcvault"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	"github.com/twinfer/reflow/pkg/reflowclient"
@@ -146,6 +150,43 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	rebalanceDrainNotifier := cluster.NewTableNotifier()
 	platformConfigNotifier := cluster.NewTableNotifier()
 
+	// Node-global Pebble caches, shared across every shard DB. Pebble's
+	// per-DB default cache would otherwise multiply by shard count on
+	// reflow's one-DB-per-shard layout, fragmenting the working set into
+	// N independent LRUs. Owned for the Host's lifetime and Unref'd by
+	// Host.Close after the engine closes its DBs; the deferred cleanup
+	// below Unrefs them on any early-return error before that handoff.
+	pebbleCache, pebbleFileCache := storage.NewSharedCaches(cfg.Storage.PebbleCacheBytes, int(numShards))
+	cachesAdopted := false
+	defer func() {
+		if !cachesAdopted {
+			pebbleCache.Unref()
+			pebbleFileCache.Unref()
+		}
+	}()
+
+	// Disk-stall handling. A DiskSlow event whose duration crosses
+	// maxSyncDuration crashes the process once: a wedged disk can't make
+	// progress, and staying in the Raft quorum while silently not
+	// applying is worse than a crash that lets the orchestrator restart
+	// us. <= 0 disables the crash (events are still logged + counted).
+	var maxSyncDuration time.Duration
+	if cfg.Storage.MaxSyncDurationMs > 0 {
+		maxSyncDuration = time.Duration(cfg.Storage.MaxSyncDurationMs) * time.Millisecond
+	}
+	var stallOnce sync.Once
+	pebbleTuning := storage.PebbleTuning{
+		Cache:     pebbleCache,
+		FileCache: pebbleFileCache,
+		EventListener: metrics.NewPebbleEventListener(logger, maxSyncDuration, func(info pebble.DiskSlowInfo) {
+			stallOnce.Do(func() {
+				logger.Error("reflow: pebble disk stall — exiting to drop out of quorum",
+					"path", info.Path, "duration", info.Duration)
+				os.Exit(1)
+			})
+		}),
+	}
+
 	hcfg := engine.HostConfig{
 		NodeID:             cfg.Node.ID,
 		RaftAddr:           cfg.Node.RaftAddr,
@@ -161,6 +202,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		JoinExisting:       cfg.Cluster.JoinExisting,
 		NumPartitionShards: numShards,
 		Metrics:            metrics,
+		PebbleOptions:      pebbleTuning.Options,
 		EagerStateMaxBytes: cfg.Handlers.EagerStateMaxBytes,
 		ClusterNotifiers: cluster.Notifiers{
 			PartitionTable:      partitionTableNotifier,
@@ -335,6 +377,11 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		}
 		return bail(herr)
 	}
+	// The Host adopts the shared Pebble caches; Host.Close Unrefs them
+	// after the engine closes its DBs. Suppress the deferred cleanup.
+	host.pebbleCache = pebbleCache
+	host.pebbleFileCache = pebbleFileCache
+	cachesAdopted = true
 	return host, nil
 }
 
@@ -1024,6 +1071,11 @@ func withDefaults(cfg Config) Config {
 	}
 	if cfg.Rebalance.SkewDisengagePct == 0 {
 		cfg.Rebalance.SkewDisengagePct = 8
+	}
+	if cfg.Storage.MaxSyncDurationMs == 0 {
+		// Unset → arm disk-stall detection at the storage default (20s).
+		// A negative value disables it and is left untouched.
+		cfg.Storage.MaxSyncDurationMs = int64(storage.DefaultMaxSyncDuration / time.Millisecond)
 	}
 	return cfg
 }

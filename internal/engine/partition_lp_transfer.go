@@ -16,8 +16,8 @@ import (
 )
 
 // onBeginLPTransfer installs the freeze row for the named LP and emits
-// an ActStartLPTransferScan so the leader-side LPTransferSourceService
-// opens a snapshot and starts shipping chunks. Idempotent on retry: a
+// an ActStartLPTransferScan so the leader-side LPTransferService
+// opens a snapshot and starts shipping SSTs. Idempotent on retry: a
 // second BeginLPTransfer for the same lp+transfer_id is a no-op (the
 // existing row is preserved, the action is still emitted so the source
 // service rebuild on leader gain converges).
@@ -63,7 +63,7 @@ func (p *Partition) onBeginLPTransfer(
 // source uploads the SSTs to every replica before proposing — so the
 // Ingest call here is deterministic across replicas. If the local file
 // is missing (replica hasn't received the upload yet), we skip the
-// Ingest + bookkeeping update so the source's retry replays the chunk
+// Ingest + bookkeeping update so the source's retry replays the SSTs
 // from sst_seq=0. The freeze gate on source means no concurrent writes
 // race the dest's pre-Ingest state.
 func (p *Partition) onApplyLPTransferSST(
@@ -171,7 +171,7 @@ func ingestLPTransferSSTs(store storage.Store, cmd *enginev1.ApplyLPTransferSST)
 
 // onCommitLPTransfer drops the destination's staging row after the
 // LPOwnersTable flip succeeds. The staged data was already written into
-// the live LP namespaces by ApplyLPTransferChunk, so there is no
+// the live LP namespaces by ApplyLPTransferSST's Ingest, so there is no
 // data-mutation step here — only bookkeeping.
 func (p *Partition) onCommitLPTransfer(
 	batch storage.Batch,
@@ -233,7 +233,7 @@ func (p *Partition) onFinishLPTransfer(
 // onAbortLPTransfer rolls back partial state on either side of an
 // aborted transfer. On the source: drop the freeze row (writes resume;
 // the lpMover keeps the LPOwners row pointing at source). On the dest:
-// range-delete every LP-prefixed namespace (any chunks that landed
+// range-delete every LP-prefixed namespace (any rows that landed
 // before abort) and drop the staging row.
 //
 // Symmetric: the same command is sent to both sides; the apply path
@@ -265,7 +265,7 @@ func (p *Partition) onAbortLPTransfer(
 		}
 	}
 	if stagingRow != nil {
-		// Dest side: scrub any chunks that landed in the LP keyspace
+		// Dest side: scrub any rows that landed in the LP keyspace
 		// before the abort applied, then drop the staging row.
 		if err := deleteLPTimers(batch, lp); err != nil {
 			return fmt.Errorf("onAbortLPTransfer: timer cleanup: %w", err)

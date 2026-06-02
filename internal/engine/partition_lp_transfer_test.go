@@ -256,10 +256,9 @@ func TestPartition_FinishLPTransfer_RangeDeletesLPKeyspace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 1. Pre-seed an LP-prefixed row directly (the old chunk-apply
-	// path that wrote rows via batch.Set is gone; the new SST-apply
-	// arm Ingests files and is wired in the follow-up PR). Finish's
-	// range-delete behavior is independent of how data got there.
+	// 1. Pre-seed an LP-prefixed row directly (the SST-apply arm
+	// Ingests files rather than writing rows via batch.Set; Finish's
+	// range-delete behavior is independent of how data got there).
 	store := p.cfg.Snapshotter.Store()
 	b := store.NewBatch()
 	if err := b.Set(invKey, []byte("data")); err != nil {
@@ -318,9 +317,9 @@ func TestPartition_DedupArbitrary_StagesAndFinishesWithLP(t *testing.T) {
 	dedupKey := keys.DedupArbitraryKey(lp, "outbox/p1", 42)
 	dedupVal := []byte{0xAA, 0xBB, 0xCC}
 
-	// 1. Pre-seed the LP-prefixed dedup row directly (was previously
-	// done via ApplyLPTransferChunk; SST-shipping path lands the data
-	// in the same LSM via Ingest, which is wired in the follow-up PR).
+	// 1. Pre-seed the LP-prefixed dedup row directly. The SST-shipping
+	// path lands transferred data in the LSM via Ingest; this test only
+	// needs the row present, regardless of how it got there.
 	store := p.cfg.Snapshotter.Store()
 	b := store.NewBatch()
 	if err := b.Set(dedupKey, dedupVal); err != nil {

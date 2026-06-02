@@ -37,6 +37,12 @@ Two parallel test tiers run on top of the unit + engine-integration baseline:
 # against the reference numbers in this file.
 go test -tags=loadtest -timeout=10m -run=TestLoad_SteadyState -v ./internal/loadgen/...
 
+# LP-transfer-under-load measurement (loadtest tag). TestLoad_TransferUnderLoad
+# in internal/loadgen/. Chains SST transfers of populated high-LPs between
+# shards while the steady workload runs, reporting dest L0 / write-amp — the
+# data behind the "ship SSTs via IngestAndExcise?" call. See §Performance baseline.
+go test -tags=loadtest -timeout=10m -run=TestLoad_TransferUnderLoad -v ./internal/loadgen/...
+
 # Containerized chaos suite (e2e tag) in internal/e2e/chaos/.
 # Requires Docker. Lifecycle chaos via Docker ContainerKill / Start;
 # network chaos via per-source Toxiproxy sidecars. Replaces the
@@ -154,6 +160,28 @@ Invariants: all passed.
 ```
 
 Note: the containerized run is faster end-to-end than the in-proc reference above on this machine — that's a stale in-proc reference taken under heavier laptop load, not a "containers are faster than in-proc" claim. Recalibrate both baselines together when one drifts so the comparison stays meaningful.
+
+### LP-transfer-under-load baseline
+
+`TestLoad_TransferUnderLoad` in `internal/loadgen/` is the measurement behind the "ship LP-transfer SSTs via `pebble.DB.Ingest` vs `IngestAndExcise`?" decision. A 3-node in-proc cluster runs the steady 50qps workload on band-0 LPs (live write-load on every shard) while several populated high-LPs (≥ `loadgen.FirstTenantedLP`, which the anonymous band-0 workload never routes to) are chain-transferred shard-to-shard. Transfers are **single-flight**: the lpMover flips ownership through one `LPOwnersTable` CAS revision, so two flips in flight means one aborts — serializing matches how the autonomous rebalancer actuates transfers. Each hop ships an SST and samples the dest shard's worst-replica L0 + write-amp immediately after `CLEANED`. The L0/write-amp numbers are **reported, not asserted**; the test asserts only that the workload stays correct under transfer load and that transfers actually ran. Outputs land in the result dir: `summary.md`, `pebble-stats.csv` (continuous per-shard L0), `transfers.csv` (per-hop dest L0).
+
+Run:
+
+```bash
+go test -tags=loadtest -timeout=10m -count=1 -run=TestLoad_TransferUnderLoad -v ./internal/loadgen/...
+```
+
+Reference (2026-06-02, branch `strip-to-core`, Darwin/arm64 laptop; seed 3000 rows × 512 B ≈ 1.5 MiB SST/hop, 30s workload):
+
+```
+- Workload: issued 572, completed 572, failed 1 (within the 1% tolerance)
+- Transfers: 10 hops, 9 reached CLEANED, 1 cancelled at the 30s cutoff (mid-saga, FLIPPED)
+- peak dest L0 after ingest: 3 files
+- max dest write-amp after ingest: 1.255
+- continuous peak L0 (any shard/node): 3; mean write-amp: 1.159
+```
+
+Reading: ingesting ~1.5 MiB transfer SSTs into workload-busy dest shards barely perturbs L0 (peak 3) and leaves write-amp ~1.2 — at this scale plain `Ingest` shows no L0 pressure, so `IngestAndExcise` is not yet justified. Push `seedRows` / the LP count up to probe the threshold where L0 climbs into the dozens; that's the signal that would flip the decision.
 
 ## Conventions worth knowing before editing
 

@@ -29,10 +29,11 @@ const lpTransferAckProducer = "lptransfer-ack/"
 // kinds emitted by the apply path:
 //
 //   - ActStartLPTransferScan: open a snapshot view of every LP-prefixed
-//     namespace under the named LP, pack rows into ~256 KiB chunks, and
-//     ship each via CrossShardSender to the destination shard.
+//     namespace under the named LP, build one SST per namespace, upload
+//     them to the destination's replicas, and propose a single
+//     ApplyLPTransferSST so each replica Ingests its staged files.
 //   - ActSignalLPTransferStaged: dest-side signal that the is_final
-//     chunk applied. Send UpdateLPTransferPhase{STAGED} to shard 0.
+//     SST applied. Send UpdateLPTransferPhase{STAGED} to shard 0.
 //   - ActSignalLPTransferCleaned: source-side signal that the LP
 //     keyspace has been range-deleted. Send UpdateLPTransferPhase
 //     {CLEANED} to shard 0.
@@ -118,7 +119,7 @@ func (s *LPTransferService) PushScan(transferID string, lp uint32, destShard uin
 	s.push(lpTransferJob{kind: lpJobScan, transferID: transferID, lp: lp, destShard: destShard})
 }
 
-// PushAckStaged enqueues an "is_final chunk applied" phase-ack to
+// PushAckStaged enqueues an "is_final SST applied" phase-ack to
 // shard 0. Called by the dest-side runner on ActSignalLPTransferStaged.
 func (s *LPTransferService) PushAckStaged(transferID string, lp uint32, sourceShard uint64) {
 	s.push(lpTransferJob{
@@ -154,8 +155,8 @@ func (s *LPTransferService) push(job lpTransferJob) {
 
 // Rebuild scans the partition's LPFreezeTable + LPStagingTable on
 // leader gain and re-enqueues every in-flight transfer:
-//   - Every freeze row → scan job (the source re-ships from chunk_seq=0;
-//     the dest's LPStagingTable.next_chunk_seq dedups). Acks are not
+//   - Every freeze row → scan job (the source re-ships from sst_seq=0;
+//     the dest's LPStagingTable.next_sst_seq dedups). Acks are not
 //     re-enqueued here because they're durable on shard 0 already; if
 //     the previous leader's ack didn't land, the lpMover's stall
 //     detection will retry the side-effect that produced it.

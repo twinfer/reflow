@@ -94,11 +94,11 @@ const (
 	// INIT: row written by Admin/TransferLP. lpMover next sends
 	// BeginLPTransfer to the source.
 	LPTransferPhase_LP_TRANSFER_PHASE_INIT LPTransferPhase = 1
-	// SHIPPING: source has accepted the freeze and is streaming chunks
+	// SHIPPING: source has accepted the freeze and is shipping SSTs
 	// to the destination. The source emits a phase=SHIPPING ack after
 	// its outbox drain completes.
 	LPTransferPhase_LP_TRANSFER_PHASE_SHIPPING LPTransferPhase = 2
-	// STAGED: destination has applied the is_final chunk. lpMover next
+	// STAGED: destination has applied the is_final SST. lpMover next
 	// proposes UpsertLPOwner with the recorded expected_lpowners_revision
 	// CAS.
 	LPTransferPhase_LP_TRANSFER_PHASE_STAGED LPTransferPhase = 3
@@ -9211,7 +9211,7 @@ func (x *FinishLPTransfer) GetLp() uint32 {
 
 // AbortLPTransfer is sent by the lpMover to both partition sides when
 // a transfer is rolled back. Source: drops LPFreezeTable[lp] row. Dest:
-// DeleteRange's every LP-prefixed namespace (in case partial chunks
+// DeleteRange's every LP-prefixed namespace (in case partial SST data
 // landed) and drops LPStagingTable[transfer_id]. Both sides emit
 // ActSignalLPTransferAbortAck.
 type AbortLPTransfer struct {

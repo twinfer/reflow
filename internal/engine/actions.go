@@ -69,9 +69,9 @@ func (ActScheduleReap) isAction() {}
 
 // ActStartLPTransferScan is emitted by onBeginLPTransfer (source side)
 // after the freeze row is durable. The runner hands it to the leader-
-// side LPTransferSourceService, which opens a read snapshot, iterates
-// every LP-prefixed namespace, and ships chunks to the destination via
-// CrossShardSender.
+// side LPTransferService, which opens a read snapshot, builds one
+// SST per LP-prefixed namespace, uploads them to the destination's
+// replicas, and proposes a single ApplyLPTransferSST.
 type ActStartLPTransferScan struct {
 	TransferID string
 	LP         uint32
@@ -80,8 +80,8 @@ type ActStartLPTransferScan struct {
 
 func (ActStartLPTransferScan) isAction() {}
 
-// ActSignalLPTransferStaged is emitted by onApplyLPTransferChunk (dest
-// side) when the is_final chunk applies. The runner enqueues an outbox
+// ActSignalLPTransferStaged is emitted by onApplyLPTransferSST (dest
+// side) when the is_final SST applies. The runner enqueues an outbox
 // envelope back to shard 0 carrying UpdateLPTransferPhase{phase=STAGED}
 // so the lpMover advances the saga.
 type ActSignalLPTransferStaged struct {

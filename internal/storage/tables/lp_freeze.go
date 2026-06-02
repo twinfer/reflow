@@ -46,7 +46,7 @@ func (t LPFreezeTable) Delete(b storage.Batch, lp uint32) error {
 }
 
 // List enumerates every frozen LP in the partition. Used by
-// LPTransferSourceService.Rebuild on leader gain to re-enqueue scan jobs
+// LPTransferService.Rebuild on leader gain to re-enqueue scan jobs
 // for transfers that the previous leader started but didn't finish.
 func (t LPFreezeTable) List(ctx context.Context) ([]LPFreezeEntry, error) {
 	prefix := keys.LPFreezePrefix()

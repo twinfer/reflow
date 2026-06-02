@@ -102,7 +102,7 @@ const (
 	// LPNoLP is the sentinel LP for arbitrary dedup rows that don't belong
 	// to any real LP — today only the OutboxAck command, which is shard-
 	// internal and LP-agnostic. The sentinel is chosen so it can never
-	// collide with a real LP (real LPs are < LPCount = 4096) and so a
+	// collide with a real LP (real LPs are < LPCount = 16384) and so a
 	// per-LP range scan / range-delete never touches it.
 	LPNoLP uint32 = 0xFFFF_FFFF
 
@@ -911,7 +911,7 @@ func LPFreezeKey(lp uint32) []byte {
 }
 
 // LPFreezePrefix returns the lp_freeze/ namespace prefix, used by
-// LPTransferSourceService.Rebuild to enumerate frozen LPs on leader
+// LPTransferService.Rebuild to enumerate frozen LPs on leader
 // gain.
 func LPFreezePrefix() []byte { return []byte(lpFreezePrefix) }
 

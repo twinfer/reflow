@@ -145,6 +145,13 @@ type HostConfig struct {
 	// insecure-creds deployments).
 	HandlerSigner handlerclient.Signer
 
+	// InProcDialer, when non-nil, is registered on the handlerclient
+	// Registry under the "inproc" scheme so a single-binary deployment can
+	// run its handler in-process with no HTTP. The bridge is assembled in
+	// pkg/reflow (internal/engine cannot import pkg/handler); nil keeps the
+	// engine remote-only — the production multi-node path.
+	InProcDialer handlerclient.Dialer
+
 	// EagerStateMaxBytes caps the eager-state snapshot the invoker ships
 	// in StartMessage.state_map. Larger object states fall back to lazy
 	// fetch (StartMessage.partial_state=true). Zero means "use
@@ -289,7 +296,7 @@ func NewHost(ctx context.Context, cfg HostConfig) (*Host, error) {
 		partitioner:     routing.NewPartitioner(cfg.NumPartitionShards),
 		partitions:      make(map[uint64]*PartitionRunner),
 		startMu:         make(map[uint64]*sync.Mutex),
-		handlerRegistry: newHandlerRegistry(cfg.HandlerSigner),
+		handlerRegistry: newHandlerRegistry(cfg.HandlerSigner, cfg.InProcDialer),
 	}
 
 	advertisedRaft, listenOverride := raftBindAndAdvertise(&cfg)

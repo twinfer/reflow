@@ -26,6 +26,7 @@ import (
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
+	handlerv1 "github.com/twinfer/reflow/proto/handlerv1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
@@ -166,31 +167,46 @@ func TestServer_Discover(t *testing.T) {
 	}
 }
 
-// runOneSession opens a stream against client, sends StartMessage +
-// InputCommandMessage matching the engine's wire-session protocol, and
-// reads frames until EndMessage. Returns the OutputCommandMessage.value
-// payload; fails the test on any unexpected condition.
+// runOneSession invokes a registered handler with input and returns the
+// OutputCommandMessage.value payload; fails the test on any unexpected
+// condition.
 func runOneSession(t *testing.T, client handlerclient.Client, route wire.Route, input []byte) []byte {
+	t.Helper()
+	out := invokeOne(t, client, route, input)
+	val, ok := out.GetResult().(*protocolv1.OutputCommandMessage_Value)
+	if !ok {
+		t.Fatalf("output result = %T; want Value", out.GetResult())
+	}
+	return val.Value.GetContent()
+}
+
+// runOneSessionExpectFailure mirrors runOneSession but expects the
+// terminal OutputCommandMessage.result to be a Failure.
+func runOneSessionExpectFailure(t *testing.T, client handlerclient.Client, route wire.Route, input []byte) *protocolv1.Failure {
+	t.Helper()
+	out := invokeOne(t, client, route, input)
+	fail, ok := out.GetResult().(*protocolv1.OutputCommandMessage_Failure)
+	if !ok {
+		t.Fatalf("output result = %T; want Failure", out.GetResult())
+	}
+	return fail.Failure
+}
+
+// invokeOne runs one unary Invoke (StartMessage + InputCommandMessage
+// request) and returns the terminal OutputCommandMessage from the response
+// frames. The engine's wire_session is bypassed — this exercises the
+// handler-side half on its own.
+func invokeOne(t *testing.T, client handlerclient.Client, route wire.Route, input []byte) *protocolv1.OutputCommandMessage {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	stream, err := client.Invoke(ctx, route)
+	resp, err := client.Invoke(ctx, route, &handlerv1.InvokeRequest{Frames: buildStartFrames(t, route, input)})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
-	defer func() { _ = stream.CloseSend() }()
-
-	if err := sendStart(stream, route, input); err != nil {
-		t.Fatalf("send start: %v", err)
-	}
-
 	codec := wire.DefaultCodec()
 	var got *protocolv1.OutputCommandMessage
-	for {
-		f, err := stream.Recv()
-		if err != nil {
-			t.Fatalf("recv: %v", err)
-		}
+	for _, f := range resp.GetFrames() {
 		if err := wire.ValidatePayload(f); err != nil {
 			t.Fatalf("frame validate: %v", err)
 		}
@@ -206,11 +222,7 @@ func runOneSession(t *testing.T, client handlerclient.Client, route wire.Route, 
 			if got == nil {
 				t.Fatal("EndMessage before OutputCommandMessage")
 			}
-			val, ok := got.GetResult().(*protocolv1.OutputCommandMessage_Value)
-			if !ok {
-				t.Fatalf("output result = %T; want Value", got.GetResult())
-			}
-			return val.Value.GetContent()
+			return got
 		case wire.TypeError:
 			var em protocolv1.ErrorMessage
 			_ = codec.Unmarshal(f.GetPayload(), &em)
@@ -219,59 +231,16 @@ func runOneSession(t *testing.T, client handlerclient.Client, route wire.Route, 
 			t.Fatalf("unexpected frame type 0x%04x", typeCode)
 		}
 	}
+	t.Fatal("response ended without EndMessage")
+	return nil
 }
 
-// runOneSessionExpectFailure mirrors runOneSession but expects the
-// terminal OutputCommandMessage.result to be a Failure.
-func runOneSessionExpectFailure(t *testing.T, client handlerclient.Client, route wire.Route, input []byte) *protocolv1.Failure {
+// buildStartFrames builds the Start + Input frame pair the engine normally
+// sends. The reflow-internal wire_session is bypassed here, so the helper
+// does the encoding itself. known_entries=1 because the only replay frame
+// is the InputCommandMessage at slot 0.
+func buildStartFrames(t *testing.T, route wire.Route, input []byte) []*protocolv1.Frame {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	stream, err := client.Invoke(ctx, route)
-	if err != nil {
-		t.Fatalf("Invoke: %v", err)
-	}
-	defer func() { _ = stream.CloseSend() }()
-
-	if err := sendStart(stream, route, input); err != nil {
-		t.Fatalf("send start: %v", err)
-	}
-
-	codec := wire.DefaultCodec()
-	var got *protocolv1.OutputCommandMessage
-	for {
-		f, err := stream.Recv()
-		if err != nil {
-			t.Fatalf("recv: %v", err)
-		}
-		typeCode, _, _ := wire.UnpackHeader(f.GetHeader())
-		switch typeCode {
-		case wire.TypeCmdOutput:
-			var out protocolv1.OutputCommandMessage
-			if err := codec.Unmarshal(f.GetPayload(), &out); err != nil {
-				t.Fatalf("decode OutputCommandMessage: %v", err)
-			}
-			got = &out
-		case wire.TypeEnd:
-			if got == nil {
-				t.Fatal("EndMessage before OutputCommandMessage")
-			}
-			fail, ok := got.GetResult().(*protocolv1.OutputCommandMessage_Failure)
-			if !ok {
-				t.Fatalf("output result = %T; want Failure", got.GetResult())
-			}
-			return fail.Failure
-		default:
-			t.Fatalf("unexpected frame type 0x%04x", typeCode)
-		}
-	}
-}
-
-// sendStart pushes the Start + Input frame pair the engine normally
-// sends. The reflow-internal wire_session is bypassed here, so the
-// helper has to do the encoding itself. known_entries=1 because the
-// only replay frame is the InputCommandMessage at slot 0.
-func sendStart(stream handlerclient.Stream, route wire.Route, input []byte) error {
 	codec := wire.DefaultCodec()
 	start := &protocolv1.StartMessage{
 		Id:           []byte("test-uuid-16bytes"[:16]),
@@ -283,17 +252,17 @@ func sendStart(stream handlerclient.Stream, route wire.Route, input []byte) erro
 	}
 	startBytes, err := codec.Marshal(start)
 	if err != nil {
-		return err
-	}
-	if err := stream.Send(wire.FrameFor(wire.TypeStart, startBytes)); err != nil {
-		return err
+		t.Fatalf("marshal StartMessage: %v", err)
 	}
 	in := &protocolv1.InputCommandMessage{Value: &protocolv1.Value{Content: input}}
 	inputBytes, err := codec.Marshal(in)
 	if err != nil {
-		return err
+		t.Fatalf("marshal InputCommandMessage: %v", err)
 	}
-	return stream.Send(wire.FrameFor(wire.TypeCmdInput, inputBytes))
+	return []*protocolv1.Frame{
+		wire.FrameFor(wire.TypeStart, startBytes),
+		wire.FrameFor(wire.TypeCmdInput, inputBytes),
+	}
 }
 
 // discoverHTTP2 calls DiscoveryService.Discover over h2c. The engine's
@@ -364,9 +333,8 @@ func TestServer_RoundTrip_WithAuth(t *testing.T) {
 // TestServer_AuthRejectsForeignCA: a client whose leaf is signed
 // by a CA the server doesn't trust gets rejected at the HTTP layer.
 // We bypass connectclient (which would surface the 401 as a transport
-// error inside Receive) and hit the Connect InvokeStream URL directly
-// — withAuth runs before Connect's stream handler, so an empty POST
-// is enough to exercise the 401 path.
+// error) and hit the Connect Invoke URL directly — withAuth runs before
+// Connect's handler, so an empty POST is enough to exercise the 401 path.
 func TestServer_AuthRejectsForeignCA(t *testing.T) {
 	caPEM, _, principal := buildCAAndSigner(t, "node/1")
 	// Foreign signer: rooted at a different CA — verifier won't accept.
@@ -400,7 +368,7 @@ func TestServer_AuthRejectsForeignCA(t *testing.T) {
 	defer tr.CloseIdleConnections()
 
 	req, _ := http.NewRequest(http.MethodPost,
-		"http://"+ln.Addr().String()+"/reflow.handler.v1.HandlerService/InvokeStream",
+		"http://"+ln.Addr().String()+"/reflow.handler.v1.HandlerService/Invoke",
 		strings.NewReader(""))
 	req.Header.Set("Authorization", "Bearer "+tok)
 	resp, err := hc.Do(req)
@@ -463,11 +431,9 @@ func (p *e2eFakeProvider) KeyMaterial(_ context.Context) (*certprovider.KeyMater
 }
 func (p *e2eFakeProvider) Close() {}
 
-// TestServer_NoBodyLeak runs many sequential sessions through one
-// connectclient.Client and asserts the transport doesn't accumulate
-// idle connections after the engine's typical "defer CloseSend"
-// teardown. Regression for the bug where Recv terminating on EOF never
-// closed the underlying HTTP/2 stream slot before GC.
+// TestServer_NoBodyLeak runs many sequential unary sessions through one
+// connectclient.Client and asserts the transport reuses its connection
+// pool without accumulating idle connections across calls.
 func TestServer_NoBodyLeak(t *testing.T) {
 	reg := handler.NewRegistry()
 	if err := reg.RegisterService("Echo", "echo", func(_ handler.Context, in []byte) ([]byte, error) {
@@ -493,16 +459,51 @@ func TestServer_NoBodyLeak(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	// 32 sequential sessions: if Recv/CloseSend doesn't close resp.Body,
-	// stdlib accumulates HTTP/2 stream tracking state. We can't directly
-	// observe the leak without internal hooks, but a session count well
-	// above the per-conn concurrency cap exercises the recycle path; a
-	// real leak would manifest as stalls or stream-limit errors.
+	// 32 sequential sessions exercise the connection-reuse path; a leak
+	// (response bodies not drained/closed) would surface as stalls or
+	// stream-limit errors well below this count.
 	for i := range 32 {
 		output := runOneSession(t, client,
 			wire.Route{Service: "Echo", Handler: "echo"}, []byte("ping"))
 		if got, want := string(output), "h2-echo:ping"; got != want {
 			t.Fatalf("session %d output = %q; want %q", i, got, want)
 		}
+	}
+}
+
+// TestServer_MaxRecvBytes asserts the handler server enforces its read cap:
+// with a tiny MaxRecvBytes, even a normal Start+Input request overflows
+// connect.WithReadMaxBytes, so Invoke returns a transport error instead of
+// running the handler.
+func TestServer_MaxRecvBytes(t *testing.T) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Echo", "echo", func(_ handler.Context, in []byte) ([]byte, error) {
+		return in, nil
+	}); err != nil {
+		t.Fatalf("RegisterService: %v", err)
+	}
+	srv, err := handler.NewServer(handler.Config{Registry: reg, MaxRecvBytes: 8})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() { _ = srv.Shutdown() }()
+
+	client, err := connectclient.New("dep-cap", "http://"+ln.Addr().String(), true, nil)
+	if err != nil {
+		t.Fatalf("connectclient.New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	route := wire.Route{Service: "Echo", Handler: "echo"}
+	_, err = client.Invoke(ctx, route, &handlerv1.InvokeRequest{Frames: buildStartFrames(t, route, []byte("hello"))})
+	if err == nil {
+		t.Fatal("expected Invoke to fail when the request exceeds the server's MaxRecvBytes; got nil")
 	}
 }

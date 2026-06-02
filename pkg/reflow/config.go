@@ -12,6 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/twinfer/reflow/pkg/handler"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 )
 
@@ -138,6 +139,14 @@ type HandlersConfig struct {
 	// StartMessage.partial_state=true and the SDK falls back to
 	// GetLazyState.
 	EagerStateMaxBytes uint32 `koanf:"eager_state_max_bytes"`
+
+	// InProcess, when non-nil, is a handler.Registry whose handlers run in
+	// the same process as the engine — no HTTP. Run registers it as a
+	// single inproc:// deployment (discovery synthesized locally) and wires
+	// an in-process transport so the engine dispatches to it directly. Set
+	// programmatically — the single-binary / embedded path; koanf-loaded
+	// engines leave it nil and use Endpoints. Not a config-file field.
+	InProcess *handler.Registry `koanf:"-"`
 }
 
 // HandlerEndpoint is one remote-handler URL the operator wants Run to

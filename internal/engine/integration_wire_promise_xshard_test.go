@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	connect "connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/config"
@@ -36,7 +35,7 @@ func (h *xshardWorkflowHandler) discovery() *discoveryv1.DiscoveryResponse {
 	}
 }
 
-func (h *xshardWorkflowHandler) serveInvoke(t *testing.T, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
+func (h *xshardWorkflowHandler) serveInvoke(t *testing.T, stream *fakeBidi) error {
 	t.Helper()
 	startFrame, err := stream.Receive()
 	if err != nil {
@@ -123,7 +122,7 @@ func (h *xshardResolverHandler) discovery() *discoveryv1.DiscoveryResponse {
 	}
 }
 
-func (h *xshardResolverHandler) serveInvoke(t *testing.T, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
+func (h *xshardResolverHandler) serveInvoke(t *testing.T, stream *fakeBidi) error {
 	t.Helper()
 	startFrame, err := stream.Receive()
 	if err != nil {

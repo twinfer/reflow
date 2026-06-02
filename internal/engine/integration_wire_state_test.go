@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	connect "connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/config"
@@ -50,7 +49,7 @@ func (f *fakeHandlerLazyState) discovery() *discoveryv1.DiscoveryResponse {
 	}
 }
 
-func (f *fakeHandlerLazyState) serveInvoke(t *testing.T, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
+func (f *fakeHandlerLazyState) serveInvoke(t *testing.T, stream *fakeBidi) error {
 	t.Helper()
 
 	startFrame, err := stream.Receive()
@@ -89,7 +88,7 @@ func (f *fakeHandlerLazyState) serveInvoke(t *testing.T, stream *connect.BidiStr
 	}
 }
 
-func (f *fakeHandlerLazyState) handleWrite(stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
+func (f *fakeHandlerLazyState) handleWrite(stream *fakeBidi) error {
 	for k, v := range f.writes {
 		setMsg := &protocolv1.SetStateCommandMessage{
 			Key:   []byte(k),
@@ -106,7 +105,7 @@ func (f *fakeHandlerLazyState) handleWrite(stream *connect.BidiStream[protocolv1
 	return f.sendOutputAndEnd(stream)
 }
 
-func (f *fakeHandlerLazyState) handleLazyRead(stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame], known uint32, replay map[uint32]*protocolv1.Frame) error {
+func (f *fakeHandlerLazyState) handleLazyRead(stream *fakeBidi, known uint32, replay map[uint32]*protocolv1.Frame) error {
 	if known <= 1 {
 		cmd := &protocolv1.GetLazyStateCommandMessage{
 			Key:                []byte(f.lazyReadKey),
@@ -149,7 +148,7 @@ func (f *fakeHandlerLazyState) handleLazyRead(stream *connect.BidiStream[protoco
 	return f.sendOutputAndEnd(stream)
 }
 
-func (f *fakeHandlerLazyState) handleLazyReadKeys(stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame], known uint32, replay map[uint32]*protocolv1.Frame) error {
+func (f *fakeHandlerLazyState) handleLazyReadKeys(stream *fakeBidi, known uint32, replay map[uint32]*protocolv1.Frame) error {
 	if known <= 1 {
 		cmd := &protocolv1.GetLazyStateKeysCommandMessage{ResultCompletionId: 2}
 		payload, err := proto.Marshal(cmd)
@@ -185,7 +184,7 @@ func (f *fakeHandlerLazyState) handleLazyReadKeys(stream *connect.BidiStream[pro
 	return f.sendOutputAndEnd(stream)
 }
 
-func (f *fakeHandlerLazyState) handleEagerReadKeys(stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame], stateMap []*protocolv1.StartMessage_StateEntry) error {
+func (f *fakeHandlerLazyState) handleEagerReadKeys(stream *fakeBidi, stateMap []*protocolv1.StartMessage_StateEntry) error {
 	keys := make([]string, 0, len(stateMap))
 	for _, e := range stateMap {
 		keys = append(keys, string(e.GetKey()))
@@ -219,7 +218,7 @@ func sortStrings(s []string) {
 	}
 }
 
-func (f *fakeHandlerLazyState) sendOutputAndEnd(stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
+func (f *fakeHandlerLazyState) sendOutputAndEnd(stream *fakeBidi) error {
 	out := &protocolv1.OutputCommandMessage{
 		Result: &protocolv1.OutputCommandMessage_Value{
 			Value: &protocolv1.Value{Content: f.output},

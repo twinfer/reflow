@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/twinfer/reflow/pkg/handler/wire"
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+	handlerv1 "github.com/twinfer/reflow/proto/handlerv1"
 )
 
 // fakeClient is a noop Client. Tracks Close calls so the URL-evict test
@@ -18,7 +18,7 @@ type fakeClient struct {
 	closed int
 }
 
-func (c *fakeClient) Invoke(_ context.Context, _ wire.Route) (Stream, error) {
+func (c *fakeClient) Invoke(_ context.Context, _ wire.Route, _ *handlerv1.InvokeRequest) (*handlerv1.InvokeResponse, error) {
 	return nil, errors.New("fakeClient: Invoke not used in registry tests")
 }
 
@@ -124,13 +124,3 @@ func TestRegistry_GetMissingScheme(t *testing.T) {
 		t.Fatal("expected error for unregistered scheme; got nil")
 	}
 }
-
-// Sanity check that we're using the right Stream/Frame types — keeps
-// the import alive if all happy-path tests skip it.
-var _ Stream = (*nilStream)(nil)
-
-type nilStream struct{}
-
-func (nilStream) Send(*protocolv1.Frame) error     { return nil }
-func (nilStream) Recv() (*protocolv1.Frame, error) { return nil, nil }
-func (nilStream) CloseSend() error                 { return nil }

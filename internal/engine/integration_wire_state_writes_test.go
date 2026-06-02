@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	connect "connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/config"
@@ -51,7 +50,7 @@ func (f *fakeHandlerStateWrites) handler(t *testing.T) http.Handler {
 	return mountFakeHandler(t, f.discovery(), f.serveInvoke)
 }
 
-func (f *fakeHandlerStateWrites) serveInvoke(t *testing.T, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
+func (f *fakeHandlerStateWrites) serveInvoke(t *testing.T, stream *fakeBidi) error {
 	t.Helper()
 	// Read StartMessage + InputCommandMessage (engine writes both before
 	// the handler emits anything).

@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	connect "connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/config"
@@ -49,7 +48,7 @@ func (f *fakeHandlerRunRetry) handler(t *testing.T) http.Handler {
 	return mountFakeHandler(t, f.discovery(), f.serveInvoke)
 }
 
-func (f *fakeHandlerRunRetry) serveInvoke(t *testing.T, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
+func (f *fakeHandlerRunRetry) serveInvoke(t *testing.T, stream *fakeBidi) error {
 	t.Helper()
 
 	startFrame, err := stream.Receive()
@@ -229,7 +228,7 @@ func (f *fakeHandlerRunExhaust) handler(t *testing.T) http.Handler {
 	return mountFakeHandler(t, f.discovery(), f.serveInvoke)
 }
 
-func (f *fakeHandlerRunExhaust) serveInvoke(t *testing.T, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
+func (f *fakeHandlerRunExhaust) serveInvoke(t *testing.T, stream *fakeBidi) error {
 	t.Helper()
 
 	startFrame, err := stream.Receive()

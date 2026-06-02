@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Reflow is a **single-binary durable-execution engine for Go**, inspired by Restate (Rust). One engine binary, one data directory; handlers run as separate Go processes the engine reaches over HTTP/2. Built on `dragonboat` (multi-group Raft) + `cockroachdb/pebble` (embedded K/V). The design doc lives at `durable-execution-go-sad.md` — read it before non-trivial work on cluster, FSM, or storage. Restate wire-protocol concepts are mirrored where applicable; comments cite the source as `crates/.../file.rs:line` (Restate v1.6.2).
+Reflow is a **single-binary durable-execution engine for Go**, inspired by Restate (Rust). One engine binary, one data directory; handlers run in-process (single-binary mode) or as separate Go processes the engine reaches over a unary Connect RPC. Built on `dragonboat` (multi-group Raft) + `cockroachdb/pebble` (embedded K/V). The design doc lives at `durable-execution-go-sad.md` — read it before non-trivial work on cluster, FSM, or storage. Restate wire-protocol concepts are mirrored where applicable; comments cite the source as `crates/.../file.rs:line` (Restate v1.6.2).
 
 
 ## Common commands
@@ -65,7 +65,7 @@ when the server has been started with `-deps all` (or `dep_index.stdlib: true`).
 The dependency direction is `cmd → pkg → internal → proto`. Internal packages must not depend on `pkg/*`, with one deliberate exception: `pkg/handler/wire` holds the shared engine↔handler protocol vocabulary (Codec, frame helpers, Type* constants, Route) and is imported by both sides — keeping it in pkg/ makes it part of the public SDK contract; bending the rule for this one focused package is preferable to duplicating the wire format.
 
 - **`cmd/reflowd`** — the production binary with three subcommand groups:
-  - `reflowd run` — start the engine. Loads layered koanf config (defaults → optional file from `$REFLOW_CONFIG` → `REFLOW_*` env vars; later overrides earlier), then calls `reflow.Run`. Handlers run in separate Go processes registered with the engine as HTTP/2 deployments; `examples/embedded/` shows a single-`main` dev setup that runs both.
+  - `reflowd run` — start the engine. Loads layered koanf config (defaults → optional file from `$REFLOW_CONFIG` → `REFLOW_*` env vars; later overrides earlier), then calls `reflow.Run`. Handlers run in-process (`Config.Handlers.InProcess` — registered as an `inproc://` deployment with no network hop) or as separate Go processes registered as HTTP/2 deployments; `examples/embedded/` shows the single-binary in-process setup.
   - `reflowd cluster {add-node|remove-node|nodes list|partitions list|snapshot {create|list|delete}|transfer-lp|list-lp-transfers}` — mTLS-authenticated RPCs against the admin Connect port, dispatched to the `reflow.clusterctl.v1.ClusterCtl` service (fleet ops: membership, partitions, snapshots, LP transfers).
   - `reflowd config {register-deployment|list-deployments|describe-deployment|delete-deployment|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|ca {…}|create-join-token|list-join-tokens|delete-join-token|issue-operator|issue-tenant|upsert-cluster-authz-policy|get-cluster-authz-policy}` — same admin listener, dispatched to the `reflow.config.v1.Config` service (app config: deployments, secrets, CA roots, join tokens, cluster authz policy). `issue-operator` / `issue-tenant` mint `operator/<name>` / `tenant/<n>` client leaves against the active cluster CA (the offline `reflowd pki` flow was removed; CA bootstrap is `config ca`). DeploymentTable carries a CAS revision (`RevisionTableDeployment`); `delete-deployment` requires `--force` because in-flight invocations resolve their pinned deployment per stream-open and a delete can break them.
   - A single mTLS listener hosts both services. `--admin` may point at any cluster node — mutating commands follow `LeaderHint` connect.Error details (attached by each server's `requireLeader`) to redirect to the metadata leader. The redirect helper lives at `pkg/reflowclient.CallWithLeaderRedirect`. Naming mirrors Restate (`cluster-ctrl` = cluster admin; `admin` is the developer/app-config surface), with `admin` flipped to `config` to avoid the overloaded word.
@@ -81,7 +81,7 @@ The dependency direction is `cmd → pkg → internal → proto`. Internal packa
 - **`internal/storage`** — `Store` interface (Pebble + in-memory); `keys` defines the byte-level key layout (no partition_id prefix — each partition has its own DB); `tables` is the typed view over keys.
 - **`internal/ingress`** — Connect RPC entrypoints (`SubmitInvocation`, `AwaitInvocation`, `AttachInvocation`, `GetInvocationOutput`, `CancelInvocation`, `ResolveAwakeable`, `ResolveWorkflowPromise`, `GetObjectState`, admin reads) over HTTP/2 with content-negotiated Connect / gRPC / gRPC-Web / HTTP-JSON on one listener. Routes via `Host.Partitioner` (hash of `service` + `object_key`). `ingress.Config.ExtraRoutes func(*Server) []connectserver.Route` is the seam for mounting additional HTTP handlers on the same listener without a second port/cert. Inbound HTTP headers prefixed `Reflow-Meta-` are lifted (lowercased + stripped) into `SubmitInvocationRequest.metadata` so operator middleware can pass facts to the durable handler via `ctx.Metadata()`.
 - **`internal/secretstore`** — per-node Resolver for shard 0's `SecretTable`. Holds an `atomic.Pointer[map[string][]byte]` (name → resolved plaintext bytes) that the reconciler swaps each pass; consumers call `Lookup(name)` (and `LookupForCASigning` for the cluster CA signing key — see `internal/certmgr`) on the hot path with no per-call work. Each reconcile pass iterates `SecretRecord` rows: fetch ciphertext via `gocloud.dev/blob`, dispatch the KEK URI through Tink's process-global `KMSClient` registry, decrypt with `AAD = []byte(secret.name)` so a leaked ciphertext for row A can't be replayed onto row B. On resolve error the previously-resolved bytes are preserved so a transient blob/KMS hiccup doesn't knock dependent consumers offline. KMS providers ship always-linked at `pkg/kms/{blob,awskms,gcpkms,hcvault}/`: BlobKMS, AWS, GCP self-register at package `init()` under `sync.Once`; Vault registers via `hcvaultkms.Register` when `cfg.KMS.Vault.TokenFile` is set. BlobKMS' on-disk shape is `boot_key(32B) || serialized_encrypted_keyset` — the boot key encrypts a Tink AEAD keyset, enabling multi-key rotation without a wire change.
-- **`internal/engine/handlerclient`** — engine-side wire client for handler deployments. Single transport is Connect RPC (`connectclient/`) over HTTP/2; the handler-side server lives at `pkg/handler` (see `pkg/handler/server.go`).
+- **`internal/engine/handlerclient`** — engine-side wire client for handler deployments. The engine↔handler RPC is **unary** `HandlerService.Invoke` (the request batches StartMessage + replay frames; the response batches the handler's command + terminal frames — the session is half-duplex, so no streaming). Two transports register by URL scheme on the `Registry`: `connectclient/` (Connect RPC over HTTP/2, `http`/`https`) and an in-process bridge (`inproc` scheme, built in `pkg/reflow`, calling `handler.InvokeInProc` directly — no HTTP). The handler-side server lives at `pkg/handler` (see `pkg/handler/server.go`).
 - **`internal/auth`** — inbound authentication, HTTP-level middleware built on `connectrpc.com/authn` so failures emit proper Connect-coded errors (`CodeUnauthenticated` / `CodePermissionDenied`) across Connect, gRPC, gRPC-Web, and HTTP-JSON, and works uniformly for unary and streaming RPCs. Authentication is mesh-only: `composeAuthFunc` resolves the `Principal` from the verified mTLS leaf's Common Name, a bare `<kind>/<name>` — `node/<id>` vs `operator/<name>` vs `tenant/<n>` — the last is the LP-band tenancy identity, issued by `config issue-tenant` (`mesh_authfunc.go` → `creds.LeafPrincipal`; mesh leaves carry no URI SANs and there is no trust-domain segment — the CA's SPKI fingerprint is the trust anchor). A request with no client cert is anonymous; the Cedar authz interceptor (`internal/authz`) decides whether anonymous is acceptable per procedure. The stamp handler (`policy_handler.go`) strips any forged `X-Reflow-Principal` header and stamps the server-verified value for the interceptor. Per-listener transport security is driven by `cfg.Delivery.Creds` / `cfg.Admin.Creds` via `pkg/reflow/creds`; multi-node insecure delivery emits a startup warning in `pkg/reflow/run.go`. Authorization is Cedar (`internal/authz`): the foundational policy restricts `/reflow.clusterctl.v1.ClusterCtl/*` and `/reflow.config.v1.Config/*` to `operator/*` with one carve-out — `SelfJoin` is allowed for `node/*` so a freshly-provisioned joiner can register itself (the handler then enforces that the leaf CN's node id equals `req.node_id`). The ingress data plane is **tenant-isolated**: the interceptor builds a tenant-scoped `Invocation` resource per ingress RPC, and the foundational policy permits a `tenant/<n>` principal only on its own band (`resource.tenant_id == principal.tenant_id`), anonymous / non-tenant callers only on band 0 (`internal/authz/policies.go`, `interceptor.go`; the by-id resource resolver is `pkg/reflow.ingressResourceTenant`).
 - **`internal/observability`** — `*Metrics` is a single Prometheus collector struct passed down into the partition apply path + timer service. The engine never constructs its own registry; wiring lives in `pkg/reflow`.
 
@@ -105,25 +105,25 @@ Run:
 go test -tags=loadtest -timeout=10m -count=1 -run=TestLoad_SteadyState -v ./internal/loadgen/...
 ```
 
-Reference (2026-06-02, branch `strip-to-core`, Darwin/arm64 laptop; post Tier-1 Pebble tuning — shared block+file cache, L0/memtable write-stall thresholds, 10s range-tombstone flush delay, now the default per-shard open path):
+Reference (2026-06-02, branch `strip-to-core`, Darwin/arm64 laptop; post unary engine↔handler transport (`HandlerService.Invoke`), on top of the Tier-1 Pebble tuning — shared block+file cache, L0/memtable write-stall thresholds, 10s range-tombstone flush delay, the default per-shard open path):
 
 ```
-- Issued: 494        # rate-limit + concurrency-cap interplay; not a deterministic target
-- Completed: 494
+- Issued: 490        # rate-limit + concurrency-cap interplay; not a deterministic target
+- Completed: 489
 - Failed: 1          # within the 1% cancelled-propose tolerance
-- InFlightAtEnd: 0
+- InFlightAtEnd: 1
 - Duration: 20s
 
 Latency (end-to-end, µs)
-- p50:  107_967
-- p90:  193_279
-- p99:  294_655
-- p999: 365_055
-- max:  365_055
+- p50:  107_007
+- p90:  185_983
+- p99:  265_471
+- p999: 348_927
+- max:  348_927
 
 Pebble
 - peak L0 files (any shard, any node): 0
-- mean write-amp across samples:       1.022
+- mean write-amp across samples:       1.024
 
 Invariants: all passed.
 ```

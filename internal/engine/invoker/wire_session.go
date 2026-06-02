@@ -4,27 +4,26 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/internal/engine/limits"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	handlerv1 "github.com/twinfer/reflow/proto/handlerv1"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
-// WireDispatcher resolves a deployment_id to an open handler stream
-// over HTTP/2. The invoker constructs one StartMessage per session and
-// the dispatcher is the seam where transport configuration lives.
-// target carries (service, handler) used to build the URL path.
+// WireDispatcher resolves a deployment to a handler transport and runs one
+// invocation session. The invoker builds the request (StartMessage +
+// replay frames); the dispatcher is the seam where transport configuration
+// lives. target carries (service, handler).
 //
-// The single Stream returned by Open is owned by the caller (the
-// session goroutine); it must be drained or its parent context
-// cancelled to release the underlying HTTP/2 stream.
+// Invoke is unary — the session is half-duplex, so the whole exchange is
+// one request/response. It returns the frames the handler emitted (command
+// frames + the terminal Output/Suspension/Error frame).
 type WireDispatcher interface {
-	Open(ctx context.Context, rec *enginev1.DeploymentRecord, target *enginev1.InvocationTarget) (handlerclient.Stream, error)
+	Invoke(ctx context.Context, rec *enginev1.DeploymentRecord, target *enginev1.InvocationTarget, req *handlerv1.InvokeRequest) ([]*protocolv1.Frame, error)
 }
 
 // wireSession runs one invocation by dispatching protocolv1 frames
@@ -149,25 +148,14 @@ func (s *wireSession) run() {
 	}
 	s.kind = kind
 
-	stream, err := s.dispatcher.Open(s.ctx, s.rec, s.target)
+	req, err := s.buildRequest(entries)
 	if err != nil {
-		s.log.Warn("invoker.wire: open stream failed",
-			"id", invocationIDString(s.id),
-			"deployment_id", s.rec.GetId(),
-			"url", s.rec.GetUrl(),
-			"err", err)
-		s.failTerminal(fmt.Sprintf("wire dispatch: open: %v", err))
-		return
-	}
-	defer func() { _ = stream.CloseSend() }()
-
-	if err := s.sendStartAndReplay(stream, entries); err != nil {
 		if s.ctx.Err() != nil {
 			return
 		}
-		s.log.Warn("invoker.wire: send Start+replay failed",
+		s.log.Warn("invoker.wire: build request failed",
 			"id", invocationIDString(s.id), "err", err)
-		s.failTerminal(fmt.Sprintf("wire dispatch: send start: %v", err))
+		s.failTerminal(fmt.Sprintf("wire dispatch: build request: %v", err))
 		return
 	}
 
@@ -175,7 +163,21 @@ func (s *wireSession) run() {
 	// command frame the handler emits gets the next sequential index.
 	s.nextIdx = highestIndex(entries) + 1
 
-	s.driveLoop(stream)
+	frames, err := s.dispatcher.Invoke(s.ctx, s.rec, s.target, req)
+	if err != nil {
+		if s.ctx.Err() != nil {
+			return
+		}
+		s.log.Warn("invoker.wire: invoke failed",
+			"id", invocationIDString(s.id),
+			"deployment_id", s.rec.GetId(),
+			"url", s.rec.GetUrl(),
+			"err", err)
+		s.failTerminal(fmt.Sprintf("wire dispatch: invoke: %v", err))
+		return
+	}
+
+	s.driveFrames(frames)
 }
 
 // loadJournal reads the invocation status, advances Scheduled to
@@ -241,18 +243,18 @@ func highestIndex(entries []*enginev1.JournalEntry) uint32 {
 	return highest
 }
 
-// sendStartAndReplay emits the StartMessage frame followed by one
-// frame per existing journal entry (translated by wire_replay.go).
-// Handlers count frames received and transition to user-code phase
-// when received == known_entries.
+// buildRequest assembles the InvokeRequest for one session: the
+// StartMessage frame followed by one frame per existing journal entry
+// (translated by wire_replay.go). Handlers count the replay frames and
+// transition to user-code phase when received == known_entries.
 //
 // StartMessage.state_map carries the eager-preloaded K/V snapshot for
 // the invocation's (service, object_key) so wireContext.GetState can
 // serve hits directly from the handler-side cache without a round-trip.
-func (s *wireSession) sendStartAndReplay(stream handlerclient.Stream, entries []*enginev1.JournalEntry) error {
+func (s *wireSession) buildRequest(entries []*enginev1.JournalEntry) (*handlerv1.InvokeRequest, error) {
 	frames, err := translateJournal(s.id, entries, s.codec, s.log)
 	if err != nil {
-		return fmt.Errorf("translate journal: %w", err)
+		return nil, fmt.Errorf("translate journal: %w", err)
 	}
 
 	start := &protocolv1.StartMessage{
@@ -283,17 +285,18 @@ func (s *wireSession) sendStartAndReplay(stream handlerclient.Stream, entries []
 	start.PartialState = overflowed
 	startBytes, err := s.codec.Marshal(start)
 	if err != nil {
-		return fmt.Errorf("marshal StartMessage: %w", err)
+		return nil, fmt.Errorf("marshal StartMessage: %w", err)
 	}
-	if err := stream.Send(wire.FrameFor(wire.TypeStart, startBytes)); err != nil {
-		return err
-	}
+
+	// frames[0] = StartMessage frame; the rest are one replay frame per
+	// journal entry. KnownEntries stays = len(replay frames) — the Start
+	// frame is the session preamble, not a counted journal entry.
+	out := make([]*protocolv1.Frame, 0, len(frames)+1)
+	out = append(out, wire.FrameFor(wire.TypeStart, startBytes))
 	for _, f := range frames {
-		if err := stream.Send(wire.FrameForSlot(f.typeCode, f.slot, f.payload)); err != nil {
-			return err
-		}
+		out = append(out, wire.FrameForSlot(f.typeCode, f.slot, f.payload))
 	}
-	return nil
+	return &handlerv1.InvokeRequest{Frames: out}, nil
 }
 
 // resolveDeployment populates s.rec by resolving s.depID against the
@@ -375,29 +378,13 @@ func (s *wireSession) resolveKind() (protocolv1.Kind, bool) {
 	return protocolv1.Kind_KIND_UNSPECIFIED, false
 }
 
-// driveLoop is the inbound-frame pump. Translates each protocolv1 frame
-// into the matching journal append or terminal effect, exiting when the
-// handler signals End / Error / Suspension or the stream breaks.
-func (s *wireSession) driveLoop(stream handlerclient.Stream) {
-	for {
+// driveFrames is the inbound-frame pump. It walks the frames the handler
+// returned (command frames + the terminal frame), translating each into
+// the matching journal append or terminal effect, and stops when it hits a
+// terminal frame (End / Error / Output / Suspension).
+func (s *wireSession) driveFrames(frames []*protocolv1.Frame) {
+	for _, f := range frames {
 		if s.ctx.Err() != nil {
-			return
-		}
-		f, err := stream.Recv()
-		if err == io.EOF {
-			// Handler closed without sending EndMessage; treat as
-			// premature end. Propose failure so the invocation
-			// terminates rather than dangling.
-			s.failTerminal("wire dispatch: handler stream closed without EndMessage")
-			return
-		}
-		if err != nil {
-			if s.ctx.Err() != nil {
-				return
-			}
-			s.log.Warn("invoker.wire: stream Recv failed",
-				"id", invocationIDString(s.id), "err", err)
-			s.failTerminal(fmt.Sprintf("wire dispatch: recv: %v", err))
 			return
 		}
 		if err := wire.ValidatePayload(f); err != nil {
@@ -502,6 +489,10 @@ func (s *wireSession) driveLoop(stream handlerclient.Stream) {
 				"id", invocationIDString(s.id), "type", fmt.Sprintf("0x%04x", typeCode))
 		}
 	}
+	// Reached only if the handler returned no terminal frame
+	// (Output/End/Error/Suspension) — each terminal arm returns inside the
+	// loop. Mirror the bidi "closed without EndMessage" failure.
+	s.failTerminal("wire dispatch: handler returned without terminal frame")
 }
 
 // handleOutput decodes an OutputCommandMessage and proposes the

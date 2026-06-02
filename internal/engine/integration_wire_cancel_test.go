@@ -42,7 +42,7 @@ func (f *fakeHandlerSleeper) httpHandler(t *testing.T) http.Handler {
 	return mountFakeHandler(t, f.discovery(), f.serveInvoke)
 }
 
-func (f *fakeHandlerSleeper) serveInvoke(t *testing.T, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
+func (f *fakeHandlerSleeper) serveInvoke(t *testing.T, stream *fakeBidi) error {
 	t.Helper()
 	startFrame, err := stream.Receive()
 	if err != nil {

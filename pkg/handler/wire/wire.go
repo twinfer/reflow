@@ -54,6 +54,17 @@ func (protoCodec) Unmarshal(data []byte, v any) error {
 
 func (protoCodec) Name() string { return "protobuf" }
 
+// DefaultMaxRecvBytes is the default ceiling for a single engine↔handler
+// message (connect.WithReadMaxBytes), applied on both the engine client
+// (reading the handler's InvokeResponse) and the handler-side server
+// (reading the engine's InvokeRequest). The unary transport batches a whole
+// session's frames into one message, so this bounds the worst case —
+// roughly max_journal_entries (default 10_000) replay/command frames plus
+// the eager-state snapshot. 64 MiB is generous for realistic journals while
+// capping memory against a pathological or buggy peer; handlers that
+// legitimately receive larger requests raise handler.Config.MaxRecvBytes.
+const DefaultMaxRecvBytes = 64 << 20
+
 // Route is the per-session destination metadata: the (service, handler)
 // tuple the engine wants to invoke. Connect RPC has no per-handler URL
 // addressing, so this tuple flows inside the StartMessage frame the

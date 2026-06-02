@@ -11,6 +11,8 @@ import (
 	"github.com/twinfer/reflow/internal/engine/handlerclient/connectclient"
 	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	handlerv1 "github.com/twinfer/reflow/proto/handlerv1"
+	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
 // resolveDeployment looks up the persisted DeploymentRecord on shard 0
@@ -161,17 +163,17 @@ func (h *Host) LookupDeploymentIDByHandler(ctx context.Context, service, handler
 	}
 }
 
-// openWireStream is the WireDispatcher implementation: ask the
+// invokeWire is the WireDispatcher implementation: ask the
 // handlerclient.Registry for a cached Client against the deployment URL
-// and open a fresh Stream addressed to (target.Service, target.Handler).
-// The route is used by the HTTP/2 transport to build the URL path; the
-// StartMessage frame echoes the same tuple as a sanity check.
-func (h *Host) openWireStream(ctx context.Context, rec *enginev1.DeploymentRecord, target *enginev1.InvocationTarget) (handlerclient.Stream, error) {
+// and run one session via its unary Invoke, addressed to (target.Service,
+// target.Handler). The route is echoed by the StartMessage frame as a
+// sanity check. Returns the frames the handler emitted.
+func (h *Host) invokeWire(ctx context.Context, rec *enginev1.DeploymentRecord, target *enginev1.InvocationTarget, req *handlerv1.InvokeRequest) ([]*protocolv1.Frame, error) {
 	if rec == nil {
-		return nil, errors.New("host: openWireStream: nil deployment record")
+		return nil, errors.New("host: invokeWire: nil deployment record")
 	}
 	if target == nil {
-		return nil, errors.New("host: openWireStream: nil invocation target")
+		return nil, errors.New("host: invokeWire: nil invocation target")
 	}
 	if h.handlerRegistry == nil {
 		return nil, errors.New("host: handlerclient registry not initialized")
@@ -180,20 +182,28 @@ func (h *Host) openWireStream(ctx context.Context, rec *enginev1.DeploymentRecor
 	if err != nil {
 		return nil, fmt.Errorf("host: get handlerclient: %w", err)
 	}
-	return client.Invoke(ctx, wire.Route{
+	resp, err := client.Invoke(ctx, wire.Route{
 		Service: target.GetServiceName(),
 		Handler: target.GetHandlerName(),
-	})
+	}, req)
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetFrames(), nil
 }
 
-// newHandlerRegistry builds the engine-side handlerclient registry
-// with the default Connect transport dialers (plaintext h2c + TLS).
-// Operators may install additional dialers post-construction via
-// Host.HandlerClients().Register. signer, when non-nil, stamps every
-// dispatched request with an Authorization: Bearer JWT.
-func newHandlerRegistry(signer handlerclient.Signer) *handlerclient.Registry {
+// newHandlerRegistry builds the engine-side handlerclient registry with the
+// default Connect transport dialers (plaintext h2c + TLS). When inprocDialer
+// is non-nil it is registered under the "inproc" scheme so single-binary
+// deployments run their handler in-process. Operators may install additional
+// dialers post-construction via Host.HandlerClients().Register. signer, when
+// non-nil, stamps every dispatched request with an Authorization: Bearer JWT.
+func newHandlerRegistry(signer handlerclient.Signer, inprocDialer handlerclient.Dialer) *handlerclient.Registry {
 	r := handlerclient.NewRegistry()
 	connectclient.Register(r, signer)
+	if inprocDialer != nil {
+		r.Register("inproc", inprocDialer)
+	}
 	return r
 }
 
@@ -205,11 +215,11 @@ func (h *Host) HandlerClients() *handlerclient.Registry {
 	return h.handlerRegistry
 }
 
-// hostWireDispatcher adapts Host.openWireStream into the
+// hostWireDispatcher adapts Host.invokeWire into the
 // invoker.WireDispatcher interface so the invoker can hold a small,
 // stable seam instead of a *Host reference.
 type hostWireDispatcher struct{ h *Host }
 
-func (d hostWireDispatcher) Open(ctx context.Context, rec *enginev1.DeploymentRecord, target *enginev1.InvocationTarget) (handlerclient.Stream, error) {
-	return d.h.openWireStream(ctx, rec, target)
+func (d hostWireDispatcher) Invoke(ctx context.Context, rec *enginev1.DeploymentRecord, target *enginev1.InvocationTarget, req *handlerv1.InvokeRequest) ([]*protocolv1.Frame, error) {
+	return d.h.invokeWire(ctx, rec, target, req)
 }

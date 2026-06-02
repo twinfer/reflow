@@ -5,20 +5,18 @@
 // dials whichever the handler advertises. Capability discovery lives in
 // proto/discoveryv1.
 //
-// Two RPC shapes are defined here. v1 implements only InvokeStream; the
-// request/response shape lands when the engine grows server-driven
-// suspension on top of the existing journal.
-//
-//   - InvokeStream is a bidi stream of protocolv1.Frame envelopes. The
-//     engine sends StartMessage + replay frames + completion
-//     notifications; the handler sends new command frames + the
-//     terminal Output/Suspension/Error frame. Used by long-lived
-//     handler deployments (containers, sidecars) that can keep an
-//     HTTP/2 connection open across the lifetime of the invocation.
+// Invoke carries one full invocation session as a unary request/response.
+// The engine sends StartMessage + replay frames in InvokeRequest.frames;
+// the handler runs to suspension or completion and returns its new command
+// frames + the terminal Output/Suspension/Error frame in InvokeResponse.frames.
+// The session is half-duplex — the engine never sends mid-session, and
+// every await resolves via suspend→respawn (a fresh session with a larger
+// replay buffer) — so a unary shape is sufficient; the engine→handler call
+// needs no streaming. Route info (service + handler) rides inside the
+// StartMessage frame — no URL/header metadata is consulted on the server.
 //
 // Wire framing of protocolv1.Frame is unchanged: the 8-byte header +
-// payload bytes live inside Frame.header and Frame.payload. Connect
-// handles the stream-framing layer on top.
+// payload bytes live inside Frame.header and Frame.payload.
 syntax = "proto3";
 
 package reflow.handler.v1;
@@ -28,11 +26,21 @@ import "protocolv1/protocol.proto";
 option go_package = "github.com/twinfer/reflow/proto/handlerv1;handlerv1";
 
 service HandlerService {
-  // InvokeStream opens a bidi stream that carries one full invocation
-  // session. The first engine-sent Frame is a StartMessage; the
-  // terminal handler-sent Frame is EndMessage (or SuspensionMessage /
-  // ErrorMessage for non-clean termination). Route info (service +
-  // handler) is carried inside StartMessage — no URL/header metadata
-  // is consulted on the server side.
-  rpc InvokeStream(stream reflow.protocol.v1.Frame) returns (stream reflow.protocol.v1.Frame);
+  // Invoke runs one full invocation session. InvokeRequest.frames is the
+  // StartMessage frame followed by one frame per known journal entry
+  // (replay); InvokeResponse.frames is the handler's emitted command
+  // frames followed by the terminal Output / Suspension / Error frame.
+  rpc Invoke(InvokeRequest) returns (InvokeResponse);
+}
+
+// InvokeRequest carries the StartMessage frame followed by the replay
+// frames the engine ships to open a session.
+message InvokeRequest {
+  repeated reflow.protocol.v1.Frame frames = 1;
+}
+
+// InvokeResponse carries the command frames the handler emitted plus the
+// terminal frame produced by one session run.
+message InvokeResponse {
+  repeated reflow.protocol.v1.Frame frames = 1;
 }

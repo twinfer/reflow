@@ -2,57 +2,35 @@ package handler
 
 import (
 	"context"
-	"errors"
-	"io"
 
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflow/pkg/handler/wire"
+	handlerv1 "github.com/twinfer/reflow/proto/handlerv1"
 	"github.com/twinfer/reflow/proto/handlerv1/handlerv1connect"
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
-// handlerService implements handlerv1connect.HandlerServiceHandler.
-// InvokeStream drives one session through runSession; route info is
-// pulled from the StartMessage payload — Connect's procedure path
-// carries no per-handler addressing.
+// handlerService implements handlerv1connect.HandlerServiceHandler. Invoke
+// drives one session through runSession; route info is pulled from the
+// StartMessage payload — Connect's procedure path carries no per-handler
+// addressing.
 type handlerService struct {
 	handlerv1connect.UnimplementedHandlerServiceHandler
 	registry *Registry
 	codec    wire.Codec
 }
 
-func (s *handlerService) InvokeStream(ctx context.Context, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
-	cs := &connectStream{stream: stream}
-	if err := runSession(ctx, cs, cs, s.registry, s.codec, wire.Route{}); err != nil {
-		// runSession's terminal frame (Output / Suspension / Error) has
-		// already been sent on the wire. Don't promote the err to a
-		// connect.Error — that would attach gRPC status trailers the
-		// engine treats as a transport failure, masking the protocol
-		// frame the SDK already wrote.
-		return nil
-	}
-	return nil
-}
-
-// connectStream adapts a connect.BidiStream onto frameSource +
-// frameSink. Connect wraps the underlying stream's EOF in its own
-// error, so Recv unwraps before returning io.EOF.
-type connectStream struct {
-	stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]
-}
-
-func (c *connectStream) Recv() (*protocolv1.Frame, error) {
-	f, err := c.stream.Receive()
-	if err != nil {
-		if errors.Is(err, io.EOF) {
-			return nil, io.EOF
-		}
-		return nil, err
-	}
-	return f, nil
-}
-
-func (c *connectStream) Send(f *protocolv1.Frame) error {
-	return c.stream.Send(f)
+// Invoke runs one full invocation session. req.Msg.Frames is the
+// StartMessage frame followed by the replay frames; the response frames
+// are the handler's emitted command frames followed by the terminal
+// Output/Suspension/Error frame.
+//
+// A session error is reported in-band: runInvoke captures runSession's
+// terminal frame in the response slice, so the outcome rides the frames.
+// We never promote it to a connect.Error — that would attach status
+// trailers the engine treats as a transport failure, masking the protocol
+// frame the SDK already wrote.
+func (s *handlerService) Invoke(ctx context.Context, req *connect.Request[handlerv1.InvokeRequest]) (*connect.Response[handlerv1.InvokeResponse], error) {
+	frames := runInvoke(ctx, s.registry, s.codec, req.Msg.GetFrames())
+	return connect.NewResponse(&handlerv1.InvokeResponse{Frames: frames}), nil
 }

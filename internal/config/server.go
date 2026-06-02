@@ -333,6 +333,53 @@ func (s *Server) AutoSeedWithBudget(ctx context.Context, url string, budget uint
 	return resp.GetDeploymentId(), nil
 }
 
+// AutoSeedLocal registers an in-process deployment without a network
+// discovery probe: the caller (pkg/reflow) supplies the handler set
+// directly — synthesized from the local handler.Registry via
+// handler.LocalDiscovery — and rawURL is the internal inproc:// address the
+// engine's in-process handlerclient dialer is keyed on. Like AutoSeed it
+// skips the leader gate (the caller waits for leadership). budget=0 → engine
+// default.
+func (s *Server) AutoSeedLocal(ctx context.Context, rawURL string, handlers []*discoveryv1.DiscoveredHandler, budget uint32) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("config: parse url: %w", err))
+	}
+	if strings.ToLower(u.Scheme) != "inproc" {
+		return "", connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("config: AutoSeedLocal requires an inproc:// url, got %q", rawURL))
+	}
+	deploymentID := uuid.NewString()
+	rec := &enginev1.DeploymentRecord{
+		Id:                deploymentID,
+		Url:               rawURL,
+		RegisteredAtMs:    uint64(time.Now().UnixMilli()),
+		MaxJournalEntries: budget,
+	}
+	for _, h := range handlers {
+		for _, name := range h.GetHandlerNames() {
+			rec.Handlers = append(rec.Handlers, &enginev1.DeploymentHandler{
+				Service: h.GetService(),
+				Handler: name,
+				Kind:    uint32(h.GetKind()),
+			})
+		}
+	}
+	cmd := &enginev1.Command{
+		Kind: &enginev1.Command_RegisterDeployment{
+			RegisterDeployment: &enginev1.RegisterDeployment{Record: rec},
+		},
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
+	defer cancel()
+	if err := s.runner.Proposer().ProposeSelf(callCtx, cmd); err != nil {
+		return "", connect.NewError(connect.CodeInternal,
+			fmt.Errorf("config: propose RegisterDeployment: %w", err))
+	}
+	return deploymentID, nil
+}
+
 // validateDeploymentScheme rejects schemes the engine cannot dial.
 func validateDeploymentScheme(scheme string) error {
 	switch scheme {

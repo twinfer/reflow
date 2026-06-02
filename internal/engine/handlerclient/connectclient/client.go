@@ -1,22 +1,22 @@
-// Package connectclient implements handlerclient.Client over Connect
-// RPC. The engine opens HandlerService.InvokeStream as a bidi stream
-// of protocolv1.Frame envelopes; routing (service, handler) flows
-// inside the StartMessage payload, not on the URL.
+// Package connectclient implements handlerclient.Client over Connect RPC.
+// The engine calls HandlerService.Invoke as a unary RPC carrying a batch of
+// protocolv1.Frame envelopes — StartMessage + replay in the request, the
+// handler's command frames + terminal frame in the response. Routing
+// (service, handler) flows inside the StartMessage payload, not on the URL.
 //
 // Connect's NewClient defaults to the Connect protocol with binary
-// protobuf, but the server side enables Connect/gRPC/gRPC-Web on the
-// same handler — supplying connect.WithGRPC() here is one switch away
-// if a deployment prefers gRPC semantics. h2c is selected via
-// http.Protocols.SetUnencryptedHTTP2 for http:// URLs; TLS via
-// SetHTTP2 for https://.
+// protobuf, but the server side enables Connect/gRPC/gRPC-Web on the same
+// handler — supplying connect.WithGRPC() here is one switch away if a
+// deployment prefers gRPC semantics. h2c is selected via
+// http.Protocols.SetUnencryptedHTTP2 for http:// URLs; TLS via SetHTTP2
+// for https://.
 //
 // Request gzip is enabled via connect.WithSendGzip — meaningful for
-// StartMessage.state_map and replay frames. Connect-Go's gzip codec
-// has a built-in minimum-byte threshold so tiny command frames stay
-// uncompressed and the CPU cost only kicks in on payloads worth
-// compressing. The handler-side server registers gzip by default (it
-// ships with protoc-gen-connect-go) so no handler-side change is
-// needed for decode.
+// StartMessage.state_map and replay frames. Connect-Go's gzip codec has a
+// built-in minimum-byte threshold so tiny requests stay uncompressed and
+// the CPU cost only kicks in on payloads worth compressing. The
+// handler-side server registers gzip by default (it ships with
+// protoc-gen-connect-go) so no handler-side change is needed for decode.
 package connectclient
 
 import (
@@ -24,7 +24,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -34,8 +33,8 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine/handlerclient"
 	"github.com/twinfer/reflow/pkg/handler/wire"
+	handlerv1 "github.com/twinfer/reflow/proto/handlerv1"
 	"github.com/twinfer/reflow/proto/handlerv1/handlerv1connect"
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
 // Scheme is the registry key for plain HTTP/2 (h2c). Plain HTTP is only
@@ -46,11 +45,11 @@ const Scheme = "http"
 // SchemeSecure is the registry key for HTTP/2 over TLS.
 const SchemeSecure = "https"
 
-// Register installs both plain (h2c) and TLS dialers on r. Operators
-// who need a custom TLS root bundle can supply their own Dialer via
-// r.Register. signer is optional: when non-nil, every dispatched
-// request carries an Authorization: Bearer header minted by it; when
-// nil, no auth header is set (single-node and insecure-creds posture).
+// Register installs both plain (h2c) and TLS dialers on r. Operators who
+// need a custom TLS root bundle can supply their own Dialer via r.Register.
+// signer is optional: when non-nil, every dispatched request carries an
+// Authorization: Bearer header minted by it; when nil, no auth header is
+// set (single-node and insecure-creds posture).
 func Register(r *handlerclient.Registry, signer handlerclient.Signer) {
 	r.Register(Scheme, dialerFor(true, signer))
 	r.Register(SchemeSecure, dialerFor(false, signer))
@@ -62,9 +61,9 @@ func dialerFor(plaintextH2C bool, signer handlerclient.Signer) handlerclient.Dia
 	}
 }
 
-// New is the constructor used by callers that want to bypass the
-// registry — primarily tests. plaintextH2C selects h2c when true,
-// HTTPS-over-TLS otherwise. signer may be nil for unauthenticated dials.
+// New is the constructor used by callers that want to bypass the registry —
+// primarily tests. plaintextH2C selects h2c when true, HTTPS-over-TLS
+// otherwise. signer may be nil for unauthenticated dials.
 func New(deploymentID, rawURL string, plaintextH2C bool, signer handlerclient.Signer) (*Client, error) {
 	c, err := newClient(deploymentID, rawURL, plaintextH2C, signer)
 	if err != nil {
@@ -97,16 +96,16 @@ func newClient(deploymentID, rawURL string, plaintextH2C bool, signer handlercli
 		baseURL:      baseURL,
 		http:         hc,
 		tr:           tr,
-		connect:      handlerv1connect.NewHandlerServiceClient(hc, baseURL, connect.WithSendGzip()),
+		connect:      handlerv1connect.NewHandlerServiceClient(hc, baseURL, connect.WithSendGzip(), connect.WithReadMaxBytes(wire.DefaultMaxRecvBytes)),
 		signer:       signer,
 	}, nil
 }
 
 // Client wraps one Connect HandlerServiceClient bound to a single
 // deployment URL. The underlying http.Transport is shared across every
-// Invoke and torn down by Close. deploymentID is captured at
-// construction so the signer can stamp it as the JWT aud without
-// threading it through Invoke.
+// Invoke and torn down by Close. deploymentID is captured at construction
+// so the signer can stamp it as the JWT aud without threading it through
+// Invoke.
 type Client struct {
 	deploymentID string
 	baseURL      string
@@ -119,33 +118,35 @@ type Client struct {
 	closed bool
 }
 
-// Invoke opens a HandlerService.InvokeStream bidi stream. route is
-// validated and forwarded as a sanity check, but Connect routing
-// itself carries no per-handler addressing — the engine puts (service,
-// handler) inside StartMessage and the handler-side server echoes the
-// same tuple from there.
-func (c *Client) Invoke(ctx context.Context, route wire.Route) (handlerclient.Stream, error) {
+// Invoke runs one session via the unary HandlerService.Invoke RPC. route is
+// validated and forwarded as a sanity check, but Connect routing itself
+// carries no per-handler addressing — the engine puts (service, handler)
+// inside the StartMessage frame and the handler-side server echoes the same
+// tuple from there. The caller's ctx scopes the whole session (the handler
+// runs to suspension or completion); there is no separate deadline.
+func (c *Client) Invoke(ctx context.Context, route wire.Route, req *handlerv1.InvokeRequest) (*handlerv1.InvokeResponse, error) {
 	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
 		return nil, handlerclient.ErrClientClosed
 	}
-	c.mu.Unlock()
 	if route.Service == "" || route.Handler == "" {
 		return nil, errors.New("connectclient: route.Service and route.Handler are required")
 	}
-
-	bs := c.connect.InvokeStream(ctx)
+	connReq := connect.NewRequest(req)
 	if c.signer != nil {
 		tok, err := c.signer.Sign(c.deploymentID)
 		if err != nil {
-			_ = bs.CloseRequest()
-			_ = bs.CloseResponse()
 			return nil, fmt.Errorf("connectclient: sign: %w", err)
 		}
-		bs.RequestHeader().Set("Authorization", "Bearer "+tok)
+		connReq.Header().Set("Authorization", "Bearer "+tok)
 	}
-	return &stream{bs: bs}, nil
+	resp, err := c.connect.Invoke(ctx, connReq)
+	if err != nil {
+		return nil, fmt.Errorf("connectclient: invoke: %w", err)
+	}
+	return resp.Msg, nil
 }
 
 // Close drops the underlying HTTP/2 transport's connection pool.
@@ -160,74 +161,5 @@ func (c *Client) Close() error {
 	tr := c.tr
 	c.mu.Unlock()
 	tr.CloseIdleConnections()
-	return nil
-}
-
-// stream is one InvokeStream session.
-type stream struct {
-	bs *connect.BidiStreamForClient[protocolv1.Frame, protocolv1.Frame]
-
-	sendMu     sync.Mutex
-	sendClosed bool
-
-	recvMu     sync.Mutex
-	recvClosed bool
-}
-
-// Send writes a frame onto the engine→handler half of the stream. The
-// first Send call also commits the request headers (Connect attaches
-// them on the first message).
-func (s *stream) Send(f *protocolv1.Frame) error {
-	if f == nil {
-		return errors.New("connectclient: nil frame")
-	}
-	s.sendMu.Lock()
-	closed := s.sendClosed
-	s.sendMu.Unlock()
-	if closed {
-		return errors.New("connectclient: send on closed stream")
-	}
-	return s.bs.Send(f)
-}
-
-// Recv reads the next frame from the handler→engine half. Returns
-// io.EOF when the handler closes the stream cleanly; Connect wraps
-// EOF in its own error type, which errors.Is unwraps.
-func (s *stream) Recv() (*protocolv1.Frame, error) {
-	s.recvMu.Lock()
-	closed := s.recvClosed
-	s.recvMu.Unlock()
-	if closed {
-		return nil, io.EOF
-	}
-	f, err := s.bs.Receive()
-	if err != nil {
-		if errors.Is(err, io.EOF) {
-			s.recvMu.Lock()
-			s.recvClosed = true
-			s.recvMu.Unlock()
-			return nil, io.EOF
-		}
-		return nil, fmt.Errorf("connectclient: receive: %w", err)
-	}
-	return f, nil
-}
-
-// CloseSend closes both halves of the bidi stream so the underlying
-// HTTP/2 stream slot is reaped immediately rather than at GC time.
-// Matches the engine's `defer stream.CloseSend()` teardown pattern.
-func (s *stream) CloseSend() error {
-	s.sendMu.Lock()
-	if !s.sendClosed {
-		s.sendClosed = true
-		_ = s.bs.CloseRequest()
-	}
-	s.sendMu.Unlock()
-	s.recvMu.Lock()
-	if !s.recvClosed {
-		s.recvClosed = true
-		_ = s.bs.CloseResponse()
-	}
-	s.recvMu.Unlock()
 	return nil
 }

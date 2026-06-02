@@ -28,12 +28,45 @@ type frameSink interface {
 	Send(*protocolv1.Frame) error
 }
 
-// frameStream is a duplex source+sink. The HTTP/2 transport satisfies
-// it with one object (request body + response writer), so bidi callers
-// pass the same value as both source and sink to runSession.
-type frameStream interface {
-	frameSource
-	frameSink
+// sliceSource serves a pre-loaded batch of frames (StartMessage + replay)
+// as a frameSource; the session driver pulls them in order and gets io.EOF
+// once exhausted.
+type sliceSource struct {
+	frames []*protocolv1.Frame
+	pos    int
+}
+
+func (s *sliceSource) Recv() (*protocolv1.Frame, error) {
+	if s.pos >= len(s.frames) {
+		return nil, io.EOF
+	}
+	f := s.frames[s.pos]
+	s.pos++
+	return f, nil
+}
+
+// sliceSink accumulates the frames a session emits so they can be returned
+// as one batch (the unary InvokeResponse, or the in-process response).
+type sliceSink struct {
+	frames []*protocolv1.Frame
+}
+
+func (s *sliceSink) Send(f *protocolv1.Frame) error {
+	s.frames = append(s.frames, f)
+	return nil
+}
+
+// runInvoke runs one session against a pre-loaded batch of input frames
+// (StartMessage + replay) and returns the frames the handler emitted
+// (command frames + the terminal Output/Suspension/Error frame). It is the
+// transport-neutral core shared by the Connect unary handler (connect.go)
+// and the in-process dispatcher (InvokeInProc): a session error surfaces
+// in-band as a terminal frame in the returned slice, never as a Go error.
+func runInvoke(ctx context.Context, reg *Registry, codec wire.Codec, in []*protocolv1.Frame) []*protocolv1.Frame {
+	src := &sliceSource{frames: in}
+	sink := &sliceSink{}
+	_ = runSession(ctx, src, sink, reg, codec, wire.Route{})
+	return sink.frames
 }
 
 // runSession drives one handler invocation: read StartMessage, replay

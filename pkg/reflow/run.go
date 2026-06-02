@@ -35,6 +35,8 @@ import (
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/secretstore"
 	"github.com/twinfer/reflow/internal/storage"
+	"github.com/twinfer/reflow/pkg/handler"
+	"github.com/twinfer/reflow/pkg/handler/wire"
 	hcvaultkms "github.com/twinfer/reflow/pkg/kms/hcvault"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	"github.com/twinfer/reflow/pkg/reflowclient"
@@ -239,6 +241,12 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	// engine→handler dispatch.
 	if handlerSigner != nil {
 		hcfg.HandlerSigner = handlerSigner
+	}
+	// In-process handler: register an inproc transport so the engine
+	// dispatches to the embedded Registry directly, no HTTP. The bridge
+	// lives in inproc.go (internal/engine can't import pkg/handler).
+	if cfg.Handlers.InProcess != nil {
+		hcfg.InProcDialer = inprocDialer(cfg.Handlers.InProcess, wire.DefaultCodec())
 	}
 	eh, err := engine.NewHost(ctx, hcfg)
 	if err != nil {
@@ -844,6 +852,9 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	if len(cfg.Handlers.Endpoints) > 0 {
 		go autoSeedEndpoints(ctx, configSrv, runner, cfg.Handlers.Endpoints, logger)
 	}
+	if cfg.Handlers.InProcess != nil {
+		go autoSeedInProc(ctx, configSrv, runner, cfg.Handlers.InProcess, logger)
+	}
 
 	return &Host{
 		engine:         eh,
@@ -1011,6 +1022,43 @@ func autoSeedEndpoints(ctx context.Context, srv *config.Server, runner *engine.M
 		log.Info("reflow: auto-seed endpoint registered",
 			"url", ep.URL, "deployment_id", depID)
 	}
+}
+
+// inprocDeploymentURL is the synthetic URL an in-process handler deployment
+// is registered under. The "inproc" scheme routes to the in-process dialer
+// installed on the engine's handlerclient Registry (HostConfig.InProcDialer).
+const inprocDeploymentURL = "inproc://local"
+
+// autoSeedInProc waits for shard 0 leadership, then registers the embedded
+// handler Registry as a single inproc:// deployment. Discovery is
+// synthesized locally via handler.LocalDiscovery — the engine cannot dial an
+// inproc URL to run the usual /discover probe. Fire-and-forget; mirrors
+// autoSeedEndpoints' leadership wait.
+func autoSeedInProc(ctx context.Context, srv *config.Server, runner *engine.MetadataRunner, reg *handler.Registry, log *slog.Logger) {
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		if runner != nil && runner.IsLeader() {
+			break
+		}
+		if time.Now().After(deadline) {
+			log.Warn("reflow: auto-seed in-process handler: shard 0 leadership not reached within 2m; skipping")
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	regCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	depID, err := srv.AutoSeedLocal(regCtx, inprocDeploymentURL, handler.LocalDiscovery(reg).GetHandlers(), 0)
+	if err != nil {
+		log.Warn("reflow: auto-seed in-process handler failed", "err", err)
+		return
+	}
+	log.Info("reflow: auto-seed in-process handler registered",
+		"deployment_id", depID, "handlers", reg.Len())
 }
 
 // toEnginePeers maps the public Peer type to the internal engine.Peer.

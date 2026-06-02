@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	connect "connectrpc.com/connect"
+
 	"github.com/twinfer/reflow/pkg/handler/wire"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
 	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
@@ -49,6 +51,13 @@ type Config struct {
 	// run). The SDK handler typically doesn't know its own deployment_id
 	// (engine-assigned), so this is opt-in.
 	ExpectedAudience string
+
+	// MaxRecvBytes caps a single inbound InvokeRequest
+	// (connect.WithReadMaxBytes) — the engine batches a whole session's
+	// StartMessage + replay frames into one message. Zero uses
+	// wire.DefaultMaxRecvBytes (64 MiB); raise it for handlers that receive
+	// very large journals or eager state.
+	MaxRecvBytes int
 }
 
 // Server hosts a reflow handler over HTTP/2. Routes:
@@ -84,7 +93,7 @@ func NewServer(cfg Config) (*Server, error) {
 	invokePath, invokeHandler := handlerv1connect.NewHandlerServiceHandler(&handlerService{
 		registry: cfg.Registry,
 		codec:    cfg.Codec,
-	})
+	}, connect.WithReadMaxBytes(cfg.MaxRecvBytes))
 	discoverPath, discoverHandler := discoveryv1connect.NewDiscoveryServiceHandler(&discoveryService{
 		registry: cfg.Registry,
 	})
@@ -140,6 +149,9 @@ func validateConfig(cfg *Config) (*creds.Verifier, error) {
 	}
 	if cfg.Codec == nil {
 		cfg.Codec = wire.DefaultCodec()
+	}
+	if cfg.MaxRecvBytes <= 0 {
+		cfg.MaxRecvBytes = wire.DefaultMaxRecvBytes
 	}
 	if cfg.RootCAs == nil {
 		if len(cfg.AllowedPrincipals) > 0 || cfg.ExpectedAudience != "" {

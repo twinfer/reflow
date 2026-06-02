@@ -1788,4 +1788,7 @@ func TestWireContext_Promise_Resolve_ReplayAckSurfacesAlreadyCompleted(t *testin
 	}
 }
 
-var _ frameStream = (*fakeStream)(nil)
+var (
+	_ frameSource = (*fakeStream)(nil)
+	_ frameSink   = (*fakeStream)(nil)
+)

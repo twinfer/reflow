@@ -12,14 +12,40 @@ import (
 	"github.com/twinfer/reflow/pkg/handler/wire"
 	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
 	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
+	handlerv1 "github.com/twinfer/reflow/proto/handlerv1"
 	"github.com/twinfer/reflow/proto/handlerv1/handlerv1connect"
 	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
 )
 
-// connectFakeSession is invoked once per InvokeStream call. The
-// implementation reads frames via stream.Receive and writes them via
-// stream.Send. Returning an error fails the stream.
-type connectFakeSession func(t *testing.T, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error
+// fakeBidi adapts the unary InvokeRequest/InvokeResponse onto the
+// Receive/Send shape the fake-handler sessions are written against:
+// Receive pops the next request frame (io.EOF once exhausted), Send
+// appends to the response. It lets the per-test session bodies stay
+// unchanged across the bidi→unary transport switch.
+type fakeBidi struct {
+	in   []*protocolv1.Frame
+	pos  int
+	sent []*protocolv1.Frame
+}
+
+func (b *fakeBidi) Receive() (*protocolv1.Frame, error) {
+	if b.pos >= len(b.in) {
+		return nil, io.EOF
+	}
+	f := b.in[b.pos]
+	b.pos++
+	return f, nil
+}
+
+func (b *fakeBidi) Send(f *protocolv1.Frame) error {
+	b.sent = append(b.sent, f)
+	return nil
+}
+
+// connectFakeSession is invoked once per Invoke call. The implementation
+// reads frames via stream.Receive and writes them via stream.Send;
+// returning an error fails the session.
+type connectFakeSession func(t *testing.T, stream *fakeBidi) error
 
 // connectFakeImpl adapts a connectFakeSession into a Connect
 // HandlerServiceHandler. The session function captures whatever
@@ -30,8 +56,12 @@ type connectFakeImpl struct {
 	session connectFakeSession
 }
 
-func (c connectFakeImpl) InvokeStream(_ context.Context, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
-	return c.session(c.t, stream)
+func (c connectFakeImpl) Invoke(_ context.Context, req *connect.Request[handlerv1.InvokeRequest]) (*connect.Response[handlerv1.InvokeResponse], error) {
+	b := &fakeBidi{in: req.Msg.GetFrames()}
+	if err := c.session(c.t, b); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&handlerv1.InvokeResponse{Frames: b.sent}), nil
 }
 
 // mountFakeHandler builds an http.Handler that mimics a real reflow
@@ -73,11 +103,11 @@ func frameFor(typeCode uint16, payload []byte) *protocolv1.Frame {
 	}
 }
 
-// drainStream reads from stream until it returns io.EOF, then exits.
-// Used by fake handlers that have written their terminal frames but
-// want to let the engine CloseSend before returning (returning while
-// the engine still has pending sends races with the HTTP/2 close).
-func drainStream(stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
+// drainStream reads any remaining request frames until io.EOF. With the
+// unary transport the whole request is already in memory, so this is
+// effectively a no-op kept for source-compatibility with sessions that
+// call it after writing their terminal frames.
+func drainStream(stream *fakeBidi) error {
 	for {
 		if _, err := stream.Receive(); err != nil {
 			if errors.Is(err, io.EOF) {

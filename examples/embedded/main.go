@@ -1,21 +1,21 @@
-// embedded is the canonical "single-binary dev" example: one main()
-// runs both the reflow engine and the Go handler. The engine still talks
-// to the handler over HTTP/2 (there is no in-process fast path); we just
-// host both on localhost in the same process so a developer can iterate
-// without orchestrating two binaries.
+// embedded is the canonical "single-binary" example: one main() runs both
+// the reflow engine and the Go handlers in the same process, with NO HTTP
+// hop between them. The handlers are registered in a handler.Registry handed
+// to reflow.Run via Config.Handlers.InProcess; the engine dispatches to them
+// directly over an in-process transport.
 //
 // Architecture:
 //
-//	┌─────────────────────────────────────────────┐
-//	│ embedded (this main)                        │
-//	│  ┌────────────────────┐  http://127.0.0.1:N │
-//	│  │ pkg/handler     │ ◄────────────────┐  │
-//	│  └────────────────────┘                  │  │
-//	│  ┌────────────────────┐                  │  │
-//	│  │ reflow.Run engine  │ ─ Handlers.Endpoints
-//	│  │  + ingress HTTP    │                     │
-//	│  └────────────────────┘                     │
-//	└─────────────────────────────────────────────┘
+//	┌────────────────────────────────────────────────┐
+//	│ embedded (this main)                             │
+//	│  ┌────────────────────┐                          │
+//	│  │ handler.Registry   │ ◄── in-process call ───┐ │
+//	│  └────────────────────┘                        │ │
+//	│  ┌────────────────────┐                        │ │
+//	│  │ reflow.Run engine  │ ── Handlers.InProcess ──┘ │
+//	│  │  + ingress HTTP    │                           │
+//	│  └────────────────────┘                           │
+//	└────────────────────────────────────────────────┘
 //	                       │
 //	                       │ HTTP POST /invocation/Greeter/hello
 //	                       ▼
@@ -30,15 +30,15 @@
 //	  -d '{"input":"d29ybGQ="}' \  # base64("world")
 //	  http://127.0.0.1:8080/invocation/Greeter/hello
 //
-// Production deployments should use cmd/reflowd for the engine and
-// examples/remote-handler (or a real handler binary) for the handlers.
+// To run handlers as a separate process instead (the remote model), host a
+// handler.NewServer on a listener and register its URL via
+// Config.Handlers.Endpoints. cmd/reflowd is the production engine binary.
 package main
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -62,29 +62,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 2. Start the SDK server on a free port. The engine talks to this
-	// listener over HTTP/2 — same wire path a remote handler uses.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		log.Error("listen sdk server", "err", err)
-		os.Exit(1)
-	}
-	handlerURL := "http://" + ln.Addr().String()
-	srv, err := handler.NewServer(handler.Config{Registry: reg})
-	if err != nil {
-		log.Error("sdk server NewServer", "err", err)
-		os.Exit(1)
-	}
-	go func() {
-		if err := srv.Serve(ln); err != nil {
-			log.Error("sdk Serve exited", "err", err)
-		}
-	}()
-	log.Info("embedded: sdk handlers listening", "url", handlerURL)
-
-	// 3. Start the engine. cfg.Handlers.Endpoints auto-registers the
-	// in-process SDK server as a deployment at metadata-leader bootstrap,
-	// so invocations submitted via ingress resolve to it.
+	// 2. Start the engine with the handlers running in-process. Run
+	// registers the Registry as a single inproc:// deployment at
+	// metadata-leader bootstrap and dispatches to it directly — no HTTP,
+	// no second listener.
 	dataDir, err := os.MkdirTemp("", "reflow-embedded-")
 	if err != nil {
 		log.Error("mkdir tmp", "err", err)
@@ -105,7 +86,7 @@ func main() {
 		},
 		Metrics: reflow.MetricsConfig{Disabled: true},
 		Handlers: reflow.HandlersConfig{
-			Endpoints: []reflow.HandlerEndpoint{{URL: handlerURL}},
+			InProcess: reg,
 		},
 	}
 
@@ -115,23 +96,16 @@ func main() {
 	host, err := reflow.Run(ctx, cfg)
 	if err != nil {
 		log.Error("reflow.Run", "err", err)
-		_ = srv.Shutdown()
 		os.Exit(1)
 	}
-	log.Info("embedded: engine + ingress live; submit via POST http://127.0.0.1:8080/invocation/Greeter/hello")
+	log.Info("embedded: engine + in-process handlers live; submit via POST http://127.0.0.1:8080/invocation/Greeter/hello")
 
-	// 4. Wait for SIGINT/SIGTERM. Shutdown order: engine first (drains
-	// ingress + partitions), then the SDK server. Reversed order would
-	// leave in-flight invocations targeting a dead handler.
+	// 3. Wait for SIGINT/SIGTERM, then drain the engine.
 	<-ctx.Done()
 	log.Info("embedded: shutting down")
 	if err := host.Close(); err != nil {
 		log.Warn("engine close", "err", err)
 	}
-	if err := srv.Shutdown(); err != nil {
-		log.Warn("sdk Shutdown", "err", err)
-	}
-	_ = ln.Close()
 }
 
 // greet returns "hello, <input>" — useful for a quick smoke test:

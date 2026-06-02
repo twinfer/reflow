@@ -78,7 +78,7 @@ func (f *fakeHandlerHTTP2) handler(t *testing.T) http.Handler {
 	return mountFakeHandler(t, f.discovery(), f.serveInvoke)
 }
 
-func (f *fakeHandlerHTTP2) serveInvoke(t *testing.T, stream *connect.BidiStream[protocolv1.Frame, protocolv1.Frame]) error {
+func (f *fakeHandlerHTTP2) serveInvoke(t *testing.T, stream *fakeBidi) error {
 	t.Helper()
 	// Read the engine's first frame; it must be a StartMessage.
 	start, err := stream.Receive()

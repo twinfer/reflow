@@ -181,7 +181,18 @@ Reference (2026-06-02, branch `strip-to-core`, Darwin/arm64 laptop; seed 3000 ro
 - continuous mean write-amp: 1.276
 ```
 
-Reading: under the tuned per-shard options (L0CompactionThreshold=2 + 10s range-tombstone flush delay), ingesting ~1.5 MiB transfer SSTs into workload-busy dest shards leaves L0 at 0 — more aggressive L0 compaction trades a hair of write-amp (~1.5 vs the prior ~1.25) for no L0 pressure at all. Plain `Ingest` remains more than sufficient; `IngestAndExcise` is still not justified. Push `seedRows` / the LP count up to probe the threshold where L0 climbs into the dozens; that's the signal that would flip the decision.
+Reading: under the tuned per-shard options (L0CompactionThreshold=2 + 10s range-tombstone flush delay), ingesting ~1.5 MiB transfer SSTs into workload-busy dest shards leaves L0 at 0 — more aggressive L0 compaction trades a hair of write-amp (~1.5 vs the prior ~1.25) for no L0 pressure at all. Plain `Ingest` remains more than sufficient; `IngestAndExcise` is still not justified.
+
+Scaling probe (the test reads env knobs — `REFLOW_LOADTEST_SEED_ROWS`, `REFLOW_LOADTEST_SEED_VALUE_BYTES`, `REFLOW_LOADTEST_LP_COUNT`, `REFLOW_LOADTEST_DURATION_SEC`, `REFLOW_LOADTEST_HOP_TIMEOUT_SEC`; defaults reproduce the numbers above). Measured 2026-06-02, peak dest L0 vs accumulated back-to-back hops at large SSTs:
+
+```
+1.5 MiB/hop, ~10 hops → peak L0  0   (mean write-amp 1.02)
+ 25 MiB/hop,   6 hops → peak L0  3   (mean write-amp 1.10)
+ 20 MiB/hop,  16 hops → peak L0  7   (mean write-amp 1.19)
+ 20 MiB/hop,  27 hops → peak L0 11   (mean write-amp 1.29, max 1.79)
+```
+
+L0 scales ~linearly at ~0.4 files per 20 MiB hop and is **transient** — compaction drains it between hops, so write-amp stays ≤ ~1.8 even at the extreme. Reaching the "dozens" signal needs ~60 back-to-back 20 MiB transfers, a regime production's transfer path **structurally cannot enter**: transfers are single-flight (one LPOwners CAS at a time) and throttled by `MinSecondsBetweenTransfers` (default 60s), so compaction fully drains L0 between them, and realistic LP payloads are KB-to-few-MB, not 20 MiB. Conclusion stands: plain `Ingest` is sufficient; `IngestAndExcise` is not justified. Re-measure via the env knobs if LP payloads grow into tens of MiB **or** transfer concurrency/cadence is raised.
 
 ## Conventions worth knowing before editing
 

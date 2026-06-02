@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -13,6 +14,47 @@ import (
 	"github.com/twinfer/reflow/internal/loadgen"
 	"github.com/twinfer/reflow/pkg/handler"
 )
+
+// envInt reads a positive-int scale knob from the environment, falling
+// back to def when unset. A malformed or non-positive value fails the
+// test loudly rather than silently running at the default.
+func envInt(t *testing.T, key string, def int) int {
+	t.Helper()
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		t.Fatalf("env %s=%q: want a positive int (%v)", key, v, err)
+	}
+	return n
+}
+
+// buildTransferLPs returns n populated high-LPs (>= FirstTenantedLP) to
+// chain-transfer. n == 5 reproduces the committed default set so the
+// reference numbers stay comparable. For any other n the LPs are spread
+// evenly across [FirstTenantedLP, FirstTenantedLP+12000): denser packing
+// raises the chance that, as LPs chain around shards and accumulate,
+// their key ranges interleave on a shared dest — the condition under
+// which a plain Ingest SST lands in L0 instead of sinking to L6.
+func buildTransferLPs(n int) []uint32 {
+	if n == 5 {
+		return []uint32{
+			loadgen.FirstTenantedLP + 0,
+			loadgen.FirstTenantedLP + 500,
+			loadgen.FirstTenantedLP + 1500,
+			loadgen.FirstTenantedLP + 4000,
+			loadgen.FirstTenantedLP + 8000,
+		}
+	}
+	const span = 12000
+	out := make([]uint32, n)
+	for i := range out {
+		out[i] = loadgen.FirstTenantedLP + uint32(i*span/n)
+	}
+	return out
+}
 
 // TestLoad_TransferUnderLoad measures what LP-transfer SST Ingest does to a
 // destination shard's Pebble L0 / write-amp while that shard is busy
@@ -54,27 +96,27 @@ func TestLoad_TransferUnderLoad(t *testing.T) {
 		handlerName = "echo"
 		rate        = 50.0
 		concurrency = 16
-		duration    = 30 * time.Second
 		sampleEvery = 1 * time.Second
-
-		// Transfer-chain knobs. Seeded payload sizes the shipped SST;
-		// ~1.5 MiB/replica/LP at these defaults. Bump SeedRows to push
-		// harder on L0.
-		seedRows       = 3000
-		seedValueBytes = 512
-		hopTimeout     = 60 * time.Second
 	)
 
+	// Scale knobs — env-overridable so this test doubles as a tunable
+	// probe for the "ship SSTs via IngestAndExcise?" threshold. Defaults
+	// reproduce the committed reference numbers; raise them to push L0:
+	//   REFLOW_LOADTEST_SEED_ROWS        (default 3000)  rows seeded per LP/replica → per-hop SST size
+	//   REFLOW_LOADTEST_SEED_VALUE_BYTES (default 512)   value bytes per seeded row
+	//   REFLOW_LOADTEST_DURATION_SEC     (default 30)    workload + transfer-chain duration
+	//   REFLOW_LOADTEST_LP_COUNT         (default 5)     number of high-LPs chain-transferred
+	//   REFLOW_LOADTEST_HOP_TIMEOUT_SEC  (default 60)    per-hop saga timeout (raise for big SSTs)
+	seedRows := envInt(t, "REFLOW_LOADTEST_SEED_ROWS", 3000)
+	seedValueBytes := envInt(t, "REFLOW_LOADTEST_SEED_VALUE_BYTES", 512)
+	duration := time.Duration(envInt(t, "REFLOW_LOADTEST_DURATION_SEC", 30)) * time.Second
+	hopTimeout := time.Duration(envInt(t, "REFLOW_LOADTEST_HOP_TIMEOUT_SEC", 60)) * time.Second
+
 	// Populated LPs to chain-transfer. All >= FirstTenantedLP (64) so the
-	// band-0 workload never routes to them; spread across the LP space so
-	// the consistent-hash seed places their initial owners on varied shards.
-	transferLPs := []uint32{
-		loadgen.FirstTenantedLP + 0,
-		loadgen.FirstTenantedLP + 500,
-		loadgen.FirstTenantedLP + 1500,
-		loadgen.FirstTenantedLP + 4000,
-		loadgen.FirstTenantedLP + 8000,
-	}
+	// band-0 workload never routes to them.
+	transferLPs := buildTransferLPs(envInt(t, "REFLOW_LOADTEST_LP_COUNT", 5))
+	t.Logf("scale: seed_rows=%d seed_value_bytes=%d (~%d KiB/hop SST) duration=%s lp_count=%d hop_timeout=%s",
+		seedRows, seedValueBytes, seedRows*seedValueBytes/1024, duration, len(transferLPs), hopTimeout)
 
 	reg := handler.NewRegistry()
 	if err := reg.RegisterService(service, handlerName, loadgen.HelloHandler); err != nil {

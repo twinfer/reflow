@@ -197,6 +197,14 @@ message Command {
     CommitLPTransfer commit_lp_transfer = 35;
     FinishLPTransfer finish_lp_transfer = 36;
     AbortLPTransfer abort_lp_transfer = 37;
+    // Process-execution commands (iflow BPMN/CMMN durable backend). The
+    // partition leader's procSession runs the iflow engine on an instance
+    // and proposes ProcessAdvanced (new state blob + reflow-native
+    // instructions); ProcessEvent feeds an instance one step — the start
+    // event plus every service-task / timer / signal completion that wakes
+    // it. Accepted only by shardID >= 1.
+    ProcessEvent process_event = 40;
+    ProcessAdvanced process_advanced = 41;
     // SetRebalanceDrain marks a partition shard as drained (drain=true)
     // or undrained (drain=false) in shard 0's RebalanceDrainTable. The
     // autonomous rebalancer subtracts drained shards from the planner's
@@ -1048,6 +1056,97 @@ message SignalSend {
   // receiver routes/keys the target under the same LP band (a signal stays
   // within one tenant). 0 = default/untenanted. See keys.BandLP.
   uint32 tenant = 4;
+}
+
+// ── Process-execution payloads (iflow BPMN/CMMN durable backend) ──
+//
+// One iflow process/case instance maps to a specialized virtual object:
+// (service, instance_key) banded by tenant, state in ProcessInstanceTable.
+// Only the leader-side procSession links iflow; everything that crosses Raft
+// is reflow-native, so the apply arm (every replica) stays iflow-agnostic.
+
+// ProcessEvent drives one instance one step. The start event carries
+// model_ref + kind (apply creates the record); later events leave them empty.
+// `event` is the opaque iflow EngineEvent (iflow's own codec) — reflow never
+// parses it; only procSession decodes it. logical_time_ms is the stamped
+// instant procSession feeds to the engine clock, so Advance is a pure function
+// of (state, event, time) and re-runs identically on a new leader.
+message ProcessEvent {
+  fixed64 pk = 1; // banded partition_key of (tenant, service, instance_key)
+  string service = 2;
+  string instance_key = 3;
+  uint64 logical_time_ms = 4;
+  bytes event = 5;              // opaque iflow EngineEvent
+  ModelRef model_ref = 6;       // start only
+  ProcessKind kind = 7;         // start only
+  ParentLink parent_link = 8;   // start only, when this instance is a child
+}
+
+// ProcessAdvanced is the leader-only result of one Advance, proposed by
+// procSession via ProposeSelf. new_state is the opaque next iflow blob; the
+// instruction lists are reflow-native (procSession already translated the
+// iflow Commands), so the apply arm just writes new_state and turns each
+// instruction into an Action.
+message ProcessAdvanced {
+  fixed64 pk = 1;
+  string service = 2;
+  string instance_key = 3;
+  bytes new_state = 4;
+  repeated TaskInvoke invoke = 5;        // -> ActInvoke (a ctx.Call to a capability handler)
+  repeated TimerArm arm_timer = 6;       // -> ActRegisterTimer
+  repeated TimerCancel cancel_timer = 7; // -> ActDeleteTimer
+  repeated ChildStart start_child = 8;   // -> ActDispatchOutbox (subprocess / call-activity / case-task)
+  repeated SignalSubscribe subscribe = 9;
+  ProcessTerminal terminal = 10;         // set iff ProcessCompleted / ProcessFailed
+}
+
+message TaskInvoke {
+  string node_id = 1;          // BPMN node / CMMN plan item the result correlates back to
+  string instance_idx = 2;     // non-empty for multi-instance
+  InvocationTarget target = 3; // resolved capability handler
+  bytes input = 4;             // marshaled task inputs
+}
+message TimerArm { string node_id = 1; uint64 fire_at_ms = 2; uint32 slot = 3; }
+message TimerCancel { string node_id = 1; uint32 slot = 2; }
+message ChildStart {
+  string node_id = 1;
+  ModelRef model_ref = 2;
+  ProcessKind kind = 3;
+  string instance_key = 4;
+  bytes vars = 5;
+}
+message SignalSubscribe { string node_id = 1; string message_name = 2; string correlation_key = 3; }
+message ProcessTerminal { bool failed = 1; bytes output = 2; string failure_message = 3; }
+
+// ProcessInstanceRecord is the stored value of ProcessInstanceTable
+// (proc/<lp:4><service>/<instance_key>).
+message ProcessInstanceRecord {
+  InvocationId root_id = 1;     // stable handle for id-keyed timer / dedup rows
+  ModelRef model_ref = 2;       // pinned at start — version-skew safe
+  ProcessKind kind = 3;
+  bytes state_blob = 4;         // opaque iflow ExecutionState / CaseState
+  ProcessStatus status = 5;
+  ParentLink parent_link = 6;   // set if this instance is a child
+}
+
+// ModelRef pins one iflow model snapshot (iflow/modelstore.ModelRef).
+message ModelRef {
+  string kind = 1;
+  string name = 2;
+  string version = 3;
+}
+
+enum ProcessKind {
+  PROCESS_KIND_UNSPECIFIED = 0;
+  PROCESS_KIND_BPMN = 1;
+  PROCESS_KIND_CMMN = 2;
+}
+
+enum ProcessStatus {
+  PROCESS_STATUS_UNSPECIFIED = 0;
+  PROCESS_STATUS_RUNNING = 1;
+  PROCESS_STATUS_COMPLETED = 2;
+  PROCESS_STATUS_FAILED = 3;
 }
 
 // SnapshotMeta is the operator-visible sidecar accompanying each snapshot

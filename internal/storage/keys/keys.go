@@ -114,6 +114,7 @@ const (
 	timerIdxPrefix       = "timer_idx/"
 	timerLPPrefix        = "timer_lp/"
 	statePrefix          = "state/"
+	procPrefix           = "proc/"
 	outboxPrefix         = "outbox/"
 	awakeablePrefix      = "awakeable/"
 	keyLeasePrefix       = "keylease/"
@@ -473,6 +474,33 @@ func StatePrefixForObject(lp uint32, service, objectKey string) []byte {
 	out = append(out, '/')
 	out = append(out, objectKey...)
 	return append(out, '/')
+}
+
+// ProcessPrefix returns the proc/ namespace prefix.
+func ProcessPrefix() []byte { return []byte(procPrefix) }
+
+// ProcessInstanceKey returns proc/<lp:4><service>/<instance_key>. One iflow
+// process/case instance is stored per (service, instance_key); the value is a
+// marshaled enginev1.ProcessInstanceRecord. Mirrors StateKey's namespace
+// discipline — none of the components may contain '/'.
+func ProcessInstanceKey(lp uint32, service, instanceKey string) []byte {
+	out := make([]byte, 0, len(procPrefix)+LPLen+len(service)+1+len(instanceKey))
+	out = append(out, procPrefix...)
+	out = appendLP(out, lp)
+	out = append(out, service...)
+	out = append(out, '/')
+	return append(out, instanceKey...)
+}
+
+// ProcessInstanceLPPrefix returns proc/<lp:4> — the LowerBound for a per-LP
+// scan of every process instance in one logical partition. Pair with
+// PrefixUpperBound. This is what lets instances ride the LP-transfer scan to
+// the destination shard and be range-deleted on the source by
+// FinishLPTransfer, exactly like DedupArbitraryLPPrefix / StatePrefixForObject.
+func ProcessInstanceLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(procPrefix)+LPLen)
+	out = append(out, procPrefix...)
+	return appendLP(out, lp)
 }
 
 // OutboxPrefix returns the outbox/ namespace prefix.

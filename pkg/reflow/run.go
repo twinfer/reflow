@@ -18,6 +18,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc/credentials"
 
+	"github.com/twinfer/iflow/capability"
+
 	"github.com/twinfer/reflow/internal/auth"
 	"github.com/twinfer/reflow/internal/authz"
 	"github.com/twinfer/reflow/internal/bootstrap"
@@ -39,6 +41,7 @@ import (
 	"github.com/twinfer/reflow/pkg/handler/wire"
 	hcvaultkms "github.com/twinfer/reflow/pkg/kms/hcvault"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
+	"github.com/twinfer/reflow/pkg/reflow/iflowengine"
 	"github.com/twinfer/reflow/pkg/reflowclient"
 	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -241,6 +244,29 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	// engine→handler dispatch.
 	if handlerSigner != nil {
 		hcfg.HandlerSigner = handlerSigner
+	}
+	// Process execution: install the iflow engine adapter as the ProcessEngine
+	// and register the capability-bridge handler into the in-process registry —
+	// before the InProcDialer below captures it, so service tasks are
+	// dispatchable. Enabled only when a model resolver is supplied.
+	if cfg.Process.Models != nil {
+		hcfg.ProcessEngine = iflowengine.New(cfg.Process.Models)
+		capReg := cfg.Process.Capabilities
+		if capReg == nil {
+			capReg = capability.NewRegistry()
+		}
+		if cfg.Handlers.InProcess == nil {
+			cfg.Handlers.InProcess = handler.NewRegistry()
+		}
+		if err := iflowengine.RegisterBridge(cfg.Handlers.InProcess, capReg); err != nil {
+			if handlerSigner != nil {
+				handlerSigner.Close()
+			}
+			if metricsCloser != nil {
+				_ = metricsCloser()
+			}
+			return nil, fmt.Errorf("reflow: register iflow capability bridge: %w", err)
+		}
 	}
 	// In-process handler: register an inproc transport so the engine
 	// dispatches to the embedded Registry directly, no HTTP. The bridge

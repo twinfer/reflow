@@ -1,0 +1,101 @@
+package iflowengine
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/twinfer/iflow/capability"
+	"github.com/twinfer/iflow/identity"
+	"github.com/twinfer/reflow/pkg/handler"
+	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+)
+
+// The capability-bridge is one deployed reflow handler that services every
+// TaskInvoke the adapter emits by running the named iflow capability. These
+// constants are the InvocationTarget the adapter addresses; the handler body and
+// its registration land with step (c). The adapter depends only on the target
+// address and the input schema, so it can emit TaskInvoke before the handler
+// exists (a service-task model then simply fails cleanly at dispatch).
+const (
+	// BridgeService is the reflow service name the bridge handler is deployed under.
+	BridgeService = "iflow.capability"
+	// BridgeHandler is the handler name within BridgeService.
+	BridgeHandler = "execute"
+)
+
+// BridgeInput is the payload the adapter marshals into TaskInvoke.Input and the
+// bridge handler reads from ctx.Input(). It carries the iflow capability ref plus
+// everything capability.Handler.Execute needs. Marshaled deterministically
+// (struct field order + sorted map keys) so the enclosing ProcessAdvanced is
+// byte-stable under replay.
+type BridgeInput struct {
+	Ref    string         `json:"ref"`
+	Vars   map[string]any `json:"vars,omitempty"`
+	Ext    []byte         `json:"ext,omitempty"`
+	Tenant string         `json:"tenant,omitempty"`
+}
+
+// bridgeTarget is the InvocationTarget every RunServiceTask routes to.
+func bridgeTarget() *enginev1.InvocationTarget {
+	return &enginev1.InvocationTarget{ServiceName: BridgeService, HandlerName: BridgeHandler}
+}
+
+func encodeBridgeInput(ref string, vars map[string]any, ext []byte, tenant string) ([]byte, error) {
+	return json.Marshal(BridgeInput{Ref: ref, Vars: vars, Ext: ext, Tenant: tenant})
+}
+
+// bridgeFailureCode is the Failure.Code the bridge stamps on a terminal
+// capability fault. reflow does not interpret it; the human-readable cause rides
+// FailureMessage (the BPMN error code has no slot on ProcessTaskCompleted, so a
+// coded business fault degrades to a catch-all error boundary).
+const bridgeFailureCode uint32 = 1
+
+// RegisterBridge installs the capability-bridge handler into reg, closing over
+// capReg. Call at boot, before the InProcDialer is assembled, so the deployment
+// seeding advertises it. One bridge serves both BPMN and CMMN — capability.Request
+// is engine-neutral.
+func RegisterBridge(reg *handler.Registry, capReg *capability.Registry) error {
+	return reg.RegisterService(BridgeService, BridgeHandler, bridgeHandler(capReg))
+}
+
+// bridgeHandler runs the iflow capability named by the BridgeInput and returns
+// its outputs as JSON. The effectful call is wrapped in ctx.Run so it is
+// journaled exactly-once: a replay returns the recorded result without
+// re-invoking the capability.
+func bridgeHandler(capReg *capability.Registry) handler.Handler {
+	return func(ctx handler.Context, input []byte) ([]byte, error) {
+		var bi BridgeInput
+		if err := json.Unmarshal(input, &bi); err != nil {
+			return nil, handler.NewFailure(bridgeFailureCode, fmt.Sprintf("iflow bridge: decode input: %v", err))
+		}
+		return ctx.Run("capability:"+capability.Namespace(bi.Ref), func(_ *handler.RunContext) ([]byte, error) {
+			return runCapability(ctx.Context(), capReg, bi)
+		})
+	}
+}
+
+// runCapability resolves and executes the capability, mapping its outcome onto
+// the (bytes, error) contract ctx.Run expects: a coded (business) fault and an
+// unresolved ref become a terminal *handler.Failure so the engine's
+// error-boundary logic runs and reflow does not retry; a bare error stays
+// transient so reflow retries the side effect under the Run's backoff policy.
+func runCapability(ctx context.Context, capReg *capability.Registry, bi BridgeInput) ([]byte, error) {
+	h, ok := capReg.Resolve(bi.Ref)
+	if !ok {
+		return nil, handler.NewFailure(bridgeFailureCode, fmt.Sprintf("iflow bridge: unresolved capability %q", bi.Ref))
+	}
+	out, err := h.Execute(ctx, capability.Request{
+		Ref:           bi.Ref,
+		Principal:     identity.Principal{TenantID: bi.Tenant},
+		Vars:          bi.Vars,
+		ExtensionsXML: bi.Ext,
+	})
+	if err != nil {
+		if capability.ErrorCodeOf(err) != "" {
+			return nil, handler.NewFailure(bridgeFailureCode, err.Error())
+		}
+		return nil, err
+	}
+	return json.Marshal(out)
+}

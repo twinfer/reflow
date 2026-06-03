@@ -12,8 +12,10 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/twinfer/iflow/capability"
 	"github.com/twinfer/reflow/pkg/handler"
 	"github.com/twinfer/reflow/pkg/reflow/creds"
+	"github.com/twinfer/reflow/pkg/reflow/iflowengine"
 )
 
 // Config is the typed configuration for a reflow node. All fields are
@@ -44,6 +46,24 @@ type Config struct {
 	PKI       PKIConfig       `koanf:"pki"`
 	Rebalance RebalanceConfig `koanf:"rebalance"`
 	Webhooks  []WebhookConfig `koanf:"webhooks"`
+	Process   ProcessConfig   `koanf:"process"`
+}
+
+// ProcessConfig enables BPMN/CMMN process execution via the iflow engine
+// adapter (pkg/reflow/iflowengine). Like Handlers.InProcess it is set
+// programmatically — the resolver and capability registry are Go objects, not
+// config-file fields — so koanf-loaded engines leave it zero and process
+// execution stays disabled.
+type ProcessConfig struct {
+	// Models resolves pinned iflow model refs (kind+name+version) to parsed
+	// graphs/definitions. Non-nil enables process execution (the adapter is
+	// installed as HostConfig.ProcessEngine); nil disables it.
+	Models iflowengine.ModelResolver `koanf:"-"`
+
+	// Capabilities is the registry the capability-bridge handler dispatches
+	// service tasks to. nil → an empty registry, so service-task models fail
+	// cleanly at dispatch until capabilities are registered.
+	Capabilities *capability.Registry `koanf:"-"`
 }
 
 // KMSConfig configures the KMS providers Reflow registers in Tink's

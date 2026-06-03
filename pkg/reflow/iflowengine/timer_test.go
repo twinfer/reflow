@@ -41,6 +41,24 @@ const boundaryTimerBPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </process>
 </definitions>`
 
+// Start -> IntermediateCatch(timeCycle R3/PT1S) -> ServiceTask(echo:noop) -> End.
+// Each fire dispatches "beat" and re-arms the next repetition until R3 is spent.
+const intermediateCycleBPMN = `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="test">
+  <process id="p" isExecutable="true">
+    <startEvent id="start"><outgoing>f1</outgoing></startEvent>
+    <sequenceFlow id="f1" sourceRef="start" targetRef="cycle"/>
+    <intermediateCatchEvent id="cycle">
+      <incoming>f1</incoming><outgoing>f2</outgoing>
+      <timerEventDefinition><timeCycle>R3/PT1S</timeCycle></timerEventDefinition>
+    </intermediateCatchEvent>
+    <sequenceFlow id="f2" sourceRef="cycle" targetRef="beat"/>
+    <serviceTask id="beat" operationRef="echo:noop"><incoming>f2</incoming><outgoing>f3</outgoing></serviceTask>
+    <sequenceFlow id="f3" sourceRef="beat" targetRef="end"/>
+    <endEvent id="end"><incoming>f3</incoming></endEvent>
+  </process>
+</definitions>`
+
 func timerFiredPayload(node string) *enginev1.ProcessEventPayload {
 	return &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_TimerFired{
 		TimerFired: &enginev1.ProcessTimerFired{NodeId: node},
@@ -134,5 +152,61 @@ func TestAdvanceBPMN_BoundaryTimerArmedThenCancelled(t *testing.T) {
 	}
 	if !hasInvoke(adv.GetInvoke(), "work2") {
 		t.Errorf("want Invoke for work2 after work completion, got %v", adv.GetInvoke())
+	}
+}
+
+// TestAdvanceBPMN_TimeCycleArmsAndReArms pins durable cyclic-timer support. A
+// TimeCycle (R<n>/…) catch arms a timer on Start; because iflow re-emits a fresh
+// WaitForTimer (count decremented in its durable state) on every fire, each
+// TimerFired re-arms the next repetition while dispatching the outgoing flow,
+// until the count is exhausted. The adapter owns no cycle bookkeeping — it just
+// translates each WaitForTimer to a one-shot ArmTimer. Rejecting Repeat != 0 (as
+// an earlier revision did) failed the whole class on Start.
+func TestAdvanceBPMN_TimeCycleArmsAndReArms(t *testing.T) {
+	a := New(mustResolver(t, "cycle", intermediateCycleBPMN))
+
+	// Start: the token parks at the catch and arms the first repetition (no fire
+	// yet → no dispatch). FireAtMs = logical(1000) + PT1S.
+	start, err := a.Advance(context.Background(), startInput("cycle", nil, 1000))
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if start.GetTerminal() != nil {
+		t.Fatalf("unexpected terminal on start: %+v", start.GetTerminal())
+	}
+	if len(start.GetInvoke()) != 0 {
+		t.Errorf("want no invoke before the first fire, got %d", len(start.GetInvoke()))
+	}
+	arm := findArm(start.GetArmTimer(), "cycle")
+	if arm == nil {
+		t.Fatalf("want ArmTimer for node cycle on start, got %v", start.GetArmTimer())
+	}
+	if got, want := arm.GetFireAtMs(), uint64(2000); got != want {
+		t.Errorf("FireAtMs = %d, want %d (logical + PT1S)", got, want)
+	}
+
+	// Fire 1/3: dispatch "beat" AND re-arm the next repetition at fireAt(2000)+PT1S,
+	// since the count is not yet exhausted.
+	cont := invoker.ProcessAdvanceInput{
+		Pk: 0, Service: "cycle", InstanceKey: "i1",
+		Record: bpmnRecord("cycle", start.GetNewState()),
+		Entry:  &enginev1.ProcessInboxEntry{Payload: timerFiredPayload("cycle"), LogicalTimeMs: 2000},
+	}
+	adv, err := a.Advance(context.Background(), cont)
+	if err != nil {
+		t.Fatalf("fire 1: %v", err)
+	}
+	if adv.GetTerminal() != nil {
+		t.Fatalf("unexpected terminal on fire 1: %+v", adv.GetTerminal())
+	}
+	if !hasInvoke(adv.GetInvoke(), "beat") {
+		t.Errorf("want Invoke for beat on fire 1, got %v", adv.GetInvoke())
+	}
+	rearm := findArm(adv.GetArmTimer(), "cycle")
+	if rearm == nil {
+		t.Fatalf("want re-arm for cycle on fire 1 (count not exhausted), got %v", adv.GetArmTimer())
+	}
+	if got, want := rearm.GetFireAtMs(), uint64(3000); got != want {
+		t.Errorf("re-armed FireAtMs = %d, want %d (fire + PT1S)", got, want)
 	}
 }

@@ -236,9 +236,13 @@ func (a *Adapter) translateBPMN(in invoker.ProcessAdvanceInput, graph *bpmn.Proc
 			if t.InstanceID != "" {
 				return nil, fmt.Errorf("iflowengine: multi-instance timer not yet supported (node %q instance %q)", t.NodeID, t.InstanceID)
 			}
-			if t.Repeat != 0 {
-				return nil, fmt.Errorf("iflowengine: timer cycle (repeat=%d) not yet supported (node %q)", t.Repeat, t.NodeID)
-			}
+			// A TimeCycle (Repeat != 0) re-arms itself: iflow re-emits a fresh
+			// WaitForTimer on every TimerFired — with the remaining count carried
+			// in its durable ExecutionState — until the count is exhausted, so each
+			// repetition arrives here as an independent one-shot arm. The adapter
+			// owns no cycle bookkeeping; it just arms the next fire at FireAtMs. The
+			// prior fire already deleted its row and the re-arm's FireAtMs is later,
+			// so re-arming the same (node, slot) never collides on the timer key.
 			adv.ArmTimer = append(adv.ArmTimer, &enginev1.TimerArm{
 				NodeId:   t.NodeID,
 				FireAtMs: in.Entry.GetLogicalTimeMs() + uint64(t.Duration.Milliseconds()),

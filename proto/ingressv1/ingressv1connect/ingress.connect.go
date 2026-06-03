@@ -73,6 +73,9 @@ const (
 	IngressStartProcessProcedure = "/reflow.ingress.v1.Ingress/StartProcess"
 	// IngressDeliverMessageProcedure is the fully-qualified name of the Ingress's DeliverMessage RPC.
 	IngressDeliverMessageProcedure = "/reflow.ingress.v1.Ingress/DeliverMessage"
+	// IngressGetProcessInstanceProcedure is the fully-qualified name of the Ingress's
+	// GetProcessInstance RPC.
+	IngressGetProcessInstanceProcedure = "/reflow.ingress.v1.Ingress/GetProcessInstance"
 )
 
 // IngressClient is a client for the reflow.ingress.v1.Ingress service.
@@ -141,6 +144,15 @@ type IngressClient interface {
 	// An empty correlation_key addresses every instance waiting on the name (BPMN
 	// signal broadcast). Messages with no current subscriber are dropped.
 	DeliverMessage(context.Context, *connect.Request[ingressv1.DeliverMessageRequest]) (*connect.Response[ingressv1.DeliverMessageResponse], error)
+	// GetProcessInstance is a linearizable read of one instance's current state,
+	// routed by (tenant, model name, instance_key) like StartProcess. It exists
+	// so a caller without an await RPC can observe lifecycle: present=false means
+	// the instance never started OR already reached a terminal and was reaped
+	// (completion is immediate-reap, so a COMPLETED record never lingers);
+	// present=true with active_seq>0 means a turn is in flight; present=true with
+	// active_seq==0 means idle/parked on an external wait (a timer that will fire,
+	// or a message/signal subscription). Read-only — no proposal.
+	GetProcessInstance(context.Context, *connect.Request[ingressv1.GetProcessInstanceRequest]) (*connect.Response[ingressv1.GetProcessInstanceResponse], error)
 }
 
 // NewIngressClient constructs a client for the reflow.ingress.v1.Ingress service. By default, it
@@ -226,6 +238,12 @@ func NewIngressClient(httpClient connect.HTTPClient, baseURL string, opts ...con
 			connect.WithSchema(ingressMethods.ByName("DeliverMessage")),
 			connect.WithClientOptions(opts...),
 		),
+		getProcessInstance: connect.NewClient[ingressv1.GetProcessInstanceRequest, ingressv1.GetProcessInstanceResponse](
+			httpClient,
+			baseURL+IngressGetProcessInstanceProcedure,
+			connect.WithSchema(ingressMethods.ByName("GetProcessInstance")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -243,6 +261,7 @@ type ingressClient struct {
 	purgeInvocation        *connect.Client[ingressv1.PurgeInvocationRequest, ingressv1.PurgeInvocationResponse]
 	startProcess           *connect.Client[ingressv1.StartProcessRequest, ingressv1.StartProcessResponse]
 	deliverMessage         *connect.Client[ingressv1.DeliverMessageRequest, ingressv1.DeliverMessageResponse]
+	getProcessInstance     *connect.Client[ingressv1.GetProcessInstanceRequest, ingressv1.GetProcessInstanceResponse]
 }
 
 // SubmitInvocation calls reflow.ingress.v1.Ingress.SubmitInvocation.
@@ -303,6 +322,11 @@ func (c *ingressClient) StartProcess(ctx context.Context, req *connect.Request[i
 // DeliverMessage calls reflow.ingress.v1.Ingress.DeliverMessage.
 func (c *ingressClient) DeliverMessage(ctx context.Context, req *connect.Request[ingressv1.DeliverMessageRequest]) (*connect.Response[ingressv1.DeliverMessageResponse], error) {
 	return c.deliverMessage.CallUnary(ctx, req)
+}
+
+// GetProcessInstance calls reflow.ingress.v1.Ingress.GetProcessInstance.
+func (c *ingressClient) GetProcessInstance(ctx context.Context, req *connect.Request[ingressv1.GetProcessInstanceRequest]) (*connect.Response[ingressv1.GetProcessInstanceResponse], error) {
+	return c.getProcessInstance.CallUnary(ctx, req)
 }
 
 // IngressHandler is an implementation of the reflow.ingress.v1.Ingress service.
@@ -371,6 +395,15 @@ type IngressHandler interface {
 	// An empty correlation_key addresses every instance waiting on the name (BPMN
 	// signal broadcast). Messages with no current subscriber are dropped.
 	DeliverMessage(context.Context, *connect.Request[ingressv1.DeliverMessageRequest]) (*connect.Response[ingressv1.DeliverMessageResponse], error)
+	// GetProcessInstance is a linearizable read of one instance's current state,
+	// routed by (tenant, model name, instance_key) like StartProcess. It exists
+	// so a caller without an await RPC can observe lifecycle: present=false means
+	// the instance never started OR already reached a terminal and was reaped
+	// (completion is immediate-reap, so a COMPLETED record never lingers);
+	// present=true with active_seq>0 means a turn is in flight; present=true with
+	// active_seq==0 means idle/parked on an external wait (a timer that will fire,
+	// or a message/signal subscription). Read-only — no proposal.
+	GetProcessInstance(context.Context, *connect.Request[ingressv1.GetProcessInstanceRequest]) (*connect.Response[ingressv1.GetProcessInstanceResponse], error)
 }
 
 // NewIngressHandler builds an HTTP handler from the service implementation. It returns the path on
@@ -452,6 +485,12 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 		connect.WithSchema(ingressMethods.ByName("DeliverMessage")),
 		connect.WithHandlerOptions(opts...),
 	)
+	ingressGetProcessInstanceHandler := connect.NewUnaryHandler(
+		IngressGetProcessInstanceProcedure,
+		svc.GetProcessInstance,
+		connect.WithSchema(ingressMethods.ByName("GetProcessInstance")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/reflow.ingress.v1.Ingress/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case IngressSubmitInvocationProcedure:
@@ -478,6 +517,8 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 			ingressStartProcessHandler.ServeHTTP(w, r)
 		case IngressDeliverMessageProcedure:
 			ingressDeliverMessageHandler.ServeHTTP(w, r)
+		case IngressGetProcessInstanceProcedure:
+			ingressGetProcessInstanceHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -533,4 +574,8 @@ func (UnimplementedIngressHandler) StartProcess(context.Context, *connect.Reques
 
 func (UnimplementedIngressHandler) DeliverMessage(context.Context, *connect.Request[ingressv1.DeliverMessageRequest]) (*connect.Response[ingressv1.DeliverMessageResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.DeliverMessage is not implemented"))
+}
+
+func (UnimplementedIngressHandler) GetProcessInstance(context.Context, *connect.Request[ingressv1.GetProcessInstanceRequest]) (*connect.Response[ingressv1.GetProcessInstanceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.GetProcessInstance is not implemented"))
 }

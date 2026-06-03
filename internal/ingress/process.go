@@ -123,6 +123,49 @@ func (s *Server) DeliverMessage(ctx context.Context, req *connect.Request[ingres
 	return connect.NewResponse(&ingressv1.DeliverMessageResponse{Pk: pk, Accepted: true}), nil
 }
 
+// GetProcessInstance performs a linearizable read of one instance's record from
+// the partition owning (tenant, model name, instance_key) — the same routing
+// StartProcess uses. It proposes nothing; it exists so a caller without an await
+// RPC can observe whether an instance is running, parked, or terminal-and-reaped.
+func (s *Server) GetProcessInstance(ctx context.Context, req *connect.Request[ingressv1.GetProcessInstanceRequest]) (*connect.Response[ingressv1.GetProcessInstanceResponse], error) {
+	msg := req.Msg
+	name := msg.GetModelRef().GetName()
+	if name == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("model_ref.name is required"))
+	}
+	if msg.GetInstanceKey() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("instance_key is required"))
+	}
+
+	tenant, terr := principalTenant(ctx)
+	if terr != nil {
+		return nil, terr
+	}
+
+	pk := routing.PartitionKey(tenant, name, msg.GetInstanceKey())
+	shardID := s.host.Partitioner().ShardForKey(pk)
+	res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupProcessInstance{
+		Service:     name,
+		InstanceKey: msg.GetInstanceKey(),
+		Tenant:      tenant,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup process instance: %w", err))
+	}
+	r, ok := res.(engine.ProcessInstanceLookupResult)
+	if !ok {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup process instance: unexpected type %T", res))
+	}
+	resp := &ingressv1.GetProcessInstanceResponse{Present: r.Present}
+	if r.Present {
+		resp.Status = r.Record.GetStatus()
+		resp.Kind = r.Record.GetKind()
+		resp.ActiveSeq = r.Record.GetActiveSeq()
+		resp.NextSeq = r.Record.GetNextSeq()
+	}
+	return connect.NewResponse(resp), nil
+}
+
 // processKindFromString maps the wire model_ref.kind onto the ProcessKind enum.
 func processKindFromString(kind string) (enginev1.ProcessKind, error) {
 	switch kind {

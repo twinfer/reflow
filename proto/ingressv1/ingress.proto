@@ -90,6 +90,16 @@ service Ingress {
   // An empty correlation_key addresses every instance waiting on the name (BPMN
   // signal broadcast). Messages with no current subscriber are dropped.
   rpc DeliverMessage(DeliverMessageRequest) returns (DeliverMessageResponse);
+
+  // GetProcessInstance is a linearizable read of one instance's current state,
+  // routed by (tenant, model name, instance_key) like StartProcess. It exists
+  // so a caller without an await RPC can observe lifecycle: present=false means
+  // the instance never started OR already reached a terminal and was reaped
+  // (completion is immediate-reap, so a COMPLETED record never lingers);
+  // present=true with active_seq>0 means a turn is in flight; present=true with
+  // active_seq==0 means idle/parked on an external wait (a timer that will fire,
+  // or a message/signal subscription). Read-only — no proposal.
+  rpc GetProcessInstance(GetProcessInstanceRequest) returns (GetProcessInstanceResponse);
 }
 
 message SubmitInvocationRequest {
@@ -266,6 +276,28 @@ message DeliverMessageResponse {
   // accepted is true when the command was routed and proposed; it does not wait
   // for apply, nor report how many subscribers matched.
   bool accepted = 2;
+}
+
+message GetProcessInstanceRequest {
+  // model_ref.name + the caller's tenant + instance_key select the routing
+  // partition (model_ref.kind/version are ignored for the read).
+  reflow.engine.v1.ModelRef model_ref = 1;
+  string instance_key = 2;
+}
+
+message GetProcessInstanceResponse {
+  // present is false when no record exists — either never started or already
+  // terminal-and-reaped. The two are indistinguishable by design (terminal
+  // records are reaped in the same apply batch).
+  bool present = 1;
+  // The remaining fields are meaningful only when present=true.
+  reflow.engine.v1.ProcessStatus status = 2;
+  reflow.engine.v1.ProcessKind kind = 3;
+  // active_seq is the seq of the turn in flight, or 0 when the instance is idle
+  // (parked on a timer or message/signal wait). next_seq is the inbox append
+  // cursor; next_seq-1-active_seq is the count of queued-but-not-yet-run events.
+  uint64 active_seq = 4;
+  uint64 next_seq = 5;
 }
 
 message ResolveWorkflowPromiseRequest {

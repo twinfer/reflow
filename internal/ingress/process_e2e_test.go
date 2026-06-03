@@ -150,6 +150,23 @@ func TestIngress_StartProcessThenDeliverMessage(t *testing.T) {
 		t.Fatal("instance never parked on its message wait (start turn / subscribe did not run)")
 	}
 
+	// 2b. The public GetProcessInstance RPC observes the same parked state
+	//     (present, idle) without reaching into the engine's internal Lookup.
+	getInst := func() *ingressv1.GetProcessInstanceResponse {
+		gctx, gcancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer gcancel()
+		resp, gerr := cli.GetProcessInstance(gctx, connect.NewRequest(&ingressv1.GetProcessInstanceRequest{
+			ModelRef: &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"}, InstanceKey: instKey,
+		}))
+		if gerr != nil {
+			t.Fatalf("GetProcessInstance: %v", gerr)
+		}
+		return resp.Msg
+	}
+	if g := getInst(); !g.GetPresent() || g.GetActiveSeq() != 0 {
+		t.Fatalf("GetProcessInstance parked = {present:%v active_seq:%d}, want {true 0}", g.GetPresent(), g.GetActiveSeq())
+	}
+
 	// 3. Deliver the correlated message.
 	delCtx, delCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer delCancel()
@@ -174,5 +191,11 @@ func TestIngress_StartProcessThenDeliverMessage(t *testing.T) {
 	}
 	if !completed {
 		t.Fatal("instance did not complete after DeliverMessage (record never reaped)")
+	}
+
+	// 4b. GetProcessInstance now reports absent — terminal-and-reaped is the
+	//     public completion signal the betsyconf e2e driver polls for.
+	if g := getInst(); g.GetPresent() {
+		t.Fatalf("GetProcessInstance after completion = present, want absent (reaped)")
 	}
 }

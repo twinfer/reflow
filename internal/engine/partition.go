@@ -1035,7 +1035,7 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 
 	for _, ti := range adv.GetInvoke() {
 		target := ti.GetTarget()
-		calleeID := mintProcessTaskID(root, ti.GetNodeId(), ti.GetInstanceIdx(), target)
+		calleeID := mintProcessTaskID(root, ti.GetNodeId(), ti.GetInstanceIdx(), rec.GetActiveSeq(), target)
 		env := &enginev1.OutboxEnvelope{
 			DestinationShardId: p.cfg.Partitioner.ShardForInvocation(calleeID),
 			Kind: &enginev1.OutboxEnvelope_Invoke{Invoke: &enginev1.InvokeCommand{
@@ -2707,15 +2707,29 @@ func hashLP(h hash.Hash, s string) {
 
 // mintProcessTaskID derives the deterministic InvocationId for a process
 // service-task invocation: the instance root uuid hashed with the node id,
-// instance index, and target tuple. Determinism means a re-driven turn (whose
-// ProcessAdvanced never committed) re-mints the same id, so DedupTable absorbs
-// the retry instead of double-spawning. partition_key routes the callee to its
-// target's shard, banded under the instance's tenant.
-func mintProcessTaskID(root *enginev1.InvocationId, nodeID, instanceIdx string, target *enginev1.InvocationTarget) *enginev1.InvocationId {
+// instance index, turn seq, and target tuple.
+//
+// turnSeq (the instance's active inbox seq for the turn that emitted this
+// dispatch) is what keeps a node that dispatches more than once over an
+// instance's lifetime — a rework / exclusive-gateway loop, an error-boundary
+// retry — from colliding on a single id. Without it every dispatch of node N
+// reduces to hash(root, N, target), so the second dispatch re-mints the first's
+// id and the receiving shard's onInvoke dedups it against the still-Completed
+// prior row (transitionOnInvoke: Completed → ErrInvalidTransition → dropped);
+// the task never re-runs and the instance hangs. turnSeq is durable and
+// replay-stable — it lives in the record and only advances when a
+// ProcessAdvanced commits — so a re-driven turn (whose ProcessAdvanced never
+// committed) re-mints the same id and DedupTable absorbs the retry, while a
+// genuine re-dispatch on a later turn gets a distinct id. partition_key routes
+// the callee to its target's shard, banded under the instance's tenant.
+func mintProcessTaskID(root *enginev1.InvocationId, nodeID, instanceIdx string, turnSeq uint64, target *enginev1.InvocationTarget) *enginev1.InvocationId {
 	h := sha256.New()
 	h.Write(root.GetUuid())
 	hashLP(h, nodeID)
 	hashLP(h, instanceIdx)
+	var seqBuf [8]byte
+	binary.BigEndian.PutUint64(seqBuf[:], turnSeq)
+	h.Write(seqBuf[:])
 	hashLP(h, target.GetServiceName())
 	hashLP(h, target.GetHandlerName())
 	hashLP(h, target.GetObjectKey())

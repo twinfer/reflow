@@ -12,6 +12,8 @@ package iflowengine
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"sync"
 
 	"github.com/twinfer/iflow/bpmn"
 	"github.com/twinfer/iflow/cmmn"
@@ -69,7 +71,18 @@ type bpmnBundle struct {
 // first-cut provisioning: models are parsed once and served from the map. A
 // production resolver would back this with a reflow modelstore plus a pre-warm
 // hook, but must preserve the no-per-turn-I/O contract.
+//
+// Safe for concurrent use. A sync.RWMutex guards the maps, so the read methods
+// (BPMN/CMMN/ChildRef/BPMNDecisions) run concurrently across every shard's apply
+// goroutine while AddBPMN/Parse*/AddDecision/AddChildRef may register a model at
+// any time — registration need not all precede the first Advance. The returned
+// graph / case-definition / child-ref values are immutable once parsed (mutators
+// only replace map entries, never mutate a published model), so reading them
+// after the lock is released is race-free; BPMNDecisions additionally snapshots
+// the decision set under the lock so the resolver closure the engine invokes
+// mid-turn never touches the live map.
 type MapResolver struct {
+	mu       sync.RWMutex
 	bpmn     map[modelKey]*bpmnBundle
 	cmmnDefs map[modelKey]*cmmn.CaseDefinition
 }
@@ -83,6 +96,8 @@ func NewMapResolver() *MapResolver {
 	}
 }
 
+// bundle returns the (name, version) BPMN bundle, creating it if absent. The
+// caller must hold mu for writing.
 func (r *MapResolver) bundle(name, version string) *bpmnBundle {
 	k := modelKey{kind: "bpmn", name: name, version: version}
 	b, ok := r.bpmn[k]
@@ -95,6 +110,8 @@ func (r *MapResolver) bundle(name, version string) *bpmnBundle {
 
 // AddBPMN registers a pre-parsed process graph under (name, version).
 func (r *MapResolver) AddBPMN(name, version string, g *bpmn.ProcessGraph) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.bundle(name, version).graph = g
 }
 
@@ -112,6 +129,8 @@ func (r *MapResolver) ParseBPMN(name, version string, xml []byte) error {
 // AddDecision registers a DMN runtime under decisionRef for the BusinessRuleTasks
 // of the (name, version) BPMN model.
 func (r *MapResolver) AddDecision(name, version, decisionRef string, rt *dmn.Runtime) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.bundle(name, version).decisions[decisionRef] = rt
 }
 
@@ -119,11 +138,15 @@ func (r *MapResolver) AddDecision(name, version, decisionRef string, rt *dmn.Run
 // resolves to within the (name, version) parent model. Without an override,
 // ChildRef falls back to a name=calledElement convention.
 func (r *MapResolver) AddChildRef(name, version, calledElement string, child *enginev1.ModelRef) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.bundle(name, version).children[calledElement] = child
 }
 
 // BPMN implements ModelResolver.
 func (r *MapResolver) BPMN(ref *enginev1.ModelRef) (*bpmn.ProcessGraph, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	b, ok := r.bpmn[keyOf(ref)]
 	if !ok || b.graph == nil {
 		return nil, fmt.Errorf("%w: bpmn %q/%q", ErrModelNotFound, ref.GetName(), ref.GetVersion())
@@ -133,15 +156,25 @@ func (r *MapResolver) BPMN(ref *enginev1.ModelRef) (*bpmn.ProcessGraph, error) {
 
 // BPMNDecisions implements ModelResolver.
 func (r *MapResolver) BPMNDecisions(ref *enginev1.ModelRef) bpmn.DecisionResolver {
-	if b, ok := r.bpmn[keyOf(ref)]; ok {
-		return decisionResolver(b.decisions)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	b, ok := r.bpmn[keyOf(ref)]
+	if !ok {
+		return decisionResolver(nil)
 	}
-	return decisionResolver(nil)
+	// Snapshot under the lock: the engine invokes the returned closure later in
+	// the turn, so hand it a private copy rather than the live map a concurrent
+	// AddDecision could be writing.
+	snap := make(map[string]*dmn.Runtime, len(b.decisions))
+	maps.Copy(snap, b.decisions)
+	return decisionResolver(snap)
 }
 
 // ChildRef implements ModelResolver: a registered override, else a convention
 // where ref names a model of childKind under the parent's version.
 func (r *MapResolver) ChildRef(parent *enginev1.ModelRef, childKind, ref string) (*enginev1.ModelRef, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	if b, ok := r.bpmn[keyOf(parent)]; ok {
 		if child, ok := b.children[ref]; ok {
 			return child, nil
@@ -157,12 +190,16 @@ func (r *MapResolver) ParseCMMN(name, version string, xml []byte) error {
 	if err != nil {
 		return fmt.Errorf("iflowengine: parse cmmn %q/%q: %w", name, version, err)
 	}
+	r.mu.Lock()
 	r.cmmnDefs[modelKey{kind: "cmmn", name: name, version: version}] = def
+	r.mu.Unlock()
 	return nil
 }
 
 // CMMN implements ModelResolver.
 func (r *MapResolver) CMMN(ref *enginev1.ModelRef) (*cmmn.CaseDefinition, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	def, ok := r.cmmnDefs[keyOf(ref)]
 	if !ok {
 		return nil, fmt.Errorf("%w: cmmn %q/%q", ErrModelNotFound, ref.GetName(), ref.GetVersion())

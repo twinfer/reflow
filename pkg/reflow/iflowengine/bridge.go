@@ -46,10 +46,49 @@ func encodeBridgeInput(ref string, vars map[string]any, ext []byte, tenant strin
 }
 
 // bridgeFailureCode is the Failure.Code the bridge stamps on a terminal
-// capability fault. reflow does not interpret it; the human-readable cause rides
-// FailureMessage (the BPMN error code has no slot on ProcessTaskCompleted, so a
-// coded business fault degrades to a catch-all error boundary).
+// capability fault. reflow's terminal-failure code channel is a uint32 and the
+// engine never interprets it; the BPMN *string* error code instead rides the
+// failure message as a bridgeFault envelope (see encodeBridgeFault), which
+// eventForBPMN re-splits into bpmn.TaskFailed.ErrorCode so a coded business
+// fault can reach the matching error boundary rather than only the catch-all.
 const bridgeFailureCode uint32 = 1
+
+// bridgeFault carries a coded BPMN business fault across reflow's terminal-
+// failure channel. capability error codes are strings, but the channel is a
+// uint32 code + a free-text message, so the string code rides the message: the
+// bridge marshals (code, message) here when the capability returned a BPMN error
+// code, reflow ferries the bytes verbatim (InvocationCompleted.failure_message →
+// ProcessTaskCompleted.failure_message), and eventForBPMN re-splits them into
+// bpmn.TaskFailed.{ErrorCode,Cause}. The envelope is iflow-private — internal/
+// engine never decodes it — which is why the string code lives here and not on
+// the core proto, whose failure_code is a uint32 mirror of handler.Failure.Code.
+type bridgeFault struct {
+	Code    string `json:"code"`
+	Message string `json:"msg"`
+}
+
+// encodeBridgeFault renders a coded capability fault as a terminal-failure
+// message. Called only when code != ""; a non-coded fault keeps its bare cause.
+func encodeBridgeFault(code, msg string) string {
+	b, err := json.Marshal(bridgeFault{Code: code, Message: msg})
+	if err != nil { // unreachable for two strings; degrade to the bare cause
+		return msg
+	}
+	return string(b)
+}
+
+// decodeBridgeFault splits a terminal-failure message produced by
+// encodeBridgeFault back into (code, cause). Any message that is not a coded
+// envelope — every non-iflow failure, every iflow fault without a BPMN error
+// code, and a reflow-synthesized failure (step-budget, cancel) — returns code ""
+// (the catch-all boundary) and the message unchanged.
+func decodeBridgeFault(s string) (code, cause string) {
+	var bf bridgeFault
+	if err := json.Unmarshal([]byte(s), &bf); err == nil && bf.Code != "" {
+		return bf.Code, bf.Message
+	}
+	return "", s
+}
 
 // RegisterBridge installs the capability-bridge handler into reg, closing over
 // capReg. Call at boot, before the InProcDialer is assembled, so the deployment
@@ -92,8 +131,8 @@ func runCapability(ctx context.Context, capReg *capability.Registry, bi BridgeIn
 		ExtensionsXML: bi.Ext,
 	})
 	if err != nil {
-		if capability.ErrorCodeOf(err) != "" {
-			return nil, handler.NewFailure(bridgeFailureCode, err.Error())
+		if code := capability.ErrorCodeOf(err); code != "" {
+			return nil, handler.NewFailure(bridgeFailureCode, encodeBridgeFault(code, err.Error()))
 		}
 		return nil, err
 	}

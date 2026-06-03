@@ -2,6 +2,8 @@ package iflowengine
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/twinfer/reflow/internal/engine/invoker"
@@ -71,6 +73,54 @@ func TestAdvanceBPMN_ChildCompletionCompletesParent(t *testing.T) {
 	if adv.GetTerminal() == nil || adv.GetTerminal().GetFailed() {
 		t.Fatalf("want successful terminal after child completion, got %+v", adv.GetTerminal())
 	}
+}
+
+// TestMapResolver_ConcurrentRegisterAndServe drives the read methods from many
+// goroutines while other goroutines register models/decisions/children. Run
+// under -race it is the proof that MapResolver is concurrency-safe: the RWMutex
+// (and the under-lock decision snapshot, exercised by invoking the returned
+// resolver) means no read races a registration. Without synchronization the race
+// detector flags the map access.
+func TestMapResolver_ConcurrentRegisterAndServe(t *testing.T) {
+	r := mustResolver(t, "seed", echoServiceTaskBPMN) // "seed"/v1 has a graph
+	ref := &enginev1.ModelRef{Kind: "bpmn", Name: "seed", Version: "v1"}
+
+	stop := make(chan struct{})
+	var readers sync.WaitGroup
+	for range 8 {
+		readers.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_, _ = r.BPMN(ref)
+				if dr := r.BPMNDecisions(ref); dr != nil {
+					_, _, _ = dr("d0") // exercise the snapshot the closure reads
+				}
+				_, _ = r.ChildRef(ref, "bpmn", "c0")
+				_, _ = r.CMMN(ref)
+			}
+		})
+	}
+
+	var writers sync.WaitGroup
+	for i := range 4 {
+		writers.Add(1)
+		go func(i int) {
+			defer writers.Done()
+			name := fmt.Sprintf("m%d", i)
+			for j := range 200 {
+				r.AddBPMN(name, "v1", nil)
+				r.AddDecision("seed", "v1", fmt.Sprintf("d%d", j), nil)
+				r.AddChildRef("seed", "v1", fmt.Sprintf("c%d", j), ref)
+			}
+		}(i)
+	}
+	writers.Wait()
+	close(stop)
+	readers.Wait()
 }
 
 func TestMapResolver_ChildRefOverride(t *testing.T) {

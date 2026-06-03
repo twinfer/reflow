@@ -73,7 +73,10 @@ func eventForCMMN(p *enginev1.ProcessEventPayload) (cmmn.EngineEvent, error) {
 	case *enginev1.ProcessEventPayload_TaskCompleted:
 		tc := of.TaskCompleted
 		if tc.GetFailed() {
-			return cmmn.TaskFailed{PlanItemID: tc.GetNodeId(), Cause: tc.GetFailureMessage()}, nil
+			// The shared bridge envelopes a coded fault into the message; cmmn.
+			// TaskFailed has no error-code slot, so keep only the human cause.
+			_, cause := decodeBridgeFault(tc.GetFailureMessage())
+			return cmmn.TaskFailed{PlanItemID: tc.GetNodeId(), Cause: cause}, nil
 		}
 		outputs, err := decodeVars(tc.GetOutput())
 		if err != nil {
@@ -98,7 +101,7 @@ func eventForCMMN(p *enginev1.ProcessEventPayload) (cmmn.EngineEvent, error) {
 		// explicit so the failure is legible if that ever changes.
 		return nil, fmt.Errorf("iflowengine: CMMN message correlation not supported (plan item %q)", of.MessageReceived.GetNodeId())
 	default:
-		return nil, fmt.Errorf("iflowengine: empty process event payload")
+		return nil, fmt.Errorf("iflowengine: unset process event payload (no event in inbox entry)")
 	}
 }
 

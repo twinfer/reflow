@@ -64,6 +64,10 @@ func (a *Adapter) advanceBPMN(in invoker.ProcessAdvanceInput) (*enginev1.Process
 // childInstanceKey mints a deterministic key for a CallActivity child instance
 // from (parent instance key, node, MI instance). reflow's apply path uses this
 // key verbatim and dedups on it, so it must reproduce identically on replay.
+// Uniqueness holds because nodeID and instanceID are BPMN/CMMN ids (XML
+// NCNames, never containing '/'): the tuple is recoverable by splitting on the
+// last two separators, so a '/'-laden parentKey (a nested child's own key) can't
+// alias a different (parent, node, instance) triple.
 func childInstanceKey(parentKey, nodeID, instanceID string) string {
 	return fmt.Sprintf("%s/%s/%s", parentKey, nodeID, instanceID)
 }
@@ -97,7 +101,11 @@ func eventForBPMN(p *enginev1.ProcessEventPayload) (bpmn.EngineEvent, error) {
 	case *enginev1.ProcessEventPayload_TaskCompleted:
 		tc := of.TaskCompleted
 		if tc.GetFailed() {
-			return bpmn.TaskFailed{NodeID: tc.GetNodeId(), InstanceID: tc.GetInstanceIdx(), Cause: tc.GetFailureMessage()}, nil
+			// A coded capability fault rides the message as a bridgeFault envelope;
+			// split it so an error boundary keyed on that code can catch it (empty
+			// code → catch-all).
+			code, cause := decodeBridgeFault(tc.GetFailureMessage())
+			return bpmn.TaskFailed{NodeID: tc.GetNodeId(), InstanceID: tc.GetInstanceIdx(), ErrorCode: code, Cause: cause}, nil
 		}
 		outputs, err := decodeVars(tc.GetOutput())
 		if err != nil {
@@ -131,7 +139,7 @@ func eventForBPMN(p *enginev1.ProcessEventPayload) (bpmn.EngineEvent, error) {
 		}
 		return bpmn.SignalReceived{NodeID: mr.GetNodeId(), Payload: payload}, nil
 	default:
-		return nil, fmt.Errorf("iflowengine: empty process event payload")
+		return nil, fmt.Errorf("iflowengine: unset process event payload (no event in inbox entry)")
 	}
 }
 

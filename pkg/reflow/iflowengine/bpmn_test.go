@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/twinfer/iflow/bpmn"
 	"github.com/twinfer/reflow/internal/engine/invoker"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"google.golang.org/protobuf/proto"
 )
 
 // Start -> ServiceTask(echo:noop) -> End.
@@ -159,8 +161,61 @@ func TestAdvanceBPMN_StartIsDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run 2: %v", err)
 	}
-	if !bytes.Equal(adv1.GetNewState(), adv2.GetNewState()) {
-		t.Errorf("NewState not byte-identical across identical turns:\n 1=%s\n 2=%s", adv1.GetNewState(), adv2.GetNewState())
+	// The replay contract covers the WHOLE ProcessAdvanced, not just NewState —
+	// most importantly the bridge Input bytes the engine later hashes for
+	// divergence detection. The echo model emits a service-task invoke, so the
+	// full-message comparison actually exercises those bytes.
+	if len(adv1.GetInvoke()) == 0 {
+		t.Fatal("expected a service-task invoke to exercise the bridge input bytes")
+	}
+	m := proto.MarshalOptions{Deterministic: true}
+	b1, err := m.Marshal(adv1)
+	if err != nil {
+		t.Fatalf("marshal adv1: %v", err)
+	}
+	b2, err := m.Marshal(adv2)
+	if err != nil {
+		t.Fatalf("marshal adv2: %v", err)
+	}
+	if !bytes.Equal(b1, b2) {
+		t.Errorf("ProcessAdvanced not byte-identical across identical turns:\n 1=%x\n 2=%x", b1, b2)
+	}
+}
+
+// TestEventForBPMN_CodedTaskFailureCarriesErrorCode pins the coded-fault path: a
+// failed service task whose message is a bridgeFault envelope decodes to a
+// bpmn.TaskFailed with ErrorCode set (so a matching error boundary catches it),
+// while a plain message stays catch-all with a clean cause.
+func TestEventForBPMN_CodedTaskFailureCarriesErrorCode(t *testing.T) {
+	coded := &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_TaskCompleted{
+		TaskCompleted: &enginev1.ProcessTaskCompleted{
+			NodeId: "work", Failed: true, FailureMessage: encodeBridgeFault("E_DECLINED", "card declined"),
+		},
+	}}
+	ev, err := eventForBPMN(coded)
+	if err != nil {
+		t.Fatalf("eventForBPMN (coded): %v", err)
+	}
+	tf, ok := ev.(bpmn.TaskFailed)
+	if !ok {
+		t.Fatalf("event = %T, want bpmn.TaskFailed", ev)
+	}
+	if tf.ErrorCode != "E_DECLINED" {
+		t.Errorf("ErrorCode = %q, want E_DECLINED", tf.ErrorCode)
+	}
+	if tf.Cause != "card declined" {
+		t.Errorf("Cause = %q, want the clean human message", tf.Cause)
+	}
+
+	plain := &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_TaskCompleted{
+		TaskCompleted: &enginev1.ProcessTaskCompleted{NodeId: "work", Failed: true, FailureMessage: "boom"},
+	}}
+	ev2, err := eventForBPMN(plain)
+	if err != nil {
+		t.Fatalf("eventForBPMN (plain): %v", err)
+	}
+	if tf2 := ev2.(bpmn.TaskFailed); tf2.ErrorCode != "" || tf2.Cause != "boom" {
+		t.Errorf("plain failure = (code %q, cause %q), want (\"\", boom)", tf2.ErrorCode, tf2.Cause)
 	}
 }
 

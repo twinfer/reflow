@@ -54,6 +54,30 @@ func TestRunCapability_CodedFaultIsTerminalFailure(t *testing.T) {
 	if !errors.As(err, &f) {
 		t.Fatalf("want terminal *handler.Failure for coded fault, got %T: %v", err, err)
 	}
+	// The BPMN error code rides the failure message as a bridgeFault envelope so
+	// eventForBPMN can route it to the matching error boundary.
+	code, cause := decodeBridgeFault(f.Message)
+	if code != "PAYMENT_DECLINED" {
+		t.Errorf("decoded code = %q, want PAYMENT_DECLINED", code)
+	}
+	if cause == "" || cause == f.Message {
+		t.Errorf("decoded cause = %q, want the human message split from the envelope (%q)", cause, f.Message)
+	}
+}
+
+func TestBridgeFault_RoundTrip(t *testing.T) {
+	// Coded → enveloped → split back into (code, cause).
+	if code, cause := decodeBridgeFault(encodeBridgeFault("E_BOOM", "kaboom")); code != "E_BOOM" || cause != "kaboom" {
+		t.Fatalf("round-trip = (%q, %q), want (E_BOOM, kaboom)", code, cause)
+	}
+	// A plain (non-enveloped) message → catch-all code "" + message unchanged.
+	if code, cause := decodeBridgeFault("connection refused"); code != "" || cause != "connection refused" {
+		t.Fatalf("plain decode = (%q, %q), want (\"\", connection refused)", code, cause)
+	}
+	// JSON that isn't a fault envelope (no code) is treated as a plain message.
+	if code, _ := decodeBridgeFault(`{"foo":1}`); code != "" {
+		t.Fatalf("non-fault JSON decoded a code %q, want catch-all", code)
+	}
 }
 
 func TestRunCapability_BareErrorIsTransient(t *testing.T) {

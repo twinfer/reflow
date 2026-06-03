@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/twinfer/iflow/capability"
 	"github.com/twinfer/iflow/identity"
@@ -88,6 +89,22 @@ func decodeBridgeFault(s string) (code, cause string) {
 		return bf.Code, bf.Message
 	}
 	return "", s
+}
+
+// encodeProcessFailure renders a child ProcessFailed terminal as a
+// ProcessTerminal.FailureMessage. An escalation cause ("escalation:CODE",
+// emitted by an uncaught escalation throw/end event in the child) is promoted
+// into a bridgeFault envelope whose code is the full "escalation:CODE" — so the
+// calling process's eventForBPMN recovers it as TaskFailed.ErrorCode and
+// advanceTaskFailed's CutPrefix still matches — letting a CallActivity
+// escalation boundary catch a child escalation. Any other cause stays a bare,
+// human-readable message → parent ErrorCode "" (catch-all), as before.
+func encodeProcessFailure(nodeID, cause string) string {
+	msg := fmt.Sprintf("process failed at %q: %s", nodeID, cause)
+	if strings.HasPrefix(cause, escalationPrefix) {
+		return encodeBridgeFault(cause, msg)
+	}
+	return msg
 }
 
 // RegisterBridge installs the capability-bridge handler into reg, closing over

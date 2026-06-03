@@ -10,6 +10,16 @@ import (
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
+// escalationPrefix tags a child ProcessFailed cause that originated from an
+// uncaught escalation throw / escalation end event (iflow bpmn/messages.go's
+// escalationErrPrefix; iflow bpmn/events_intermediate.go emits
+// ProcessFailed{Cause:"escalation:CODE"}). iflow delegates the cross-process
+// escalation surface to "the workflow driver" (bpmn/throws.go, bpmn/messages.go)
+// — for reflow that driver is this adapter: it promotes such a cause into the
+// bridgeFault code channel so a calling process's CallActivity escalation
+// boundary catches it via TaskFailed.ErrorCode (bpmn/advance.go advanceTaskFailed).
+const escalationPrefix = "escalation:"
+
 // advanceBPMN runs one turn of the BPMN reducer: load the (cached) graph, build
 // an engine pinned to the turn's logical clock, Start (first turn) or Advance
 // (continuation), reserialize state, and translate the emitted commands.
@@ -118,9 +128,14 @@ func eventForBPMN(p *enginev1.ProcessEventPayload) (bpmn.EngineEvent, error) {
 	case *enginev1.ProcessEventPayload_ChildCompleted:
 		cc := of.ChildCompleted
 		if cc.GetFailed() {
-			// A failed child = a failed CallActivity; TaskFailed lets an error
-			// boundary on the call-activity node catch it.
-			return bpmn.TaskFailed{NodeID: cc.GetNodeId(), InstanceID: cc.GetInstanceIdx(), Cause: cc.GetFailureMessage()}, nil
+			// A failed child = a failed CallActivity. Split the coded fault the
+			// same way the service-task path does, so an escalation the child
+			// threw (ProcessFailed{Cause:"escalation:CODE"}, promoted into the
+			// envelope by encodeProcessFailure) reaches the call-activity's
+			// escalation boundary via TaskFailed.ErrorCode; a plain failure
+			// decodes to ErrorCode "" (the catch-all error boundary).
+			code, cause := decodeBridgeFault(cc.GetFailureMessage())
+			return bpmn.TaskFailed{NodeID: cc.GetNodeId(), InstanceID: cc.GetInstanceIdx(), ErrorCode: code, Cause: cause}, nil
 		}
 		outputs, err := decodeVars(cc.GetOutput())
 		if err != nil {
@@ -172,7 +187,7 @@ func (a *Adapter) translateBPMN(in invoker.ProcessAdvanceInput, graph *bpmn.Proc
 		case bpmn.ProcessFailed:
 			adv.Terminal = &enginev1.ProcessTerminal{
 				Failed:         true,
-				FailureMessage: fmt.Sprintf("process failed at %q: %s", t.NodeID, t.Cause),
+				FailureMessage: encodeProcessFailure(t.NodeID, t.Cause),
 			}
 			return adv, nil
 		}

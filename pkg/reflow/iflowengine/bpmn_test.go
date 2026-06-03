@@ -219,6 +219,54 @@ func TestEventForBPMN_CodedTaskFailureCarriesErrorCode(t *testing.T) {
 	}
 }
 
+// TestEventForBPMN_ChildEscalationCarriesErrorCode pins the cross-process
+// escalation surface: a child process that throws an uncaught escalation fails
+// with ProcessFailed{Cause:"escalation:CODE"}, which encodeProcessFailure
+// promotes into the child terminal's bridgeFault envelope. The calling process
+// then sees child_completed{Failed} and eventForBPMN must recover ErrorCode as
+// the full "escalation:CODE" so advanceTaskFailed's CutPrefix fires the
+// CallActivity's escalation boundary. A plain child failure stays catch-all.
+func TestEventForBPMN_ChildEscalationCarriesErrorCode(t *testing.T) {
+	// Child side → parent side round-trip for an escalation cause.
+	esc := &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_ChildCompleted{
+		ChildCompleted: &enginev1.ProcessChildCompleted{
+			NodeId: "CallActivity_1", Failed: true,
+			FailureMessage: encodeProcessFailure("EndEvent_2", "escalation:ESC_1"),
+		},
+	}}
+	ev, err := eventForBPMN(esc)
+	if err != nil {
+		t.Fatalf("eventForBPMN (escalation child): %v", err)
+	}
+	tf, ok := ev.(bpmn.TaskFailed)
+	if !ok {
+		t.Fatalf("event = %T, want bpmn.TaskFailed", ev)
+	}
+	if tf.NodeID != "CallActivity_1" {
+		t.Errorf("NodeID = %q, want CallActivity_1", tf.NodeID)
+	}
+	// The full "escalation:CODE" must survive so advanceTaskFailed's CutPrefix matches.
+	if tf.ErrorCode != "escalation:ESC_1" {
+		t.Errorf("ErrorCode = %q, want escalation:ESC_1", tf.ErrorCode)
+	}
+
+	// A plain (non-escalation) child failure stays catch-all: encodeProcessFailure
+	// leaves it a bare message, so ErrorCode is "" (catch-all error boundary).
+	plain := &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_ChildCompleted{
+		ChildCompleted: &enginev1.ProcessChildCompleted{
+			NodeId: "CallActivity_1", Failed: true,
+			FailureMessage: encodeProcessFailure("EndEvent_9", "boom"),
+		},
+	}}
+	ev2, err := eventForBPMN(plain)
+	if err != nil {
+		t.Fatalf("eventForBPMN (plain child): %v", err)
+	}
+	if tf2 := ev2.(bpmn.TaskFailed); tf2.ErrorCode != "" {
+		t.Errorf("plain child failure ErrorCode = %q, want \"\" (catch-all)", tf2.ErrorCode)
+	}
+}
+
 func TestAdvanceBPMN_UserTaskUnsupported(t *testing.T) {
 	a := New(mustResolver(t, "ut", userTaskBPMN))
 

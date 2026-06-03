@@ -220,7 +220,7 @@ func TestProcess_ActuatesInstructions(t *testing.T) {
 		t.Fatalf("process_parent link mismatch: %+v", pp)
 	}
 	// Turn 1 actuates at active_seq 1 (start activated seq 1).
-	wantID := mintProcessTaskID(processRootID(pk, svc, key), "Task1", "", 1, target)
+	wantID := mintProcessTaskID(processRootID(pk, svc, key), "Task1", "", 1, 0, target)
 	if inv.GetInvocationId().GetPartitionKey() != wantID.GetPartitionKey() ||
 		!bytes.Equal(inv.GetInvocationId().GetUuid(), wantID.GetUuid()) {
 		t.Fatalf("callee id not deterministic: %x", inv.GetInvocationId().GetUuid())
@@ -332,14 +332,71 @@ func TestProcess_RepeatedNodeDispatchDistinctIDs(t *testing.T) {
 	id2 := dispatchWork(4, "s2")
 
 	root := processRootID(pk, svc, key)
-	if want := mintProcessTaskID(root, "Work", "", 1, target); !bytes.Equal(id1.GetUuid(), want.GetUuid()) {
+	if want := mintProcessTaskID(root, "Work", "", 1, 0, target); !bytes.Equal(id1.GetUuid(), want.GetUuid()) {
 		t.Fatalf("turn 1 id = %x, want %x (seq 1)", id1.GetUuid(), want.GetUuid())
 	}
-	if want := mintProcessTaskID(root, "Work", "", 2, target); !bytes.Equal(id2.GetUuid(), want.GetUuid()) {
+	if want := mintProcessTaskID(root, "Work", "", 2, 0, target); !bytes.Equal(id2.GetUuid(), want.GetUuid()) {
 		t.Fatalf("turn 2 id = %x, want %x (seq 2)", id2.GetUuid(), want.GetUuid())
 	}
 	if bytes.Equal(id1.GetUuid(), id2.GetUuid()) {
 		t.Fatalf("re-dispatched node collided on id %x — the receiver would dedup-drop the retry and the instance would hang", id1.GetUuid())
+	}
+}
+
+// TestProcess_FanOutSameNodeDistinctIDs is the regression for the
+// completionQuantity (BPMN §10.2) id collision: a SINGLE turn can dispatch the
+// same (nodeID, instanceIdx) more than once — N tokens leave a node whose
+// completionQuantity is N, each entering and dispatching the next activity in
+// that one turn. turnSeq is identical across a turn's fan-out, so without the
+// fan-out index every dispatch would re-mint one id; the receiving shard would
+// dedup all but the first and the extra tokens would vanish — a downstream
+// startQuantity barrier would then never fill and the instance would park
+// (betsy Token_Cardinality_Default/Explicit). The fan-out index in
+// mintProcessTaskID separates them.
+func TestProcess_FanOutSameNodeDistinctIDs(t *testing.T) {
+	p, _, col := newTestPartition(t)
+	const svc, key = "FanProc", "i1"
+	pk := routing.PartitionKey(0, svc, key)
+	target := &enginev1.InvocationTarget{ServiceName: "Cap", HandlerName: "do"}
+	must := func(idx uint64, cmd *enginev1.Command) {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Start activates seq 1.
+	must(1, procEventCmd(pk, svc, key, []byte("vars"), &enginev1.ModelRef{Name: svc}))
+	col.Drain()
+
+	// One turn that dispatches node "Fwd" TWICE — a completionQuantity=2 fan-out.
+	must(2, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: pk, Service: svc, InstanceKey: key, NewState: []byte("s1"),
+		Invoke: []*enginev1.TaskInvoke{
+			{NodeId: "Fwd", Target: target, Input: []byte("a")},
+			{NodeId: "Fwd", Target: target, Input: []byte("b")},
+		},
+	}}})
+	var ids []*enginev1.InvocationId
+	for _, a := range col.Drain() {
+		if d, ok := a.(ActDispatchOutbox); ok {
+			if inv := d.Envelope.GetInvoke(); inv != nil {
+				ids = append(ids, inv.GetInvocationId())
+			}
+		}
+	}
+	if len(ids) != 2 {
+		t.Fatalf("want 2 distinct outbox Invoke dispatches for the fan-out, got %d", len(ids))
+	}
+	if bytes.Equal(ids[0].GetUuid(), ids[1].GetUuid()) {
+		t.Fatalf("same-turn fan-out collided on id %x — the receiver would dedup the 2nd dispatch and the extra token would be lost", ids[0].GetUuid())
+	}
+	// Each must equal the deterministic mint at its fan-out index (seq 1).
+	root := processRootID(pk, svc, key)
+	if want := mintProcessTaskID(root, "Fwd", "", 1, 0, target); !bytes.Equal(ids[0].GetUuid(), want.GetUuid()) {
+		t.Errorf("fan-out[0] id = %x, want %x (seq 1, idx 0)", ids[0].GetUuid(), want.GetUuid())
+	}
+	if want := mintProcessTaskID(root, "Fwd", "", 1, 1, target); !bytes.Equal(ids[1].GetUuid(), want.GetUuid()) {
+		t.Errorf("fan-out[1] id = %x, want %x (seq 1, idx 1)", ids[1].GetUuid(), want.GetUuid())
 	}
 }
 

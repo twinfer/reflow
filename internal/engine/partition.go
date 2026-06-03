@@ -1033,9 +1033,9 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 	tenant := keys.TenantFromPartitionKey(pk)
 	timersT := tables.TimerTable{S: batch}
 
-	for _, ti := range adv.GetInvoke() {
+	for i, ti := range adv.GetInvoke() {
 		target := ti.GetTarget()
-		calleeID := mintProcessTaskID(root, ti.GetNodeId(), ti.GetInstanceIdx(), rec.GetActiveSeq(), target)
+		calleeID := mintProcessTaskID(root, ti.GetNodeId(), ti.GetInstanceIdx(), rec.GetActiveSeq(), uint64(i), target)
 		env := &enginev1.OutboxEnvelope{
 			DestinationShardId: p.cfg.Partitioner.ShardForInvocation(calleeID),
 			Kind: &enginev1.OutboxEnvelope_Invoke{Invoke: &enginev1.InvokeCommand{
@@ -2707,7 +2707,7 @@ func hashLP(h hash.Hash, s string) {
 
 // mintProcessTaskID derives the deterministic InvocationId for a process
 // service-task invocation: the instance root uuid hashed with the node id,
-// instance index, turn seq, and target tuple.
+// instance index, turn seq, fan-out index, and target tuple.
 //
 // turnSeq (the instance's active inbox seq for the turn that emitted this
 // dispatch) is what keeps a node that dispatches more than once over an
@@ -2720,15 +2720,27 @@ func hashLP(h hash.Hash, s string) {
 // replay-stable — it lives in the record and only advances when a
 // ProcessAdvanced commits — so a re-driven turn (whose ProcessAdvanced never
 // committed) re-mints the same id and DedupTable absorbs the retry, while a
-// genuine re-dispatch on a later turn gets a distinct id. partition_key routes
-// the callee to its target's shard, banded under the instance's tenant.
-func mintProcessTaskID(root *enginev1.InvocationId, nodeID, instanceIdx string, turnSeq uint64, target *enginev1.InvocationTarget) *enginev1.InvocationId {
+// genuine re-dispatch on a later turn gets a distinct id.
+//
+// fanoutIdx separates dispatches that turnSeq cannot: a single turn can emit
+// several Invoke instructions for the SAME (nodeID, instanceIdx) when a node has
+// completionQuantity > 1 (BPMN §10.2 — N tokens leave the node, each entering
+// the next activity, so the next activity dispatches N times in one turn). With
+// only turnSeq those N share an id and the receiver dedups them down to one
+// dispatch, dropping the extra tokens (a startQuantity barrier downstream then
+// never fills and the instance parks). fanoutIdx is the invoke's ordinal in the
+// turn's deterministic instruction list, so it is replay-stable; MI instances
+// already differ by instanceIdx, so adding it there is harmless. partition_key
+// routes the callee to its target's shard, banded under the instance's tenant.
+func mintProcessTaskID(root *enginev1.InvocationId, nodeID, instanceIdx string, turnSeq, fanoutIdx uint64, target *enginev1.InvocationTarget) *enginev1.InvocationId {
 	h := sha256.New()
 	h.Write(root.GetUuid())
 	hashLP(h, nodeID)
 	hashLP(h, instanceIdx)
 	var seqBuf [8]byte
 	binary.BigEndian.PutUint64(seqBuf[:], turnSeq)
+	h.Write(seqBuf[:])
+	binary.BigEndian.PutUint64(seqBuf[:], fanoutIdx)
 	h.Write(seqBuf[:])
 	hashLP(h, target.GetServiceName())
 	hashLP(h, target.GetHandlerName())

@@ -286,6 +286,14 @@ func outboxEnvelopeToCommand(env *enginev1.OutboxEnvelope) *enginev1.Command {
 		return &enginev1.Command{
 			Kind: &enginev1.Command_ProcessEvent{ProcessEvent: k.ProcessEvent},
 		}
+	case *enginev1.OutboxEnvelope_ProcessSubscribe:
+		// Cross-partition message subscription: a parked BPMN catch whose message
+		// routing key (message_name, correlation_key) hashes to a different LP
+		// than the instance. The dest shard's onProcessSubscribe writes the row,
+		// co-locating it with where DeliverProcessMessage will look.
+		return &enginev1.Command{
+			Kind: &enginev1.Command_ProcessSubscribe{ProcessSubscribe: k.ProcessSubscribe},
+		}
 	case *enginev1.OutboxEnvelope_OutboxAck:
 		return &enginev1.Command{
 			Kind: &enginev1.Command_OutboxAck{OutboxAck: k.OutboxAck},

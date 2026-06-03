@@ -26,6 +26,7 @@
 //	workflow_run/<lp:4><service>/<workflow_key>                      -> InvocationId        (svc, wf_key)      [entity-keyed]
 //	promise/<lp:4><service>/<workflow_key>/<name>                    -> PromiseValue        (svc, wf_key)      [entity-keyed]
 //	promise_awaiter/<lp:4><service>/<workflow_key>/<name>/<idx:4>    -> PromiseAwaiter      (svc, wf_key)      [entity-keyed]
+//	msgsub/<lp:4><corr_digest:32><sub_digest:32>                     -> MessageSubscription (PartitionKey(tenant,msg,corr)) [entity-keyed]
 //	timer_lp/<lp:4><8-byte BE fire_at_ms>/<24-byte id>               -> uint32 sleep_index  (id.PartitionKey)  [ID-keyed]
 //	dedup/arbitrary/<lp:4><producer_id>/<8-byte BE seq>              -> DedupEntry          (command kind)     [entity-keyed]
 //
@@ -59,6 +60,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
 
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -116,6 +118,7 @@ const (
 	statePrefix          = "state/"
 	procPrefix           = "proc/"
 	procInboxPrefix      = "proc_inbox/"
+	msgSubPrefix         = "msgsub/"
 	outboxPrefix         = "outbox/"
 	awakeablePrefix      = "awakeable/"
 	keyLeasePrefix       = "keylease/"
@@ -527,6 +530,80 @@ func ProcessInboxKey(lp uint32, service, instanceKey string, seq uint64) []byte 
 func ProcessInboxLPPrefix(lp uint32) []byte {
 	out := make([]byte, 0, len(procInboxPrefix)+LPLen)
 	out = append(out, procInboxPrefix...)
+	return appendLP(out, lp)
+}
+
+// writeLenPrefixed feeds a length-prefixed string into h so adjacent fields in
+// a composite digest never alias (the same discipline IdempotencyKey uses).
+func writeLenPrefixed(h hash.Hash, s string) {
+	var n [4]byte
+	binary.BigEndian.PutUint32(n[:], uint32(len(s)))
+	h.Write(n[:])
+	h.Write([]byte(s))
+}
+
+// msgCorrDigest hashes (message_name, correlation_key) into the 32-byte
+// correlation segment of a subscription key. Every subscriber parked on the same
+// (message_name, correlation_key) shares this segment, so a single prefix scan
+// over msgsub/<lp:4><corr_digest> finds them all on delivery.
+func msgCorrDigest(messageName, correlationKey string) []byte {
+	h := sha256.New()
+	writeLenPrefixed(h, messageName)
+	writeLenPrefixed(h, correlationKey)
+	return h.Sum(nil)
+}
+
+// msgSubDigest hashes the subscriber identity (instance_pk, service,
+// instance_key, node_id) into the 32-byte per-subscriber segment, so two
+// instances parked on the same correlation get distinct rows and a re-subscribe
+// by the same node overwrites its own row.
+func msgSubDigest(instancePk uint64, service, instanceKey, nodeID string) []byte {
+	h := sha256.New()
+	var pk [8]byte
+	binary.BigEndian.PutUint64(pk[:], instancePk)
+	h.Write(pk[:])
+	writeLenPrefixed(h, service)
+	writeLenPrefixed(h, instanceKey)
+	writeLenPrefixed(h, nodeID)
+	return h.Sum(nil)
+}
+
+// MessageSubscriptionPrefix returns the msgsub/ namespace prefix.
+func MessageSubscriptionPrefix() []byte { return []byte(msgSubPrefix) }
+
+// MessageSubscriptionKey returns msgsub/<lp:4><corr_digest:32><sub_digest:32>.
+// lp MUST be LPFromPartitionKey(PartitionKey(tenant, messageName,
+// correlationKey)) — the message routing key, not the instance's own pk — so the
+// writer (actuate / cross-shard re-inject) and the reader (DeliverProcessMessage
+// scan) land on the same row. The two fixed-width sha256 segments keep the
+// namespace boundary unambiguous even when names/keys contain arbitrary bytes.
+func MessageSubscriptionKey(lp uint32, messageName, correlationKey string, instancePk uint64, service, instanceKey, nodeID string) []byte {
+	corr := msgCorrDigest(messageName, correlationKey)
+	sub := msgSubDigest(instancePk, service, instanceKey, nodeID)
+	out := make([]byte, 0, len(msgSubPrefix)+LPLen+len(corr)+len(sub))
+	out = append(out, msgSubPrefix...)
+	out = appendLP(out, lp)
+	out = append(out, corr...)
+	return append(out, sub...)
+}
+
+// MessageSubscriptionScanPrefix returns msgsub/<lp:4><corr_digest:32> — the
+// LowerBound for a scan of every subscriber parked on one (messageName,
+// correlationKey). Pair with PrefixUpperBound.
+func MessageSubscriptionScanPrefix(lp uint32, messageName, correlationKey string) []byte {
+	corr := msgCorrDigest(messageName, correlationKey)
+	out := make([]byte, 0, len(msgSubPrefix)+LPLen+len(corr))
+	out = append(out, msgSubPrefix...)
+	out = appendLP(out, lp)
+	return append(out, corr...)
+}
+
+// MessageSubscriptionLPPrefix returns msgsub/<lp:4> — the LowerBound for a per-LP
+// scan so subscriptions ride the LP-transfer scan + source range-delete
+// alongside the process instance/inbox rows for the same logical partition.
+func MessageSubscriptionLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(msgSubPrefix)+LPLen)
+	out = append(out, msgSubPrefix...)
 	return appendLP(out, lp)
 }
 

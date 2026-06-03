@@ -44,4 +44,5 @@ var AllLPNamespaces = []LPNamespace{
 	{"dedup_arb", DedupArbitraryLPPrefix},
 	{"proc", ProcessInstanceLPPrefix},
 	{"proc_inbox", ProcessInboxLPPrefix},
+	{"msgsub", MessageSubscriptionLPPrefix},
 }

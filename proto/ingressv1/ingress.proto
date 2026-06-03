@@ -75,6 +75,21 @@ service Ingress {
   // apply arm requires a Completed/Free → Free transition). Does not touch
   // virtual-object state or workflow promise rows.
   rpc PurgeInvocation(PurgeInvocationRequest) returns (PurgeInvocationResponse);
+
+  // StartProcess launches a new iflow BPMN/CMMN instance. Routes to the
+  // partition owning (tenant, model name, instance_key) and proposes a start
+  // ProcessEvent (model_ref + kind set). Idempotent per (model, instance_key):
+  // a start for an already-existing instance is dropped by the apply path. When
+  // instance_key is empty the server mints a random one (then not idempotent).
+  rpc StartProcess(StartProcessRequest) returns (StartProcessResponse);
+
+  // DeliverMessage correlates an inbound message/signal to parked process
+  // instances. Routes to the partition owning (tenant, message_name,
+  // correlation_key) and proposes DeliverProcessMessage, which fans the message
+  // out to every instance subscribed on that (message_name, correlation_key).
+  // An empty correlation_key addresses every instance waiting on the name (BPMN
+  // signal broadcast). Messages with no current subscriber are dropped.
+  rpc DeliverMessage(DeliverMessageRequest) returns (DeliverMessageResponse);
 }
 
 message SubmitInvocationRequest {
@@ -218,6 +233,39 @@ message PurgeInvocationResponse {
   // accepted is true when the purge was routed and proposed. It does not
   // wait for apply; the rows are gone once the proposal commits.
   bool accepted = 1;
+}
+
+message StartProcessRequest {
+  // model_ref.kind is "bpmn" or "cmmn"; model_ref.name is the routing service;
+  // model_ref.version pins the model snapshot the worker resolves.
+  reflow.engine.v1.ModelRef model_ref = 1;
+  // Optional caller-chosen instance key. Empty → the server mints a random one.
+  string instance_key = 2;
+  // Start variables: a JSON object merged into the new instance.
+  bytes vars = 3;
+}
+
+message StartProcessResponse {
+  // Banded partition_key the instance was routed to.
+  fixed64 pk = 1;
+  // The instance key — echoed, or the server-minted one when the request left
+  // it empty.
+  string instance_key = 2;
+}
+
+message DeliverMessageRequest {
+  string message_name = 1;
+  string correlation_key = 2;
+  // Message body: a JSON object of variables merged into each matched instance.
+  bytes payload = 3;
+}
+
+message DeliverMessageResponse {
+  // Banded partition_key the message was routed to (debug/observability).
+  fixed64 pk = 1;
+  // accepted is true when the command was routed and proposed; it does not wait
+  // for apply, nor report how many subscribers matched.
+  bool accepted = 2;
 }
 
 message ResolveWorkflowPromiseRequest {

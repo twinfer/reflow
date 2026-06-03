@@ -205,6 +205,16 @@ message Command {
     // it. Accepted only by shardID >= 1.
     ProcessEvent process_event = 40;
     ProcessAdvanced process_advanced = 41;
+    // DeliverProcessMessage correlates an inbound message to parked instances:
+    // it lands on the partition owning (tenant, message_name, correlation_key),
+    // scans MessageSubscriptionTable, and fans a ProcessMessageReceived event
+    // out to each subscribed instance. ProcessSubscribe records one such
+    // subscription written by actuateProcessInstructions — applied locally, or
+    // re-injected here after riding OutboxEnvelope.process_subscribe cross-shard
+    // to the partition that owns the message routing key. Accepted only by
+    // shardID >= 1.
+    DeliverProcessMessage deliver_process_message = 42;
+    ProcessSubscribe process_subscribe = 43;
     // SetRebalanceDrain marks a partition shard as drained (drain=true)
     // or undrained (drain=false) in shard 0's RebalanceDrainTable. The
     // autonomous rebalancer subtracts drained shards from the planner's
@@ -1032,6 +1042,7 @@ message OutboxEnvelope {
     PromiseCompleted promise_completion = 6;
     PromiseCompletionAck promise_completion_ack = 7;
     ProcessEvent process_event = 8;
+    ProcessSubscribe process_subscribe = 9;
   }
 }
 
@@ -1109,6 +1120,7 @@ message ProcessEventPayload {
     ProcessTaskCompleted task_completed = 2;
     ProcessTimerFired timer_fired = 3;
     ProcessChildCompleted child_completed = 4;
+    ProcessMessageReceived message_received = 5;
   }
 }
 
@@ -1139,6 +1151,19 @@ message ProcessChildCompleted {
   bytes output = 3;
   bool failed = 4;
   string failure_message = 5;
+}
+
+// ProcessMessageReceived feeds a correlated inbound message back to a parked
+// node — a BPMN message/signal catch that emitted SignalSubscribe. The read
+// path (onDeliverProcessMessage) stamps node_id from the matched
+// MessageSubscription; procSession turns it into the iflow resume event
+// (bpmn.SignalReceived{NodeID, Payload}). payload is the message body, a JSON
+// object of variables merged into the instance.
+message ProcessMessageReceived {
+  string node_id = 1;
+  string message_name = 2;
+  string correlation_key = 3;
+  bytes payload = 4;
 }
 
 // TimerValue is the stored value of a TimerTable row. A plain sleep / run-retry
@@ -1196,6 +1221,44 @@ message ChildStart {
 }
 message SignalSubscribe { string node_id = 1; string message_name = 2; string correlation_key = 3; }
 message ProcessTerminal { bool failed = 1; bytes output = 2; string failure_message = 3; }
+
+// MessageSubscription is one parked BPMN message/signal catch, stored in
+// MessageSubscriptionTable on the partition owning (tenant, message_name,
+// correlation_key) — which generally differs from the instance's own partition,
+// so actuateProcessInstructions writes it cross-shard via
+// OutboxEnvelope.process_subscribe. instance_pk/service/instance_key address the
+// parked instance; node_id is the waiting node the delivery resumes.
+message MessageSubscription {
+  fixed64 instance_pk = 1;
+  string service = 2;
+  string instance_key = 3;
+  string node_id = 4;
+  string message_name = 5;
+  string correlation_key = 6;
+}
+
+// ProcessSubscribe carries one MessageSubscription to the partition that owns the
+// message routing key (pk = banded PartitionKey(tenant, message_name,
+// correlation_key)). Applied via Command_ProcessSubscribe (onProcessSubscribe
+// writes the row); shipped cross-shard via OutboxEnvelope.process_subscribe.
+message ProcessSubscribe {
+  fixed64 pk = 1;
+  MessageSubscription sub = 2;
+}
+
+// DeliverProcessMessage is the inbound-correlation command. It lands on the
+// partition owning pk = banded PartitionKey(tenant, message_name,
+// correlation_key), scans every matching MessageSubscription, fans a
+// ProcessMessageReceived out to each parked instance, and one-shot-deletes the
+// rows (so redelivery is naturally idempotent). A message with no current
+// subscriber is dropped, not buffered — matching BPMN signal semantics.
+message DeliverProcessMessage {
+  fixed64 pk = 1;
+  string message_name = 2;
+  string correlation_key = 3;
+  bytes payload = 4;
+  uint64 logical_time_ms = 5;
+}
 
 // ProcessInstanceRecord is the stored value of ProcessInstanceTable
 // (proc/<lp:4><service>/<instance_key>).

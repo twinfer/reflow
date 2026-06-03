@@ -1136,6 +1136,241 @@ func (x *PurgeInvocationResponse) GetAccepted() bool {
 	return false
 }
 
+type StartProcessRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// model_ref.kind is "bpmn" or "cmmn"; model_ref.name is the routing service;
+	// model_ref.version pins the model snapshot the worker resolves.
+	ModelRef *enginev1.ModelRef `protobuf:"bytes,1,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`
+	// Optional caller-chosen instance key. Empty → the server mints a random one.
+	InstanceKey string `protobuf:"bytes,2,opt,name=instance_key,json=instanceKey,proto3" json:"instance_key,omitempty"`
+	// Start variables: a JSON object merged into the new instance.
+	Vars          []byte `protobuf:"bytes,3,opt,name=vars,proto3" json:"vars,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartProcessRequest) Reset() {
+	*x = StartProcessRequest{}
+	mi := &file_ingressv1_ingress_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartProcessRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartProcessRequest) ProtoMessage() {}
+
+func (x *StartProcessRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ingressv1_ingress_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartProcessRequest.ProtoReflect.Descriptor instead.
+func (*StartProcessRequest) Descriptor() ([]byte, []int) {
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *StartProcessRequest) GetModelRef() *enginev1.ModelRef {
+	if x != nil {
+		return x.ModelRef
+	}
+	return nil
+}
+
+func (x *StartProcessRequest) GetInstanceKey() string {
+	if x != nil {
+		return x.InstanceKey
+	}
+	return ""
+}
+
+func (x *StartProcessRequest) GetVars() []byte {
+	if x != nil {
+		return x.Vars
+	}
+	return nil
+}
+
+type StartProcessResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Banded partition_key the instance was routed to.
+	Pk uint64 `protobuf:"fixed64,1,opt,name=pk,proto3" json:"pk,omitempty"`
+	// The instance key — echoed, or the server-minted one when the request left
+	// it empty.
+	InstanceKey   string `protobuf:"bytes,2,opt,name=instance_key,json=instanceKey,proto3" json:"instance_key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartProcessResponse) Reset() {
+	*x = StartProcessResponse{}
+	mi := &file_ingressv1_ingress_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartProcessResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartProcessResponse) ProtoMessage() {}
+
+func (x *StartProcessResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ingressv1_ingress_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartProcessResponse.ProtoReflect.Descriptor instead.
+func (*StartProcessResponse) Descriptor() ([]byte, []int) {
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *StartProcessResponse) GetPk() uint64 {
+	if x != nil {
+		return x.Pk
+	}
+	return 0
+}
+
+func (x *StartProcessResponse) GetInstanceKey() string {
+	if x != nil {
+		return x.InstanceKey
+	}
+	return ""
+}
+
+type DeliverMessageRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	MessageName    string                 `protobuf:"bytes,1,opt,name=message_name,json=messageName,proto3" json:"message_name,omitempty"`
+	CorrelationKey string                 `protobuf:"bytes,2,opt,name=correlation_key,json=correlationKey,proto3" json:"correlation_key,omitempty"`
+	// Message body: a JSON object of variables merged into each matched instance.
+	Payload       []byte `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeliverMessageRequest) Reset() {
+	*x = DeliverMessageRequest{}
+	mi := &file_ingressv1_ingress_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeliverMessageRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeliverMessageRequest) ProtoMessage() {}
+
+func (x *DeliverMessageRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ingressv1_ingress_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeliverMessageRequest.ProtoReflect.Descriptor instead.
+func (*DeliverMessageRequest) Descriptor() ([]byte, []int) {
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *DeliverMessageRequest) GetMessageName() string {
+	if x != nil {
+		return x.MessageName
+	}
+	return ""
+}
+
+func (x *DeliverMessageRequest) GetCorrelationKey() string {
+	if x != nil {
+		return x.CorrelationKey
+	}
+	return ""
+}
+
+func (x *DeliverMessageRequest) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+type DeliverMessageResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Banded partition_key the message was routed to (debug/observability).
+	Pk uint64 `protobuf:"fixed64,1,opt,name=pk,proto3" json:"pk,omitempty"`
+	// accepted is true when the command was routed and proposed; it does not wait
+	// for apply, nor report how many subscribers matched.
+	Accepted      bool `protobuf:"varint,2,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeliverMessageResponse) Reset() {
+	*x = DeliverMessageResponse{}
+	mi := &file_ingressv1_ingress_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeliverMessageResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeliverMessageResponse) ProtoMessage() {}
+
+func (x *DeliverMessageResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ingressv1_ingress_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeliverMessageResponse.ProtoReflect.Descriptor instead.
+func (*DeliverMessageResponse) Descriptor() ([]byte, []int) {
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *DeliverMessageResponse) GetPk() uint64 {
+	if x != nil {
+		return x.Pk
+	}
+	return 0
+}
+
+func (x *DeliverMessageResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
 type ResolveWorkflowPromiseRequest struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	Service     string                 `protobuf:"bytes,1,opt,name=service,proto3" json:"service,omitempty"`
@@ -1151,7 +1386,7 @@ type ResolveWorkflowPromiseRequest struct {
 
 func (x *ResolveWorkflowPromiseRequest) Reset() {
 	*x = ResolveWorkflowPromiseRequest{}
-	mi := &file_ingressv1_ingress_proto_msgTypes[18]
+	mi := &file_ingressv1_ingress_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1163,7 +1398,7 @@ func (x *ResolveWorkflowPromiseRequest) String() string {
 func (*ResolveWorkflowPromiseRequest) ProtoMessage() {}
 
 func (x *ResolveWorkflowPromiseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ingressv1_ingress_proto_msgTypes[18]
+	mi := &file_ingressv1_ingress_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1176,7 +1411,7 @@ func (x *ResolveWorkflowPromiseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveWorkflowPromiseRequest.ProtoReflect.Descriptor instead.
 func (*ResolveWorkflowPromiseRequest) Descriptor() ([]byte, []int) {
-	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{18}
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ResolveWorkflowPromiseRequest) GetService() string {
@@ -1228,7 +1463,7 @@ type ResolveWorkflowPromiseResponse struct {
 
 func (x *ResolveWorkflowPromiseResponse) Reset() {
 	*x = ResolveWorkflowPromiseResponse{}
-	mi := &file_ingressv1_ingress_proto_msgTypes[19]
+	mi := &file_ingressv1_ingress_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1240,7 +1475,7 @@ func (x *ResolveWorkflowPromiseResponse) String() string {
 func (*ResolveWorkflowPromiseResponse) ProtoMessage() {}
 
 func (x *ResolveWorkflowPromiseResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ingressv1_ingress_proto_msgTypes[19]
+	mi := &file_ingressv1_ingress_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1253,7 +1488,7 @@ func (x *ResolveWorkflowPromiseResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveWorkflowPromiseResponse.ProtoReflect.Descriptor instead.
 func (*ResolveWorkflowPromiseResponse) Descriptor() ([]byte, []int) {
-	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{19}
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ResolveWorkflowPromiseResponse) GetAccepted() bool {
@@ -1343,7 +1578,21 @@ const file_ingressv1_ingress_proto_rawDesc = "" +
 	"\rinvocation_id\x18\x01 \x01(\tR\finvocationId\x12N\n" +
 	"\x13invocation_id_proto\x18\x02 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\x11invocationIdProto\"5\n" +
 	"\x17PurgeInvocationResponse\x12\x1a\n" +
-	"\baccepted\x18\x01 \x01(\bR\baccepted\"\xbe\x01\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\"\x85\x01\n" +
+	"\x13StartProcessRequest\x127\n" +
+	"\tmodel_ref\x18\x01 \x01(\v2\x1a.reflow.engine.v1.ModelRefR\bmodelRef\x12!\n" +
+	"\finstance_key\x18\x02 \x01(\tR\vinstanceKey\x12\x12\n" +
+	"\x04vars\x18\x03 \x01(\fR\x04vars\"I\n" +
+	"\x14StartProcessResponse\x12\x0e\n" +
+	"\x02pk\x18\x01 \x01(\x06R\x02pk\x12!\n" +
+	"\finstance_key\x18\x02 \x01(\tR\vinstanceKey\"}\n" +
+	"\x15DeliverMessageRequest\x12!\n" +
+	"\fmessage_name\x18\x01 \x01(\tR\vmessageName\x12'\n" +
+	"\x0fcorrelation_key\x18\x02 \x01(\tR\x0ecorrelationKey\x12\x18\n" +
+	"\apayload\x18\x03 \x01(\fR\apayload\"D\n" +
+	"\x16DeliverMessageResponse\x12\x0e\n" +
+	"\x02pk\x18\x01 \x01(\x06R\x02pk\x12\x1a\n" +
+	"\baccepted\x18\x02 \x01(\bR\baccepted\"\xbe\x01\n" +
 	"\x1dResolveWorkflowPromiseRequest\x12\x18\n" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12!\n" +
 	"\fworkflow_key\x18\x02 \x01(\tR\vworkflowKey\x12!\n" +
@@ -1351,7 +1600,8 @@ const file_ingressv1_ingress_proto_rawDesc = "" +
 	"\x05value\x18\x04 \x01(\fR\x05value\x12'\n" +
 	"\x0ffailure_message\x18\x05 \x01(\tR\x0efailureMessage\"<\n" +
 	"\x1eResolveWorkflowPromiseResponse\x12\x1a\n" +
-	"\baccepted\x18\x01 \x01(\bR\baccepted2\xe0\b\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted2\xa8\n" +
+	"\n" +
 	"\aIngress\x12k\n" +
 	"\x10SubmitInvocation\x12*.reflow.ingress.v1.SubmitInvocationRequest\x1a+.reflow.ingress.v1.SubmitInvocationResponse\x12h\n" +
 	"\x0fAwaitInvocation\x12).reflow.ingress.v1.AwaitInvocationRequest\x1a*.reflow.ingress.v1.AwaitInvocationResponse\x12k\n" +
@@ -1362,7 +1612,9 @@ const file_ingressv1_ingress_proto_rawDesc = "" +
 	"\x0eGetObjectState\x12(.reflow.ingress.v1.GetObjectStateRequest\x1a).reflow.ingress.v1.GetObjectStateResponse\x12k\n" +
 	"\x10CancelInvocation\x12*.reflow.ingress.v1.CancelInvocationRequest\x1a+.reflow.ingress.v1.CancelInvocationResponse\x12}\n" +
 	"\x16ResolveWorkflowPromise\x120.reflow.ingress.v1.ResolveWorkflowPromiseRequest\x1a1.reflow.ingress.v1.ResolveWorkflowPromiseResponse\x12h\n" +
-	"\x0fPurgeInvocation\x12).reflow.ingress.v1.PurgeInvocationRequest\x1a*.reflow.ingress.v1.PurgeInvocationResponseB5Z3github.com/twinfer/reflow/proto/ingressv1;ingressv1b\x06proto3"
+	"\x0fPurgeInvocation\x12).reflow.ingress.v1.PurgeInvocationRequest\x1a*.reflow.ingress.v1.PurgeInvocationResponse\x12_\n" +
+	"\fStartProcess\x12&.reflow.ingress.v1.StartProcessRequest\x1a'.reflow.ingress.v1.StartProcessResponse\x12e\n" +
+	"\x0eDeliverMessage\x12(.reflow.ingress.v1.DeliverMessageRequest\x1a).reflow.ingress.v1.DeliverMessageResponseB5Z3github.com/twinfer/reflow/proto/ingressv1;ingressv1b\x06proto3"
 
 var (
 	file_ingressv1_ingress_proto_rawDescOnce sync.Once
@@ -1377,7 +1629,7 @@ func file_ingressv1_ingress_proto_rawDescGZIP() []byte {
 }
 
 var file_ingressv1_ingress_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_ingressv1_ingress_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_ingressv1_ingress_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
 var file_ingressv1_ingress_proto_goTypes = []any{
 	(GetInvocationOutputResponse_Status)(0), // 0: reflow.ingress.v1.GetInvocationOutputResponse.Status
 	(*SubmitInvocationRequest)(nil),         // 1: reflow.ingress.v1.SubmitInvocationRequest
@@ -1398,48 +1650,58 @@ var file_ingressv1_ingress_proto_goTypes = []any{
 	(*CancelInvocationResponse)(nil),        // 16: reflow.ingress.v1.CancelInvocationResponse
 	(*PurgeInvocationRequest)(nil),          // 17: reflow.ingress.v1.PurgeInvocationRequest
 	(*PurgeInvocationResponse)(nil),         // 18: reflow.ingress.v1.PurgeInvocationResponse
-	(*ResolveWorkflowPromiseRequest)(nil),   // 19: reflow.ingress.v1.ResolveWorkflowPromiseRequest
-	(*ResolveWorkflowPromiseResponse)(nil),  // 20: reflow.ingress.v1.ResolveWorkflowPromiseResponse
-	nil,                                     // 21: reflow.ingress.v1.SubmitInvocationRequest.MetadataEntry
-	(*enginev1.InvocationId)(nil),           // 22: reflow.engine.v1.InvocationId
-	(*enginev1.InvocationStatus)(nil),       // 23: reflow.engine.v1.InvocationStatus
+	(*StartProcessRequest)(nil),             // 19: reflow.ingress.v1.StartProcessRequest
+	(*StartProcessResponse)(nil),            // 20: reflow.ingress.v1.StartProcessResponse
+	(*DeliverMessageRequest)(nil),           // 21: reflow.ingress.v1.DeliverMessageRequest
+	(*DeliverMessageResponse)(nil),          // 22: reflow.ingress.v1.DeliverMessageResponse
+	(*ResolveWorkflowPromiseRequest)(nil),   // 23: reflow.ingress.v1.ResolveWorkflowPromiseRequest
+	(*ResolveWorkflowPromiseResponse)(nil),  // 24: reflow.ingress.v1.ResolveWorkflowPromiseResponse
+	nil,                                     // 25: reflow.ingress.v1.SubmitInvocationRequest.MetadataEntry
+	(*enginev1.InvocationId)(nil),           // 26: reflow.engine.v1.InvocationId
+	(*enginev1.InvocationStatus)(nil),       // 27: reflow.engine.v1.InvocationStatus
+	(*enginev1.ModelRef)(nil),               // 28: reflow.engine.v1.ModelRef
 }
 var file_ingressv1_ingress_proto_depIdxs = []int32{
-	21, // 0: reflow.ingress.v1.SubmitInvocationRequest.metadata:type_name -> reflow.ingress.v1.SubmitInvocationRequest.MetadataEntry
-	22, // 1: reflow.ingress.v1.SubmitInvocationResponse.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	22, // 2: reflow.ingress.v1.AwaitInvocationRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
-	22, // 3: reflow.ingress.v1.DescribeInvocationRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
-	23, // 4: reflow.ingress.v1.DescribeInvocationResponse.status:type_name -> reflow.engine.v1.InvocationStatus
-	22, // 5: reflow.ingress.v1.AttachInvocationRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
-	22, // 6: reflow.ingress.v1.GetInvocationOutputRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
+	25, // 0: reflow.ingress.v1.SubmitInvocationRequest.metadata:type_name -> reflow.ingress.v1.SubmitInvocationRequest.MetadataEntry
+	26, // 1: reflow.ingress.v1.SubmitInvocationResponse.invocation_id:type_name -> reflow.engine.v1.InvocationId
+	26, // 2: reflow.ingress.v1.AwaitInvocationRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
+	26, // 3: reflow.ingress.v1.DescribeInvocationRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
+	27, // 4: reflow.ingress.v1.DescribeInvocationResponse.status:type_name -> reflow.engine.v1.InvocationStatus
+	26, // 5: reflow.ingress.v1.AttachInvocationRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
+	26, // 6: reflow.ingress.v1.GetInvocationOutputRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
 	0,  // 7: reflow.ingress.v1.GetInvocationOutputResponse.status:type_name -> reflow.ingress.v1.GetInvocationOutputResponse.Status
-	22, // 8: reflow.ingress.v1.CancelInvocationRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
-	22, // 9: reflow.ingress.v1.PurgeInvocationRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
-	1,  // 10: reflow.ingress.v1.Ingress.SubmitInvocation:input_type -> reflow.ingress.v1.SubmitInvocationRequest
-	3,  // 11: reflow.ingress.v1.Ingress.AwaitInvocation:input_type -> reflow.ingress.v1.AwaitInvocationRequest
-	5,  // 12: reflow.ingress.v1.Ingress.ResolveAwakeable:input_type -> reflow.ingress.v1.ResolveAwakeableRequest
-	7,  // 13: reflow.ingress.v1.Ingress.DescribeInvocation:input_type -> reflow.ingress.v1.DescribeInvocationRequest
-	9,  // 14: reflow.ingress.v1.Ingress.AttachInvocation:input_type -> reflow.ingress.v1.AttachInvocationRequest
-	11, // 15: reflow.ingress.v1.Ingress.GetInvocationOutput:input_type -> reflow.ingress.v1.GetInvocationOutputRequest
-	12, // 16: reflow.ingress.v1.Ingress.GetObjectState:input_type -> reflow.ingress.v1.GetObjectStateRequest
-	15, // 17: reflow.ingress.v1.Ingress.CancelInvocation:input_type -> reflow.ingress.v1.CancelInvocationRequest
-	19, // 18: reflow.ingress.v1.Ingress.ResolveWorkflowPromise:input_type -> reflow.ingress.v1.ResolveWorkflowPromiseRequest
-	17, // 19: reflow.ingress.v1.Ingress.PurgeInvocation:input_type -> reflow.ingress.v1.PurgeInvocationRequest
-	2,  // 20: reflow.ingress.v1.Ingress.SubmitInvocation:output_type -> reflow.ingress.v1.SubmitInvocationResponse
-	4,  // 21: reflow.ingress.v1.Ingress.AwaitInvocation:output_type -> reflow.ingress.v1.AwaitInvocationResponse
-	6,  // 22: reflow.ingress.v1.Ingress.ResolveAwakeable:output_type -> reflow.ingress.v1.ResolveAwakeableResponse
-	8,  // 23: reflow.ingress.v1.Ingress.DescribeInvocation:output_type -> reflow.ingress.v1.DescribeInvocationResponse
-	10, // 24: reflow.ingress.v1.Ingress.AttachInvocation:output_type -> reflow.ingress.v1.AttachInvocationResponse
-	14, // 25: reflow.ingress.v1.Ingress.GetInvocationOutput:output_type -> reflow.ingress.v1.GetInvocationOutputResponse
-	13, // 26: reflow.ingress.v1.Ingress.GetObjectState:output_type -> reflow.ingress.v1.GetObjectStateResponse
-	16, // 27: reflow.ingress.v1.Ingress.CancelInvocation:output_type -> reflow.ingress.v1.CancelInvocationResponse
-	20, // 28: reflow.ingress.v1.Ingress.ResolveWorkflowPromise:output_type -> reflow.ingress.v1.ResolveWorkflowPromiseResponse
-	18, // 29: reflow.ingress.v1.Ingress.PurgeInvocation:output_type -> reflow.ingress.v1.PurgeInvocationResponse
-	20, // [20:30] is the sub-list for method output_type
-	10, // [10:20] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	26, // 8: reflow.ingress.v1.CancelInvocationRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
+	26, // 9: reflow.ingress.v1.PurgeInvocationRequest.invocation_id_proto:type_name -> reflow.engine.v1.InvocationId
+	28, // 10: reflow.ingress.v1.StartProcessRequest.model_ref:type_name -> reflow.engine.v1.ModelRef
+	1,  // 11: reflow.ingress.v1.Ingress.SubmitInvocation:input_type -> reflow.ingress.v1.SubmitInvocationRequest
+	3,  // 12: reflow.ingress.v1.Ingress.AwaitInvocation:input_type -> reflow.ingress.v1.AwaitInvocationRequest
+	5,  // 13: reflow.ingress.v1.Ingress.ResolveAwakeable:input_type -> reflow.ingress.v1.ResolveAwakeableRequest
+	7,  // 14: reflow.ingress.v1.Ingress.DescribeInvocation:input_type -> reflow.ingress.v1.DescribeInvocationRequest
+	9,  // 15: reflow.ingress.v1.Ingress.AttachInvocation:input_type -> reflow.ingress.v1.AttachInvocationRequest
+	11, // 16: reflow.ingress.v1.Ingress.GetInvocationOutput:input_type -> reflow.ingress.v1.GetInvocationOutputRequest
+	12, // 17: reflow.ingress.v1.Ingress.GetObjectState:input_type -> reflow.ingress.v1.GetObjectStateRequest
+	15, // 18: reflow.ingress.v1.Ingress.CancelInvocation:input_type -> reflow.ingress.v1.CancelInvocationRequest
+	23, // 19: reflow.ingress.v1.Ingress.ResolveWorkflowPromise:input_type -> reflow.ingress.v1.ResolveWorkflowPromiseRequest
+	17, // 20: reflow.ingress.v1.Ingress.PurgeInvocation:input_type -> reflow.ingress.v1.PurgeInvocationRequest
+	19, // 21: reflow.ingress.v1.Ingress.StartProcess:input_type -> reflow.ingress.v1.StartProcessRequest
+	21, // 22: reflow.ingress.v1.Ingress.DeliverMessage:input_type -> reflow.ingress.v1.DeliverMessageRequest
+	2,  // 23: reflow.ingress.v1.Ingress.SubmitInvocation:output_type -> reflow.ingress.v1.SubmitInvocationResponse
+	4,  // 24: reflow.ingress.v1.Ingress.AwaitInvocation:output_type -> reflow.ingress.v1.AwaitInvocationResponse
+	6,  // 25: reflow.ingress.v1.Ingress.ResolveAwakeable:output_type -> reflow.ingress.v1.ResolveAwakeableResponse
+	8,  // 26: reflow.ingress.v1.Ingress.DescribeInvocation:output_type -> reflow.ingress.v1.DescribeInvocationResponse
+	10, // 27: reflow.ingress.v1.Ingress.AttachInvocation:output_type -> reflow.ingress.v1.AttachInvocationResponse
+	14, // 28: reflow.ingress.v1.Ingress.GetInvocationOutput:output_type -> reflow.ingress.v1.GetInvocationOutputResponse
+	13, // 29: reflow.ingress.v1.Ingress.GetObjectState:output_type -> reflow.ingress.v1.GetObjectStateResponse
+	16, // 30: reflow.ingress.v1.Ingress.CancelInvocation:output_type -> reflow.ingress.v1.CancelInvocationResponse
+	24, // 31: reflow.ingress.v1.Ingress.ResolveWorkflowPromise:output_type -> reflow.ingress.v1.ResolveWorkflowPromiseResponse
+	18, // 32: reflow.ingress.v1.Ingress.PurgeInvocation:output_type -> reflow.ingress.v1.PurgeInvocationResponse
+	20, // 33: reflow.ingress.v1.Ingress.StartProcess:output_type -> reflow.ingress.v1.StartProcessResponse
+	22, // 34: reflow.ingress.v1.Ingress.DeliverMessage:output_type -> reflow.ingress.v1.DeliverMessageResponse
+	23, // [23:35] is the sub-list for method output_type
+	11, // [11:23] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_ingressv1_ingress_proto_init() }
@@ -1453,7 +1715,7 @@ func file_ingressv1_ingress_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ingressv1_ingress_proto_rawDesc), len(file_ingressv1_ingress_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   21,
+			NumMessages:   25,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

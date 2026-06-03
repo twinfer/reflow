@@ -92,6 +92,11 @@ func eventForCMMN(p *enginev1.ProcessEventPayload) (cmmn.EngineEvent, error) {
 			return nil, fmt.Errorf("iflowengine: decode child output: %w", err)
 		}
 		return cmmn.TaskCompleted{PlanItemID: cc.GetNodeId(), Outputs: outputs}, nil
+	case *enginev1.ProcessEventPayload_MessageReceived:
+		// Unreachable in practice: the CMMN translation emits no SignalSubscribe,
+		// so the read path never routes a ProcessMessageReceived to a case. Kept
+		// explicit so the failure is legible if that ever changes.
+		return nil, fmt.Errorf("iflowengine: CMMN message correlation not supported (plan item %q)", of.MessageReceived.GetNodeId())
 	default:
 		return nil, fmt.Errorf("iflowengine: empty process event payload")
 	}

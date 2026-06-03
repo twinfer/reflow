@@ -69,6 +69,10 @@ const (
 	IngressResolveWorkflowPromiseProcedure = "/reflow.ingress.v1.Ingress/ResolveWorkflowPromise"
 	// IngressPurgeInvocationProcedure is the fully-qualified name of the Ingress's PurgeInvocation RPC.
 	IngressPurgeInvocationProcedure = "/reflow.ingress.v1.Ingress/PurgeInvocation"
+	// IngressStartProcessProcedure is the fully-qualified name of the Ingress's StartProcess RPC.
+	IngressStartProcessProcedure = "/reflow.ingress.v1.Ingress/StartProcess"
+	// IngressDeliverMessageProcedure is the fully-qualified name of the Ingress's DeliverMessage RPC.
+	IngressDeliverMessageProcedure = "/reflow.ingress.v1.Ingress/DeliverMessage"
 )
 
 // IngressClient is a client for the reflow.ingress.v1.Ingress service.
@@ -124,6 +128,19 @@ type IngressClient interface {
 	// apply arm requires a Completed/Free → Free transition). Does not touch
 	// virtual-object state or workflow promise rows.
 	PurgeInvocation(context.Context, *connect.Request[ingressv1.PurgeInvocationRequest]) (*connect.Response[ingressv1.PurgeInvocationResponse], error)
+	// StartProcess launches a new iflow BPMN/CMMN instance. Routes to the
+	// partition owning (tenant, model name, instance_key) and proposes a start
+	// ProcessEvent (model_ref + kind set). Idempotent per (model, instance_key):
+	// a start for an already-existing instance is dropped by the apply path. When
+	// instance_key is empty the server mints a random one (then not idempotent).
+	StartProcess(context.Context, *connect.Request[ingressv1.StartProcessRequest]) (*connect.Response[ingressv1.StartProcessResponse], error)
+	// DeliverMessage correlates an inbound message/signal to parked process
+	// instances. Routes to the partition owning (tenant, message_name,
+	// correlation_key) and proposes DeliverProcessMessage, which fans the message
+	// out to every instance subscribed on that (message_name, correlation_key).
+	// An empty correlation_key addresses every instance waiting on the name (BPMN
+	// signal broadcast). Messages with no current subscriber are dropped.
+	DeliverMessage(context.Context, *connect.Request[ingressv1.DeliverMessageRequest]) (*connect.Response[ingressv1.DeliverMessageResponse], error)
 }
 
 // NewIngressClient constructs a client for the reflow.ingress.v1.Ingress service. By default, it
@@ -197,6 +214,18 @@ func NewIngressClient(httpClient connect.HTTPClient, baseURL string, opts ...con
 			connect.WithSchema(ingressMethods.ByName("PurgeInvocation")),
 			connect.WithClientOptions(opts...),
 		),
+		startProcess: connect.NewClient[ingressv1.StartProcessRequest, ingressv1.StartProcessResponse](
+			httpClient,
+			baseURL+IngressStartProcessProcedure,
+			connect.WithSchema(ingressMethods.ByName("StartProcess")),
+			connect.WithClientOptions(opts...),
+		),
+		deliverMessage: connect.NewClient[ingressv1.DeliverMessageRequest, ingressv1.DeliverMessageResponse](
+			httpClient,
+			baseURL+IngressDeliverMessageProcedure,
+			connect.WithSchema(ingressMethods.ByName("DeliverMessage")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -212,6 +241,8 @@ type ingressClient struct {
 	cancelInvocation       *connect.Client[ingressv1.CancelInvocationRequest, ingressv1.CancelInvocationResponse]
 	resolveWorkflowPromise *connect.Client[ingressv1.ResolveWorkflowPromiseRequest, ingressv1.ResolveWorkflowPromiseResponse]
 	purgeInvocation        *connect.Client[ingressv1.PurgeInvocationRequest, ingressv1.PurgeInvocationResponse]
+	startProcess           *connect.Client[ingressv1.StartProcessRequest, ingressv1.StartProcessResponse]
+	deliverMessage         *connect.Client[ingressv1.DeliverMessageRequest, ingressv1.DeliverMessageResponse]
 }
 
 // SubmitInvocation calls reflow.ingress.v1.Ingress.SubmitInvocation.
@@ -262,6 +293,16 @@ func (c *ingressClient) ResolveWorkflowPromise(ctx context.Context, req *connect
 // PurgeInvocation calls reflow.ingress.v1.Ingress.PurgeInvocation.
 func (c *ingressClient) PurgeInvocation(ctx context.Context, req *connect.Request[ingressv1.PurgeInvocationRequest]) (*connect.Response[ingressv1.PurgeInvocationResponse], error) {
 	return c.purgeInvocation.CallUnary(ctx, req)
+}
+
+// StartProcess calls reflow.ingress.v1.Ingress.StartProcess.
+func (c *ingressClient) StartProcess(ctx context.Context, req *connect.Request[ingressv1.StartProcessRequest]) (*connect.Response[ingressv1.StartProcessResponse], error) {
+	return c.startProcess.CallUnary(ctx, req)
+}
+
+// DeliverMessage calls reflow.ingress.v1.Ingress.DeliverMessage.
+func (c *ingressClient) DeliverMessage(ctx context.Context, req *connect.Request[ingressv1.DeliverMessageRequest]) (*connect.Response[ingressv1.DeliverMessageResponse], error) {
+	return c.deliverMessage.CallUnary(ctx, req)
 }
 
 // IngressHandler is an implementation of the reflow.ingress.v1.Ingress service.
@@ -317,6 +358,19 @@ type IngressHandler interface {
 	// apply arm requires a Completed/Free → Free transition). Does not touch
 	// virtual-object state or workflow promise rows.
 	PurgeInvocation(context.Context, *connect.Request[ingressv1.PurgeInvocationRequest]) (*connect.Response[ingressv1.PurgeInvocationResponse], error)
+	// StartProcess launches a new iflow BPMN/CMMN instance. Routes to the
+	// partition owning (tenant, model name, instance_key) and proposes a start
+	// ProcessEvent (model_ref + kind set). Idempotent per (model, instance_key):
+	// a start for an already-existing instance is dropped by the apply path. When
+	// instance_key is empty the server mints a random one (then not idempotent).
+	StartProcess(context.Context, *connect.Request[ingressv1.StartProcessRequest]) (*connect.Response[ingressv1.StartProcessResponse], error)
+	// DeliverMessage correlates an inbound message/signal to parked process
+	// instances. Routes to the partition owning (tenant, message_name,
+	// correlation_key) and proposes DeliverProcessMessage, which fans the message
+	// out to every instance subscribed on that (message_name, correlation_key).
+	// An empty correlation_key addresses every instance waiting on the name (BPMN
+	// signal broadcast). Messages with no current subscriber are dropped.
+	DeliverMessage(context.Context, *connect.Request[ingressv1.DeliverMessageRequest]) (*connect.Response[ingressv1.DeliverMessageResponse], error)
 }
 
 // NewIngressHandler builds an HTTP handler from the service implementation. It returns the path on
@@ -386,6 +440,18 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 		connect.WithSchema(ingressMethods.ByName("PurgeInvocation")),
 		connect.WithHandlerOptions(opts...),
 	)
+	ingressStartProcessHandler := connect.NewUnaryHandler(
+		IngressStartProcessProcedure,
+		svc.StartProcess,
+		connect.WithSchema(ingressMethods.ByName("StartProcess")),
+		connect.WithHandlerOptions(opts...),
+	)
+	ingressDeliverMessageHandler := connect.NewUnaryHandler(
+		IngressDeliverMessageProcedure,
+		svc.DeliverMessage,
+		connect.WithSchema(ingressMethods.ByName("DeliverMessage")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/reflow.ingress.v1.Ingress/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case IngressSubmitInvocationProcedure:
@@ -408,6 +474,10 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 			ingressResolveWorkflowPromiseHandler.ServeHTTP(w, r)
 		case IngressPurgeInvocationProcedure:
 			ingressPurgeInvocationHandler.ServeHTTP(w, r)
+		case IngressStartProcessProcedure:
+			ingressStartProcessHandler.ServeHTTP(w, r)
+		case IngressDeliverMessageProcedure:
+			ingressDeliverMessageHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -455,4 +525,12 @@ func (UnimplementedIngressHandler) ResolveWorkflowPromise(context.Context, *conn
 
 func (UnimplementedIngressHandler) PurgeInvocation(context.Context, *connect.Request[ingressv1.PurgeInvocationRequest]) (*connect.Response[ingressv1.PurgeInvocationResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.PurgeInvocation is not implemented"))
+}
+
+func (UnimplementedIngressHandler) StartProcess(context.Context, *connect.Request[ingressv1.StartProcessRequest]) (*connect.Response[ingressv1.StartProcessResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.StartProcess is not implemented"))
+}
+
+func (UnimplementedIngressHandler) DeliverMessage(context.Context, *connect.Request[ingressv1.DeliverMessageRequest]) (*connect.Response[ingressv1.DeliverMessageResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.DeliverMessage is not implemented"))
 }

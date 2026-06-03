@@ -578,6 +578,10 @@ func (p *Partition) applyCommand(
 		return p.onProcessEvent(batch, k.ProcessEvent, now, isLeader)
 	case *enginev1.Command_ProcessAdvanced:
 		return p.onProcessAdvanced(batch, meta, k.ProcessAdvanced, now, isLeader)
+	case *enginev1.Command_ProcessSubscribe:
+		return p.onProcessSubscribe(batch, k.ProcessSubscribe)
+	case *enginev1.Command_DeliverProcessMessage:
+		return p.onDeliverProcessMessage(batch, meta, k.DeliverProcessMessage, now, isLeader)
 	case nil:
 		p.cfg.Log.Warn("partition: envelope has no command kind", "raft_index", raftIndex)
 		return nil
@@ -776,6 +780,16 @@ func (p *Partition) enqueueInstanceEvent(batch storage.Batch, ev *enginev1.Proce
 	if err != nil {
 		return fmt.Errorf("enqueueInstanceEvent: load record: %w", err)
 	}
+	if ok && ev.GetModelRef() != nil {
+		// A start event (model_ref set) for an instance that already exists: a
+		// re-proposed StartProcess or a re-delivered child start. The instance is
+		// already running (or finished); re-starting it would mis-feed the start
+		// vars as a continuation event. Drop — starts are idempotent per
+		// (service, instance_key).
+		p.cfg.Log.Debug("partition: start ProcessEvent for existing instance; dropping",
+			"service", service, "key", instanceKey)
+		return nil
+	}
 	if !ok {
 		// A start event (model_ref set) creates the instance; any other event
 		// for an absent instance is a straggler (reaped / never existed / a
@@ -843,6 +857,40 @@ func (p *Partition) deliverProcessEvent(batch storage.Batch, meta *enginev1.Part
 	}
 	if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {
 		return fmt.Errorf("deliverProcessEvent: outbox append: %w", err)
+	}
+	return nil
+}
+
+// deliverProcessSubscribe routes a message subscription to the partition owning
+// the message routing key (ps.pk): written directly when this shard owns that
+// LP, else shipped via the outbox to the owning shard (where onProcessSubscribe
+// applies it). A subscription must be co-located with where DeliverProcessMessage
+// routes — which generally differs from the instance's own partition — so this
+// mirrors deliverProcessEvent's same-shard / cross-shard split.
+func (p *Partition) deliverProcessSubscribe(batch storage.Batch, meta *enginev1.PartitionMeta, ps *enginev1.ProcessSubscribe, isLeader bool) error {
+	shard := p.cfg.Partitioner.ShardForKey(ps.GetPk())
+	if shard == 0 || shard == p.shardID {
+		return p.writeSubscription(batch, ps)
+	}
+	env := &enginev1.OutboxEnvelope{
+		DestinationShardId: shard,
+		Kind:               &enginev1.OutboxEnvelope_ProcessSubscribe{ProcessSubscribe: ps},
+	}
+	if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {
+		return fmt.Errorf("deliverProcessSubscribe: outbox append: %w", err)
+	}
+	return nil
+}
+
+// writeSubscription persists one MessageSubscription row on this shard, which
+// owns ps.pk's LP. Used directly for a same-shard subscribe (the inline path,
+// which like deliverProcessEvent does not re-gate the freeze) and by
+// onProcessSubscribe for the cross-shard landing (which gates).
+func (p *Partition) writeSubscription(batch storage.Batch, ps *enginev1.ProcessSubscribe) error {
+	lp := keys.LPFromPartitionKey(ps.GetPk())
+	subT := tables.MessageSubscriptionTable{S: batch}
+	if err := subT.Put(batch, lp, ps.GetSub()); err != nil {
+		return fmt.Errorf("writeSubscription: put: %w", err)
 	}
 	return nil
 }
@@ -1055,6 +1103,99 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 		}
 		if err := p.deliverProcessEvent(batch, meta, ev, nowMs, isLeader); err != nil {
 			return fmt.Errorf("actuateProcessInstructions: child start: %w", err)
+		}
+	}
+
+	// Message/signal subscriptions: a parked BPMN catch (WaitForSignal). The row
+	// lives on the partition owning the message routing key (tenant, message_name,
+	// correlation_key) — generally a different LP than this instance — so a future
+	// DeliverProcessMessage can find it without knowing the instance's address.
+	for _, sub := range adv.GetSubscribe() {
+		ps := &enginev1.ProcessSubscribe{
+			Pk: routing.PartitionKey(tenant, sub.GetMessageName(), sub.GetCorrelationKey()),
+			Sub: &enginev1.MessageSubscription{
+				InstancePk:     pk,
+				Service:        service,
+				InstanceKey:    instanceKey,
+				NodeId:         sub.GetNodeId(),
+				MessageName:    sub.GetMessageName(),
+				CorrelationKey: sub.GetCorrelationKey(),
+			},
+		}
+		if err := p.deliverProcessSubscribe(batch, meta, ps, isLeader); err != nil {
+			return fmt.Errorf("actuateProcessInstructions: subscribe: %w", err)
+		}
+	}
+	return nil
+}
+
+// onProcessSubscribe records one message subscription on this shard (it owns the
+// message routing key's LP). This is the cross-shard landing of an
+// OutboxEnvelope.process_subscribe; same-shard subscribes skip the Raft round
+// trip by calling writeSubscription directly from actuateProcessInstructions.
+func (p *Partition) onProcessSubscribe(batch storage.Batch, ps *enginev1.ProcessSubscribe) error {
+	if err := p.checkLPFreeze(batch, ps.GetPk()); err != nil {
+		return err
+	}
+	return p.writeSubscription(batch, ps)
+}
+
+// onDeliverProcessMessage applies an inbound correlated message: scan every
+// MessageSubscription parked on (message_name, correlation_key) within this
+// shard's owning LP, fan a ProcessMessageReceived ProcessEvent out to each
+// subscribed instance (same-shard inline or cross-shard via the outbox), and
+// one-shot-delete each consumed subscription row. A message with no current
+// subscriber is a no-op (not buffered) — matching BPMN signal semantics, and
+// making redelivery naturally idempotent (the rows are gone after the first
+// apply). Scanning is separated from mutation so we never write to the batch
+// while iterating it.
+func (p *Partition) onDeliverProcessMessage(batch storage.Batch, meta *enginev1.PartitionMeta, dpm *enginev1.DeliverProcessMessage, nowMs uint64, isLeader bool) error {
+	pk := dpm.GetPk()
+	if err := p.checkLPFreeze(batch, pk); err != nil {
+		return err
+	}
+	lp := keys.LPFromPartitionKey(pk)
+	lt := dpm.GetLogicalTimeMs()
+	if lt == 0 {
+		lt = nowMs
+	}
+	subT := tables.MessageSubscriptionTable{S: batch}
+
+	type delivery struct {
+		key []byte
+		ev  *enginev1.ProcessEvent
+	}
+	var deliveries []delivery
+	if err := subT.ScanByCorrelation(lp, dpm.GetMessageName(), dpm.GetCorrelationKey(),
+		func(key []byte, sub *enginev1.MessageSubscription) error {
+			deliveries = append(deliveries, delivery{
+				key: key,
+				ev: &enginev1.ProcessEvent{
+					Pk:            sub.GetInstancePk(),
+					Service:       sub.GetService(),
+					InstanceKey:   sub.GetInstanceKey(),
+					LogicalTimeMs: lt,
+					Payload: &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_MessageReceived{
+						MessageReceived: &enginev1.ProcessMessageReceived{
+							NodeId:         sub.GetNodeId(),
+							MessageName:    dpm.GetMessageName(),
+							CorrelationKey: dpm.GetCorrelationKey(),
+							Payload:        dpm.GetPayload(),
+						},
+					}},
+				},
+			})
+			return nil
+		}); err != nil {
+		return fmt.Errorf("onDeliverProcessMessage: scan: %w", err)
+	}
+
+	for _, d := range deliveries {
+		if err := p.deliverProcessEvent(batch, meta, d.ev, nowMs, isLeader); err != nil {
+			return fmt.Errorf("onDeliverProcessMessage: deliver: %w", err)
+		}
+		if err := subT.DeleteKey(batch, d.key); err != nil {
+			return fmt.Errorf("onDeliverProcessMessage: delete subscription: %w", err)
 		}
 	}
 	return nil
@@ -2817,6 +2958,25 @@ type StateLookupResult struct {
 	Present bool
 }
 
+// LookupProcessInstance returns the ProcessInstanceRecord for (service,
+// instance_key) banded under Tenant, or Present=false when absent — the instance
+// never started, or already reached a terminal and was reaped. Used by ingress to
+// observe a started/parked/completed instance without a dedicated await RPC.
+type LookupProcessInstance struct {
+	Service     string
+	InstanceKey string
+	// Tenant is the band of the requesting principal (see LookupIdempotency).
+	Tenant uint32
+}
+
+func (LookupProcessInstance) isLookup() {}
+
+// ProcessInstanceLookupResult is the value returned by Lookup(LookupProcessInstance).
+type ProcessInstanceLookupResult struct {
+	Record  *enginev1.ProcessInstanceRecord
+	Present bool
+}
+
 // Lookup performs a linearizable read against the partition's on-disk store.
 // query must be one of the Lookup marker types defined in this package;
 // an unrecognised type returns an error. Implements statemachine.IOnDiskStateMachine.
@@ -2849,6 +3009,13 @@ func (p *Partition) Lookup(query any) (any, error) {
 	case LookupWorkflowRun:
 		lp := keys.LPFromPartitionKey(routing.PartitionKey(q.Tenant, q.Service, q.WorkflowKey))
 		return (tables.WorkflowRunTable{S: store}).Get(lp, q.Service, q.WorkflowKey)
+	case LookupProcessInstance:
+		lp := keys.LPFromPartitionKey(routing.PartitionKey(q.Tenant, q.Service, q.InstanceKey))
+		rec, ok, err := (tables.ProcessInstanceTable{S: store}).Get(lp, q.Service, q.InstanceKey)
+		if err != nil {
+			return nil, err
+		}
+		return ProcessInstanceLookupResult{Record: rec, Present: ok}, nil
 	default:
 		return nil, fmt.Errorf("partition: unknown lookup type %T", query)
 	}

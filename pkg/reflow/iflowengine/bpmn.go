@@ -119,6 +119,17 @@ func eventForBPMN(p *enginev1.ProcessEventPayload) (bpmn.EngineEvent, error) {
 			return nil, fmt.Errorf("iflowengine: decode child output: %w", err)
 		}
 		return bpmn.SubProcessCompleted{NodeID: cc.GetNodeId(), InstanceID: cc.GetInstanceIdx(), Outputs: outputs}, nil
+	case *enginev1.ProcessEventPayload_MessageReceived:
+		// A correlated inbound message resuming a parked WaitForSignal. reflow's
+		// read path already did the (message_name, correlation_key) matching and
+		// stamped the node_id; the iflow engine matches purely by NodeID and
+		// merges Payload into the instance variables.
+		mr := of.MessageReceived
+		payload, err := decodeVars(mr.GetPayload())
+		if err != nil {
+			return nil, fmt.Errorf("iflowengine: decode message payload: %w", err)
+		}
+		return bpmn.SignalReceived{NodeID: mr.GetNodeId(), Payload: payload}, nil
 	default:
 		return nil, fmt.Errorf("iflowengine: empty process event payload")
 	}
@@ -174,8 +185,12 @@ func (a *Adapter) translateBPMN(in invoker.ProcessAdvanceInput, graph *bpmn.Proc
 				Input:       input,
 			})
 		case bpmn.WaitForSignal:
-			// reflow does not actuate Subscribe yet (the deferred inbound
-			// correlation read path); emit it forward-looking and harmless.
+			// A message/signal catch. reflow actuates Subscribe: the apply path
+			// writes a MessageSubscription keyed by (message_name, correlation_key)
+			// on the partition owning that routing key, and a later DeliverMessage
+			// resumes this node via ProcessMessageReceived. A message catch sets
+			// MessageName + CorrelationKey; a signal catch sets SignalRef and no
+			// correlation (an empty key → name-only broadcast).
 			name := t.MessageName
 			if name == "" {
 				name = t.SignalRef
@@ -207,9 +222,13 @@ func (a *Adapter) translateBPMN(in invoker.ProcessAdvanceInput, graph *bpmn.Proc
 				Slot:     0,
 			})
 		case bpmn.CancelWait:
-			// CancelWait tears down a timer OR a signal/message wait. Only timer
-			// waits have a reflow actuation (TimerCancel); signal subscriptions
-			// aren't actuated yet, so there is nothing to cancel for those.
+			// CancelWait tears down a timer OR a signal/message wait. Timer waits
+			// map to TimerCancel. Signal/message subscriptions have no unsubscribe
+			// instruction yet, so a torn-down catch leaves its one-shot
+			// MessageSubscription row behind — benign in the same way as a leaked
+			// boundary timer: a later matching message delivers a stale
+			// MessageReceived that the partition drops for the absent/advanced
+			// instance. Cross-shard unsubscribe is future work.
 			if isTimerWaitNode(graph, t.NodeID) {
 				adv.CancelTimer = append(adv.CancelTimer, &enginev1.TimerCancel{NodeId: t.NodeID, Slot: 0})
 			}

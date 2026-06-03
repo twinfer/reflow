@@ -54,6 +54,8 @@ var procMap = map[string]procEntry{
 	ingressv1connect.IngressResolveAwakeableProcedure:       {"ResolveAwakeable", []string{groupIngress}},
 	ingressv1connect.IngressResolveWorkflowPromiseProcedure: {"ResolveWorkflowPromise", []string{groupIngress}},
 	ingressv1connect.IngressGetObjectStateProcedure:         {"GetObjectState", []string{groupIngress}},
+	ingressv1connect.IngressStartProcessProcedure:           {"StartProcess", []string{groupIngress}},
+	ingressv1connect.IngressDeliverMessageProcedure:         {"DeliverMessage", []string{groupIngress}},
 
 	// ----- Ingress: operator-only maintenance (no open plane) -----
 	// PurgeInvocation permanently deletes a Completed invocation's durable

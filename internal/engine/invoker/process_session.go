@@ -2,7 +2,9 @@ package invoker
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"runtime/debug"
 
 	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
@@ -97,6 +99,28 @@ func (s *processSession) start()                { go s.run() }
 func (s *processSession) abort()                { s.cancel() }
 func (s *processSession) Done() <-chan struct{} { return s.done }
 
+// advance runs one ProcessEngine turn, recovering a panic into an error. The
+// engine is an injected, possibly-third-party adapter (iflow); a bug in it (a
+// nil-token deref, an out-of-range index reconstructing state) must fail the one
+// instance via run's terminal-failure path — never crash the durable node. This
+// mirrors the host driver's per-case recover and the FSM's log-and-continue rule.
+func (s *processSession) advance(rec *enginev1.ProcessInstanceRecord) (adv *enginev1.ProcessAdvanced, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("invoker.proc: process engine panicked; failing instance",
+				"service", s.ref.service, "key", s.ref.instanceKey, "panic", r, "stack", string(debug.Stack()))
+			adv, err = nil, fmt.Errorf("process engine panicked: %v", r)
+		}
+	}()
+	return s.engine.Advance(s.ctx, ProcessAdvanceInput{
+		Pk:          s.ref.pk,
+		Service:     s.ref.service,
+		InstanceKey: s.ref.instanceKey,
+		Record:      rec,
+		Entry:       s.entry,
+	})
+}
+
 func (s *processSession) run() {
 	defer close(s.done)
 	if s.ctx.Err() != nil {
@@ -119,13 +143,7 @@ func (s *processSession) run() {
 		return
 	}
 
-	adv, err := s.engine.Advance(s.ctx, ProcessAdvanceInput{
-		Pk:          s.ref.pk,
-		Service:     s.ref.service,
-		InstanceKey: s.ref.instanceKey,
-		Record:      rec,
-		Entry:       s.entry,
-	})
+	adv, err := s.advance(rec)
 	if err != nil {
 		// A model/evaluation failure is terminal for this one instance. Carry
 		// the current blob unchanged plus a failed terminal so the apply path

@@ -115,6 +115,7 @@ const (
 	timerLPPrefix        = "timer_lp/"
 	statePrefix          = "state/"
 	procPrefix           = "proc/"
+	procInboxPrefix      = "proc_inbox/"
 	outboxPrefix         = "outbox/"
 	awakeablePrefix      = "awakeable/"
 	keyLeasePrefix       = "keylease/"
@@ -500,6 +501,32 @@ func ProcessInstanceKey(lp uint32, service, instanceKey string) []byte {
 func ProcessInstanceLPPrefix(lp uint32) []byte {
 	out := make([]byte, 0, len(procPrefix)+LPLen)
 	out = append(out, procPrefix...)
+	return appendLP(out, lp)
+}
+
+// ProcessInboxKey returns proc_inbox/<lp:4><service>/<instance_key>/<seq:8>.
+// One row per queued engine event; the 8-byte big-endian seq makes a forward
+// scan yield events in FIFO order. The cursor (next_seq/active_seq) lives on
+// ProcessInstanceRecord. Components must not contain '/'.
+func ProcessInboxKey(lp uint32, service, instanceKey string, seq uint64) []byte {
+	out := make([]byte, 0, len(procInboxPrefix)+LPLen+len(service)+1+len(instanceKey)+1+8)
+	out = append(out, procInboxPrefix...)
+	out = appendLP(out, lp)
+	out = append(out, service...)
+	out = append(out, '/')
+	out = append(out, instanceKey...)
+	out = append(out, '/')
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], seq)
+	return append(out, buf[:]...)
+}
+
+// ProcessInboxLPPrefix returns proc_inbox/<lp:4> — the LowerBound for a per-LP
+// scan of every queued event in one logical partition, so the inbox rides the
+// LP-transfer scan + source range-delete alongside the instance rows.
+func ProcessInboxLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(procInboxPrefix)+LPLen)
+	out = append(out, procInboxPrefix...)
 	return appendLP(out, lp)
 }
 

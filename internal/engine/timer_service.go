@@ -30,7 +30,8 @@ type timerHeapEntry struct {
 	fireAtMs uint64
 	id       *enginev1.InvocationId
 	sleepIdx uint32
-	rawID    []byte // cached canonical form for tie-breaking + Delete lookup
+	process  *enginev1.ProcessTimer // non-nil → fire as Command_ProcessEvent
+	rawID    []byte                 // cached canonical form for tie-breaking + Delete lookup
 }
 
 type timerHeap []timerHeapEntry
@@ -127,6 +128,7 @@ func (ts *TimerService) Rebuild() error {
 			fireAtMs: e.FireAtMs,
 			id:       e.ID,
 			sleepIdx: e.SleepIdx,
+			process:  e.Process,
 			rawID:    raw,
 		})
 		return nil
@@ -143,20 +145,26 @@ func (ts *TimerService) Rebuild() error {
 	return nil
 }
 
-// Push adds a timer to the in-memory heap. Called by the leader runner when
-// it drains an ActRegisterTimer Action.
+// Push adds a sleep / run-retry timer to the in-memory heap. Called by the
+// leader runner when it drains an ActRegisterTimer Action with no Process.
 func (ts *TimerService) Push(fireAtMs uint64, id *enginev1.InvocationId, sleepIdx uint32) error {
-	raw, err := keys.EncodeInvocationID(id)
+	return ts.push(timerHeapEntry{fireAtMs: fireAtMs, id: id, sleepIdx: sleepIdx})
+}
+
+// PushProcess adds a process timer to the heap; it fires as a
+// Command_ProcessEvent{timer_fired} rather than a Command_TimerFired.
+func (ts *TimerService) PushProcess(fireAtMs uint64, id *enginev1.InvocationId, pt *enginev1.ProcessTimer) error {
+	return ts.push(timerHeapEntry{fireAtMs: fireAtMs, id: id, process: pt})
+}
+
+func (ts *TimerService) push(e timerHeapEntry) error {
+	raw, err := keys.EncodeInvocationID(e.id)
 	if err != nil {
 		return err
 	}
+	e.rawID = raw
 	ts.mu.Lock()
-	heap.Push(&ts.heap, timerHeapEntry{
-		fireAtMs: fireAtMs,
-		id:       id,
-		sleepIdx: sleepIdx,
-		rawID:    raw,
-	})
+	heap.Push(&ts.heap, e)
 	ts.mu.Unlock()
 	ts.signalWake()
 	return nil
@@ -281,15 +289,7 @@ func (ts *TimerService) fireDue(ctx context.Context) {
 	ts.mu.Unlock()
 
 	for _, e := range due {
-		cmd := &enginev1.Command{
-			Kind: &enginev1.Command_TimerFired{
-				TimerFired: &enginev1.TimerFired{
-					InvocationId: e.id,
-					SleepIndex:   e.sleepIdx,
-					FireAtMs:     e.fireAtMs,
-				},
-			},
-		}
+		cmd := timerFireCommand(e)
 		propCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		err := ts.proposer.ProposeSelf(propCtx, cmd)
 		cancel()
@@ -317,6 +317,32 @@ func (ts *TimerService) fireDue(ctx context.Context) {
 			"sleep_idx", e.sleepIdx,
 		)
 	}
+}
+
+// timerFireCommand builds the command a due timer proposes. A process timer
+// (process != nil) fires a Command_ProcessEvent{timer_fired} addressed to the
+// instance; everything else fires the plain Command_TimerFired. logical_time_ms
+// is the scheduled fire instant so the re-driven turn is deterministic.
+func timerFireCommand(e timerHeapEntry) *enginev1.Command {
+	if e.process != nil {
+		return &enginev1.Command{Kind: &enginev1.Command_ProcessEvent{ProcessEvent: &enginev1.ProcessEvent{
+			Pk:            e.id.GetPartitionKey(),
+			Service:       e.process.GetService(),
+			InstanceKey:   e.process.GetInstanceKey(),
+			LogicalTimeMs: e.fireAtMs,
+			Payload: &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_TimerFired{
+				TimerFired: &enginev1.ProcessTimerFired{
+					NodeId: e.process.GetNodeId(),
+					Slot:   e.process.GetSlot(),
+				},
+			}},
+		}}}
+	}
+	return &enginev1.Command{Kind: &enginev1.Command_TimerFired{TimerFired: &enginev1.TimerFired{
+		InvocationId: e.id,
+		SleepIndex:   e.sleepIdx,
+		FireAtMs:     e.fireAtMs,
+	}}}
 }
 
 // heapLen returns the current heap length (for tests).

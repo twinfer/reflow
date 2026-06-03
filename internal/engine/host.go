@@ -152,6 +152,13 @@ type HostConfig struct {
 	// engine remote-only — the production multi-node path.
 	InProcDialer handlerclient.Dialer
 
+	// ProcessEngine, when non-nil, runs iflow process/case instances in-process
+	// on the partition leader (the procSession path). Like InProcDialer it is
+	// assembled outside internal/engine (the iflow binding lives in pkg/reflow
+	// or an iflow-side adapter) and injected here so the engine never imports
+	// iflow. nil disables process execution.
+	ProcessEngine invoker.ProcessEngine
+
 	// EagerStateMaxBytes caps the eager-state snapshot the invoker ships
 	// in StartMessage.state_map. Larger object states fall back to lazy
 	// fetch (StartMessage.partial_state=true). Zero means "use
@@ -877,15 +884,18 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 	// onBecomeLeader — their `done` channels are single-use so reusing
 	// the same instance across promotions would panic.
 	runner.invoker = invoker.New(invoker.Config{
-		JournalTable:       tables.JournalTable{S: snap.Store()},
-		InvocationTable:    tables.InvocationTable{S: snap.Store()},
-		StateTable:         tables.StateTable{S: snap.Store()},
-		Proposer:           proposer,
-		Deployments:        invoker.DeploymentResolverFunc(h.resolveDeployment),
-		HandlerLookup:      h.LookupDeploymentIDByHandler,
-		WireDispatcher:     hostWireDispatcher{h: h},
-		EagerStateMaxBytes: h.cfg.EagerStateMaxBytes,
-		Log:                h.log,
+		JournalTable:         tables.JournalTable{S: snap.Store()},
+		InvocationTable:      tables.InvocationTable{S: snap.Store()},
+		StateTable:           tables.StateTable{S: snap.Store()},
+		Proposer:             proposer,
+		Deployments:          invoker.DeploymentResolverFunc(h.resolveDeployment),
+		HandlerLookup:        h.LookupDeploymentIDByHandler,
+		WireDispatcher:       hostWireDispatcher{h: h},
+		EagerStateMaxBytes:   h.cfg.EagerStateMaxBytes,
+		ProcessEngine:        h.cfg.ProcessEngine,
+		ProcessInstanceTable: tables.ProcessInstanceTable{S: snap.Store()},
+		ProcessInboxTable:    tables.ProcessInboxTable{S: snap.Store()},
+		Log:                  h.log,
 	})
 
 	leadership.SetCallbacks(runner.onBecomeLeader, runner.onStepDown)

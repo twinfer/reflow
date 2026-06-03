@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	"github.com/twinfer/reflow/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -44,6 +45,16 @@ type Config struct {
 	// StartMessage. Zero means "use DefaultEagerStateMaxBytes" (64 KiB).
 	// Operators tune via Config.Handlers.EagerStateMaxBytes.
 	EagerStateMaxBytes uint32
+
+	// ProcessEngine runs iflow process/case turns in-process. Nil disables
+	// process execution (StartProcessTurn drops with a warn). Injected so the
+	// engine package never imports iflow.
+	ProcessEngine ProcessEngine
+
+	// ProcessInstanceTable / ProcessInboxTable back the process-execution path;
+	// rebound on leader gain like the other table views.
+	ProcessInstanceTable tables.ProcessInstanceTable
+	ProcessInboxTable    tables.ProcessInboxTable
 }
 
 // HandlerLookup resolves (service, handler) → deployment_id.
@@ -98,6 +109,14 @@ type Invoker struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	started      bool
+
+	// Process-execution path. procSessions tracks in-flight process turns
+	// (one per instance, keyed by procSessionKey); processEngine is nil when
+	// no iflow binding is injected.
+	processEngine    ProcessEngine
+	processInstances tables.ProcessInstanceTable
+	processInbox     tables.ProcessInboxTable
+	procSessions     map[string]sessionHandle
 }
 
 type pendingStartReq struct {
@@ -129,18 +148,24 @@ func New(cfg Config) *Invoker {
 		log:                log,
 		sessions:           make(map[string]sessionHandle),
 		pendingRespawn:     make(map[string]*enginev1.InvocationTarget),
+		procSessions:       make(map[string]sessionHandle),
+		processEngine:      cfg.ProcessEngine,
+		processInstances:   cfg.ProcessInstanceTable,
+		processInbox:       cfg.ProcessInboxTable,
 	}
 }
 
 // Rebind swaps the underlying storage handles after a snapshot recovery
 // has replaced the Pebble DB on disk. Mirrors timer/outbox rebind
 // patterns elsewhere in the engine package.
-func (i *Invoker) Rebind(journal tables.JournalTable, invocations tables.InvocationTable, state tables.StateTable) {
+func (i *Invoker) Rebind(journal tables.JournalTable, invocations tables.InvocationTable, state tables.StateTable, procInstances tables.ProcessInstanceTable, procInbox tables.ProcessInboxTable) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.journal.Rebind(journal)
 	i.invocationTable = invocations
 	i.stateTable = state
+	i.processInstances = procInstances
+	i.processInbox = procInbox
 }
 
 // Start activates the Invoker. Calling Start a second time without an
@@ -176,7 +201,9 @@ func (i *Invoker) Stop() {
 	i.mu.Lock()
 	cancel := i.cancel
 	sessions := i.sessions
+	procSessions := i.procSessions
 	i.sessions = make(map[string]sessionHandle)
+	i.procSessions = make(map[string]sessionHandle)
 	i.pendingRespawn = make(map[string]*enginev1.InvocationTarget)
 	i.pendingStart = nil
 	i.cancel = nil
@@ -187,6 +214,10 @@ func (i *Invoker) Stop() {
 		cancel()
 	}
 	for _, s := range sessions {
+		s.abort()
+		<-s.Done()
+	}
+	for _, s := range procSessions {
 		s.abort()
 		<-s.Done()
 	}
@@ -385,6 +416,94 @@ func (i *Invoker) AbortInvocation(id *enginev1.InvocationId) {
 		s.abort()
 		<-s.Done()
 	}
+}
+
+// StartProcessTurn spawns a one-shot processSession for the instance: run the
+// iflow engine on event and propose ProcessAdvanced. The apply path serializes
+// turns per instance via the process inbox, so a session never overlaps another
+// for the same instance under normal operation; a lingering session (e.g. a
+// resume racing a fresh activation) is detected and the duplicate dropped.
+// Turns that arrive before Start are dropped — the active inbox seq is durable,
+// so ResumeProcessTurns re-drives them on leader gain.
+func (i *Invoker) StartProcessTurn(pk uint64, service, instanceKey string, entry *enginev1.ProcessInboxEntry) {
+	i.mu.Lock()
+	if !i.started {
+		i.mu.Unlock()
+		return
+	}
+	if i.processEngine == nil {
+		i.mu.Unlock()
+		i.log.Warn("invoker: ActAdvanceProcess with no process engine; dropping",
+			"service", service, "key", instanceKey)
+		return
+	}
+	key := procSessionKey(pk, service, instanceKey)
+	if existing, ok := i.procSessions[key]; ok {
+		select {
+		case <-existing.Done():
+			delete(i.procSessions, key)
+		default:
+			// A turn is already running for this instance; it will propose
+			// ProcessAdvanced. Dropping the duplicate preserves single-writer.
+			i.mu.Unlock()
+			return
+		}
+	}
+	ref := processRef{pk: pk, service: service, instanceKey: instanceKey}
+	s := newProcessSession(i.ctx, ref, entry, i.processEngine, i.processInstances, i.proposer, i.log)
+	i.procSessions[key] = s
+	i.mu.Unlock()
+	s.start()
+	go i.watchProcessSession(key, s)
+}
+
+// watchProcessSession reclaims the procSessions slot when a turn finishes.
+// Unlike invocation sessions there is no respawn here: the next turn is driven
+// by the apply path (ProcessAdvanced activates the next inbox seq, which
+// re-emits ActAdvanceProcess), not by the invoker.
+func (i *Invoker) watchProcessSession(key string, s sessionHandle) {
+	<-s.Done()
+	i.mu.Lock()
+	if cur, ok := i.procSessions[key]; ok && cur == s {
+		delete(i.procSessions, key)
+	}
+	i.mu.Unlock()
+}
+
+// ResumeProcessTurns re-drives any instance whose inbox has an active turn.
+// Called from onBecomeLeader after Start, mirroring ResumeNonTerminal: an
+// ActAdvanceProcess that committed before this leader scope was dropped (the
+// invoker was not yet started), so the new leader must re-issue it. The active
+// seq is durable on ProcessInstanceRecord and Advance is pure w.r.t.
+// (record, event, logical_time), so re-driving reproduces the same turn.
+func (i *Invoker) ResumeProcessTurns(ctx context.Context, instances tables.ProcessInstanceTable, inbox tables.ProcessInboxTable) error {
+	i.mu.Lock()
+	started := i.started
+	engine := i.processEngine
+	i.mu.Unlock()
+	if !started || engine == nil {
+		return nil
+	}
+	return instances.ScanAll(ctx, func(service, instanceKey string, rec *enginev1.ProcessInstanceRecord) error {
+		if rec.GetActiveSeq() == 0 || rec.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_RUNNING {
+			return nil
+		}
+		pk := rec.GetRootId().GetPartitionKey()
+		lp := keys.LPFromPartitionKey(pk)
+		entry, ok, err := inbox.Get(lp, service, instanceKey, rec.GetActiveSeq())
+		if err != nil {
+			i.log.Warn("invoker: resume process turn; inbox load failed",
+				"service", service, "key", instanceKey, "err", err)
+			return nil
+		}
+		if !ok {
+			i.log.Warn("invoker: resume process turn; active inbox row missing",
+				"service", service, "key", instanceKey, "active_seq", rec.GetActiveSeq())
+			return nil
+		}
+		i.StartProcessTurn(pk, service, instanceKey, entry)
+		return nil
+	})
 }
 
 // activeSessions returns a snapshot of currently-active session keys.

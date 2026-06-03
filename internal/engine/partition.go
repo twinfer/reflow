@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"log/slog"
 	"time"
@@ -353,6 +354,10 @@ func commandKindLabel(cmd *enginev1.Command) string {
 		return "FinishLPTransfer"
 	case *enginev1.Command_AbortLpTransfer:
 		return "AbortLPTransfer"
+	case *enginev1.Command_ProcessEvent:
+		return "ProcessEvent"
+	case *enginev1.Command_ProcessAdvanced:
+		return "ProcessAdvanced"
 	case nil:
 		return "empty"
 	default:
@@ -471,6 +476,10 @@ func lpFromCommand(cmd *enginev1.Command) uint32 {
 		return k.FinishLpTransfer.GetLp()
 	case *enginev1.Command_AbortLpTransfer:
 		return k.AbortLpTransfer.GetLp()
+	case *enginev1.Command_ProcessEvent:
+		return keys.LPFromPartitionKey(k.ProcessEvent.GetPk())
+	case *enginev1.Command_ProcessAdvanced:
+		return keys.LPFromPartitionKey(k.ProcessAdvanced.GetPk())
 	default:
 		// OutboxAck (LP-agnostic shard-internal pop), AnnounceLeader
 		// (SelfProposal dedup; lp ignored), unknown future kinds.
@@ -565,6 +574,10 @@ func (p *Partition) applyCommand(
 		return p.onFinishLPTransfer(batch, k.FinishLpTransfer, isLeader)
 	case *enginev1.Command_AbortLpTransfer:
 		return p.onAbortLPTransfer(batch, k.AbortLpTransfer, isLeader)
+	case *enginev1.Command_ProcessEvent:
+		return p.onProcessEvent(batch, k.ProcessEvent, now, isLeader)
+	case *enginev1.Command_ProcessAdvanced:
+		return p.onProcessAdvanced(batch, meta, k.ProcessAdvanced, now, isLeader)
 	case nil:
 		p.cfg.Log.Warn("partition: envelope has no command kind", "raft_index", raftIndex)
 		return nil
@@ -720,6 +733,328 @@ func (p *Partition) onInvoke(batch storage.Batch, cmd *enginev1.InvokeCommand, n
 	if isLeader {
 		for _, a := range actions {
 			p.cfg.Collector.Push(a)
+		}
+	}
+	return nil
+}
+
+// processRootID derives the stable InvocationId handle for a process instance.
+// Deterministic across replicas (apply runs on every replica) so timer/dedup
+// rows keyed by the root id agree; partition_key routes to this shard and uuid
+// is the truncated SHA-256 of (service, instance_key).
+func processRootID(pk uint64, service, instanceKey string) *enginev1.InvocationId {
+	h := sha256.Sum256([]byte(service + "\x00" + instanceKey))
+	return &enginev1.InvocationId{PartitionKey: pk, Uuid: h[:16]}
+}
+
+// onProcessEvent applies a ProcessEvent landing on this shard (external ingress,
+// a cross-shard outbox redelivery, or a timer fire): freeze-gate, then enqueue
+// it on the addressed instance's inbox.
+func (p *Partition) onProcessEvent(batch storage.Batch, ev *enginev1.ProcessEvent, nowMs uint64, isLeader bool) error {
+	if err := p.checkLPFreeze(batch, ev.GetPk()); err != nil {
+		return err
+	}
+	return p.enqueueInstanceEvent(batch, ev, nowMs, isLeader)
+}
+
+// enqueueInstanceEvent creates the instance on the start event, appends the
+// event payload to the per-instance inbox, and — when no turn is in flight —
+// activates it (emitting ActAdvanceProcess so the leader's procSession runs one
+// iflow step). Turn serialization is the inbox cursor on ProcessInstanceRecord:
+// concurrent events for one instance queue behind the active turn rather than
+// racing the state blob. Logical/stale conditions log and return nil — never an
+// error, which would halt the shard. The caller owns the freeze gate (the
+// inline feedback-delivery path does not re-gate, matching applyCallResultToParent).
+func (p *Partition) enqueueInstanceEvent(batch storage.Batch, ev *enginev1.ProcessEvent, nowMs uint64, isLeader bool) error {
+	pk := ev.GetPk()
+	lp := keys.LPFromPartitionKey(pk)
+	service, instanceKey := ev.GetService(), ev.GetInstanceKey()
+	procT := tables.ProcessInstanceTable{S: batch}
+	inboxT := tables.ProcessInboxTable{S: batch}
+
+	rec, ok, err := procT.Get(lp, service, instanceKey)
+	if err != nil {
+		return fmt.Errorf("enqueueInstanceEvent: load record: %w", err)
+	}
+	if !ok {
+		// A start event (model_ref set) creates the instance; any other event
+		// for an absent instance is a straggler (reaped / never existed / a
+		// child result for an already-completed parent).
+		if ev.GetModelRef() == nil {
+			p.cfg.Log.Debug("partition: ProcessEvent for absent instance; dropping",
+				"service", service, "key", instanceKey)
+			return nil
+		}
+		rec = &enginev1.ProcessInstanceRecord{
+			RootId:     processRootID(pk, service, instanceKey),
+			ModelRef:   ev.GetModelRef(),
+			Kind:       ev.GetKind(),
+			ParentLink: ev.GetParentLink(),
+			Status:     enginev1.ProcessStatus_PROCESS_STATUS_RUNNING,
+			NextSeq:    1,
+		}
+	}
+	if rec.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_RUNNING {
+		p.cfg.Log.Debug("partition: ProcessEvent for terminal instance; dropping",
+			"service", service, "key", instanceKey, "status", rec.GetStatus().String())
+		return nil
+	}
+
+	seq := rec.GetNextSeq()
+	if seq == 0 {
+		seq = 1
+	}
+	rec.NextSeq = seq + 1
+	lt := ev.GetLogicalTimeMs()
+	if lt == 0 {
+		lt = nowMs
+	}
+	entry := &enginev1.ProcessInboxEntry{Payload: ev.GetPayload(), LogicalTimeMs: lt}
+	if err := inboxT.Append(batch, lp, service, instanceKey, seq, entry); err != nil {
+		return fmt.Errorf("enqueueInstanceEvent: inbox append: %w", err)
+	}
+
+	if rec.GetActiveSeq() == 0 {
+		rec.ActiveSeq = seq
+		if isLeader {
+			p.cfg.Collector.Push(ActAdvanceProcess{
+				Pk: pk, Service: service, InstanceKey: instanceKey, Entry: entry,
+			})
+		}
+	}
+	if err := procT.Put(batch, lp, service, instanceKey, rec); err != nil {
+		return fmt.Errorf("enqueueInstanceEvent: write record: %w", err)
+	}
+	return nil
+}
+
+// deliverProcessEvent routes a synthesized ProcessEvent to the addressed
+// instance: inline onto the local inbox when this shard owns the instance's LP,
+// else via the outbox to the owning shard (where onProcessEvent applies it).
+// Mirrors deliverCallResultToParent's same-shard / cross-shard split.
+func (p *Partition) deliverProcessEvent(batch storage.Batch, meta *enginev1.PartitionMeta, ev *enginev1.ProcessEvent, nowMs uint64, isLeader bool) error {
+	shard := p.cfg.Partitioner.ShardForKey(ev.GetPk())
+	if shard == 0 || shard == p.shardID {
+		return p.enqueueInstanceEvent(batch, ev, nowMs, isLeader)
+	}
+	env := &enginev1.OutboxEnvelope{
+		DestinationShardId: shard,
+		Kind:               &enginev1.OutboxEnvelope_ProcessEvent{ProcessEvent: ev},
+	}
+	if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {
+		return fmt.Errorf("deliverProcessEvent: outbox append: %w", err)
+	}
+	return nil
+}
+
+// onProcessAdvanced applies the result of one process turn: persist the new
+// state blob and dequeue the completed turn, then either finish the instance
+// (terminal) or actuate the turn's instructions and activate the next queued
+// event. Instruction actuation and the terminal path run only for the turn that
+// actually commits — a re-driven turn (whose first ProcessAdvanced never
+// committed) sees the cursor unmoved and reproduces the same effects; a
+// duplicate (first proposal already applied) is dropped at the active==0 guard,
+// or at the absent-record guard once the instance has finished.
+func (p *Partition) onProcessAdvanced(batch storage.Batch, meta *enginev1.PartitionMeta, adv *enginev1.ProcessAdvanced, nowMs uint64, isLeader bool) error {
+	pk := adv.GetPk()
+	if err := p.checkLPFreeze(batch, pk); err != nil {
+		return err
+	}
+	lp := keys.LPFromPartitionKey(pk)
+	service, instanceKey := adv.GetService(), adv.GetInstanceKey()
+	procT := tables.ProcessInstanceTable{S: batch}
+	inboxT := tables.ProcessInboxTable{S: batch}
+
+	rec, ok, err := procT.Get(lp, service, instanceKey)
+	if err != nil {
+		return fmt.Errorf("onProcessAdvanced: load record: %w", err)
+	}
+	if !ok {
+		p.cfg.Log.Debug("partition: ProcessAdvanced for absent instance; dropping",
+			"service", service, "key", instanceKey)
+		return nil
+	}
+	active := rec.GetActiveSeq()
+	if active == 0 {
+		// No turn was active: a duplicate ProcessAdvanced (e.g. a re-driven turn
+		// whose first proposal already applied). Drop — re-persisting could
+		// clobber a newer turn's state.
+		p.cfg.Log.Debug("partition: ProcessAdvanced with no active turn; dropping",
+			"service", service, "key", instanceKey)
+		return nil
+	}
+
+	rec.StateBlob = adv.GetNewState()
+
+	// Dequeue the completed turn.
+	if err := inboxT.Delete(batch, lp, service, instanceKey, active); err != nil {
+		return fmt.Errorf("onProcessAdvanced: inbox delete: %w", err)
+	}
+
+	if term := adv.GetTerminal(); term != nil {
+		return p.finishProcessInstance(batch, meta, rec, adv, term, active, nowMs, isLeader)
+	}
+
+	// Non-terminal: actuate the turn's instructions, then advance the cursor.
+	if err := p.actuateProcessInstructions(batch, meta, rec, adv, nowMs, isLeader); err != nil {
+		return err
+	}
+	if next := active + 1; next < rec.GetNextSeq() {
+		rec.ActiveSeq = next
+		if isLeader {
+			entry, eok, eerr := inboxT.Get(lp, service, instanceKey, next)
+			if eerr != nil {
+				return fmt.Errorf("onProcessAdvanced: load next inbox: %w", eerr)
+			}
+			if eok {
+				p.cfg.Collector.Push(ActAdvanceProcess{
+					Pk: pk, Service: service, InstanceKey: instanceKey, Entry: entry,
+				})
+			}
+		}
+	} else {
+		rec.ActiveSeq = 0
+	}
+
+	if err := procT.Put(batch, lp, service, instanceKey, rec); err != nil {
+		return fmt.Errorf("onProcessAdvanced: write record: %w", err)
+	}
+	return nil
+}
+
+// finishProcessInstance applies a terminal turn: deliver the result back to a
+// process parent (call-activity / case-task node) if one is linked, then reap
+// the instance — delete every remaining inbox row plus the record itself. There
+// is no retention window yet: a completed instance is observable only via the
+// result delivered to its parent (an external query surface is future work).
+// The cross-shard delivery rides the durable outbox, so it survives the record
+// delete that happens in the same batch.
+func (p *Partition) finishProcessInstance(batch storage.Batch, meta *enginev1.PartitionMeta, rec *enginev1.ProcessInstanceRecord, adv *enginev1.ProcessAdvanced, term *enginev1.ProcessTerminal, active, nowMs uint64, isLeader bool) error {
+	pk := adv.GetPk()
+	lp := keys.LPFromPartitionKey(pk)
+	service, instanceKey := adv.GetService(), adv.GetInstanceKey()
+	inboxT := tables.ProcessInboxTable{S: batch}
+	procT := tables.ProcessInstanceTable{S: batch}
+
+	if pp := rec.GetParentLink().GetProcessParent(); pp != nil {
+		ev := &enginev1.ProcessEvent{
+			Pk:            pp.GetPk(),
+			Service:       pp.GetService(),
+			InstanceKey:   pp.GetInstanceKey(),
+			LogicalTimeMs: nowMs,
+			Payload: &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_ChildCompleted{
+				ChildCompleted: &enginev1.ProcessChildCompleted{
+					NodeId:         pp.GetNodeId(),
+					InstanceIdx:    pp.GetInstanceIdx(),
+					Output:         term.GetOutput(),
+					Failed:         term.GetFailed(),
+					FailureMessage: term.GetFailureMessage(),
+				},
+			}},
+		}
+		if err := p.deliverProcessEvent(batch, meta, ev, nowMs, isLeader); err != nil {
+			return err
+		}
+	}
+
+	// Reap: drop any still-queued inbox rows (active was already dequeued above)
+	// and the record. Queued seqs are contiguous in (active, next_seq).
+	for seq := active + 1; seq < rec.GetNextSeq(); seq++ {
+		if err := inboxT.Delete(batch, lp, service, instanceKey, seq); err != nil {
+			return fmt.Errorf("finishProcessInstance: inbox delete: %w", err)
+		}
+	}
+	if err := procT.Delete(batch, lp, service, instanceKey); err != nil {
+		return fmt.Errorf("finishProcessInstance: record delete: %w", err)
+	}
+	return nil
+}
+
+// actuateProcessInstructions turns a non-terminal turn's instruction lists into
+// reflow-native side effects: a service task becomes an invocation carrying a
+// process_parent link (its result feeds back via applyTerminalCompletion); a
+// timer becomes a process timer (fires as a Command_ProcessEvent); a child start
+// becomes a ProcessEvent(start) addressed to the child, itself process-parented
+// back. Durable rows are written on every replica; leader-only actions drive the
+// live timer/outbox services. Message subscriptions are not yet actuated — they
+// need the inbound correlation read path, deferred.
+func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *enginev1.PartitionMeta, rec *enginev1.ProcessInstanceRecord, adv *enginev1.ProcessAdvanced, nowMs uint64, isLeader bool) error {
+	pk := adv.GetPk()
+	service, instanceKey := adv.GetService(), adv.GetInstanceKey()
+	root := rec.GetRootId()
+	tenant := keys.TenantFromPartitionKey(pk)
+	timersT := tables.TimerTable{S: batch}
+
+	for _, ti := range adv.GetInvoke() {
+		target := ti.GetTarget()
+		calleeID := mintProcessTaskID(root, ti.GetNodeId(), ti.GetInstanceIdx(), target)
+		env := &enginev1.OutboxEnvelope{
+			DestinationShardId: p.cfg.Partitioner.ShardForInvocation(calleeID),
+			Kind: &enginev1.OutboxEnvelope_Invoke{Invoke: &enginev1.InvokeCommand{
+				InvocationId: calleeID,
+				Target:       target,
+				Input:        ti.GetInput(),
+				ParentLink: &enginev1.ParentLink{ProcessParent: &enginev1.ProcessParent{
+					Pk: pk, Service: service, InstanceKey: instanceKey,
+					NodeId: ti.GetNodeId(), InstanceIdx: ti.GetInstanceIdx(),
+				}},
+			}},
+		}
+		if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {
+			return fmt.Errorf("actuateProcessInstructions: outbox append (task): %w", err)
+		}
+	}
+
+	for _, ta := range adv.GetArmTimer() {
+		tid := processTimerID(pk, service, instanceKey, ta.GetNodeId(), ta.GetSlot())
+		pt := &enginev1.ProcessTimer{
+			Service: service, InstanceKey: instanceKey,
+			NodeId: ta.GetNodeId(), Slot: ta.GetSlot(),
+		}
+		if err := timersT.InsertProcess(batch, ta.GetFireAtMs(), tid, pt); err != nil {
+			return fmt.Errorf("actuateProcessInstructions: timer insert: %w", err)
+		}
+		if isLeader {
+			p.cfg.Collector.Push(ActRegisterTimer{FireAtMs: ta.GetFireAtMs(), ID: tid, Process: pt})
+		}
+	}
+
+	for _, tc := range adv.GetCancelTimer() {
+		tid := processTimerID(pk, service, instanceKey, tc.GetNodeId(), tc.GetSlot())
+		var fires []uint64
+		if err := timersT.ScanByInvocation(tid, func(fireAt uint64) error {
+			fires = append(fires, fireAt)
+			return nil
+		}); err != nil {
+			return fmt.Errorf("actuateProcessInstructions: timer scan: %w", err)
+		}
+		for _, fireAt := range fires {
+			if err := timersT.Delete(batch, fireAt, tid); err != nil {
+				return fmt.Errorf("actuateProcessInstructions: timer delete: %w", err)
+			}
+			if isLeader {
+				p.cfg.Collector.Push(ActDeleteTimer{FireAtMs: fireAt, ID: tid})
+			}
+		}
+	}
+
+	for _, cs := range adv.GetStartChild() {
+		childSvc := cs.GetModelRef().GetName()
+		childKey := cs.GetInstanceKey()
+		ev := &enginev1.ProcessEvent{
+			Pk:            routing.PartitionKey(tenant, childSvc, childKey),
+			Service:       childSvc,
+			InstanceKey:   childKey,
+			LogicalTimeMs: nowMs,
+			Payload:       &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_External{External: cs.GetVars()}},
+			ModelRef:      cs.GetModelRef(),
+			Kind:          cs.GetKind(),
+			ParentLink: &enginev1.ParentLink{ProcessParent: &enginev1.ProcessParent{
+				Pk: pk, Service: service, InstanceKey: instanceKey, NodeId: cs.GetNodeId(),
+			}},
+		}
+		if err := p.deliverProcessEvent(batch, meta, ev, nowMs, isLeader); err != nil {
+			return fmt.Errorf("actuateProcessInstructions: child start: %w", err)
 		}
 	}
 	return nil
@@ -1619,6 +1954,29 @@ func (p *Partition) applyTerminalCompletion(
 			return next, actions, perr
 		}
 		actions = append(actions, parentActs...)
+	} else if pp := pl.GetProcessParent(); pp != nil {
+		// This invocation was an iflow service task. Feed its result back to the
+		// awaiting node as a ProcessEvent{task_completed} instead of a
+		// JECallResult. Delivery pushes its own actions (same-shard activation /
+		// outbox dispatch) onto the collector, so nothing is appended here.
+		ev := &enginev1.ProcessEvent{
+			Pk:            pp.GetPk(),
+			Service:       pp.GetService(),
+			InstanceKey:   pp.GetInstanceKey(),
+			LogicalTimeMs: nowMs,
+			Payload: &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_TaskCompleted{
+				TaskCompleted: &enginev1.ProcessTaskCompleted{
+					NodeId:         pp.GetNodeId(),
+					InstanceIdx:    pp.GetInstanceIdx(),
+					Output:         completed.GetOutput(),
+					Failed:         completed.GetFailureMessage() != "",
+					FailureMessage: completed.GetFailureMessage(),
+				},
+			}},
+		}
+		if derr := p.deliverProcessEvent(batch, meta, ev, nowMs, isLeader); derr != nil {
+			return next, actions, derr
+		}
 	}
 	if completedTarget.GetObjectKey() != "" {
 		leaseActs, rerr := p.releaseKeyLease(batch, keys.TenantFromPartitionKey(id.GetPartitionKey()), completedTarget)
@@ -2183,20 +2541,9 @@ func mintCalleeInvocationID(parent *enginev1.InvocationId, idx uint32, target *e
 	var idxBuf [4]byte
 	binary.BigEndian.PutUint32(idxBuf[:], idx)
 	h.Write(idxBuf[:])
-	// Length-prefix each target field so adjacent fields cannot collide
-	// (("ab","c") vs ("a","bc")) regardless of the field contents. Safer
-	// than a NUL separator: the SDK rejects NUL inside identifiers, but
-	// length-prefixing keeps the hash robust if that invariant is ever
-	// relaxed or bypassed.
-	writeLP := func(s string) {
-		var lenBuf [4]byte
-		binary.BigEndian.PutUint32(lenBuf[:], uint32(len(s)))
-		h.Write(lenBuf[:])
-		h.Write([]byte(s))
-	}
-	writeLP(target.GetServiceName())
-	writeLP(target.GetHandlerName())
-	writeLP(target.GetObjectKey())
+	hashLP(h, target.GetServiceName())
+	hashLP(h, target.GetHandlerName())
+	hashLP(h, target.GetObjectKey())
 	sum := h.Sum(nil)
 	return &enginev1.InvocationId{
 		// A call stays in the parent's tenant: band the callee's pk by the
@@ -2204,6 +2551,54 @@ func mintCalleeInvocationID(parent *enginev1.InvocationId, idx uint32, target *e
 		PartitionKey: routing.PartitionKey(keys.TenantFromPartitionKey(parent.GetPartitionKey()), target.GetServiceName(), target.GetObjectKey()),
 		Uuid:         append([]byte(nil), sum[:16]...),
 	}
+}
+
+// hashLP length-prefixes s into h so adjacent fields cannot collide (("ab","c")
+// vs ("a","bc")) regardless of contents. Safer than a NUL separator: the SDK
+// rejects NUL inside identifiers, but length-prefixing stays robust if that
+// invariant is ever relaxed. Shared by the deterministic id minters.
+func hashLP(h hash.Hash, s string) {
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(s)))
+	h.Write(lenBuf[:])
+	h.Write([]byte(s))
+}
+
+// mintProcessTaskID derives the deterministic InvocationId for a process
+// service-task invocation: the instance root uuid hashed with the node id,
+// instance index, and target tuple. Determinism means a re-driven turn (whose
+// ProcessAdvanced never committed) re-mints the same id, so DedupTable absorbs
+// the retry instead of double-spawning. partition_key routes the callee to its
+// target's shard, banded under the instance's tenant.
+func mintProcessTaskID(root *enginev1.InvocationId, nodeID, instanceIdx string, target *enginev1.InvocationTarget) *enginev1.InvocationId {
+	h := sha256.New()
+	h.Write(root.GetUuid())
+	hashLP(h, nodeID)
+	hashLP(h, instanceIdx)
+	hashLP(h, target.GetServiceName())
+	hashLP(h, target.GetHandlerName())
+	hashLP(h, target.GetObjectKey())
+	sum := h.Sum(nil)
+	return &enginev1.InvocationId{
+		PartitionKey: routing.PartitionKey(keys.TenantFromPartitionKey(root.GetPartitionKey()), target.GetServiceName(), target.GetObjectKey()),
+		Uuid:         append([]byte(nil), sum[:16]...),
+	}
+}
+
+// processTimerID derives the synthetic InvocationId for a process timer. pk
+// routes the timer to the instance's shard; the uuid is the truncated SHA-256
+// of (service, instance_key, node_id, slot), so each (node, slot) gets a
+// distinct timer row and the per-invocation index cancels exactly it.
+func processTimerID(pk uint64, service, instanceKey, nodeID string, slot uint32) *enginev1.InvocationId {
+	h := sha256.New()
+	hashLP(h, service)
+	hashLP(h, instanceKey)
+	hashLP(h, nodeID)
+	var slotBuf [4]byte
+	binary.BigEndian.PutUint32(slotBuf[:], slot)
+	h.Write(slotBuf[:])
+	sum := h.Sum(nil)
+	return &enginev1.InvocationId{PartitionKey: pk, Uuid: append([]byte(nil), sum[:16]...)}
 }
 
 func (p *Partition) onTimerFired(batch storage.Batch, cmd *enginev1.TimerFired, nowMs uint64, inv tables.InvocationTable, timers tables.TimerTable, isLeader bool) error {

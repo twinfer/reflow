@@ -103,7 +103,13 @@ func (r *PartitionRunner) dispatchActions(actions []Action) {
 					"shard", r.ShardID)
 				continue
 			}
-			if err := r.timers.Push(act.FireAtMs, act.ID, act.SleepIdx); err != nil {
+			var err error
+			if act.Process != nil {
+				err = r.timers.PushProcess(act.FireAtMs, act.ID, act.Process)
+			} else {
+				err = r.timers.Push(act.FireAtMs, act.ID, act.SleepIdx)
+			}
+			if err != nil {
 				r.log.Warn("runner: timer push failed", "err", err, "shard", r.ShardID)
 			}
 		case ActDeleteTimer:
@@ -119,6 +125,12 @@ func (r *PartitionRunner) dispatchActions(actions []Action) {
 				continue
 			}
 			r.invoker.StartInvocation(act.ID, act.Target)
+		case ActAdvanceProcess:
+			if r.invoker == nil {
+				r.log.Warn("runner: ActAdvanceProcess with no invoker", "shard", r.ShardID)
+				continue
+			}
+			r.invoker.StartProcessTurn(act.Pk, act.Service, act.InstanceKey, act.Entry)
 		case ActDispatchOutbox:
 			if r.outbox == nil {
 				r.log.Warn("runner: ActDispatchOutbox with no outbox service",
@@ -216,6 +228,8 @@ func (r *PartitionRunner) onBecomeLeader() {
 			tables.JournalTable{S: store},
 			tables.InvocationTable{S: store},
 			tables.StateTable{S: store},
+			tables.ProcessInstanceTable{S: store},
+			tables.ProcessInboxTable{S: store},
 		)
 	}
 
@@ -295,6 +309,9 @@ func (r *PartitionRunner) onBecomeLeader() {
 		// re-spawn sessions explicitly from the InvocationTable.
 		if err := r.invoker.ResumeNonTerminal(leaderCtx, tables.InvocationTable{S: store}); err != nil {
 			r.log.Warn("partition: invoker resume failed", "shard", r.ShardID, "err", err)
+		}
+		if err := r.invoker.ResumeProcessTurns(leaderCtx, tables.ProcessInstanceTable{S: store}, tables.ProcessInboxTable{S: store}); err != nil {
+			r.log.Warn("partition: process turn resume failed", "shard", r.ShardID, "err", err)
 		}
 	}
 

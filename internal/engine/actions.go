@@ -27,10 +27,13 @@ type ActInvoke struct {
 func (ActInvoke) isAction() {}
 
 // ActRegisterTimer hands a newly persisted timer to the leader-side TimerService.
+// Process is non-nil for a process timer (fires as Command_ProcessEvent instead
+// of Command_TimerFired); SleepIdx applies to a plain sleep / run-retry timer.
 type ActRegisterTimer struct {
 	FireAtMs uint64
 	ID       *enginev1.InvocationId
 	SleepIdx uint32
+	Process  *enginev1.ProcessTimer
 }
 
 func (ActRegisterTimer) isAction() {}
@@ -110,6 +113,19 @@ type ActSignalLPTransferAbortAck struct {
 }
 
 func (ActSignalLPTransferAbortAck) isAction() {}
+
+// ActAdvanceProcess asks the invoker to run one process-instance turn: load
+// the ProcessInstanceRecord, run the injected iflow engine on the carried
+// inbox entry, and propose ProcessAdvanced. Emitted by the ProcessEvent /
+// ProcessAdvanced apply arms when an inbox seq becomes the active turn.
+type ActAdvanceProcess struct {
+	Pk          uint64
+	Service     string
+	InstanceKey string
+	Entry       *enginev1.ProcessInboxEntry
+}
+
+func (ActAdvanceProcess) isAction() {}
 
 // ActionCollector is a single-goroutine append-only buffer of Actions
 // produced during one Update call. It is owned by the partition's apply path

@@ -1,6 +1,11 @@
 package tables
 
 import (
+	"bytes"
+	"context"
+
+	"google.golang.org/protobuf/proto"
+
 	"github.com/twinfer/reflow/internal/storage"
 	"github.com/twinfer/reflow/internal/storage/keys"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
@@ -39,4 +44,41 @@ func (t ProcessInstanceTable) Put(b storage.Batch, lp uint32, service, instanceK
 // Delete removes the instance row (terminal reap).
 func (t ProcessInstanceTable) Delete(b storage.Batch, lp uint32, service, instanceKey string) error {
 	return b.Delete(keys.ProcessInstanceKey(lp, service, instanceKey))
+}
+
+// ScanAll iterates every persisted process instance in key order, decoding the
+// (service, instance_key) from each key. The instance's banded partition_key is
+// available on rec.root_id. Used by the leader-gain resume to re-drive
+// in-flight turns. Aborts early (returning ctx.Err()) on cancellation.
+func (t ProcessInstanceTable) ScanAll(ctx context.Context, fn func(service, instanceKey string, rec *enginev1.ProcessInstanceRecord) error) error {
+	prefix := keys.ProcessPrefix()
+	iter, err := t.S.NewIter(prefix, keys.PrefixUpperBound(prefix))
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+	for ok := iter.First(); ok; ok = iter.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		k := iter.Key()
+		if len(k) < len(prefix)+keys.LPLen {
+			continue
+		}
+		// proc/<lp:4><service>/<instance_key> — split the remainder on the
+		// first '/' (components are '/'-free by construction).
+		body := k[len(prefix)+keys.LPLen:]
+		before, after, ok0 := bytes.Cut(body, []byte{'/'})
+		if !ok0 {
+			continue
+		}
+		rec := &enginev1.ProcessInstanceRecord{}
+		if err := proto.Unmarshal(iter.Value(), rec); err != nil {
+			continue
+		}
+		if err := fn(string(before), string(after), rec); err != nil {
+			return err
+		}
+	}
+	return iter.Error()
 }

@@ -43,4 +43,5 @@ var AllLPNamespaces = []LPNamespace{
 	{"promise_awaiter", PromiseAwaiterLPPrefix},
 	{"dedup_arb", DedupArbitraryLPPrefix},
 	{"proc", ProcessInstanceLPPrefix},
+	{"proc_inbox", ProcessInboxLPPrefix},
 }

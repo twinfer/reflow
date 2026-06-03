@@ -289,13 +289,28 @@ message InvokeCommand {
   map<string, string> metadata = 8;
 }
 
-// ParentLink references the parent invocation that spawned a callee via
-// ctx.Call. parent_id is the parent's InvocationId; call_index is the
-// journal index of the parent's JECall entry. The callee's JECallResult
-// lands at call_index + 1.
+// ParentLink references the parent that spawned a callee. Exactly one case is
+// set. parent_id + call_index: an invocation parent (ctx.Call) — the callee's
+// JECallResult lands on the parent's journal at call_index + 1. process_parent:
+// an iflow process instance that dispatched a service task or child activity —
+// the callee's terminal apply delivers a Command_ProcessEvent back to the
+// instance instead (see applyTerminalCompletion / onProcessAdvanced terminal).
 message ParentLink {
   InvocationId parent_id = 1;
   uint32 call_index = 2;
+  ProcessParent process_parent = 3;
+}
+
+// ProcessParent routes a child's terminal result back to a process instance as
+// a Command_ProcessEvent (task_completed / child_completed), correlated to the
+// element that spawned it. pk routes to the instance's shard; node_id is the
+// BPMN/CMMN element awaiting the result.
+message ProcessParent {
+  fixed64 pk = 1;
+  string service = 2;
+  string instance_key = 3;
+  string node_id = 4;
+  string instance_idx = 5;
 }
 
 message InvokerEffect {
@@ -1016,6 +1031,7 @@ message OutboxEnvelope {
     OutboxAck outbox_ack = 5;
     PromiseCompleted promise_completion = 6;
     PromiseCompletionAck promise_completion_ack = 7;
+    ProcessEvent process_event = 8;
   }
 }
 
@@ -1067,19 +1083,82 @@ message SignalSend {
 
 // ProcessEvent drives one instance one step. The start event carries
 // model_ref + kind (apply creates the record); later events leave them empty.
-// `event` is the opaque iflow EngineEvent (iflow's own codec) — reflow never
-// parses it; only procSession decodes it. logical_time_ms is the stamped
-// instant procSession feeds to the engine clock, so Advance is a pure function
-// of (state, event, time) and re-runs identically on a new leader.
+// logical_time_ms is the stamped instant procSession feeds to the engine clock,
+// so Advance is a pure function of (state, event, time) and re-runs identically
+// on a new leader.
 message ProcessEvent {
   fixed64 pk = 1; // banded partition_key of (tenant, service, instance_key)
   string service = 2;
   string instance_key = 3;
   uint64 logical_time_ms = 4;
-  bytes event = 5;              // opaque iflow EngineEvent
+  ProcessEventPayload payload = 5;
   ModelRef model_ref = 6;       // start only
   ProcessKind kind = 7;         // start only
   ParentLink parent_link = 8;   // start only, when this instance is a child
+}
+
+// ProcessEventPayload is the per-turn input. `external` carries an opaque iflow
+// EngineEvent (start vars / an externally-injected message) — reflow never
+// parses it; only procSession decodes it. The other arms are reflow-native
+// feedback the apply path synthesizes when a dispatched task / timer / child
+// completes; procSession translates them into the iflow EngineEvent the engine
+// expects. Reused by ProcessInboxEntry so the inbox stores a turn verbatim.
+message ProcessEventPayload {
+  oneof of {
+    bytes external = 1;
+    ProcessTaskCompleted task_completed = 2;
+    ProcessTimerFired timer_fired = 3;
+    ProcessChildCompleted child_completed = 4;
+  }
+}
+
+// ProcessTaskCompleted feeds a dispatched service task's result back to the
+// node that spawned it (TaskInvoke → ActInvoke → invocation terminal →
+// applyTerminalCompletion's process_parent branch).
+message ProcessTaskCompleted {
+  string node_id = 1;
+  string instance_idx = 2;
+  bytes output = 3;
+  bool failed = 4;
+  string failure_message = 5;
+}
+
+// ProcessTimerFired feeds an armed process timer back (TimerArm → TimerService
+// → Command_ProcessEvent). node_id + slot identify the timer element.
+message ProcessTimerFired {
+  string node_id = 1;
+  uint32 slot = 2;
+}
+
+// ProcessChildCompleted feeds a child process/case instance's terminal result
+// back to the call-activity / case-task node that started it (ChildStart →
+// child instance terminal → onProcessAdvanced terminal delivery).
+message ProcessChildCompleted {
+  string node_id = 1;
+  string instance_idx = 2;
+  bytes output = 3;
+  bool failed = 4;
+  string failure_message = 5;
+}
+
+// TimerValue is the stored value of a TimerTable row. A plain sleep / run-retry
+// timer carries sleep_idx (the originating JESleep/JERun journal index); a
+// process timer carries `process` instead, so the TimerService fires it as a
+// Command_ProcessEvent rather than a Command_TimerFired. Exactly one is set.
+message TimerValue {
+  uint32 sleep_idx = 1;
+  ProcessTimer process = 2;
+}
+
+// ProcessTimer is the process-timer descriptor stored in TimerValue.process.
+// The timer's InvocationId carries pk (→ shard) + a synthetic uuid derived from
+// (service, instance_key, node_id, slot); this descriptor recovers the
+// addressing the TimerService needs to build the fired ProcessEvent.
+message ProcessTimer {
+  string service = 1;
+  string instance_key = 2;
+  string node_id = 3;
+  uint32 slot = 4;
 }
 
 // ProcessAdvanced is the leader-only result of one Advance, proposed by
@@ -1127,6 +1206,22 @@ message ProcessInstanceRecord {
   bytes state_blob = 4;         // opaque iflow ExecutionState / CaseState
   ProcessStatus status = 5;
   ParentLink parent_link = 6;   // set if this instance is a child
+  // Inbox cursor for single-writer turn serialization. Events are appended to
+  // ProcessInboxTable at next_seq (then next_seq is bumped); active_seq is the
+  // seq of the turn in flight (0 = idle). Exactly one turn runs at a time: the
+  // ProcessAdvanced apply arm dequeues active_seq and activates active_seq+1
+  // when it exists. Seqs are 1-based so 0 is an unambiguous "idle".
+  uint64 next_seq = 7;
+  uint64 active_seq = 8;
+}
+
+// ProcessInboxEntry is one queued event for an instance, stored at
+// proc_inbox/<lp:4><service>/<instance_key>/<seq:8>. It holds everything needed
+// to (re-)drive the turn after a leader change: the verbatim turn payload and
+// the stamped logical time the procSession feeds to the engine clock.
+message ProcessInboxEntry {
+  ProcessEventPayload payload = 1;
+  uint64 logical_time_ms = 2;
 }
 
 // ModelRef pins one iflow model snapshot (iflow/modelstore.ModelRef).

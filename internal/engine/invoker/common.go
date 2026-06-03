@@ -110,6 +110,14 @@ func sessionKey(id *enginev1.InvocationId) string {
 	return string(buf[:])
 }
 
+// procSessionKey builds a stable map key for a process instance from its
+// banded partition_key + (service, instance_key). Used in Invoker.procSessions.
+func procSessionKey(pk uint64, service, instanceKey string) string {
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], pk)
+	return string(b[:]) + service + "\x00" + instanceKey
+}
+
 // invocationIDString renders id as "<partition_key_hex>:<uuid_hex>" for
 // log lines. Lazy-allocated — only called inside log-statements.
 func invocationIDString(id *enginev1.InvocationId) string {

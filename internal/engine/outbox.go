@@ -279,6 +279,13 @@ func outboxEnvelopeToCommand(env *enginev1.OutboxEnvelope) *enginev1.Command {
 		return &enginev1.Command{
 			Kind: &enginev1.Command_DeliverCallResult{DeliverCallResult: k.DeliverCallResult},
 		}
+	case *enginev1.OutboxEnvelope_ProcessEvent:
+		// Cross-partition process event: a child task/instance result fed back
+		// to its parent process (process_parent), or a child-process start. The
+		// dest shard's onProcessEvent appends it to the instance inbox.
+		return &enginev1.Command{
+			Kind: &enginev1.Command_ProcessEvent{ProcessEvent: k.ProcessEvent},
+		}
 	case *enginev1.OutboxEnvelope_OutboxAck:
 		return &enginev1.Command{
 			Kind: &enginev1.Command_OutboxAck{OutboxAck: k.OutboxAck},

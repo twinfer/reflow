@@ -443,9 +443,23 @@ func (i *Invoker) StartProcessTurn(pk uint64, service, instanceKey string, entry
 		case <-existing.Done():
 			delete(i.procSessions, key)
 		default:
-			// A turn is already running for this instance; it will propose
-			// ProcessAdvanced. Dropping the duplicate preserves single-writer.
+			// The prior turn's session is still being reclaimed. The apply-path
+			// cursor only emits the activation for inbox seq N+1 AFTER seq N's
+			// ProcessAdvanced applied, so this is a genuinely new turn the running
+			// (seq N) session will NOT cover — dropping it strands the seq (lost
+			// wakeup: a parallel/MI join whose final feedback turn never runs
+			// freezes the instance at active_seq>0). Re-drive from the durable
+			// record once the predecessor finishes; redriveActiveTurn reads the
+			// current active seq, so a redundant re-drive (the resume-vs-fresh
+			// race this guard originally caught) is a safe no-op, not a re-apply.
 			i.mu.Unlock()
+			go func() {
+				select {
+				case <-existing.Done():
+					i.redriveActiveTurn(pk, service, instanceKey)
+				case <-i.ctx.Done():
+				}
+			}()
 			return
 		}
 	}
@@ -468,6 +482,27 @@ func (i *Invoker) watchProcessSession(key string, s sessionHandle) {
 		delete(i.procSessions, key)
 	}
 	i.mu.Unlock()
+}
+
+// redriveActiveTurn re-issues a process turn for the instance's CURRENT durable
+// active seq, if it still has one. It reads the record rather than re-using a
+// caller-supplied entry, so it always drives the seq the apply path most
+// recently activated — making a redundant or no-longer-needed call a safe no-op
+// (absorbed by onProcessAdvanced, which keys off the record's active seq). Used
+// by StartProcessTurn to re-drive an activation that landed while the prior
+// turn's session was still being reclaimed, instead of dropping it.
+func (i *Invoker) redriveActiveTurn(pk uint64, service, instanceKey string) {
+	lp := keys.LPFromPartitionKey(pk)
+	rec, ok, err := i.processInstances.Get(lp, service, instanceKey)
+	if err != nil || !ok || rec.GetActiveSeq() == 0 ||
+		rec.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_RUNNING {
+		return
+	}
+	entry, ok, err := i.processInbox.Get(lp, service, instanceKey, rec.GetActiveSeq())
+	if err != nil || !ok {
+		return
+	}
+	i.StartProcessTurn(pk, service, instanceKey, entry)
 }
 
 // ResumeProcessTurns re-drives any instance whose inbox has an active turn.

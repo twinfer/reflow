@@ -70,20 +70,6 @@ func (f *fakeProposer) ProposeSelf(_ context.Context, cmd *enginev1.Command) err
 	return nil
 }
 
-// effects returns a snapshot of every proposed InvokerEffect.kind in
-// order. Convenient for assertions.
-func (f *fakeProposer) effects() []*enginev1.InvokerEffect {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	out := make([]*enginev1.InvokerEffect, 0, len(f.cmds))
-	for _, c := range f.cmds {
-		if eff := c.GetInvokerEffect(); eff != nil {
-			out = append(out, eff)
-		}
-	}
-	return out
-}
-
 func newID(pk uint64, uuid string) *enginev1.InvocationId {
 	b := []byte(uuid)
 	if len(b) > 16 {

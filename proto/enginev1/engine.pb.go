@@ -8154,8 +8154,17 @@ type ProcessInstanceRecord struct {
 	// seq of the turn in flight (0 = idle). Exactly one turn runs at a time: the
 	// ProcessAdvanced apply arm dequeues active_seq and activates active_seq+1
 	// when it exists. Seqs are 1-based so 0 is an unambiguous "idle".
-	NextSeq       uint64 `protobuf:"varint,7,opt,name=next_seq,json=nextSeq,proto3" json:"next_seq,omitempty"`
-	ActiveSeq     uint64 `protobuf:"varint,8,opt,name=active_seq,json=activeSeq,proto3" json:"active_seq,omitempty"`
+	NextSeq   uint64 `protobuf:"varint,7,opt,name=next_seq,json=nextSeq,proto3" json:"next_seq,omitempty"`
+	ActiveSeq uint64 `protobuf:"varint,8,opt,name=active_seq,json=activeSeq,proto3" json:"active_seq,omitempty"`
+	// outstanding counts dispatched work awaiting a feedback event — service-task
+	// invokes, child-process starts, and armed timers. The inbox cursor cannot see
+	// it: next_seq-1-active_seq is only queued events, whereas dispatched work has
+	// left the instance and not yet returned. outstanding==0 with active_seq==0 and
+	// an empty inbox (next_seq==active_seq+1) is the unambiguous "genuinely
+	// quiescent — parked on an external message/signal" signal, as opposed to a
+	// turn mid-dispatch. Maintained on the apply path; feedback decrements saturate
+	// at 0 to absorb the benign timer fire-vs-cancel race.
+	Outstanding   uint32 `protobuf:"varint,9,opt,name=outstanding,proto3" json:"outstanding,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8242,6 +8251,13 @@ func (x *ProcessInstanceRecord) GetNextSeq() uint64 {
 func (x *ProcessInstanceRecord) GetActiveSeq() uint64 {
 	if x != nil {
 		return x.ActiveSeq
+	}
+	return 0
+}
+
+func (x *ProcessInstanceRecord) GetOutstanding() uint32 {
+	if x != nil {
+		return x.Outstanding
 	}
 	return 0
 }
@@ -11851,7 +11867,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\fmessage_name\x18\x02 \x01(\tR\vmessageName\x12'\n" +
 	"\x0fcorrelation_key\x18\x03 \x01(\tR\x0ecorrelationKey\x12\x18\n" +
 	"\apayload\x18\x04 \x01(\fR\apayload\x12&\n" +
-	"\x0flogical_time_ms\x18\x05 \x01(\x04R\rlogicalTimeMs\"\x8d\x03\n" +
+	"\x0flogical_time_ms\x18\x05 \x01(\x04R\rlogicalTimeMs\"\xaf\x03\n" +
 	"\x15ProcessInstanceRecord\x127\n" +
 	"\aroot_id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\x06rootId\x127\n" +
 	"\tmodel_ref\x18\x02 \x01(\v2\x1a.reflow.engine.v1.ModelRefR\bmodelRef\x121\n" +
@@ -11863,7 +11879,8 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"parentLink\x12\x19\n" +
 	"\bnext_seq\x18\a \x01(\x04R\anextSeq\x12\x1d\n" +
 	"\n" +
-	"active_seq\x18\b \x01(\x04R\tactiveSeq\"|\n" +
+	"active_seq\x18\b \x01(\x04R\tactiveSeq\x12 \n" +
+	"\voutstanding\x18\t \x01(\rR\voutstanding\"|\n" +
 	"\x11ProcessInboxEntry\x12?\n" +
 	"\apayload\x18\x01 \x01(\v2%.reflow.engine.v1.ProcessEventPayloadR\apayload\x12&\n" +
 	"\x0flogical_time_ms\x18\x02 \x01(\x04R\rlogicalTimeMs\"L\n" +

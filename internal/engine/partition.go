@@ -814,6 +814,13 @@ func (p *Partition) enqueueInstanceEvent(batch storage.Batch, ev *enginev1.Proce
 		return nil
 	}
 
+	// A dispatched task / timer / child whose result just landed is no longer
+	// outstanding. Saturating because a timer fire can race its cancel (which
+	// already balanced the arm); see ProcessInstanceRecord.outstanding.
+	if isProcessFeedback(ev.GetPayload()) {
+		rec.Outstanding = satSubU32(rec.Outstanding, 1)
+	}
+
 	seq := rec.GetNextSeq()
 	if seq == 0 {
 		seq = 1
@@ -840,6 +847,29 @@ func (p *Partition) enqueueInstanceEvent(batch storage.Batch, ev *enginev1.Proce
 		return fmt.Errorf("enqueueInstanceEvent: write record: %w", err)
 	}
 	return nil
+}
+
+// isProcessFeedback reports whether an inbound ProcessEvent payload is the result
+// of work this instance dispatched — so it decrements ProcessInstanceRecord.outstanding.
+// External input (start vars, an injected message, a satisfied subscription) never
+// incremented the counter and so must not decrement it.
+func isProcessFeedback(pl *enginev1.ProcessEventPayload) bool {
+	switch pl.GetOf().(type) {
+	case *enginev1.ProcessEventPayload_TaskCompleted,
+		*enginev1.ProcessEventPayload_TimerFired,
+		*enginev1.ProcessEventPayload_ChildCompleted:
+		return true
+	default:
+		return false
+	}
+}
+
+// satSubU32 returns a-b clamped at 0 (no unsigned wraparound).
+func satSubU32(a, b uint32) uint32 {
+	if b >= a {
+		return 0
+	}
+	return a - b
 }
 
 // deliverProcessEvent routes a synthesized ProcessEvent to the addressed
@@ -1052,6 +1082,8 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 			return fmt.Errorf("actuateProcessInstructions: outbox append (task): %w", err)
 		}
 	}
+	// Each dispatched service task feeds back exactly once (TaskCompleted).
+	rec.Outstanding += uint32(len(adv.GetInvoke()))
 
 	for _, ta := range adv.GetArmTimer() {
 		tid := processTimerID(pk, service, instanceKey, ta.GetNodeId(), ta.GetSlot())
@@ -1066,7 +1098,11 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 			p.cfg.Collector.Push(ActRegisterTimer{FireAtMs: ta.GetFireAtMs(), ID: tid, Process: pt})
 		}
 	}
+	// Each armed timer stays outstanding until it fires (TimerFired) or is
+	// cancelled (the row delete below balances the arm).
+	rec.Outstanding += uint32(len(adv.GetArmTimer()))
 
+	var canceledTimers uint32
 	for _, tc := range adv.GetCancelTimer() {
 		tid := processTimerID(pk, service, instanceKey, tc.GetNodeId(), tc.GetSlot())
 		var fires []uint64
@@ -1083,8 +1119,11 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 			if isLeader {
 				p.cfg.Collector.Push(ActDeleteTimer{FireAtMs: fireAt, ID: tid})
 			}
+			canceledTimers++
 		}
 	}
+	// Every timer row actually removed balances its earlier arm increment.
+	rec.Outstanding = satSubU32(rec.Outstanding, canceledTimers)
 
 	for _, cs := range adv.GetStartChild() {
 		childSvc := cs.GetModelRef().GetName()
@@ -1105,6 +1144,10 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 			return fmt.Errorf("actuateProcessInstructions: child start: %w", err)
 		}
 	}
+	// Each child instance feeds back exactly once (ChildCompleted) on its terminal.
+	// Subscriptions below are NOT counted: a parked catch is an external wait, the
+	// very state outstanding==0 is meant to reveal.
+	rec.Outstanding += uint32(len(adv.GetStartChild()))
 
 	// Message/signal subscriptions: a parked BPMN catch (WaitForSignal). The row
 	// lives on the partition owning the message routing key (tenant, message_name,

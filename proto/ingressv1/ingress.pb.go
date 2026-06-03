@@ -1437,8 +1437,15 @@ type GetProcessInstanceResponse struct {
 	// active_seq is the seq of the turn in flight, or 0 when the instance is idle
 	// (parked on a timer or message/signal wait). next_seq is the inbox append
 	// cursor; next_seq-1-active_seq is the count of queued-but-not-yet-run events.
-	ActiveSeq     uint64 `protobuf:"varint,4,opt,name=active_seq,json=activeSeq,proto3" json:"active_seq,omitempty"`
-	NextSeq       uint64 `protobuf:"varint,5,opt,name=next_seq,json=nextSeq,proto3" json:"next_seq,omitempty"`
+	ActiveSeq uint64 `protobuf:"varint,4,opt,name=active_seq,json=activeSeq,proto3" json:"active_seq,omitempty"`
+	NextSeq   uint64 `protobuf:"varint,5,opt,name=next_seq,json=nextSeq,proto3" json:"next_seq,omitempty"`
+	// outstanding is the authoritative count of dispatched work that will feed back
+	// on its own — service tasks, child processes, armed timers. With active_seq==0,
+	// next_seq==active_seq+1, and outstanding==0 the instance is genuinely quiescent
+	// (parked on an external message/signal); any of the three non-zero means it
+	// will progress without external input. Lets a caller distinguish "working"
+	// from "parked" without timing heuristics.
+	Outstanding   uint32 `protobuf:"varint,6,opt,name=outstanding,proto3" json:"outstanding,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1504,6 +1511,13 @@ func (x *GetProcessInstanceResponse) GetActiveSeq() uint64 {
 func (x *GetProcessInstanceResponse) GetNextSeq() uint64 {
 	if x != nil {
 		return x.NextSeq
+	}
+	return 0
+}
+
+func (x *GetProcessInstanceResponse) GetOutstanding() uint32 {
+	if x != nil {
+		return x.Outstanding
 	}
 	return 0
 }
@@ -1732,14 +1746,15 @@ const file_ingressv1_ingress_proto_rawDesc = "" +
 	"\baccepted\x18\x02 \x01(\bR\baccepted\"w\n" +
 	"\x19GetProcessInstanceRequest\x127\n" +
 	"\tmodel_ref\x18\x01 \x01(\v2\x1a.reflow.engine.v1.ModelRefR\bmodelRef\x12!\n" +
-	"\finstance_key\x18\x02 \x01(\tR\vinstanceKey\"\xdc\x01\n" +
+	"\finstance_key\x18\x02 \x01(\tR\vinstanceKey\"\xfe\x01\n" +
 	"\x1aGetProcessInstanceResponse\x12\x18\n" +
 	"\apresent\x18\x01 \x01(\bR\apresent\x127\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1f.reflow.engine.v1.ProcessStatusR\x06status\x121\n" +
 	"\x04kind\x18\x03 \x01(\x0e2\x1d.reflow.engine.v1.ProcessKindR\x04kind\x12\x1d\n" +
 	"\n" +
 	"active_seq\x18\x04 \x01(\x04R\tactiveSeq\x12\x19\n" +
-	"\bnext_seq\x18\x05 \x01(\x04R\anextSeq\"\xbe\x01\n" +
+	"\bnext_seq\x18\x05 \x01(\x04R\anextSeq\x12 \n" +
+	"\voutstanding\x18\x06 \x01(\rR\voutstanding\"\xbe\x01\n" +
 	"\x1dResolveWorkflowPromiseRequest\x12\x18\n" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12!\n" +
 	"\fworkflow_key\x18\x02 \x01(\tR\vworkflowKey\x12!\n" +

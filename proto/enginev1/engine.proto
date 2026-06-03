@@ -1276,6 +1276,15 @@ message ProcessInstanceRecord {
   // when it exists. Seqs are 1-based so 0 is an unambiguous "idle".
   uint64 next_seq = 7;
   uint64 active_seq = 8;
+  // outstanding counts dispatched work awaiting a feedback event — service-task
+  // invokes, child-process starts, and armed timers. The inbox cursor cannot see
+  // it: next_seq-1-active_seq is only queued events, whereas dispatched work has
+  // left the instance and not yet returned. outstanding==0 with active_seq==0 and
+  // an empty inbox (next_seq==active_seq+1) is the unambiguous "genuinely
+  // quiescent — parked on an external message/signal" signal, as opposed to a
+  // turn mid-dispatch. Maintained on the apply path; feedback decrements saturate
+  // at 0 to absorb the benign timer fire-vs-cancel race.
+  uint32 outstanding = 9;
 }
 
 // ProcessInboxEntry is one queued event for an instance, stored at

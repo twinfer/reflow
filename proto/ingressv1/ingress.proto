@@ -298,6 +298,13 @@ message GetProcessInstanceResponse {
   // cursor; next_seq-1-active_seq is the count of queued-but-not-yet-run events.
   uint64 active_seq = 4;
   uint64 next_seq = 5;
+  // outstanding is the authoritative count of dispatched work that will feed back
+  // on its own — service tasks, child processes, armed timers. With active_seq==0,
+  // next_seq==active_seq+1, and outstanding==0 the instance is genuinely quiescent
+  // (parked on an external message/signal); any of the three non-zero means it
+  // will progress without external input. Lets a caller distinguish "working"
+  // from "parked" without timing heuristics.
+  uint32 outstanding = 6;
 }
 
 message ResolveWorkflowPromiseRequest {

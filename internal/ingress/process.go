@@ -162,6 +162,7 @@ func (s *Server) GetProcessInstance(ctx context.Context, req *connect.Request[in
 		resp.Kind = r.Record.GetKind()
 		resp.ActiveSeq = r.Record.GetActiveSeq()
 		resp.NextSeq = r.Record.GetNextSeq()
+		resp.Outstanding = r.Record.GetOutstanding()
 	}
 	return connect.NewResponse(resp), nil
 }

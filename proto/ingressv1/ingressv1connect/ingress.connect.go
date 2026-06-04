@@ -69,6 +69,8 @@ const (
 	IngressResolveWorkflowPromiseProcedure = "/reflow.ingress.v1.Ingress/ResolveWorkflowPromise"
 	// IngressPurgeInvocationProcedure is the fully-qualified name of the Ingress's PurgeInvocation RPC.
 	IngressPurgeInvocationProcedure = "/reflow.ingress.v1.Ingress/PurgeInvocation"
+	// IngressListInvocationsProcedure is the fully-qualified name of the Ingress's ListInvocations RPC.
+	IngressListInvocationsProcedure = "/reflow.ingress.v1.Ingress/ListInvocations"
 	// IngressStartProcessProcedure is the fully-qualified name of the Ingress's StartProcess RPC.
 	IngressStartProcessProcedure = "/reflow.ingress.v1.Ingress/StartProcess"
 	// IngressDeliverMessageProcedure is the fully-qualified name of the Ingress's DeliverMessage RPC.
@@ -134,6 +136,11 @@ type IngressClient interface {
 	// apply arm requires a Completed/Free → Free transition). Does not touch
 	// virtual-object state or workflow promise rows.
 	PurgeInvocation(context.Context, *connect.Request[ingressv1.PurgeInvocationRequest]) (*connect.Response[ingressv1.PurgeInvocationResponse], error)
+	// ListInvocations lists the caller tenant band's invocations, fanning out
+	// across the shards owning the band's LPs (same substrate as
+	// ListProcessInstances). Optional service-name and state filters; capped by
+	// limit. Read-only — no proposal.
+	ListInvocations(context.Context, *connect.Request[ingressv1.ListInvocationsRequest]) (*connect.Response[ingressv1.ListInvocationsResponse], error)
 	// StartProcess launches a new iflow BPMN/CMMN instance. Routes to the
 	// partition owning (tenant, model name, instance_key) and proposes a start
 	// ProcessEvent (model_ref + kind set). Idempotent per (model, instance_key):
@@ -233,6 +240,12 @@ func NewIngressClient(httpClient connect.HTTPClient, baseURL string, opts ...con
 			connect.WithSchema(ingressMethods.ByName("PurgeInvocation")),
 			connect.WithClientOptions(opts...),
 		),
+		listInvocations: connect.NewClient[ingressv1.ListInvocationsRequest, ingressv1.ListInvocationsResponse](
+			httpClient,
+			baseURL+IngressListInvocationsProcedure,
+			connect.WithSchema(ingressMethods.ByName("ListInvocations")),
+			connect.WithClientOptions(opts...),
+		),
 		startProcess: connect.NewClient[ingressv1.StartProcessRequest, ingressv1.StartProcessResponse](
 			httpClient,
 			baseURL+IngressStartProcessProcedure,
@@ -272,6 +285,7 @@ type ingressClient struct {
 	cancelInvocation       *connect.Client[ingressv1.CancelInvocationRequest, ingressv1.CancelInvocationResponse]
 	resolveWorkflowPromise *connect.Client[ingressv1.ResolveWorkflowPromiseRequest, ingressv1.ResolveWorkflowPromiseResponse]
 	purgeInvocation        *connect.Client[ingressv1.PurgeInvocationRequest, ingressv1.PurgeInvocationResponse]
+	listInvocations        *connect.Client[ingressv1.ListInvocationsRequest, ingressv1.ListInvocationsResponse]
 	startProcess           *connect.Client[ingressv1.StartProcessRequest, ingressv1.StartProcessResponse]
 	deliverMessage         *connect.Client[ingressv1.DeliverMessageRequest, ingressv1.DeliverMessageResponse]
 	getProcessInstance     *connect.Client[ingressv1.GetProcessInstanceRequest, ingressv1.GetProcessInstanceResponse]
@@ -326,6 +340,11 @@ func (c *ingressClient) ResolveWorkflowPromise(ctx context.Context, req *connect
 // PurgeInvocation calls reflow.ingress.v1.Ingress.PurgeInvocation.
 func (c *ingressClient) PurgeInvocation(ctx context.Context, req *connect.Request[ingressv1.PurgeInvocationRequest]) (*connect.Response[ingressv1.PurgeInvocationResponse], error) {
 	return c.purgeInvocation.CallUnary(ctx, req)
+}
+
+// ListInvocations calls reflow.ingress.v1.Ingress.ListInvocations.
+func (c *ingressClient) ListInvocations(ctx context.Context, req *connect.Request[ingressv1.ListInvocationsRequest]) (*connect.Response[ingressv1.ListInvocationsResponse], error) {
+	return c.listInvocations.CallUnary(ctx, req)
 }
 
 // StartProcess calls reflow.ingress.v1.Ingress.StartProcess.
@@ -401,6 +420,11 @@ type IngressHandler interface {
 	// apply arm requires a Completed/Free → Free transition). Does not touch
 	// virtual-object state or workflow promise rows.
 	PurgeInvocation(context.Context, *connect.Request[ingressv1.PurgeInvocationRequest]) (*connect.Response[ingressv1.PurgeInvocationResponse], error)
+	// ListInvocations lists the caller tenant band's invocations, fanning out
+	// across the shards owning the band's LPs (same substrate as
+	// ListProcessInstances). Optional service-name and state filters; capped by
+	// limit. Read-only — no proposal.
+	ListInvocations(context.Context, *connect.Request[ingressv1.ListInvocationsRequest]) (*connect.Response[ingressv1.ListInvocationsResponse], error)
 	// StartProcess launches a new iflow BPMN/CMMN instance. Routes to the
 	// partition owning (tenant, model name, instance_key) and proposes a start
 	// ProcessEvent (model_ref + kind set). Idempotent per (model, instance_key):
@@ -496,6 +520,12 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 		connect.WithSchema(ingressMethods.ByName("PurgeInvocation")),
 		connect.WithHandlerOptions(opts...),
 	)
+	ingressListInvocationsHandler := connect.NewUnaryHandler(
+		IngressListInvocationsProcedure,
+		svc.ListInvocations,
+		connect.WithSchema(ingressMethods.ByName("ListInvocations")),
+		connect.WithHandlerOptions(opts...),
+	)
 	ingressStartProcessHandler := connect.NewUnaryHandler(
 		IngressStartProcessProcedure,
 		svc.StartProcess,
@@ -542,6 +572,8 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 			ingressResolveWorkflowPromiseHandler.ServeHTTP(w, r)
 		case IngressPurgeInvocationProcedure:
 			ingressPurgeInvocationHandler.ServeHTTP(w, r)
+		case IngressListInvocationsProcedure:
+			ingressListInvocationsHandler.ServeHTTP(w, r)
 		case IngressStartProcessProcedure:
 			ingressStartProcessHandler.ServeHTTP(w, r)
 		case IngressDeliverMessageProcedure:
@@ -597,6 +629,10 @@ func (UnimplementedIngressHandler) ResolveWorkflowPromise(context.Context, *conn
 
 func (UnimplementedIngressHandler) PurgeInvocation(context.Context, *connect.Request[ingressv1.PurgeInvocationRequest]) (*connect.Response[ingressv1.PurgeInvocationResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.PurgeInvocation is not implemented"))
+}
+
+func (UnimplementedIngressHandler) ListInvocations(context.Context, *connect.Request[ingressv1.ListInvocationsRequest]) (*connect.Response[ingressv1.ListInvocationsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.ListInvocations is not implemented"))
 }
 
 func (UnimplementedIngressHandler) StartProcess(context.Context, *connect.Request[ingressv1.StartProcessRequest]) (*connect.Response[ingressv1.StartProcessResponse], error) {

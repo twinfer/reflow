@@ -12,16 +12,8 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/routing"
-	"github.com/twinfer/reflow/internal/storage/keys"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
-)
-
-const (
-	// defaultListProcessLimit caps a ListProcessInstances response when the caller
-	// gives no (or an over-large) limit; maxListProcessLimit is the hard ceiling.
-	defaultListProcessLimit = 1000
-	maxListProcessLimit     = 10000
 )
 
 // StartProcess launches a new iflow BPMN/CMMN instance. It routes by
@@ -190,57 +182,44 @@ func (s *Server) ListProcessInstances(ctx context.Context, req *connect.Request[
 	if terr != nil {
 		return nil, terr
 	}
-	limit := int(msg.GetLimit())
-	if limit <= 0 || limit > maxListProcessLimit {
-		limit = defaultListProcessLimit
-	}
-
-	// Group the band's LPs by owning shard.
-	bandStart := tenant << keys.IntraLPBits
-	bandEnd := (tenant + 1) << keys.IntraLPBits
-	part := s.host.Partitioner()
-	byShard := make(map[uint64][]uint32)
-	for lp := bandStart; lp < bandEnd; lp++ {
-		shard := part.ShardForLP(lp)
-		byShard[shard] = append(byShard[shard], lp)
-	}
-
-	q := engine.LookupProcessInstances{
-		Tenant:       tenant,
-		Service:      msg.GetModelRef().GetName(),
-		StatusFilter: msg.GetStatusFilter(),
-		Limit:        limit,
-	}
+	limit := clampListLimit(int(msg.GetLimit()))
 	var out []*ingressv1.ProcessInstanceSummary
-	for shard, lps := range byShard {
-		if len(out) >= limit {
-			break
-		}
-		q.LPs = lps
-		res, err := s.host.NodeHost().SyncRead(ctx, shard, q)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list process instances (shard %d): %w", shard, err))
-		}
-		r, ok := res.(engine.ProcessInstancesLookupResult)
-		if !ok {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list process instances: unexpected type %T", res))
-		}
-		for _, si := range r.Instances {
-			out = append(out, &ingressv1.ProcessInstanceSummary{
-				Service:     si.Service,
-				InstanceKey: si.InstanceKey,
-				Status:      si.Record.GetStatus(),
-				Kind:        si.Record.GetKind(),
-				ActiveSeq:   si.Record.GetActiveSeq(),
-				NextSeq:     si.Record.GetNextSeq(),
-				Outstanding: si.Record.GetOutstanding(),
-				CreatedAtMs: si.Record.GetCreatedAtMs(),
-				EndedAtMs:   si.Record.GetEndedAtMs(),
-			})
-			if len(out) >= limit {
-				break
+	err := s.fanOutBand(ctx, tenant,
+		func(lps []uint32) any {
+			return engine.LookupProcessInstances{
+				Tenant:       tenant,
+				Service:      msg.GetModelRef().GetName(),
+				StatusFilter: msg.GetStatusFilter(),
+				LPs:          lps,
+				Limit:        limit,
 			}
-		}
+		},
+		func(res any) (bool, error) {
+			r, ok := res.(engine.ProcessInstancesLookupResult)
+			if !ok {
+				return false, fmt.Errorf("unexpected result type %T", res)
+			}
+			for _, si := range r.Instances {
+				out = append(out, &ingressv1.ProcessInstanceSummary{
+					Service:     si.Service,
+					InstanceKey: si.InstanceKey,
+					Status:      si.Record.GetStatus(),
+					Kind:        si.Record.GetKind(),
+					ActiveSeq:   si.Record.GetActiveSeq(),
+					NextSeq:     si.Record.GetNextSeq(),
+					Outstanding: si.Record.GetOutstanding(),
+					CreatedAtMs: si.Record.GetCreatedAtMs(),
+					EndedAtMs:   si.Record.GetEndedAtMs(),
+				})
+				if len(out) >= limit {
+					return true, nil
+				}
+			}
+			return false, nil
+		},
+	)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list process instances: %w", err))
 	}
 	return connect.NewResponse(&ingressv1.ListProcessInstancesResponse{Instances: out}), nil
 }

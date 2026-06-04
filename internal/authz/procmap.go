@@ -50,6 +50,7 @@ var procMap = map[string]procEntry{
 	ingressv1connect.IngressAttachInvocationProcedure:       {"AttachInvocation", []string{groupIngress}},
 	ingressv1connect.IngressGetInvocationOutputProcedure:    {"GetInvocationOutput", []string{groupIngress}},
 	ingressv1connect.IngressDescribeInvocationProcedure:     {"DescribeInvocation", []string{groupIngress}},
+	ingressv1connect.IngressListInvocationsProcedure:        {"ListInvocations", []string{groupIngress}},
 	ingressv1connect.IngressCancelInvocationProcedure:       {"CancelInvocation", []string{groupIngress}},
 	ingressv1connect.IngressResolveAwakeableProcedure:       {"ResolveAwakeable", []string{groupIngress}},
 	ingressv1connect.IngressResolveWorkflowPromiseProcedure: {"ResolveWorkflowPromise", []string{groupIngress}},

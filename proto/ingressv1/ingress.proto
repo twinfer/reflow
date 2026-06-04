@@ -76,6 +76,12 @@ service Ingress {
   // virtual-object state or workflow promise rows.
   rpc PurgeInvocation(PurgeInvocationRequest) returns (PurgeInvocationResponse);
 
+  // ListInvocations lists the caller tenant band's invocations, fanning out
+  // across the shards owning the band's LPs (same substrate as
+  // ListProcessInstances). Optional service-name and state filters; capped by
+  // limit. Read-only — no proposal.
+  rpc ListInvocations(ListInvocationsRequest) returns (ListInvocationsResponse);
+
   // StartProcess launches a new iflow BPMN/CMMN instance. Routes to the
   // partition owning (tenant, model name, instance_key) and proposes a start
   // ProcessEvent (model_ref + kind set). Idempotent per (model, instance_key):
@@ -343,6 +349,29 @@ message ProcessInstanceSummary {
   uint32 outstanding = 7;
   uint64 created_at_ms = 8;
   uint64 ended_at_ms = 9;
+}
+
+message ListInvocationsRequest {
+  // service (when set) filters to one target service; empty lists every service
+  // in the caller's tenant band.
+  string service = 1;
+  // Optional state filter; empty = any state.
+  repeated reflow.engine.v1.InvocationState state_filter = 2;
+  // Max rows to return; 0 = the server default cap.
+  uint32 limit = 3;
+}
+
+message ListInvocationsResponse {
+  repeated InvocationSummary invocations = 1;
+}
+
+message InvocationSummary {
+  reflow.engine.v1.InvocationId id = 1;
+  reflow.engine.v1.InvocationTarget target = 2;
+  reflow.engine.v1.InvocationState state = 3;
+  string deployment_id = 4;
+  uint64 created_at_ms = 5;
+  uint64 completed_at_ms = 6;
 }
 
 message ResolveWorkflowPromiseRequest {

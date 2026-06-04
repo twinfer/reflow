@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -3300,6 +3301,37 @@ type ProcessInstancesLookupResult struct {
 	Instances []ProcessInstanceSummary
 }
 
+// LookupInvocations lists invocations on this shard within Tenant's band — the
+// invocation-plane twin of LookupProcessInstances, sharing the scanBandedLPs
+// substrate. Service (target service name) and StateFilter are optional prunes;
+// Limit caps the rows (0 = no cap). The shard-side band check is defense in
+// depth on top of ingress only enumerating the caller's band.
+type LookupInvocations struct {
+	Tenant      uint32
+	Service     string
+	LPs         []uint32
+	StateFilter []enginev1.InvocationState
+	Limit       int
+}
+
+func (LookupInvocations) isLookup() {}
+
+// InvocationSummary is one row of a LookupInvocations result: the flat
+// projection of an InvocationStatus the ListInvocations RPC surfaces.
+type InvocationSummary struct {
+	ID            *enginev1.InvocationId
+	Target        *enginev1.InvocationTarget
+	State         enginev1.InvocationState
+	DeploymentID  string
+	CreatedAtMs   uint64
+	CompletedAtMs uint64
+}
+
+// InvocationsLookupResult is the value returned by Lookup(LookupInvocations).
+type InvocationsLookupResult struct {
+	Invocations []InvocationSummary
+}
+
 // Lookup performs a linearizable read against the partition's on-disk store.
 // query must be one of the Lookup marker types defined in this package;
 // an unrecognised type returns an error. Implements statemachine.IOnDiskStateMachine.
@@ -3341,6 +3373,8 @@ func (p *Partition) Lookup(query any) (any, error) {
 		return ProcessInstanceLookupResult{Record: rec, Present: ok}, nil
 	case LookupProcessInstances:
 		return p.lookupProcessInstances(store, q)
+	case LookupInvocations:
+		return p.lookupInvocations(store, q)
 	default:
 		return nil, fmt.Errorf("partition: unknown lookup type %T", query)
 	}
@@ -3349,43 +3383,110 @@ func (p *Partition) Lookup(query any) (any, error) {
 // errListLimitReached aborts a ScanLP early once the caller's row cap is hit.
 var errListLimitReached = errors.New("list limit reached")
 
-// lookupProcessInstances scans the given LPs on this shard, filtering by service
-// (optional), status (optional), and the caller's tenant band (defense in depth),
-// capped at Limit rows. Backs the ingress ListProcessInstances fan-out.
-func (p *Partition) lookupProcessInstances(store storage.Store, q LookupProcessInstances) (ProcessInstancesLookupResult, error) {
-	statusOK := func(rec *enginev1.ProcessInstanceRecord) bool {
-		if len(q.StatusFilter) == 0 {
-			return true
-		}
-		return slices.Contains(q.StatusFilter, rec.GetStatus())
+// scanBandedLPs runs scanLP for each LP that falls in tenant's band, collecting
+// rows until limit is reached (0 = no cap). scanLP scans one LP, calling emit per
+// candidate row; emit appends and returns true once the cap is hit, at which
+// point scanLP should return errListLimitReached to stop its own iteration. The
+// band re-check is defense in depth — ingress already routes each owning shard
+// only its band LPs. Shared substrate behind lookupProcessInstances and
+// lookupInvocations.
+func scanBandedLPs[T any](lps []uint32, tenant uint32, limit int, scanLP func(lp uint32, emit func(T) bool) error) ([]T, error) {
+	var out []T
+	emit := func(v T) bool {
+		out = append(out, v)
+		return limit > 0 && len(out) >= limit
 	}
-	procT := tables.ProcessInstanceTable{S: store}
-	var out []ProcessInstanceSummary
-	for _, lp := range q.LPs {
-		if lp>>keys.IntraLPBits != q.Tenant {
+	for _, lp := range lps {
+		if lp>>keys.IntraLPBits != tenant {
 			continue // not in the caller's band
 		}
-		if q.Limit > 0 && len(out) >= q.Limit {
+		if limit > 0 && len(out) >= limit {
 			break
 		}
-		err := procT.ScanLP(lp, func(service, instanceKey string, rec *enginev1.ProcessInstanceRecord) error {
+		if err := scanLP(lp, emit); err != nil && !errors.Is(err, errListLimitReached) {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// lookupProcessInstances scans the given LPs on this shard, filtering by service
+// (optional) and status (optional), capped at Limit rows. Backs the ingress
+// ListProcessInstances fan-out.
+func (p *Partition) lookupProcessInstances(store storage.Store, q LookupProcessInstances) (ProcessInstancesLookupResult, error) {
+	procT := tables.ProcessInstanceTable{S: store}
+	out, err := scanBandedLPs(q.LPs, q.Tenant, q.Limit, func(lp uint32, emit func(ProcessInstanceSummary) bool) error {
+		return procT.ScanLP(lp, func(service, instanceKey string, rec *enginev1.ProcessInstanceRecord) error {
 			if q.Service != "" && service != q.Service {
 				return nil
 			}
-			if !statusOK(rec) {
+			if len(q.StatusFilter) > 0 && !slices.Contains(q.StatusFilter, rec.GetStatus()) {
 				return nil
 			}
-			out = append(out, ProcessInstanceSummary{Service: service, InstanceKey: instanceKey, Record: rec})
-			if q.Limit > 0 && len(out) >= q.Limit {
+			if emit(ProcessInstanceSummary{Service: service, InstanceKey: instanceKey, Record: rec}) {
 				return errListLimitReached
 			}
 			return nil
 		})
-		if err != nil && !errors.Is(err, errListLimitReached) {
-			return ProcessInstancesLookupResult{}, err
-		}
+	})
+	if err != nil {
+		return ProcessInstancesLookupResult{}, err
 	}
 	return ProcessInstancesLookupResult{Instances: out}, nil
+}
+
+// lookupInvocations scans the given LPs on this shard, filtering by target
+// service (optional) and state (optional), capped at Limit rows. Backs the
+// ingress ListInvocations fan-out — the invocation-plane twin of
+// lookupProcessInstances. ScanLP skips Free rows.
+func (p *Partition) lookupInvocations(store storage.Store, q LookupInvocations) (InvocationsLookupResult, error) {
+	invT := tables.InvocationTable{S: store}
+	// Lookup runs on dragonboat's read goroutine with no caller context; the scan
+	// is bounded (one range per band LP, capped at Limit), so Background is fine.
+	ctx := context.Background()
+	out, err := scanBandedLPs(q.LPs, q.Tenant, q.Limit, func(lp uint32, emit func(InvocationSummary) bool) error {
+		return invT.ScanLP(ctx, lp, func(id *enginev1.InvocationId, s *enginev1.InvocationStatus) error {
+			target, state, createdAtMs, completedAtMs := invocationSummaryFields(s)
+			if q.Service != "" && target.GetServiceName() != q.Service {
+				return nil
+			}
+			if len(q.StateFilter) > 0 && !slices.Contains(q.StateFilter, state) {
+				return nil
+			}
+			if emit(InvocationSummary{
+				ID:            id,
+				Target:        target,
+				State:         state,
+				DeploymentID:  s.GetDeploymentId(),
+				CreatedAtMs:   createdAtMs,
+				CompletedAtMs: completedAtMs,
+			}) {
+				return errListLimitReached
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return InvocationsLookupResult{}, err
+	}
+	return InvocationsLookupResult{Invocations: out}, nil
+}
+
+// invocationSummaryFields projects an InvocationStatus oneof into the flat fields
+// a list summary surfaces. Free rows never reach here (ScanLP skips them).
+func invocationSummaryFields(s *enginev1.InvocationStatus) (target *enginev1.InvocationTarget, state enginev1.InvocationState, createdAtMs, completedAtMs uint64) {
+	switch st := s.GetStatus().(type) {
+	case *enginev1.InvocationStatus_Scheduled:
+		return st.Scheduled.GetTarget(), enginev1.InvocationState_INVOCATION_STATE_SCHEDULED, st.Scheduled.GetCreatedAtMs(), 0
+	case *enginev1.InvocationStatus_Invoked:
+		return st.Invoked.GetTarget(), enginev1.InvocationState_INVOCATION_STATE_INVOKED, st.Invoked.GetCreatedAtMs(), 0
+	case *enginev1.InvocationStatus_Suspended:
+		return st.Suspended.GetTarget(), enginev1.InvocationState_INVOCATION_STATE_SUSPENDED, 0, 0
+	case *enginev1.InvocationStatus_Completed:
+		return st.Completed.GetTarget(), enginev1.InvocationState_INVOCATION_STATE_COMPLETED, 0, st.Completed.GetCompletedAtMs()
+	default:
+		return nil, enginev1.InvocationState_INVOCATION_STATE_UNSPECIFIED, 0, 0
+	}
 }
 
 // Sync flushes pending writes (no-op when batches are committed with sync=true,

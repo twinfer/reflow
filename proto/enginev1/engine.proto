@@ -920,6 +920,17 @@ message InvocationStatus {
   uint32 kind = 7;
 }
 
+// InvocationState is the flat projection of InvocationStatus.status used by the
+// ListInvocations summary + filter (the oneof case as a single enum). Free is
+// not surfaced — a Free row is equivalent to absent and the list scan skips it.
+enum InvocationState {
+  INVOCATION_STATE_UNSPECIFIED = 0;
+  INVOCATION_STATE_SCHEDULED = 1;
+  INVOCATION_STATE_INVOKED = 2;
+  INVOCATION_STATE_SUSPENDED = 3;
+  INVOCATION_STATE_COMPLETED = 4;
+}
+
 message Free {}
 
 message Scheduled {

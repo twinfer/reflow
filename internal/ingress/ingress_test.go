@@ -193,6 +193,105 @@ func TestIngress_SubmitAndAwaitEcho(t *testing.T) {
 	}
 }
 
+// TestIngress_ListInvocations covers the invocation-plane list fan-out: submit a
+// few invocations, await completion, then list — asserting service filter, state
+// filter (composed), and the limit cap. The invocation-plane twin of
+// TestIngress_ListProcessInstances over the shared fanOutBand substrate.
+func TestIngress_ListInvocations(t *testing.T) {
+	reg := handler.NewRegistry()
+	if err := reg.RegisterService("Echo", "echo", func(_ handler.Context, in []byte) ([]byte, error) {
+		return append([]byte("echo:"), in...), nil
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	_, _, cli := bringUpHostWithIngress(t, reg)
+
+	inputs := []string{"a", "b", "c"}
+	for _, in := range inputs {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		submitResp, err := cli.SubmitInvocation(ctx, connect.NewRequest(&ingressv1.SubmitInvocationRequest{
+			Service: "Echo",
+			Handler: "echo",
+			Input:   []byte(in),
+		}))
+		cancel()
+		if err != nil {
+			t.Fatalf("submit %s: %v", in, err)
+		}
+		// Await completion so the row settles into a known COMPLETED state.
+		idStr := submitResp.Msg.GetInvocationIdStr()
+		deadline := time.Now().Add(5 * time.Second)
+		completed := false
+		for time.Now().Before(deadline) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			resp, err := cli.AwaitInvocation(ctx, connect.NewRequest(&ingressv1.AwaitInvocationRequest{
+				InvocationId: idStr,
+				TimeoutMs:    1000,
+			}))
+			cancel()
+			if err != nil {
+				t.Fatalf("await %s: %v", in, err)
+			}
+			if resp.Msg.GetCompleted() {
+				completed = true
+				break
+			}
+		}
+		if !completed {
+			t.Fatalf("invocation %s never completed", in)
+		}
+	}
+
+	listReq := func(req *ingressv1.ListInvocationsRequest) []*ingressv1.InvocationSummary {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		resp, err := cli.ListInvocations(ctx, connect.NewRequest(req))
+		if err != nil {
+			t.Fatalf("ListInvocations: %v", err)
+		}
+		return resp.Msg.GetInvocations()
+	}
+
+	all := listReq(&ingressv1.ListInvocationsRequest{Service: "Echo"})
+	if len(all) != len(inputs) {
+		t.Fatalf("list Echo: got %d, want %d", len(all), len(inputs))
+	}
+	for _, iv := range all {
+		if iv.GetTarget().GetServiceName() != "Echo" {
+			t.Fatalf("summary target service = %q, want Echo", iv.GetTarget().GetServiceName())
+		}
+		if iv.GetState() != enginev1.InvocationState_INVOCATION_STATE_COMPLETED {
+			t.Fatalf("summary state = %v, want COMPLETED", iv.GetState())
+		}
+		if iv.GetId() == nil {
+			t.Fatalf("summary missing id")
+		}
+	}
+
+	// State filter composes with service: COMPLETED returns all three, SCHEDULED none.
+	if c := listReq(&ingressv1.ListInvocationsRequest{
+		Service:     "Echo",
+		StateFilter: []enginev1.InvocationState{enginev1.InvocationState_INVOCATION_STATE_COMPLETED},
+	}); len(c) != len(inputs) {
+		t.Fatalf("list COMPLETED: got %d, want %d", len(c), len(inputs))
+	}
+	if sc := listReq(&ingressv1.ListInvocationsRequest{
+		Service:     "Echo",
+		StateFilter: []enginev1.InvocationState{enginev1.InvocationState_INVOCATION_STATE_SCHEDULED},
+	}); len(sc) != 0 {
+		t.Fatalf("list SCHEDULED: got %d, want 0", len(sc))
+	}
+	// A non-matching service lists nothing.
+	if other := listReq(&ingressv1.ListInvocationsRequest{Service: "Nope"}); len(other) != 0 {
+		t.Fatalf("list other service: got %d, want 0", len(other))
+	}
+	// limit caps the result.
+	if capped := listReq(&ingressv1.ListInvocationsRequest{Service: "Echo", Limit: 1}); len(capped) != 1 {
+		t.Fatalf("list limit 1: got %d, want 1", len(capped))
+	}
+}
+
 // TestIngress_DescribeInvocation covers the read-only DescribeInvocation
 // admin endpoint: it reports Completed for a finished invocation. Live
 // per-node leadership reads moved off ingress to ClusterCtl/NodeLeadership.

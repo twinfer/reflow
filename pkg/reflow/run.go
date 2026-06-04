@@ -262,6 +262,15 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		modelTableResolver = iflowengine.NewTableResolver(logger)
 		modelResolver = modelTableResolver
 	}
+	// validateModel gates config.UpsertModel with the real iflow parser+static
+	// validator whenever the process plane is active (injected or table-backed),
+	// so a structurally-broken model is rejected at registration instead of
+	// failing silently per-node at reconcile. Nil otherwise → config falls back
+	// to its shallow well-formed-XML check.
+	var modelValidator func(kind string, xml []byte) error
+	if modelResolver != nil {
+		modelValidator = iflowengine.ValidateModel
+	}
 	if modelResolver != nil {
 		hcfg.ProcessEngine = iflowengine.New(modelResolver)
 		capReg := cfg.Process.Capabilities
@@ -411,6 +420,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		secretNotifier:         secretNotifier,
 		modelNotifier:          modelNotifier,
 		modelTableResolver:     modelTableResolver,
+		modelValidator:         modelValidator,
 		caRootNotifier:         caRootNotifier,
 		joinTokenNotifier:      joinTokenNotifier,
 		lpOwnersNotifier:       lpOwnersNotifier,
@@ -564,6 +574,7 @@ type startupDeps struct {
 	secretNotifier         *cluster.TableNotifier
 	modelNotifier          *cluster.TableNotifier
 	modelTableResolver     *iflowengine.TableResolver
+	modelValidator         func(kind string, xml []byte) error
 	caRootNotifier         *cluster.TableNotifier
 	joinTokenNotifier      *cluster.TableNotifier
 	lpOwnersNotifier       *cluster.TableNotifier
@@ -720,6 +731,9 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		Runner: runner,
 		Log:    logger,
 	}
+	// With the process plane on, gate UpsertModel with the real iflow
+	// parser+static-validator; nil otherwise → config's shallow XML check.
+	configCfg.ValidateModel = d.modelValidator
 	// Avoid the typed-nil interface trap: only assign the Signer field
 	// when the underlying *creds.Signer is non-nil.
 	if handlerSigner != nil {

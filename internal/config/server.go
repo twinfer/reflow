@@ -60,6 +60,11 @@ type Server struct {
 	// CA. Optional: when nil (e.g. before a CA root exists), the
 	// IssueOperator RPC returns FailedPrecondition.
 	operatorIssuer *certmgr.ClusterIssuer
+	// validateModel gates UpsertModel. pkg/reflow injects an iflow-backed
+	// parser+static-validator when the process plane is enabled; nil falls
+	// back to validateModelXML (config cannot import iflow). Never nil after
+	// NewServer.
+	validateModel func(kind string, xml []byte) error
 
 	adminCallTimeout time.Duration
 }
@@ -75,6 +80,11 @@ type Config struct {
 	// OperatorIssuer, when non-nil, enables the IssueOperator RPC. Used
 	// to sign operator-supplied CSRs against the active cluster CA.
 	OperatorIssuer *certmgr.ClusterIssuer
+	// ValidateModel, when non-nil, validates a model definition at
+	// registration time (UpsertModel). pkg/reflow injects
+	// iflowengine.ValidateModel when the process plane is enabled; nil
+	// falls back to the shallow well-formed-XML check.
+	ValidateModel func(kind string, xml []byte) error
 }
 
 // NewServer constructs the Config server.
@@ -85,12 +95,17 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
+	validateModel := cfg.ValidateModel
+	if validateModel == nil {
+		validateModel = validateModelXML
+	}
 	return &Server{
 		host:             cfg.Host,
 		runner:           cfg.Runner,
 		log:              cfg.Log,
 		signer:           cfg.Signer,
 		operatorIssuer:   cfg.OperatorIssuer,
+		validateModel:    validateModel,
 		adminCallTimeout: 30 * time.Second,
 	}, nil
 }

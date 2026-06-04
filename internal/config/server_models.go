@@ -15,11 +15,14 @@ import (
 )
 
 // UpsertModel validates a BPMN/CMMN model definition and proposes
-// Command_UpsertModel to shard 0's ModelTable. The XML is checked for kind +
-// well-formedness here (config must not depend on iflow); the authoritative
-// parse-to-graph happens per-node in the iflowengine TableResolver on the next
-// notifier wake, which surfaces a semantic parse failure as a metric +
-// preserve-prev. CAS via if_table_revision_eq.
+// Command_UpsertModel to shard 0's ModelTable. Validation runs through the
+// injected s.validateModel: when the process plane is enabled pkg/reflow wires
+// iflowengine.ValidateModel (real parse + static validation), so a
+// structurally-broken model is rejected here with InvalidArgument instead of
+// being committed to Raft and failing silently per-node at reconcile. Without
+// the process plane it falls back to a shallow well-formed-XML check (config
+// must not depend on iflow). The per-node TableResolver parse stays as
+// defense-in-depth for version skew. CAS via if_table_revision_eq.
 func (s *Server) UpsertModel(ctx context.Context, req *connect.Request[configv1.UpsertModelRequest]) (*connect.Response[configv1.UpsertModelResponse], error) {
 	if err := s.requireLeader(); err != nil {
 		return nil, err
@@ -29,7 +32,7 @@ func (s *Server) UpsertModel(ctx context.Context, req *connect.Request[configv1.
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("config: model_ref kind and name required"))
 	}
-	if err := validateModelXML(ref.GetKind(), req.Msg.GetXml()); err != nil {
+	if err := s.validateModel(ref.GetKind(), req.Msg.GetXml()); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	cmd := &enginev1.Command{
@@ -136,11 +139,13 @@ func (s *Server) readModelRevision(ctx context.Context) (uint64, error) {
 	return list.TableRevision, nil
 }
 
-// validateModelXML rejects an obviously-bad model before it enters the Raft
-// log: kind must be bpmn or cmmn and the bytes must be well-formed XML. config
-// deliberately does NOT semantically parse BPMN/CMMN (that would couple it to
-// iflow) — the per-node TableResolver does, and a bad-but-well-formed model
-// surfaces there as a parse-failure metric.
+// validateModelXML is the fallback gate when no iflow-backed validator is
+// injected (process plane disabled): kind must be bpmn or cmmn and the bytes
+// must be well-formed XML. It deliberately does NOT semantically parse BPMN/CMMN
+// (that would couple config to iflow). With the process plane on, pkg/reflow
+// injects iflowengine.ValidateModel instead, which catches structural defects
+// this check cannot. Signature matches that injected func so the two are
+// interchangeable in NewServer.
 func validateModelXML(kind string, x []byte) error {
 	switch kind {
 	case "bpmn", "cmmn":

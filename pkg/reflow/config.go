@@ -55,9 +55,19 @@ type Config struct {
 // config-file fields — so koanf-loaded engines leave it zero and process
 // execution stays disabled.
 type ProcessConfig struct {
+	// Enabled turns on process execution backed by the durable shard-0
+	// ModelTable: when set with no injected Models resolver, the host builds a
+	// table-backed ModelResolver fed by a reconciler over the ModelTable
+	// (operators register models via `reflowd config register-model`). Settable
+	// from config/env so a koanf-loaded production engine can enable the durable
+	// process plane. Ignored when Models is non-nil (an injected resolver
+	// implies enabled).
+	Enabled bool `koanf:"enabled"`
+
 	// Models resolves pinned iflow model refs (kind+name+version) to parsed
 	// graphs/definitions. Non-nil enables process execution (the adapter is
-	// installed as HostConfig.ProcessEngine); nil disables it.
+	// installed as HostConfig.ProcessEngine) with this resolver; nil falls back
+	// to the table-backed resolver when Enabled, else disables process execution.
 	Models iflowengine.ModelResolver `koanf:"-"`
 
 	// Capabilities is the registry the capability-bridge handler dispatches

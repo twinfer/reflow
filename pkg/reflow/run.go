@@ -149,6 +149,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	// Subscribe() ends are handed to subsystem goroutines later.
 	partitionTableNotifier := cluster.NewTableNotifier()
 	secretNotifier := cluster.NewTableNotifier()
+	modelNotifier := cluster.NewTableNotifier()
 	caRootNotifier := cluster.NewTableNotifier()
 	joinTokenNotifier := cluster.NewTableNotifier()
 	lpOwnersNotifier := cluster.NewTableNotifier()
@@ -212,6 +213,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		ClusterNotifiers: cluster.Notifiers{
 			PartitionTable:      partitionTableNotifier,
 			SecretTable:         secretNotifier,
+			ModelTable:          modelNotifier,
 			CARootTable:         caRootNotifier,
 			JoinTokenTable:      joinTokenNotifier,
 			LPOwnersTable:       lpOwnersNotifier,
@@ -248,9 +250,20 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	// Process execution: install the iflow engine adapter as the ProcessEngine
 	// and register the capability-bridge handler into the in-process registry —
 	// before the InProcDialer below captures it, so service tasks are
-	// dispatchable. Enabled only when a model resolver is supplied.
+	// dispatchable. The resolver is either operator-injected (Process.Models,
+	// embedded) or, when Process.Enabled with no injected resolver, a
+	// table-backed resolver fed by the shard-0 ModelTable (its reconciler is
+	// spawned in finishStartup once the host exists).
+	var modelResolver iflowengine.ModelResolver
+	var modelTableResolver *iflowengine.TableResolver
 	if cfg.Process.Models != nil {
-		hcfg.ProcessEngine = iflowengine.New(cfg.Process.Models)
+		modelResolver = cfg.Process.Models
+	} else if cfg.Process.Enabled {
+		modelTableResolver = iflowengine.NewTableResolver(logger)
+		modelResolver = modelTableResolver
+	}
+	if modelResolver != nil {
+		hcfg.ProcessEngine = iflowengine.New(modelResolver)
 		capReg := cfg.Process.Capabilities
 		if capReg == nil {
 			capReg = capability.NewRegistry()
@@ -396,6 +409,8 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		metrics:                metrics,
 		partitionTableNotifier: partitionTableNotifier,
 		secretNotifier:         secretNotifier,
+		modelNotifier:          modelNotifier,
+		modelTableResolver:     modelTableResolver,
 		caRootNotifier:         caRootNotifier,
 		joinTokenNotifier:      joinTokenNotifier,
 		lpOwnersNotifier:       lpOwnersNotifier,
@@ -547,6 +562,8 @@ type startupDeps struct {
 	metrics                *observability.Metrics
 	partitionTableNotifier *cluster.TableNotifier
 	secretNotifier         *cluster.TableNotifier
+	modelNotifier          *cluster.TableNotifier
+	modelTableResolver     *iflowengine.TableResolver
 	caRootNotifier         *cluster.TableNotifier
 	joinTokenNotifier      *cluster.TableNotifier
 	lpOwnersNotifier       *cluster.TableNotifier
@@ -796,6 +813,18 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		}
 	}()
 
+	// Table-backed model resolver (durable process plane): reparse the shard-0
+	// ModelTable on each notifier wake, serving parsed graphs from an in-memory
+	// cache. Only spawned when Process.Enabled selected the table resolver.
+	if d.modelTableResolver != nil {
+		go func() {
+			reader := modelReader{host: eh}
+			if rerr := d.modelTableResolver.RunReconciler(ctx, d.modelNotifier.Subscribe(), reader); rerr != nil && !errors.Is(rerr, context.Canceled) {
+				logger.Warn("reflow: model resolver reconcile loop exited", "err", rerr)
+			}
+		}()
+	}
+
 	// Bootstrap listener: opt-in, TLS-without-client-cert. Hosts the
 	// MeshSign service. The ClusterIssuer requires shard 0 to carry an
 	// "active" CARoot row; without one we log + skip so an operator can
@@ -938,6 +967,22 @@ func (r secretReader) ListSecrets(ctx context.Context) ([]*enginev1.SecretRecord
 	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	list, err := r.host.Secrets(readCtx)
+	if err != nil {
+		return nil, 0, err
+	}
+	return list.Records, list.TableRevision, nil
+}
+
+// modelReader adapts engine.Host.Models to the iflowengine.ModelTableReader the
+// TableResolver reconciler reads each ModelTable wake.
+type modelReader struct {
+	host *engine.Host
+}
+
+func (r modelReader) ListModels(ctx context.Context) ([]*enginev1.ModelRecord, uint64, error) {
+	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	list, err := r.host.Models(readCtx)
 	if err != nil {
 		return nil, 0, err
 	}

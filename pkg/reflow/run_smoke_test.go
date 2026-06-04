@@ -92,6 +92,37 @@ func TestRun_StartsIngressListener(t *testing.T) {
 	}
 }
 
+// TestRun_ProcessEnabledStartsTableResolver verifies the durable process-plane
+// wiring: Process.Enabled with no injected resolver builds the table-backed
+// ModelResolver, installs it as the ProcessEngine, and spawns its reconciler
+// over the shard-0 ModelTable — the host comes up and closes cleanly. (The full
+// register-model -> reconcile -> run round-trip rides the auth-gated admin RPC;
+// this is the run.go wiring smoke the component tests don't cover.)
+func TestRun_ProcessEnabledStartsTableResolver(t *testing.T) {
+	cfg := reflow.Config{
+		Node:    reflow.NodeConfig{ID: 1, RaftAddr: freeAddr(t)},
+		Storage: reflow.StorageConfig{DataDir: t.TempDir()},
+		Ingress: reflow.IngressConfig{Addr: freeAddr(t)},
+		Process: reflow.ProcessConfig{Enabled: true},
+		Metrics: reflow.MetricsConfig{Disabled: true},
+	}
+	ctx := t.Context()
+
+	host, err := reflow.Run(ctx, cfg)
+	if err != nil {
+		t.Fatalf("reflow.Run with Process.Enabled: %v", err)
+	}
+	t.Cleanup(func() { _ = host.Close() })
+
+	awaitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := host.AwaitLeader(awaitCtx, 1); err != nil {
+		t.Fatalf("AwaitLeader(shard 1): %v", err)
+	}
+	// Host is up with the durable process plane wired; the ModelTable is empty
+	// until an operator registers a model via `reflowd config register-model`.
+}
+
 // TestRun_IngressDefaultsApplyWhenEmpty verifies that Run fills in the
 // standard ingress port when the operator leaves Addr empty in the
 // config. Dials :8080 to confirm the listener is bound.

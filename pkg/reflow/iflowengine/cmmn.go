@@ -122,17 +122,23 @@ func (a *Adapter) translateCMMN(in invoker.ProcessAdvanceInput, cmds []cmmn.Comm
 			if err != nil {
 				return nil, fmt.Errorf("iflowengine: encode case outputs: %w", err)
 			}
-			adv.Terminal = &enginev1.ProcessTerminal{Output: out}
+			adv.Terminal = &enginev1.ProcessTerminal{
+				Output:      out,
+				RetentionMs: a.retentionMs(in.Record.GetModelRef()),
+			}
 			return adv, nil
 		case cmmn.CaseFailed:
 			adv.Terminal = &enginev1.ProcessTerminal{
 				Failed:         true,
 				FailureMessage: fmt.Sprintf("case failed at %q: %s", t.PlanItemID, t.Cause),
+				RetentionMs:    a.retentionMs(in.Record.GetModelRef()),
 			}
 			return adv, nil
 		case cmmn.CaseTerminated:
 			// Exit-criterion termination is a clean end (matches dboshost).
-			adv.Terminal = &enginev1.ProcessTerminal{}
+			adv.Terminal = &enginev1.ProcessTerminal{
+				RetentionMs: a.retentionMs(in.Record.GetModelRef()),
+			}
 			return adv, nil
 		}
 	}

@@ -18,7 +18,7 @@ import (
 // hosted on the same admin Connect listener as ClusterCtl.
 func dispatchConfig(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: reflowd config {register-deployment|list-deployments|describe-deployment|delete-deployment|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|ca|create-join-token|list-join-tokens|delete-join-token|issue-operator|issue-tenant|upsert-cluster-authz-policy|get-cluster-authz-policy} [flags]")
+		return fmt.Errorf("usage: reflowd config {register-deployment|list-deployments|describe-deployment|delete-deployment|register-model|list-models|describe-model|delete-model|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|ca|create-join-token|list-join-tokens|delete-join-token|issue-operator|issue-tenant|upsert-cluster-authz-policy|get-cluster-authz-policy} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -31,6 +31,14 @@ func dispatchConfig(ctx context.Context, args []string) error {
 		return cmdDescribeDeployment(ctx, rest)
 	case "delete-deployment":
 		return cmdDeleteDeployment(ctx, rest)
+	case "register-model":
+		return cmdRegisterModel(ctx, rest)
+	case "list-models":
+		return cmdListModels(ctx, rest)
+	case "describe-model":
+		return cmdDescribeModel(ctx, rest)
+	case "delete-model":
+		return cmdDeleteModel(ctx, rest)
 	case "init-kek":
 		return cmdInitKEK(ctx, rest)
 	case "create-secret":

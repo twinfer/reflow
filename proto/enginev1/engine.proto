@@ -164,6 +164,14 @@ message Command {
     // Accepted only by shardID=0.
     UpsertSecret upsert_secret = 25;
     DeleteSecret delete_secret = 26;
+    // UpsertModel / DeleteModel carry shard-0 ModelTable rows — BPMN/CMMN
+    // model definitions (model_ref + inlined XML) the per-node iflowengine
+    // TableResolver reconciles into parsed graphs + resolved
+    // historyTimeToLive. Same CAS + notifier semantics as the secret pair;
+    // the XML is inlined (models are KB-scale deployment artifacts, like a
+    // discovery manifest). Accepted only by shardID=0.
+    UpsertModel upsert_model = 52;
+    DeleteModel delete_model = 53;
     // UpsertLPOwner / DeleteLPOwner / BulkUpsertLPOwners carry shard-0
     // LPOwnersTable mutations — the (lp → shard_id) routing table that
     // Partitioner reads via per-node reconciler snapshot. Same CAS +
@@ -1567,6 +1575,35 @@ message UpsertSecret {
 // metric and clean up by deleting the consumer rows next.
 message DeleteSecret {
   string name = 1;
+}
+
+// ModelRecord is the persisted shape of one BPMN/CMMN model definition in
+// shard 0's ModelTable, keyed by model_ref (kind+name+version — an immutable
+// snapshot id). The XML source is inlined: models are KB-scale artifacts (like
+// a deployment discovery manifest), so a blob pointer isn't warranted. Per-node
+// iflowengine TableResolvers reconcile each row into a parsed graph/case plus a
+// resolved historyTimeToLive on each ModelTable notifier wake.
+message ModelRecord {
+  ModelRef model_ref = 1;
+  bytes xml = 2;
+  fixed64 registered_at_ms = 3;
+}
+
+// UpsertModel is the Command_UpsertModel payload. Apply arm CAS-checks
+// Envelope.precondition, writes ModelTable[model_ref] = record, bumps
+// RevisionTableModel, and fires the ModelTable notifier so each node's
+// TableResolver wakes and re-parses. Accepted only by shardID=0.
+message UpsertModel {
+  ModelRecord record = 1;
+}
+
+// DeleteModel is the Command_DeleteModel payload. Same CAS + notifier
+// semantics as Upsert. Delete-of-absent is a no-op (the revision still bumps).
+// A model with live instances isn't cascade-checked here; an in-flight instance
+// pins its model_ref, so a delete surfaces as a resolve failure on its next
+// turn (failing just that instance).
+message DeleteModel {
+  ModelRef model_ref = 1;
 }
 
 // CARootRecord is the persisted shape of one cluster CA root in shard

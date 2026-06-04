@@ -182,15 +182,19 @@ func (a *Adapter) translateBPMN(in invoker.ProcessAdvanceInput, graph *bpmn.Proc
 			if err != nil {
 				return nil, fmt.Errorf("iflowengine: encode process outputs: %w", err)
 			}
-			// retention_ms is left 0 → the engine deletes the terminal record
-			// immediately (opt-in history). Per-model historyTimeToLive parsing
-			// (Camunda-style) would resolve and stamp the window here; deferred.
-			adv.Terminal = &enginev1.ProcessTerminal{Output: out}
+			// retention_ms carries the model's Camunda historyTimeToLive,
+			// resolved at model-materialize time (0 when undeclared → the engine
+			// deletes the terminal record immediately).
+			adv.Terminal = &enginev1.ProcessTerminal{
+				Output:      out,
+				RetentionMs: a.retentionMs(in.Record.GetModelRef()),
+			}
 			return adv, nil
 		case bpmn.ProcessFailed:
 			adv.Terminal = &enginev1.ProcessTerminal{
 				Failed:         true,
 				FailureMessage: encodeProcessFailure(t.NodeID, t.Cause),
+				RetentionMs:    a.retentionMs(in.Record.GetModelRef()),
 			}
 			return adv, nil
 		}

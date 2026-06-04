@@ -381,6 +381,71 @@ func (t SecretTable) List() ([]*enginev1.SecretRecord, error) {
 	return out, iter.Error()
 }
 
+// ModelTable persists ModelRecord rows keyed by (kind, name, version). Lives on
+// shard 0 alongside the other cluster-managed config tables. Per-node
+// iflowengine TableResolvers SyncRead-iterate this table on each TableNotifier
+// wake to re-parse each BPMN/CMMN model into an in-memory graph cache.
+type ModelTable struct{ S storage.Reader }
+
+func (t ModelTable) Get(kind, name, version string) (*enginev1.ModelRecord, error) {
+	val, closer, err := t.S.Get(ModelKey(kind, name, version))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer closer.Close()
+	var rec enginev1.ModelRecord
+	if err := proto.Unmarshal(val, &rec); err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (t ModelTable) Put(b storage.Batch, rec *enginev1.ModelRecord) error {
+	ref := rec.GetModelRef()
+	if ref.GetKind() == "" || ref.GetName() == "" {
+		return errors.New("ModelTable.Put: empty model_ref kind/name")
+	}
+	buf, err := proto.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return b.Set(ModelKey(ref.GetKind(), ref.GetName(), ref.GetVersion()), buf)
+}
+
+// Delete removes the row for (kind, name, version). Delete-of-absent is a no-op.
+func (t ModelTable) Delete(b storage.Batch, kind, name, version string) error {
+	if kind == "" || name == "" {
+		return errors.New("ModelTable.Delete: empty kind/name")
+	}
+	return b.Delete(ModelKey(kind, name, version))
+}
+
+// List returns every ModelRecord in lexicographic key order.
+func (t ModelTable) List() ([]*enginev1.ModelRecord, error) {
+	prefix := ModelPrefix()
+	upper := prefixUpperBound(prefix)
+	iter, err := t.S.NewIter(prefix, upper)
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	var out []*enginev1.ModelRecord
+	for ok := iter.First(); ok; ok = iter.Next() {
+		if !bytes.HasPrefix(iter.Key(), prefix) {
+			continue
+		}
+		var rec enginev1.ModelRecord
+		if err := proto.Unmarshal(iter.Value(), &rec); err != nil {
+			return nil, err
+		}
+		out = append(out, &rec)
+	}
+	return out, iter.Error()
+}
+
 // CARootTable persists CARootRecord rows keyed by name. Lives on shard
 // 0 alongside the other cluster-managed config tables. The row holds
 // the CA cert PEM and a pointer (key_secret_name) into SecretTable

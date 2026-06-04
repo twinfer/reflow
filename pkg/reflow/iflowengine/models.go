@@ -82,17 +82,21 @@ type bpmnBundle struct {
 // the decision set under the lock so the resolver closure the engine invokes
 // mid-turn never touches the live map.
 type MapResolver struct {
-	mu       sync.RWMutex
-	bpmn     map[modelKey]*bpmnBundle
-	cmmnDefs map[modelKey]*cmmn.CaseDefinition
+	mu        sync.RWMutex
+	bpmn      map[modelKey]*bpmnBundle
+	cmmnDefs  map[modelKey]*cmmn.CaseDefinition
+	retention map[modelKey]uint64 // parsed historyTimeToLive (ms) per model
 }
+
+var _ retentionResolver = (*MapResolver)(nil)
 
 // NewMapResolver returns an empty resolver. Register models with AddBPMN /
 // ParseBPMN / ParseCMMN before serving turns.
 func NewMapResolver() *MapResolver {
 	return &MapResolver{
-		bpmn:     make(map[modelKey]*bpmnBundle),
-		cmmnDefs: make(map[modelKey]*cmmn.CaseDefinition),
+		bpmn:      make(map[modelKey]*bpmnBundle),
+		cmmnDefs:  make(map[modelKey]*cmmn.CaseDefinition),
+		retention: make(map[modelKey]uint64),
 	}
 }
 
@@ -122,7 +126,11 @@ func (r *MapResolver) ParseBPMN(name, version string, xml []byte) error {
 	if err != nil {
 		return fmt.Errorf("iflowengine: parse bpmn %q/%q: %w", name, version, err)
 	}
-	r.AddBPMN(name, version, g)
+	ttl := historyTTLFromBPMN(xml)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.bundle(name, version).graph = g
+	r.retention[modelKey{kind: "bpmn", name: name, version: version}] = ttl
 	return nil
 }
 
@@ -190,9 +198,11 @@ func (r *MapResolver) ParseCMMN(name, version string, xml []byte) error {
 	if err != nil {
 		return fmt.Errorf("iflowengine: parse cmmn %q/%q: %w", name, version, err)
 	}
+	ttl := historyTTLFromCMMN(xml)
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.cmmnDefs[modelKey{kind: "cmmn", name: name, version: version}] = def
-	r.mu.Unlock()
+	r.retention[modelKey{kind: "cmmn", name: name, version: version}] = ttl
 	return nil
 }
 
@@ -205,6 +215,15 @@ func (r *MapResolver) CMMN(ref *enginev1.ModelRef) (*cmmn.CaseDefinition, error)
 		return nil, fmt.Errorf("%w: cmmn %q/%q", ErrModelNotFound, ref.GetName(), ref.GetVersion())
 	}
 	return def, nil
+}
+
+// RetentionMs implements the optional retentionResolver capability (see
+// adapter.go): the model's parsed historyTimeToLive in ms, or 0 when the model
+// declares none. Models registered via AddBPMN (pre-parsed, no XML) report 0.
+func (r *MapResolver) RetentionMs(ref *enginev1.ModelRef) uint64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.retention[keyOf(ref)]
 }
 
 // decisionResolver mirrors dboshost's makeBPMNDecisionResolver: a closure over

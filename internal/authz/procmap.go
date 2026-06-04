@@ -79,11 +79,15 @@ var procMap = map[string]procEntry{
 	configv1connect.ConfigDeleteSecretProcedure:       {"DeleteSecret", []string{groupTenantConfig}},
 	configv1connect.ConfigRegisterDeploymentProcedure: {"RegisterDeployment", []string{groupTenantConfig}},
 	configv1connect.ConfigDeleteDeploymentProcedure:   {"DeleteDeployment", []string{groupTenantConfig}},
+	configv1connect.ConfigUpsertModelProcedure:        {"UpsertModel", []string{groupTenantConfig}},
+	configv1connect.ConfigDeleteModelProcedure:        {"DeleteModel", []string{groupTenantConfig}},
 
 	// ----- Config: tenant-config reads -----
 	configv1connect.ConfigListDeploymentsProcedure:    {"ListDeployments", []string{groupConfigRead}},
 	configv1connect.ConfigDescribeDeploymentProcedure: {"DescribeDeployment", []string{groupConfigRead}},
 	configv1connect.ConfigListSecretsProcedure:        {"ListSecrets", []string{groupConfigRead}},
+	configv1connect.ConfigListModelsProcedure:         {"ListModels", []string{groupConfigRead}},
+	configv1connect.ConfigDescribeModelProcedure:      {"DescribeModel", []string{groupConfigRead}},
 
 	// ----- Config: platform plane (operator only) -----
 	configv1connect.ConfigUpsertCARootProcedure:             {"UpsertCARoot", []string{groupPlatformConfig}},

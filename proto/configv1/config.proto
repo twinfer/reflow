@@ -63,6 +63,18 @@ service Config {
   // for active references.
   rpc DeleteDeployment(DeleteDeploymentRequest) returns (DeleteDeploymentResponse);
 
+  // UpsertModel / ListModels / DescribeModel / DeleteModel manage shard 0's
+  // ModelTable — BPMN/CMMN model definitions (model_ref + inlined XML). Upsert
+  // parses-to-validate before proposing Command_UpsertModel; the per-node
+  // iflowengine TableResolver reconciles rows into parsed graphs + resolved
+  // historyTimeToLive. Leader-only for mutating calls; List/Describe are
+  // SyncRead. DeleteModel takes if_table_revision_eq for CAS (no force gate —
+  // an in-flight instance pins its model_ref and fails on its next turn).
+  rpc UpsertModel(UpsertModelRequest) returns (UpsertModelResponse);
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+  rpc DescribeModel(DescribeModelRequest) returns (DescribeModelResponse);
+  rpc DeleteModel(DeleteModelRequest) returns (DeleteModelResponse);
+
   // UpsertSecret / DeleteSecret / ListSecrets mirror the same trio
   // against shard 0's SecretTable. Each SecretRecord references a
   // ciphertext blob (gocloud.dev/blob URI) and a KEK (Tink KMS URI);
@@ -168,6 +180,35 @@ message DeleteDeploymentRequest {
   uint64 if_table_revision_eq = 3;
 }
 message DeleteDeploymentResponse {
+  uint64 table_revision = 1;
+}
+
+// Model registration (shard 0 ModelTable). model_ref pins kind+name+version;
+// xml is the BPMN/CMMN source the server parses-to-validate before proposing.
+message UpsertModelRequest {
+  reflow.engine.v1.ModelRef model_ref = 1;
+  bytes xml = 2;
+  uint64 if_table_revision_eq = 3;
+}
+message UpsertModelResponse {
+  uint64 table_revision = 1;
+}
+message ListModelsRequest {}
+message ListModelsResponse {
+  repeated reflow.engine.v1.ModelRecord records = 1;
+  uint64 table_revision = 2;
+}
+message DescribeModelRequest {
+  reflow.engine.v1.ModelRef model_ref = 1;
+}
+message DescribeModelResponse {
+  reflow.engine.v1.ModelRecord record = 1;
+}
+message DeleteModelRequest {
+  reflow.engine.v1.ModelRef model_ref = 1;
+  uint64 if_table_revision_eq = 2;
+}
+message DeleteModelResponse {
   uint64 table_revision = 1;
 }
 

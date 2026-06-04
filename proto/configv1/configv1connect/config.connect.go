@@ -70,6 +70,14 @@ const (
 	ConfigDescribeDeploymentProcedure = "/reflow.config.v1.Config/DescribeDeployment"
 	// ConfigDeleteDeploymentProcedure is the fully-qualified name of the Config's DeleteDeployment RPC.
 	ConfigDeleteDeploymentProcedure = "/reflow.config.v1.Config/DeleteDeployment"
+	// ConfigUpsertModelProcedure is the fully-qualified name of the Config's UpsertModel RPC.
+	ConfigUpsertModelProcedure = "/reflow.config.v1.Config/UpsertModel"
+	// ConfigListModelsProcedure is the fully-qualified name of the Config's ListModels RPC.
+	ConfigListModelsProcedure = "/reflow.config.v1.Config/ListModels"
+	// ConfigDescribeModelProcedure is the fully-qualified name of the Config's DescribeModel RPC.
+	ConfigDescribeModelProcedure = "/reflow.config.v1.Config/DescribeModel"
+	// ConfigDeleteModelProcedure is the fully-qualified name of the Config's DeleteModel RPC.
+	ConfigDeleteModelProcedure = "/reflow.config.v1.Config/DeleteModel"
 	// ConfigUpsertSecretProcedure is the fully-qualified name of the Config's UpsertSecret RPC.
 	ConfigUpsertSecretProcedure = "/reflow.config.v1.Config/UpsertSecret"
 	// ConfigDeleteSecretProcedure is the fully-qualified name of the Config's DeleteSecret RPC.
@@ -127,6 +135,17 @@ type ConfigClient interface {
 	// risk" acknowledgement; reflow does not currently scan partitions
 	// for active references.
 	DeleteDeployment(context.Context, *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error)
+	// UpsertModel / ListModels / DescribeModel / DeleteModel manage shard 0's
+	// ModelTable — BPMN/CMMN model definitions (model_ref + inlined XML). Upsert
+	// parses-to-validate before proposing Command_UpsertModel; the per-node
+	// iflowengine TableResolver reconciles rows into parsed graphs + resolved
+	// historyTimeToLive. Leader-only for mutating calls; List/Describe are
+	// SyncRead. DeleteModel takes if_table_revision_eq for CAS (no force gate —
+	// an in-flight instance pins its model_ref and fails on its next turn).
+	UpsertModel(context.Context, *connect.Request[configv1.UpsertModelRequest]) (*connect.Response[configv1.UpsertModelResponse], error)
+	ListModels(context.Context, *connect.Request[configv1.ListModelsRequest]) (*connect.Response[configv1.ListModelsResponse], error)
+	DescribeModel(context.Context, *connect.Request[configv1.DescribeModelRequest]) (*connect.Response[configv1.DescribeModelResponse], error)
+	DeleteModel(context.Context, *connect.Request[configv1.DeleteModelRequest]) (*connect.Response[configv1.DeleteModelResponse], error)
 	// UpsertSecret / DeleteSecret / ListSecrets mirror the same trio
 	// against shard 0's SecretTable. Each SecretRecord references a
 	// ciphertext blob (gocloud.dev/blob URI) and a KEK (Tink KMS URI);
@@ -217,6 +236,30 @@ func NewConfigClient(httpClient connect.HTTPClient, baseURL string, opts ...conn
 			connect.WithSchema(configMethods.ByName("DeleteDeployment")),
 			connect.WithClientOptions(opts...),
 		),
+		upsertModel: connect.NewClient[configv1.UpsertModelRequest, configv1.UpsertModelResponse](
+			httpClient,
+			baseURL+ConfigUpsertModelProcedure,
+			connect.WithSchema(configMethods.ByName("UpsertModel")),
+			connect.WithClientOptions(opts...),
+		),
+		listModels: connect.NewClient[configv1.ListModelsRequest, configv1.ListModelsResponse](
+			httpClient,
+			baseURL+ConfigListModelsProcedure,
+			connect.WithSchema(configMethods.ByName("ListModels")),
+			connect.WithClientOptions(opts...),
+		),
+		describeModel: connect.NewClient[configv1.DescribeModelRequest, configv1.DescribeModelResponse](
+			httpClient,
+			baseURL+ConfigDescribeModelProcedure,
+			connect.WithSchema(configMethods.ByName("DescribeModel")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteModel: connect.NewClient[configv1.DeleteModelRequest, configv1.DeleteModelResponse](
+			httpClient,
+			baseURL+ConfigDeleteModelProcedure,
+			connect.WithSchema(configMethods.ByName("DeleteModel")),
+			connect.WithClientOptions(opts...),
+		),
 		upsertSecret: connect.NewClient[configv1.UpsertSecretRequest, configv1.UpsertSecretResponse](
 			httpClient,
 			baseURL+ConfigUpsertSecretProcedure,
@@ -304,6 +347,10 @@ type configClient struct {
 	listDeployments          *connect.Client[configv1.ListDeploymentsRequest, configv1.ListDeploymentsResponse]
 	describeDeployment       *connect.Client[configv1.DescribeDeploymentRequest, configv1.DescribeDeploymentResponse]
 	deleteDeployment         *connect.Client[configv1.DeleteDeploymentRequest, configv1.DeleteDeploymentResponse]
+	upsertModel              *connect.Client[configv1.UpsertModelRequest, configv1.UpsertModelResponse]
+	listModels               *connect.Client[configv1.ListModelsRequest, configv1.ListModelsResponse]
+	describeModel            *connect.Client[configv1.DescribeModelRequest, configv1.DescribeModelResponse]
+	deleteModel              *connect.Client[configv1.DeleteModelRequest, configv1.DeleteModelResponse]
 	upsertSecret             *connect.Client[configv1.UpsertSecretRequest, configv1.UpsertSecretResponse]
 	deleteSecret             *connect.Client[configv1.DeleteSecretRequest, configv1.DeleteSecretResponse]
 	listSecrets              *connect.Client[configv1.ListSecretsRequest, configv1.ListSecretsResponse]
@@ -337,6 +384,26 @@ func (c *configClient) DescribeDeployment(ctx context.Context, req *connect.Requ
 // DeleteDeployment calls reflow.config.v1.Config.DeleteDeployment.
 func (c *configClient) DeleteDeployment(ctx context.Context, req *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error) {
 	return c.deleteDeployment.CallUnary(ctx, req)
+}
+
+// UpsertModel calls reflow.config.v1.Config.UpsertModel.
+func (c *configClient) UpsertModel(ctx context.Context, req *connect.Request[configv1.UpsertModelRequest]) (*connect.Response[configv1.UpsertModelResponse], error) {
+	return c.upsertModel.CallUnary(ctx, req)
+}
+
+// ListModels calls reflow.config.v1.Config.ListModels.
+func (c *configClient) ListModels(ctx context.Context, req *connect.Request[configv1.ListModelsRequest]) (*connect.Response[configv1.ListModelsResponse], error) {
+	return c.listModels.CallUnary(ctx, req)
+}
+
+// DescribeModel calls reflow.config.v1.Config.DescribeModel.
+func (c *configClient) DescribeModel(ctx context.Context, req *connect.Request[configv1.DescribeModelRequest]) (*connect.Response[configv1.DescribeModelResponse], error) {
+	return c.describeModel.CallUnary(ctx, req)
+}
+
+// DeleteModel calls reflow.config.v1.Config.DeleteModel.
+func (c *configClient) DeleteModel(ctx context.Context, req *connect.Request[configv1.DeleteModelRequest]) (*connect.Response[configv1.DeleteModelResponse], error) {
+	return c.deleteModel.CallUnary(ctx, req)
 }
 
 // UpsertSecret calls reflow.config.v1.Config.UpsertSecret.
@@ -431,6 +498,17 @@ type ConfigHandler interface {
 	// risk" acknowledgement; reflow does not currently scan partitions
 	// for active references.
 	DeleteDeployment(context.Context, *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error)
+	// UpsertModel / ListModels / DescribeModel / DeleteModel manage shard 0's
+	// ModelTable — BPMN/CMMN model definitions (model_ref + inlined XML). Upsert
+	// parses-to-validate before proposing Command_UpsertModel; the per-node
+	// iflowengine TableResolver reconciles rows into parsed graphs + resolved
+	// historyTimeToLive. Leader-only for mutating calls; List/Describe are
+	// SyncRead. DeleteModel takes if_table_revision_eq for CAS (no force gate —
+	// an in-flight instance pins its model_ref and fails on its next turn).
+	UpsertModel(context.Context, *connect.Request[configv1.UpsertModelRequest]) (*connect.Response[configv1.UpsertModelResponse], error)
+	ListModels(context.Context, *connect.Request[configv1.ListModelsRequest]) (*connect.Response[configv1.ListModelsResponse], error)
+	DescribeModel(context.Context, *connect.Request[configv1.DescribeModelRequest]) (*connect.Response[configv1.DescribeModelResponse], error)
+	DeleteModel(context.Context, *connect.Request[configv1.DeleteModelRequest]) (*connect.Response[configv1.DeleteModelResponse], error)
 	// UpsertSecret / DeleteSecret / ListSecrets mirror the same trio
 	// against shard 0's SecretTable. Each SecretRecord references a
 	// ciphertext blob (gocloud.dev/blob URI) and a KEK (Tink KMS URI);
@@ -515,6 +593,30 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 		ConfigDeleteDeploymentProcedure,
 		svc.DeleteDeployment,
 		connect.WithSchema(configMethods.ByName("DeleteDeployment")),
+		connect.WithHandlerOptions(opts...),
+	)
+	configUpsertModelHandler := connect.NewUnaryHandler(
+		ConfigUpsertModelProcedure,
+		svc.UpsertModel,
+		connect.WithSchema(configMethods.ByName("UpsertModel")),
+		connect.WithHandlerOptions(opts...),
+	)
+	configListModelsHandler := connect.NewUnaryHandler(
+		ConfigListModelsProcedure,
+		svc.ListModels,
+		connect.WithSchema(configMethods.ByName("ListModels")),
+		connect.WithHandlerOptions(opts...),
+	)
+	configDescribeModelHandler := connect.NewUnaryHandler(
+		ConfigDescribeModelProcedure,
+		svc.DescribeModel,
+		connect.WithSchema(configMethods.ByName("DescribeModel")),
+		connect.WithHandlerOptions(opts...),
+	)
+	configDeleteModelHandler := connect.NewUnaryHandler(
+		ConfigDeleteModelProcedure,
+		svc.DeleteModel,
+		connect.WithSchema(configMethods.ByName("DeleteModel")),
 		connect.WithHandlerOptions(opts...),
 	)
 	configUpsertSecretHandler := connect.NewUnaryHandler(
@@ -605,6 +707,14 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 			configDescribeDeploymentHandler.ServeHTTP(w, r)
 		case ConfigDeleteDeploymentProcedure:
 			configDeleteDeploymentHandler.ServeHTTP(w, r)
+		case ConfigUpsertModelProcedure:
+			configUpsertModelHandler.ServeHTTP(w, r)
+		case ConfigListModelsProcedure:
+			configListModelsHandler.ServeHTTP(w, r)
+		case ConfigDescribeModelProcedure:
+			configDescribeModelHandler.ServeHTTP(w, r)
+		case ConfigDeleteModelProcedure:
+			configDeleteModelHandler.ServeHTTP(w, r)
 		case ConfigUpsertSecretProcedure:
 			configUpsertSecretHandler.ServeHTTP(w, r)
 		case ConfigDeleteSecretProcedure:
@@ -654,6 +764,22 @@ func (UnimplementedConfigHandler) DescribeDeployment(context.Context, *connect.R
 
 func (UnimplementedConfigHandler) DeleteDeployment(context.Context, *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DeleteDeployment is not implemented"))
+}
+
+func (UnimplementedConfigHandler) UpsertModel(context.Context, *connect.Request[configv1.UpsertModelRequest]) (*connect.Response[configv1.UpsertModelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.UpsertModel is not implemented"))
+}
+
+func (UnimplementedConfigHandler) ListModels(context.Context, *connect.Request[configv1.ListModelsRequest]) (*connect.Response[configv1.ListModelsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.ListModels is not implemented"))
+}
+
+func (UnimplementedConfigHandler) DescribeModel(context.Context, *connect.Request[configv1.DescribeModelRequest]) (*connect.Response[configv1.DescribeModelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DescribeModel is not implemented"))
+}
+
+func (UnimplementedConfigHandler) DeleteModel(context.Context, *connect.Request[configv1.DeleteModelRequest]) (*connect.Response[configv1.DeleteModelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DeleteModel is not implemented"))
 }
 
 func (UnimplementedConfigHandler) UpsertSecret(context.Context, *connect.Request[configv1.UpsertSecretRequest]) (*connect.Response[configv1.UpsertSecretResponse], error) {

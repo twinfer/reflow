@@ -60,6 +60,7 @@ const (
 	deploymentPrefix      = "deployment/"
 	deploymentIndexPrefix = "deployment_idx/"
 	secretPrefix          = "secret/"
+	modelPrefix           = "model/"
 	lpOwnerPrefix         = "lpowner/"
 	lpTransferPrefix      = "lptransfer/"
 	rebalanceDrainPrefix  = "rebalance_drain/"
@@ -80,6 +81,7 @@ const (
 	RevisionTableCARoot         = "caroot"
 	RevisionTableJoinToken      = "jointoken"
 	RevisionTablePlatformConfig = "platformconfig"
+	RevisionTableModel          = "model"
 )
 
 // MetaKey returns the singleton key for the metadata shard's PartitionMeta.
@@ -136,6 +138,22 @@ func SecretKey(name string) []byte {
 	out := make([]byte, 0, len(secretPrefix)+len(name))
 	out = append(out, secretPrefix...)
 	return append(out, name...)
+}
+
+// ModelPrefix returns the model/ namespace prefix. Used for iteration.
+func ModelPrefix() []byte { return []byte(modelPrefix) }
+
+// ModelKey returns model/<kind>\x00<name>\x00<version>. The NUL separators
+// can't appear in proto string fields, so the (kind,name,version) boundaries
+// are unambiguous — the row is keyed by the immutable ModelRef snapshot id.
+func ModelKey(kind, name, version string) []byte {
+	out := make([]byte, 0, len(modelPrefix)+len(kind)+1+len(name)+1+len(version))
+	out = append(out, modelPrefix...)
+	out = append(out, kind...)
+	out = append(out, 0x00)
+	out = append(out, name...)
+	out = append(out, 0x00)
+	return append(out, version...)
 }
 
 // CARootPrefix returns the caroot/ namespace prefix. Used for iteration.

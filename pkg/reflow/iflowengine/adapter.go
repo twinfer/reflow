@@ -27,6 +27,24 @@ func New(models ModelResolver) *Adapter {
 
 var _ invoker.ProcessEngine = (*Adapter)(nil)
 
+// retentionResolver is the optional capability a ModelResolver implements to
+// declare a per-model history-retention window (the Camunda historyTimeToLive
+// analog). Kept off the ModelResolver interface so a resolver that doesn't
+// parse a window (e.g. a custom test resolver) keeps the immediate-delete
+// default rather than failing to compile.
+type retentionResolver interface {
+	RetentionMs(ref *enginev1.ModelRef) uint64
+}
+
+// retentionMs resolves the model's history window in ms, or 0 (immediate
+// delete) when the resolver doesn't implement the optional capability.
+func (a *Adapter) retentionMs(ref *enginev1.ModelRef) uint64 {
+	if rr, ok := a.models.(retentionResolver); ok {
+		return rr.RetentionMs(ref)
+	}
+	return 0
+}
+
 // Advance runs one iflow engine turn for the instance described by in.Record,
 // driven by in.Entry. See the package and Adapter docs for the contract. A
 // returned error is converted by reflow's processSession into a failed

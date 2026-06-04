@@ -54,6 +54,7 @@ type Config struct {
 type Notifiers struct {
 	PartitionTable      *TableNotifier
 	SecretTable         *TableNotifier
+	ModelTable          *TableNotifier
 	LPOwnersTable       *TableNotifier
 	LPTransfersTable    *TableNotifier
 	RebalanceDrainTable *TableNotifier
@@ -281,6 +282,10 @@ func (f *FSM) applyCommand(
 		return f.applyUpsertSecret(batch, env, k.UpsertSecret, raftIndex)
 	case *enginev1.Command_DeleteSecret:
 		return f.applyDeleteSecret(batch, env, k.DeleteSecret, raftIndex)
+	case *enginev1.Command_UpsertModel:
+		return f.applyUpsertModel(batch, env, k.UpsertModel, raftIndex)
+	case *enginev1.Command_DeleteModel:
+		return f.applyDeleteModel(batch, env, k.DeleteModel, raftIndex)
 	case *enginev1.Command_UpsertLpOwner:
 		return f.applyUpsertLPOwner(batch, env, k.UpsertLpOwner, raftIndex)
 	case *enginev1.Command_DeleteLpOwner:
@@ -547,6 +552,66 @@ func (f *FSM) applyDeleteSecret(
 		return nil, fmt.Errorf("cluster: bump secret revision: %w", err)
 	}
 	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.SecretTable}}, nil
+}
+
+func (f *FSM) applyUpsertModel(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.UpsertModel,
+	raftIndex uint64,
+) (*applyResult, error) {
+	rec := cmd.GetRecord()
+	ref := rec.GetModelRef()
+	if ref.GetKind() == "" || ref.GetName() == "" {
+		f.cfg.Log.Warn("cluster: UpsertModel missing model_ref kind/name; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableModel)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load model revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	rec.RegisteredAtMs = nowMs // deterministic stamp from the proposer's header clock
+	if err := (ModelTable{S: batch}).Put(batch, rec); err != nil {
+		return nil, fmt.Errorf("cluster: write model: %w", err)
+	}
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableModel, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump model revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.ModelTable}}, nil
+}
+
+func (f *FSM) applyDeleteModel(
+	batch storage.Batch,
+	env *enginev1.Envelope,
+	cmd *enginev1.DeleteModel,
+	raftIndex uint64,
+) (*applyResult, error) {
+	ref := cmd.GetModelRef()
+	if ref.GetKind() == "" || ref.GetName() == "" {
+		f.cfg.Log.Warn("cluster: DeleteModel missing model_ref kind/name; ignoring",
+			"raft_index", raftIndex)
+		return &applyResult{}, nil
+	}
+	ok, err := f.checkPrecondition(batch, env, RevisionTableModel)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: load model revision: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	if err := (ModelTable{S: batch}).Delete(batch, ref.GetKind(), ref.GetName(), ref.GetVersion()); err != nil {
+		return nil, fmt.Errorf("cluster: delete model: %w", err)
+	}
+	nowMs := env.GetHeader().GetCreatedAtMs()
+	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableModel, nowMs); err != nil {
+		return nil, fmt.Errorf("cluster: bump model revision: %w", err)
+	}
+	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.ModelTable}}, nil
 }
 
 // applyUpsertCARoot writes the CARootRecord and bumps the table
@@ -1404,6 +1469,11 @@ type (
 	// Reconciler calls this on each TableNotifier wake.
 	LookupSecrets struct{}
 
+	// LookupModels returns *ModelList — every ModelRecord on shard 0 plus
+	// the table's CAS revision in one SyncRead. The per-node iflowengine
+	// TableResolver calls this on each ModelTable notifier wake.
+	LookupModels struct{}
+
 	// LookupPlatformConfig returns *PlatformConfigResult — the
 	// PlatformConfigRecord singleton (nil Record when unset) plus the
 	// platform-config table's CAS revision. The authz Reconciler calls this
@@ -1458,6 +1528,13 @@ type PlatformConfigResult struct {
 // revision, atomic w.r.t. the read snapshot.
 type SecretList struct {
 	Records       []*enginev1.SecretRecord
+	TableRevision uint64
+}
+
+// ModelList bundles every row in ModelTable with the table's CAS revision,
+// atomic w.r.t. the read snapshot.
+type ModelList struct {
+	Records       []*enginev1.ModelRecord
 	TableRevision uint64
 }
 
@@ -1583,6 +1660,16 @@ func (f *FSM) Lookup(query any) (any, error) {
 			return nil, err
 		}
 		return &SecretList{Records: records, TableRevision: rev}, nil
+	case LookupModels:
+		records, err := (ModelTable{S: store}).List()
+		if err != nil {
+			return nil, err
+		}
+		rev, err := (RevisionTable{S: store}).Get(RevisionTableModel)
+		if err != nil {
+			return nil, err
+		}
+		return &ModelList{Records: records, TableRevision: rev}, nil
 	case LookupCARoots:
 		records, err := (CARootTable{S: store}).List()
 		if err != nil {

@@ -9,25 +9,34 @@ import (
 	"os"
 
 	connect "connectrpc.com/connect"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/twinfer/reflow/pkg/reflowclient"
 	configv1 "github.com/twinfer/reflow/proto/configv1"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// cmdRegisterModel uploads a BPMN/CMMN model file into shard 0's ModelTable.
-// The server validates kind + XML well-formedness before proposing; each node's
-// iflowengine TableResolver reconciles the row into a parsed graph +
-// historyTimeToLive on the next notifier wake.
+// cmdRegisterModel uploads a BPMN/CMMN/DMN model file into shard 0's ModelTable.
+// The server validates the model (real iflow parse + static validation when the
+// process plane is on) and the optional bundle before proposing; each node's
+// iflowengine TableResolver reconciles the row into a parsed graph + decision
+// runtimes + child-ref overrides + historyTimeToLive on the next notifier wake.
 //
-//	reflowd config register-model --file=order.bpmn --kind=bpmn --name=Order --version=v1 [--admin=ADDR]
+// --bundle is an optional protojson ModelBundle pinning the DMN decisions and
+// child processes/cases this model reaches, e.g.
+//
+//	{"decisions":{"checkCredit":{"kind":"dmn","name":"CreditCheck","version":"v1"}},
+//	 "children":{"ship":{"kind":"bpmn","name":"Shipping","version":"v1"}}}
+//
+//	reflowd config register-model --file=order.bpmn --kind=bpmn --name=Order --version=v1 [--bundle=order.bundle.json] [--admin=ADDR]
 func cmdRegisterModel(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("register-model", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)
-	file := fs.String("file", "", "path to a BPMN/CMMN model XML file (required)")
-	kind := fs.String("kind", "bpmn", "model kind: bpmn or cmmn")
+	file := fs.String("file", "", "path to a BPMN/CMMN/DMN model XML file (required)")
+	kind := fs.String("kind", "bpmn", "model kind: bpmn, cmmn or dmn")
 	name := fs.String("name", "", "model name (required)")
 	version := fs.String("version", "", "model version")
+	bundleFile := fs.String("bundle", "", "path to a protojson ModelBundle pinning decision/child refs (optional)")
 	ifRev := fs.Uint64("if-revision", 0, "CAS guard: only apply if the model-table revision equals this (0 disables)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -42,10 +51,22 @@ func cmdRegisterModel(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("read model file: %w", err)
 	}
+	var bundle *enginev1.ModelBundle
+	if *bundleFile != "" {
+		raw, err := os.ReadFile(*bundleFile)
+		if err != nil {
+			return fmt.Errorf("read bundle file: %w", err)
+		}
+		bundle = &enginev1.ModelBundle{}
+		if err := protojson.Unmarshal(raw, bundle); err != nil {
+			return fmt.Errorf("parse bundle json: %w", err)
+		}
+	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
 		resp, err := cli.Config.UpsertModel(rctx, connect.NewRequest(&configv1.UpsertModelRequest{
 			ModelRef:          &enginev1.ModelRef{Kind: *kind, Name: *name, Version: *version},
 			Xml:               xmlBytes,
+			Bundle:            bundle,
 			IfTableRevisionEq: *ifRev,
 		}))
 		if err != nil {
@@ -116,6 +137,7 @@ func cmdDescribeModel(ctx context.Context, args []string) error {
 		return enc.Encode(map[string]any{
 			"model_ref":        rec.GetModelRef(),
 			"registered_at_ms": rec.GetRegisteredAtMs(),
+			"bundle":           rec.GetBundle(),
 			"xml":              string(rec.GetXml()),
 		})
 	})

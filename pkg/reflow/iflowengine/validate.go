@@ -6,6 +6,7 @@ import (
 
 	"github.com/twinfer/iflow/bpmn"
 	"github.com/twinfer/iflow/cmmn"
+	"github.com/twinfer/iflow/dmn"
 )
 
 // ValidateModel parses and statically validates a model definition, returning a
@@ -47,8 +48,15 @@ func ValidateModel(kind string, xml []byte) error {
 			return fmt.Errorf("validate cmmn: %w", err)
 		}
 		return nil
+	case "dmn":
+		// A DMN model is a decision dependency of a BusinessRuleTask, referenced
+		// via a bundle. NewRuntime parses + compiles every decision in the file.
+		if _, err := dmn.NewRuntime(xml); err != nil {
+			return fmt.Errorf("compile dmn: %w", err)
+		}
+		return nil
 	default:
-		return fmt.Errorf("model kind must be %q or %q, got %q", "bpmn", "cmmn", kind)
+		return fmt.Errorf("model kind must be %q, %q or %q, got %q", "bpmn", "cmmn", "dmn", kind)
 	}
 }
 

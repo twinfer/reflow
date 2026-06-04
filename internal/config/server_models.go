@@ -35,11 +35,15 @@ func (s *Server) UpsertModel(ctx context.Context, req *connect.Request[configv1.
 	if err := s.validateModel(ref.GetKind(), req.Msg.GetXml()); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	if err := validateBundle(req.Msg.GetBundle()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	cmd := &enginev1.Command{
 		Kind: &enginev1.Command_UpsertModel{
 			UpsertModel: &enginev1.UpsertModel{Record: &enginev1.ModelRecord{
 				ModelRef: ref,
 				Xml:      req.Msg.GetXml(),
+				Bundle:   req.Msg.GetBundle(),
 				// registered_at_ms is stamped deterministically in the apply arm.
 			}},
 		},
@@ -146,6 +150,36 @@ func (s *Server) readModelRevision(ctx context.Context) (uint64, error) {
 // injects iflowengine.ValidateModel instead, which catches structural defects
 // this check cannot. Signature matches that injected func so the two are
 // interchangeable in NewServer.
+// validateBundle structurally checks a model's ref-resolution bundle: decision
+// refs must name a dmn model, child refs a bpmn/cmmn model, and every ref must
+// carry a name. It does NOT consult the table (cross-row existence is resolved
+// per-node by the TableResolver) nor parse the model — pure proto checks, so
+// config stays iflow-free. A nil/empty bundle is valid.
+func validateBundle(b *enginev1.ModelBundle) error {
+	if b == nil {
+		return nil
+	}
+	for decisionRef, ref := range b.GetDecisions() {
+		if ref.GetName() == "" {
+			return fmt.Errorf("config: bundle decision %q: ref name required", decisionRef)
+		}
+		if ref.GetKind() != "dmn" {
+			return fmt.Errorf("config: bundle decision %q: ref kind must be dmn, got %q", decisionRef, ref.GetKind())
+		}
+	}
+	for elem, ref := range b.GetChildren() {
+		if ref.GetName() == "" {
+			return fmt.Errorf("config: bundle child %q: ref name required", elem)
+		}
+		switch ref.GetKind() {
+		case "bpmn", "cmmn":
+		default:
+			return fmt.Errorf("config: bundle child %q: ref kind must be bpmn or cmmn, got %q", elem, ref.GetKind())
+		}
+	}
+	return nil
+}
+
 func validateModelXML(kind string, x []byte) error {
 	switch kind {
 	case "bpmn", "cmmn":

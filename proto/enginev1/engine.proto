@@ -1587,6 +1587,22 @@ message ModelRecord {
   ModelRef model_ref = 1;
   bytes xml = 2;
   fixed64 registered_at_ms = 3;
+  // bundle pins the DMN decisions and child processes/cases this model reaches
+  // at runtime (mirrors iflow's runtime.BPMNBundle). Optional: an empty/absent
+  // bundle leaves child refs to the name convention and a BusinessRuleTask
+  // decisionRef unresolvable (errors at eval, as before).
+  ModelBundle bundle = 4;
+}
+
+// ModelBundle is the explicit ref-resolution map for a model: which DMN model a
+// BusinessRuleTask's decisionRef resolves to, and which child model a
+// CallActivity/CaseTask calledElement resolves to. The per-node TableResolver
+// reads it at reconcile to build the decision runtimes and child-ref overrides.
+// Keys are the strings the iflow engine sees (decisionRef / calledElement);
+// values are ModelTable refs (decisions → kind=dmn, children → kind=bpmn/cmmn).
+message ModelBundle {
+  map<string, ModelRef> decisions = 1;
+  map<string, ModelRef> children = 2;
 }
 
 // UpsertModel is the Command_UpsertModel payload. Apply arm CAS-checks

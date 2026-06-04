@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/twinfer/iflow/bpmn"
 	"github.com/twinfer/iflow/cmmn"
+	"github.com/twinfer/iflow/dmn"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -25,11 +27,14 @@ type ModelTableReader interface {
 }
 
 // parsedModel is one model materialized from a ModelRecord: the parsed graph or
-// case definition plus the resolved historyTimeToLive window. Immutable once
-// built; the resolver swaps whole maps, never mutates a published entry.
+// case definition, the bundle-resolved decision runtimes + child-ref overrides,
+// and the resolved historyTimeToLive window. Immutable once built; the resolver
+// swaps whole maps, never mutates a published entry.
 type parsedModel struct {
 	graph       *bpmn.ProcessGraph
 	caseDef     *cmmn.CaseDefinition
+	decisions   map[string]*dmn.Runtime       // decisionRef → runtime (from bundle.decisions)
+	children    map[string]*enginev1.ModelRef // calledElement → child ref override (bundle.children)
 	retentionMs uint64
 }
 
@@ -38,9 +43,9 @@ type parsedModel struct {
 // atomically swaps an in-memory parsed-model cache; the read methods serve that
 // cache with a single atomic load and no per-turn I/O — the no-per-turn-I/O
 // contract the determinism rules require. It is the production counterpart to
-// the boot-time MapResolver. v1 scope: BPMN + CMMN models, no DMN decision
-// runtimes and no child-ref overrides (ChildRef falls back to the name
-// convention, as MapResolver does); those are follow-ups.
+// the boot-time MapResolver. Each model's bundle (ModelRecord.bundle) pins its
+// DMN decision runtimes and child-ref overrides; ChildRef falls back to the
+// name convention when the bundle declares no override.
 type TableResolver struct {
 	log         *slog.Logger
 	live        atomic.Pointer[map[modelKey]*parsedModel]
@@ -88,17 +93,26 @@ func (r *TableResolver) CMMN(ref *enginev1.ModelRef) (*cmmn.CaseDefinition, erro
 	return m.caseDef, nil
 }
 
-// BPMNDecisions implements ModelResolver. v1 stores no DMN runtimes: a
-// decision-free model never invokes the resolver; a BusinessRuleTask model
-// errors at decision-resolve time (same as MapResolver without AddDecision).
-func (r *TableResolver) BPMNDecisions(*enginev1.ModelRef) bpmn.DecisionResolver {
-	return decisionResolver(nil)
+// BPMNDecisions implements ModelResolver: a resolver over the runtimes the
+// model's bundle.decisions pinned at reconcile. A decisionRef absent from the
+// bundle errors at resolve time (same as MapResolver without AddDecision).
+func (r *TableResolver) BPMNDecisions(ref *enginev1.ModelRef) bpmn.DecisionResolver {
+	m := r.lookup(ref)
+	if m == nil {
+		return decisionResolver(nil)
+	}
+	return decisionResolver(m.decisions)
 }
 
-// ChildRef implements ModelResolver. v1 has no per-model override rows, so it
-// uses the name=ref convention under the parent's version — identical to
-// MapResolver's fallback.
+// ChildRef implements ModelResolver: a bundle.children override if the model
+// declared one for ref, else the name=ref convention under the parent's version
+// (identical to MapResolver's fallback).
 func (r *TableResolver) ChildRef(parent *enginev1.ModelRef, childKind, ref string) (*enginev1.ModelRef, error) {
+	if m := r.lookup(parent); m != nil {
+		if child, ok := m.children[ref]; ok {
+			return child, nil
+		}
+	}
 	return &enginev1.ModelRef{Kind: childKind, Name: ref, Version: parent.GetVersion()}, nil
 }
 
@@ -139,21 +153,44 @@ func (r *TableResolver) reconcileFromReader(ctx context.Context, reader ModelTab
 	r.Reconcile(records)
 }
 
-// Reconcile parses each ModelRecord and atomically swaps the cache. A row that
-// fails to parse preserves its previously-cached entry (transient or
-// build-time-bad models don't knock a working model offline).
+// Reconcile parses each ModelRecord and atomically swaps the cache. DMN rows are
+// compiled first so BPMN/CMMN models can bind their bundle.decisions; a row that
+// fails to parse (or whose referenced DMN is missing) preserves its
+// previously-cached entry — transient or build-time-bad models don't knock a
+// working model offline.
 func (r *TableResolver) Reconcile(records []*enginev1.ModelRecord) {
 	r.reconcileMu.Lock()
 	defer r.reconcileMu.Unlock()
 	prev := r.live.Load()
+
+	// First pass: compile every DMN row into a runtime. A DMN that fails to
+	// compile is skipped here; a model referencing it then fails its second-pass
+	// parse and preserves-prev.
+	dmnRuntimes := make(map[modelKey]*dmn.Runtime)
+	for _, rec := range records {
+		ref := rec.GetModelRef()
+		if ref.GetKind() != "dmn" || ref.GetName() == "" {
+			continue
+		}
+		rt, err := dmn.NewRuntime(rec.GetXml())
+		if err != nil {
+			r.log.Warn("iflowengine: dmn compile failed; dependent models will preserve-prev",
+				"name", ref.GetName(), "version", ref.GetVersion(), "err", err)
+			continue
+		}
+		dmnRuntimes[keyOf(ref)] = rt
+	}
+
+	// Second pass: materialize BPMN/CMMN models (DMN rows are consumed above, not
+	// served directly through BPMN/CMMN).
 	next := make(map[modelKey]*parsedModel, len(records))
 	for _, rec := range records {
 		ref := rec.GetModelRef()
-		if ref.GetKind() == "" || ref.GetName() == "" {
+		if ref.GetName() == "" || ref.GetKind() == "" || ref.GetKind() == "dmn" {
 			continue
 		}
 		key := keyOf(ref)
-		pm, err := parseModelRecord(rec)
+		pm, err := parseModelRecord(rec, dmnRuntimes)
 		if err != nil {
 			r.log.Warn("iflowengine: model parse failed; preserving previous",
 				"kind", ref.GetKind(), "name", ref.GetName(), "version", ref.GetVersion(), "err", err)
@@ -169,22 +206,57 @@ func (r *TableResolver) Reconcile(records []*enginev1.ModelRecord) {
 	r.live.Store(&next)
 }
 
-func parseModelRecord(rec *enginev1.ModelRecord) (*parsedModel, error) {
+func parseModelRecord(rec *enginev1.ModelRecord, dmnRuntimes map[modelKey]*dmn.Runtime) (*parsedModel, error) {
 	ref := rec.GetModelRef()
+	decisions, err := resolveDecisions(rec.GetBundle(), dmnRuntimes)
+	if err != nil {
+		return nil, err
+	}
+	children := resolveChildren(rec.GetBundle())
 	switch ref.GetKind() {
 	case "bpmn":
 		g, err := bpmn.Parse(rec.GetXml(), "")
 		if err != nil {
 			return nil, fmt.Errorf("parse bpmn: %w", err)
 		}
-		return &parsedModel{graph: g, retentionMs: historyTTLFromBPMN(rec.GetXml())}, nil
+		return &parsedModel{graph: g, decisions: decisions, children: children, retentionMs: historyTTLFromBPMN(rec.GetXml())}, nil
 	case "cmmn":
 		def, err := cmmn.Parse(rec.GetXml(), "")
 		if err != nil {
 			return nil, fmt.Errorf("parse cmmn: %w", err)
 		}
-		return &parsedModel{caseDef: def, retentionMs: historyTTLFromCMMN(rec.GetXml())}, nil
+		return &parsedModel{caseDef: def, decisions: decisions, children: children, retentionMs: historyTTLFromCMMN(rec.GetXml())}, nil
 	default:
 		return nil, fmt.Errorf("unknown model kind %q", ref.GetKind())
 	}
+}
+
+// resolveDecisions binds each bundle.decisions entry (decisionRef → dmn ref) to
+// its compiled runtime. An entry pointing at a missing/uncompilable DMN row is
+// an error so the referencing model preserves-prev rather than running with a
+// half-resolved decision set.
+func resolveDecisions(b *enginev1.ModelBundle, dmnRuntimes map[modelKey]*dmn.Runtime) (map[string]*dmn.Runtime, error) {
+	if b == nil || len(b.GetDecisions()) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]*dmn.Runtime, len(b.GetDecisions()))
+	for decisionRef, dmnRef := range b.GetDecisions() {
+		rt, ok := dmnRuntimes[keyOf(dmnRef)]
+		if !ok {
+			return nil, fmt.Errorf("decision %q: unresolved dmn %s/%s", decisionRef, dmnRef.GetName(), dmnRef.GetVersion())
+		}
+		out[decisionRef] = rt
+	}
+	return out, nil
+}
+
+// resolveChildren copies the bundle.children overrides (calledElement → child
+// ref) into a plain map for ChildRef.
+func resolveChildren(b *enginev1.ModelBundle) map[string]*enginev1.ModelRef {
+	if b == nil || len(b.GetChildren()) == 0 {
+		return nil
+	}
+	out := make(map[string]*enginev1.ModelRef, len(b.GetChildren()))
+	maps.Copy(out, b.GetChildren())
+	return out
 }

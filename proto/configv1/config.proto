@@ -189,6 +189,9 @@ message UpsertModelRequest {
   reflow.engine.v1.ModelRef model_ref = 1;
   bytes xml = 2;
   uint64 if_table_revision_eq = 3;
+  // bundle is the optional decision/child ref-resolution map stored on the
+  // ModelRecord (decisions → kind=dmn refs, children → kind=bpmn/cmmn refs).
+  reflow.engine.v1.ModelBundle bundle = 4;
 }
 message UpsertModelResponse {
   uint64 table_revision = 1;

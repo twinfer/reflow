@@ -33,6 +33,8 @@ func TestValidateModel(t *testing.T) {
 	}{
 		{"valid bpmn", "bpmn", bpmnWithTTL, false},
 		{"valid cmmn", "cmmn", echoCaseCMMN, false},
+		{"valid dmn", "dmn", validDMN, false},
+		{"malformed dmn", "dmn", `<definitions`, true},
 		// Well-formed + parseable but statically invalid: the gap a shallow XML
 		// check misses. bpmn endEvent-with-outgoing → BPM001; empty cmmn case →
 		// cmmn.Validate "root stage has no plan items".
@@ -42,7 +44,7 @@ func TestValidateModel(t *testing.T) {
 		{"malformed xml", "bpmn", `<definitions><process id="p"`, true},
 		// Input guards.
 		{"empty xml", "bpmn", "", true},
-		{"unknown kind", "dmn", bpmnWithTTL, true},
+		{"unknown kind", "xslt", bpmnWithTTL, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

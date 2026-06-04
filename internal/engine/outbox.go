@@ -294,6 +294,12 @@ func outboxEnvelopeToCommand(env *enginev1.OutboxEnvelope) *enginev1.Command {
 		return &enginev1.Command{
 			Kind: &enginev1.Command_ProcessSubscribe{ProcessSubscribe: k.ProcessSubscribe},
 		}
+	case *enginev1.OutboxEnvelope_ProcessUnsubscribe:
+		// Cross-partition teardown of the above: onProcessUnsubscribe deletes the
+		// forward MessageSubscription row on the message routing key's shard.
+		return &enginev1.Command{
+			Kind: &enginev1.Command_ProcessUnsubscribe{ProcessUnsubscribe: k.ProcessUnsubscribe},
+		}
 	case *enginev1.OutboxEnvelope_OutboxAck:
 		return &enginev1.Command{
 			Kind: &enginev1.Command_OutboxAck{OutboxAck: k.OutboxAck},

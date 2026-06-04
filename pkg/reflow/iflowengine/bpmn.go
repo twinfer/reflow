@@ -182,6 +182,9 @@ func (a *Adapter) translateBPMN(in invoker.ProcessAdvanceInput, graph *bpmn.Proc
 			if err != nil {
 				return nil, fmt.Errorf("iflowengine: encode process outputs: %w", err)
 			}
+			// retention_ms is left 0 → the engine deletes the terminal record
+			// immediately (opt-in history). Per-model historyTimeToLive parsing
+			// (Camunda-style) would resolve and stamp the window here; deferred.
 			adv.Terminal = &enginev1.ProcessTerminal{Output: out}
 			return adv, nil
 		case bpmn.ProcessFailed:
@@ -249,15 +252,16 @@ func (a *Adapter) translateBPMN(in invoker.ProcessAdvanceInput, graph *bpmn.Proc
 				Slot:     0,
 			})
 		case bpmn.CancelWait:
-			// CancelWait tears down a timer OR a signal/message wait. Timer waits
-			// map to TimerCancel. Signal/message subscriptions have no unsubscribe
-			// instruction yet, so a torn-down catch leaves its one-shot
-			// MessageSubscription row behind — benign in the same way as a leaked
-			// boundary timer: a later matching message delivers a stale
-			// MessageReceived that the partition drops for the absent/advanced
-			// instance. Cross-shard unsubscribe is future work.
+			// CancelWait tears down a timer OR a signal/message wait. A timer-wait
+			// node maps to TimerCancel; any other catch maps to SignalUnsubscribe,
+			// and the engine resolves the node id to the forward MessageSubscription
+			// via its per-instance reverse index and deletes it (same-shard or via
+			// the outbox). The catch's correlation key is not re-derivable here,
+			// which is why the instruction carries only the node id.
 			if isTimerWaitNode(graph, t.NodeID) {
 				adv.CancelTimer = append(adv.CancelTimer, &enginev1.TimerCancel{NodeId: t.NodeID, Slot: 0})
+			} else {
+				adv.Unsubscribe = append(adv.Unsubscribe, &enginev1.SignalUnsubscribe{NodeId: t.NodeID})
 			}
 		case bpmn.SpawnSubProcess:
 			// Only CallActivity spawns a child instance (CalledElement set);

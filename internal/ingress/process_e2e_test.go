@@ -199,3 +199,76 @@ func TestIngress_StartProcessThenDeliverMessage(t *testing.T) {
 		t.Fatalf("GetProcessInstance after completion = present, want absent (reaped)")
 	}
 }
+
+// TestIngress_ListProcessInstances proves the band-scoped fan-out: several parked
+// instances of one model are enumerated by ListProcessInstances (each running,
+// parked on its message catch), with service and status filters applied. Single
+// node, so the fan-out resolves every band LP to the one partition shard.
+func TestIngress_ListProcessInstances(t *testing.T) {
+	res := iflowengine.NewMapResolver()
+	if err := res.ParseBPMN("msgproc", "v1", []byte(e2eMessageCatchBPMN)); err != nil {
+		t.Fatalf("parse model: %v", err)
+	}
+	_, cli := bringUpHostWithProcessEngine(t, iflowengine.New(res))
+
+	const svc = "msgproc"
+	instKeys := []string{"o-1", "o-2", "o-3"}
+	for _, k := range instKeys {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := cli.StartProcess(ctx, connect.NewRequest(&ingressv1.StartProcessRequest{
+			ModelRef:    &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"},
+			InstanceKey: k,
+			Vars:        []byte(`{"orderId":"` + k + `"}`),
+		}))
+		cancel()
+		if err != nil {
+			t.Fatalf("StartProcess %s: %v", k, err)
+		}
+	}
+
+	listReq := func(req *ingressv1.ListProcessInstancesRequest) []*ingressv1.ProcessInstanceSummary {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		resp, err := cli.ListProcessInstances(ctx, connect.NewRequest(req))
+		if err != nil {
+			t.Fatalf("ListProcessInstances: %v", err)
+		}
+		return resp.Msg.GetInstances()
+	}
+
+	// Wait until all three records exist (each StartProcess commits its record).
+	deadline := time.Now().Add(10 * time.Second)
+	var got []*ingressv1.ProcessInstanceSummary
+	for time.Now().Before(deadline) {
+		got = listReq(&ingressv1.ListProcessInstancesRequest{ModelRef: &enginev1.ModelRef{Name: svc}})
+		if len(got) == len(instKeys) {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if len(got) != len(instKeys) {
+		t.Fatalf("list returned %d instances, want %d", len(got), len(instKeys))
+	}
+	seen := map[string]bool{}
+	for _, s := range got {
+		if s.GetService() != svc {
+			t.Fatalf("summary service = %q, want %q", s.GetService(), svc)
+		}
+		seen[s.GetInstanceKey()] = true
+	}
+	for _, k := range instKeys {
+		if !seen[k] {
+			t.Fatalf("instance %q missing from list", k)
+		}
+	}
+
+	// A non-matching model name lists nothing.
+	if other := listReq(&ingressv1.ListProcessInstancesRequest{ModelRef: &enginev1.ModelRef{Name: "nope"}}); len(other) != 0 {
+		t.Fatalf("list other model: got %d, want 0", len(other))
+	}
+	// limit caps the result.
+	if capped := listReq(&ingressv1.ListProcessInstancesRequest{ModelRef: &enginev1.ModelRef{Name: svc}, Limit: 1}); len(capped) != 1 {
+		t.Fatalf("list limit 1: got %d, want 1", len(capped))
+	}
+}

@@ -70,6 +70,19 @@ type ActScheduleReap struct {
 
 func (ActScheduleReap) isAction() {}
 
+// ActScheduleProcessReap hands a freshly-written process-instance reap row to
+// the leader's process ReapService. The reaper fires at FireAtMs by proposing
+// Command.ReapProcessInstance, which deletes the terminal instance's retained
+// record. The process-plane analog of ActScheduleReap.
+type ActScheduleProcessReap struct {
+	FireAtMs    uint64
+	Pk          uint64
+	Service     string
+	InstanceKey string
+}
+
+func (ActScheduleProcessReap) isAction() {}
+
 // ActStartLPTransferScan is emitted by onBeginLPTransfer (source side)
 // after the freeze row is durable. The runner hands it to the leader-
 // side LPTransferService, which opens a read snapshot, builds one

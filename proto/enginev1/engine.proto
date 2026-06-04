@@ -215,6 +215,16 @@ message Command {
     // shardID >= 1.
     DeliverProcessMessage deliver_process_message = 42;
     ProcessSubscribe process_subscribe = 43;
+    // ProcessUnsubscribe deletes a parked MessageSubscription on the partition
+    // owning the message routing key — the teardown counterpart of
+    // ProcessSubscribe (cross-shard via OutboxEnvelope.process_unsubscribe).
+    // Accepted only by shardID >= 1.
+    ProcessUnsubscribe process_unsubscribe = 44;
+    // ReapProcessInstance deletes a terminal instance's retained record when its
+    // ProcessTerminal.retention_ms history window elapses — the process-plane
+    // analog of ReapInvocation, proposed by the leader's process reaper.
+    // Accepted only by shardID >= 1.
+    ReapProcessInstance reap_process_instance = 51;
     // SetRebalanceDrain marks a partition shard as drained (drain=true)
     // or undrained (drain=false) in shard 0's RebalanceDrainTable. The
     // autonomous rebalancer subtracts drained shards from the planner's
@@ -1043,6 +1053,7 @@ message OutboxEnvelope {
     PromiseCompletionAck promise_completion_ack = 7;
     ProcessEvent process_event = 8;
     ProcessSubscribe process_subscribe = 9;
+    ProcessUnsubscribe process_unsubscribe = 10;
   }
 }
 
@@ -1201,7 +1212,8 @@ message ProcessAdvanced {
   repeated TimerCancel cancel_timer = 7; // -> ActDeleteTimer
   repeated ChildStart start_child = 8;   // -> ActDispatchOutbox (subprocess / call-activity / case-task)
   repeated SignalSubscribe subscribe = 9;
-  ProcessTerminal terminal = 10;         // set iff ProcessCompleted / ProcessFailed
+  ProcessTerminal terminal = 10;             // set iff ProcessCompleted / ProcessFailed
+  repeated SignalUnsubscribe unsubscribe = 11; // -> delete MessageSubscription (torn-down catch)
 }
 
 message TaskInvoke {
@@ -1220,7 +1232,40 @@ message ChildStart {
   bytes vars = 5;
 }
 message SignalSubscribe { string node_id = 1; string message_name = 2; string correlation_key = 3; }
-message ProcessTerminal { bool failed = 1; bytes output = 2; string failure_message = 3; }
+// SignalUnsubscribe tears down a parked catch (event-gateway loser, or any catch
+// torn down while still subscribed). Carries only the catch node id — the engine
+// recovers the correlation from the per-instance proc_sub_idx reverse index (the
+// adapter's CancelWait has no correlation key; see iflow host.Correlation).
+message SignalUnsubscribe { string node_id = 1; }
+
+// ProcessTerminal ends an instance. retention_ms is the model-declared history
+// window (the Camunda historyTimeToLive analog), stamped by the iflow adapter:
+// 0 = no retention (finishProcessInstance deletes the record immediately on
+// terminal, as before — observable only via the result delivered to a parent);
+// >0 retains the terminal record for the window, after which the leader's
+// process reaper deletes it. The window is opt-in and shares the reap mechanism
+// with invocation/workflow retention.
+message ProcessTerminal {
+  bool failed = 1;
+  bytes output = 2;
+  string failure_message = 3;
+  uint64 retention_ms = 4;
+}
+
+// ReapProcessInstance deletes a terminal process instance's retained record and
+// any leftover rows after its history window (ProcessTerminal.retention_ms)
+// elapses — the process-plane analog of ReapInvocation. Proposed only by the
+// leader's process reaper (the generalized ReapService bound to
+// ProcessReapTable); idempotent — the originating
+// proc_reap/<fire_at><pk><digest> row is deleted in the same batch even on a
+// no-op apply. pk/service/instance_key address the record; fire_at_ms
+// identifies the reap row.
+message ReapProcessInstance {
+  fixed64 pk = 1;
+  string service = 2;
+  string instance_key = 3;
+  fixed64 fire_at_ms = 4;
+}
 
 // MessageSubscription is one parked BPMN message/signal catch, stored in
 // MessageSubscriptionTable on the partition owning (tenant, message_name,
@@ -1242,6 +1287,17 @@ message MessageSubscription {
 // correlation_key)). Applied via Command_ProcessSubscribe (onProcessSubscribe
 // writes the row); shipped cross-shard via OutboxEnvelope.process_subscribe.
 message ProcessSubscribe {
+  fixed64 pk = 1;
+  MessageSubscription sub = 2;
+}
+
+// ProcessUnsubscribe deletes one MessageSubscription from the partition owning
+// the message routing key — the teardown counterpart of ProcessSubscribe.
+// Applied via Command_ProcessUnsubscribe (onProcessUnsubscribe deletes the row);
+// shipped cross-shard via OutboxEnvelope.process_unsubscribe. It carries the full
+// subscription (not just a correlation) so the apply arm reconstructs the forward
+// row key exactly; the engine builds it from the proc_sub_idx reverse index.
+message ProcessUnsubscribe {
   fixed64 pk = 1;
   MessageSubscription sub = 2;
 }
@@ -1285,6 +1341,16 @@ message ProcessInstanceRecord {
   // turn mid-dispatch. Maintained on the apply path; feedback decrements saturate
   // at 0 to absorb the benign timer fire-vs-cancel race.
   uint32 outstanding = 9;
+  // Terminal / history fields. finishProcessInstance stamps output,
+  // failure_message, and ended_at_ms when a turn ends the instance and (when
+  // ProcessTerminal.retention_ms > 0) retains the record for the window before
+  // the process reaper deletes it. output/failure_message mirror the terminal
+  // turn's ProcessTerminal; created_at_ms is stamped at record creation so the
+  // pair brackets the instance lifetime for the history/query surface.
+  bytes output = 10;
+  string failure_message = 11;
+  uint64 created_at_ms = 12;
+  uint64 ended_at_ms = 13;
 }
 
 // ProcessInboxEntry is one queued event for an instance, stored at

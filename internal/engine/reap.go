@@ -5,37 +5,103 @@ import (
 	"container/heap"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/twinfer/reflow/internal/engine/limits"
-	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
-// reapHeapEntry is a single scheduled retention sweep ordered by
-// fire_at_ms. Tie-breaking by (partition_key, uuid) keeps ordering
-// deterministic across replicas.
-type reapHeapEntry struct {
-	fireAtMs uint64
-	id       *enginev1.InvocationId
+// reapEntry is one scheduled retention sweep. The reaper is target-agnostic so
+// one ReapService drains either plane: invocation reaps (keyed by InvocationId →
+// Command_ReapInvocation) and process-instance reaps (keyed by
+// pk+service+instance_key → Command_ReapProcessInstance) both implement it. A
+// single ReapService instance only ever holds one concrete type, so lessThan
+// may assume its argument is the same type.
+type reapEntry interface {
+	fireAtMs() uint64
+	// lessThan is the deterministic tiebreak at equal fire times, so every
+	// replica drains the heap in the same order.
+	lessThan(other reapEntry) bool
+	// command is what the reaper proposes (via ProposeSelf) when the entry is due.
+	command() *enginev1.Command
+	// String is a compact identity for failure logs.
+	String() string
 }
 
-type reapHeap []reapHeapEntry
+// invocationReapEntry reaps a Completed invocation's durable footprint.
+type invocationReapEntry struct {
+	fireAt uint64
+	id     *enginev1.InvocationId
+}
 
-func (h reapHeap) Len() int { return len(h) }
-func (h reapHeap) Less(i, j int) bool {
-	if h[i].fireAtMs != h[j].fireAtMs {
-		return h[i].fireAtMs < h[j].fireAtMs
+func (e invocationReapEntry) fireAtMs() uint64 { return e.fireAt }
+
+func (e invocationReapEntry) lessThan(o reapEntry) bool {
+	if of := o.fireAtMs(); e.fireAt != of {
+		return e.fireAt < of
 	}
-	if pi, pj := h[i].id.GetPartitionKey(), h[j].id.GetPartitionKey(); pi != pj {
+	oo := o.(invocationReapEntry)
+	if pi, pj := e.id.GetPartitionKey(), oo.id.GetPartitionKey(); pi != pj {
 		return pi < pj
 	}
-	return bytes.Compare(h[i].id.GetUuid(), h[j].id.GetUuid()) < 0
+	return bytes.Compare(e.id.GetUuid(), oo.id.GetUuid()) < 0
 }
-func (h reapHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
-func (h *reapHeap) Push(x any)   { *h = append(*h, x.(reapHeapEntry)) }
+
+func (e invocationReapEntry) command() *enginev1.Command {
+	return &enginev1.Command{Kind: &enginev1.Command_ReapInvocation{
+		ReapInvocation: &enginev1.ReapInvocation{InvocationId: e.id, FireAtMs: e.fireAt},
+	}}
+}
+
+func (e invocationReapEntry) String() string {
+	return fmt.Sprintf("inv %d/%x", e.id.GetPartitionKey(), e.id.GetUuid())
+}
+
+// processReapEntry reaps a terminal process instance's retained record.
+type processReapEntry struct {
+	fireAt      uint64
+	pk          uint64
+	service     string
+	instanceKey string
+}
+
+func (e processReapEntry) fireAtMs() uint64 { return e.fireAt }
+
+func (e processReapEntry) lessThan(o reapEntry) bool {
+	if of := o.fireAtMs(); e.fireAt != of {
+		return e.fireAt < of
+	}
+	oo := o.(processReapEntry)
+	if e.pk != oo.pk {
+		return e.pk < oo.pk
+	}
+	if e.service != oo.service {
+		return e.service < oo.service
+	}
+	return e.instanceKey < oo.instanceKey
+}
+
+func (e processReapEntry) command() *enginev1.Command {
+	return &enginev1.Command{Kind: &enginev1.Command_ReapProcessInstance{
+		ReapProcessInstance: &enginev1.ReapProcessInstance{
+			Pk: e.pk, Service: e.service, InstanceKey: e.instanceKey, FireAtMs: e.fireAt,
+		},
+	}}
+}
+
+func (e processReapEntry) String() string {
+	return fmt.Sprintf("proc %d/%s/%s", e.pk, e.service, e.instanceKey)
+}
+
+type reapHeap []reapEntry
+
+func (h reapHeap) Len() int           { return len(h) }
+func (h reapHeap) Less(i, j int) bool { return h[i].lessThan(h[j]) }
+func (h reapHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *reapHeap) Push(x any)        { *h = append(*h, x.(reapEntry)) }
 func (h *reapHeap) Pop() any {
 	old := *h
 	n := len(old)
@@ -44,16 +110,16 @@ func (h *reapHeap) Pop() any {
 	return x
 }
 
-// ReapService is the leader-only loop that drives invocation retention
-// cleanup. Mirrors TimerService: an in-memory heap of (fire_at_ms,
-// inv_id) entries persisted in ReapTable. On leader gain Rebuild reloads
-// the heap; the Run loop wakes at the head's fire_at_ms and proposes
-// Command.ReapInvocation against the local apply path. One service
-// reaps every kind — plain invocations, virtual-object calls, and
-// workflow runs — because every Completed invocation schedules a row
-// here; the apply arm decides whether to also sweep entity-scoped state.
+// ReapService is the leader-only loop that drives retention cleanup. Mirrors
+// TimerService: an in-memory heap of reapEntry persisted in a backing table. On
+// leader gain Rebuild reloads the heap; the Run loop wakes at the head's
+// fire_at_ms and proposes the entry's command against the local apply path. The
+// service is target-agnostic (the scanAll closure + entry.command bind it to a
+// table + command), so the runner instantiates one for invocation retention
+// (ReapTable → ReapInvocation) and one for process-instance retention
+// (ProcessReapTable → ReapProcessInstance).
 type ReapService struct {
-	table      tables.ReapTable
+	scanAll    func(func(reapEntry) error) error
 	proposer   Proposer
 	now        func() uint64
 	log        *slog.Logger
@@ -77,9 +143,10 @@ type ReapServiceOptions struct {
 	MaxPending int
 }
 
-// NewReapService constructs the service. proposer may be nil on
-// followers; firing is a no-op then.
-func NewReapService(table tables.ReapTable, proposer Proposer, opts ReapServiceOptions) *ReapService {
+// NewReapService constructs the service. scanAll reloads the heap from the
+// backing table on Rebuild (each scanned row emitted as a reapEntry). proposer
+// may be nil on followers; firing is a no-op then.
+func NewReapService(scanAll func(func(reapEntry) error) error, proposer Proposer, opts ReapServiceOptions) *ReapService {
 	if opts.Now == nil {
 		opts.Now = func() uint64 { return uint64(time.Now().UnixMilli()) }
 	}
@@ -90,7 +157,7 @@ func NewReapService(table tables.ReapTable, proposer Proposer, opts ReapServiceO
 		opts.MaxPending = limits.DefaultMaxPendingReaps
 	}
 	return &ReapService{
-		table:      table,
+		scanAll:    scanAll,
 		proposer:   proposer,
 		now:        opts.Now,
 		log:        opts.Log,
@@ -105,8 +172,8 @@ func NewReapService(table tables.ReapTable, proposer Proposer, opts ReapServiceO
 // on leader gain.
 func (s *ReapService) Rebuild() error {
 	loaded := make(reapHeap, 0)
-	if err := s.table.ScanAll(func(r tables.ReapRow) error {
-		loaded = append(loaded, reapHeapEntry{fireAtMs: r.FireAtMs, id: r.ID})
+	if err := s.scanAll(func(e reapEntry) error {
+		loaded = append(loaded, e)
 		return nil
 	}); err != nil {
 		return err
@@ -120,10 +187,10 @@ func (s *ReapService) Rebuild() error {
 }
 
 // Push enqueues a freshly-written reap row. Called inline from the
-// runner's dispatchActions handler for ActScheduleReap.
-func (s *ReapService) Push(fireAtMs uint64, id *enginev1.InvocationId) {
+// runner's dispatchActions handler for ActScheduleReap / ActScheduleProcessReap.
+func (s *ReapService) Push(e reapEntry) {
 	s.mu.Lock()
-	heap.Push(&s.heap, reapHeapEntry{fireAtMs: fireAtMs, id: id})
+	heap.Push(&s.heap, e)
 	s.mu.Unlock()
 	s.signalWake()
 }
@@ -144,7 +211,7 @@ func (s *ReapService) Run(ctx context.Context) error {
 		s.mu.Lock()
 		var nextFire uint64
 		if len(s.heap) > 0 {
-			nextFire = s.heap[0].fireAtMs
+			nextFire = s.heap[0].fireAtMs()
 		}
 		s.mu.Unlock()
 
@@ -206,16 +273,16 @@ func (s *ReapService) signalWake() {
 	}
 }
 
-// fireDue pops every due entry and proposes a ReapInvocation for each.
+// fireDue pops every due entry and proposes its command.
 func (s *ReapService) fireDue(ctx context.Context) {
 	if s.dropIfNoProposer() {
 		return
 	}
 	now := s.now()
-	var due []reapHeapEntry
+	var due []reapEntry
 	s.mu.Lock()
-	for len(s.heap) > 0 && s.heap[0].fireAtMs <= now {
-		due = append(due, heap.Pop(&s.heap).(reapHeapEntry))
+	for len(s.heap) > 0 && s.heap[0].fireAtMs() <= now {
+		due = append(due, heap.Pop(&s.heap).(reapEntry))
 	}
 	s.mu.Unlock()
 	s.proposeReaps(ctx, due)
@@ -240,9 +307,9 @@ func (s *ReapService) fireOverflow(ctx context.Context) bool {
 	}
 
 	s.mu.Lock()
-	over := make([]reapHeapEntry, 0, excess)
+	over := make([]reapEntry, 0, excess)
 	for i := 0; i < excess && len(s.heap) > 0; i++ {
-		over = append(over, heap.Pop(&s.heap).(reapHeapEntry))
+		over = append(over, heap.Pop(&s.heap).(reapEntry))
 	}
 	remaining := len(s.heap)
 	s.mu.Unlock()
@@ -253,22 +320,14 @@ func (s *ReapService) fireOverflow(ctx context.Context) bool {
 	return true
 }
 
-// proposeReaps proposes a ReapInvocation for each entry. Mutex is NOT held
-// across the Propose call. Transient failures re-push the entry so the
-// retention sweep is not lost; shutdown-class errors drop on the floor
-// (the persistent row survives, next leader rebuild picks it up).
-func (s *ReapService) proposeReaps(ctx context.Context, entries []reapHeapEntry) {
+// proposeReaps proposes each entry's command. Mutex is NOT held across the
+// Propose call. Transient failures re-push the entry so the retention sweep is
+// not lost; shutdown-class errors drop on the floor (the persistent row
+// survives, next leader rebuild picks it up).
+func (s *ReapService) proposeReaps(ctx context.Context, entries []reapEntry) {
 	for _, e := range entries {
-		cmd := &enginev1.Command{
-			Kind: &enginev1.Command_ReapInvocation{
-				ReapInvocation: &enginev1.ReapInvocation{
-					InvocationId: e.id,
-					FireAtMs:     e.fireAtMs,
-				},
-			},
-		}
 		propCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		err := s.proposer.ProposeSelf(propCtx, cmd)
+		err := s.proposer.ProposeSelf(propCtx, e.command())
 		cancel()
 		if err == nil {
 			continue
@@ -279,11 +338,7 @@ func (s *ReapService) proposeReaps(ctx context.Context, entries []reapHeapEntry)
 		s.mu.Lock()
 		heap.Push(&s.heap, e)
 		s.mu.Unlock()
-		s.log.Warn("reap propose failed; re-queued",
-			"err", err,
-			"fire_at_ms", e.fireAtMs,
-			"partition_key", e.id.GetPartitionKey(),
-		)
+		s.log.Warn("reap propose failed; re-queued", "err", err, "entry", e.String())
 	}
 }
 

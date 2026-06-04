@@ -131,6 +131,8 @@ const (
 	promisePrefix        = "promise/"
 	promiseAwaiterPrefix = "promise_awaiter/"
 	reapPrefix           = "reap/"
+	procReapPrefix       = "proc_reap/"
+	procSubIdxPrefix     = "proc_sub_idx/"
 	lpFreezePrefix       = "lp_freeze/"
 	lpStagingPrefix      = "lp_staging/"
 )
@@ -929,6 +931,59 @@ func DecodeReapKey(key []byte) (uint64, *enginev1.InvocationId, error) {
 	fireAt := binary.BigEndian.Uint64(key[p : p+8])
 	id, err := DecodeInvocationID(key[p+8:])
 	return fireAt, id, err
+}
+
+// ProcessReapKey returns proc_reap/<8-byte BE fire_at_ms>/<24-byte process
+// root id>. Same shape as ReapKey (fire_at prefix → due-order drain) but the
+// process-plane namespace; id is the instance's deterministic
+// processRootID(pk, service, instance_key). The row VALUE carries the full
+// ReapProcessInstance (pk / service / instance_key / fire_at) since the id
+// digest in the key can't recover the strings.
+func ProcessReapKey(fireAtMs uint64, id *enginev1.InvocationId) ([]byte, error) {
+	raw, err := EncodeInvocationID(id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(procReapPrefix)+8+invocationIDLen)
+	out = append(out, procReapPrefix...)
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], fireAtMs)
+	out = append(out, buf[:]...)
+	return append(out, raw...), nil
+}
+
+// ProcessReapPrefix returns the proc_reap/ namespace prefix.
+func ProcessReapPrefix() []byte { return []byte(procReapPrefix) }
+
+// ProcessSubIndexKey returns proc_sub_idx/<lp:4><24-byte process root id><node_id>.
+// The per-instance reverse index of message subscriptions: it lives on the
+// instance's own shard (lp = the instance's LP) so finishProcessInstance can
+// sweep an instance's parked catches with one bounded prefix scan, and a
+// torn-down catch (SignalUnsubscribe, keyed by node id) resolves to its forward
+// subscription. The explicit lp:4 prefix keeps the rows LP-range-scannable
+// alongside the instance record. The value is the originating ProcessSubscribe.
+func ProcessSubIndexKey(root *enginev1.InvocationId, nodeID string) ([]byte, error) {
+	prefix, err := ProcessSubIndexInstancePrefix(root)
+	if err != nil {
+		return nil, err
+	}
+	return append(prefix, nodeID...), nil
+}
+
+// ProcessSubIndexInstancePrefix returns proc_sub_idx/<lp:4><24-byte root id> —
+// the bounded scan prefix for every subscription parked by one instance.
+func ProcessSubIndexInstancePrefix(root *enginev1.InvocationId) ([]byte, error) {
+	raw, err := EncodeInvocationID(root)
+	if err != nil {
+		return nil, err
+	}
+	lp := LPFromPartitionKey(root.GetPartitionKey())
+	out := make([]byte, 0, len(procSubIdxPrefix)+LPLen+invocationIDLen+8)
+	out = append(out, procSubIdxPrefix...)
+	var lpb [LPLen]byte
+	binary.BigEndian.PutUint32(lpb[:], lp)
+	out = append(out, lpb[:]...)
+	return append(out, raw...), nil
 }
 
 // PrefixUpperBound returns the smallest key strictly greater than every key

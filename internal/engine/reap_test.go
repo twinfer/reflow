@@ -14,7 +14,12 @@ func newReapSvc(t *testing.T, opts ReapServiceOptions) (*ReapService, *fakePropo
 	s := storage.NewMemStore()
 	t.Cleanup(func() { _ = s.Close() })
 	fp := &fakeProposer{}
-	return NewReapService(tables.ReapTable{S: s}, fp, opts), fp
+	scanAll := func(emit func(reapEntry) error) error {
+		return (tables.ReapTable{S: s}).ScanAll(func(rr tables.ReapRow) error {
+			return emit(invocationReapEntry{fireAt: rr.FireAtMs, id: rr.ID})
+		})
+	}
+	return NewReapService(scanAll, fp, opts), fp
 }
 
 func reapID(pk uint64, b byte) *enginev1.InvocationId {
@@ -39,7 +44,7 @@ func TestReapService_CountCapFiresOldestEarly(t *testing.T) {
 	// Five entries, distinct fire times far in the future. Excess = 5-3 = 2,
 	// so the two smallest fireAtMs (base+100, base+200) must fire.
 	for i := uint64(1); i <= 5; i++ {
-		svc.Push(base+i*100, reapID(i, byte(i)))
+		svc.Push(invocationReapEntry{fireAt: base + i*100, id: reapID(i, byte(i))})
 	}
 
 	ctx := t.Context()
@@ -83,7 +88,7 @@ func TestReapService_CountCapDisabled(t *testing.T) {
 		MaxPending: -1,
 	})
 	for i := uint64(1); i <= 5; i++ {
-		svc.Push(base+i*100, reapID(i, byte(i)))
+		svc.Push(invocationReapEntry{fireAt: base + i*100, id: reapID(i, byte(i))})
 	}
 	ctx := t.Context()
 	go svc.Run(ctx)

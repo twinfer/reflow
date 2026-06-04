@@ -43,17 +43,19 @@ type PartitionRunner struct {
 	// onBecomeLeader and torn down by onStepDown. dispatchActions reads
 	// them on the apply goroutine, which is the same goroutine as
 	// onBecomeLeader/onStepDown — no extra synchronisation needed.
-	timers     *TimerService
-	outbox     *OutboxService
-	reap       *ReapService
-	lpTransfer *LPTransferService
+	timers      *TimerService
+	outbox      *OutboxService
+	reap        *ReapService
+	processReap *ReapService
+	lpTransfer  *LPTransferService
 
-	mu             sync.Mutex
-	leaderCancel   context.CancelFunc
-	timerDone      chan struct{}
-	outboxDone     chan struct{}
-	reapDone       chan struct{}
-	lpTransferDone chan struct{}
+	mu              sync.Mutex
+	leaderCancel    context.CancelFunc
+	timerDone       chan struct{}
+	outboxDone      chan struct{}
+	reapDone        chan struct{}
+	processReapDone chan struct{}
+	lpTransferDone  chan struct{}
 	// storeRelease releases the Snapshotter lease acquired in
 	// onBecomeLeader. Held for the lifetime of the current leader scope
 	// so Host.Close → Snapshotter.Close waits until our leader-scoped
@@ -144,7 +146,16 @@ func (r *PartitionRunner) dispatchActions(actions []Action) {
 					"shard", r.ShardID)
 				continue
 			}
-			r.reap.Push(act.FireAtMs, act.ID)
+			r.reap.Push(invocationReapEntry{fireAt: act.FireAtMs, id: act.ID})
+		case ActScheduleProcessReap:
+			if r.processReap == nil {
+				r.log.Warn("runner: ActScheduleProcessReap with no process reap service",
+					"shard", r.ShardID)
+				continue
+			}
+			r.processReap.Push(processReapEntry{
+				fireAt: act.FireAtMs, pk: act.Pk, service: act.Service, instanceKey: act.InstanceKey,
+			})
 		case ActStartLPTransferScan:
 			if r.lpTransfer == nil {
 				r.log.Warn("runner: ActStartLPTransferScan with no lp transfer service",
@@ -218,7 +229,23 @@ func (r *PartitionRunner) onBecomeLeader() {
 		r.log,
 	)
 	reap := NewReapService(
-		tables.ReapTable{S: store},
+		func(emit func(reapEntry) error) error {
+			return (tables.ReapTable{S: store}).ScanAll(func(rr tables.ReapRow) error {
+				return emit(invocationReapEntry{fireAt: rr.FireAtMs, id: rr.ID})
+			})
+		},
+		r.proposer,
+		ReapServiceOptions{Log: r.log},
+	)
+	processReap := NewReapService(
+		func(emit func(reapEntry) error) error {
+			return (tables.ProcessReapTable{S: store}).ScanAll(func(cmd *enginev1.ReapProcessInstance) error {
+				return emit(processReapEntry{
+					fireAt: cmd.GetFireAtMs(), pk: cmd.GetPk(),
+					service: cmd.GetService(), instanceKey: cmd.GetInstanceKey(),
+				})
+			})
+		},
 		r.proposer,
 		ReapServiceOptions{Log: r.log},
 	)
@@ -248,6 +275,11 @@ func (r *PartitionRunner) onBecomeLeader() {
 		r.log.Error("partition: reap rebuild failed", "shard", r.ShardID, "err", err)
 		return
 	}
+	if err := processReap.Rebuild(); err != nil {
+		release()
+		r.log.Error("partition: process reap rebuild failed", "shard", r.ShardID, "err", err)
+		return
+	}
 	if err := lpTransfer.Rebuild(context.Background()); err != nil {
 		release()
 		r.log.Error("partition: lp transfer rebuild failed", "shard", r.ShardID, "err", err)
@@ -256,6 +288,7 @@ func (r *PartitionRunner) onBecomeLeader() {
 	r.timers = timers
 	r.outbox = outbox
 	r.reap = reap
+	r.processReap = processReap
 	r.lpTransfer = lpTransfer
 
 	// Reclaim SelfProposal dedup rows from epochs we have moved past.
@@ -276,6 +309,7 @@ func (r *PartitionRunner) onBecomeLeader() {
 	timerDone := make(chan struct{})
 	outboxDone := make(chan struct{})
 	reapDone := make(chan struct{})
+	processReapDone := make(chan struct{})
 	lpTransferDone := make(chan struct{})
 
 	r.mu.Lock()
@@ -293,6 +327,7 @@ func (r *PartitionRunner) onBecomeLeader() {
 	r.timerDone = timerDone
 	r.outboxDone = outboxDone
 	r.reapDone = reapDone
+	r.processReapDone = processReapDone
 	r.lpTransferDone = lpTransferDone
 	r.storeRelease = release
 	r.mu.Unlock()
@@ -337,6 +372,12 @@ func (r *PartitionRunner) onBecomeLeader() {
 		}
 	}()
 	go func() {
+		defer close(processReapDone)
+		if err := processReap.Run(leaderCtx); err != nil && !errors.Is(err, context.Canceled) {
+			r.log.Error("partition: process reap run exited", "shard", r.ShardID, "err", err)
+		}
+	}()
+	go func() {
 		defer close(lpTransferDone)
 		if err := lpTransfer.Run(leaderCtx); err != nil && !errors.Is(err, context.Canceled) {
 			r.log.Error("partition: lp transfer run exited", "shard", r.ShardID, "err", err)
@@ -370,12 +411,14 @@ func (r *PartitionRunner) onStepDown() {
 	timerDone := r.timerDone
 	outboxDone := r.outboxDone
 	reapDone := r.reapDone
+	processReapDone := r.processReapDone
 	lpTransferDone := r.lpTransferDone
 	release := r.storeRelease
 	r.leaderCancel = nil
 	r.timerDone = nil
 	r.outboxDone = nil
 	r.reapDone = nil
+	r.processReapDone = nil
 	r.lpTransferDone = nil
 	r.storeRelease = nil
 	r.mu.Unlock()
@@ -394,6 +437,9 @@ func (r *PartitionRunner) onStepDown() {
 	}
 	if reapDone != nil {
 		<-reapDone
+	}
+	if processReapDone != nil {
+		<-processReapDone
 	}
 	if lpTransferDone != nil {
 		<-lpTransferDone

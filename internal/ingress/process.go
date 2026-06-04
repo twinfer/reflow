@@ -12,8 +12,16 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/routing"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
+)
+
+const (
+	// defaultListProcessLimit caps a ListProcessInstances response when the caller
+	// gives no (or an over-large) limit; maxListProcessLimit is the hard ceiling.
+	defaultListProcessLimit = 1000
+	maxListProcessLimit     = 10000
 )
 
 // StartProcess launches a new iflow BPMN/CMMN instance. It routes by
@@ -163,8 +171,78 @@ func (s *Server) GetProcessInstance(ctx context.Context, req *connect.Request[in
 		resp.ActiveSeq = r.Record.GetActiveSeq()
 		resp.NextSeq = r.Record.GetNextSeq()
 		resp.Outstanding = r.Record.GetOutstanding()
+		resp.Output = r.Record.GetOutput()
+		resp.CreatedAtMs = r.Record.GetCreatedAtMs()
+		resp.EndedAtMs = r.Record.GetEndedAtMs()
 	}
 	return connect.NewResponse(resp), nil
+}
+
+// ListProcessInstances lists the caller tenant band's process instances. It
+// enumerates only the band's LPs (band = principal tenant), groups them by owning
+// shard, and reads each shard locally via SyncRead — every node hosts a replica
+// of every shard, so no cross-node RPC is needed — merging up to limit rows.
+// Tenant isolation: only the caller's band LPs are scanned, and each shard
+// re-derives the band as defense in depth.
+func (s *Server) ListProcessInstances(ctx context.Context, req *connect.Request[ingressv1.ListProcessInstancesRequest]) (*connect.Response[ingressv1.ListProcessInstancesResponse], error) {
+	msg := req.Msg
+	tenant, terr := principalTenant(ctx)
+	if terr != nil {
+		return nil, terr
+	}
+	limit := int(msg.GetLimit())
+	if limit <= 0 || limit > maxListProcessLimit {
+		limit = defaultListProcessLimit
+	}
+
+	// Group the band's LPs by owning shard.
+	bandStart := tenant << keys.IntraLPBits
+	bandEnd := (tenant + 1) << keys.IntraLPBits
+	part := s.host.Partitioner()
+	byShard := make(map[uint64][]uint32)
+	for lp := bandStart; lp < bandEnd; lp++ {
+		shard := part.ShardForLP(lp)
+		byShard[shard] = append(byShard[shard], lp)
+	}
+
+	q := engine.LookupProcessInstances{
+		Tenant:       tenant,
+		Service:      msg.GetModelRef().GetName(),
+		StatusFilter: msg.GetStatusFilter(),
+		Limit:        limit,
+	}
+	var out []*ingressv1.ProcessInstanceSummary
+	for shard, lps := range byShard {
+		if len(out) >= limit {
+			break
+		}
+		q.LPs = lps
+		res, err := s.host.NodeHost().SyncRead(ctx, shard, q)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list process instances (shard %d): %w", shard, err))
+		}
+		r, ok := res.(engine.ProcessInstancesLookupResult)
+		if !ok {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list process instances: unexpected type %T", res))
+		}
+		for _, si := range r.Instances {
+			out = append(out, &ingressv1.ProcessInstanceSummary{
+				Service:     si.Service,
+				InstanceKey: si.InstanceKey,
+				Status:      si.Record.GetStatus(),
+				Kind:        si.Record.GetKind(),
+				ActiveSeq:   si.Record.GetActiveSeq(),
+				NextSeq:     si.Record.GetNextSeq(),
+				Outstanding: si.Record.GetOutstanding(),
+				CreatedAtMs: si.Record.GetCreatedAtMs(),
+				EndedAtMs:   si.Record.GetEndedAtMs(),
+			})
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	return connect.NewResponse(&ingressv1.ListProcessInstancesResponse{Instances: out}), nil
 }
 
 // processKindFromString maps the wire model_ref.kind onto the ProcessKind enum.

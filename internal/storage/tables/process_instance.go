@@ -82,3 +82,35 @@ func (t ProcessInstanceTable) ScanAll(ctx context.Context, fn func(service, inst
 	}
 	return iter.Error()
 }
+
+// ScanLP iterates every instance in one logical partition in key order, decoding
+// (service, instance_key) from each key. Bounded by the LP's instance count.
+// Used by the cross-shard ListProcessInstances fan-out: the shard owning an LP
+// scans only that LP's instances. Mirrors ScanAll's key decode.
+func (t ProcessInstanceTable) ScanLP(lp uint32, fn func(service, instanceKey string, rec *enginev1.ProcessInstanceRecord) error) error {
+	base := len(keys.ProcessPrefix()) + keys.LPLen
+	prefix := keys.ProcessInstanceLPPrefix(lp)
+	iter, err := t.S.NewIter(prefix, keys.PrefixUpperBound(prefix))
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+	for ok := iter.First(); ok; ok = iter.Next() {
+		k := iter.Key()
+		if len(k) < base {
+			continue
+		}
+		before, after, ok0 := bytes.Cut(k[base:], []byte{'/'})
+		if !ok0 {
+			continue
+		}
+		rec := &enginev1.ProcessInstanceRecord{}
+		if err := proto.Unmarshal(iter.Value(), rec); err != nil {
+			continue
+		}
+		if err := fn(string(before), string(after), rec); err != nil {
+			return err
+		}
+	}
+	return iter.Error()
+}

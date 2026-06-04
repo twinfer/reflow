@@ -9,6 +9,7 @@ import (
 	"hash"
 	"io"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/lni/dragonboat/v4/statemachine"
@@ -358,6 +359,10 @@ func commandKindLabel(cmd *enginev1.Command) string {
 		return "ProcessEvent"
 	case *enginev1.Command_ProcessAdvanced:
 		return "ProcessAdvanced"
+	case *enginev1.Command_ProcessUnsubscribe:
+		return "ProcessUnsubscribe"
+	case *enginev1.Command_ReapProcessInstance:
+		return "ReapProcessInstance"
 	case nil:
 		return "empty"
 	default:
@@ -480,6 +485,8 @@ func lpFromCommand(cmd *enginev1.Command) uint32 {
 		return keys.LPFromPartitionKey(k.ProcessEvent.GetPk())
 	case *enginev1.Command_ProcessAdvanced:
 		return keys.LPFromPartitionKey(k.ProcessAdvanced.GetPk())
+	case *enginev1.Command_ReapProcessInstance:
+		return keys.LPFromPartitionKey(k.ReapProcessInstance.GetPk())
 	default:
 		// OutboxAck (LP-agnostic shard-internal pop), AnnounceLeader
 		// (SelfProposal dedup; lp ignored), unknown future kinds.
@@ -580,8 +587,12 @@ func (p *Partition) applyCommand(
 		return p.onProcessAdvanced(batch, meta, k.ProcessAdvanced, now, isLeader)
 	case *enginev1.Command_ProcessSubscribe:
 		return p.onProcessSubscribe(batch, k.ProcessSubscribe)
+	case *enginev1.Command_ProcessUnsubscribe:
+		return p.onProcessUnsubscribe(batch, k.ProcessUnsubscribe)
 	case *enginev1.Command_DeliverProcessMessage:
 		return p.onDeliverProcessMessage(batch, meta, k.DeliverProcessMessage, now, isLeader)
+	case *enginev1.Command_ReapProcessInstance:
+		return p.onReapProcessInstance(batch, k.ReapProcessInstance)
 	case nil:
 		p.cfg.Log.Warn("partition: envelope has no command kind", "raft_index", raftIndex)
 		return nil
@@ -834,12 +845,13 @@ func (p *Partition) enqueueInstanceEvent(batch storage.Batch, ev *enginev1.Proce
 			return nil
 		}
 		rec = &enginev1.ProcessInstanceRecord{
-			RootId:     processRootID(pk, service, instanceKey),
-			ModelRef:   ev.GetModelRef(),
-			Kind:       ev.GetKind(),
-			ParentLink: ev.GetParentLink(),
-			Status:     enginev1.ProcessStatus_PROCESS_STATUS_RUNNING,
-			NextSeq:    1,
+			RootId:      processRootID(pk, service, instanceKey),
+			ModelRef:    ev.GetModelRef(),
+			Kind:        ev.GetKind(),
+			ParentLink:  ev.GetParentLink(),
+			Status:      enginev1.ProcessStatus_PROCESS_STATUS_RUNNING,
+			NextSeq:     1,
+			CreatedAtMs: nowMs,
 		}
 	}
 	if rec.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_RUNNING {
@@ -959,6 +971,39 @@ func (p *Partition) writeSubscription(batch storage.Batch, ps *enginev1.ProcessS
 	return nil
 }
 
+// deliverProcessUnsubscribe tears down a message subscription on the partition
+// owning the message routing key (ps.pk): deleted directly when this shard owns
+// that LP, else shipped via the outbox to the owning shard (onProcessUnsubscribe
+// applies it). Mirrors deliverProcessSubscribe; takes the originating
+// ProcessSubscribe so the forward row key is reconstructed exactly.
+func (p *Partition) deliverProcessUnsubscribe(batch storage.Batch, meta *enginev1.PartitionMeta, ps *enginev1.ProcessSubscribe, isLeader bool) error {
+	pu := &enginev1.ProcessUnsubscribe{Pk: ps.GetPk(), Sub: ps.GetSub()}
+	shard := p.cfg.Partitioner.ShardForKey(pu.GetPk())
+	if shard == 0 || shard == p.shardID {
+		return p.deleteSubscription(batch, pu)
+	}
+	env := &enginev1.OutboxEnvelope{
+		DestinationShardId: shard,
+		Kind:               &enginev1.OutboxEnvelope_ProcessUnsubscribe{ProcessUnsubscribe: pu},
+	}
+	if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {
+		return fmt.Errorf("deliverProcessUnsubscribe: outbox append: %w", err)
+	}
+	return nil
+}
+
+// deleteSubscription removes one MessageSubscription row on this shard (it owns
+// pu.pk's LP). Used directly for a same-shard unsubscribe and by
+// onProcessUnsubscribe for the cross-shard landing.
+func (p *Partition) deleteSubscription(batch storage.Batch, pu *enginev1.ProcessUnsubscribe) error {
+	lp := keys.LPFromPartitionKey(pu.GetPk())
+	subT := tables.MessageSubscriptionTable{S: batch}
+	if err := subT.Delete(batch, lp, pu.GetSub()); err != nil {
+		return fmt.Errorf("deleteSubscription: delete: %w", err)
+	}
+	return nil
+}
+
 // onProcessAdvanced applies the result of one process turn: persist the new
 // state blob and dequeue the completed turn, then either finish the instance
 // (terminal) or actuate the turn's instructions and activate the next queued
@@ -1035,12 +1080,13 @@ func (p *Partition) onProcessAdvanced(batch storage.Batch, meta *enginev1.Partit
 }
 
 // finishProcessInstance applies a terminal turn: deliver the result back to a
-// process parent (call-activity / case-task node) if one is linked, then reap
-// the instance — delete every remaining inbox row plus the record itself. There
-// is no retention window yet: a completed instance is observable only via the
-// result delivered to its parent (an external query surface is future work).
-// The cross-shard delivery rides the durable outbox, so it survives the record
-// delete that happens in the same batch.
+// process parent (call-activity / case-task node) if one is linked, drop the
+// instance's still-queued inbox rows, then stamp the terminal state on the
+// record. Retention is opt-in via ProcessTerminal.retention_ms: 0 deletes the
+// record now (prior behavior); > 0 retains the terminal record and schedules the
+// process reaper to delete it after the window, so a history / query surface can
+// observe terminal status + output meanwhile. The cross-shard parent delivery
+// rides the durable outbox, so it survives whatever record disposition follows.
 func (p *Partition) finishProcessInstance(batch storage.Batch, meta *enginev1.PartitionMeta, rec *enginev1.ProcessInstanceRecord, adv *enginev1.ProcessAdvanced, term *enginev1.ProcessTerminal, active, nowMs uint64, isLeader bool) error {
 	pk := adv.GetPk()
 	lp := keys.LPFromPartitionKey(pk)
@@ -1069,15 +1115,124 @@ func (p *Partition) finishProcessInstance(batch storage.Batch, meta *enginev1.Pa
 		}
 	}
 
-	// Reap: drop any still-queued inbox rows (active was already dequeued above)
-	// and the record. Queued seqs are contiguous in (active, next_seq).
+	// Drop any still-queued inbox rows (active was dequeued by the caller); the
+	// inbox is the transient turn queue, not history. Queued seqs are contiguous
+	// in (active, next_seq).
 	for seq := active + 1; seq < rec.GetNextSeq(); seq++ {
 		if err := inboxT.Delete(batch, lp, service, instanceKey, seq); err != nil {
 			return fmt.Errorf("finishProcessInstance: inbox delete: %w", err)
 		}
 	}
+
+	// Tear down any still-parked message subscriptions (terminate-while-parked):
+	// scan the per-instance reverse index, unsubscribe each on its message
+	// partition, and drop the index rows. Collect-then-mutate so we never write
+	// the batch while iterating it.
+	root := rec.GetRootId()
+	subIdxT := tables.ProcessSubIndexTable{S: batch}
+	var parkedSubs []*enginev1.ProcessSubscribe
+	if err := subIdxT.ScanByInstance(root, func(ps *enginev1.ProcessSubscribe) error {
+		parkedSubs = append(parkedSubs, ps)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("finishProcessInstance: subscription index scan: %w", err)
+	}
+	for _, ps := range parkedSubs {
+		if err := p.deliverProcessUnsubscribe(batch, meta, ps, isLeader); err != nil {
+			return err
+		}
+		if err := subIdxT.Delete(batch, root, ps.GetSub().GetNodeId()); err != nil {
+			return fmt.Errorf("finishProcessInstance: subscription index delete: %w", err)
+		}
+	}
+
+	// Stamp terminal state on the record (the caller already set state_blob).
+	if term.GetFailed() {
+		rec.Status = enginev1.ProcessStatus_PROCESS_STATUS_FAILED
+	} else {
+		rec.Status = enginev1.ProcessStatus_PROCESS_STATUS_COMPLETED
+	}
+	rec.Output = term.GetOutput()
+	rec.FailureMessage = term.GetFailureMessage()
+	rec.EndedAtMs = nowMs
+	rec.ActiveSeq = 0
+	rec.Outstanding = 0
+
+	retention := term.GetRetentionMs()
+	if retention == 0 {
+		// No declared window → delete immediately (opt-in retention).
+		if err := procT.Delete(batch, lp, service, instanceKey); err != nil {
+			return fmt.Errorf("finishProcessInstance: record delete: %w", err)
+		}
+		return nil
+	}
+	if retention > limits.MaxAllowedRetentionMs {
+		retention = limits.MaxAllowedRetentionMs
+	}
+
+	// Retain the terminal record and schedule its reap. Mirrors
+	// applyTerminalCompletion's reap scheduling for invocations.
+	if err := procT.Put(batch, lp, service, instanceKey, rec); err != nil {
+		return fmt.Errorf("finishProcessInstance: record put: %w", err)
+	}
+	fireAt := nowMs + retention
+	cmd := &enginev1.ReapProcessInstance{Pk: pk, Service: service, InstanceKey: instanceKey, FireAtMs: fireAt}
+	if err := (tables.ProcessReapTable{S: batch}).Put(batch, root, cmd); err != nil {
+		return fmt.Errorf("finishProcessInstance: reap put: %w", err)
+	}
+	if isLeader {
+		p.cfg.Collector.Push(ActScheduleProcessReap{
+			FireAtMs: fireAt, Pk: pk, Service: service, InstanceKey: instanceKey,
+		})
+	}
+	return nil
+}
+
+// onReapProcessInstance deletes a terminal process instance's retained record
+// once its history window (ProcessTerminal.retention_ms) has elapsed. The
+// originating proc_reap row is the episode token: it is consumed atomically with
+// the record below, and each terminal episode's fire_at is strictly increasing,
+// so a duplicate / stale fire finds no row and no-ops — it can never delete a
+// re-created instance's record. The process plane has no entity-scoped state to
+// guard (unlike onReap for workflow invocations) and process timers self-clean
+// via reclaimFiredProcessTimer, so this is a straight record delete.
+func (p *Partition) onReapProcessInstance(batch storage.Batch, cmd *enginev1.ReapProcessInstance) error {
+	pk := cmd.GetPk()
+	if err := p.checkLPFreeze(batch, pk); err != nil {
+		return err
+	}
+	service, instanceKey := cmd.GetService(), cmd.GetInstanceKey()
+	root := processRootID(pk, service, instanceKey)
+	reapT := tables.ProcessReapTable{S: batch}
+	present, err := reapT.Exists(cmd.GetFireAtMs(), root)
+	if err != nil {
+		return fmt.Errorf("onReapProcessInstance: reap row exists: %w", err)
+	}
+	if !present {
+		// Duplicate / stale fire whose row was already consumed. No-op.
+		return nil
+	}
+	if err := reapT.Delete(batch, cmd.GetFireAtMs(), root); err != nil {
+		return fmt.Errorf("onReapProcessInstance: reap row delete: %w", err)
+	}
+	lp := keys.LPFromPartitionKey(pk)
+	procT := tables.ProcessInstanceTable{S: batch}
+	rec, ok, err := procT.Get(lp, service, instanceKey)
+	if err != nil {
+		return fmt.Errorf("onReapProcessInstance: load record: %w", err)
+	}
+	if !ok {
+		return nil
+	}
+	if rec.GetStatus() == enginev1.ProcessStatus_PROCESS_STATUS_RUNNING {
+		// Defensive: a row was present but the record is running (a re-created
+		// instance reusing the key). Leave the live record alone.
+		p.cfg.Log.Warn("partition: process reap on running instance; skipping record delete",
+			"service", service, "key", instanceKey)
+		return nil
+	}
 	if err := procT.Delete(batch, lp, service, instanceKey); err != nil {
-		return fmt.Errorf("finishProcessInstance: record delete: %w", err)
+		return fmt.Errorf("onReapProcessInstance: record delete: %w", err)
 	}
 	return nil
 }
@@ -1088,8 +1243,9 @@ func (p *Partition) finishProcessInstance(batch storage.Batch, meta *enginev1.Pa
 // timer becomes a process timer (fires as a Command_ProcessEvent); a child start
 // becomes a ProcessEvent(start) addressed to the child, itself process-parented
 // back. Durable rows are written on every replica; leader-only actions drive the
-// live timer/outbox services. Message subscriptions are not yet actuated — they
-// need the inbound correlation read path, deferred.
+// live timer/outbox services. A message/signal subscribe writes a forward
+// MessageSubscription on the message routing key's shard plus a per-instance
+// proc_sub_idx reverse-index row here; an unsubscribe tears both down.
 func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *enginev1.PartitionMeta, rec *enginev1.ProcessInstanceRecord, adv *enginev1.ProcessAdvanced, nowMs uint64, isLeader bool) error {
 	pk := adv.GetPk()
 	service, instanceKey := adv.GetService(), adv.GetInstanceKey()
@@ -1187,6 +1343,7 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 	// lives on the partition owning the message routing key (tenant, message_name,
 	// correlation_key) — generally a different LP than this instance — so a future
 	// DeliverProcessMessage can find it without knowing the instance's address.
+	subIdxT := tables.ProcessSubIndexTable{S: batch}
 	for _, sub := range adv.GetSubscribe() {
 		ps := &enginev1.ProcessSubscribe{
 			Pk: routing.PartitionKey(tenant, sub.GetMessageName(), sub.GetCorrelationKey()),
@@ -1202,6 +1359,31 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 		if err := p.deliverProcessSubscribe(batch, meta, ps, isLeader); err != nil {
 			return fmt.Errorf("actuateProcessInstructions: subscribe: %w", err)
 		}
+		// Record the per-instance reverse index (on this, the instance's shard) so
+		// a torn-down catch or the terminal sweep can find and delete the forward
+		// MessageSubscription, which lives on the message routing key's shard.
+		if err := subIdxT.Put(batch, root, ps); err != nil {
+			return fmt.Errorf("actuateProcessInstructions: subscribe index: %w", err)
+		}
+	}
+
+	// Unsubscribes: a torn-down catch (event-gateway loser). The instruction
+	// carries only the catch node id, so resolve the forward subscription via the
+	// reverse index, tear it down on its message partition, and drop the index row.
+	for _, un := range adv.GetUnsubscribe() {
+		ps, ok, err := subIdxT.Get(root, un.GetNodeId())
+		if err != nil {
+			return fmt.Errorf("actuateProcessInstructions: unsubscribe index get: %w", err)
+		}
+		if !ok {
+			continue // never subscribed / already torn down — idempotent
+		}
+		if err := p.deliverProcessUnsubscribe(batch, meta, ps, isLeader); err != nil {
+			return fmt.Errorf("actuateProcessInstructions: unsubscribe: %w", err)
+		}
+		if err := subIdxT.Delete(batch, root, un.GetNodeId()); err != nil {
+			return fmt.Errorf("actuateProcessInstructions: unsubscribe index delete: %w", err)
+		}
 	}
 	return nil
 }
@@ -1215,6 +1397,17 @@ func (p *Partition) onProcessSubscribe(batch storage.Batch, ps *enginev1.Process
 		return err
 	}
 	return p.writeSubscription(batch, ps)
+}
+
+// onProcessUnsubscribe deletes one message subscription on this shard (it owns
+// the message routing key's LP). The cross-shard landing of an
+// OutboxEnvelope.process_unsubscribe; same-shard unsubscribes call
+// deleteSubscription directly from actuateProcessInstructions.
+func (p *Partition) onProcessUnsubscribe(batch storage.Batch, pu *enginev1.ProcessUnsubscribe) error {
+	if err := p.checkLPFreeze(batch, pu.GetPk()); err != nil {
+		return err
+	}
+	return p.deleteSubscription(batch, pu)
 }
 
 // onDeliverProcessMessage applies an inbound correlated message: scan every
@@ -3080,6 +3273,33 @@ type ProcessInstanceLookupResult struct {
 	Present bool
 }
 
+// LookupProcessInstances lists instances on this shard within Tenant's band,
+// scanning each LP in LPs (the ingress fan-out routes each owning shard only the
+// band LPs it owns). Service and StatusFilter are optional prunes; Limit caps the
+// rows returned (0 = no cap). The shard-side band check (lp>>IntraLPBits) is
+// defense in depth on top of ingress only enumerating the caller's band.
+type LookupProcessInstances struct {
+	Tenant       uint32
+	Service      string
+	LPs          []uint32
+	StatusFilter []enginev1.ProcessStatus
+	Limit        int
+}
+
+func (LookupProcessInstances) isLookup() {}
+
+// ProcessInstanceSummary is one row of a LookupProcessInstances result.
+type ProcessInstanceSummary struct {
+	Service     string
+	InstanceKey string
+	Record      *enginev1.ProcessInstanceRecord
+}
+
+// ProcessInstancesLookupResult is the value returned by Lookup(LookupProcessInstances).
+type ProcessInstancesLookupResult struct {
+	Instances []ProcessInstanceSummary
+}
+
 // Lookup performs a linearizable read against the partition's on-disk store.
 // query must be one of the Lookup marker types defined in this package;
 // an unrecognised type returns an error. Implements statemachine.IOnDiskStateMachine.
@@ -3119,9 +3339,53 @@ func (p *Partition) Lookup(query any) (any, error) {
 			return nil, err
 		}
 		return ProcessInstanceLookupResult{Record: rec, Present: ok}, nil
+	case LookupProcessInstances:
+		return p.lookupProcessInstances(store, q)
 	default:
 		return nil, fmt.Errorf("partition: unknown lookup type %T", query)
 	}
+}
+
+// errListLimitReached aborts a ScanLP early once the caller's row cap is hit.
+var errListLimitReached = errors.New("list limit reached")
+
+// lookupProcessInstances scans the given LPs on this shard, filtering by service
+// (optional), status (optional), and the caller's tenant band (defense in depth),
+// capped at Limit rows. Backs the ingress ListProcessInstances fan-out.
+func (p *Partition) lookupProcessInstances(store storage.Store, q LookupProcessInstances) (ProcessInstancesLookupResult, error) {
+	statusOK := func(rec *enginev1.ProcessInstanceRecord) bool {
+		if len(q.StatusFilter) == 0 {
+			return true
+		}
+		return slices.Contains(q.StatusFilter, rec.GetStatus())
+	}
+	procT := tables.ProcessInstanceTable{S: store}
+	var out []ProcessInstanceSummary
+	for _, lp := range q.LPs {
+		if lp>>keys.IntraLPBits != q.Tenant {
+			continue // not in the caller's band
+		}
+		if q.Limit > 0 && len(out) >= q.Limit {
+			break
+		}
+		err := procT.ScanLP(lp, func(service, instanceKey string, rec *enginev1.ProcessInstanceRecord) error {
+			if q.Service != "" && service != q.Service {
+				return nil
+			}
+			if !statusOK(rec) {
+				return nil
+			}
+			out = append(out, ProcessInstanceSummary{Service: service, InstanceKey: instanceKey, Record: rec})
+			if q.Limit > 0 && len(out) >= q.Limit {
+				return errListLimitReached
+			}
+			return nil
+		})
+		if err != nil && !errors.Is(err, errListLimitReached) {
+			return ProcessInstancesLookupResult{}, err
+		}
+	}
+	return ProcessInstancesLookupResult{Instances: out}, nil
 }
 
 // Sync flushes pending writes (no-op when batches are committed with sync=true,

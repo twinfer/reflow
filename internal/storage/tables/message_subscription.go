@@ -59,3 +59,10 @@ func (t MessageSubscriptionTable) ScanByCorrelation(lp uint32, messageName, corr
 func (t MessageSubscriptionTable) DeleteKey(b storage.Batch, key []byte) error {
 	return b.Delete(key)
 }
+
+// Delete removes the subscription row for sub on lp by reconstructing its key
+// from the same fields Put used (the sub digest is stable per subscriber). Used
+// by onProcessUnsubscribe to tear down a parked catch.
+func (t MessageSubscriptionTable) Delete(b storage.Batch, lp uint32, sub *enginev1.MessageSubscription) error {
+	return b.Delete(t.key(lp, sub))
+}

@@ -100,6 +100,10 @@ service Ingress {
   // active_seq==0 means idle/parked on an external wait (a timer that will fire,
   // or a message/signal subscription). Read-only — no proposal.
   rpc GetProcessInstance(GetProcessInstanceRequest) returns (GetProcessInstanceResponse);
+  // ListProcessInstances lists the caller tenant band's process instances,
+  // fanning out across the shards owning the band's LPs. Optional model-name and
+  // status filters; capped by limit.
+  rpc ListProcessInstances(ListProcessInstancesRequest) returns (ListProcessInstancesResponse);
 }
 
 message SubmitInvocationRequest {
@@ -286,9 +290,10 @@ message GetProcessInstanceRequest {
 }
 
 message GetProcessInstanceResponse {
-  // present is false when no record exists — either never started or already
-  // terminal-and-reaped. The two are indistinguishable by design (terminal
-  // records are reaped in the same apply batch).
+  // present is false when no record exists — never started, or terminal and
+  // reaped (ProcessTerminal.retention_ms==0, or the history window elapsed). A
+  // terminal instance with a non-zero retention_ms stays present=true with a
+  // terminal status until its history window elapses.
   bool present = 1;
   // The remaining fields are meaningful only when present=true.
   reflow.engine.v1.ProcessStatus status = 2;
@@ -305,6 +310,39 @@ message GetProcessInstanceResponse {
   // will progress without external input. Lets a caller distinguish "working"
   // from "parked" without timing heuristics.
   uint32 outstanding = 6;
+  // Terminal / history fields, populated when present=true and the instance is
+  // terminal (status COMPLETED/FAILED) within its retention window. output is the
+  // completed instance's output (empty on failure); created_at_ms / ended_at_ms
+  // bracket the instance lifetime.
+  bytes output = 7;
+  uint64 created_at_ms = 8;
+  uint64 ended_at_ms = 9;
+}
+
+message ListProcessInstancesRequest {
+  // model_ref.name (when set) filters to one model; empty lists every model in
+  // the caller's tenant band. model_ref.kind/version are ignored.
+  reflow.engine.v1.ModelRef model_ref = 1;
+  // Optional status filter; empty = any status.
+  repeated reflow.engine.v1.ProcessStatus status_filter = 2;
+  // Max rows to return; 0 = the server default cap.
+  uint32 limit = 3;
+}
+
+message ListProcessInstancesResponse {
+  repeated ProcessInstanceSummary instances = 1;
+}
+
+message ProcessInstanceSummary {
+  string service = 1;
+  string instance_key = 2;
+  reflow.engine.v1.ProcessStatus status = 3;
+  reflow.engine.v1.ProcessKind kind = 4;
+  uint64 active_seq = 5;
+  uint64 next_seq = 6;
+  uint32 outstanding = 7;
+  uint64 created_at_ms = 8;
+  uint64 ended_at_ms = 9;
 }
 
 message ResolveWorkflowPromiseRequest {

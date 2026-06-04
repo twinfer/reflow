@@ -133,7 +133,14 @@ func PartitionKey(tenant uint32, service, objectKey string) uint64 {
 // Returns 1 when both the snapshot and the planner are absent — defensive
 // only; tests guard against the zero-NumShards case.
 func (p Partitioner) ShardForKey(partitionKey uint64) uint64 {
-	lp := keys.LPFromPartitionKey(partitionKey)
+	return p.ShardForLP(keys.LPFromPartitionKey(partitionKey))
+}
+
+// ShardForLP maps a logical partition id directly to its owning shard, sharing
+// ShardForKey's lookup order (LPOwners snapshot, then planner fallback, then 1).
+// Used by fan-out reads that enumerate LPs — e.g. ListProcessInstances over a
+// tenant band — rather than a single partition key.
+func (p Partitioner) ShardForLP(lp uint32) uint64 {
 	if p.lpOwners != nil {
 		if mp := p.lpOwners.Load(); mp != nil {
 			if shard, ok := (*mp)[lp]; ok {

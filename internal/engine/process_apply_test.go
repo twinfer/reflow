@@ -619,3 +619,262 @@ func TestProcess_TimerFireCommand(t *testing.T) {
 		t.Fatalf("plain timer should fire TimerFired: %+v", plain.GetKind())
 	}
 }
+
+// TestProcess_RetentionImmediateDelete: a terminal turn with retention_ms==0
+// deletes the record immediately (opt-in retention; prior behavior).
+func TestProcess_RetentionImmediateDelete(t *testing.T) {
+	p, _, col := newTestPartition(t)
+	const svc, key = "P", "k1"
+	pk := routing.PartitionKey(0, svc, key)
+	lp := keys.LPFromPartitionKey(pk)
+	procs, _ := procStore(p)
+
+	apply := func(idx uint64, cmd *enginev1.Command) {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+		col.Drain()
+	}
+	apply(1, procEventCmd(pk, svc, key, []byte("v"), &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"}))
+	apply(2, procAdvancedCmd(pk, svc, key, []byte("final"), &enginev1.ProcessTerminal{Output: []byte("out")}))
+
+	if _, ok, err := procs.Get(lp, svc, key); err != nil || ok {
+		t.Fatalf("record should be deleted (retention 0): ok=%v err=%v", ok, err)
+	}
+}
+
+// TestProcess_RetentionRetainsAndReaps: a terminal turn with retention_ms>0
+// retains the record (terminal status + output + timestamps), schedules a
+// process reap, and the ReapProcessInstance arm deletes record + row. A
+// duplicate fire (row already consumed) is a no-op.
+func TestProcess_RetentionRetainsAndReaps(t *testing.T) {
+	p, _, col := newTestPartition(t)
+	const svc, key = "P", "k1"
+	pk := routing.PartitionKey(0, svc, key)
+	lp := keys.LPFromPartitionKey(pk)
+	procs, _ := procStore(p)
+	const retention uint64 = 60_000
+	wantFireAt := testEnvelopeNowMs + retention
+
+	apply := func(idx uint64, cmd *enginev1.Command) []Action {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+		return col.Drain()
+	}
+	apply(1, procEventCmd(pk, svc, key, []byte("v"), &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"}))
+	acts := apply(2, procAdvancedCmd(pk, svc, key, []byte("final"),
+		&enginev1.ProcessTerminal{Output: []byte("out"), RetentionMs: retention}))
+
+	rec, ok, err := procs.Get(lp, svc, key)
+	if err != nil || !ok {
+		t.Fatalf("record should be retained: ok=%v err=%v", ok, err)
+	}
+	if rec.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_COMPLETED {
+		t.Fatalf("status = %v, want COMPLETED", rec.GetStatus())
+	}
+	if string(rec.GetOutput()) != "out" {
+		t.Fatalf("output = %q", rec.GetOutput())
+	}
+	if rec.GetCreatedAtMs() != testEnvelopeNowMs || rec.GetEndedAtMs() != testEnvelopeNowMs {
+		t.Fatalf("timestamps: created=%d ended=%d", rec.GetCreatedAtMs(), rec.GetEndedAtMs())
+	}
+	if rec.GetActiveSeq() != 0 || rec.GetOutstanding() != 0 {
+		t.Fatalf("active=%d outstanding=%d", rec.GetActiveSeq(), rec.GetOutstanding())
+	}
+
+	store := p.cfg.Snapshotter.Store()
+	root := processRootID(pk, svc, key)
+	if present, err := (tables.ProcessReapTable{S: store}).Exists(wantFireAt, root); err != nil || !present {
+		t.Fatalf("proc_reap row: present=%v err=%v", present, err)
+	}
+	var sched *ActScheduleProcessReap
+	for i := range acts {
+		if a, ok := acts[i].(ActScheduleProcessReap); ok {
+			sched = &a
+		}
+	}
+	if sched == nil || sched.FireAtMs != wantFireAt || sched.Service != svc || sched.InstanceKey != key {
+		t.Fatalf("ActScheduleProcessReap = %+v", sched)
+	}
+
+	reapCmd := func() *enginev1.Command {
+		return &enginev1.Command{Kind: &enginev1.Command_ReapProcessInstance{
+			ReapProcessInstance: &enginev1.ReapProcessInstance{
+				Pk: pk, Service: svc, InstanceKey: key, FireAtMs: wantFireAt,
+			},
+		}}
+	}
+	apply(3, reapCmd())
+	if _, ok, _ := procs.Get(lp, svc, key); ok {
+		t.Fatalf("record should be reaped")
+	}
+	if present, _ := (tables.ProcessReapTable{S: store}).Exists(wantFireAt, root); present {
+		t.Fatalf("proc_reap row should be deleted")
+	}
+
+	// Duplicate / stale fire: row already consumed → no-op (no error, nothing recreated).
+	apply(4, reapCmd())
+	if _, ok, _ := procs.Get(lp, svc, key); ok {
+		t.Fatalf("duplicate reap must not resurrect the record")
+	}
+}
+
+// procSubFixture drives one instance through start + a subscribe turn and
+// returns accessors for the forward MessageSubscription count and the reverse
+// proc_sub_idx presence. The catch is (node, msg, corr); same-shard routing (the
+// test Partitioner sends every key to shard 1) so the forward row lands locally.
+func procSubFixture(t *testing.T, p *Partition, col *ActionCollector) (svc, key, node, msg, corr string, subCount func() int, idxPresent func() bool, apply func(uint64, *enginev1.Command)) {
+	t.Helper()
+	svc, key, node, msg, corr = "P", "k1", "Catch1", "PaymentDone", "ord-1"
+	pk := routing.PartitionKey(0, svc, key)
+	msgLp := keys.LPFromPartitionKey(routing.PartitionKey(0, msg, corr))
+	store := p.cfg.Snapshotter.Store()
+	root := processRootID(pk, svc, key)
+
+	apply = func(idx uint64, cmd *enginev1.Command) {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+		col.Drain()
+	}
+	subCount = func() int {
+		n := 0
+		if err := (tables.MessageSubscriptionTable{S: store}).ScanByCorrelation(msgLp, msg, corr,
+			func(_ []byte, _ *enginev1.MessageSubscription) error { n++; return nil }); err != nil {
+			t.Fatalf("scan subs: %v", err)
+		}
+		return n
+	}
+	idxPresent = func() bool {
+		_, ok, err := (tables.ProcessSubIndexTable{S: store}).Get(root, node)
+		if err != nil {
+			t.Fatalf("idx get: %v", err)
+		}
+		return ok
+	}
+
+	apply(1, procEventCmd(pk, svc, key, []byte("v"), &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"}))
+	apply(2, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: pk, Service: svc, InstanceKey: key, NewState: []byte("s1"),
+		Subscribe: []*enginev1.SignalSubscribe{{NodeId: node, MessageName: msg, CorrelationKey: corr}},
+	}}})
+	if subCount() != 1 || !idxPresent() {
+		t.Fatalf("after subscribe: forward=%d reverseIdx=%v, want 1, true", subCount(), idxPresent())
+	}
+	return svc, key, node, msg, corr, subCount, idxPresent, apply
+}
+
+// TestProcess_UnsubscribeTearsDownBoth: a SignalUnsubscribe instruction deletes
+// the forward MessageSubscription and the reverse proc_sub_idx row (gateway-loser).
+func TestProcess_UnsubscribeTearsDownBoth(t *testing.T) {
+	p, _, col := newTestPartition(t)
+	svc, key, node, _, _, subCount, idxPresent, apply := procSubFixture(t, p, col)
+	pk := routing.PartitionKey(0, svc, key)
+
+	// Open a second turn, then unsubscribe the catch.
+	apply(3, procEventCmd(pk, svc, key, []byte("e2"), nil))
+	apply(4, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: pk, Service: svc, InstanceKey: key, NewState: []byte("s2"),
+		Unsubscribe: []*enginev1.SignalUnsubscribe{{NodeId: node}},
+	}}})
+	if subCount() != 0 || idxPresent() {
+		t.Fatalf("after unsubscribe: forward=%d reverseIdx=%v, want 0, false", subCount(), idxPresent())
+	}
+
+	// A repeat unsubscribe for the same node is a no-op (reverse row already gone).
+	apply(5, procEventCmd(pk, svc, key, []byte("e3"), nil))
+	apply(6, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: pk, Service: svc, InstanceKey: key, NewState: []byte("s3"),
+		Unsubscribe: []*enginev1.SignalUnsubscribe{{NodeId: node}},
+	}}})
+	if subCount() != 0 {
+		t.Fatalf("repeat unsubscribe must stay a no-op: forward=%d", subCount())
+	}
+}
+
+// TestProcess_TerminalSweepsSubscriptions: terminating while a catch is parked
+// (terminate-while-parked) sweeps the forward MessageSubscription and the
+// reverse index via finishProcessInstance, even with retention_ms==0.
+func TestProcess_TerminalSweepsSubscriptions(t *testing.T) {
+	p, _, col := newTestPartition(t)
+	svc, key, _, _, _, subCount, idxPresent, apply := procSubFixture(t, p, col)
+	pk := routing.PartitionKey(0, svc, key)
+	lp := keys.LPFromPartitionKey(pk)
+	procs, _ := procStore(p)
+
+	apply(3, procEventCmd(pk, svc, key, []byte("e2"), nil))
+	apply(4, procAdvancedCmd(pk, svc, key, []byte("final"), &enginev1.ProcessTerminal{Output: []byte("out")}))
+
+	if subCount() != 0 || idxPresent() {
+		t.Fatalf("terminal sweep: forward=%d reverseIdx=%v, want 0, false", subCount(), idxPresent())
+	}
+	if _, ok, _ := procs.Get(lp, svc, key); ok {
+		t.Fatalf("record should be reaped (retention 0)")
+	}
+}
+
+// TestProcess_LookupProcessInstances exercises the shard-side scan that backs the
+// ListProcessInstances fan-out: multi-LP scan, service + status filters, the
+// limit cap, and the tenant-band defense.
+func TestProcess_LookupProcessInstances(t *testing.T) {
+	p, _, col := newTestPartition(t)
+	const svc = "OrderProc"
+	modelRef := &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"}
+	idx := uint64(0)
+	apply := func(cmd *enginev1.Command) {
+		t.Helper()
+		idx++
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+		col.Drain()
+	}
+	mk := func(key string) uint64 { return routing.PartitionKey(0, svc, key) }
+
+	// Three running instances in band 0; complete one with retention so it is
+	// retained as COMPLETED.
+	for _, k := range []string{"a", "b", "c"} {
+		apply(procEventCmd(mk(k), svc, k, []byte("v"), modelRef))
+	}
+	apply(procAdvancedCmd(mk("a"), svc, "a", []byte("s"), &enginev1.ProcessTerminal{RetentionMs: 60_000}))
+
+	var band0 []uint32
+	for lp := range uint32(1) << keys.IntraLPBits {
+		band0 = append(band0, lp)
+	}
+	list := func(q LookupProcessInstances) []ProcessInstanceSummary {
+		t.Helper()
+		res, err := p.Lookup(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, ok := res.(ProcessInstancesLookupResult)
+		if !ok {
+			t.Fatalf("unexpected lookup result type %T", res)
+		}
+		return r.Instances
+	}
+
+	if all := list(LookupProcessInstances{Tenant: 0, Service: svc, LPs: band0}); len(all) != 3 {
+		t.Fatalf("list all: got %d, want 3", len(all))
+	}
+	running := list(LookupProcessInstances{Tenant: 0, Service: svc, LPs: band0,
+		StatusFilter: []enginev1.ProcessStatus{enginev1.ProcessStatus_PROCESS_STATUS_RUNNING}})
+	if len(running) != 2 {
+		t.Fatalf("list running: got %d, want 2", len(running))
+	}
+	if none := list(LookupProcessInstances{Tenant: 0, Service: "Other", LPs: band0}); len(none) != 0 {
+		t.Fatalf("list other service: got %d, want 0", len(none))
+	}
+	if capped := list(LookupProcessInstances{Tenant: 0, Service: svc, LPs: band0, Limit: 1}); len(capped) != 1 {
+		t.Fatalf("list limit 1: got %d, want 1", len(capped))
+	}
+	// A band-1 LP passed under tenant 0 is skipped (defense in depth).
+	if wrong := list(LookupProcessInstances{Tenant: 0, Service: svc, LPs: []uint32{1 << keys.IntraLPBits}}); len(wrong) != 0 {
+		t.Fatalf("band-1 lp under tenant 0: got %d, want 0", len(wrong))
+	}
+}

@@ -290,6 +290,45 @@ func TestIngress_ListInvocations(t *testing.T) {
 	if capped := listReq(&ingressv1.ListInvocationsRequest{Service: "Echo", Limit: 1}); len(capped) != 1 {
 		t.Fatalf("list limit 1: got %d, want 1", len(capped))
 	}
+
+	// Paging: walk the whole set one row per page via next_page_token. Each page
+	// holds at most the limit, the union covers every row exactly once, and an
+	// empty token ends iteration.
+	seen := map[string]int{}
+	token := ""
+	pages := 0
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		resp, err := cli.ListInvocations(ctx, connect.NewRequest(&ingressv1.ListInvocationsRequest{
+			Service: "Echo", Limit: 1, PageToken: token,
+		}))
+		cancel()
+		if err != nil {
+			t.Fatalf("ListInvocations page %d: %v", pages, err)
+		}
+		rows := resp.Msg.GetInvocations()
+		if len(rows) > 1 {
+			t.Fatalf("page %d returned %d rows, want <= 1", pages, len(rows))
+		}
+		for _, iv := range rows {
+			seen[string(iv.GetId().GetUuid())]++
+		}
+		token = resp.Msg.GetNextPageToken()
+		if token == "" {
+			break
+		}
+		if pages++; pages > len(inputs)+2 {
+			t.Fatalf("paging did not terminate after %d pages", pages)
+		}
+	}
+	if len(seen) != len(inputs) {
+		t.Fatalf("paged union = %d distinct rows, want %d", len(seen), len(inputs))
+	}
+	for uuid, n := range seen {
+		if n != 1 {
+			t.Fatalf("row %x returned %d times across pages, want 1", uuid, n)
+		}
+	}
 }
 
 // TestIngress_DescribeInvocation covers the read-only DescribeInvocation

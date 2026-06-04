@@ -2,6 +2,8 @@ package ingress
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"slices"
 
@@ -28,14 +30,56 @@ func clampListLimit(limit int) int {
 	return limit
 }
 
+// pageCursor is a decoded ListInvocations / ListProcessInstances continuation:
+// the owning shard plus the full storage key of the last row returned on the
+// prior page. Global iteration order is (shard asc, raw-key asc), so a shard <
+// cursor.shard was fully drained in a prior page, cursor.shard resumes strictly
+// past cursor.key (SeekGE), and shards > cursor.shard are scanned fresh. Stable
+// only under stable LP ownership (the same caveat capped lists already carry).
+type pageCursor struct {
+	shard uint64
+	key   []byte
+}
+
+// encodePageToken renders a cursor as an opaque base64 token (8-byte big-endian
+// shard || raw key). The embedded key is data the caller already saw in the
+// page; it can't widen access because the server re-derives the caller's band
+// LP set from the verified principal and only seeks within it — a forged token
+// shifts the resume point inside the caller's own band, never across bands.
+func encodePageToken(shard uint64, key []byte) string {
+	buf := make([]byte, 8+len(key))
+	binary.BigEndian.PutUint64(buf[:8], shard)
+	copy(buf[8:], key)
+	return base64.RawURLEncoding.EncodeToString(buf)
+}
+
+// decodePageToken parses a token from a prior next_page_token. Empty → nil (start
+// from the beginning).
+func decodePageToken(tok string) (*pageCursor, error) {
+	if tok == "" {
+		return nil, nil
+	}
+	buf, err := base64.RawURLEncoding.DecodeString(tok)
+	if err != nil {
+		return nil, fmt.Errorf("malformed page token: %w", err)
+	}
+	if len(buf) < 8 {
+		return nil, fmt.Errorf("malformed page token: short")
+	}
+	return &pageCursor{shard: binary.BigEndian.Uint64(buf[:8]), key: buf[8:]}, nil
+}
+
 // fanOutBand enumerates tenant band's LPs, groups them by owning shard, and
 // issues one linearizable SyncRead per shard. Every node replicates every shard,
 // so the read is always local — no cross-node RPC. makeQuery builds that shard's
-// engine Lookup from its LP subset; collect receives each shard's result and
-// returns done=true once the caller has filled its row cap. Shards are visited in
-// id order so a capped result is stable given stable ownership. Shared substrate
-// behind ListInvocations and ListProcessInstances.
-func (s *Server) fanOutBand(ctx context.Context, band uint32, makeQuery func(lps []uint32) any, collect func(res any) (done bool, err error)) error {
+// engine Lookup from its LP subset and an optional resume key (the page cursor,
+// non-nil only for the shard the cursor names); collect receives each shard's id
+// + result and returns done=true once the caller has filled its row cap. Shards
+// are visited in id order so a capped/paged result is stable given stable
+// ownership. cur, when non-nil, resumes a prior page: shards below cur.shard are
+// skipped (already drained) and cur.shard is seeked past cur.key. Shared
+// substrate behind ListInvocations and ListProcessInstances.
+func (s *Server) fanOutBand(ctx context.Context, band uint32, cur *pageCursor, makeQuery func(shard uint64, lps []uint32, after []byte) any, collect func(shard uint64, res any) (done bool, err error)) error {
 	part := s.host.Partitioner()
 	byShard := make(map[uint64][]uint32)
 	lo := band << keys.IntraLPBits
@@ -50,11 +94,18 @@ func (s *Server) fanOutBand(ctx context.Context, band uint32, makeQuery func(lps
 	}
 	slices.Sort(shards)
 	for _, shard := range shards {
-		res, err := s.host.NodeHost().SyncRead(ctx, shard, makeQuery(byShard[shard]))
+		if cur != nil && shard < cur.shard {
+			continue // fully drained in a prior page
+		}
+		var after []byte
+		if cur != nil && shard == cur.shard {
+			after = cur.key
+		}
+		res, err := s.host.NodeHost().SyncRead(ctx, shard, makeQuery(shard, byShard[shard], after))
 		if err != nil {
 			return fmt.Errorf("shard %d: %w", shard, err)
 		}
-		done, err := collect(res)
+		done, err := collect(shard, res)
 		if err != nil {
 			return err
 		}
@@ -76,19 +127,27 @@ func (s *Server) ListInvocations(ctx context.Context, req *connect.Request[ingre
 	if terr != nil {
 		return nil, terr
 	}
+	cur, err := decodePageToken(msg.GetPageToken())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	limit := clampListLimit(int(msg.GetLimit()))
 	var out []*ingressv1.InvocationSummary
-	err := s.fanOutBand(ctx, tenant,
-		func(lps []uint32) any {
+	var nextToken string
+	ferr := s.fanOutBand(ctx, tenant, cur,
+		func(shard uint64, lps []uint32, after []byte) any {
 			return engine.LookupInvocations{
-				Tenant:      tenant,
-				Service:     msg.GetService(),
-				StateFilter: msg.GetStateFilter(),
-				LPs:         lps,
-				Limit:       limit,
+				Tenant:          tenant,
+				Service:         msg.GetService(),
+				StateFilter:     msg.GetStateFilter(),
+				CreatedAfterMs:  msg.GetCreatedAfterMs(),
+				CreatedBeforeMs: msg.GetCreatedBeforeMs(),
+				LPs:             lps,
+				After:           after,
+				Limit:           limit,
 			}
 		},
-		func(res any) (bool, error) {
+		func(shard uint64, res any) (bool, error) {
 			r, ok := res.(engine.InvocationsLookupResult)
 			if !ok {
 				return false, fmt.Errorf("unexpected result type %T", res)
@@ -103,14 +162,19 @@ func (s *Server) ListInvocations(ctx context.Context, req *connect.Request[ingre
 					CompletedAtMs: iv.CompletedAtMs,
 				})
 				if len(out) >= limit {
+					key, err := keys.InvocationKey(iv.ID)
+					if err != nil {
+						return false, err
+					}
+					nextToken = encodePageToken(shard, key)
 					return true, nil
 				}
 			}
 			return false, nil
 		},
 	)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list invocations: %w", err))
+	if ferr != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list invocations: %w", ferr))
 	}
-	return connect.NewResponse(&ingressv1.ListInvocationsResponse{Invocations: out}), nil
+	return connect.NewResponse(&ingressv1.ListInvocationsResponse{Invocations: out, NextPageToken: nextToken}), nil
 }

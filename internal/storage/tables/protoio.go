@@ -1,12 +1,30 @@
 package tables
 
 import (
+	"bytes"
 	"errors"
 
 	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflow/internal/storage"
 )
+
+// scanStart positions iter for a forward scan, returning whether it landed on a
+// valid key. With after == nil it starts at the first key; otherwise it resumes
+// strictly past after (SeekGE then skip an exact match), so after is an
+// exclusive cursor. Bounds clamp it: an after below the iterator's range scans
+// from the start, one at/above the range yields nothing. Shared by the per-LP
+// ScanLP cursors behind the ListInvocations / ListProcessInstances fan-out.
+func scanStart(iter storage.Iter, after []byte) bool {
+	if after == nil {
+		return iter.First()
+	}
+	ok := iter.SeekGE(after)
+	if ok && bytes.Equal(iter.Key(), after) {
+		ok = iter.Next()
+	}
+	return ok
+}
 
 // isNotFound is the package-local alias for the storage absent sentinel —
 // keeps the import noise in each table down to one symbol.

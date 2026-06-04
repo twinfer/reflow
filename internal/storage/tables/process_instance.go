@@ -87,7 +87,13 @@ func (t ProcessInstanceTable) ScanAll(ctx context.Context, fn func(service, inst
 // (service, instance_key) from each key. Bounded by the LP's instance count.
 // Used by the cross-shard ListProcessInstances fan-out: the shard owning an LP
 // scans only that LP's instances. Mirrors ScanAll's key decode.
-func (t ProcessInstanceTable) ScanLP(lp uint32, fn func(service, instanceKey string, rec *enginev1.ProcessInstanceRecord) error) error {
+//
+// after, when non-nil, is a full proc/ storage key the scan resumes strictly
+// past (the ListProcessInstances page cursor). Because the iterator is bounded
+// to this LP's prefix range, an after key below the range scans from the start
+// and one at/above the range yields nothing — so the same cursor can be passed
+// to every LP of a shard and each resumes correctly (SeekGE clamps to bounds).
+func (t ProcessInstanceTable) ScanLP(lp uint32, after []byte, fn func(service, instanceKey string, rec *enginev1.ProcessInstanceRecord) error) error {
 	base := len(keys.ProcessPrefix()) + keys.LPLen
 	prefix := keys.ProcessInstanceLPPrefix(lp)
 	iter, err := t.S.NewIter(prefix, keys.PrefixUpperBound(prefix))
@@ -95,7 +101,7 @@ func (t ProcessInstanceTable) ScanLP(lp uint32, fn func(service, instanceKey str
 		return err
 	}
 	defer iter.Close()
-	for ok := iter.First(); ok; ok = iter.Next() {
+	for ok := scanStart(iter, after); ok; ok = iter.Next() {
 		k := iter.Key()
 		if len(k) < base {
 			continue

@@ -12,6 +12,7 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine"
 	"github.com/twinfer/reflow/internal/engine/routing"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
 )
@@ -182,19 +183,27 @@ func (s *Server) ListProcessInstances(ctx context.Context, req *connect.Request[
 	if terr != nil {
 		return nil, terr
 	}
+	cur, err := decodePageToken(msg.GetPageToken())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	limit := clampListLimit(int(msg.GetLimit()))
 	var out []*ingressv1.ProcessInstanceSummary
-	err := s.fanOutBand(ctx, tenant,
-		func(lps []uint32) any {
+	var nextToken string
+	ferr := s.fanOutBand(ctx, tenant, cur,
+		func(shard uint64, lps []uint32, after []byte) any {
 			return engine.LookupProcessInstances{
-				Tenant:       tenant,
-				Service:      msg.GetModelRef().GetName(),
-				StatusFilter: msg.GetStatusFilter(),
-				LPs:          lps,
-				Limit:        limit,
+				Tenant:          tenant,
+				Service:         msg.GetModelRef().GetName(),
+				StatusFilter:    msg.GetStatusFilter(),
+				CreatedAfterMs:  msg.GetCreatedAfterMs(),
+				CreatedBeforeMs: msg.GetCreatedBeforeMs(),
+				LPs:             lps,
+				After:           after,
+				Limit:           limit,
 			}
 		},
-		func(res any) (bool, error) {
+		func(shard uint64, res any) (bool, error) {
 			r, ok := res.(engine.ProcessInstancesLookupResult)
 			if !ok {
 				return false, fmt.Errorf("unexpected result type %T", res)
@@ -212,16 +221,18 @@ func (s *Server) ListProcessInstances(ctx context.Context, req *connect.Request[
 					EndedAtMs:   si.Record.GetEndedAtMs(),
 				})
 				if len(out) >= limit {
+					lp := keys.LPFromPartitionKey(routing.PartitionKey(tenant, si.Service, si.InstanceKey))
+					nextToken = encodePageToken(shard, keys.ProcessInstanceKey(lp, si.Service, si.InstanceKey))
 					return true, nil
 				}
 			}
 			return false, nil
 		},
 	)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list process instances: %w", err))
+	if ferr != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list process instances: %w", ferr))
 	}
-	return connect.NewResponse(&ingressv1.ListProcessInstancesResponse{Instances: out}), nil
+	return connect.NewResponse(&ingressv1.ListProcessInstancesResponse{Instances: out, NextPageToken: nextToken}), nil
 }
 
 // processKindFromString maps the wire model_ref.kind onto the ProcessKind enum.

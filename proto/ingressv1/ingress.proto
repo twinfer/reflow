@@ -331,12 +331,24 @@ message ListProcessInstancesRequest {
   reflow.engine.v1.ModelRef model_ref = 1;
   // Optional status filter; empty = any status.
   repeated reflow.engine.v1.ProcessStatus status_filter = 2;
-  // Max rows to return; 0 = the server default cap.
+  // Max rows per page; 0 = the server default cap. Doubles as the page size.
   uint32 limit = 3;
+  // Optional created_at window [created_after_ms, created_before_ms): keep only
+  // instances whose created_at_ms is >= created_after_ms (when non-zero) and
+  // < created_before_ms (when non-zero). created_at_ms is stamped at instance
+  // creation, so the window is exact for process instances.
+  uint64 created_after_ms = 4;
+  uint64 created_before_ms = 5;
+  // Opaque continuation from a prior response's next_page_token; empty starts at
+  // the beginning. Valid only under stable LP ownership.
+  string page_token = 6;
 }
 
 message ListProcessInstancesResponse {
   repeated ProcessInstanceSummary instances = 1;
+  // Set when more rows may remain (the page filled to limit); pass it back as
+  // page_token to continue. Empty signals the end of iteration.
+  string next_page_token = 2;
 }
 
 message ProcessInstanceSummary {
@@ -357,12 +369,25 @@ message ListInvocationsRequest {
   string service = 1;
   // Optional state filter; empty = any state.
   repeated reflow.engine.v1.InvocationState state_filter = 2;
-  // Max rows to return; 0 = the server default cap.
+  // Max rows per page; 0 = the server default cap. Doubles as the page size.
   uint32 limit = 3;
+  // Optional created_at window [created_after_ms, created_before_ms): keep only
+  // invocations whose created_at_ms is >= created_after_ms (when non-zero) and
+  // < created_before_ms (when non-zero). NOTE: only Scheduled/Invoked statuses
+  // carry created_at_ms; Suspended/Completed summaries report 0, so a non-zero
+  // created_after_ms excludes them. Filter by state for terminal rows.
+  uint64 created_after_ms = 4;
+  uint64 created_before_ms = 5;
+  // Opaque continuation from a prior response's next_page_token; empty starts at
+  // the beginning. Valid only under stable LP ownership.
+  string page_token = 6;
 }
 
 message ListInvocationsResponse {
   repeated InvocationSummary invocations = 1;
+  // Set when more rows may remain (the page filled to limit); pass it back as
+  // page_token to continue. Empty signals the end of iteration.
+  string next_page_token = 2;
 }
 
 message InvocationSummary {

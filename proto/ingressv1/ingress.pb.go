@@ -1558,8 +1558,17 @@ type ListProcessInstancesRequest struct {
 	ModelRef *enginev1.ModelRef `protobuf:"bytes,1,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`
 	// Optional status filter; empty = any status.
 	StatusFilter []enginev1.ProcessStatus `protobuf:"varint,2,rep,packed,name=status_filter,json=statusFilter,proto3,enum=reflow.engine.v1.ProcessStatus" json:"status_filter,omitempty"`
-	// Max rows to return; 0 = the server default cap.
-	Limit         uint32 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	// Max rows per page; 0 = the server default cap. Doubles as the page size.
+	Limit uint32 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	// Optional created_at window [created_after_ms, created_before_ms): keep only
+	// instances whose created_at_ms is >= created_after_ms (when non-zero) and
+	// < created_before_ms (when non-zero). created_at_ms is stamped at instance
+	// creation, so the window is exact for process instances.
+	CreatedAfterMs  uint64 `protobuf:"varint,4,opt,name=created_after_ms,json=createdAfterMs,proto3" json:"created_after_ms,omitempty"`
+	CreatedBeforeMs uint64 `protobuf:"varint,5,opt,name=created_before_ms,json=createdBeforeMs,proto3" json:"created_before_ms,omitempty"`
+	// Opaque continuation from a prior response's next_page_token; empty starts at
+	// the beginning. Valid only under stable LP ownership.
+	PageToken     string `protobuf:"bytes,6,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1615,9 +1624,33 @@ func (x *ListProcessInstancesRequest) GetLimit() uint32 {
 	return 0
 }
 
+func (x *ListProcessInstancesRequest) GetCreatedAfterMs() uint64 {
+	if x != nil {
+		return x.CreatedAfterMs
+	}
+	return 0
+}
+
+func (x *ListProcessInstancesRequest) GetCreatedBeforeMs() uint64 {
+	if x != nil {
+		return x.CreatedBeforeMs
+	}
+	return 0
+}
+
+func (x *ListProcessInstancesRequest) GetPageToken() string {
+	if x != nil {
+		return x.PageToken
+	}
+	return ""
+}
+
 type ListProcessInstancesResponse struct {
-	state         protoimpl.MessageState    `protogen:"open.v1"`
-	Instances     []*ProcessInstanceSummary `protobuf:"bytes,1,rep,name=instances,proto3" json:"instances,omitempty"`
+	state     protoimpl.MessageState    `protogen:"open.v1"`
+	Instances []*ProcessInstanceSummary `protobuf:"bytes,1,rep,name=instances,proto3" json:"instances,omitempty"`
+	// Set when more rows may remain (the page filled to limit); pass it back as
+	// page_token to continue. Empty signals the end of iteration.
+	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1657,6 +1690,13 @@ func (x *ListProcessInstancesResponse) GetInstances() []*ProcessInstanceSummary 
 		return x.Instances
 	}
 	return nil
+}
+
+func (x *ListProcessInstancesResponse) GetNextPageToken() string {
+	if x != nil {
+		return x.NextPageToken
+	}
+	return ""
 }
 
 type ProcessInstanceSummary struct {
@@ -1774,8 +1814,18 @@ type ListInvocationsRequest struct {
 	Service string `protobuf:"bytes,1,opt,name=service,proto3" json:"service,omitempty"`
 	// Optional state filter; empty = any state.
 	StateFilter []enginev1.InvocationState `protobuf:"varint,2,rep,packed,name=state_filter,json=stateFilter,proto3,enum=reflow.engine.v1.InvocationState" json:"state_filter,omitempty"`
-	// Max rows to return; 0 = the server default cap.
-	Limit         uint32 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	// Max rows per page; 0 = the server default cap. Doubles as the page size.
+	Limit uint32 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	// Optional created_at window [created_after_ms, created_before_ms): keep only
+	// invocations whose created_at_ms is >= created_after_ms (when non-zero) and
+	// < created_before_ms (when non-zero). NOTE: only Scheduled/Invoked statuses
+	// carry created_at_ms; Suspended/Completed summaries report 0, so a non-zero
+	// created_after_ms excludes them. Filter by state for terminal rows.
+	CreatedAfterMs  uint64 `protobuf:"varint,4,opt,name=created_after_ms,json=createdAfterMs,proto3" json:"created_after_ms,omitempty"`
+	CreatedBeforeMs uint64 `protobuf:"varint,5,opt,name=created_before_ms,json=createdBeforeMs,proto3" json:"created_before_ms,omitempty"`
+	// Opaque continuation from a prior response's next_page_token; empty starts at
+	// the beginning. Valid only under stable LP ownership.
+	PageToken     string `protobuf:"bytes,6,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1831,9 +1881,33 @@ func (x *ListInvocationsRequest) GetLimit() uint32 {
 	return 0
 }
 
+func (x *ListInvocationsRequest) GetCreatedAfterMs() uint64 {
+	if x != nil {
+		return x.CreatedAfterMs
+	}
+	return 0
+}
+
+func (x *ListInvocationsRequest) GetCreatedBeforeMs() uint64 {
+	if x != nil {
+		return x.CreatedBeforeMs
+	}
+	return 0
+}
+
+func (x *ListInvocationsRequest) GetPageToken() string {
+	if x != nil {
+		return x.PageToken
+	}
+	return ""
+}
+
 type ListInvocationsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Invocations   []*InvocationSummary   `protobuf:"bytes,1,rep,name=invocations,proto3" json:"invocations,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Invocations []*InvocationSummary   `protobuf:"bytes,1,rep,name=invocations,proto3" json:"invocations,omitempty"`
+	// Set when more rows may remain (the page filled to limit); pass it back as
+	// page_token to continue. Empty signals the end of iteration.
+	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1873,6 +1947,13 @@ func (x *ListInvocationsResponse) GetInvocations() []*InvocationSummary {
 		return x.Invocations
 	}
 	return nil
+}
+
+func (x *ListInvocationsResponse) GetNextPageToken() string {
+	if x != nil {
+		return x.NextPageToken
+	}
+	return ""
 }
 
 type InvocationSummary struct {
@@ -2194,13 +2275,18 @@ const file_ingressv1_ingress_proto_rawDesc = "" +
 	"\voutstanding\x18\x06 \x01(\rR\voutstanding\x12\x16\n" +
 	"\x06output\x18\a \x01(\fR\x06output\x12\"\n" +
 	"\rcreated_at_ms\x18\b \x01(\x04R\vcreatedAtMs\x12\x1e\n" +
-	"\vended_at_ms\x18\t \x01(\x04R\tendedAtMs\"\xb2\x01\n" +
+	"\vended_at_ms\x18\t \x01(\x04R\tendedAtMs\"\xa7\x02\n" +
 	"\x1bListProcessInstancesRequest\x127\n" +
 	"\tmodel_ref\x18\x01 \x01(\v2\x1a.reflow.engine.v1.ModelRefR\bmodelRef\x12D\n" +
 	"\rstatus_filter\x18\x02 \x03(\x0e2\x1f.reflow.engine.v1.ProcessStatusR\fstatusFilter\x12\x14\n" +
-	"\x05limit\x18\x03 \x01(\rR\x05limit\"g\n" +
+	"\x05limit\x18\x03 \x01(\rR\x05limit\x12(\n" +
+	"\x10created_after_ms\x18\x04 \x01(\x04R\x0ecreatedAfterMs\x12*\n" +
+	"\x11created_before_ms\x18\x05 \x01(\x04R\x0fcreatedBeforeMs\x12\x1d\n" +
+	"\n" +
+	"page_token\x18\x06 \x01(\tR\tpageToken\"\x8f\x01\n" +
 	"\x1cListProcessInstancesResponse\x12G\n" +
-	"\tinstances\x18\x01 \x03(\v2).reflow.ingress.v1.ProcessInstanceSummaryR\tinstances\"\xe1\x02\n" +
+	"\tinstances\x18\x01 \x03(\v2).reflow.ingress.v1.ProcessInstanceSummaryR\tinstances\x12&\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xe1\x02\n" +
 	"\x16ProcessInstanceSummary\x12\x18\n" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12!\n" +
 	"\finstance_key\x18\x02 \x01(\tR\vinstanceKey\x127\n" +
@@ -2211,13 +2297,18 @@ const file_ingressv1_ingress_proto_rawDesc = "" +
 	"\bnext_seq\x18\x06 \x01(\x04R\anextSeq\x12 \n" +
 	"\voutstanding\x18\a \x01(\rR\voutstanding\x12\"\n" +
 	"\rcreated_at_ms\x18\b \x01(\x04R\vcreatedAtMs\x12\x1e\n" +
-	"\vended_at_ms\x18\t \x01(\x04R\tendedAtMs\"\x8e\x01\n" +
+	"\vended_at_ms\x18\t \x01(\x04R\tendedAtMs\"\x83\x02\n" +
 	"\x16ListInvocationsRequest\x12\x18\n" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12D\n" +
 	"\fstate_filter\x18\x02 \x03(\x0e2!.reflow.engine.v1.InvocationStateR\vstateFilter\x12\x14\n" +
-	"\x05limit\x18\x03 \x01(\rR\x05limit\"a\n" +
+	"\x05limit\x18\x03 \x01(\rR\x05limit\x12(\n" +
+	"\x10created_after_ms\x18\x04 \x01(\x04R\x0ecreatedAfterMs\x12*\n" +
+	"\x11created_before_ms\x18\x05 \x01(\x04R\x0fcreatedBeforeMs\x12\x1d\n" +
+	"\n" +
+	"page_token\x18\x06 \x01(\tR\tpageToken\"\x89\x01\n" +
 	"\x17ListInvocationsResponse\x12F\n" +
-	"\vinvocations\x18\x01 \x03(\v2$.reflow.ingress.v1.InvocationSummaryR\vinvocations\"\xa9\x02\n" +
+	"\vinvocations\x18\x01 \x03(\v2$.reflow.ingress.v1.InvocationSummaryR\vinvocations\x12&\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xa9\x02\n" +
 	"\x11InvocationSummary\x12.\n" +
 	"\x02id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\x02id\x12:\n" +
 	"\x06target\x18\x02 \x01(\v2\".reflow.engine.v1.InvocationTargetR\x06target\x127\n" +

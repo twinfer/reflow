@@ -3276,15 +3276,21 @@ type ProcessInstanceLookupResult struct {
 
 // LookupProcessInstances lists instances on this shard within Tenant's band,
 // scanning each LP in LPs (the ingress fan-out routes each owning shard only the
-// band LPs it owns). Service and StatusFilter are optional prunes; Limit caps the
-// rows returned (0 = no cap). The shard-side band check (lp>>IntraLPBits) is
-// defense in depth on top of ingress only enumerating the caller's band.
+// band LPs it owns). Service and StatusFilter are optional prunes; the created_at
+// window [CreatedAfterMs, CreatedBeforeMs) prunes by creation time (0 bound =
+// open). Limit caps the rows returned (0 = no cap). After, when non-nil, is the
+// page cursor (a full proc/ key) the scan resumes strictly past. The shard-side
+// band check (lp>>IntraLPBits) is defense in depth on top of ingress only
+// enumerating the caller's band.
 type LookupProcessInstances struct {
-	Tenant       uint32
-	Service      string
-	LPs          []uint32
-	StatusFilter []enginev1.ProcessStatus
-	Limit        int
+	Tenant          uint32
+	Service         string
+	LPs             []uint32
+	StatusFilter    []enginev1.ProcessStatus
+	CreatedAfterMs  uint64
+	CreatedBeforeMs uint64
+	After           []byte
+	Limit           int
 }
 
 func (LookupProcessInstances) isLookup() {}
@@ -3304,14 +3310,21 @@ type ProcessInstancesLookupResult struct {
 // LookupInvocations lists invocations on this shard within Tenant's band — the
 // invocation-plane twin of LookupProcessInstances, sharing the scanBandedLPs
 // substrate. Service (target service name) and StateFilter are optional prunes;
-// Limit caps the rows (0 = no cap). The shard-side band check is defense in
-// depth on top of ingress only enumerating the caller's band.
+// the created_at window [CreatedAfterMs, CreatedBeforeMs) prunes by creation time
+// (0 bound = open; only Scheduled/Invoked carry created_at, so the window
+// excludes Suspended/Completed rows). Limit caps the rows (0 = no cap). After,
+// when non-nil, is the page cursor (a full inv/ key) the scan resumes strictly
+// past. The shard-side band check is defense in depth on top of ingress only
+// enumerating the caller's band.
 type LookupInvocations struct {
-	Tenant      uint32
-	Service     string
-	LPs         []uint32
-	StateFilter []enginev1.InvocationState
-	Limit       int
+	Tenant          uint32
+	Service         string
+	LPs             []uint32
+	StateFilter     []enginev1.InvocationState
+	CreatedAfterMs  uint64
+	CreatedBeforeMs uint64
+	After           []byte
+	Limit           int
 }
 
 func (LookupInvocations) isLookup() {}
@@ -3383,6 +3396,20 @@ func (p *Partition) Lookup(query any) (any, error) {
 // errListLimitReached aborts a ScanLP early once the caller's row cap is hit.
 var errListLimitReached = errors.New("list limit reached")
 
+// withinCreatedWindow reports whether createdAtMs falls in the half-open window
+// [after, before). A zero bound is open on that side; a row with createdAtMs==0
+// (no recorded creation time) is admitted only when after==0. Shared by the
+// ListInvocations / ListProcessInstances created_at filter.
+func withinCreatedWindow(createdAtMs, after, before uint64) bool {
+	if after > 0 && createdAtMs < after {
+		return false
+	}
+	if before > 0 && createdAtMs >= before {
+		return false
+	}
+	return true
+}
+
 // scanBandedLPs runs scanLP for each LP that falls in tenant's band, collecting
 // rows until limit is reached (0 = no cap). scanLP scans one LP, calling emit per
 // candidate row; emit appends and returns true once the cap is hit, at which
@@ -3416,11 +3443,14 @@ func scanBandedLPs[T any](lps []uint32, tenant uint32, limit int, scanLP func(lp
 func (p *Partition) lookupProcessInstances(store storage.Store, q LookupProcessInstances) (ProcessInstancesLookupResult, error) {
 	procT := tables.ProcessInstanceTable{S: store}
 	out, err := scanBandedLPs(q.LPs, q.Tenant, q.Limit, func(lp uint32, emit func(ProcessInstanceSummary) bool) error {
-		return procT.ScanLP(lp, func(service, instanceKey string, rec *enginev1.ProcessInstanceRecord) error {
+		return procT.ScanLP(lp, q.After, func(service, instanceKey string, rec *enginev1.ProcessInstanceRecord) error {
 			if q.Service != "" && service != q.Service {
 				return nil
 			}
 			if len(q.StatusFilter) > 0 && !slices.Contains(q.StatusFilter, rec.GetStatus()) {
+				return nil
+			}
+			if !withinCreatedWindow(rec.GetCreatedAtMs(), q.CreatedAfterMs, q.CreatedBeforeMs) {
 				return nil
 			}
 			if emit(ProcessInstanceSummary{Service: service, InstanceKey: instanceKey, Record: rec}) {
@@ -3445,12 +3475,15 @@ func (p *Partition) lookupInvocations(store storage.Store, q LookupInvocations) 
 	// is bounded (one range per band LP, capped at Limit), so Background is fine.
 	ctx := context.Background()
 	out, err := scanBandedLPs(q.LPs, q.Tenant, q.Limit, func(lp uint32, emit func(InvocationSummary) bool) error {
-		return invT.ScanLP(ctx, lp, func(id *enginev1.InvocationId, s *enginev1.InvocationStatus) error {
+		return invT.ScanLP(ctx, lp, q.After, func(id *enginev1.InvocationId, s *enginev1.InvocationStatus) error {
 			target, state, createdAtMs, completedAtMs := invocationSummaryFields(s)
 			if q.Service != "" && target.GetServiceName() != q.Service {
 				return nil
 			}
 			if len(q.StateFilter) > 0 && !slices.Contains(q.StateFilter, state) {
+				return nil
+			}
+			if !withinCreatedWindow(createdAtMs, q.CreatedAfterMs, q.CreatedBeforeMs) {
 				return nil
 			}
 			if emit(InvocationSummary{

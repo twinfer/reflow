@@ -96,8 +96,12 @@ func (t InvocationTable) ScanAll(ctx context.Context, fn func(id *enginev1.Invoc
 // to the given logical partition id. Bounded by a single Pebble range scan
 // over [inv/<lp:4>, inv/<lp+1:4>). Used by the cross-shard LP transfer
 // protocol to extract one LP's invocations without touching the rest of the
-// shard.
-func (t InvocationTable) ScanLP(ctx context.Context, lp uint32, fn func(id *enginev1.InvocationId, s *enginev1.InvocationStatus) error) error {
+// shard, and by the ListInvocations fan-out.
+//
+// after, when non-nil, is a full inv/ storage key the scan resumes strictly
+// past (the ListInvocations page cursor); see ProcessInstanceTable.ScanLP for
+// the per-LP cursor-clamping rationale.
+func (t InvocationTable) ScanLP(ctx context.Context, lp uint32, after []byte, fn func(id *enginev1.InvocationId, s *enginev1.InvocationStatus) error) error {
 	lower := keys.InvocationLPPrefix(lp)
 	upper := keys.PrefixUpperBound(lower)
 	iter, err := t.S.NewIter(lower, upper)
@@ -105,7 +109,7 @@ func (t InvocationTable) ScanLP(ctx context.Context, lp uint32, fn func(id *engi
 		return err
 	}
 	defer iter.Close()
-	for ok := iter.First(); ok; ok = iter.Next() {
+	for ok := scanStart(iter, after); ok; ok = iter.Next() {
 		if err := ctx.Err(); err != nil {
 			return err
 		}

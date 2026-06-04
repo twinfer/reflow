@@ -193,7 +193,7 @@ func runTablesSuite(t *testing.T, name string, open openFn) {
 		for _, id := range ids {
 			lp := keys.LPFromPartitionKey(id.GetPartitionKey())
 			var found []*enginev1.InvocationId
-			if err := it.ScanLP(context.Background(), lp, func(gotID *enginev1.InvocationId, _ *enginev1.InvocationStatus) error {
+			if err := it.ScanLP(context.Background(), lp, nil, func(gotID *enginev1.InvocationId, _ *enginev1.InvocationStatus) error {
 				found = append(found, gotID)
 				return nil
 			}); err != nil {

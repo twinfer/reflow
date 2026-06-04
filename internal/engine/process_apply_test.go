@@ -877,4 +877,28 @@ func TestProcess_LookupProcessInstances(t *testing.T) {
 	if wrong := list(LookupProcessInstances{Tenant: 0, Service: svc, LPs: []uint32{1 << keys.IntraLPBits}}); len(wrong) != 0 {
 		t.Fatalf("band-1 lp under tenant 0: got %d, want 0", len(wrong))
 	}
+
+	// created_at window: every instance is stamped testEnvelopeNowMs at creation.
+	// A lower bound one past it excludes all; an upper bound one past it keeps all.
+	if after := list(LookupProcessInstances{Tenant: 0, Service: svc, LPs: band0, CreatedAfterMs: testEnvelopeNowMs + 1}); len(after) != 0 {
+		t.Fatalf("created_after now+1: got %d, want 0", len(after))
+	}
+	if before := list(LookupProcessInstances{Tenant: 0, Service: svc, LPs: band0, CreatedBeforeMs: testEnvelopeNowMs + 1}); len(before) != 3 {
+		t.Fatalf("created_before now+1: got %d, want 3", len(before))
+	}
+
+	// Page cursor: After = the first row's key resumes strictly past it.
+	all := list(LookupProcessInstances{Tenant: 0, Service: svc, LPs: band0})
+	first := all[0]
+	lp := keys.LPFromPartitionKey(mk(first.InstanceKey))
+	resumed := list(LookupProcessInstances{Tenant: 0, Service: svc, LPs: band0,
+		After: keys.ProcessInstanceKey(lp, first.Service, first.InstanceKey)})
+	if len(resumed) != len(all)-1 {
+		t.Fatalf("resume after first: got %d, want %d", len(resumed), len(all)-1)
+	}
+	for i := range resumed {
+		if resumed[i].InstanceKey != all[i+1].InstanceKey {
+			t.Fatalf("resume row %d: got %q, want %q", i, resumed[i].InstanceKey, all[i+1].InstanceKey)
+		}
+	}
 }

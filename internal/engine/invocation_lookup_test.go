@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/twinfer/reflow/internal/engine/routing"
@@ -86,5 +87,31 @@ func TestInvocations_Lookup(t *testing.T) {
 	// A band-1 LP passed under tenant 0 is skipped (defense in depth).
 	if wrong := list(LookupInvocations{Tenant: 0, Service: svc, LPs: []uint32{1 << keys.IntraLPBits}}); len(wrong) != 0 {
 		t.Fatalf("band-1 lp under tenant 0: got %d, want 0", len(wrong))
+	}
+
+	// created_at window: only Scheduled rows carry created_at (a=1000, c=1500);
+	// the Completed row b reports 0. [1200, ∞) keeps only c; [0, 1200) keeps a+b.
+	if after := list(LookupInvocations{Tenant: 0, LPs: band0, CreatedAfterMs: 1200}); len(after) != 1 {
+		t.Fatalf("created_after 1200: got %d, want 1", len(after))
+	}
+	if before := list(LookupInvocations{Tenant: 0, LPs: band0, CreatedBeforeMs: 1200}); len(before) != 2 {
+		t.Fatalf("created_before 1200: got %d, want 2", len(before))
+	}
+
+	// Page cursor: After = the first row's key resumes strictly past it, yielding
+	// exactly the remaining rows in the same (lp asc, key asc) order.
+	all := list(LookupInvocations{Tenant: 0, LPs: band0})
+	cursor, err := keys.InvocationKey(all[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed := list(LookupInvocations{Tenant: 0, LPs: band0, After: cursor})
+	if len(resumed) != len(all)-1 {
+		t.Fatalf("resume after first: got %d, want %d", len(resumed), len(all)-1)
+	}
+	for i := range resumed {
+		if !bytes.Equal(resumed[i].ID.GetUuid(), all[i+1].ID.GetUuid()) {
+			t.Fatalf("resume row %d: got uuid %x, want %x", i, resumed[i].ID.GetUuid(), all[i+1].ID.GetUuid())
+		}
 	}
 }

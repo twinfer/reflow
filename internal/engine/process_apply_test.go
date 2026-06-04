@@ -281,6 +281,64 @@ func TestProcess_ActuatesInstructions(t *testing.T) {
 	}
 }
 
+// TestProcess_FiredTimerRowReclaimed pins the fire-side timer cleanup: when a
+// process timer fires, its durable row (primary + secondaries) is deleted in the
+// same apply, so a later leader-gain TimerService.Rebuild — which ScanAlls the
+// timer table — cannot re-load the past-due row and re-fire a duplicate
+// timer_fired. The cancel side is covered by TestProcess_ActuatesInstructions.
+func TestProcess_FiredTimerRowReclaimed(t *testing.T) {
+	p, _, col := newTestPartition(t)
+	const svc, key = "Proc", "tf"
+	pk := routing.PartitionKey(0, svc, key)
+	must := func(idx uint64, cmd *enginev1.Command) {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// timerRows counts primary timer/ rows for the Boundary1 timer — exactly what
+	// TimerService.Rebuild's ScanAll would re-load on leader gain.
+	wantTID := processTimerID(pk, svc, key, "Boundary1", 1)
+	timerRows := func() int {
+		t.Helper()
+		n := 0
+		if err := (tables.TimerTable{S: p.cfg.Snapshotter.Store()}).ScanAll(func(e tables.TimerEntry) error {
+			if bytes.Equal(e.ID.GetUuid(), wantTID.GetUuid()) {
+				n++
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// Start, then arm a boundary timer.
+	must(1, procEventCmd(pk, svc, key, []byte("v"), &enginev1.ModelRef{Name: svc}))
+	col.Drain()
+	must(2, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: pk, Service: svc, InstanceKey: key, NewState: []byte("s1"),
+		ArmTimer: []*enginev1.TimerArm{{NodeId: "Boundary1", FireAtMs: testEnvelopeNowMs + 5000, Slot: 1}},
+	}}})
+	col.Drain()
+	if got := timerRows(); got != 1 {
+		t.Fatalf("after arm: timer rows=%d, want 1", got)
+	}
+
+	// Fire the timer. The fire-apply must reclaim the durable row so a later
+	// Rebuild (ScanAll) cannot re-load and re-fire it.
+	must(3, &enginev1.Command{Kind: &enginev1.Command_ProcessEvent{ProcessEvent: &enginev1.ProcessEvent{
+		Pk: pk, Service: svc, InstanceKey: key,
+		Payload: &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_TimerFired{
+			TimerFired: &enginev1.ProcessTimerFired{NodeId: "Boundary1", Slot: 1},
+		}},
+	}}})
+	col.Drain()
+	if got := timerRows(); got != 0 {
+		t.Fatalf("after fire: timer rows=%d, want 0 (row must be reclaimed so Rebuild cannot re-fire)", got)
+	}
+}
+
 // TestProcess_RepeatedNodeDispatchDistinctIDs is the regression for the
 // loop/retry id collision: a node that dispatches a service task more than once
 // over an instance's lifetime (a rework loop, an error-boundary retry) must mint

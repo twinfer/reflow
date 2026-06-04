@@ -752,13 +752,47 @@ func processRootID(pk uint64, service, instanceKey string) *enginev1.InvocationI
 }
 
 // onProcessEvent applies a ProcessEvent landing on this shard (external ingress,
-// a cross-shard outbox redelivery, or a timer fire): freeze-gate, then enqueue
-// it on the addressed instance's inbox.
+// a cross-shard outbox redelivery, or a timer fire): freeze-gate, reclaim a fired
+// process timer's durable row, then enqueue it on the addressed instance's inbox.
 func (p *Partition) onProcessEvent(batch storage.Batch, ev *enginev1.ProcessEvent, nowMs uint64, isLeader bool) error {
 	if err := p.checkLPFreeze(batch, ev.GetPk()); err != nil {
 		return err
 	}
+	if err := p.reclaimFiredProcessTimer(batch, ev); err != nil {
+		return err
+	}
 	return p.enqueueInstanceEvent(batch, ev, nowMs, isLeader)
+}
+
+// reclaimFiredProcessTimer deletes the durable row(s) of a process timer that
+// just fired — the fire-side counterpart of actuateProcessInstructions' CancelTimer
+// delete, and the process analogue of onTimerFired's delete for a plain sleep.
+// Without it the row outlives the fire, so the next leader-gain TimerService.Rebuild
+// re-loads the past-due row and re-fires a duplicate timer_fired. It runs on every
+// timer_fired apply — including a re-fire into an already-reaped instance — so a row
+// left armed when its instance terminated self-cleans the next time it fires. The
+// fire already consumed the in-memory heap entry, so no ActDeleteTimer is pushed;
+// the batch delete is unconditional (durable state, applied on every replica).
+func (p *Partition) reclaimFiredProcessTimer(batch storage.Batch, ev *enginev1.ProcessEvent) error {
+	tf := ev.GetPayload().GetTimerFired()
+	if tf == nil {
+		return nil
+	}
+	timersT := tables.TimerTable{S: batch}
+	tid := processTimerID(ev.GetPk(), ev.GetService(), ev.GetInstanceKey(), tf.GetNodeId(), tf.GetSlot())
+	var fires []uint64
+	if err := timersT.ScanByInvocation(tid, func(fireAt uint64) error {
+		fires = append(fires, fireAt)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("reclaimFiredProcessTimer: scan: %w", err)
+	}
+	for _, fireAt := range fires {
+		if err := timersT.Delete(batch, fireAt, tid); err != nil {
+			return fmt.Errorf("reclaimFiredProcessTimer: delete: %w", err)
+		}
+	}
+	return nil
 }
 
 // enqueueInstanceEvent creates the instance on the start event, appends the

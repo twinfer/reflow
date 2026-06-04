@@ -114,9 +114,9 @@ func TestIntegration_LPOwnersBootstrapSeed(t *testing.T) {
 
 	for _, pk := range []uint64{
 		0, 1, 2, 3, 4096, 8191, 8192,
-		routing.PartitionKey(0, "svc", "alpha"),
-		routing.PartitionKey(0, "svc", "beta"),
-		routing.PartitionKey(0, "Other", "key-1"),
+		routing.PartitionKey("svc", "alpha"),
+		routing.PartitionKey("svc", "beta"),
+		routing.PartitionKey("Other", "key-1"),
 	} {
 		expected := expectedPlan[keys.LPFromPartitionKey(pk)]
 		if r := h.Partitioner().ShardForKey(pk); r != expected {

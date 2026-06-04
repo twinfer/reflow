@@ -26,6 +26,7 @@ import (
 	"github.com/twinfer/reflow/internal/engine/routing"
 	"github.com/twinfer/reflow/internal/observability"
 	"github.com/twinfer/reflow/internal/storage"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -273,6 +274,11 @@ func NewHost(ctx context.Context, cfg HostConfig) (*Host, error) {
 	}
 	if cfg.NumPartitionShards == 0 {
 		return nil, errors.New("host: NumPartitionShards must be > 0")
+	}
+	// LPCount is the routing modulus: each LP maps to one shard, so shards
+	// beyond LPCount would own no LPs and never receive traffic.
+	if cfg.NumPartitionShards > uint64(keys.LPCount) {
+		return nil, fmt.Errorf("host: NumPartitionShards (%d) must not exceed LPCount (%d)", cfg.NumPartitionShards, keys.LPCount)
 	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()

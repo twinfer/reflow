@@ -66,7 +66,7 @@ func TestWireDispatch_HTTP2_PromiseXshard_Conflict(t *testing.T) {
 	rsH.wfKey = wfKey
 
 	wfTarget := &enginev1.InvocationTarget{ServiceName: wfH.service, HandlerName: wfH.handler, ObjectKey: wfKey}
-	wfID := buildID(routing.PartitionKey(0, wfH.service, wfKey), "conflict-wf")
+	wfID := buildID(routing.PartitionKey(wfH.service, wfKey), "conflict-wf")
 	wfShard := host.Partitioner().ShardForInvocation(wfID)
 	wfRunner := host.Partition(wfShard)
 	if wfRunner == nil {
@@ -111,7 +111,7 @@ func TestWireDispatch_HTTP2_PromiseXshard_Conflict(t *testing.T) {
 	// Now submit the cross-partition resolver — it should hit the
 	// already-completed conflict and surface "promise already completed".
 	rsTarget := &enginev1.InvocationTarget{ServiceName: rsH.service, HandlerName: rsH.handler, ObjectKey: rsKey}
-	rsID := buildID(routing.PartitionKey(0, rsH.service, rsKey), "conflict-rs")
+	rsID := buildID(routing.PartitionKey(rsH.service, rsKey), "conflict-rs")
 	rsShard := host.Partitioner().ShardForInvocation(rsID)
 	if rsShard == wfShard {
 		t.Fatalf("test setup: workflow + resolver expected on different shards")

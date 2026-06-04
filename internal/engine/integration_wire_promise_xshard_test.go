@@ -216,8 +216,8 @@ func findCrossShardKeys(t *testing.T, p routing.Partitioner, wfSvc, resolverSvc 
 			}
 			wfKey := "wf-" + itoa(i)
 			rsKey := "rs-" + itoa(j)
-			wfShard := p.ShardForTarget(0, &enginev1.InvocationTarget{ServiceName: wfSvc, ObjectKey: wfKey})
-			rsShard := p.ShardForTarget(0, &enginev1.InvocationTarget{ServiceName: resolverSvc, ObjectKey: rsKey})
+			wfShard := p.ShardForTarget(&enginev1.InvocationTarget{ServiceName: wfSvc, ObjectKey: wfKey})
+			rsShard := p.ShardForTarget(&enginev1.InvocationTarget{ServiceName: resolverSvc, ObjectKey: rsKey})
 			if wfShard != rsShard {
 				return wfKey, rsKey
 			}
@@ -301,12 +301,12 @@ func TestWireDispatch_HTTP2_PromiseXshard_Resolve(t *testing.T) {
 	wfKey, rsKey := findCrossShardKeys(t, host.Partitioner(), wfH.service, rsH.service)
 	rsH.wfKey = wfKey
 	t.Logf("wf key=%s shard=%d; resolver key=%s shard=%d",
-		wfKey, host.Partitioner().ShardForTarget(0, &enginev1.InvocationTarget{ServiceName: wfH.service, ObjectKey: wfKey}),
-		rsKey, host.Partitioner().ShardForTarget(0, &enginev1.InvocationTarget{ServiceName: rsH.service, ObjectKey: rsKey}))
+		wfKey, host.Partitioner().ShardForTarget(&enginev1.InvocationTarget{ServiceName: wfH.service, ObjectKey: wfKey}),
+		rsKey, host.Partitioner().ShardForTarget(&enginev1.InvocationTarget{ServiceName: rsH.service, ObjectKey: rsKey}))
 
 	// Submit workflow on its shard.
 	wfTarget := &enginev1.InvocationTarget{ServiceName: wfH.service, HandlerName: wfH.handler, ObjectKey: wfKey}
-	wfID := buildID(routing.PartitionKey(0, wfH.service, wfKey), "xshard-wf")
+	wfID := buildID(routing.PartitionKey(wfH.service, wfKey), "xshard-wf")
 	wfShard := host.Partitioner().ShardForInvocation(wfID)
 	wfRunner := host.Partition(wfShard)
 	if wfRunner == nil {
@@ -329,7 +329,7 @@ func TestWireDispatch_HTTP2_PromiseXshard_Resolve(t *testing.T) {
 
 	// Submit resolver on its own (different) shard.
 	rsTarget := &enginev1.InvocationTarget{ServiceName: rsH.service, HandlerName: rsH.handler, ObjectKey: rsKey}
-	rsID := buildID(routing.PartitionKey(0, rsH.service, rsKey), "xshard-rs")
+	rsID := buildID(routing.PartitionKey(rsH.service, rsKey), "xshard-rs")
 	rsShard := host.Partitioner().ShardForInvocation(rsID)
 	rsRunner := host.Partition(rsShard)
 	if rsRunner == nil {

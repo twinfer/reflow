@@ -66,11 +66,11 @@ func preloadEagerState(
 	}
 	cache = make(map[string][]byte)
 	total := uint32(0)
-	// LP for state rows is banded under the invocation's tenant, recomputed
-	// from the routing tuple so it matches the apply path's writes (partition.go
-	// bandedEntityPK) and stays robust to synthetic test ids whose pk doesn't
-	// follow the mint invariant id.pk == PartitionKey(tenant, svc, objKey).
-	lp := keys.LPFromPartitionKey(routing.PartitionKey(keys.TenantFromPartitionKey(id.GetPartitionKey()), target.GetServiceName(), target.GetObjectKey()))
+	// LP for state rows is recomputed from the routing tuple so it matches the
+	// apply path's writes (partition.go entityPK) and stays robust to synthetic
+	// test ids whose pk doesn't follow the mint invariant id.pk ==
+	// PartitionKey(svc, objKey).
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
 	err := stateTable.ScanObject(lp, target, func(key string, value []byte) error {
 		total += uint32(len(key) + len(value))
 		if total > maxBytes {

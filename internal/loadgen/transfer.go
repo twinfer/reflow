@@ -21,20 +21,20 @@ import (
 // seeded transfer, generalized into a reusable driver that chains
 // transfers of populated logical partitions while a workload runs.
 //
-// The driver is deliberately scoped to LPs the live workload never
-// routes to. The anonymous workload submits under tenant band 0, which
-// keys.BandLP folds into LPs [0, LPCount>>TenantBandBits) — LPs 0..63 at
-// the current constants. Any LP >= keys.LPCount>>keys.TenantBandBits is
-// therefore never the target of a live invocation, so transferring it
-// cannot misroute traffic. That matters because the in-process loadgen
-// host does NOT run the routing reconciler (only pkg/reflow.Run does), so
-// Host.Partitioner() routes statically and would not follow an LP that
-// flipped owners mid-run.
+// The driver is deliberately scoped to LPs the live workload never routes to.
+// The loadgen workload confines its keys to LPs below FirstTenantedLP (see
+// randomObjectKey); any LP >= FirstTenantedLP is therefore never the target of a
+// live invocation, so transferring it cannot misroute traffic. That matters
+// because the in-process loadgen host does NOT run the routing reconciler (only
+// pkg/reflow.Run does), so Host.Partitioner() routes statically and would not
+// follow an LP that flipped owners mid-run.
 
-// FirstTenantedLP is the lowest LP outside tenant band 0. Workload
-// invocations (band 0) never route at or above it, so LPs in
-// [FirstTenantedLP, keys.LPCount) are safe to chain-transfer under load.
-const FirstTenantedLP uint32 = keys.LPCount >> keys.TenantBandBits
+// FirstTenantedLP is the lowest LP in the region reserved for the transfer
+// driver. The loadgen workload confines itself to [0, FirstTenantedLP), so LPs
+// in [FirstTenantedLP, keys.LPCount) are safe to chain-transfer under load. 64
+// low LPs give the workload ample partition spread while leaving the bulk of the
+// LP space free for transfer targets.
+const FirstTenantedLP uint32 = 64
 
 // MetadataLeaderHost returns the engine.Host currently leading shard 0,
 // or nil when no in-process node leads it. Re-resolve per use: leadership

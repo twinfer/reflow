@@ -62,15 +62,7 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 		ObjectKey:   msg.GetObjectKey(),
 	}
 
-	// Tenant enters here, from the verified principal, and is folded into the
-	// minted id's partition_key band. Every downstream key placement follows
-	// that banded pk; the optimistic Lookup* reads below band the same way so
-	// they hit the rows onInvoke will write.
-	tenant, terr := principalTenant(ctx)
-	if terr != nil {
-		return nil, terr
-	}
-	shardID := s.routeToShard(tenant, target)
+	shardID := s.routeToShard(target)
 	runner := s.host.Partition(shardID)
 	if runner == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no partition for shard %d", shardID))
@@ -88,7 +80,6 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 			Handler:        target.GetHandlerName(),
 			ObjectKey:      target.GetObjectKey(),
 			IdempotencyKey: ik,
-			Tenant:         tenant,
 		})
 		if err == nil {
 			if prior, ok := res.(*enginev1.InvocationId); ok && prior != nil {
@@ -129,7 +120,6 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 		res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupWorkflowRun{
 			Service:     target.GetServiceName(),
 			WorkflowKey: target.GetObjectKey(),
-			Tenant:      tenant,
 		})
 		if err == nil {
 			if prior, ok := res.(*enginev1.InvocationId); ok && prior != nil {
@@ -143,7 +133,7 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 		// authoritative and idempotent on retries.
 	}
 
-	id, err := mintInvocationID(tenant, target)
+	id, err := mintInvocationID(target)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("mint invocation id: %w", err))
 	}
@@ -171,9 +161,9 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 }
 
 // routeToShard picks the owning partition for a target by hashing
-// (tenant, service, object_key) through the Host's Partitioner.
-func (s *Server) routeToShard(tenant uint32, target *enginev1.InvocationTarget) uint64 {
-	return s.host.Partitioner().ShardForTarget(tenant, target)
+// (service, object_key) through the Host's Partitioner.
+func (s *Server) routeToShard(target *enginev1.InvocationTarget) uint64 {
+	return s.host.Partitioner().ShardForTarget(target)
 }
 
 // shardForID returns the partition shard owning the given invocation
@@ -188,10 +178,10 @@ func (s *Server) shardForID(id *enginev1.InvocationId) (uint64, error) {
 	return s.host.Partitioner().ShardForKey(pk), nil
 }
 
-// mintInvocationID generates a fresh 16-byte UUIDv4 and stamps the banded
-// partition_key derived from (tenant, service, object_key), pinning the id to
-// a specific shard — and tenant band — for its lifetime.
-func mintInvocationID(tenant uint32, target *enginev1.InvocationTarget) (*enginev1.InvocationId, error) {
+// mintInvocationID generates a fresh 16-byte UUIDv4 and stamps the
+// partition_key derived from (service, object_key), pinning the id to a
+// specific shard for its lifetime.
+func mintInvocationID(target *enginev1.InvocationTarget) (*enginev1.InvocationId, error) {
 	uuid := make([]byte, 16)
 	if _, err := rand.Read(uuid); err != nil {
 		return nil, fmt.Errorf("rand: %w", err)
@@ -199,7 +189,7 @@ func mintInvocationID(tenant uint32, target *enginev1.InvocationTarget) (*engine
 	uuid[6] = (uuid[6] & 0x0f) | 0x40
 	uuid[8] = (uuid[8] & 0x3f) | 0x80
 	return &enginev1.InvocationId{
-		PartitionKey: routing.PartitionKey(tenant, target.GetServiceName(), target.GetObjectKey()),
+		PartitionKey: routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()),
 		Uuid:         uuid,
 	}, nil
 }

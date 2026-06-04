@@ -234,7 +234,7 @@ func TestWireDispatch_HTTP2_Awakeable(t *testing.T) {
 	// Wait for the handler to journal its awakeable id via SetState.
 	store := pr.Snapshotter().Store()
 	st := tables.StateTable{S: store}
-	lp := keys.LPFromPartitionKey(routing.PartitionKey(0, target.GetServiceName(), target.GetObjectKey()))
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
 	var awakeableID string
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {

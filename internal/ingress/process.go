@@ -18,7 +18,7 @@ import (
 )
 
 // StartProcess launches a new iflow BPMN/CMMN instance. It routes by
-// (tenant, model name, instance_key) — the same scheme the worker's
+// (model name, instance_key) — the same scheme the worker's
 // procSession and ChildStart use — and proposes a start ProcessEvent (model_ref
 // + kind set, which makes the apply path create the instance record). When the
 // caller leaves instance_key empty the server mints a random one; a caller-
@@ -35,11 +35,6 @@ func (s *Server) StartProcess(ctx context.Context, req *connect.Request[ingressv
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	tenant, terr := principalTenant(ctx)
-	if terr != nil {
-		return nil, terr
-	}
-
 	instanceKey := msg.GetInstanceKey()
 	if instanceKey == "" {
 		k, kerr := mintProcessInstanceKey()
@@ -49,7 +44,7 @@ func (s *Server) StartProcess(ctx context.Context, req *connect.Request[ingressv
 		instanceKey = k
 	}
 
-	pk := routing.PartitionKey(tenant, mr.GetName(), instanceKey)
+	pk := routing.PartitionKey(mr.GetName(), instanceKey)
 	shardID := s.host.Partitioner().ShardForKey(pk)
 	runner := s.host.Partition(shardID)
 	if runner == nil {
@@ -78,7 +73,7 @@ func (s *Server) StartProcess(ctx context.Context, req *connect.Request[ingressv
 }
 
 // DeliverMessage correlates an inbound message/signal to parked process
-// instances. It routes by (tenant, message_name, correlation_key) — the same
+// instances. It routes by (message_name, correlation_key) — the same
 // key actuateProcessInstructions writes the subscription under — and proposes a
 // DeliverProcessMessage, whose apply fans the message out to every subscribed
 // instance and one-shot-consumes the matched subscriptions. Delivery is
@@ -92,12 +87,7 @@ func (s *Server) DeliverMessage(ctx context.Context, req *connect.Request[ingres
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message_name is required"))
 	}
 
-	tenant, terr := principalTenant(ctx)
-	if terr != nil {
-		return nil, terr
-	}
-
-	pk := routing.PartitionKey(tenant, msg.GetMessageName(), msg.GetCorrelationKey())
+	pk := routing.PartitionKey(msg.GetMessageName(), msg.GetCorrelationKey())
 	shardID := s.host.Partitioner().ShardForKey(pk)
 	runner := s.host.Partition(shardID)
 	if runner == nil {
@@ -125,7 +115,7 @@ func (s *Server) DeliverMessage(ctx context.Context, req *connect.Request[ingres
 }
 
 // GetProcessInstance performs a linearizable read of one instance's record from
-// the partition owning (tenant, model name, instance_key) — the same routing
+// the partition owning (model name, instance_key) — the same routing
 // StartProcess uses. It proposes nothing; it exists so a caller without an await
 // RPC can observe whether an instance is running, parked, or terminal-and-reaped.
 func (s *Server) GetProcessInstance(ctx context.Context, req *connect.Request[ingressv1.GetProcessInstanceRequest]) (*connect.Response[ingressv1.GetProcessInstanceResponse], error) {
@@ -138,17 +128,11 @@ func (s *Server) GetProcessInstance(ctx context.Context, req *connect.Request[in
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("instance_key is required"))
 	}
 
-	tenant, terr := principalTenant(ctx)
-	if terr != nil {
-		return nil, terr
-	}
-
-	pk := routing.PartitionKey(tenant, name, msg.GetInstanceKey())
+	pk := routing.PartitionKey(name, msg.GetInstanceKey())
 	shardID := s.host.Partitioner().ShardForKey(pk)
 	res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupProcessInstance{
 		Service:     name,
 		InstanceKey: msg.GetInstanceKey(),
-		Tenant:      tenant,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup process instance: %w", err))
@@ -171,18 +155,11 @@ func (s *Server) GetProcessInstance(ctx context.Context, req *connect.Request[in
 	return connect.NewResponse(resp), nil
 }
 
-// ListProcessInstances lists the caller tenant band's process instances. It
-// enumerates only the band's LPs (band = principal tenant), groups them by owning
-// shard, and reads each shard locally via SyncRead — every node hosts a replica
-// of every shard, so no cross-node RPC is needed — merging up to limit rows.
-// Tenant isolation: only the caller's band LPs are scanned, and each shard
-// re-derives the band as defense in depth.
+// ListProcessInstances lists the deployment's process instances: one
+// whole-namespace scan per partition shard via the shared fanOut substrate,
+// merging up to limit rows.
 func (s *Server) ListProcessInstances(ctx context.Context, req *connect.Request[ingressv1.ListProcessInstancesRequest]) (*connect.Response[ingressv1.ListProcessInstancesResponse], error) {
 	msg := req.Msg
-	tenant, terr := principalTenant(ctx)
-	if terr != nil {
-		return nil, terr
-	}
 	cur, err := decodePageToken(msg.GetPageToken())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -190,15 +167,13 @@ func (s *Server) ListProcessInstances(ctx context.Context, req *connect.Request[
 	limit := clampListLimit(int(msg.GetLimit()))
 	var out []*ingressv1.ProcessInstanceSummary
 	var nextToken string
-	ferr := s.fanOutBand(ctx, tenant, cur,
-		func(shard uint64, lps []uint32, after []byte) any {
+	ferr := s.fanOut(ctx, cur,
+		func(shard uint64, after []byte) any {
 			return engine.LookupProcessInstances{
-				Tenant:          tenant,
 				Service:         msg.GetModelRef().GetName(),
 				StatusFilter:    msg.GetStatusFilter(),
 				CreatedAfterMs:  msg.GetCreatedAfterMs(),
 				CreatedBeforeMs: msg.GetCreatedBeforeMs(),
-				LPs:             lps,
 				After:           after,
 				Limit:           limit,
 			}
@@ -221,7 +196,7 @@ func (s *Server) ListProcessInstances(ctx context.Context, req *connect.Request[
 					EndedAtMs:   si.Record.GetEndedAtMs(),
 				})
 				if len(out) >= limit {
-					lp := keys.LPFromPartitionKey(routing.PartitionKey(tenant, si.Service, si.InstanceKey))
+					lp := keys.LPFromPartitionKey(routing.PartitionKey(si.Service, si.InstanceKey))
 					nextToken = encodePageToken(shard, keys.ProcessInstanceKey(lp, si.Service, si.InstanceKey))
 					return true, nil
 				}

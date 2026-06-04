@@ -83,6 +83,40 @@ func (t ProcessInstanceTable) ScanAll(ctx context.Context, fn func(service, inst
 	return iter.Error()
 }
 
+// ScanAllAfter is ScanAll resumed strictly past the after cursor (a full proc/
+// storage key); after==nil starts from the beginning. Backs the paged
+// ListProcessInstances fan-out (one namespace scan per shard).
+func (t ProcessInstanceTable) ScanAllAfter(ctx context.Context, after []byte, fn func(service, instanceKey string, rec *enginev1.ProcessInstanceRecord) error) error {
+	prefix := keys.ProcessPrefix()
+	iter, err := t.S.NewIter(prefix, keys.PrefixUpperBound(prefix))
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+	for ok := scanStart(iter, after); ok; ok = iter.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		k := iter.Key()
+		if len(k) < len(prefix)+keys.LPLen {
+			continue
+		}
+		body := k[len(prefix)+keys.LPLen:]
+		before, rest, ok0 := bytes.Cut(body, []byte{'/'})
+		if !ok0 {
+			continue
+		}
+		rec := &enginev1.ProcessInstanceRecord{}
+		if err := proto.Unmarshal(iter.Value(), rec); err != nil {
+			continue
+		}
+		if err := fn(string(before), string(rest), rec); err != nil {
+			return err
+		}
+	}
+	return iter.Error()
+}
+
 // ScanLP iterates every instance in one logical partition in key order, decoding
 // (service, instance_key) from each key. Bounded by the LP's instance count.
 // Used by the cross-shard ListProcessInstances fan-out: the shard owning an LP

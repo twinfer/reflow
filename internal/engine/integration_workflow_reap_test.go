@@ -67,7 +67,7 @@ func TestReap_PurgesWorkflowStateAndPromise(t *testing.T) {
 		HandlerName: awaiter.handler,
 		ObjectKey:   wfKey,
 	}
-	pk := routing.PartitionKey(0, target.GetServiceName(), target.GetObjectKey())
+	pk := routing.PartitionKey(target.GetServiceName(), target.GetObjectKey())
 	id := buildID(pk, "reap-id")
 	shardID := host.Partitioner().ShardForInvocation(id)
 	pr := host.Partition(shardID)
@@ -112,7 +112,7 @@ func TestReap_PurgesWorkflowStateAndPromise(t *testing.T) {
 	// DefaultWorkflowRetentionMs. Snapshotter store is the source of
 	// truth — confirm before reap.
 	store := pr.Snapshotter().Store()
-	lp := keys.LPFromPartitionKey(routing.PartitionKey(0, target.GetServiceName(), target.GetObjectKey()))
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
 	runRow, err := (tables.WorkflowRunTable{S: store}).Get(lp, target.GetServiceName(), target.GetObjectKey())
 	if err != nil {
 		t.Fatalf("workflow_run pre-reap: %v", err)

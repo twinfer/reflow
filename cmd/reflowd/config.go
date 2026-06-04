@@ -18,7 +18,7 @@ import (
 // hosted on the same admin Connect listener as ClusterCtl.
 func dispatchConfig(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: reflowd config {register-deployment|list-deployments|describe-deployment|delete-deployment|register-model|list-models|describe-model|delete-model|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|ca|create-join-token|list-join-tokens|delete-join-token|issue-operator|issue-tenant|upsert-cluster-authz-policy|get-cluster-authz-policy} [flags]")
+		return fmt.Errorf("usage: reflowd config {register-deployment|list-deployments|describe-deployment|delete-deployment|register-model|list-models|describe-model|delete-model|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|ca|create-join-token|list-join-tokens|delete-join-token|issue-operator|upsert-cluster-authz-policy|get-cluster-authz-policy} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -59,8 +59,6 @@ func dispatchConfig(ctx context.Context, args []string) error {
 		return cmdDeleteJoinToken(ctx, rest)
 	case "issue-operator":
 		return cmdIssueOperator(ctx, rest)
-	case "issue-tenant":
-		return cmdIssueTenant(ctx, rest)
 	case "upsert-cluster-authz-policy":
 		return cmdUpsertClusterAuthzPolicy(ctx, rest)
 	case "get-cluster-authz-policy":

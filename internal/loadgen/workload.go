@@ -3,7 +3,6 @@ package loadgen
 import (
 	"context"
 	"crypto/rand"
-	"encoding/binary"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -12,6 +11,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/twinfer/reflow/internal/engine/routing"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/pkg/handler"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -199,7 +199,7 @@ func (cfg WorkloadConfig) Run(ctx context.Context, sampler *Sampler) (WorkloadSt
 			continue
 		}
 
-		objectKey := randomObjectKey()
+		objectKey := randomObjectKey(cfg.Service)
 		// Decouple submit budget from runCtx so end-of-run shrinkage
 		// doesn't shorten ctx below dragonboat's RTT-based minimum.
 		// The runCtx still cancels in-flight submits when fired.
@@ -264,12 +264,21 @@ type IssuedInvocation struct {
 	Service string
 }
 
-// randomObjectKey spreads invocations across partitions by sampling
-// from a 1024-entry key namespace.
-func randomObjectKey() string {
+// randomObjectKey spreads invocations across partitions while keeping them in
+// LPs below FirstTenantedLP — the region the chain-transfer driver's high-LP
+// targets stay clear of, so live traffic never routes to an LP mid-transfer (the
+// in-process loadgen host routes statically; see transfer.go). Rejection-samples
+// free-form keys until the (service, key) hash lands in the low region, so the
+// spread across those LPs stays uniform.
+func randomObjectKey(service string) string {
 	var b [8]byte
-	_, _ = rand.Read(b[:])
-	return fmt.Sprintf("k%d", binary.BigEndian.Uint64(b[:])%1024)
+	for {
+		_, _ = rand.Read(b[:])
+		key := fmt.Sprintf("k%x", b[:])
+		if keys.LPFromPartitionKey(routing.PartitionKey(service, key)) < FirstTenantedLP {
+			return key
+		}
+	}
 }
 
 func encodeKey(inv IssuedInvocation) string {

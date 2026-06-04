@@ -19,7 +19,7 @@ func TestPartition_LPFreeze_RejectsInvoke(t *testing.T) {
 	p, _, col := newTestPartition(t)
 
 	target := &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h", ObjectKey: "k"}
-	lp := keys.LPFromPartitionKey(routing.PartitionKey(0, target.GetServiceName(), target.GetObjectKey()))
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()))
 
 	// 1. Install freeze via BeginLPTransfer.
 	beginCmd := envelope(t, &enginev1.Command{
@@ -47,7 +47,7 @@ func TestPartition_LPFreeze_RejectsInvoke(t *testing.T) {
 
 	// 2. Invoke targeting the same LP must be rejected with ResultValueLPFrozen.
 	id := &enginev1.InvocationId{
-		PartitionKey: routing.PartitionKey(0, target.GetServiceName(), target.GetObjectKey()),
+		PartitionKey: routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()),
 		Uuid:         []byte("0123456789abcdef"),
 	}
 	invCmd := envelope(t, &enginev1.Command{

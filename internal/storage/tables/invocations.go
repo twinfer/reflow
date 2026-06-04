@@ -92,6 +92,42 @@ func (t InvocationTable) ScanAll(ctx context.Context, fn func(id *enginev1.Invoc
 	return iter.Error()
 }
 
+// ScanAllAfter is ScanAll resumed strictly past the after cursor (a full inv/
+// storage key); after==nil starts from the beginning. Skips Free rows. Backs the
+// paged ListInvocations fan-out (one namespace scan per shard).
+func (t InvocationTable) ScanAllAfter(ctx context.Context, after []byte, fn func(id *enginev1.InvocationId, s *enginev1.InvocationStatus) error) error {
+	prefix := []byte("inv/")
+	iter, err := t.S.NewIter(prefix, keys.PrefixUpperBound(prefix))
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+	for ok := scanStart(iter, after); ok; ok = iter.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		key := iter.Key()
+		if !bytes.HasPrefix(key, prefix) {
+			continue
+		}
+		id, err := decodeInvKeyID(key, len(prefix))
+		if err != nil {
+			return err
+		}
+		var s enginev1.InvocationStatus
+		if err := proto.Unmarshal(iter.Value(), &s); err != nil {
+			return err
+		}
+		if _, free := s.GetStatus().(*enginev1.InvocationStatus_Free); free {
+			continue
+		}
+		if err := fn(id, &s); err != nil {
+			return err
+		}
+	}
+	return iter.Error()
+}
+
 // ScanLP iterates every invocation status whose owner partition_key reduces
 // to the given logical partition id. Bounded by a single Pebble range scan
 // over [inv/<lp:4>, inv/<lp+1:4>). Used by the cross-shard LP transfer

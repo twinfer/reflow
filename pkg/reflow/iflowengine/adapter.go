@@ -3,10 +3,8 @@ package iflowengine
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	"github.com/twinfer/reflow/internal/engine/invoker"
-	"github.com/twinfer/reflow/internal/storage/keys"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
 
@@ -60,10 +58,8 @@ func (a *Adapter) Advance(_ context.Context, in invoker.ProcessAdvanceInput) (*e
 	}
 }
 
-// tenantOf renders reflow's numeric per-partition tenant id as the string
-// identity.Principal.TenantID the iflow capability layer expects. The mapping is
-// a convention for the first cut; a deployment that needs the original tenant
-// string would resolve it out of band.
-func tenantOf(pk uint64) string {
-	return strconv.FormatUint(uint64(keys.TenantFromPartitionKey(pk)), 10)
-}
+// singleTenantID is the fixed iflow identity.Principal.TenantID for reflow's
+// single-tenant engine (multi-tenancy is a deployment concern, not an engine
+// concept). iflow still wants a tenant string for its keying; a stable constant
+// keeps that deterministic.
+const singleTenantID = "0"

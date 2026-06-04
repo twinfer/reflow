@@ -203,13 +203,13 @@ func TestMultiNode_JoinExistingCluster_OperatorAddNode(t *testing.T) {
 	// for a target that hashes to some shard and confirm the joiner
 	// returns the resulting Completed status via a linearizable read.
 	target := &enginev1.InvocationTarget{ServiceName: svc, HandlerName: handlerName}
-	shard := p.ShardForTarget(0, target)
+	shard := p.ShardForTarget(target)
 	leader := findPartitionLeader(rigs, shard)
 	if leader == nil {
 		t.Fatalf("no leader for shard %d", shard)
 	}
 	id := &enginev1.InvocationId{
-		PartitionKey: routing.PartitionKey(0, svc, ""),
+		PartitionKey: routing.PartitionKey(svc, ""),
 		Uuid:         []byte("join-test-uuid!!"),
 	}
 	depLookupCtx, depLookupCancel := context.WithTimeout(context.Background(), 5*time.Second)

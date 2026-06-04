@@ -104,13 +104,13 @@ func TestIngress_StartProcessThenDeliverMessage(t *testing.T) {
 	h, cli := bringUpHostWithProcessEngine(t, iflowengine.New(res))
 
 	const svc, instKey = "msgproc", "o-1"
-	shardID := h.Partitioner().ShardForKey(routing.PartitionKey(0, svc, instKey))
+	shardID := h.Partitioner().ShardForKey(routing.PartitionKey(svc, instKey))
 
 	lookup := func() (engine.ProcessInstanceLookupResult, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		v, err := h.NodeHost().SyncRead(ctx, shardID, engine.LookupProcessInstance{
-			Service: svc, InstanceKey: instKey, Tenant: 0,
+			Service: svc, InstanceKey: instKey,
 		})
 		if err != nil {
 			return engine.ProcessInstanceLookupResult{}, err

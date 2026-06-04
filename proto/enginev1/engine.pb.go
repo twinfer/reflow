@@ -2548,13 +2548,10 @@ func (x *AwakeableResolved) GetFailureMessage() string {
 // time (sender knows only the Target), and routing is by Target hash via
 // Partitioner.ShardForTarget at the sender shard.
 type SignalDelivered struct {
-	state      protoimpl.MessageState `protogen:"open.v1"`
-	Target     *InvocationTarget      `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
-	SignalName string                 `protobuf:"bytes,2,opt,name=signal_name,json=signalName,proto3" json:"signal_name,omitempty"`
-	Payload    []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
-	// tenant is forward-carried from SignalSend so the receiver's key-lease
-	// lookup bands the target pk under the sender's tenant. 0 = default.
-	Tenant        uint32 `protobuf:"varint,4,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Target        *InvocationTarget      `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
+	SignalName    string                 `protobuf:"bytes,2,opt,name=signal_name,json=signalName,proto3" json:"signal_name,omitempty"`
+	Payload       []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2610,13 +2607,6 @@ func (x *SignalDelivered) GetPayload() []byte {
 	return nil
 }
 
-func (x *SignalDelivered) GetTenant() uint32 {
-	if x != nil {
-		return x.Tenant
-	}
-	return 0
-}
-
 // PromiseCompleted is proposed by ingress (or relayed across partitions
 // via OutboxEnvelope.PromiseCompletion) when a caller resolves or
 // rejects a workflow-scoped promise. The apply arm writes a Resolved
@@ -2638,13 +2628,8 @@ type PromiseCompleted struct {
 	FailureMessage     string                 `protobuf:"bytes,5,opt,name=failure_message,json=failureMessage,proto3" json:"failure_message,omitempty"`
 	CallerId           *InvocationId          `protobuf:"bytes,6,opt,name=caller_id,json=callerId,proto3" json:"caller_id,omitempty"`
 	ResultCompletionId uint32                 `protobuf:"varint,7,opt,name=result_completion_id,json=resultCompletionId,proto3" json:"result_completion_id,omitempty"`
-	// tenant is the band of the workflow being resolved, forward-carried so
-	// the owner shard keys promise/awaiter rows under the right LP band. From
-	// the ingress principal (ResolveWorkflowPromise) or the resolver
-	// invocation's band (cross-partition JECompletePromise). 0 = default.
-	Tenant        uint32 `protobuf:"varint,8,opt,name=tenant,proto3" json:"tenant,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *PromiseCompleted) Reset() {
@@ -2722,13 +2707,6 @@ func (x *PromiseCompleted) GetCallerId() *InvocationId {
 func (x *PromiseCompleted) GetResultCompletionId() uint32 {
 	if x != nil {
 		return x.ResultCompletionId
-	}
-	return 0
-}
-
-func (x *PromiseCompleted) GetTenant() uint32 {
-	if x != nil {
-		return x.Tenant
 	}
 	return 0
 }
@@ -6841,14 +6819,10 @@ func (x *OutboxAck) GetProducerSeq() uint64 {
 // shape as JESignal — repeated here so the outbox row is self-contained
 // (the shuffler does not need to load the journal to re-inject).
 type SignalSend struct {
-	state      protoimpl.MessageState `protogen:"open.v1"`
-	Target     *InvocationTarget      `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
-	SignalName string                 `protobuf:"bytes,2,opt,name=signal_name,json=signalName,proto3" json:"signal_name,omitempty"`
-	Payload    []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
-	// tenant is the band of the sending invocation, forward-carried so the
-	// receiver routes/keys the target under the same LP band (a signal stays
-	// within one tenant). 0 = default/untenanted. See keys.BandLP.
-	Tenant        uint32 `protobuf:"varint,4,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Target        *InvocationTarget      `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
+	SignalName    string                 `protobuf:"bytes,2,opt,name=signal_name,json=signalName,proto3" json:"signal_name,omitempty"`
+	Payload       []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6902,13 +6876,6 @@ func (x *SignalSend) GetPayload() []byte {
 		return x.Payload
 	}
 	return nil
-}
-
-func (x *SignalSend) GetTenant() uint32 {
-	if x != nil {
-		return x.Tenant
-	}
-	return 0
 }
 
 // ProcessEvent drives one instance one step. The start event carries
@@ -12097,13 +12064,12 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x11AwakeableResolved\x12!\n" +
 	"\fawakeable_id\x18\x01 \x01(\tR\vawakeableId\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\x12'\n" +
-	"\x0ffailure_message\x18\x03 \x01(\tR\x0efailureMessage\"\xa0\x01\n" +
+	"\x0ffailure_message\x18\x03 \x01(\tR\x0efailureMessage\"\x88\x01\n" +
 	"\x0fSignalDelivered\x12:\n" +
 	"\x06target\x18\x01 \x01(\v2\".reflow.engine.v1.InvocationTargetR\x06target\x12\x1f\n" +
 	"\vsignal_name\x18\x02 \x01(\tR\n" +
 	"signalName\x12\x18\n" +
-	"\apayload\x18\x03 \x01(\fR\apayload\x12\x16\n" +
-	"\x06tenant\x18\x04 \x01(\rR\x06tenant\"\xb8\x02\n" +
+	"\apayload\x18\x03 \x01(\fR\apayload\"\xa0\x02\n" +
 	"\x10PromiseCompleted\x12\x18\n" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12!\n" +
 	"\fworkflow_key\x18\x02 \x01(\tR\vworkflowKey\x12!\n" +
@@ -12111,8 +12077,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x05value\x18\x04 \x01(\fR\x05value\x12'\n" +
 	"\x0ffailure_message\x18\x05 \x01(\tR\x0efailureMessage\x12;\n" +
 	"\tcaller_id\x18\x06 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\bcallerId\x120\n" +
-	"\x14result_completion_id\x18\a \x01(\rR\x12resultCompletionId\x12\x16\n" +
-	"\x06tenant\x18\b \x01(\rR\x06tenant\"\xcc\x01\n" +
+	"\x14result_completion_id\x18\a \x01(\rR\x12resultCompletionId\"\xcc\x01\n" +
 	"\x14PromiseCompletionAck\x12;\n" +
 	"\tcaller_id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\bcallerId\x120\n" +
 	"\x14result_completion_id\x18\x02 \x01(\rR\x12resultCompletionId\x12\x1c\n" +
@@ -12388,14 +12353,13 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x0ffailure_message\x18\x04 \x01(\tR\x0efailureMessage\"Z\n" +
 	"\tOutboxAck\x12*\n" +
 	"\x11producer_shard_id\x18\x01 \x01(\x04R\x0fproducerShardId\x12!\n" +
-	"\fproducer_seq\x18\x02 \x01(\x04R\vproducerSeq\"\x9b\x01\n" +
+	"\fproducer_seq\x18\x02 \x01(\x04R\vproducerSeq\"\x83\x01\n" +
 	"\n" +
 	"SignalSend\x12:\n" +
 	"\x06target\x18\x01 \x01(\v2\".reflow.engine.v1.InvocationTargetR\x06target\x12\x1f\n" +
 	"\vsignal_name\x18\x02 \x01(\tR\n" +
 	"signalName\x12\x18\n" +
-	"\apayload\x18\x03 \x01(\fR\apayload\x12\x16\n" +
-	"\x06tenant\x18\x04 \x01(\rR\x06tenant\"\xef\x02\n" +
+	"\apayload\x18\x03 \x01(\fR\apayload\"\xef\x02\n" +
 	"\fProcessEvent\x12\x0e\n" +
 	"\x02pk\x18\x01 \x01(\x06R\x02pk\x12\x18\n" +
 	"\aservice\x18\x02 \x01(\tR\aservice\x12!\n" +

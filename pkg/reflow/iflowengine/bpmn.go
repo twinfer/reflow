@@ -200,7 +200,7 @@ func (a *Adapter) translateBPMN(in invoker.ProcessAdvanceInput, graph *bpmn.Proc
 		}
 	}
 
-	tenant := tenantOf(in.Pk)
+	tenant := singleTenantID
 	for _, c := range cmds {
 		switch t := c.(type) {
 		case bpmn.RunServiceTask:

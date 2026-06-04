@@ -357,11 +357,6 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		return bail(fmt.Errorf("reflow: authz engine: %w", azErr))
 	}
 	authzInterceptor := authz.NewInterceptor(authzEngine, logger, false)
-	// Teach the interceptor to recover a by-id ingress request's tenant band
-	// from its invocation/awakeable id, so cross-tenant reads/cancels by id are
-	// denied (see authz_resource.go). by-target ingress routes into the
-	// caller's own band, so it needs no resolver entry.
-	authzInterceptor.SetResourceResolver(ingressResourceTenant)
 
 	if crossShard {
 		dc, derr := creds.Build(cfg.Delivery.Creds, logger)

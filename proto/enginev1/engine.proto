@@ -406,9 +406,6 @@ message SignalDelivered {
   InvocationTarget target = 1;
   string signal_name = 2;
   bytes payload = 3;
-  // tenant is forward-carried from SignalSend so the receiver's key-lease
-  // lookup bands the target pk under the sender's tenant. 0 = default.
-  uint32 tenant = 4;
 }
 
 // PromiseCompleted is proposed by ingress (or relayed across partitions
@@ -431,11 +428,6 @@ message PromiseCompleted {
   string failure_message = 5;
   InvocationId caller_id = 6;
   uint32 result_completion_id = 7;
-  // tenant is the band of the workflow being resolved, forward-carried so
-  // the owner shard keys promise/awaiter rows under the right LP band. From
-  // the ingress principal (ResolveWorkflowPromise) or the resolver
-  // invocation's band (cross-partition JECompletePromise). 0 = default.
-  uint32 tenant = 8;
 }
 
 // PromiseCompletionAck is the cross-partition ack that informs the
@@ -1109,10 +1101,6 @@ message SignalSend {
   InvocationTarget target = 1;
   string signal_name = 2;
   bytes payload = 3;
-  // tenant is the band of the sending invocation, forward-carried so the
-  // receiver routes/keys the target under the same LP band (a signal stays
-  // within one tenant). 0 = default/untenanted. See keys.BandLP.
-  uint32 tenant = 4;
 }
 
 // ── Process-execution payloads (iflow BPMN/CMMN durable backend) ──

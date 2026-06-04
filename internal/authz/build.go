@@ -13,7 +13,6 @@ import (
 const (
 	TypeClusterOperator cedar.EntityType = "ClusterOperator"
 	TypeNode            cedar.EntityType = "Node"
-	TypeTenantAdmin     cedar.EntityType = "TenantAdmin"
 	TypeUser            cedar.EntityType = "User"
 	TypeAnonymous       cedar.EntityType = "Anonymous"
 
@@ -29,10 +28,9 @@ const (
 var PlatformConfigUID = cedar.NewEntityUID(TypePlatformConfig, "cluster")
 
 // InvocationResourceUID is the singleton resource for ingress data-plane
-// authorization. The id is fixed — only its tenant_id attribute matters, set
-// per-request by the interceptor from the routed (by-target) or recovered
-// (by-id) tenant band. The tenant-isolation when-clause compares it to the
-// principal's band.
+// authorization. The engine is single-tenant, so the resource carries no
+// tenant attribute; the resource type is the seam for future per-service
+// ingress rules (the `service` attribute the interceptor stamps).
 var InvocationResourceUID = cedar.NewEntityUID(TypeInvocation, "request")
 
 // PrincipalEntity maps a server-verified auth.Principal to its Cedar
@@ -51,16 +49,6 @@ func PrincipalEntity(p auth.Principal) (cedar.EntityUID, types.Entity) {
 		uid := cedar.NewEntityUID(TypeNode, cedar.String(p.Subject))
 		return uid, types.Entity{UID: uid, Attributes: types.NewRecord(types.RecordMap{
 			"node_id": types.Long(parseNodeID(p.Subject)),
-		})}
-	case "tenant":
-		// tenant_id is server-bound, not self-asserted: TenantIDFromPrincipal
-		// reads the id stamped by the per-tenant OIDC reconciler when the
-		// caller's token validated against that tenant's operator-registered
-		// issuer (TenantRecord.oidc_issuers). It is never read from a token claim.
-		uid := cedar.NewEntityUID(TypeTenantAdmin, cedar.String(p.Subject))
-		return uid, types.Entity{UID: uid, Attributes: types.NewRecord(types.RecordMap{
-			"tenant_id": types.Long(int64(auth.TenantIDFromPrincipal(p))),
-			"subject":   types.String(p.Subject),
 		})}
 	case "user":
 		uid := cedar.NewEntityUID(TypeUser, cedar.String(p.Subject))

@@ -31,11 +31,7 @@ func (s *Server) ResolveWorkflowPromise(ctx context.Context, req *connect.Reques
 		ServiceName: msg.GetService(),
 		ObjectKey:   msg.GetWorkflowKey(),
 	}
-	tenant, terr := principalTenant(ctx)
-	if terr != nil {
-		return nil, terr
-	}
-	shardID := s.host.Partitioner().ShardForTarget(tenant, target)
+	shardID := s.host.Partitioner().ShardForTarget(target)
 	runner := s.host.Partition(shardID)
 	if runner == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
@@ -49,7 +45,6 @@ func (s *Server) ResolveWorkflowPromise(ctx context.Context, req *connect.Reques
 			PromiseName:    msg.GetPromiseName(),
 			Value:          msg.GetValue(),
 			FailureMessage: msg.GetFailureMessage(),
-			Tenant:         tenant,
 		}},
 	}
 	cmd := &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: effect}}

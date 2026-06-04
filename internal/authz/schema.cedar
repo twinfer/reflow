@@ -20,25 +20,18 @@
 // ---- Principal entity types — one per authn outcome ----
 entity ClusterOperator;                  // mTLS CN=operator/<name> or OIDC kind=operator
 entity Node { node_id: Long };           // mTLS CN=node/<id>
-entity TenantAdmin {
-    // tenant_id is a server-side binding, not a token claim: it is the tenant
-    // whose operator-registered OIDC issuer (TenantRecord.oidc_issuers, set via
-    // ClusterCtl/UpsertTenant) validated the bearer token. Resolution lives in
-    // the per-tenant OIDC reconciler + auth.TenantIDFromPrincipal.
-    tenant_id: Long,
-    subject: String
-};
-entity User { subject: String };         // OIDC bearer without a tenant binding (pre-tenancy)
+entity User { subject: String };         // OIDC bearer
 entity Anonymous;                        // no verified identity — open-ingress traffic
 
 // ---- Resource entity types — one per persisted record + action target ----
-// tenant_id is declared now; records gain the field in PR4 and the
-// tenant-isolation when-clause activates in PR5. Today every request evaluates
-// against a single PlatformConfig sentinel resource (foundational policies
-// leave resource unconstrained), so resource attributes are not yet read.
-entity SecretRecord        { tenant_id: Long, name: String };
-entity DeploymentRecord    { tenant_id: Long, name: String };
-entity Invocation          { tenant_id: Long, service: String };
+// The engine is single-tenant (multi-tenancy is a deployment concern), so
+// resources carry no tenant attribute. At evaluation every request resolves
+// against the PlatformConfig sentinel, except ingress, which resolves against
+// the singleton Invocation resource (the `service` attribute is the seam for
+// future per-service ingress rules).
+entity SecretRecord        { name: String };
+entity DeploymentRecord    { name: String };
+entity Invocation          { service: String };
 entity PlatformConfig;                   // cluster-scoped sentinel resource
 
 // ---- Action groups — the administrative planes of SAD §6.15.1 ----
@@ -50,15 +43,15 @@ action ClusterAdminActions;     // cluster topology / DR / rebalance — operato
 action MeshActions;             // inter-node mesh — node only
 
 // ===================== Ingress (data plane) =====================
-action "SubmitInvocation"       in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, TenantAdmin, ClusterOperator], resource: Invocation };
-action "AwaitInvocation"        in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, TenantAdmin, ClusterOperator], resource: Invocation };
-action "AttachInvocation"       in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, TenantAdmin, ClusterOperator], resource: Invocation };
-action "GetInvocationOutput"    in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, TenantAdmin, ClusterOperator], resource: Invocation };
-action "DescribeInvocation"     in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, TenantAdmin, ClusterOperator], resource: Invocation };
-action "CancelInvocation"       in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, TenantAdmin, ClusterOperator], resource: Invocation };
-action "ResolveAwakeable"       in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, TenantAdmin, ClusterOperator], resource: Invocation };
-action "ResolveWorkflowPromise" in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, TenantAdmin, ClusterOperator], resource: Invocation };
-action "GetObjectState"         in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, TenantAdmin, ClusterOperator], resource: Invocation };
+action "SubmitInvocation"       in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, ClusterOperator], resource: Invocation };
+action "AwaitInvocation"        in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, ClusterOperator], resource: Invocation };
+action "AttachInvocation"       in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, ClusterOperator], resource: Invocation };
+action "GetInvocationOutput"    in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, ClusterOperator], resource: Invocation };
+action "DescribeInvocation"     in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, ClusterOperator], resource: Invocation };
+action "CancelInvocation"       in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, ClusterOperator], resource: Invocation };
+action "ResolveAwakeable"       in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, ClusterOperator], resource: Invocation };
+action "ResolveWorkflowPromise" in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, ClusterOperator], resource: Invocation };
+action "GetObjectState"         in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, ClusterOperator], resource: Invocation };
 
 // ===================== Delivery + SelfJoin (node mesh) =====================
 action "Deliver"             in [Action::"MeshActions"] appliesTo { principal: [Node], resource: PlatformConfig };
@@ -66,15 +59,15 @@ action "UploadLPTransferSST" in [Action::"MeshActions"] appliesTo { principal: [
 action "SelfJoin"            in [Action::"MeshActions"] appliesTo { principal: [Node], resource: PlatformConfig };
 
 // ===================== Config: tenant-config writes =====================
-action "UpsertSecret"        in [Action::"TenantConfigActions"] appliesTo { principal: [ClusterOperator, TenantAdmin], resource: SecretRecord };
-action "DeleteSecret"        in [Action::"TenantConfigActions"] appliesTo { principal: [ClusterOperator, TenantAdmin], resource: SecretRecord };
-action "RegisterDeployment"  in [Action::"TenantConfigActions"] appliesTo { principal: [ClusterOperator, TenantAdmin], resource: DeploymentRecord };
-action "DeleteDeployment"    in [Action::"TenantConfigActions"] appliesTo { principal: [ClusterOperator, TenantAdmin], resource: DeploymentRecord };
+action "UpsertSecret"        in [Action::"TenantConfigActions"] appliesTo { principal: [ClusterOperator], resource: SecretRecord };
+action "DeleteSecret"        in [Action::"TenantConfigActions"] appliesTo { principal: [ClusterOperator], resource: SecretRecord };
+action "RegisterDeployment"  in [Action::"TenantConfigActions"] appliesTo { principal: [ClusterOperator], resource: DeploymentRecord };
+action "DeleteDeployment"    in [Action::"TenantConfigActions"] appliesTo { principal: [ClusterOperator], resource: DeploymentRecord };
 
 // ===================== Config: tenant-config reads =====================
-action "ListDeployments"    in [Action::"ConfigReadActions"] appliesTo { principal: [ClusterOperator, TenantAdmin], resource: DeploymentRecord };
-action "DescribeDeployment" in [Action::"ConfigReadActions"] appliesTo { principal: [ClusterOperator, TenantAdmin], resource: DeploymentRecord };
-action "ListSecrets"        in [Action::"ConfigReadActions"] appliesTo { principal: [ClusterOperator, TenantAdmin], resource: SecretRecord };
+action "ListDeployments"    in [Action::"ConfigReadActions"] appliesTo { principal: [ClusterOperator], resource: DeploymentRecord };
+action "DescribeDeployment" in [Action::"ConfigReadActions"] appliesTo { principal: [ClusterOperator], resource: DeploymentRecord };
+action "ListSecrets"        in [Action::"ConfigReadActions"] appliesTo { principal: [ClusterOperator], resource: SecretRecord };
 
 // ===================== Config: platform plane (operator only) =====================
 action "UpsertCARoot"    in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
@@ -84,7 +77,6 @@ action "CreateJoinToken" in [Action::"PlatformConfigActions"] appliesTo { princi
 action "DeleteJoinToken" in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 action "ListJoinTokens"  in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 action "IssueOperator"            in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
-action "IssueTenant"              in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 action "UpsertClusterAuthzPolicy" in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 action "GetClusterAuthzPolicy"    in [Action::"PlatformConfigActions"] appliesTo { principal: [ClusterOperator], resource: PlatformConfig };
 

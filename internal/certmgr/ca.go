@@ -39,7 +39,6 @@ type CALeafKind int
 const (
 	CALeafNode CALeafKind = iota
 	CALeafOperator
-	CALeafTenant
 )
 
 // caDefaultValidity is the validity stamped onto fresh CAs.
@@ -179,7 +178,7 @@ func (ca *CA) IssueLeafForKey(opts IssueLeafOptions, pub crypto.PublicKey) ([]by
 		template.ExtKeyUsage = []x509.ExtKeyUsage{
 			x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth,
 		}
-	case CALeafOperator, CALeafTenant:
+	case CALeafOperator:
 		template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
 	}
 	for _, h := range opts.Hosts {
@@ -230,8 +229,6 @@ func rolePrefix(k CALeafKind) (string, error) {
 		return "node", nil
 	case CALeafOperator:
 		return "operator", nil
-	case CALeafTenant:
-		return "tenant", nil
 	default:
 		return "", fmt.Errorf("certmgr: unknown leaf kind %d", k)
 	}

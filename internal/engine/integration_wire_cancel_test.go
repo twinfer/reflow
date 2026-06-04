@@ -129,7 +129,7 @@ func TestWireDispatch_HTTP2_CancelInvocation(t *testing.T) {
 		HandlerName: sleeper.handler,
 		ObjectKey:   objectKey,
 	}
-	pk := routing.PartitionKey(0, target.GetServiceName(), target.GetObjectKey())
+	pk := routing.PartitionKey(target.GetServiceName(), target.GetObjectKey())
 	id := buildID(pk, "wire-cancel-id1")
 	shardID := host.Partitioner().ShardForInvocation(id)
 	pr := host.Partition(shardID)

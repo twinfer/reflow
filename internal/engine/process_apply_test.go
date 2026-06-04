@@ -46,7 +46,7 @@ func firstAdvance(acts []Action, service string) *ActAdvanceProcess {
 
 func TestProcess_StartEnqueueActivate(t *testing.T) {
 	p, _, col := newTestPartition(t)
-	pk := routing.PartitionKey(0, "OrderProc", "order-1")
+	pk := routing.PartitionKey("OrderProc", "order-1")
 	lp := keys.LPFromPartitionKey(pk)
 
 	cmd := envelope(t, procEventCmd(pk, "OrderProc", "order-1", []byte("vars"),
@@ -95,7 +95,7 @@ func TestProcess_StartEnqueueActivate(t *testing.T) {
 func TestProcess_SerializesConcurrentEvents(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	const svc, key = "P", "k1"
-	pk := routing.PartitionKey(0, svc, key)
+	pk := routing.PartitionKey(svc, key)
 	lp := keys.LPFromPartitionKey(pk)
 	procs, inbox := procStore(p)
 
@@ -173,7 +173,7 @@ func TestProcess_SerializesConcurrentEvents(t *testing.T) {
 func TestProcess_ActuatesInstructions(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	const svc, key = "Proc", "i1"
-	pk := routing.PartitionKey(0, svc, key)
+	pk := routing.PartitionKey(svc, key)
 	lp := keys.LPFromPartitionKey(pk)
 	procs, _ := procStore(p)
 	must := func(idx uint64, cmd *enginev1.Command) {
@@ -289,7 +289,7 @@ func TestProcess_ActuatesInstructions(t *testing.T) {
 func TestProcess_FiredTimerRowReclaimed(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	const svc, key = "Proc", "tf"
-	pk := routing.PartitionKey(0, svc, key)
+	pk := routing.PartitionKey(svc, key)
 	must := func(idx uint64, cmd *enginev1.Command) {
 		t.Helper()
 		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
@@ -351,7 +351,7 @@ func TestProcess_FiredTimerRowReclaimed(t *testing.T) {
 func TestProcess_RepeatedNodeDispatchDistinctIDs(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	const svc, key = "LoopProc", "i1"
-	pk := routing.PartitionKey(0, svc, key)
+	pk := routing.PartitionKey(svc, key)
 	target := &enginev1.InvocationTarget{ServiceName: "Cap", HandlerName: "do"}
 	must := func(idx uint64, cmd *enginev1.Command) {
 		t.Helper()
@@ -414,7 +414,7 @@ func TestProcess_RepeatedNodeDispatchDistinctIDs(t *testing.T) {
 func TestProcess_FanOutSameNodeDistinctIDs(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	const svc, key = "FanProc", "i1"
-	pk := routing.PartitionKey(0, svc, key)
+	pk := routing.PartitionKey(svc, key)
 	target := &enginev1.InvocationTarget{ServiceName: "Cap", HandlerName: "do"}
 	must := func(idx uint64, cmd *enginev1.Command) {
 		t.Helper()
@@ -465,7 +465,7 @@ func TestProcess_FanOutSameNodeDistinctIDs(t *testing.T) {
 func TestProcess_ChildStartAndTerminalDelivery(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	const psvc, pkey = "Parent", "p1"
-	ppk := routing.PartitionKey(0, psvc, pkey)
+	ppk := routing.PartitionKey(psvc, pkey)
 	plp := keys.LPFromPartitionKey(ppk)
 	procs, inbox := procStore(p)
 	must := func(idx uint64, cmd *enginev1.Command) {
@@ -487,7 +487,7 @@ func TestProcess_ChildStartAndTerminalDelivery(t *testing.T) {
 	}}})
 
 	const csvc, ckey = "Child", "c1"
-	cpk := routing.PartitionKey(0, csvc, ckey)
+	cpk := routing.PartitionKey(csvc, ckey)
 	clp := keys.LPFromPartitionKey(cpk)
 
 	// Child created, process-parented to CA1, and activated (its start vars).
@@ -540,7 +540,7 @@ func TestProcess_ChildStartAndTerminalDelivery(t *testing.T) {
 func TestProcess_ServiceTaskResultFeedsBackToParent(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	const psvc, pkey = "Proc", "ip"
-	ppk := routing.PartitionKey(0, psvc, pkey)
+	ppk := routing.PartitionKey(psvc, pkey)
 	plp := keys.LPFromPartitionKey(ppk)
 	procs, _ := procStore(p)
 	must := func(idx uint64, cmd *enginev1.Command) {
@@ -596,7 +596,7 @@ func TestProcess_ServiceTaskResultFeedsBackToParent(t *testing.T) {
 // Command_ProcessEvent{timer_fired} for a process timer (and the plain
 // Command_TimerFired otherwise).
 func TestProcess_TimerFireCommand(t *testing.T) {
-	pk := routing.PartitionKey(0, "Proc", "i9")
+	pk := routing.PartitionKey("Proc", "i9")
 	id := processTimerID(pk, "Proc", "i9", "Boundary", 2)
 	cmd := timerFireCommand(timerHeapEntry{
 		fireAtMs: 9999,
@@ -625,7 +625,7 @@ func TestProcess_TimerFireCommand(t *testing.T) {
 func TestProcess_RetentionImmediateDelete(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	const svc, key = "P", "k1"
-	pk := routing.PartitionKey(0, svc, key)
+	pk := routing.PartitionKey(svc, key)
 	lp := keys.LPFromPartitionKey(pk)
 	procs, _ := procStore(p)
 
@@ -651,7 +651,7 @@ func TestProcess_RetentionImmediateDelete(t *testing.T) {
 func TestProcess_RetentionRetainsAndReaps(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	const svc, key = "P", "k1"
-	pk := routing.PartitionKey(0, svc, key)
+	pk := routing.PartitionKey(svc, key)
 	lp := keys.LPFromPartitionKey(pk)
 	procs, _ := procStore(p)
 	const retention uint64 = 60_000
@@ -729,8 +729,8 @@ func TestProcess_RetentionRetainsAndReaps(t *testing.T) {
 func procSubFixture(t *testing.T, p *Partition, col *ActionCollector) (svc, key, node, msg, corr string, subCount func() int, idxPresent func() bool, apply func(uint64, *enginev1.Command)) {
 	t.Helper()
 	svc, key, node, msg, corr = "P", "k1", "Catch1", "PaymentDone", "ord-1"
-	pk := routing.PartitionKey(0, svc, key)
-	msgLp := keys.LPFromPartitionKey(routing.PartitionKey(0, msg, corr))
+	pk := routing.PartitionKey(svc, key)
+	msgLp := keys.LPFromPartitionKey(routing.PartitionKey(msg, corr))
 	store := p.cfg.Snapshotter.Store()
 	root := processRootID(pk, svc, key)
 
@@ -773,7 +773,7 @@ func procSubFixture(t *testing.T, p *Partition, col *ActionCollector) (svc, key,
 func TestProcess_UnsubscribeTearsDownBoth(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	svc, key, node, _, _, subCount, idxPresent, apply := procSubFixture(t, p, col)
-	pk := routing.PartitionKey(0, svc, key)
+	pk := routing.PartitionKey(svc, key)
 
 	// Open a second turn, then unsubscribe the catch.
 	apply(3, procEventCmd(pk, svc, key, []byte("e2"), nil))
@@ -802,7 +802,7 @@ func TestProcess_UnsubscribeTearsDownBoth(t *testing.T) {
 func TestProcess_TerminalSweepsSubscriptions(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	svc, key, _, _, _, subCount, idxPresent, apply := procSubFixture(t, p, col)
-	pk := routing.PartitionKey(0, svc, key)
+	pk := routing.PartitionKey(svc, key)
 	lp := keys.LPFromPartitionKey(pk)
 	procs, _ := procStore(p)
 
@@ -833,7 +833,7 @@ func TestProcess_LookupProcessInstances(t *testing.T) {
 		}
 		col.Drain()
 	}
-	mk := func(key string) uint64 { return routing.PartitionKey(0, svc, key) }
+	mk := func(key string) uint64 { return routing.PartitionKey(svc, key) }
 
 	// Three running instances in band 0; complete one with retention so it is
 	// retained as COMPLETED.
@@ -842,10 +842,6 @@ func TestProcess_LookupProcessInstances(t *testing.T) {
 	}
 	apply(procAdvancedCmd(mk("a"), svc, "a", []byte("s"), &enginev1.ProcessTerminal{RetentionMs: 60_000}))
 
-	var band0 []uint32
-	for lp := range uint32(1) << keys.IntraLPBits {
-		band0 = append(band0, lp)
-	}
 	list := func(q LookupProcessInstances) []ProcessInstanceSummary {
 		t.Helper()
 		res, err := p.Lookup(q)
@@ -859,39 +855,35 @@ func TestProcess_LookupProcessInstances(t *testing.T) {
 		return r.Instances
 	}
 
-	if all := list(LookupProcessInstances{Tenant: 0, Service: svc, LPs: band0}); len(all) != 3 {
+	if all := list(LookupProcessInstances{Service: svc}); len(all) != 3 {
 		t.Fatalf("list all: got %d, want 3", len(all))
 	}
-	running := list(LookupProcessInstances{Tenant: 0, Service: svc, LPs: band0,
+	running := list(LookupProcessInstances{Service: svc,
 		StatusFilter: []enginev1.ProcessStatus{enginev1.ProcessStatus_PROCESS_STATUS_RUNNING}})
 	if len(running) != 2 {
 		t.Fatalf("list running: got %d, want 2", len(running))
 	}
-	if none := list(LookupProcessInstances{Tenant: 0, Service: "Other", LPs: band0}); len(none) != 0 {
+	if none := list(LookupProcessInstances{Service: "Other"}); len(none) != 0 {
 		t.Fatalf("list other service: got %d, want 0", len(none))
 	}
-	if capped := list(LookupProcessInstances{Tenant: 0, Service: svc, LPs: band0, Limit: 1}); len(capped) != 1 {
+	if capped := list(LookupProcessInstances{Service: svc, Limit: 1}); len(capped) != 1 {
 		t.Fatalf("list limit 1: got %d, want 1", len(capped))
-	}
-	// A band-1 LP passed under tenant 0 is skipped (defense in depth).
-	if wrong := list(LookupProcessInstances{Tenant: 0, Service: svc, LPs: []uint32{1 << keys.IntraLPBits}}); len(wrong) != 0 {
-		t.Fatalf("band-1 lp under tenant 0: got %d, want 0", len(wrong))
 	}
 
 	// created_at window: every instance is stamped testEnvelopeNowMs at creation.
 	// A lower bound one past it excludes all; an upper bound one past it keeps all.
-	if after := list(LookupProcessInstances{Tenant: 0, Service: svc, LPs: band0, CreatedAfterMs: testEnvelopeNowMs + 1}); len(after) != 0 {
+	if after := list(LookupProcessInstances{Service: svc, CreatedAfterMs: testEnvelopeNowMs + 1}); len(after) != 0 {
 		t.Fatalf("created_after now+1: got %d, want 0", len(after))
 	}
-	if before := list(LookupProcessInstances{Tenant: 0, Service: svc, LPs: band0, CreatedBeforeMs: testEnvelopeNowMs + 1}); len(before) != 3 {
+	if before := list(LookupProcessInstances{Service: svc, CreatedBeforeMs: testEnvelopeNowMs + 1}); len(before) != 3 {
 		t.Fatalf("created_before now+1: got %d, want 3", len(before))
 	}
 
 	// Page cursor: After = the first row's key resumes strictly past it.
-	all := list(LookupProcessInstances{Tenant: 0, Service: svc, LPs: band0})
+	all := list(LookupProcessInstances{Service: svc})
 	first := all[0]
 	lp := keys.LPFromPartitionKey(mk(first.InstanceKey))
-	resumed := list(LookupProcessInstances{Tenant: 0, Service: svc, LPs: band0,
+	resumed := list(LookupProcessInstances{Service: svc,
 		After: keys.ProcessInstanceKey(lp, first.Service, first.InstanceKey)})
 	if len(resumed) != len(all)-1 {
 		t.Fatalf("resume after first: got %d, want %d", len(resumed), len(all)-1)

@@ -5,12 +5,10 @@
 // LP-prefixed namespaces carry a 4-byte big-endian Logical Partition (LP) id
 // immediately after the namespace string (LP is `partition_key % LPCount`).
 // The LP-transfer range-scan `[ns/<lp>, ns/<lp+1>)` spans every row on one LP
-// without filter overhead. There is no tenant segment: tenancy is a routing
-// property folded into partition_key's low bits (and therefore the LP band),
-// not a key field. The LP's high TenantBandBits ARE the tenant band, so a
-// per-tenant range is just that band's contiguous LP range, while the
-// tenant-agnostic LP-transfer scan `[ns/<lp>, ns/<lp+1>)` is unchanged.
-// See BandLP / TenantFromPartitionKey and project (b) LP-banding.
+// without filter overhead. The engine is single-tenant: the LP is purely a
+// routing/sharding coordinate (the low log2(LPCount) bits of partition_key),
+// not a tenant field. Multi-tenancy is a deployment concern (one instance per
+// customer), never an engine concept.
 //
 // LP-prefixed namespaces (LP source in parentheses):
 //
@@ -26,7 +24,7 @@
 //	workflow_run/<lp:4><service>/<workflow_key>                      -> InvocationId        (svc, wf_key)      [entity-keyed]
 //	promise/<lp:4><service>/<workflow_key>/<name>                    -> PromiseValue        (svc, wf_key)      [entity-keyed]
 //	promise_awaiter/<lp:4><service>/<workflow_key>/<name>/<idx:4>    -> PromiseAwaiter      (svc, wf_key)      [entity-keyed]
-//	msgsub/<lp:4><corr_digest:32><sub_digest:32>                     -> MessageSubscription (PartitionKey(tenant,msg,corr)) [entity-keyed]
+//	msgsub/<lp:4><corr_digest:32><sub_digest:32>                     -> MessageSubscription (PartitionKey(msg,corr)) [entity-keyed]
 //	timer_lp/<lp:4><8-byte BE fire_at_ms>/<24-byte id>               -> uint32 sleep_index  (id.PartitionKey)  [ID-keyed]
 //	dedup/arbitrary/<lp:4><producer_id>/<8-byte BE seq>              -> DedupEntry          (command kind)     [entity-keyed]
 //
@@ -44,7 +42,7 @@
 // dedup/arbitrary is LP-prefixed so the row rides the LP-transfer scan and
 // follows the LP across shard moves; LP-agnostic arbitrary dedups (today only
 // the OutboxAck command) key under the LPNoLP sentinel = 0xFFFF_FFFF, which
-// is never a real LP (LPCount=16384) and therefore is never range-deleted by
+// is never a real LP (LPCount=4096) and therefore is never range-deleted by
 // FinishLPTransfer.
 //
 // All multi-byte integers in keys are big-endian so lexicographic byte order
@@ -77,34 +75,22 @@ const (
 	awakeableIDLen   = 26
 	awakeableBodyLen = 16
 
-	// LPCount is the forever-fixed number of Logical Partitions. Routing
-	// reduces `partition_key % LPCount` to an LP id; the LP is embedded as a
-	// 4-byte big-endian uint32 immediately after the namespace prefix of
-	// every LP-prefixed key. 16384 is a power of two so the reduction is a
-	// single bitwise AND (`pk & 0x3FFF`).
-	LPCount uint32 = 16384
+	// LPCount is the forever-fixed number of Logical Partitions — the
+	// cluster-wide routing granularity and the ceiling on partition shard
+	// count. Routing reduces `partition_key % LPCount` to an LP id; the LP is
+	// embedded as a 4-byte big-endian uint32 immediately after the namespace
+	// prefix of every LP-prefixed key. 4096 is a power of two so the reduction
+	// is a single bitwise AND (`pk & 0x0FFF`). It is baked into every on-disk
+	// key and must be identical across all nodes, so it can never change for a
+	// populated data directory — a pick-once constant, not per-deployment config.
+	LPCount uint32 = 4096
 	// LPLen is the byte width of the encoded LP field.
 	LPLen = 4
 
-	// TenantBandBits is how many high bits of the 14-bit LP encode the tenant
-	// band; the remaining IntraLPBits low bits are the intra-tenant hash
-	// spread. Each tenant owns the contiguous LP range
-	// [band<<IntraLPBits, (band+1)<<IntraLPBits) — the prefix that isolates it.
-	// Capacity is forever-fixed with LPCount: 1<<TenantBandBits bands,
-	// LPCount>>TenantBandBits LPs each. At LPCount=16384, 8 bits → 256 bands ×
-	// 64 LPs. Band 0 is the default/untenanted band (anonymous/operator/node
-	// and any caller without a tenant leaf). See BandLP / TenantFromPartitionKey.
-	TenantBandBits = 8
-	// IntraLPBits = log2(LPCount) - TenantBandBits (asserted in init). 6 here.
-	IntraLPBits = 6
-	// intraLPMask masks the intra-tenant low bits of an LP (0x3F here).
-	intraLPMask = uint32(1)<<IntraLPBits - 1
-	// MaxTenantBand is the exclusive upper bound on a tenant band id (256).
-	MaxTenantBand uint32 = 1 << TenantBandBits
 	// LPNoLP is the sentinel LP for arbitrary dedup rows that don't belong
 	// to any real LP — today only the OutboxAck command, which is shard-
 	// internal and LP-agnostic. The sentinel is chosen so it can never
-	// collide with a real LP (real LPs are < LPCount = 16384) and so a
+	// collide with a real LP (real LPs are < LPCount = 4096) and so a
 	// per-LP range scan / range-delete never touches it.
 	LPNoLP uint32 = 0xFFFF_FFFF
 
@@ -145,23 +131,6 @@ var ErrInvalidInvocationID = errors.New("invocation id must have 16-byte uuid")
 // LPCount is a power of two so the reduction is a bitwise mask.
 func LPFromPartitionKey(pk uint64) uint32 {
 	return uint32(pk & uint64(LPCount-1))
-}
-
-// BandLP folds a tenant band and a 64-bit hash into the 14-bit banded LP:
-// the high TenantBandBits are the band, the low IntraLPBits are the hash
-// spread. tenant must be < MaxTenantBand (caller pre-validates; out-of-range
-// bands are masked, never panicking on the hot path). This is the only place
-// the band/intra split is constructed; routing.PartitionKey calls it.
-func BandLP(tenant uint32, hash uint64) uint32 {
-	return (tenant&(MaxTenantBand-1))<<IntraLPBits | uint32(hash)&intraLPMask
-}
-
-// TenantFromPartitionKey recovers the tenant band from a partition_key — the
-// inverse of the band fold. Every key placement rides the banded pk, so this
-// is how downstream code (Cedar resource attribution, observability) learns an
-// invocation's tenant without a separate field. Band 0 = default/untenanted.
-func TenantFromPartitionKey(pk uint64) uint32 {
-	return LPFromPartitionKey(pk) >> IntraLPBits
 }
 
 // appendLP appends the 4-byte big-endian encoding of lp to out.
@@ -1120,10 +1089,5 @@ func LPStagingPrefix() []byte { return []byte(lpStagingPrefix) }
 func init() {
 	if LPCount&(LPCount-1) != 0 {
 		panic("keys: LPCount must be a power of two")
-	}
-	// The band/intra split must exactly tile the LP space:
-	// 2^(TenantBandBits+IntraLPBits) == LPCount.
-	if uint32(1)<<(TenantBandBits+IntraLPBits) != LPCount {
-		panic("keys: TenantBandBits + IntraLPBits must equal log2(LPCount)")
 	}
 }

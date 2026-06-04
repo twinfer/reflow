@@ -9,8 +9,8 @@ import (
 )
 
 func TestRouting_PartitionKeyDeterministic(t *testing.T) {
-	a := PartitionKey(0, "svc", "key-1")
-	b := PartitionKey(0, "svc", "key-1")
+	a := PartitionKey("svc", "key-1")
+	b := PartitionKey("svc", "key-1")
 	if a != b {
 		t.Fatalf("PartitionKey not deterministic: %d vs %d", a, b)
 	}
@@ -21,42 +21,21 @@ func TestRouting_PartitionKeyDisambiguates(t *testing.T) {
 	// separator. If callers ever pass a service with a NUL byte we'd
 	// regress here — the SDK API surface is responsible for rejecting
 	// such ids before they reach routing.
-	a := PartitionKey(0, "ab", "c")
-	b := PartitionKey(0, "a", "bc")
+	a := PartitionKey("ab", "c")
+	b := PartitionKey("a", "bc")
 	if a == b {
 		t.Fatalf("PartitionKey collided on adjacent components: %d", a)
 	}
 }
 
-func TestRouting_TenantBanding(t *testing.T) {
-	// The tenant band folds into the LP region of the partition_key, is
-	// recoverable, and lands in the band's contiguous LP range.
-	for _, tenant := range []uint32{0, 1, 42, 255} {
-		pk := PartitionKey(tenant, "cart", "user-1")
-		if got := keys.TenantFromPartitionKey(pk); got != tenant {
-			t.Errorf("tenant %d: recovered %d", tenant, got)
-		}
-		lp := keys.LPFromPartitionKey(pk)
-		lo, hi := tenant<<keys.IntraLPBits, (tenant+1)<<keys.IntraLPBits
-		if lp < lo || lp >= hi {
-			t.Errorf("tenant %d: lp %d not in band [%d,%d)", tenant, lp, lo, hi)
-		}
-	}
-
-	// Same (service, key) in different tenants → disjoint LP bands.
-	b1 := keys.LPFromPartitionKey(PartitionKey(1, "cart", "u")) >> keys.IntraLPBits
-	b2 := keys.LPFromPartitionKey(PartitionKey(2, "cart", "u")) >> keys.IntraLPBits
-	if b1 == b2 {
-		t.Errorf("tenants 1 and 2 share band %d", b1)
-	}
-
-	// Within a band, distinct keys still spread across intra-tenant LPs.
+func TestRouting_PartitionKeySpread(t *testing.T) {
+	// Distinct keys spread across LPs (the FNV hash fills the LP region).
 	seen := map[uint32]bool{}
 	for i := range 64 {
-		seen[keys.LPFromPartitionKey(PartitionKey(7, "cart", fmt.Sprintf("k%d", i)))] = true
+		seen[keys.LPFromPartitionKey(PartitionKey("cart", fmt.Sprintf("k%d", i)))] = true
 	}
 	if len(seen) < 2 {
-		t.Errorf("tenant 7 keys collapsed to %d LP(s); expected spread", len(seen))
+		t.Errorf("keys collapsed to %d LP(s); expected spread", len(seen))
 	}
 }
 
@@ -85,8 +64,8 @@ func TestRouting_ZeroPartitionerShardOne(t *testing.T) {
 func TestRouting_ShardForTargetMatchesShardForInvocation(t *testing.T) {
 	p := NewPartitioner(7)
 	target := &enginev1.InvocationTarget{ServiceName: "S", ObjectKey: "k"}
-	id := &enginev1.InvocationId{PartitionKey: PartitionKey(0, "S", "k")}
-	if p.ShardForTarget(0, target) != p.ShardForInvocation(id) {
+	id := &enginev1.InvocationId{PartitionKey: PartitionKey("S", "k")}
+	if p.ShardForTarget(target) != p.ShardForInvocation(id) {
 		t.Fatalf("ShardForTarget != ShardForInvocation for same key tuple")
 	}
 }
@@ -97,7 +76,7 @@ func TestRouting_ShardForTargetMatchesShardForInvocation(t *testing.T) {
 // fallback path.
 func TestRouting_SnapshotOverridesPlanner(t *testing.T) {
 	p := NewPartitioner(3)
-	pk := PartitionKey(0, "svc", "obj-1")
+	pk := PartitionKey("svc", "obj-1")
 	lp := keys.LPFromPartitionKey(pk)
 	const override uint64 = 999 // outside [1, 3]
 	p.SetLPOwnersSnapshot(map[uint32]uint64{lp: override})
@@ -114,7 +93,7 @@ func TestRouting_SnapshotOverridesPlanner(t *testing.T) {
 // from the same shard ids.
 func TestRouting_SnapshotMissFallsBackToPlanner(t *testing.T) {
 	p := NewPartitioner(4)
-	pk := PartitionKey(0, "svc", "obj-2")
+	pk := PartitionKey("svc", "obj-2")
 	lp := keys.LPFromPartitionKey(pk)
 	// Snapshot contains every LP except this one.
 	snap := map[uint32]uint64{}
@@ -137,7 +116,7 @@ func TestRouting_SnapshotMissFallsBackToPlanner(t *testing.T) {
 // SetLPOwnersSnapshot call.
 func TestRouting_NilSnapshotFallsBackToPlanner(t *testing.T) {
 	p := NewPartitioner(5)
-	pk := PartitionKey(0, "svc", "obj-3")
+	pk := PartitionKey("svc", "obj-3")
 	lp := keys.LPFromPartitionKey(pk)
 	want := NewPlanner([]uint64{1, 2, 3, 4, 5}).ShardForLP(lp)
 	if got := p.ShardForKey(pk); got != want {
@@ -152,7 +131,7 @@ func TestRouting_SnapshotSwapVisibleAcrossCopies(t *testing.T) {
 	p := NewPartitioner(2)
 	a := *p
 	b := *p
-	pk := PartitionKey(0, "svc", "obj-shared")
+	pk := PartitionKey("svc", "obj-shared")
 	lp := keys.LPFromPartitionKey(pk)
 	p.SetLPOwnersSnapshot(map[uint32]uint64{lp: 42})
 	if got := a.ShardForKey(pk); got != 42 {
@@ -184,9 +163,9 @@ func TestRouting_PlannerSeedMatchesFallback(t *testing.T) {
 
 	for _, pk := range []uint64{
 		0, 1, 2, 3, 1<<31 + 7, 1<<63 + 1, 0xffff_ffff_ffff_ffff,
-		PartitionKey(0, "svc", "alpha"),
-		PartitionKey(0, "svc", "beta"),
-		PartitionKey(0, "Other", ""),
+		PartitionKey("svc", "alpha"),
+		PartitionKey("svc", "beta"),
+		PartitionKey("Other", ""),
 	} {
 		if s, u := seeded.ShardForKey(pk), unseeded.ShardForKey(pk); s != u {
 			t.Errorf("ShardForKey(0x%x): seeded=%d unseeded=%d; warm-up routing must match steady-state", pk, s, u)

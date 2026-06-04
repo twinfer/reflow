@@ -60,7 +60,7 @@ func TestProcessSession_RunsAdvanceAndProposes(t *testing.T) {
 	store := storage.NewMemStore()
 	procs := tables.ProcessInstanceTable{S: store}
 
-	pk := routing.PartitionKey(0, "OrderProc", "order-42") // band 0
+	pk := routing.PartitionKey("OrderProc", "order-42") // band 0
 	lp := keys.LPFromPartitionKey(pk)
 	seedInstance(t, store, lp, "OrderProc", "order-42", &enginev1.ProcessInstanceRecord{
 		ModelRef:  &enginev1.ModelRef{Kind: "bpmn", Name: "OrderProc", Version: "v1"},
@@ -110,7 +110,7 @@ func TestProcessSession_AdvanceErrorFailsInstance(t *testing.T) {
 	store := storage.NewMemStore()
 	procs := tables.ProcessInstanceTable{S: store}
 
-	pk := routing.PartitionKey(0, "S", "k")
+	pk := routing.PartitionKey("S", "k")
 	lp := keys.LPFromPartitionKey(pk)
 	seedInstance(t, store, lp, "S", "k", &enginev1.ProcessInstanceRecord{StateBlob: []byte("blob")})
 
@@ -142,7 +142,7 @@ func TestProcessSession_MissingInstanceDropsTurn(t *testing.T) {
 
 	eng := &stubProcessEngine{out: &enginev1.ProcessAdvanced{}}
 	prop := &fakeProposer{}
-	pk := routing.PartitionKey(0, "S", "gone")
+	pk := routing.PartitionKey("S", "gone")
 	s := newProcessSession(context.Background(), processRef{pk: pk, service: "S", instanceKey: "gone"}, extEntry(nil, 1), eng, procs, prop, slog.Default())
 	s.start()
 	waitDone(t, s)

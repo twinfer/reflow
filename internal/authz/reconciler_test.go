@@ -81,13 +81,13 @@ func TestReconcileOnce_ReadErrorKeepsPrevious(t *testing.T) {
 }
 
 // TestValidateClusterPolicy is the upload gate the Config server applies: a
-// schema-conformant policy passes; an appliesTo violation (TenantAdmin on the
+// schema-conformant policy passes; an appliesTo violation (Anonymous on the
 // operator-only AddNode) is rejected at upload, never installed.
 func TestValidateClusterPolicy(t *testing.T) {
 	if err := ValidateClusterPolicy([]byte(FoundationalClusterPolicies)); err != nil {
 		t.Errorf("foundational policy should validate: %v", err)
 	}
-	bad := `permit (principal is TenantAdmin, action == Action::"AddNode", resource);`
+	bad := `permit (principal is Anonymous, action == Action::"AddNode", resource);`
 	if err := ValidateClusterPolicy([]byte(bad)); err == nil {
 		t.Error("expected appliesTo violation to be rejected at upload")
 	}

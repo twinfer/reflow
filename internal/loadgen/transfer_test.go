@@ -12,6 +12,7 @@ import (
 
 	"github.com/twinfer/reflow/internal/engine/rebalance"
 	"github.com/twinfer/reflow/internal/loadgen"
+	"github.com/twinfer/reflow/internal/storage/keys"
 	"github.com/twinfer/reflow/pkg/handler"
 )
 
@@ -31,27 +32,28 @@ func envInt(t *testing.T, key string, def int) int {
 	return n
 }
 
-// buildTransferLPs returns n populated high-LPs (>= FirstTenantedLP) to
-// chain-transfer. n == 5 reproduces the committed default set so the
-// reference numbers stay comparable. For any other n the LPs are spread
-// evenly across [FirstTenantedLP, FirstTenantedLP+12000): denser packing
-// raises the chance that, as LPs chain around shards and accumulate,
-// their key ranges interleave on a shared dest — the condition under
-// which a plain Ingest SST lands in L0 instead of sinking to L6.
+// buildTransferLPs returns n populated high-LPs to chain-transfer, spread across
+// the transfer region [FirstTenantedLP, LPCount) — the LPs the live workload
+// never routes to. Region-relative so it stays valid for any LPCount. n == 5 is
+// the canonical set (spread with increasing gaps); for any other n the LPs are
+// spread evenly. Spreading raises the chance that, as LPs chain around shards
+// and accumulate, their key ranges interleave on a shared dest — the condition
+// under which a plain Ingest SST lands in L0 instead of sinking to L6.
 func buildTransferLPs(n int) []uint32 {
+	region := keys.LPCount - loadgen.FirstTenantedLP
 	if n == 5 {
+		// Fractions of the region, clustered low with increasing gaps.
 		return []uint32{
 			loadgen.FirstTenantedLP + 0,
-			loadgen.FirstTenantedLP + 500,
-			loadgen.FirstTenantedLP + 1500,
-			loadgen.FirstTenantedLP + 4000,
-			loadgen.FirstTenantedLP + 8000,
+			loadgen.FirstTenantedLP + region/32,
+			loadgen.FirstTenantedLP + region/11,
+			loadgen.FirstTenantedLP + region/4,
+			loadgen.FirstTenantedLP + region/2,
 		}
 	}
-	const span = 12000
 	out := make([]uint32, n)
 	for i := range out {
-		out[i] = loadgen.FirstTenantedLP + uint32(i*span/n)
+		out[i] = loadgen.FirstTenantedLP + uint32(i)*region/uint32(n)
 	}
 	return out
 }
@@ -71,9 +73,8 @@ func buildTransferLPs(n int) []uint32 {
 // Shape:
 //   - 3-node in-process cluster, autonomous rebalancer OFF (we drive the
 //     transfers manually).
-//   - A steady 50qps workload runs against band-0 LPs (0..63) — the
-//     anonymous tenant's only routable LPs — as background write-load on
-//     every shard.
+//   - A steady 50qps workload runs against the reserved low LPs (0..63) the
+//     workload confines itself to — as background write-load on every shard.
 //   - Concurrently, several populated high-LPs (>= FirstTenantedLP) are
 //     chain-transferred shard-to-shard. Live traffic never routes to those
 //     LPs, so the transfers cannot misroute the workload (the in-process

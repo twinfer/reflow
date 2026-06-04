@@ -98,8 +98,6 @@ const (
 	ConfigListJoinTokensProcedure = "/reflow.config.v1.Config/ListJoinTokens"
 	// ConfigIssueOperatorProcedure is the fully-qualified name of the Config's IssueOperator RPC.
 	ConfigIssueOperatorProcedure = "/reflow.config.v1.Config/IssueOperator"
-	// ConfigIssueTenantProcedure is the fully-qualified name of the Config's IssueTenant RPC.
-	ConfigIssueTenantProcedure = "/reflow.config.v1.Config/IssueTenant"
 	// ConfigUpsertClusterAuthzPolicyProcedure is the fully-qualified name of the Config's
 	// UpsertClusterAuthzPolicy RPC.
 	ConfigUpsertClusterAuthzPolicyProcedure = "/reflow.config.v1.Config/UpsertClusterAuthzPolicy"
@@ -185,12 +183,6 @@ type ConfigClient interface {
 	// same ClusterIssuer the bootstrap listener uses. Leader-only.
 	// Replaces the deleted `reflowd pki issue-operator` flow.
 	IssueOperator(context.Context, *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error)
-	// IssueTenant mints a tenant client cert (CN "tenant/<n>", n in [1,255])
-	// against the active cluster CA — the source identity for LP-band tenancy.
-	// Same flow as IssueOperator (operator generates the keypair, sends the
-	// CSR, receives the signed leaf + CA chain); the server validates the CN's
-	// numeric tenant band and signs the public key. Operator-only, leader-only.
-	IssueTenant(context.Context, *connect.Request[configv1.IssueTenantRequest]) (*connect.Response[configv1.IssueTenantResponse], error)
 	// UpsertClusterAuthzPolicy replaces shard 0's cluster-wide Cedar authz
 	// policy text (PlatformConfigRecord). The server runs layer-1 schema
 	// validation before proposing, so an invalid policy is rejected at upload,
@@ -320,12 +312,6 @@ func NewConfigClient(httpClient connect.HTTPClient, baseURL string, opts ...conn
 			connect.WithSchema(configMethods.ByName("IssueOperator")),
 			connect.WithClientOptions(opts...),
 		),
-		issueTenant: connect.NewClient[configv1.IssueTenantRequest, configv1.IssueTenantResponse](
-			httpClient,
-			baseURL+ConfigIssueTenantProcedure,
-			connect.WithSchema(configMethods.ByName("IssueTenant")),
-			connect.WithClientOptions(opts...),
-		),
 		upsertClusterAuthzPolicy: connect.NewClient[configv1.UpsertClusterAuthzPolicyRequest, configv1.UpsertClusterAuthzPolicyResponse](
 			httpClient,
 			baseURL+ConfigUpsertClusterAuthzPolicyProcedure,
@@ -361,7 +347,6 @@ type configClient struct {
 	deleteJoinToken          *connect.Client[configv1.DeleteJoinTokenRequest, configv1.DeleteJoinTokenResponse]
 	listJoinTokens           *connect.Client[configv1.ListJoinTokensRequest, configv1.ListJoinTokensResponse]
 	issueOperator            *connect.Client[configv1.IssueOperatorRequest, configv1.IssueOperatorResponse]
-	issueTenant              *connect.Client[configv1.IssueTenantRequest, configv1.IssueTenantResponse]
 	upsertClusterAuthzPolicy *connect.Client[configv1.UpsertClusterAuthzPolicyRequest, configv1.UpsertClusterAuthzPolicyResponse]
 	getClusterAuthzPolicy    *connect.Client[configv1.GetClusterAuthzPolicyRequest, configv1.GetClusterAuthzPolicyResponse]
 }
@@ -456,11 +441,6 @@ func (c *configClient) IssueOperator(ctx context.Context, req *connect.Request[c
 	return c.issueOperator.CallUnary(ctx, req)
 }
 
-// IssueTenant calls reflow.config.v1.Config.IssueTenant.
-func (c *configClient) IssueTenant(ctx context.Context, req *connect.Request[configv1.IssueTenantRequest]) (*connect.Response[configv1.IssueTenantResponse], error) {
-	return c.issueTenant.CallUnary(ctx, req)
-}
-
 // UpsertClusterAuthzPolicy calls reflow.config.v1.Config.UpsertClusterAuthzPolicy.
 func (c *configClient) UpsertClusterAuthzPolicy(ctx context.Context, req *connect.Request[configv1.UpsertClusterAuthzPolicyRequest]) (*connect.Response[configv1.UpsertClusterAuthzPolicyResponse], error) {
 	return c.upsertClusterAuthzPolicy.CallUnary(ctx, req)
@@ -548,12 +528,6 @@ type ConfigHandler interface {
 	// same ClusterIssuer the bootstrap listener uses. Leader-only.
 	// Replaces the deleted `reflowd pki issue-operator` flow.
 	IssueOperator(context.Context, *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error)
-	// IssueTenant mints a tenant client cert (CN "tenant/<n>", n in [1,255])
-	// against the active cluster CA — the source identity for LP-band tenancy.
-	// Same flow as IssueOperator (operator generates the keypair, sends the
-	// CSR, receives the signed leaf + CA chain); the server validates the CN's
-	// numeric tenant band and signs the public key. Operator-only, leader-only.
-	IssueTenant(context.Context, *connect.Request[configv1.IssueTenantRequest]) (*connect.Response[configv1.IssueTenantResponse], error)
 	// UpsertClusterAuthzPolicy replaces shard 0's cluster-wide Cedar authz
 	// policy text (PlatformConfigRecord). The server runs layer-1 schema
 	// validation before proposing, so an invalid policy is rejected at upload,
@@ -679,12 +653,6 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 		connect.WithSchema(configMethods.ByName("IssueOperator")),
 		connect.WithHandlerOptions(opts...),
 	)
-	configIssueTenantHandler := connect.NewUnaryHandler(
-		ConfigIssueTenantProcedure,
-		svc.IssueTenant,
-		connect.WithSchema(configMethods.ByName("IssueTenant")),
-		connect.WithHandlerOptions(opts...),
-	)
 	configUpsertClusterAuthzPolicyHandler := connect.NewUnaryHandler(
 		ConfigUpsertClusterAuthzPolicyProcedure,
 		svc.UpsertClusterAuthzPolicy,
@@ -735,8 +703,6 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 			configListJoinTokensHandler.ServeHTTP(w, r)
 		case ConfigIssueOperatorProcedure:
 			configIssueOperatorHandler.ServeHTTP(w, r)
-		case ConfigIssueTenantProcedure:
-			configIssueTenantHandler.ServeHTTP(w, r)
 		case ConfigUpsertClusterAuthzPolicyProcedure:
 			configUpsertClusterAuthzPolicyHandler.ServeHTTP(w, r)
 		case ConfigGetClusterAuthzPolicyProcedure:
@@ -820,10 +786,6 @@ func (UnimplementedConfigHandler) ListJoinTokens(context.Context, *connect.Reque
 
 func (UnimplementedConfigHandler) IssueOperator(context.Context, *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.IssueOperator is not implemented"))
-}
-
-func (UnimplementedConfigHandler) IssueTenant(context.Context, *connect.Request[configv1.IssueTenantRequest]) (*connect.Response[configv1.IssueTenantResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.IssueTenant is not implemented"))
 }
 
 func (UnimplementedConfigHandler) UpsertClusterAuthzPolicy(context.Context, *connect.Request[configv1.UpsertClusterAuthzPolicyRequest]) (*connect.Response[configv1.UpsertClusterAuthzPolicyResponse], error) {

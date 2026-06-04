@@ -143,7 +143,7 @@ func (a *Adapter) translateCMMN(in invoker.ProcessAdvanceInput, cmds []cmmn.Comm
 		}
 	}
 
-	tenant := tenantOf(in.Pk)
+	tenant := singleTenantID
 	for _, c := range cmds {
 		switch t := c.(type) {
 		case cmmn.RunTask:

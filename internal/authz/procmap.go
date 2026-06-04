@@ -97,7 +97,6 @@ var procMap = map[string]procEntry{
 	configv1connect.ConfigDeleteJoinTokenProcedure:          {"DeleteJoinToken", []string{groupPlatformConfig}},
 	configv1connect.ConfigListJoinTokensProcedure:           {"ListJoinTokens", []string{groupPlatformConfig}},
 	configv1connect.ConfigIssueOperatorProcedure:            {"IssueOperator", []string{groupPlatformConfig}},
-	configv1connect.ConfigIssueTenantProcedure:              {"IssueTenant", []string{groupPlatformConfig}},
 	configv1connect.ConfigUpsertClusterAuthzPolicyProcedure: {"UpsertClusterAuthzPolicy", []string{groupPlatformConfig}},
 	configv1connect.ConfigGetClusterAuthzPolicyProcedure:    {"GetClusterAuthzPolicy", []string{groupPlatformConfig}},
 

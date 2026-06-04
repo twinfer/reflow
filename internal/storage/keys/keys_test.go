@@ -76,40 +76,6 @@ func TestLPFromPartitionKey_Bounds(t *testing.T) {
 	}
 }
 
-func TestBandLP_DisjointContiguousRanges(t *testing.T) {
-	// Each tenant band owns the contiguous, disjoint LP range
-	// [band<<IntraLPBits, (band+1)<<IntraLPBits), and the band is recoverable.
-	for _, band := range []uint32{0, 1, 42, MaxTenantBand - 1} {
-		for _, hash := range []uint64{0, 1, 0x3F, 12345, ^uint64(0)} {
-			lp := BandLP(band, hash)
-			lo, hi := band<<IntraLPBits, (band+1)<<IntraLPBits
-			if lp < lo || lp >= hi {
-				t.Errorf("BandLP(%d, %#x) = %d; want in [%d,%d)", band, hash, lp, lo, hi)
-			}
-			if lp >= LPCount {
-				t.Errorf("BandLP(%d, %#x) = %d; out of LP range [0,%d)", band, hash, lp, LPCount)
-			}
-			if got := lp >> IntraLPBits; got != band {
-				t.Errorf("band recovered from LP %d = %d; want %d", lp, got, band)
-			}
-		}
-	}
-}
-
-func TestTenantFromPartitionKey_IgnoresEntropyBits(t *testing.T) {
-	// Recovery reads the band out of the LP region only; the high entropy bits
-	// (which keep uuid-derivation / sessionKey / idempotency collision-free)
-	// do not affect the recovered tenant.
-	for _, band := range []uint32{0, 1, 42, MaxTenantBand - 1} {
-		lp := BandLP(band, 0x29)
-		entropy := uint64(0xABCD_1234_5678_9ABC)
-		pk := entropy&^uint64(LPCount-1) | uint64(lp)
-		if got := TenantFromPartitionKey(pk); got != band {
-			t.Errorf("TenantFromPartitionKey(%#x) = %d; want %d", pk, got, band)
-		}
-	}
-}
-
 func TestInvocationKey_LPPrefix(t *testing.T) {
 	id := testID(t, 0x123, "0123456789abcdef")
 	k, err := InvocationKey(id)

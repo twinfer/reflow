@@ -272,7 +272,7 @@ func drawSpecPool(entries []targetSpec) []invSpec {
 	specs := make([]invSpec, 0, len(entries)*2)
 	uuidNonce := uint64(1)
 	for _, e := range entries {
-		pk := routing.PartitionKey(0, e.tgt.service, e.tgt.objectKey)
+		pk := routing.PartitionKey(e.tgt.service, e.tgt.objectKey)
 		for range 2 {
 			uuid := make([]byte, 16)
 			binary.BigEndian.PutUint64(uuid, uuidNonce)
@@ -910,11 +910,11 @@ func (m *engineMachine) Check(t *rapid.T) {
 	// Object FSM invariant — leases live on the shard owning the target's
 	// PartitionKey.
 	for lk, want := range m.leases {
-		shard := m.partitioner.ShardForTarget(0, &enginev1.InvocationTarget{
+		shard := m.partitioner.ShardForTarget(&enginev1.InvocationTarget{
 			ServiceName: lk.service, ObjectKey: lk.objectKey,
 		})
 		klt := tables.KeyLeaseTable{S: m.snaps[m.sIdx(shard)].Store()}
-		lp := keys.LPFromPartitionKey(routing.PartitionKey(0, lk.service, lk.objectKey))
+		lp := keys.LPFromPartitionKey(routing.PartitionKey(lk.service, lk.objectKey))
 		got, err := klt.Get(lp, lk.service, lk.objectKey)
 		if err != nil {
 			t.Fatalf("KeyLeaseTable.Get shard=%d %+v: %v", shard, lk, err)
@@ -1053,10 +1053,10 @@ func (m *engineMachine) Check(t *rapid.T) {
 	// the row outlives a Completed/Purged invocation — the model mirrors
 	// that by never deleting m.workflowRuns entries.
 	for lk, winnerHex := range m.workflowRuns {
-		shard := m.partitioner.ShardForTarget(0, &enginev1.InvocationTarget{
+		shard := m.partitioner.ShardForTarget(&enginev1.InvocationTarget{
 			ServiceName: lk.service, ObjectKey: lk.objectKey,
 		})
-		lp := keys.LPFromPartitionKey(routing.PartitionKey(0, lk.service, lk.objectKey))
+		lp := keys.LPFromPartitionKey(routing.PartitionKey(lk.service, lk.objectKey))
 		got, err := (tables.WorkflowRunTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(lp, lk.service, lk.objectKey)
 		if err != nil {
 			t.Fatalf("WorkflowRunTable.Get shard=%d %+v: %v", shard, lk, err)
@@ -1079,11 +1079,11 @@ func (m *engineMachine) Check(t *rapid.T) {
 	// and rooted on the shard that owns the partition key, so writes/reads
 	// from any invocation under the same lease key target the same store.
 	for lk, want := range m.state {
-		shard := m.partitioner.ShardForTarget(0, &enginev1.InvocationTarget{
+		shard := m.partitioner.ShardForTarget(&enginev1.InvocationTarget{
 			ServiceName: lk.service, ObjectKey: lk.objectKey,
 		})
 		target := &enginev1.InvocationTarget{ServiceName: lk.service, ObjectKey: lk.objectKey}
-		lp := keys.LPFromPartitionKey(routing.PartitionKey(0, lk.service, lk.objectKey))
+		lp := keys.LPFromPartitionKey(routing.PartitionKey(lk.service, lk.objectKey))
 		got := map[string][]byte{}
 		if err := (tables.StateTable{S: m.snaps[m.sIdx(shard)].Store()}).ScanObject(lp, target, func(k string, v []byte) error {
 			got[k] = append([]byte(nil), v...)
@@ -1171,7 +1171,7 @@ func TestEngine_InvokedWakeRespawn(t *testing.T) {
 	// Signals route by Target → KeyLeaseTable, so the wake-respawn test
 	// needs a keyed target so the apply arm can resolve back to this id.
 	target := &enginev1.InvocationTarget{ServiceName: "S", HandlerName: "h", ObjectKey: "wake-respawn-key"}
-	pk := routing.PartitionKey(0, target.GetServiceName(), target.GetObjectKey())
+	pk := routing.PartitionKey(target.GetServiceName(), target.GetObjectKey())
 	id := &enginev1.InvocationId{PartitionKey: pk, Uuid: []byte("wake-respawn-id1")}
 
 	apply := func(idx uint64, cmd *enginev1.Command) []Action {

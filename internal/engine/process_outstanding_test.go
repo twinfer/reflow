@@ -51,7 +51,7 @@ func TestProcess_OutstandingCounter(t *testing.T) {
 	t.Run("invoke fan-out increments by N, each feedback decrements", func(t *testing.T) {
 		p, _, col := newTestPartition(t)
 		const svc, key = "Proc", "i1"
-		pk := routing.PartitionKey(0, svc, key)
+		pk := routing.PartitionKey(svc, key)
 		lp := keys.LPFromPartitionKey(pk)
 		target := &enginev1.InvocationTarget{ServiceName: "Cap", HandlerName: "do"}
 
@@ -82,7 +82,7 @@ func TestProcess_OutstandingCounter(t *testing.T) {
 	t.Run("armed timer fires", func(t *testing.T) {
 		p, _, col := newTestPartition(t)
 		const svc, key = "Proc", "tf"
-		pk := routing.PartitionKey(0, svc, key)
+		pk := routing.PartitionKey(svc, key)
 		lp := keys.LPFromPartitionKey(pk)
 
 		mustApply(t, p, 1, procEventCmd(pk, svc, key, []byte("v"), &enginev1.ModelRef{Name: svc}))
@@ -105,7 +105,7 @@ func TestProcess_OutstandingCounter(t *testing.T) {
 	t.Run("armed timer cancelled", func(t *testing.T) {
 		p, _, col := newTestPartition(t)
 		const svc, key = "Proc", "tc"
-		pk := routing.PartitionKey(0, svc, key)
+		pk := routing.PartitionKey(svc, key)
 		lp := keys.LPFromPartitionKey(pk)
 
 		mustApply(t, p, 1, procEventCmd(pk, svc, key, []byte("v"), &enginev1.ModelRef{Name: svc}))
@@ -134,7 +134,7 @@ func TestProcess_OutstandingCounter(t *testing.T) {
 	t.Run("child start and completion", func(t *testing.T) {
 		p, _, col := newTestPartition(t)
 		const svc, key = "Parent", "p1"
-		pk := routing.PartitionKey(0, svc, key)
+		pk := routing.PartitionKey(svc, key)
 		lp := keys.LPFromPartitionKey(pk)
 
 		mustApply(t, p, 1, procEventCmd(pk, svc, key, []byte("v"), &enginev1.ModelRef{Name: svc}))
@@ -160,7 +160,7 @@ func TestProcess_OutstandingCounter(t *testing.T) {
 	t.Run("feedback at zero saturates (no underflow)", func(t *testing.T) {
 		p, _, col := newTestPartition(t)
 		const svc, key = "Proc", "z1"
-		pk := routing.PartitionKey(0, svc, key)
+		pk := routing.PartitionKey(svc, key)
 		lp := keys.LPFromPartitionKey(pk)
 
 		mustApply(t, p, 1, procEventCmd(pk, svc, key, []byte("v"), &enginev1.ModelRef{Name: svc}))
@@ -178,7 +178,7 @@ func TestProcess_OutstandingCounter(t *testing.T) {
 	t.Run("external input does not decrement", func(t *testing.T) {
 		p, _, col := newTestPartition(t)
 		const svc, key = "Proc", "x1"
-		pk := routing.PartitionKey(0, svc, key)
+		pk := routing.PartitionKey(svc, key)
 		lp := keys.LPFromPartitionKey(pk)
 		target := &enginev1.InvocationTarget{ServiceName: "Cap", HandlerName: "do"}
 

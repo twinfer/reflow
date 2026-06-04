@@ -60,7 +60,7 @@ func procTaskCompletedCmdMI(pk uint64, service, key, node, instanceIdx string, o
 func TestProcess_Iflow_ParallelJoin_ApplyPath(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	const svc, key = "pj", "i1"
-	pk := routing.PartitionKey(0, svc, key)
+	pk := routing.PartitionKey(svc, key)
 	lp := keys.LPFromPartitionKey(pk)
 	procs, _ := procStore(p)
 
@@ -153,7 +153,7 @@ const reproMINumericXML = `<?xml version="1.0" encoding="UTF-8"?>
 func TestProcess_Iflow_MINumeric_ApplyPath(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	const svc, key = "mi", "i1"
-	pk := routing.PartitionKey(0, svc, key)
+	pk := routing.PartitionKey(svc, key)
 	lp := keys.LPFromPartitionKey(pk)
 	procs, _ := procStore(p)
 

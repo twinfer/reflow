@@ -497,7 +497,7 @@ func deriveCalleeID(parent *enginev1.InvocationId, entryIdx uint32, target *engi
 	writeLP(target.GetObjectKey())
 	sum := h.Sum(nil)
 	return &enginev1.InvocationId{
-		PartitionKey: routing.PartitionKey(0, target.GetServiceName(), target.GetObjectKey()),
+		PartitionKey: routing.PartitionKey(target.GetServiceName(), target.GetObjectKey()),
 		Uuid:         sum[:16],
 	}
 }

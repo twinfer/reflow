@@ -236,7 +236,7 @@ func (m *engineMachine) PromiseCompletedExternal(t *rapid.T) {
 	pv := m.promises[pk]
 	alreadyTerminal := pv != nil && pv.state != promisePending
 
-	shard := m.partitioner.ShardForTarget(0, &enginev1.InvocationTarget{
+	shard := m.partitioner.ShardForTarget(&enginev1.InvocationTarget{
 		ServiceName: spec.tgt.service,
 		ObjectKey:   spec.tgt.objectKey,
 	})
@@ -282,10 +282,10 @@ func (m *engineMachine) PromiseCompletedExternal(t *rapid.T) {
 // (owner, entry_index) pairs.
 func (m *engineMachine) checkPromiseInvariants(t *rapid.T) {
 	for pk, want := range m.promises {
-		shard := m.partitioner.ShardForTarget(0, &enginev1.InvocationTarget{
+		shard := m.partitioner.ShardForTarget(&enginev1.InvocationTarget{
 			ServiceName: pk.service, ObjectKey: pk.workflowKey,
 		})
-		lp := keys.LPFromPartitionKey(routing.PartitionKey(0, pk.service, pk.workflowKey))
+		lp := keys.LPFromPartitionKey(routing.PartitionKey(pk.service, pk.workflowKey))
 		got, err := (tables.PromiseTable{S: m.snaps[m.sIdx(shard)].Store()}).Get(lp, pk.service, pk.workflowKey, pk.name)
 		if err != nil {
 			t.Fatalf("PromiseTable.Get shard=%d %+v: %v", shard, pk, err)
@@ -316,10 +316,10 @@ func (m *engineMachine) checkPromiseInvariants(t *rapid.T) {
 	}
 
 	for pk, want := range m.promiseAwaiters {
-		shard := m.partitioner.ShardForTarget(0, &enginev1.InvocationTarget{
+		shard := m.partitioner.ShardForTarget(&enginev1.InvocationTarget{
 			ServiceName: pk.service, ObjectKey: pk.workflowKey,
 		})
-		lp := keys.LPFromPartitionKey(routing.PartitionKey(0, pk.service, pk.workflowKey))
+		lp := keys.LPFromPartitionKey(routing.PartitionKey(pk.service, pk.workflowKey))
 		var got []*enginev1.PromiseAwaiter
 		if err := (tables.PromiseAwaiterTable{S: m.snaps[m.sIdx(shard)].Store()}).ScanForName(lp, pk.service, pk.workflowKey, pk.name, func(a *enginev1.PromiseAwaiter) error {
 			got = append(got, proto.Clone(a).(*enginev1.PromiseAwaiter))

@@ -42,7 +42,7 @@ func deliverMsgCmd(pk uint64, name, corr string, payload []byte) *enginev1.Comma
 
 func countSubscriptions(t *testing.T, p *Partition, name, corr string) int {
 	t.Helper()
-	lp := keys.LPFromPartitionKey(routing.PartitionKey(0, name, corr))
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(name, corr))
 	subT := tables.MessageSubscriptionTable{S: p.cfg.Snapshotter.Store()}
 	n := 0
 	if err := subT.ScanByCorrelation(lp, name, corr, func(_ []byte, _ *enginev1.MessageSubscription) error {
@@ -64,7 +64,7 @@ func countSubscriptions(t *testing.T, p *Partition, name, corr string) int {
 func TestProcess_MessageCorrelationReadPath(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	const svc, key = "msgproc", "o-1"
-	pk := routing.PartitionKey(0, svc, key)
+	pk := routing.PartitionKey(svc, key)
 	lp := keys.LPFromPartitionKey(pk)
 	procs, inbox := procStore(p)
 
@@ -118,14 +118,14 @@ func TestProcess_MessageCorrelationReadPath(t *testing.T) {
 	}
 
 	// A non-matching correlation key must not consume the subscription.
-	must(3, deliverMsgCmd(routing.PartitionKey(0, "shipped", "OTHER"), "shipped", "OTHER", []byte(`{}`)))
+	must(3, deliverMsgCmd(routing.PartitionKey("shipped", "OTHER"), "shipped", "OTHER", []byte(`{}`)))
 	if n := countSubscriptions(t, p, "shipped", "A-1"); n != 1 {
 		t.Fatalf("after non-matching delivery: subscription must survive, got %d", n)
 	}
 
 	// 2. Deliver the matching message → fans a ProcessMessageReceived to the
 	//    instance inbox and one-shot-consumes the subscription.
-	must(4, deliverMsgCmd(routing.PartitionKey(0, "shipped", "A-1"), "shipped", "A-1", []byte(`{"tracking":"Z9"}`)))
+	must(4, deliverMsgCmd(routing.PartitionKey("shipped", "A-1"), "shipped", "A-1", []byte(`{"tracking":"Z9"}`)))
 	if n := countSubscriptions(t, p, "shipped", "A-1"); n != 0 {
 		t.Fatalf("after delivery: want subscription consumed, got %d rows", n)
 	}
@@ -150,7 +150,7 @@ func TestProcess_MessageCorrelationReadPath(t *testing.T) {
 func TestProcess_DuplicateStartIsDropped(t *testing.T) {
 	p, _, _ := newTestPartition(t)
 	const svc, key = "dup", "i1"
-	pk := routing.PartitionKey(0, svc, key)
+	pk := routing.PartitionKey(svc, key)
 	lp := keys.LPFromPartitionKey(pk)
 	procs, inbox := procStore(p)
 	mr := &enginev1.ModelRef{Kind: "bpmn", Name: "dup", Version: "v1"}
@@ -202,7 +202,7 @@ func TestProcess_SubscribeCrossShardUsesOutbox(t *testing.T) {
 
 	// Route the message key (shipped/A-1) to shard 2; this partition is shard 1.
 	part := routing.NewPartitioner(4)
-	msgLP := keys.LPFromPartitionKey(routing.PartitionKey(0, "shipped", "A-1"))
+	msgLP := keys.LPFromPartitionKey(routing.PartitionKey("shipped", "A-1"))
 	part.SetLPOwnersSnapshot(map[uint32]uint64{msgLP: 2})
 
 	p := NewPartition(1, 1, PartitionConfig{
@@ -214,7 +214,7 @@ func TestProcess_SubscribeCrossShardUsesOutbox(t *testing.T) {
 	t.Cleanup(func() { _ = p.Close() })
 
 	const svc, key = "msgproc", "o-1"
-	pk := routing.PartitionKey(0, svc, key)
+	pk := routing.PartitionKey(svc, key)
 	lp := keys.LPFromPartitionKey(pk)
 	procs, _ := procStore(p)
 

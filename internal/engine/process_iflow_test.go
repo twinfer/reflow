@@ -54,7 +54,7 @@ func hasInvokeNode(invs []*enginev1.TaskInvoke, node string) bool {
 func TestProcess_IflowAdapterLifecycle(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	const svc, key = "echo", "i1"
-	pk := routing.PartitionKey(0, svc, key)
+	pk := routing.PartitionKey(svc, key)
 	lp := keys.LPFromPartitionKey(pk)
 	procs, _ := procStore(p)
 

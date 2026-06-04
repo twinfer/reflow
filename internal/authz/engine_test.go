@@ -45,15 +45,6 @@ func evalReq(e *Engine, procedure string, p auth.Principal, resType cedar.Entity
 	if resAttrs == nil {
 		resAttrs = types.RecordMap{}
 	}
-	// Ingress resources always carry tenant_id in production (the interceptor
-	// builds an Invocation with the principal's/recovered band). Default it to
-	// band 0 so the tenant-isolation when-clause evaluates rather than erroring
-	// on a missing attribute. Tests exercising tenant!=0 pass it explicitly.
-	if resType == TypeInvocation {
-		if _, ok := resAttrs["tenant_id"]; !ok {
-			resAttrs["tenant_id"] = types.Long(0)
-		}
-	}
 	rUID := cedar.NewEntityUID(resType, cedar.String(resID))
 	em := types.EntityMap{
 		pUID: pEnt,
@@ -119,46 +110,6 @@ func TestAuthorize_PlaneSeparation(t *testing.T) {
 	}
 }
 
-// TestAuthorize_TenantIsolation is the data-plane isolation fixture: a tenant
-// principal may act only within its own band, anonymous/user only on the
-// default band (0), and the operator god-mode spans all bands. The resource's
-// tenant_id is what the interceptor builds (the routed band for by-target RPCs,
-// the band recovered from the request id for by-id RPCs).
-func TestAuthorize_TenantIsolation(t *testing.T) {
-	e := mustEngine(t, FoundationalClusterPolicies)
-	tenant7 := auth.Principal{Kind: "tenant", Subject: "7", Raw: "tenant/7"}
-	anon := auth.Principal{}
-	operator := auth.Principal{Kind: "operator", Subject: "alice", Raw: "operator/alice"}
-
-	band := func(n int64) types.RecordMap {
-		return types.RecordMap{"tenant_id": types.Long(n), "service": types.String("svc")}
-	}
-	cases := []struct {
-		name      string
-		p         auth.Principal
-		resTenant int64
-		want      cedar.Decision
-	}{
-		{"tenant7-own-band", tenant7, 7, cedar.Allow},
-		{"tenant7-other-band", tenant7, 5, cedar.Deny},   // cross-tenant by-id read
-		{"tenant7-default-band", tenant7, 0, cedar.Deny}, // can't reach untenanted
-		{"anon-default-band", anon, 0, cedar.Allow},
-		{"anon-tenant-band", anon, 7, cedar.Deny}, // anonymous can't reach a tenant
-		{"operator-any-band", operator, 7, cedar.Allow},
-	}
-	for _, c := range cases {
-		for _, action := range []string{actSubmitInvocation, actAwaitInvocation} {
-			t.Run(c.name, func(t *testing.T) {
-				got := evalReq(e, action, c.p, TypeInvocation, "request", band(c.resTenant))
-				if got != c.want {
-					t.Errorf("action=%s principal=%q resTenant=%d: got %v want %v",
-						action, c.p.Raw, c.resTenant, got, c.want)
-				}
-			})
-		}
-	}
-}
-
 // TestPrincipalEntity_Mapping checks the auth.Principal -> Cedar UID + attrs
 // mapping for each kind, including the always-typed anonymous and user cases.
 func TestPrincipalEntity_Mapping(t *testing.T) {
@@ -175,14 +126,6 @@ func TestPrincipalEntity_Mapping(t *testing.T) {
 		t.Errorf("node_id = %v want 7", v)
 	}
 
-	tUID, tEnt := PrincipalEntity(auth.Principal{Kind: "tenant", Subject: "12/bob"})
-	if tUID.Type != TypeTenantAdmin {
-		t.Fatalf("tenant: uid=%v", tUID)
-	}
-	if v, _ := tEnt.Attributes.Get("tenant_id"); v != types.Long(12) {
-		t.Errorf("tenant_id = %v want 12", v)
-	}
-
 	if uUID, _ := PrincipalEntity(auth.Principal{Kind: "user", Subject: "x"}); uUID.Type != TypeUser {
 		t.Errorf("user: uid=%v want type User", uUID)
 	}
@@ -192,36 +135,12 @@ func TestPrincipalEntity_Mapping(t *testing.T) {
 }
 
 // TestCompileAndValidate_RejectsAppliesToViolation proves layer-1 validation
-// rejects a policy that violates the schema's appliesTo: TenantAdmin cannot
-// be a principal for AddNode (operator-only). Caught at compile, not eval.
+// rejects a policy that violates the schema's appliesTo: Anonymous cannot be a
+// principal for AddNode (operator-only). Caught at compile, not eval.
 func TestCompileAndValidate_RejectsAppliesToViolation(t *testing.T) {
 	e := mustEngine(t, FoundationalClusterPolicies)
-	bad := `permit (principal is TenantAdmin, action == Action::"AddNode", resource);`
+	bad := `permit (principal is Anonymous, action == Action::"AddNode", resource);`
 	if _, err := e.CompileAndValidate([]byte(bad)); err == nil {
-		t.Fatal("expected schema validation to reject TenantAdmin on AddNode")
-	}
-}
-
-// TestTenantIsolation_ValidatesAndEnforces proves the headline mechanism
-// (the PR5 guarantee) works: a tenant-isolation policy validates against the
-// schema and denies cross-tenant access while allowing same-tenant access.
-func TestTenantIsolation_ValidatesAndEnforces(t *testing.T) {
-	tenantPolicy := `
-permit (
-    principal is TenantAdmin,
-    action == Action::"RegisterDeployment",
-    resource
-) when { resource.tenant_id == principal.tenant_id && principal.tenant_id > 0 };
-`
-	e := mustEngine(t, FoundationalClusterPolicies+tenantPolicy)
-	tenant12 := auth.Principal{Kind: "tenant", Subject: "12/alice"}
-
-	if got := evalReq(e, actRegisterDeployment, tenant12, TypeDeploymentRecord, "kafka",
-		types.RecordMap{"tenant_id": types.Long(12), "name": types.String("kafka")}); got != cedar.Allow {
-		t.Errorf("same-tenant: got %v want Allow", got)
-	}
-	if got := evalReq(e, actRegisterDeployment, tenant12, TypeDeploymentRecord, "kafka",
-		types.RecordMap{"tenant_id": types.Long(99), "name": types.String("kafka")}); got != cedar.Deny {
-		t.Errorf("cross-tenant: got %v want Deny", got)
+		t.Fatal("expected schema validation to reject Anonymous on AddNode")
 	}
 }

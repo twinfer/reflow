@@ -114,8 +114,6 @@ func splitPrincipal(raw string) (CALeafKind, string, bool) {
 		return CALeafNode, name, true
 	case "operator":
 		return CALeafOperator, name, true
-	case "tenant":
-		return CALeafTenant, name, true
 	default:
 		return 0, "", false
 	}

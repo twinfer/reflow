@@ -122,7 +122,7 @@ func (n *InProcessNode) SubmitInvocation(ctx context.Context, service, handler, 
 		HandlerName: handler,
 		ObjectKey:   objectKey,
 	}
-	shardID := n.Host.Partitioner().ShardForTarget(0, target)
+	shardID := n.Host.Partitioner().ShardForTarget(target)
 	pr := n.Host.Partition(shardID)
 	if pr == nil {
 		return nil, fmt.Errorf("loadgen: no partition for shard %d", shardID)

@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	// defaultListLimit caps a band-list response (ListInvocations /
+	// defaultListLimit caps a list response (ListInvocations /
 	// ListProcessInstances) when the caller gives no (or an over-large) limit;
 	// maxListLimit is the hard ceiling.
 	defaultListLimit = 1000
@@ -43,9 +43,8 @@ type pageCursor struct {
 
 // encodePageToken renders a cursor as an opaque base64 token (8-byte big-endian
 // shard || raw key). The embedded key is data the caller already saw in the
-// page; it can't widen access because the server re-derives the caller's band
-// LP set from the verified principal and only seeks within it — a forged token
-// shifts the resume point inside the caller's own band, never across bands.
+// page; a forged token only shifts the resume point within the same namespace
+// scan, so it can't widen access.
 func encodePageToken(shard uint64, key []byte) string {
 	buf := make([]byte, 8+len(key))
 	binary.BigEndian.PutUint64(buf[:8], shard)
@@ -69,27 +68,31 @@ func decodePageToken(tok string) (*pageCursor, error) {
 	return &pageCursor{shard: binary.BigEndian.Uint64(buf[:8]), key: buf[8:]}, nil
 }
 
-// fanOutBand enumerates tenant band's LPs, groups them by owning shard, and
-// issues one linearizable SyncRead per shard. Every node replicates every shard,
-// so the read is always local — no cross-node RPC. makeQuery builds that shard's
-// engine Lookup from its LP subset and an optional resume key (the page cursor,
-// non-nil only for the shard the cursor names); collect receives each shard's id
-// + result and returns done=true once the caller has filled its row cap. Shards
-// are visited in id order so a capped/paged result is stable given stable
-// ownership. cur, when non-nil, resumes a prior page: shards below cur.shard are
-// skipped (already drained) and cur.shard is seeked past cur.key. Shared
-// substrate behind ListInvocations and ListProcessInstances.
-func (s *Server) fanOutBand(ctx context.Context, band uint32, cur *pageCursor, makeQuery func(shard uint64, lps []uint32, after []byte) any, collect func(shard uint64, res any) (done bool, err error)) error {
+// fanOut issues one linearizable SyncRead per partition shard, each scanning the
+// whole namespace on that shard. Every node replicates every shard, so the read
+// is always local — no cross-node RPC. The shard set is the distinct owners in
+// the LPOwners snapshot (the full LP enumeration is the pre-warmup fallback).
+// makeQuery builds that shard's engine Lookup from an optional resume key (the
+// page cursor, non-nil only for the shard the cursor names); collect receives
+// each shard's id + result and returns done=true once the caller has filled its
+// row cap. Shards are visited in id order so a capped/paged result is stable
+// given stable ownership. cur, when non-nil, resumes a prior page: shards below
+// cur.shard are skipped (already drained) and cur.shard is seeked past cur.key.
+// Shared substrate behind ListInvocations and ListProcessInstances.
+func (s *Server) fanOut(ctx context.Context, cur *pageCursor, makeQuery func(shard uint64, after []byte) any, collect func(shard uint64, res any) (done bool, err error)) error {
 	part := s.host.Partitioner()
-	byShard := make(map[uint64][]uint32)
-	lo := band << keys.IntraLPBits
-	hi := (band + 1) << keys.IntraLPBits
-	for lp := lo; lp < hi; lp++ {
-		shard := part.ShardForLP(lp)
-		byShard[shard] = append(byShard[shard], lp)
+	shardSet := make(map[uint64]struct{})
+	if snap := part.LPOwnersSnapshot(); len(snap) > 0 {
+		for _, shard := range snap {
+			shardSet[shard] = struct{}{}
+		}
+	} else {
+		for lp := range keys.LPCount {
+			shardSet[part.ShardForLP(lp)] = struct{}{}
+		}
 	}
-	shards := make([]uint64, 0, len(byShard))
-	for shard := range byShard {
+	shards := make([]uint64, 0, len(shardSet))
+	for shard := range shardSet {
 		shards = append(shards, shard)
 	}
 	slices.Sort(shards)
@@ -101,7 +104,7 @@ func (s *Server) fanOutBand(ctx context.Context, band uint32, cur *pageCursor, m
 		if cur != nil && shard == cur.shard {
 			after = cur.key
 		}
-		res, err := s.host.NodeHost().SyncRead(ctx, shard, makeQuery(shard, byShard[shard], after))
+		res, err := s.host.NodeHost().SyncRead(ctx, shard, makeQuery(shard, after))
 		if err != nil {
 			return fmt.Errorf("shard %d: %w", shard, err)
 		}
@@ -116,17 +119,10 @@ func (s *Server) fanOutBand(ctx context.Context, band uint32, cur *pageCursor, m
 	return nil
 }
 
-// ListInvocations lists the caller tenant band's invocations. Like
-// ListProcessInstances it enumerates only the band's LPs, groups them by owning
-// shard, and reads each shard locally via the shared fanOutBand substrate,
-// merging up to limit rows. Tenant isolation: only the caller's band LPs are
-// scanned, and each shard re-derives the band as defense in depth.
+// ListInvocations lists the deployment's invocations: one whole-namespace scan
+// per partition shard via the shared fanOut substrate, merging up to limit rows.
 func (s *Server) ListInvocations(ctx context.Context, req *connect.Request[ingressv1.ListInvocationsRequest]) (*connect.Response[ingressv1.ListInvocationsResponse], error) {
 	msg := req.Msg
-	tenant, terr := principalTenant(ctx)
-	if terr != nil {
-		return nil, terr
-	}
 	cur, err := decodePageToken(msg.GetPageToken())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -134,15 +130,13 @@ func (s *Server) ListInvocations(ctx context.Context, req *connect.Request[ingre
 	limit := clampListLimit(int(msg.GetLimit()))
 	var out []*ingressv1.InvocationSummary
 	var nextToken string
-	ferr := s.fanOutBand(ctx, tenant, cur,
-		func(shard uint64, lps []uint32, after []byte) any {
+	ferr := s.fanOut(ctx, cur,
+		func(shard uint64, after []byte) any {
 			return engine.LookupInvocations{
-				Tenant:          tenant,
 				Service:         msg.GetService(),
 				StateFilter:     msg.GetStateFilter(),
 				CreatedAfterMs:  msg.GetCreatedAfterMs(),
 				CreatedBeforeMs: msg.GetCreatedBeforeMs(),
-				LPs:             lps,
 				After:           after,
 				Limit:           limit,
 			}

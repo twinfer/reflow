@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/twinfer/reflow/pkg/reflow/config"
+	"github.com/twinfer/reflw/pkg/reflow/config"
 )
 
 func writeFile(t *testing.T, dir, name, body string) string {

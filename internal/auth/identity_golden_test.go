@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/twinfer/reflow/internal/certmgr"
+	"github.com/twinfer/reflw/internal/certmgr"
 )
 
 // identity_golden_test.go snapshots the post-PR-1 mesh identity

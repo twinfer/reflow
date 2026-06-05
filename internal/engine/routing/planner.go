@@ -8,7 +8,7 @@ import (
 	"github.com/buraksezer/consistent"
 	"github.com/cespare/xxhash/v2"
 
-	"github.com/twinfer/reflow/internal/storage/keys"
+	"github.com/twinfer/reflw/internal/storage/keys"
 )
 
 // Tunables for the underlying consistent.Consistent ring.

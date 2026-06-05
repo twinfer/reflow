@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/twinfer/reflow/internal/engine/limits"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/engine/limits"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // reapEntry is one scheduled retention sweep. The reaper is target-agnostic so

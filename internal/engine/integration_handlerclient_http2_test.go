@@ -12,15 +12,15 @@ import (
 	connect "connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/twinfer/reflow/internal/config"
-	"github.com/twinfer/reflow/internal/connectserver"
-	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
-	"github.com/twinfer/reflow/proto/configv1/configv1connect"
-	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+	"github.com/twinfer/reflw/internal/config"
+	"github.com/twinfer/reflw/internal/connectserver"
+	"github.com/twinfer/reflw/internal/loadgen"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	configv1 "github.com/twinfer/reflw/proto/configv1"
+	"github.com/twinfer/reflw/proto/configv1/configv1connect"
+	discoveryv1 "github.com/twinfer/reflw/proto/discoveryv1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 )
 
 // callRegisterDeployment invokes config.Server.RegisterDeployment via a

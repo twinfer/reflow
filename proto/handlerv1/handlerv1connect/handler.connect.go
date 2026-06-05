@@ -28,7 +28,7 @@ import (
 	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
-	handlerv1 "github.com/twinfer/reflow/proto/handlerv1"
+	handlerv1 "github.com/twinfer/reflw/proto/handlerv1"
 	http "net/http"
 	strings "strings"
 )

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/e2e"
+	"github.com/twinfer/reflw/internal/e2e"
 )
 
 // TestChaos_RollingRestart runs a steady-state workload while every

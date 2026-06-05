@@ -17,7 +17,7 @@ import (
 
 	"google.golang.org/grpc/credentials/tls/certprovider"
 
-	"github.com/twinfer/reflow/pkg/reflow/creds"
+	"github.com/twinfer/reflw/pkg/reflow/creds"
 )
 
 // testCAAndLeaf builds a self-signed CA + a leaf signed by it carrying

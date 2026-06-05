@@ -7,8 +7,8 @@ import (
 	"github.com/lni/dragonboat/v4/statemachine"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/twinfer/reflow/internal/storage"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/storage"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 func setDrainEnvelope(t *testing.T, shardID uint64, drain bool, ifRev uint64) []byte {

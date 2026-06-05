@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/twinfer/iflow/capability"
-	"github.com/twinfer/reflow/pkg/handler"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflwos/capability"
+	"github.com/twinfer/reflw/pkg/handler"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // The capability-bridge is one deployed reflow handler that services every

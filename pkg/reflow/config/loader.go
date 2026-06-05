@@ -25,7 +25,7 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	koanf "github.com/knadh/koanf/v2"
 
-	"github.com/twinfer/reflow/pkg/reflow"
+	"github.com/twinfer/reflw/pkg/reflow"
 )
 
 // DefaultEnvPrefix is the prefix the FromEnv helper strips from env

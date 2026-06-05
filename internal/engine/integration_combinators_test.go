@@ -11,12 +11,12 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/internal/ingress"
-	"github.com/twinfer/reflow/pkg/handler"
-	"github.com/twinfer/reflow/pkg/ingressclient"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
+	"github.com/twinfer/reflw/internal/engine"
+	"github.com/twinfer/reflw/internal/ingress"
+	"github.com/twinfer/reflw/pkg/handler"
+	"github.com/twinfer/reflw/pkg/ingressclient"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
 // Integration tests for combinator futures (ctx.All / ctx.Any):

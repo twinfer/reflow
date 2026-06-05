@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/caddyserver/certmagic"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // CARootReader is the seam ClusterIssuer uses to fetch CARootTable

@@ -8,12 +8,12 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/twinfer/reflow/internal/config"
-	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+	"github.com/twinfer/reflw/internal/config"
+	"github.com/twinfer/reflw/internal/loadgen"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	discoveryv1 "github.com/twinfer/reflw/proto/discoveryv1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 )
 
 // fakeHandlerRun is a wire handler that exercises ctx.Run end-to-end:

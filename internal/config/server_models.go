@@ -10,8 +10,8 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	configv1 "github.com/twinfer/reflow/proto/configv1"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	configv1 "github.com/twinfer/reflw/proto/configv1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // UpsertModel validates a BPMN/CMMN model definition and proposes

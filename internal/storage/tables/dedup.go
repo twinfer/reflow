@@ -3,9 +3,9 @@ package tables
 import (
 	"fmt"
 
-	"github.com/twinfer/reflow/internal/storage"
-	"github.com/twinfer/reflow/internal/storage/keys"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/storage"
+	"github.com/twinfer/reflw/internal/storage/keys"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // DedupTable records per-propose presence so the state machine can reject

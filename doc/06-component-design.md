@@ -35,7 +35,7 @@ separate code path, not part of ingress.
 partition_id = hash(service_name + "/" + object_key) % num_partitions
 ```
 
-**Surfaces hosted by reflowd (all distinct, by design):**
+**Surfaces hosted by reflwd (all distinct, by design):**
 
 | Surface | Port (default) | Wire | Auth | Purpose |
 |--|--|--|--|--|
@@ -63,7 +63,7 @@ RPC owns it.
 
 The engine ↔ handler wire (`proto/protocolv1` frames carried inside
 `proto/handlerv1.HandlerService/InvokeStream`) terminates at the
-handler-hosted endpoint, not a service hosted by reflowd. See §6.10.
+handler-hosted endpoint, not a service hosted by reflwd. See §6.10.
 
 ---
 
@@ -98,11 +98,11 @@ metadata group is always authoritative; gossip is only ever a hint.
 **Bootstrap — static peer list, no discovery service required:**
 
 Every node ships with the full `Cluster.Peers` list in its config; there
-is no founder/joiner asymmetry in the `reflowd` binary. The cluster
+is no founder/joiner asymmetry in the `reflwd` binary. The cluster
 forms once a quorum of `NodeHost`s can reach each other.
 
 ```yaml
-# reflowd config (identical shape on every node; only node.id differs)
+# reflwd config (identical shape on every node; only node.id differs)
 node:
   id: 2
   raft_addr: 10.0.0.2:9091
@@ -175,11 +175,11 @@ Followers run the same FSM apply path with leader-only services idle.
 **Dynamic membership — implemented end-to-end:**
 
 ```bash
-reflowd cluster add-node    --node-id=4 --raft-addr=10.0.0.4:9091 \
+reflwd cluster add-node    --node-id=4 --raft-addr=10.0.0.4:9091 \
                             --gossip-addr=10.0.0.4:9092 \
                             --grpc-endpoint=10.0.0.4:8081 \
                             --node-host-id=<uuid>
-reflowd cluster remove-node --node-id=2
+reflwd cluster remove-node --node-id=2
 ```
 
 - **Operator-driven add (`add-node`, `internal/clusterctl/server.go:AddNode`):**
@@ -191,7 +191,7 @@ reflowd cluster remove-node --node-id=2
   `SyncRequestAddNonVoting`, then `SyncRequestAddReplica`. On success
   it proposes `CompleteRebalanceStep`, which updates the persisted
   replica set and bumps `assignment_epoch`.
-- **Joiner-driven add (`reflowd run` with `Cluster.JoinExisting=true`):**
+- **Joiner-driven add (`reflwd run` with `Cluster.JoinExisting=true`):**
   `pkg/reflow/run.go:callSelfJoin` discovers the metadata leader via
   gossip-published `NodeHostMeta.admin_endpoint` and dials the
   leader's `ClusterCtl/SelfJoin` RPC before any local shard starts.
@@ -202,7 +202,7 @@ reflowd cluster remove-node --node-id=2
   which dragonboat services via the snapshot+log catch-up path now
   that the membership is in place.
 - **`remove-node`**: same shape with `EvictNode` →
-  `SyncRequestDeleteReplica`. The leaving node's `reflowd` already
+  `SyncRequestDeleteReplica`. The leaving node's `reflwd` already
   has the live membership in its NodeHost and exits when dragonboat
   removes its replica.
 
@@ -382,7 +382,7 @@ Each tick:
    `reflow_rebalance_decisions_total{outcome=would_transfer}` — never
    propose.
 9. **Auto**: propose `Command_InitiateLPTransfer` for the first
-   `capacity` moves. Same path manual `reflowd cluster transfer-lp`
+   `capacity` moves. Same path manual `reflwd cluster transfer-lp`
    takes, so autonomous transfers appear in `ListLPTransfers` with no
    extra plumbing.
 
@@ -1268,7 +1268,7 @@ set plus env-var fallbacks beats a config-file abstraction.
 
 `pkg/reflow/config` package and the `koanf` + `koanf/providers/*`
 dependencies all delete. Bootstrap goes through `flag.FlagSet` +
-`os.Getenv` only, exposed via `cmd/reflowd serve [flags]`. The static
+`os.Getenv` only, exposed via `cmd/reflwd serve [flags]`. The static
 `cfg.Cluster.Peers` topology disappears: first node uses
 `serve --bootstrap`, every subsequent node uses
 `serve --join=<one-leader-addr> --join-token=<tok>` (see §6.15.7).
@@ -1321,7 +1321,7 @@ moves to Raft.
    already uses (`internal/ingress/webhook/manager.go`).
 
 Loss of "ssh in and edit a yaml" debuggability is replaced by
-`reflowd config platform set ...` against the admin RPC. This is a
+`reflwd config platform set ...` against the admin RPC. This is a
 feature: every change flows through the audited path, no quiet
 out-of-band edits.
 
@@ -1329,9 +1329,9 @@ out-of-band edits.
 
 PKI is a CertMagic-managed lifecycle (`internal/certmgr`) with a single
 configurable seam: `certmagic.Issuer`. CA bootstrap is
-`reflowd config ca {init|list|delete}` (mesh-CA trust roots live in
+`reflwd config ca {init|list|delete}` (mesh-CA trust roots live in
 shard 0's `CARootTable`); operator and tenant leaves are minted by
-`reflowd config issue-operator` / `issue-tenant`. Identity is the leaf
+`reflwd config issue-operator` / `issue-tenant`. Identity is the leaf
 CN (`<kind>/<name>`), not a SPIFFE URI SAN; per-node cert material is
 owned by CertMagic, not hand-managed cert paths.
 
@@ -1410,9 +1410,9 @@ other things to steal).
 
 **Removed on `strip-to-core`:**
 
-- The offline `reflowd pki` subcommand and the `internal/pki` package
+- The offline `reflwd pki` subcommand and the `internal/pki` package
   (the in-cluster CA + `BuiltinIssuer` live in `internal/certmgr`; CA
-  bootstrap is `reflowd config ca`).
+  bootstrap is `reflwd config ca`).
 - SPIFFE URI SAN parsing; identity extraction is leaf-CN via
   `creds.LeafPrincipal` (`internal/auth/mesh_authfunc.go`).
 - `--trust-domain` config, listener `--tls-cert-file` /
@@ -1449,19 +1449,19 @@ shard 0 like every other state change.
 
 ```
 # 1. Operator mints a one-time token (any leader-resolved node):
-reflowd cluster token issue --node-id=4 --ttl=1h
+reflwd cluster token issue --node-id=4 --ttl=1h
 → TOKEN=reflow-jt-<base32>
 → ROOT_PIN=sha256:<hash>      # optional, printed alongside
 
 # 2. New node boots with the token:
-reflowd serve --id=4 --data-dir=/var/lib/reflow \
+reflwd serve --id=4 --data-dir=/var/lib/reflow \
               --raft=:5400 --gossip=:5401 --delivery=:5402 \
               --join=node1.example.com:5500 \
               --join-token=$TOKEN \
               [--root-cert-pin=$ROOT_PIN]
 ```
 
-**Internal sequence (`cmd/reflowd serve` startup path):**
+**Internal sequence (`cmd/reflwd serve` startup path):**
 
 1. CertMagic, in the configured mode, generates a private key for
    this node and constructs a CSR with `CN=node/4` (matching `--id`).
@@ -1531,7 +1531,7 @@ reflowd serve --id=4 --data-dir=/var/lib/reflow \
 
 **Revocation:**
 
-- `reflowd cluster revoke-cert --node-id=N` proposes a
+- `reflwd cluster revoke-cert --node-id=N` proposes a
   `RevocationRecord` into shard 0. Auth chain on every node consults
   the revocation set during chain verification — one
   `atomic.Pointer.Load` on the hot path; revocations propagate via

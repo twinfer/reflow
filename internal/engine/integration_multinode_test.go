@@ -7,10 +7,10 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/twinfer/reflow/internal/engine/routing"
-	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/handler"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/engine/routing"
+	"github.com/twinfer/reflw/internal/loadgen"
+	"github.com/twinfer/reflw/pkg/handler"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // nodeRig is the engine_test alias for the concrete in-process Node

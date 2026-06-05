@@ -27,7 +27,7 @@ syntax = "proto3";
 
 package reflow.bootstrap.v1;
 
-option go_package = "github.com/twinfer/reflow/proto/bootstrapv1;bootstrapv1";
+option go_package = "github.com/twinfer/reflw/proto/bootstrapv1;bootstrapv1";
 
 service MeshSign {
   // SignCSR verifies join_token against shard 0's JoinTokenTable,

@@ -1,8 +1,8 @@
 package invoker
 
 import (
-	"github.com/twinfer/reflow/internal/storage/tables"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/storage/tables"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // JournalReader is a thin wrapper over tables.JournalTable.Scan that

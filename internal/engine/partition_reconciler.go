@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // partitionReconcileInterval is the periodic backstop tick. Matches the

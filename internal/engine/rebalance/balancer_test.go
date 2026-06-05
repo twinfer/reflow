@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/engine/cluster"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/engine/cluster"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // fakeHost implements HostReader against in-memory state. Tests mutate

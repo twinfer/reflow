@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/pkg/handler"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/engine"
+	"github.com/twinfer/reflw/pkg/handler"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // openSingleNodeOnDir opens an engine.Host on dataDir / raftAddr with

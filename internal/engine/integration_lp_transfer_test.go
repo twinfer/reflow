@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/engine/rebalance"
-	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/internal/storage"
-	"github.com/twinfer/reflow/internal/storage/keys"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/engine/rebalance"
+	"github.com/twinfer/reflw/internal/loadgen"
+	"github.com/twinfer/reflw/internal/storage"
+	"github.com/twinfer/reflw/internal/storage/keys"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // TestIntegrationLPTransfer_SeededRowsShipViaSST stands up a 3-node

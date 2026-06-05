@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"runtime/debug"
 
-	"github.com/twinfer/reflow/internal/storage/keys"
-	"github.com/twinfer/reflow/internal/storage/tables"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/storage/keys"
+	"github.com/twinfer/reflw/internal/storage/tables"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // ProcessEngine runs one deterministic step of an iflow process/case instance.

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/twinfer/reflow/internal/certmgr"
-	"github.com/twinfer/reflow/pkg/reflow/creds"
+	"github.com/twinfer/reflw/internal/certmgr"
+	"github.com/twinfer/reflw/pkg/reflow/creds"
 )
 
 // Container-side mount paths for the mesh PKI. Every node mounts its own

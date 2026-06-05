@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 func TestNextRetryDelay_NilPolicyExhaustsImmediately(t *testing.T) {

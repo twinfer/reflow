@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/twinfer/reflow/internal/engine/invoker"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/engine/invoker"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // Adapter implements invoker.ProcessEngine by driving iflow's pure BPMN/CMMN

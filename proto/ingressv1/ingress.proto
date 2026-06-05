@@ -12,7 +12,7 @@ package reflow.ingress.v1;
 
 import "enginev1/engine.proto";
 
-option go_package = "github.com/twinfer/reflow/proto/ingressv1;ingressv1";
+option go_package = "github.com/twinfer/reflw/proto/ingressv1;ingressv1";
 
 service Ingress {
   // SubmitInvocation enqueues a new invocation. Returns the minted

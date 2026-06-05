@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/twinfer/reflow/proto/ingressv1/ingressv1connect"
+	"github.com/twinfer/reflw/proto/ingressv1/ingressv1connect"
 )
 
 // Client is a thin wrapper around the generated Connect client plus the

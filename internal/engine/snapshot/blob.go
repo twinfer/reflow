@@ -18,7 +18,7 @@ import (
 	"gocloud.dev/gcerrors"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 
 	// Register every supported scheme. Including all drivers in one
 	// binary is a deliberate trade-off (~10MB binary growth) so reflowd

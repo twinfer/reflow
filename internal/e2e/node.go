@@ -15,13 +15,13 @@ import (
 	dockerclient "github.com/moby/moby/client"
 	"github.com/testcontainers/testcontainers-go"
 
-	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/ingressclient"
-	"github.com/twinfer/reflow/pkg/reflow/creds"
-	"github.com/twinfer/reflow/pkg/reflowclient"
-	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
+	"github.com/twinfer/reflw/internal/loadgen"
+	"github.com/twinfer/reflw/pkg/ingressclient"
+	"github.com/twinfer/reflw/pkg/reflow/creds"
+	"github.com/twinfer/reflw/pkg/reflowclient"
+	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
 // ContainerNode is one reflowd container plus an ingress client dialed

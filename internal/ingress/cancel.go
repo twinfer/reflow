@@ -7,10 +7,10 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
+	"github.com/twinfer/reflw/internal/engine"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
 // CancelInvocation forces a running invocation to terminate with

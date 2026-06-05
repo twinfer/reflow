@@ -19,9 +19,9 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/twinfer/reflow/internal/e2e"
-	"github.com/twinfer/reflow/internal/secretstore"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/e2e"
+	"github.com/twinfer/reflw/internal/secretstore"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 const (

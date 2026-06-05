@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflw/internal/auth"
 )
 
 // uploadTestServer stands up a real UploadLPTransferSST handler over

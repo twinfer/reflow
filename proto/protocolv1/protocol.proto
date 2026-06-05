@@ -28,7 +28,7 @@ syntax = "proto3";
 
 package reflow.protocol.v1;
 
-option go_package = "github.com/twinfer/reflow/proto/protocolv1;protocolv1";
+option go_package = "github.com/twinfer/reflw/proto/protocolv1;protocolv1";
 
 // Frame is the on-the-wire envelope. payload is a protobuf-encoded
 // message whose concrete type is determined by the header's type code.

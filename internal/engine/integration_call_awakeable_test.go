@@ -12,11 +12,11 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/engine/routing"
-	"github.com/twinfer/reflow/pkg/handler"
-	"github.com/twinfer/reflow/pkg/ingressclient"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
+	"github.com/twinfer/reflw/internal/engine/routing"
+	"github.com/twinfer/reflw/pkg/handler"
+	"github.com/twinfer/reflw/pkg/ingressclient"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
 // TestHandlerSurvivesKill verifies kill-9 safety. A handler doing

@@ -10,14 +10,14 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/pkg/reflowclient"
-	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
+	"github.com/twinfer/reflw/pkg/reflowclient"
+	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
 )
 
 // cmdRebalanceAdvise invokes ClusterCtl/RebalanceAdvise and emits the
 // decision as indented JSON. Read-only — any peer can answer.
 //
-//	reflowd cluster rebalance-advise [--admin=ADDR]
+//	reflwd cluster rebalance-advise [--admin=ADDR]
 func cmdRebalanceAdvise(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("rebalance-advise", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)
@@ -50,7 +50,7 @@ func cmdRebalanceAdvise(ctx context.Context, args []string) error {
 // if_table_revision_eq so a concurrent operator edit reproducibly
 // conflicts.
 //
-//	reflowd cluster rebalance-drain --shard=N [--stop] [--admin=ADDR]
+//	reflwd cluster rebalance-drain --shard=N [--stop] [--admin=ADDR]
 func cmdRebalanceDrain(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("rebalance-drain", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)

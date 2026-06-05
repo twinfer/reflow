@@ -3,10 +3,10 @@ package reflow
 import (
 	"context"
 
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
-	"github.com/twinfer/reflow/pkg/handler"
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	handlerv1 "github.com/twinfer/reflow/proto/handlerv1"
+	"github.com/twinfer/reflw/internal/engine/handlerclient"
+	"github.com/twinfer/reflw/pkg/handler"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	handlerv1 "github.com/twinfer/reflw/proto/handlerv1"
 )
 
 // inprocDialer returns a handlerclient.Dialer that hands back an in-process

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/twinfer/reflow/pkg/handler/wire"
+	"github.com/twinfer/reflw/pkg/handler/wire"
 )
 
 // ErrSuspended is returned by Context methods when the engine has decided

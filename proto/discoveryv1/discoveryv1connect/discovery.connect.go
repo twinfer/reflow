@@ -20,7 +20,7 @@ import (
 	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
-	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
+	discoveryv1 "github.com/twinfer/reflw/proto/discoveryv1"
 	http "net/http"
 	strings "strings"
 )

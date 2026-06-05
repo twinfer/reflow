@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/twinfer/iflow/bpmn"
-	"github.com/twinfer/iflow/cmmn"
-	"github.com/twinfer/iflow/dmn"
+	"github.com/twinfer/reflwos/bpmn"
+	"github.com/twinfer/reflwos/cmmn"
+	"github.com/twinfer/reflwos/dmn"
 )
 
 // ValidateModel parses and statically validates a model definition, returning a

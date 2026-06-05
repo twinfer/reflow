@@ -7,8 +7,8 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
+	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
+	configv1 "github.com/twinfer/reflw/proto/configv1"
 )
 
 // CallWithLeaderRedirect invokes fn against opts.Addr; on

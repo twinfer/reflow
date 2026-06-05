@@ -11,10 +11,10 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/connectserver"
-	"github.com/twinfer/reflow/internal/ingress"
-	"github.com/twinfer/reflow/pkg/webhook"
-	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
+	"github.com/twinfer/reflw/internal/connectserver"
+	"github.com/twinfer/reflw/internal/ingress"
+	"github.com/twinfer/reflw/pkg/webhook"
+	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
 // ingressRPCPrefix is the path the Connect ingress handler mounts on.

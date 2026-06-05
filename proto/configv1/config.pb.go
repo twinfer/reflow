@@ -34,7 +34,7 @@
 package configv1
 
 import (
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -2243,7 +2243,7 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\x0eListJoinTokens\x12'.reflow.config.v1.ListJoinTokensRequest\x1a(.reflow.config.v1.ListJoinTokensResponse\x12`\n" +
 	"\rIssueOperator\x12&.reflow.config.v1.IssueOperatorRequest\x1a'.reflow.config.v1.IssueOperatorResponse\x12\x81\x01\n" +
 	"\x18UpsertClusterAuthzPolicy\x121.reflow.config.v1.UpsertClusterAuthzPolicyRequest\x1a2.reflow.config.v1.UpsertClusterAuthzPolicyResponse\x12x\n" +
-	"\x15GetClusterAuthzPolicy\x12..reflow.config.v1.GetClusterAuthzPolicyRequest\x1a/.reflow.config.v1.GetClusterAuthzPolicyResponseB3Z1github.com/twinfer/reflow/proto/configv1;configv1b\x06proto3"
+	"\x15GetClusterAuthzPolicy\x12..reflow.config.v1.GetClusterAuthzPolicyRequest\x1a/.reflow.config.v1.GetClusterAuthzPolicyResponseB2Z0github.com/twinfer/reflw/proto/configv1;configv1b\x06proto3"
 
 var (
 	file_configv1_config_proto_rawDescOnce sync.Once

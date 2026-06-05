@@ -4,8 +4,8 @@ import (
 	"crypto/rand"
 	"fmt"
 
-	"github.com/twinfer/reflow/internal/engine/routing"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/engine/routing"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // mintInvocationID stamps a fresh UUIDv4 with the partition_key derived

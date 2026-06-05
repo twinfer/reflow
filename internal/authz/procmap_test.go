@@ -6,10 +6,10 @@ import (
 	"github.com/cedar-policy/cedar-go"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
-	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
-	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
+	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
+	configv1 "github.com/twinfer/reflw/proto/configv1"
+	deliveryv1 "github.com/twinfer/reflw/proto/deliveryv1"
+	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
 // inScopeFiles are the four Connect services mounted behind the authz

@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 )
 
 // futures.go holds Future implementations bound to the wire path.

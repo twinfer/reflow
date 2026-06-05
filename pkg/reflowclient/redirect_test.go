@@ -12,10 +12,10 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
-	"github.com/twinfer/reflow/proto/clusterctlv1/clusterctlv1connect"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
-	"github.com/twinfer/reflow/proto/configv1/configv1connect"
+	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
+	"github.com/twinfer/reflw/proto/clusterctlv1/clusterctlv1connect"
+	configv1 "github.com/twinfer/reflw/proto/configv1"
+	"github.com/twinfer/reflw/proto/configv1/configv1connect"
 )
 
 // fakeCluster lets each test express AddNode behavior as a closure.

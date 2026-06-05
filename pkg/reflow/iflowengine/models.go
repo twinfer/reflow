@@ -15,10 +15,10 @@ import (
 	"maps"
 	"sync"
 
-	"github.com/twinfer/iflow/bpmn"
-	"github.com/twinfer/iflow/cmmn"
-	"github.com/twinfer/iflow/dmn"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflwos/bpmn"
+	"github.com/twinfer/reflwos/cmmn"
+	"github.com/twinfer/reflwos/dmn"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // ErrModelNotFound is returned by a ModelResolver when no model is registered for

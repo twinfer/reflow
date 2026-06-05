@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/e2e"
-	"github.com/twinfer/reflow/internal/loadgen"
+	"github.com/twinfer/reflw/internal/e2e"
+	"github.com/twinfer/reflw/internal/loadgen"
 )
 
 // TestSmoke_ToxiproxyLeaderIsolation is the PR-4 capstone. Goals:

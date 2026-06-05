@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/twinfer/reflow/internal/observability"
-	"github.com/twinfer/reflow/internal/storage/keys"
-	"github.com/twinfer/reflow/internal/storage/tables"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/observability"
+	"github.com/twinfer/reflw/internal/storage/keys"
+	"github.com/twinfer/reflw/internal/storage/tables"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // Proposer is the leader-side interface that turns a Command into a Raft

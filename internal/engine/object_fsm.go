@@ -8,7 +8,7 @@ import (
 	"github.com/qmuntal/stateless"
 	"google.golang.org/protobuf/proto"
 
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // Per-key VO FSM. Constructed fresh inside each partition apply call,

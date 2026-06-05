@@ -1,4 +1,4 @@
-module github.com/twinfer/reflow
+module github.com/twinfer/reflw
 
 go 1.26.2
 
@@ -32,7 +32,7 @@ require (
 	github.com/tink-crypto/tink-go-gcpkms/v2 v2.2.0
 	github.com/tink-crypto/tink-go-hcvault/v2 v2.5.0
 	github.com/tink-crypto/tink-go/v2 v2.6.0
-	github.com/twinfer/iflow v0.0.0-00010101000000-000000000000
+	github.com/twinfer/reflwos v0.0.0-00010101000000-000000000000
 	go.uber.org/zap v1.27.1
 	gocloud.dev v0.45.0
 	golang.org/x/net v0.55.0
@@ -230,4 +230,4 @@ require (
 
 // iflow is developed in a sibling checkout; the adapter (pkg/reflow/iflowengine)
 // binds its bpmn/cmmn engines to reflow's process-execution turn machine.
-replace github.com/twinfer/iflow => ../iflow
+replace github.com/twinfer/reflwos => ../iflow

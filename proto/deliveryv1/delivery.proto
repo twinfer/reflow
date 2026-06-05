@@ -24,7 +24,7 @@ package reflow.delivery.v1;
 
 import "enginev1/engine.proto";
 
-option go_package = "github.com/twinfer/reflow/proto/deliveryv1;deliveryv1";
+option go_package = "github.com/twinfer/reflw/proto/deliveryv1;deliveryv1";
 
 service Delivery {
   // Deliver is a bidirectional stream so the sender can pipeline multiple

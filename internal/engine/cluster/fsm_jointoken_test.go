@@ -6,7 +6,7 @@ import (
 	"github.com/lni/dragonboat/v4/statemachine"
 	"google.golang.org/protobuf/proto"
 
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 func upsertJoinTokenEnvelope(t *testing.T, rec *enginev1.JoinTokenRecord, nowMs uint64, ifRev uint64) []byte {

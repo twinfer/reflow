@@ -3,7 +3,7 @@ package config_test
 import (
 	"testing"
 
-	"github.com/twinfer/reflow/pkg/reflow/config"
+	"github.com/twinfer/reflw/pkg/reflow/config"
 )
 
 // TestLoad_RebalanceMinSecondsBetweenTransfers_DecoderPointer asserts

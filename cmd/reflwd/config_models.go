@@ -11,9 +11,9 @@ import (
 	connect "connectrpc.com/connect"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/twinfer/reflow/pkg/reflowclient"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/pkg/reflowclient"
+	configv1 "github.com/twinfer/reflw/proto/configv1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // cmdRegisterModel uploads a BPMN/CMMN/DMN model file into shard 0's ModelTable.
@@ -28,7 +28,7 @@ import (
 //	{"decisions":{"checkCredit":{"kind":"dmn","name":"CreditCheck","version":"v1"}},
 //	 "children":{"ship":{"kind":"bpmn","name":"Shipping","version":"v1"}}}
 //
-//	reflowd config register-model --file=order.bpmn --kind=bpmn --name=Order --version=v1 [--bundle=order.bundle.json] [--admin=ADDR]
+//	reflwd config register-model --file=order.bpmn --kind=bpmn --name=Order --version=v1 [--bundle=order.bundle.json] [--admin=ADDR]
 func cmdRegisterModel(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("register-model", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)
@@ -111,7 +111,7 @@ func cmdListModels(ctx context.Context, args []string) error {
 // cmdDescribeModel invokes Config/DescribeModel for one model_ref and prints the
 // record (XML rendered as text) as JSON. Read-only.
 //
-//	reflowd config describe-model --kind=bpmn --name=Order --version=v1 [--admin=ADDR]
+//	reflwd config describe-model --kind=bpmn --name=Order --version=v1 [--admin=ADDR]
 func cmdDescribeModel(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("describe-model", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)
@@ -147,7 +147,7 @@ func cmdDescribeModel(ctx context.Context, args []string) error {
 // round-trip reads the current table_revision and passes it as
 // if_table_revision_eq so a concurrent operator-edit reproducibly conflicts.
 //
-//	reflowd config delete-model --kind=bpmn --name=Order --version=v1 [--admin=ADDR]
+//	reflwd config delete-model --kind=bpmn --name=Order --version=v1 [--admin=ADDR]
 func cmdDeleteModel(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("delete-model", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)

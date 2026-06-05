@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/e2e"
+	"github.com/twinfer/reflw/internal/e2e"
 )
 
 // LeaderKill identifies the current shard-1 leader, kills that node

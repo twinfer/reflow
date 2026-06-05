@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/twinfer/iflow/bpmn"
+	"github.com/twinfer/reflwos/bpmn"
 )
 
 // decodeVars decodes a JSON object of variables into a map. Empty/nil bytes or a

@@ -45,8 +45,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"pgregory.net/rapid"
 
-	"github.com/twinfer/reflow/internal/storage"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/storage"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 const (

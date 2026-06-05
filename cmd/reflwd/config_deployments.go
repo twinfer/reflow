@@ -10,15 +10,15 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/pkg/reflowclient"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
+	"github.com/twinfer/reflw/pkg/reflowclient"
+	configv1 "github.com/twinfer/reflw/proto/configv1"
 )
 
 // cmdListDeployments invokes Config/ListDeployments and prints the
 // returned records (with the deployment-table CAS revision) as
 // indented JSON. Read-only — any peer can answer.
 //
-//	reflowd config list-deployments [--admin=ADDR]
+//	reflwd config list-deployments [--admin=ADDR]
 func cmdListDeployments(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("list-deployments", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)
@@ -42,7 +42,7 @@ func cmdListDeployments(ctx context.Context, args []string) error {
 // cmdDescribeDeployment invokes Config/DescribeDeployment for one id
 // and prints the record as JSON. Read-only.
 //
-//	reflowd config describe-deployment --id=DEPLOYMENT_ID [--admin=ADDR]
+//	reflwd config describe-deployment --id=DEPLOYMENT_ID [--admin=ADDR]
 func cmdDescribeDeployment(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("describe-deployment", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)
@@ -73,7 +73,7 @@ func cmdDescribeDeployment(ctx context.Context, args []string) error {
 // if_table_revision_eq so a concurrent operator-edit reproducibly
 // conflicts.
 //
-//	reflowd config delete-deployment --id=DEPLOYMENT_ID --force [--admin=ADDR]
+//	reflwd config delete-deployment --id=DEPLOYMENT_ID --force [--admin=ADDR]
 func cmdDeleteDeployment(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("delete-deployment", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)

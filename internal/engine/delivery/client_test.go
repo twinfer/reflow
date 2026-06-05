@@ -11,11 +11,11 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/auth"
-	"github.com/twinfer/reflow/internal/authz"
-	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
-	"github.com/twinfer/reflow/proto/deliveryv1/deliveryv1connect"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/auth"
+	"github.com/twinfer/reflw/internal/authz"
+	deliveryv1 "github.com/twinfer/reflw/proto/deliveryv1"
+	"github.com/twinfer/reflw/proto/deliveryv1/deliveryv1connect"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // stubResolver maps a shard to (nodeID, endpoint) — endpoint is the

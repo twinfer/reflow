@@ -12,12 +12,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/twinfer/reflow/internal/bootstrap"
-	"github.com/twinfer/reflow/pkg/reflow"
-	"github.com/twinfer/reflow/pkg/reflow/config"
+	"github.com/twinfer/reflw/internal/bootstrap"
+	"github.com/twinfer/reflw/pkg/reflow"
+	"github.com/twinfer/reflw/pkg/reflow/config"
 )
 
-// cmdRun is the "reflowd run" subcommand: load layered config and start
+// cmdRun is the "reflwd run" subcommand: load layered config and start
 // the engine until SIGINT/SIGTERM. Configuration sources (later overrides
 // earlier):
 //
@@ -34,7 +34,7 @@ import (
 func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	joinAddr := fs.String("join", "", "joiner mode: bootstrap listener address (host:port)")
-	joinToken := fs.String("join-token", "", "joiner mode: plaintext join token from `reflowd config create-join-token`")
+	joinToken := fs.String("join-token", "", "joiner mode: plaintext join token from `reflwd config create-join-token`")
 	rootCertPin := fs.String("root-cert-pin", "", "joiner mode: optional SPKI pin (sha256:<hex>) the joiner verifies before sending the token")
 	extraHosts := fs.String("join-hostname", "", "joiner mode: comma-separated extra DNS/IP SANs to embed in the CSR")
 	if err := fs.Parse(args); err != nil {
@@ -51,7 +51,7 @@ func cmdRun(args []string) error {
 
 	if *joinAddr != "" {
 		if err := runJoinerPreflight(*joinAddr, *joinToken, *rootCertPin, *extraHosts, cfg); err != nil {
-			return fmt.Errorf("reflowd: --join failed: %w", err)
+			return fmt.Errorf("reflwd: --join failed: %w", err)
 		}
 	}
 
@@ -64,7 +64,7 @@ func cmdRun(args []string) error {
 	}
 
 	<-ctx.Done()
-	slog.Default().Info("reflowd: shutting down")
+	slog.Default().Info("reflwd: shutting down")
 	return host.Close()
 }
 
@@ -121,11 +121,11 @@ func runJoinerPreflight(addr, token, pin, extraHostsCSV string, cfg reflow.Confi
 	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), res.CAChainPEM, 0o644); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "reflowd: joiner credentials written to %s\n", dir)
-	fmt.Fprintf(os.Stderr, "reflowd:   leaf.crt — signed leaf (CN=node/%d)\n", res.AssignedNodeID)
-	fmt.Fprintf(os.Stderr, "reflowd:   leaf.key — private key (0600)\n")
-	fmt.Fprintf(os.Stderr, "reflowd:   ca.crt   — cluster CA chain (pin %s)\n", res.CAFingerprint)
-	fmt.Fprintf(os.Stderr, "reflowd: point cfg.{admin,delivery,ingress}.creds.tls at these files and restart without --join.\n")
+	fmt.Fprintf(os.Stderr, "reflwd: joiner credentials written to %s\n", dir)
+	fmt.Fprintf(os.Stderr, "reflwd:   leaf.crt — signed leaf (CN=node/%d)\n", res.AssignedNodeID)
+	fmt.Fprintf(os.Stderr, "reflwd:   leaf.key — private key (0600)\n")
+	fmt.Fprintf(os.Stderr, "reflwd:   ca.crt   — cluster CA chain (pin %s)\n", res.CAFingerprint)
+	fmt.Fprintf(os.Stderr, "reflwd: point cfg.{admin,delivery,ingress}.creds.tls at these files and restart without --join.\n")
 	return nil
 }
 
@@ -161,7 +161,7 @@ func loadConfig() (reflow.Config, error) {
 	return cfg, err
 }
 
-// defaultValues are the baked-in defaults. Picked so `reflowd run`
+// defaultValues are the baked-in defaults. Picked so `reflwd run`
 // works out of the box on a developer machine. Multi-node fields
 // (node.gossip_bind_addr, node.delivery_addr, cluster.peers) are
 // left empty by default — single-node bootstrap when they are unset.

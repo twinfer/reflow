@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/internal/loadgen"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+	"github.com/twinfer/reflw/internal/engine"
+	"github.com/twinfer/reflw/internal/loadgen"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 )
 
 // freeLocalAddr is a thin shim into loadgen.FreeLocalAddr so the

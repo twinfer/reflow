@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/internal/storage"
+	"github.com/twinfer/reflw/internal/engine"
+	"github.com/twinfer/reflw/internal/storage"
 )
 
 func newPebbleFactory(t *testing.T) engine.StoreFactory {

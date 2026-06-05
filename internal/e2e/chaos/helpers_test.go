@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/e2e"
-	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/handler"
+	"github.com/twinfer/reflw/internal/e2e"
+	"github.com/twinfer/reflw/internal/loadgen"
+	"github.com/twinfer/reflw/pkg/handler"
 )
 
 // scenarioConfig parameterizes the standard "workload + chaos + check"

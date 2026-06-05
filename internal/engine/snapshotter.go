@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/twinfer/reflow/internal/engine/snapshot"
-	"github.com/twinfer/reflow/internal/storage"
+	"github.com/twinfer/reflw/internal/engine/snapshot"
+	"github.com/twinfer/reflw/internal/storage"
 )
 
 // StoreFactory opens a fresh storage.Store rooted at the given path. It is

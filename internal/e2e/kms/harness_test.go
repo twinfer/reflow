@@ -30,7 +30,7 @@ import (
 	"gocloud.dev/blob"
 	_ "gocloud.dev/blob/s3blob"
 
-	"github.com/twinfer/reflow/internal/e2e"
+	"github.com/twinfer/reflw/internal/e2e"
 )
 
 const (

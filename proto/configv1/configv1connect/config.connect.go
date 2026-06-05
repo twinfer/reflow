@@ -35,7 +35,7 @@ import (
 	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
+	configv1 "github.com/twinfer/reflw/proto/configv1"
 	http "net/http"
 	strings "strings"
 )

@@ -5,9 +5,9 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	handlerv1 "github.com/twinfer/reflow/proto/handlerv1"
-	"github.com/twinfer/reflow/proto/handlerv1/handlerv1connect"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	handlerv1 "github.com/twinfer/reflw/proto/handlerv1"
+	"github.com/twinfer/reflw/proto/handlerv1/handlerv1connect"
 )
 
 // handlerService implements handlerv1connect.HandlerServiceHandler. Invoke

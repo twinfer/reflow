@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/config"
-	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/handler"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/config"
+	"github.com/twinfer/reflw/internal/loadgen"
+	"github.com/twinfer/reflw/pkg/handler"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // TestSDKServer_E2E_HTTP2 drives the real handler-side stack

@@ -10,7 +10,7 @@ import (
 	"github.com/cedar-policy/cedar-go"
 	"github.com/cedar-policy/cedar-go/types"
 
-	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflw/internal/auth"
 )
 
 // Sentinel denial messages. Opaque on the wire so authz does not leak which

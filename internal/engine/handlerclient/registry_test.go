@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	handlerv1 "github.com/twinfer/reflow/proto/handlerv1"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	handlerv1 "github.com/twinfer/reflw/proto/handlerv1"
 )
 
 // fakeClient is a noop Client. Tracks Close calls so the URL-evict test

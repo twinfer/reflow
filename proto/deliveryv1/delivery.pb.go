@@ -28,7 +28,7 @@
 package deliveryv1
 
 import (
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -715,7 +715,7 @@ const file_deliveryv1_delivery_proto_rawDesc = "" +
 	"\rrelative_path\x18\x01 \x01(\tR\frelativePath2\xdc\x01\n" +
 	"\bDelivery\x12V\n" +
 	"\aDeliver\x12\".reflow.delivery.v1.DeliverRequest\x1a#.reflow.delivery.v1.DeliverResponse(\x010\x01\x12x\n" +
-	"\x13UploadLPTransferSST\x12..reflow.delivery.v1.UploadLPTransferSSTRequest\x1a/.reflow.delivery.v1.UploadLPTransferSSTResponse(\x01B7Z5github.com/twinfer/reflow/proto/deliveryv1;deliveryv1b\x06proto3"
+	"\x13UploadLPTransferSST\x12..reflow.delivery.v1.UploadLPTransferSSTRequest\x1a/.reflow.delivery.v1.UploadLPTransferSSTResponse(\x01B6Z4github.com/twinfer/reflw/proto/deliveryv1;deliveryv1b\x06proto3"
 
 var (
 	file_deliveryv1_delivery_proto_rawDescOnce sync.Once

@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/twinfer/iflow/capability"
-	"github.com/twinfer/iflow/cmmn"
-	"github.com/twinfer/reflow/internal/engine/invoker"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflwos/capability"
+	"github.com/twinfer/reflwos/cmmn"
+	"github.com/twinfer/reflw/internal/engine/invoker"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // advanceCMMN runs one turn of the CMMN reducer. It mirrors advanceBPMN against

@@ -16,7 +16,7 @@
 package ingressv1
 
 import (
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -2339,7 +2339,7 @@ const file_ingressv1_ingress_proto_rawDesc = "" +
 	"\fStartProcess\x12&.reflow.ingress.v1.StartProcessRequest\x1a'.reflow.ingress.v1.StartProcessResponse\x12e\n" +
 	"\x0eDeliverMessage\x12(.reflow.ingress.v1.DeliverMessageRequest\x1a).reflow.ingress.v1.DeliverMessageResponse\x12q\n" +
 	"\x12GetProcessInstance\x12,.reflow.ingress.v1.GetProcessInstanceRequest\x1a-.reflow.ingress.v1.GetProcessInstanceResponse\x12w\n" +
-	"\x14ListProcessInstances\x12..reflow.ingress.v1.ListProcessInstancesRequest\x1a/.reflow.ingress.v1.ListProcessInstancesResponseB5Z3github.com/twinfer/reflow/proto/ingressv1;ingressv1b\x06proto3"
+	"\x14ListProcessInstances\x12..reflow.ingress.v1.ListProcessInstancesRequest\x1a/.reflow.ingress.v1.ListProcessInstancesResponseB4Z2github.com/twinfer/reflw/proto/ingressv1;ingressv1b\x06proto3"
 
 var (
 	file_ingressv1_ingress_proto_rawDescOnce sync.Once

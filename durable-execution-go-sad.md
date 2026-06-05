@@ -57,7 +57,7 @@ The key technical decision is to replace Restate's custom distributed log
 direct composition of `dragonboat` (multi-group Raft) and `cockroachdb/pebble`
 (embedded K/V store), both linked into a single Go binary. The cluster's own
 metadata lives in another `dragonboat` Raft group hosted by the same
-`NodeHost` as the partition shards (see §6.2). Operationally, `reflowd` is
+`NodeHost` as the partition shards (see §6.2). Operationally, `reflwd` is
 one process with one data directory.
 
 ---
@@ -66,7 +66,7 @@ one process with one data directory.
 
 - **Durable execution.** Handler execution survives crashes and resumes
   exactly where it stopped.
-- **Single self-contained engine binary.** `reflowd` is the only engine
+- **Single self-contained engine binary.** `reflwd` is the only engine
   process the operator runs. No external metadata store, no external log
   servers, no required sidecars, no Kubernetes operator. Static peer
   config is enough to form a multi-node cluster.

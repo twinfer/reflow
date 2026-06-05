@@ -1,19 +1,19 @@
-// Command reflowd is the production reflow binary. It exposes three
+// Command reflwd is the production reflow binary. It exposes three
 // top-level subcommands:
 //
-//	reflowd run                 # start the engine
-//	reflowd cluster <subcmd>    # mTLS-authenticated ClusterCtl RPCs
+//	reflwd run                 # start the engine
+//	reflwd cluster <subcmd>    # mTLS-authenticated ClusterCtl RPCs
 //	                            # (fleet ops: membership, partitions,
 //	                            # snapshots, LP transfers)
-//	reflowd config <subcmd>     # mTLS-authenticated Config RPCs
+//	reflwd config <subcmd>     # mTLS-authenticated Config RPCs
 //	                            # (app config: deployments, event
 //	                            # sources, webhooks, secrets,
 //	                            # CA roots, join tokens)
 //
 // PKI: cluster CA + leaf material is managed via shard-0 tables —
-// operators run `reflowd config ca init` once to mint a cluster CA,
-// `reflowd config create-join-token` to mint a one-time joiner
-// credential, and `reflowd run --join` to redeem it. Every leaf carries
+// operators run `reflwd config ca init` once to mint a cluster CA,
+// `reflwd config create-join-token` to mint a one-time joiner
+// credential, and `reflwd run --join` to redeem it. Every leaf carries
 // the principal Raw form (e.g. "node/1", "operator/alice") in its CN
 // that the reflow TLS layer matches against the listener's expected
 // role.
@@ -23,28 +23,28 @@
 // the LeaderHint detail attached to connect.CodeUnavailable to redirect
 // to the metadata leader automatically:
 //
-//	reflowd cluster add-node            --admin=ANY:PORT --node-id=N --raft-addr=... --gossip-addr=... --grpc-endpoint=... [--node-host-id=ID]
-//	reflowd cluster remove-node         --admin=ANY:PORT --node-id=N
-//	reflowd cluster nodes list          --admin=ANY:PORT
-//	reflowd cluster partitions list     --admin=ANY:PORT
-//	reflowd cluster snapshot create     --admin=ANY:PORT --shard=N
-//	reflowd cluster snapshot list       --admin=ANY:PORT --shard=N
-//	reflowd cluster snapshot delete     --admin=ANY:PORT --shard=N --index=I
-//	reflowd cluster transfer-lp         --admin=ANY:PORT --lp=N --to-shard=M
-//	reflowd cluster list-lp-transfers   --admin=ANY:PORT
-//	reflowd cluster rebalance-advise    --admin=ANY:PORT
-//	reflowd cluster rebalance-drain     --admin=ANY:PORT --shard=N [--stop]
+//	reflwd cluster add-node            --admin=ANY:PORT --node-id=N --raft-addr=... --gossip-addr=... --grpc-endpoint=... [--node-host-id=ID]
+//	reflwd cluster remove-node         --admin=ANY:PORT --node-id=N
+//	reflwd cluster nodes list          --admin=ANY:PORT
+//	reflwd cluster partitions list     --admin=ANY:PORT
+//	reflwd cluster snapshot create     --admin=ANY:PORT --shard=N
+//	reflwd cluster snapshot list       --admin=ANY:PORT --shard=N
+//	reflwd cluster snapshot delete     --admin=ANY:PORT --shard=N --index=I
+//	reflwd cluster transfer-lp         --admin=ANY:PORT --lp=N --to-shard=M
+//	reflwd cluster list-lp-transfers   --admin=ANY:PORT
+//	reflwd cluster rebalance-advise    --admin=ANY:PORT
+//	reflwd cluster rebalance-drain     --admin=ANY:PORT --shard=N [--stop]
 //
-//	reflowd config register-deployment  --admin=ANY:PORT --url=http://HANDLER:PORT
-//	reflowd config list-deployments     --admin=ANY:PORT
-//	reflowd config describe-deployment  --admin=ANY:PORT --id=DEPLOYMENT_ID
-//	reflowd config delete-deployment    --admin=ANY:PORT --id=DEPLOYMENT_ID --force
-//	reflowd config apply -f <file>      --admin=ANY:PORT
-//	reflowd config init-kek             --blob-uri=...
-//	reflowd config create-secret        --admin=ANY:PORT --name=N --kek-uri=... --blob-uri=...
-//	reflowd config delete-secret        --admin=ANY:PORT --name=N
-//	reflowd config list-secrets         --admin=ANY:PORT
-//	reflowd config decrypt-secret       --name=N --kek-uri=... --blob-uri=...
+//	reflwd config register-deployment  --admin=ANY:PORT --url=http://HANDLER:PORT
+//	reflwd config list-deployments     --admin=ANY:PORT
+//	reflwd config describe-deployment  --admin=ANY:PORT --id=DEPLOYMENT_ID
+//	reflwd config delete-deployment    --admin=ANY:PORT --id=DEPLOYMENT_ID --force
+//	reflwd config apply -f <file>      --admin=ANY:PORT
+//	reflwd config init-kek             --blob-uri=...
+//	reflwd config create-secret        --admin=ANY:PORT --name=N --kek-uri=... --blob-uri=...
+//	reflwd config delete-secret        --admin=ANY:PORT --name=N
+//	reflwd config list-secrets         --admin=ANY:PORT
+//	reflwd config decrypt-secret       --name=N --kek-uri=... --blob-uri=...
 //
 // Cluster and config subcommands need the operator TLS flags (or
 // matching env vars):
@@ -53,7 +53,7 @@
 //	--client-key    $REFLOW_CLIENT_KEY
 //	--ca            $REFLOW_CA_CERT
 //
-// `reflowd run` reads layered configuration sources (later overrides
+// `reflwd run` reads layered configuration sources (later overrides
 // earlier):
 //
 //  1. Built-in defaults (single-node, shard 1, sensible ports).
@@ -93,23 +93,23 @@ func main() {
 		usage(os.Stdout)
 		return
 	default:
-		fmt.Fprintf(os.Stderr, "reflowd: unknown subcommand %q\n\n", cmd)
+		fmt.Fprintf(os.Stderr, "reflwd: unknown subcommand %q\n\n", cmd)
 		usage(os.Stderr)
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "reflowd: %v\n", err)
+		fmt.Fprintf(os.Stderr, "reflwd: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-// dispatchCluster routes "reflowd cluster <subcmd> ..." to the
+// dispatchCluster routes "reflwd cluster <subcmd> ..." to the
 // ClusterCtl-service handlers (fleet ops: membership, partitions,
 // snapshots, LP transfers). App-config subcommands moved to
-// `reflowd config`.
+// `reflwd config`.
 func dispatchCluster(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: reflowd cluster {add-node|remove-node|nodes|partitions|snapshot|transfer-lp|list-lp-transfers} [flags]")
+		return fmt.Errorf("usage: reflwd cluster {add-node|remove-node|nodes|partitions|snapshot|transfer-lp|list-lp-transfers} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -133,12 +133,12 @@ func dispatchCluster(ctx context.Context, args []string) error {
 	case "rebalance-drain":
 		return cmdRebalanceDrain(ctx, rest)
 	default:
-		return fmt.Errorf("reflowd cluster: unknown subcommand %q", sub)
+		return fmt.Errorf("reflwd cluster: unknown subcommand %q", sub)
 	}
 }
 
 func usage(w *os.File) {
-	fmt.Fprint(w, `reflowd — reflow engine + admin CLI
+	fmt.Fprint(w, `reflwd — reflow engine + admin CLI
 
 Engine:
   run                  Start the engine. Reads layered config:

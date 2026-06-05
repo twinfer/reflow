@@ -19,9 +19,9 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/pkg/reflowclient"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/pkg/reflowclient"
+	configv1 "github.com/twinfer/reflw/proto/configv1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // cmdCreateJoinToken mints a one-time bootstrap credential and prints
@@ -59,7 +59,7 @@ func cmdCreateJoinToken(ctx context.Context, args []string) error {
 			*kind, *name, *ttl, *singleUse,
 			hex.EncodeToString(resp.Msg.GetTokenHash()),
 			resp.Msg.GetTableRevision())
-		fmt.Fprintf(os.Stderr, "redeem on the joiner: reflowd run --join=<this-node>:<bootstrap-port> --join-token=<token>\n")
+		fmt.Fprintf(os.Stderr, "redeem on the joiner: reflwd run --join=<this-node>:<bootstrap-port> --join-token=<token>\n")
 		return nil
 	})
 }
@@ -123,7 +123,7 @@ func cmdDeleteJoinToken(ctx context.Context, args []string) error {
 // cmdIssueOperator generates an ECDSA-P256 keypair locally, sends a
 // CSR with CN=operator/<name> to the cluster, and writes the signed
 // leaf + key + CA chain into --out. Replaces the deleted
-// `reflowd pki issue-operator` flow.
+// `reflwd pki issue-operator` flow.
 func cmdIssueOperator(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("issue-operator", flag.ContinueOnError)
 	tlsFlags := registerTLSFlags(fs)

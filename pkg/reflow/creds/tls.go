@@ -14,7 +14,7 @@ import (
 
 	"google.golang.org/grpc/credentials"
 
-	"github.com/twinfer/reflow/internal/certmgr"
+	"github.com/twinfer/reflw/internal/certmgr"
 )
 
 // TLSSpec is the TLS configuration. Two modes are supported:

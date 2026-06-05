@@ -7,9 +7,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/twinfer/reflow/internal/storage"
-	"github.com/twinfer/reflow/internal/storage/keys"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/storage"
+	"github.com/twinfer/reflw/internal/storage/keys"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // LPFreezeTable is the per-partition control-plane index of which logical

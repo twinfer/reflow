@@ -6,7 +6,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/twinfer/reflow/internal/storage"
+	"github.com/twinfer/reflw/internal/storage"
 )
 
 // scanStart positions iter for a forward scan, returning whether it landed on a

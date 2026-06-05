@@ -18,10 +18,10 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/e2e"
-	"github.com/twinfer/reflow/pkg/reflowclient"
-	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/e2e"
+	"github.com/twinfer/reflw/pkg/reflowclient"
+	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // TestE2EBalance_DrainShardRebalances brings up a 3-node, 3-shard

@@ -7,11 +7,11 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/config"
-	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/pkg/reflow/iflowengine"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/config"
+	"github.com/twinfer/reflw/internal/loadgen"
+	"github.com/twinfer/reflw/pkg/reflow/iflowengine"
+	configv1 "github.com/twinfer/reflw/proto/configv1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // validBPMN is a minimal executable process: start → end. Parses and passes

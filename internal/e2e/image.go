@@ -62,7 +62,7 @@ func ReflowdImage(t testing.TB) string {
 }
 
 func buildReflowdImage() (string, error) {
-	return buildImage("Dockerfile.reflowd", reflowdImageRepo, reflowdImageTag)
+	return buildImage("Dockerfile.reflwd", reflowdImageRepo, reflowdImageTag)
 }
 
 // LoadhandlerImage returns the Docker image reference for the sidecar

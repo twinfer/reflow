@@ -1,7 +1,7 @@
 package engine
 
 import (
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // Action is a post-commit side-effect intent. The partition's state machine

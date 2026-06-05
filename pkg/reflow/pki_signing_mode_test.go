@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/twinfer/reflow/internal/certmgr"
+	"github.com/twinfer/reflw/internal/certmgr"
 )
 
 func TestCertmgrSigningMode_Mapping(t *testing.T) {

@@ -9,10 +9,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/internal/storage"
-	"github.com/twinfer/reflow/internal/storage/keys"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/engine"
+	"github.com/twinfer/reflw/internal/storage"
+	"github.com/twinfer/reflw/internal/storage/keys"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // This file holds the LP-transfer-under-load primitives the loadtest

@@ -11,7 +11,7 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
+	deliveryv1 "github.com/twinfer/reflw/proto/deliveryv1"
 )
 
 // uploadFsync, when false in tests, skips fsync calls so the suite runs

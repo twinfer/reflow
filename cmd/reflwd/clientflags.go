@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/twinfer/reflow/pkg/reflow/creds"
-	"github.com/twinfer/reflow/pkg/reflowclient"
+	"github.com/twinfer/reflw/pkg/reflow/creds"
+	"github.com/twinfer/reflw/pkg/reflowclient"
 )
 
 // tlsFlags installs --client-cert / --client-key / --ca with env
-// fallbacks. Shared by every `reflowd cluster` and `reflowd config`
+// fallbacks. Shared by every `reflwd cluster` and `reflwd config`
 // subcommand that dials the admin Connect port; cluster RPCs go
 // through cli.Cluster.X (ClusterCtl), config RPCs through cli.Config.Y
 // (Config), both served on the same mTLS listener.

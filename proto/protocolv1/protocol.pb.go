@@ -4047,7 +4047,7 @@ const file_protocolv1_protocol_proto_rawDesc = "" +
 	"\fKIND_SERVICE\x10\x01\x12\x0f\n" +
 	"\vKIND_OBJECT\x10\x02\x12\x11\n" +
 	"\rKIND_WORKFLOW\x10\x03\x12\x18\n" +
-	"\x14KIND_WORKFLOW_SHARED\x10\x04B7Z5github.com/twinfer/reflow/proto/protocolv1;protocolv1b\x06proto3"
+	"\x14KIND_WORKFLOW_SHARED\x10\x04B6Z4github.com/twinfer/reflw/proto/protocolv1;protocolv1b\x06proto3"
 
 var (
 	file_protocolv1_protocol_proto_rawDescOnce sync.Once

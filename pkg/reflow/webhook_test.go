@@ -18,7 +18,7 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
+	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
 // fakeSubmitter records the SubmitInvocation requests the webhook

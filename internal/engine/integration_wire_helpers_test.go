@@ -9,12 +9,12 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
-	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
-	handlerv1 "github.com/twinfer/reflow/proto/handlerv1"
-	"github.com/twinfer/reflow/proto/handlerv1/handlerv1connect"
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	discoveryv1 "github.com/twinfer/reflw/proto/discoveryv1"
+	"github.com/twinfer/reflw/proto/discoveryv1/discoveryv1connect"
+	handlerv1 "github.com/twinfer/reflw/proto/handlerv1"
+	"github.com/twinfer/reflw/proto/handlerv1/handlerv1connect"
+	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 )
 
 // fakeBidi adapts the unary InvokeRequest/InvokeResponse onto the

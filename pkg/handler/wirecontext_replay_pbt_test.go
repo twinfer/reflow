@@ -9,9 +9,9 @@ import (
 
 	"pgregory.net/rapid"
 
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 )
 
 // TestWireContext_ReplayDeterminism is a property-based test for the

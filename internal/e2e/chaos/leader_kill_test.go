@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/e2e"
-	"github.com/twinfer/reflow/internal/e2e/chaos"
+	"github.com/twinfer/reflw/internal/e2e"
+	"github.com/twinfer/reflw/internal/e2e/chaos"
 )
 
 // TestChaos_LeaderKill runs a steady-state workload, SIGKILLs the

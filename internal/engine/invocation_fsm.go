@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // ErrInvalidTransition is returned by FSM transitions when the event is not

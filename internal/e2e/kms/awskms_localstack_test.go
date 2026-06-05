@@ -18,7 +18,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/twinfer/reflow/internal/e2e"
+	"github.com/twinfer/reflw/internal/e2e"
 )
 
 const (

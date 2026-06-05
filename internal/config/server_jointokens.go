@@ -14,11 +14,11 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/auth"
-	"github.com/twinfer/reflow/internal/certmgr"
-	"github.com/twinfer/reflow/internal/engine/cluster"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/auth"
+	"github.com/twinfer/reflw/internal/certmgr"
+	"github.com/twinfer/reflw/internal/engine/cluster"
+	configv1 "github.com/twinfer/reflw/proto/configv1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // operatorMaxValidity caps IssueOperator leaf lifetimes. Mirrors the

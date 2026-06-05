@@ -7,8 +7,8 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
 // AttachInvocation blocks until the named invocation reaches Completed

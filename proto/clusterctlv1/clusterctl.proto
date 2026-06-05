@@ -34,7 +34,7 @@ package reflow.clusterctl.v1;
 
 import "enginev1/engine.proto";
 
-option go_package = "github.com/twinfer/reflow/proto/clusterctlv1;clusterctlv1";
+option go_package = "github.com/twinfer/reflw/proto/clusterctlv1;clusterctlv1";
 
 service ClusterCtl {
   // AddNode registers a new peer with shard 0 and enqueues a rebalance

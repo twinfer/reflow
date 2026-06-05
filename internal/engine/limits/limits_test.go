@@ -3,7 +3,7 @@ package limits
 import (
 	"testing"
 
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 func TestEffectiveMaxJournalEntries(t *testing.T) {

@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/config"
-	"github.com/twinfer/reflow/internal/engine/routing"
-	"github.com/twinfer/reflow/internal/loadgen"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+	"github.com/twinfer/reflw/internal/config"
+	"github.com/twinfer/reflw/internal/engine/routing"
+	"github.com/twinfer/reflw/internal/loadgen"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 )
 
 // TestWireDispatch_HTTP2_PromiseXshard_Conflict resolves the workflow's

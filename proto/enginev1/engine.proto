@@ -10,7 +10,7 @@ syntax = "proto3";
 
 package reflow.engine.v1;
 
-option go_package = "github.com/twinfer/reflow/proto/enginev1;enginev1";
+option go_package = "github.com/twinfer/reflw/proto/enginev1;enginev1";
 
 // InvocationId carries the partition_key inside the ID so routing never needs
 // to re-parse the target. Mirrors restate types/identifiers.rs:456-461.

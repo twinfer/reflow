@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // Context is the durable-execution handle every reflow handler receives.

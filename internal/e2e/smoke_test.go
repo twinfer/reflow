@@ -11,7 +11,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/twinfer/reflow/internal/e2e"
+	"github.com/twinfer/reflw/internal/e2e"
 )
 
 // TestSmoke_SingleNodeReflowdBoots builds the Dockerfile.reflowd image,

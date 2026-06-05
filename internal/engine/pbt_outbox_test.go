@@ -19,9 +19,9 @@ import (
 
 	"pgregory.net/rapid"
 
-	"github.com/twinfer/reflow/internal/storage/tables"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+	"github.com/twinfer/reflw/internal/storage/tables"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 )
 
 // ChildCall journals a JECall for an mInvoked parent. The partition mints a

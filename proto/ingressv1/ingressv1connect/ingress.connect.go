@@ -17,7 +17,7 @@ import (
 	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
-	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
+	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 	http "net/http"
 	strings "strings"
 )

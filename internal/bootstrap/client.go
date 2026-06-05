@@ -19,8 +19,8 @@ import (
 	connect "connectrpc.com/connect"
 	"golang.org/x/net/http2"
 
-	bootstrapv1 "github.com/twinfer/reflow/proto/bootstrapv1"
-	"github.com/twinfer/reflow/proto/bootstrapv1/bootstrapv1connect"
+	bootstrapv1 "github.com/twinfer/reflw/proto/bootstrapv1"
+	"github.com/twinfer/reflw/proto/bootstrapv1/bootstrapv1connect"
 )
 
 // JoinResult bundles the outputs of a successful MeshSign exchange.

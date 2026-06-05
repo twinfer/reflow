@@ -15,9 +15,9 @@ import (
 	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/twinfer/reflow/pkg/reflow/creds"
-	"github.com/twinfer/reflow/pkg/reflowclient"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
+	"github.com/twinfer/reflw/pkg/reflow/creds"
+	"github.com/twinfer/reflw/pkg/reflowclient"
+	configv1 "github.com/twinfer/reflw/proto/configv1"
 )
 
 // loadhandlerInternalPort is the port cmd/loadhandler binds inside its

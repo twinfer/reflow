@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/engine/rebalance"
-	"github.com/twinfer/reflow/internal/loadgen"
-	"github.com/twinfer/reflow/internal/storage/keys"
-	"github.com/twinfer/reflow/pkg/handler"
+	"github.com/twinfer/reflw/internal/engine/rebalance"
+	"github.com/twinfer/reflw/internal/loadgen"
+	"github.com/twinfer/reflw/internal/storage/keys"
+	"github.com/twinfer/reflw/pkg/handler"
 )
 
 // envInt reads a positive-int scale knob from the environment, falling

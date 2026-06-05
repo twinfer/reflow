@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/certmgr"
+	"github.com/twinfer/reflw/internal/certmgr"
 )
 
 // TestBuild_TLSManagedIssuer end-to-ends the certmagic-managed path:

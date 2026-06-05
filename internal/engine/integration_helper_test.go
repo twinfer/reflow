@@ -1,8 +1,8 @@
 package engine_test
 
 import (
-	"github.com/twinfer/reflow/internal/storage"
-	"github.com/twinfer/reflow/internal/storage/tables"
+	"github.com/twinfer/reflw/internal/storage"
+	"github.com/twinfer/reflw/internal/storage/tables"
 )
 
 // journalTableFor returns a JournalTable bound to the given Store. Lives in

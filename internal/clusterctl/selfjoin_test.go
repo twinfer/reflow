@@ -6,7 +6,7 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflw/internal/auth"
 )
 
 // TestCheckSelfJoinPrincipal_* covers the SPIFFE-equals-NodeID gate

@@ -31,7 +31,7 @@ package reflow.config.v1;
 
 import "enginev1/engine.proto";
 
-option go_package = "github.com/twinfer/reflow/proto/configv1;configv1";
+option go_package = "github.com/twinfer/reflw/proto/configv1;configv1";
 
 service Config {
   // RegisterDeployment introduces a new handler deployment to the

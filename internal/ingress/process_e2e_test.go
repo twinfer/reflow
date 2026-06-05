@@ -8,13 +8,13 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/internal/engine/routing"
-	"github.com/twinfer/reflow/internal/ingress"
-	"github.com/twinfer/reflow/pkg/ingressclient"
-	iflowengine "github.com/twinfer/reflow/pkg/reflow/iflowengine"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
+	"github.com/twinfer/reflw/internal/engine"
+	"github.com/twinfer/reflw/internal/engine/routing"
+	"github.com/twinfer/reflw/internal/ingress"
+	"github.com/twinfer/reflw/pkg/ingressclient"
+	iflowengine "github.com/twinfer/reflw/pkg/reflow/iflowengine"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
 // e2eMessageCatchBPMN: Start -> IntermediateCatch(message "shipped", correlate

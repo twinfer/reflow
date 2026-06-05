@@ -12,7 +12,7 @@
 package rebalance
 
 import (
-	"github.com/twinfer/reflow/internal/engine/routing"
+	"github.com/twinfer/reflw/internal/engine/routing"
 )
 
 // Mode constants match pkg/reflow.RebalanceConfig.Mode values. Stringly

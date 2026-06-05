@@ -3,8 +3,8 @@ package rebalance
 import (
 	"testing"
 
-	"github.com/twinfer/reflow/internal/engine/routing"
-	"github.com/twinfer/reflow/internal/storage/keys"
+	"github.com/twinfer/reflw/internal/engine/routing"
+	"github.com/twinfer/reflw/internal/storage/keys"
 )
 
 // plannedOwners returns the consistent-hash plan for shards as a

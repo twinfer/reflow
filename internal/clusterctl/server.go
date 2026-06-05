@@ -29,14 +29,14 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/auth"
-	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/internal/engine/cluster"
-	"github.com/twinfer/reflow/internal/engine/rebalance"
-	"github.com/twinfer/reflow/internal/engine/snapshot"
-	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
-	"github.com/twinfer/reflow/proto/clusterctlv1/clusterctlv1connect"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/auth"
+	"github.com/twinfer/reflw/internal/engine"
+	"github.com/twinfer/reflw/internal/engine/cluster"
+	"github.com/twinfer/reflw/internal/engine/rebalance"
+	"github.com/twinfer/reflw/internal/engine/snapshot"
+	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
+	"github.com/twinfer/reflw/proto/clusterctlv1/clusterctlv1connect"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // Server implements clusterctlv1connect.ClusterCtlHandler.

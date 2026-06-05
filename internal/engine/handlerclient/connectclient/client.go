@@ -31,10 +31,10 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	handlerv1 "github.com/twinfer/reflow/proto/handlerv1"
-	"github.com/twinfer/reflow/proto/handlerv1/handlerv1connect"
+	"github.com/twinfer/reflw/internal/engine/handlerclient"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	handlerv1 "github.com/twinfer/reflw/proto/handlerv1"
+	"github.com/twinfer/reflw/proto/handlerv1/handlerv1connect"
 )
 
 // Scheme is the registry key for plain HTTP/2 (h2c). Plain HTTP is only

@@ -21,8 +21,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	handlerv1 "github.com/twinfer/reflow/proto/handlerv1"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	handlerv1 "github.com/twinfer/reflw/proto/handlerv1"
 )
 
 // ErrClientClosed is returned by Invoke after Close has been called.

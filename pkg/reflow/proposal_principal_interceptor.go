@@ -5,8 +5,8 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/auth"
-	"github.com/twinfer/reflow/internal/engine"
+	"github.com/twinfer/reflw/internal/auth"
+	"github.com/twinfer/reflw/internal/engine"
 )
 
 // proposalPrincipalInterceptor bridges auth.Principal (attached to the

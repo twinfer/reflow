@@ -19,7 +19,7 @@
 package discoveryv1
 
 import (
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -218,7 +218,7 @@ const file_discoveryv1_discovery_proto_rawDesc = "" +
 	"\x04kind\x18\x02 \x01(\x0e2\x18.reflow.protocol.v1.KindR\x04kind\x12#\n" +
 	"\rhandler_names\x18\x03 \x03(\tR\fhandlerNames2m\n" +
 	"\x10DiscoveryService\x12Y\n" +
-	"\bDiscover\x12%.reflow.discovery.v1.DiscoveryRequest\x1a&.reflow.discovery.v1.DiscoveryResponseB9Z7github.com/twinfer/reflow/proto/discoveryv1;discoveryv1b\x06proto3"
+	"\bDiscover\x12%.reflow.discovery.v1.DiscoveryRequest\x1a&.reflow.discovery.v1.DiscoveryResponseB8Z6github.com/twinfer/reflw/proto/discoveryv1;discoveryv1b\x06proto3"
 
 var (
 	file_discoveryv1_discovery_proto_rawDescOnce sync.Once

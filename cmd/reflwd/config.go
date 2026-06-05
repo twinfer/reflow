@@ -9,16 +9,16 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/pkg/reflowclient"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
+	"github.com/twinfer/reflw/pkg/reflowclient"
+	configv1 "github.com/twinfer/reflw/proto/configv1"
 )
 
-// dispatchConfig routes "reflowd config <subcmd> ..." to the right
+// dispatchConfig routes "reflwd config <subcmd> ..." to the right
 // handler. All subcommands target the reflow.config.v1.Config service
 // hosted on the same admin Connect listener as ClusterCtl.
 func dispatchConfig(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: reflowd config {register-deployment|list-deployments|describe-deployment|delete-deployment|register-model|list-models|describe-model|delete-model|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|ca|create-join-token|list-join-tokens|delete-join-token|issue-operator|upsert-cluster-authz-policy|get-cluster-authz-policy} [flags]")
+		return fmt.Errorf("usage: reflwd config {register-deployment|list-deployments|describe-deployment|delete-deployment|register-model|list-models|describe-model|delete-model|init-kek|create-secret|delete-secret|list-secrets|decrypt-secret|ca|create-join-token|list-join-tokens|delete-join-token|issue-operator|upsert-cluster-authz-policy|get-cluster-authz-policy} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -64,7 +64,7 @@ func dispatchConfig(ctx context.Context, args []string) error {
 	case "get-cluster-authz-policy":
 		return cmdGetClusterAuthzPolicy(ctx, rest)
 	default:
-		return fmt.Errorf("reflowd config: unknown subcommand %q", sub)
+		return fmt.Errorf("reflwd config: unknown subcommand %q", sub)
 	}
 }
 

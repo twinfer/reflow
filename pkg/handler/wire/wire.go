@@ -10,7 +10,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 )
 
 // Codec encodes the inner protocolv1 message payloads carried inside a

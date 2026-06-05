@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/twinfer/reflow/pkg/handler"
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	handlerv1 "github.com/twinfer/reflow/proto/handlerv1"
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+	"github.com/twinfer/reflw/pkg/handler"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	handlerv1 "github.com/twinfer/reflw/proto/handlerv1"
+	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 )
 
 // TestInprocClient_RoundTrip exercises the in-process transport bridge end

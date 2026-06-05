@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/twinfer/reflow/internal/storage/keys"
-	"github.com/twinfer/reflow/internal/storage/tables"
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/storage/keys"
+	"github.com/twinfer/reflw/internal/storage/tables"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // Config carries the dependencies the Invoker needs at construction

@@ -3,9 +3,9 @@ package handler
 import (
 	"context"
 
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
-	handlerv1 "github.com/twinfer/reflow/proto/handlerv1"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	discoveryv1 "github.com/twinfer/reflw/proto/discoveryv1"
+	handlerv1 "github.com/twinfer/reflw/proto/handlerv1"
 )
 
 // InvokeInProc runs one invocation session entirely in-process: req carries

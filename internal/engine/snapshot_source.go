@@ -3,7 +3,7 @@ package engine
 import (
 	"context"
 
-	"github.com/twinfer/reflow/internal/engine/snapshot"
+	"github.com/twinfer/reflw/internal/engine/snapshot"
 )
 
 // HostSnapshotSource adapts *Host to the snapshot.Source interface.

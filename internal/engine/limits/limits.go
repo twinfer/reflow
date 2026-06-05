@@ -4,7 +4,7 @@
 // can both depend on it without creating an engine↔invoker cycle.
 package limits
 
-import enginev1 "github.com/twinfer/reflow/proto/enginev1"
+import enginev1 "github.com/twinfer/reflw/proto/enginev1"
 
 // Step budget defaults. Each journal entry counts as one step: JEInput,
 // every command, each result notification, and JEOutput. A pathological

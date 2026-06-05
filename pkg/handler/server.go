@@ -16,10 +16,10 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	"github.com/twinfer/reflow/pkg/reflow/creds"
-	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
-	"github.com/twinfer/reflow/proto/handlerv1/handlerv1connect"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	"github.com/twinfer/reflw/pkg/reflow/creds"
+	"github.com/twinfer/reflw/proto/discoveryv1/discoveryv1connect"
+	"github.com/twinfer/reflw/proto/handlerv1/handlerv1connect"
 )
 
 // Config groups constructor inputs. Registry is required; the others have

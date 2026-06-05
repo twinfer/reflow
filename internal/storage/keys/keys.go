@@ -60,7 +60,7 @@ import (
 	"fmt"
 	"hash"
 
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 const (

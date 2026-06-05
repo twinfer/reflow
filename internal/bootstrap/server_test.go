@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 func TestFindToken_PicksMatchingHash(t *testing.T) {

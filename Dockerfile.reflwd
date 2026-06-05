@@ -1,4 +1,4 @@
-# Multi-stage build of cmd/reflowd for the e2e chaos harness.
+# Multi-stage build of cmd/reflwd for the e2e chaos harness.
 # Stage 1 compiles the binary; stage 2 ships a distroless static image
 # containing only the binary and its CA bundle.
 #
@@ -25,11 +25,11 @@ COPY . .
 # binary suitable for the distroless runtime stage.
 RUN CGO_ENABLED=0 GOOS=linux \
     go build -tags=netgo -trimpath -ldflags="-s -w" \
-        -o /out/reflowd ./cmd/reflowd
+        -o /out/reflwd ./cmd/reflwd
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
-COPY --from=builder /out/reflowd /reflowd
+COPY --from=builder /out/reflwd /reflwd
 
 # Distroless nonroot is UID 65532; /home/nonroot is the canonical
 # writable location for that user. Chaos tests that need persistence
@@ -37,5 +37,5 @@ COPY --from=builder /out/reflowd /reflowd
 # Mounts — REFLOW_STORAGE_DATA_DIR overrides this default anyway.
 ENV REFLOW_STORAGE_DATA_DIR=/home/nonroot/reflow
 
-ENTRYPOINT ["/reflowd"]
+ENTRYPOINT ["/reflwd"]
 CMD ["run"]

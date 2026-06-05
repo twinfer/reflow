@@ -22,7 +22,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/twinfer/reflow/pkg/handler"
+	"github.com/twinfer/reflw/pkg/handler"
 )
 
 func main() {

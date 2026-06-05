@@ -19,15 +19,15 @@ import (
 	connect "connectrpc.com/connect"
 	"google.golang.org/grpc/credentials/tls/certprovider"
 
-	"github.com/twinfer/reflow/internal/engine/handlerclient"
-	"github.com/twinfer/reflow/internal/engine/handlerclient/connectclient"
-	"github.com/twinfer/reflow/pkg/handler"
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	"github.com/twinfer/reflow/pkg/reflow/creds"
-	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
-	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
-	handlerv1 "github.com/twinfer/reflow/proto/handlerv1"
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+	"github.com/twinfer/reflw/internal/engine/handlerclient"
+	"github.com/twinfer/reflw/internal/engine/handlerclient/connectclient"
+	"github.com/twinfer/reflw/pkg/handler"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	"github.com/twinfer/reflw/pkg/reflow/creds"
+	discoveryv1 "github.com/twinfer/reflw/proto/discoveryv1"
+	"github.com/twinfer/reflw/proto/discoveryv1/discoveryv1connect"
+	handlerv1 "github.com/twinfer/reflw/proto/handlerv1"
+	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 )
 
 // TestServer_RoundTrip drives a registered handler end-to-end via

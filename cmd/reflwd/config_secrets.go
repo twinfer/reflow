@@ -15,15 +15,15 @@ import (
 	"gocloud.dev/blob"
 
 	// Always-linked KMS providers — the CLI shares the same Tink
-	// registry as the engine, so any URI scheme accepted by `reflowd
+	// registry as the engine, so any URI scheme accepted by `reflwd
 	// run` is also accepted here.
-	_ "github.com/twinfer/reflow/pkg/kms/awskms"
-	tinkkmsblob "github.com/twinfer/reflow/pkg/kms/blob"
-	_ "github.com/twinfer/reflow/pkg/kms/gcpkms"
+	_ "github.com/twinfer/reflw/pkg/kms/awskms"
+	tinkkmsblob "github.com/twinfer/reflw/pkg/kms/blob"
+	_ "github.com/twinfer/reflw/pkg/kms/gcpkms"
 
-	"github.com/twinfer/reflow/pkg/reflowclient"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/pkg/reflowclient"
+	configv1 "github.com/twinfer/reflw/proto/configv1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // cmdInitKEK creates a fresh BlobKMS KEK blob (boot key + encrypted

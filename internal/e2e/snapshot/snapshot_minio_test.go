@@ -22,8 +22,8 @@ import (
 	"gocloud.dev/gcerrors"
 	_ "gocloud.dev/blob/s3blob"
 
-	"github.com/twinfer/reflow/internal/e2e"
-	enginesnapshot "github.com/twinfer/reflow/internal/engine/snapshot"
+	"github.com/twinfer/reflw/internal/e2e"
+	enginesnapshot "github.com/twinfer/reflw/internal/engine/snapshot"
 )
 
 const (

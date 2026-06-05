@@ -201,7 +201,7 @@ const file_bootstrapv1_bootstrap_proto_rawDesc = "" +
 	"\x10assigned_node_id\x18\x03 \x01(\x04R\x0eassignedNodeId\x12%\n" +
 	"\x0eca_fingerprint\x18\x04 \x01(\tR\rcaFingerprint2`\n" +
 	"\bMeshSign\x12T\n" +
-	"\aSignCSR\x12#.reflow.bootstrap.v1.SignCSRRequest\x1a$.reflow.bootstrap.v1.SignCSRResponseB9Z7github.com/twinfer/reflow/proto/bootstrapv1;bootstrapv1b\x06proto3"
+	"\aSignCSR\x12#.reflow.bootstrap.v1.SignCSRRequest\x1a$.reflow.bootstrap.v1.SignCSRResponseB8Z6github.com/twinfer/reflw/proto/bootstrapv1;bootstrapv1b\x06proto3"
 
 var (
 	file_bootstrapv1_bootstrap_proto_rawDescOnce sync.Once

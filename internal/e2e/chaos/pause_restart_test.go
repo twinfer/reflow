@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/e2e"
+	"github.com/twinfer/reflw/internal/e2e"
 )
 
 // TestChaos_LeaderPauseUnpause freezes the shard-1 leader's cgroup

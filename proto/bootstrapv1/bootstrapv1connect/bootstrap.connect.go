@@ -33,7 +33,7 @@ import (
 	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
-	bootstrapv1 "github.com/twinfer/reflow/proto/bootstrapv1"
+	bootstrapv1 "github.com/twinfer/reflw/proto/bootstrapv1"
 	http "net/http"
 	strings "strings"
 )

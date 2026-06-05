@@ -5,9 +5,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/twinfer/reflow/internal/storage"
-	"github.com/twinfer/reflow/internal/storage/tables"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/storage"
+	"github.com/twinfer/reflw/internal/storage/tables"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // fakeProposer is a test double for engine.RaftProposer. JournalAppended

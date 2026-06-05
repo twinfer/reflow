@@ -20,10 +20,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/twinfer/reflow/pkg/reflow/creds"
-	"github.com/twinfer/reflow/proto/clusterctlv1/clusterctlv1connect"
-	"github.com/twinfer/reflow/proto/configv1/configv1connect"
-	"github.com/twinfer/reflow/proto/ingressv1/ingressv1connect"
+	"github.com/twinfer/reflw/pkg/reflow/creds"
+	"github.com/twinfer/reflw/proto/clusterctlv1/clusterctlv1connect"
+	"github.com/twinfer/reflw/proto/configv1/configv1connect"
+	"github.com/twinfer/reflw/proto/ingressv1/ingressv1connect"
 )
 
 // DialOptions configures Dial. Addr is host:port of the admin endpoint

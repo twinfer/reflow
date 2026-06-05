@@ -9,10 +9,10 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/engine/cluster"
-	"github.com/twinfer/reflow/internal/engine/rebalance"
-	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/engine/cluster"
+	"github.com/twinfer/reflw/internal/engine/rebalance"
+	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // RebalanceAdvise returns the rebalancer's view of the cluster on this

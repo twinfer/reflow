@@ -10,15 +10,15 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/pkg/reflowclient"
-	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
+	"github.com/twinfer/reflw/pkg/reflowclient"
+	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
 )
 
 // cmdTransferLP invokes ClusterCtl/TransferLP to initiate a cross-shard
 // LP transfer. Follows the leader-redirect pattern — the call lands on
 // the metadata leader even if --admin points at a follower.
 //
-//	reflowd cluster transfer-lp --lp=N --to-shard=M [--admin=ADDR]
+//	reflwd cluster transfer-lp --lp=N --to-shard=M [--admin=ADDR]
 func cmdTransferLP(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("transfer-lp", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)
@@ -47,7 +47,7 @@ func cmdTransferLP(ctx context.Context, args []string) error {
 // returned rows as indented JSON. Read-only — any peer can answer
 // (SyncRead against shard 0).
 //
-//	reflowd cluster list-lp-transfers [--admin=ADDR]
+//	reflwd cluster list-lp-transfers [--admin=ADDR]
 func cmdListLPTransfers(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("list-lp-transfers", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)

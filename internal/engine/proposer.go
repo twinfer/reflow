@@ -11,7 +11,7 @@ import (
 	"github.com/lni/dragonboat/v4/client"
 	"google.golang.org/protobuf/proto"
 
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // retryBackoff returns a randomized short sleep used to space out

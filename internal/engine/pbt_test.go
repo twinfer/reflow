@@ -41,13 +41,13 @@ import (
 	"google.golang.org/protobuf/proto"
 	"pgregory.net/rapid"
 
-	"github.com/twinfer/reflow/internal/engine/routing"
-	"github.com/twinfer/reflow/internal/storage"
-	"github.com/twinfer/reflow/internal/storage/keys"
-	"github.com/twinfer/reflow/internal/storage/tables"
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+	"github.com/twinfer/reflw/internal/engine/routing"
+	"github.com/twinfer/reflw/internal/storage"
+	"github.com/twinfer/reflw/internal/storage/keys"
+	"github.com/twinfer/reflw/internal/storage/tables"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 )
 
 const numShards = 2

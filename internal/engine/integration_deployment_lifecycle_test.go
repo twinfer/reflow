@@ -8,11 +8,11 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/config"
-	"github.com/twinfer/reflow/internal/connectserver"
-	"github.com/twinfer/reflow/internal/loadgen"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
-	"github.com/twinfer/reflow/proto/configv1/configv1connect"
+	"github.com/twinfer/reflw/internal/config"
+	"github.com/twinfer/reflw/internal/connectserver"
+	"github.com/twinfer/reflw/internal/loadgen"
+	configv1 "github.com/twinfer/reflw/proto/configv1"
+	"github.com/twinfer/reflw/proto/configv1/configv1connect"
 )
 
 // newDeploymentClient stands up a loopback Connect client against srv's

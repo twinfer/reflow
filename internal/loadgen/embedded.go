@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/config"
-	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/pkg/handler"
+	"github.com/twinfer/reflw/internal/config"
+	"github.com/twinfer/reflw/internal/engine"
+	"github.com/twinfer/reflw/pkg/handler"
 )
 
 // StartEmbeddedHandlers spins up a pkg/handler.NewServer endpoint on a

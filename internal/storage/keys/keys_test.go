@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 func testID(t *testing.T, pk uint64, uuid string) *enginev1.InvocationId {

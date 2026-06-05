@@ -6,8 +6,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/twinfer/iflow/capability"
-	"github.com/twinfer/reflow/pkg/handler"
+	"github.com/twinfer/reflwos/capability"
+	"github.com/twinfer/reflw/pkg/handler"
 )
 
 func capRegistryWith(ns string, h capability.Handler) *capability.Registry {

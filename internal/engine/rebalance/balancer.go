@@ -10,9 +10,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/twinfer/reflow/internal/engine/cluster"
-	"github.com/twinfer/reflow/internal/observability"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/engine/cluster"
+	"github.com/twinfer/reflw/internal/observability"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // HostReader is the subset of *engine.Host the balancer reads through.

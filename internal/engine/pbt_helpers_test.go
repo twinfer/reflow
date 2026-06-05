@@ -8,7 +8,7 @@ import (
 	"encoding/hex"
 	"sort"
 
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // idHex is the canonical key for InvocationId in model maps. Using hex of the

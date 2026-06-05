@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/twinfer/reflow/internal/storage/keys"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/storage/keys"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 func TestRouting_PartitionKeyDeterministic(t *testing.T) {

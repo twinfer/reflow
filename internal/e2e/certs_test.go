@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/pkg/reflow/creds"
+	"github.com/twinfer/reflw/pkg/reflow/creds"
 )
 
 // TestMeshCerts_OperatorMTLSHandshake mints the cluster PKI and drives a real

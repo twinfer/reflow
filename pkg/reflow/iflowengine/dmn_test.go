@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/twinfer/iflow/dmn"
+	"github.com/twinfer/reflwos/dmn"
 )
 
 // Start -> BusinessRuleTask(name="discount") -> End. The task name is the

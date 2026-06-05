@@ -11,7 +11,7 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
 
-	"github.com/twinfer/reflow/internal/storage"
+	"github.com/twinfer/reflw/internal/storage"
 )
 
 // runConformanceSuite exercises both the MemStore and a Pebble-backed Store

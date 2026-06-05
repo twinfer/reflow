@@ -9,15 +9,15 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/config"
-	"github.com/twinfer/reflow/internal/connectserver"
-	"github.com/twinfer/reflow/pkg/ingressclient"
-	"github.com/twinfer/reflow/pkg/reflow"
-	"github.com/twinfer/reflow/pkg/reflow/iflowengine"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
-	"github.com/twinfer/reflow/proto/configv1/configv1connect"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
-	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
+	"github.com/twinfer/reflw/internal/config"
+	"github.com/twinfer/reflw/internal/connectserver"
+	"github.com/twinfer/reflw/pkg/ingressclient"
+	"github.com/twinfer/reflw/pkg/reflow"
+	"github.com/twinfer/reflw/pkg/reflow/iflowengine"
+	configv1 "github.com/twinfer/reflw/proto/configv1"
+	"github.com/twinfer/reflw/proto/configv1/configv1connect"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
 // e2eStartEndBPMN is a trivial executable process (start → end) carrying a

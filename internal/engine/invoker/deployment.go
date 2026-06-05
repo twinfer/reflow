@@ -3,7 +3,7 @@ package invoker
 import (
 	"context"
 
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // DeploymentResolver returns the DeploymentRecord for a stamped

@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/twinfer/iflow/timer"
+	"github.com/twinfer/reflwos/timer"
 )
 
 // historyTTLms parses a Camunda historyTimeToLive value into milliseconds: an

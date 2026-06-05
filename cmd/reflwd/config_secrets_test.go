@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	tinkkmsblob "github.com/twinfer/reflow/pkg/kms/blob"
+	tinkkmsblob "github.com/twinfer/reflw/pkg/kms/blob"
 )
 
 // captureStdout returns whatever fn wrote to os.Stdout.

@@ -12751,7 +12751,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x19LP_TRANSFER_PHASE_FLIPPED\x10\x04\x12\x1d\n" +
 	"\x19LP_TRANSFER_PHASE_CLEANED\x10\x05\x12\x1e\n" +
 	"\x1aLP_TRANSFER_PHASE_ABORTING\x10\x06\x12\x1d\n" +
-	"\x19LP_TRANSFER_PHASE_ABORTED\x10\aB3Z1github.com/twinfer/reflow/proto/enginev1;enginev1b\x06proto3"
+	"\x19LP_TRANSFER_PHASE_ABORTED\x10\aB2Z0github.com/twinfer/reflw/proto/enginev1;enginev1b\x06proto3"
 
 var (
 	file_enginev1_engine_proto_rawDescOnce sync.Once

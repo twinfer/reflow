@@ -8,8 +8,8 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/pkg/reflowclient"
-	ingressv1 "github.com/twinfer/reflow/proto/ingressv1"
+	"github.com/twinfer/reflw/pkg/reflowclient"
+	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
 // cmdPurgeInvocation immediately deletes a Completed invocation's durable

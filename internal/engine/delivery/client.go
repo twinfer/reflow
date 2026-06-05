@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	deliveryv1 "github.com/twinfer/reflow/proto/deliveryv1"
-	"github.com/twinfer/reflow/proto/deliveryv1/deliveryv1connect"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	deliveryv1 "github.com/twinfer/reflw/proto/deliveryv1"
+	"github.com/twinfer/reflw/proto/deliveryv1/deliveryv1connect"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // ErrNotLeader is returned by Client.Send when the receiver replied with

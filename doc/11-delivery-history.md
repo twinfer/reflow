@@ -17,7 +17,7 @@ This document chronicles the historical progress and development phases of the R
 - Self-propose + ingress-propose pathways (RaftProposer).
 - Leader-only TimerService with restart rebuild.
 - Snapshotter with close → swap → reopen lifecycle.
-- Prometheus metrics + structured logging + `cmd/reflowd` single binary.
+- Prometheus metrics + structured logging + `cmd/reflwd` single binary.
 - Integration tests: replay across restart, dedup blocking, timer survives
   restart.
 
@@ -26,7 +26,7 @@ This document chronicles the historical progress and development phases of the R
 ## In-process Go SDK + Invoker
 
 The first-class developer experience: write a Go function, register it
-with `reflowd`, have it become a durable goroutine.
+with `reflwd`, have it become a durable goroutine.
 
 - **`handler.Context`** Go API in `pkg/handler/` (the durable-execution
   handle exposed to handler authors) and the handler-side Connect
@@ -100,7 +100,7 @@ membership, partition table, assignment epoch; founder/joiner bootstrap via
 Dragonboat gossip (memberlist/SWIM) drives K-of-N liveness; the metadata
 leader's `metadataRebalancer.failureLoop` turns missed gossip observations
 into `EvictNode` proposals to shard 0. The cluster admin CLI lives in
-`reflowd cluster` (`add-node`, `remove-node`, `nodes list`,
+`reflwd cluster` (`add-node`, `remove-node`, `nodes list`,
 `partitions list`, `snapshot {create,list,delete}`).
 `SnapshotRepository` filesystem driver wired. Admin Connect surface is
 two services on one mTLS-protected listener: `reflow.clusterctl.v1.ClusterCtl`
@@ -138,7 +138,7 @@ anonymous. See §6.13.
   partition assignment epoch.
 - **Static peer bootstrap.** `--bootstrap-cluster` for the founder,
   `--join=<addr>` for joiners. No discovery service required.
-- **`reflowd cluster` admin subcommands** for `add-node`, `remove-node`,
+- **`reflwd cluster` admin subcommands** for `add-node`, `remove-node`,
   `partitions list`, `partition move`.
 - **Multi-node partition shards** with dragonboat membership operations
   (`RequestAddNonVoting` → catch-up → `RequestAddReplica` →
@@ -221,7 +221,7 @@ KEK delivered through Tink's `KMSClient` registry. See §6.14.
   dispatcher goroutines (per-source `sync.WaitGroup` for ≤5s graceful
   drain on remove); webhook `Manager` reconciles a path→source map
   via `atomic.Pointer` swap.
-- **kubectl-shaped CLI.** `reflowd config {eventsources,webhooks}
+- **kubectl-shaped CLI.** `reflwd config {eventsources,webhooks}
   {list,delete}` plus top-level `config apply -f <file>` and
   `config export [--kind=…]`. Multi-doc YAML with
   `kind`/`metadata.name`/`spec`. `sigs.k8s.io/yaml` for
@@ -310,7 +310,7 @@ OIDC client secrets tomorrow) references the secret.
   Tink's `monitoring.RegisterMonitoringClient` lives in
   `tink-go/v2/internal/internalregistry` (blocked from external
   import in v2.6).
-- **`reflowd config {init-kek, create-secret, delete-secret,
+- **`reflwd config {init-kek, create-secret, delete-secret,
   list-secrets, decrypt-secret, upsert-webhook}`.** `init-kek`
   generates the keyset + boot key at a `gocloud.dev/blob` URI.
   `create-secret` reads plaintext from stdin / `--input`, encrypts
@@ -373,7 +373,7 @@ full design.
   `off` (default), `advisory` (observes + emits metrics + logs
   `would_transfer`, never proposes), `auto` (proposes
   `Command_InitiateLPTransfer` — the same path
-  `reflowd cluster transfer-lp` takes — so autonomous transfers
+  `reflwd cluster transfer-lp` takes — so autonomous transfers
   appear in `ListLPTransfers` with no extra plumbing). Triggers in
   PR 5.0: membership change + operator-requested drain. Drained
   shards live in shard 0's new `RebalanceDrainTable`
@@ -383,8 +383,8 @@ full design.
   (`len(routing.Diff(current, desired)) / total_LPs`); hysteresis
   engage 15% / disengage 8%; defaults are conservative (1 concurrent
   transfer, 60s cooldown). Eight new metrics under
-  `reflow_rebalance_*`. CLI: `reflowd cluster rebalance-advise`
-  (read-only) + `reflowd cluster rebalance-drain --shard=N [--stop]`.
+  `reflow_rebalance_*`. CLI: `reflwd cluster rebalance-advise`
+  (read-only) + `reflwd cluster rebalance-drain --shard=N [--stop]`.
 
 **Deferred to PR 5.1+:** capacity circuit breakers (Pebble L0,
 write-amp — should *gate destinations*, not *trigger* moves),
@@ -403,7 +403,7 @@ wire SST upload RPC + dest Ingest end-to-end`.)
   `BlobRepository` over `gocloud.dev/blob` covers S3, GCS, Azure Blob,
   filesystem, and in-memory. `.meta.json` sidecar per archive. Count,
   age, and GFS tiered retention via a per-shard reaper goroutine.
-  Admin `DeleteSnapshot` RPC + `reflowd cluster snapshot delete` CLI.
+  Admin `DeleteSnapshot` RPC + `reflwd cluster snapshot delete` CLI.
   Server-side encryption flows through gocloud URL parameters. Restore
   RPC and DR/migration runbooks remain future work. See §6.12.
 - Pebble snapshot tuning (compaction, log retention, checkpoint cadence).
@@ -448,7 +448,7 @@ entry records their removal.
 - **Batteries removed.** Event sources, webhooks, OIDC ingress, quota,
   encstore, audit, and the old logical-tenant model are gone — no proto
   service, no record type, no package. The offline CA path went with
-  them: the `reflowd pki` subcommand and `internal/pki` package were
+  them: the `reflwd pki` subcommand and `internal/pki` package were
   deleted (in-cluster issuance via the `MeshSign` / `Config` services
   is the only path now). Live proto services are exactly: `ClusterCtl`,
   `Config`, `Delivery`, `DiscoveryService`, `HandlerService`, `Ingress`,
@@ -463,6 +463,6 @@ entry records their removal.
   just that band's contiguous LP prefix, so existing LP machinery
   (transfer, dedup, range-delete) isolates tenants for free. Tenant
   identity is a verified `tenant/<n>` mTLS leaf, issued via
-  `reflowd config issue-tenant` (CSR with `CN=tenant/<id>` →
+  `reflwd config issue-tenant` (CSR with `CN=tenant/<id>` →
   `Config.IssueTenant`); Cedar enforces tenant isolation on the ingress
   data plane.

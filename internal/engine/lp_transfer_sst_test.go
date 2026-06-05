@@ -11,10 +11,10 @@ import (
 	"slices"
 	"testing"
 
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 
-	"github.com/twinfer/reflow/internal/storage"
-	"github.com/twinfer/reflow/internal/storage/keys"
+	"github.com/twinfer/reflw/internal/storage"
+	"github.com/twinfer/reflw/internal/storage/keys"
 )
 
 // TestBuildLPSSTs_EmptyLP confirms that an LP with no rows produces

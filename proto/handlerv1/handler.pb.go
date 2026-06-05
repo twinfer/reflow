@@ -27,7 +27,7 @@
 package handlerv1
 
 import (
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -144,7 +144,7 @@ const file_handlerv1_handler_proto_rawDesc = "" +
 	"\x0eInvokeResponse\x121\n" +
 	"\x06frames\x18\x01 \x03(\v2\x19.reflow.protocol.v1.FrameR\x06frames2_\n" +
 	"\x0eHandlerService\x12M\n" +
-	"\x06Invoke\x12 .reflow.handler.v1.InvokeRequest\x1a!.reflow.handler.v1.InvokeResponseB5Z3github.com/twinfer/reflow/proto/handlerv1;handlerv1b\x06proto3"
+	"\x06Invoke\x12 .reflow.handler.v1.InvokeRequest\x1a!.reflow.handler.v1.InvokeResponseB4Z2github.com/twinfer/reflw/proto/handlerv1;handlerv1b\x06proto3"
 
 var (
 	file_handlerv1_handler_proto_rawDescOnce sync.Once

@@ -10,9 +10,9 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/connectserver"
-	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/proto/ingressv1/ingressv1connect"
+	"github.com/twinfer/reflw/internal/connectserver"
+	"github.com/twinfer/reflw/internal/engine"
+	"github.com/twinfer/reflw/proto/ingressv1/ingressv1connect"
 )
 
 // Config is the minimum the ingress runtime needs. Mirrors the public

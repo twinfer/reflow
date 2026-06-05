@@ -23,7 +23,7 @@ package reflow.handler.v1;
 
 import "protocolv1/protocol.proto";
 
-option go_package = "github.com/twinfer/reflow/proto/handlerv1;handlerv1";
+option go_package = "github.com/twinfer/reflw/proto/handlerv1;handlerv1";
 
 service HandlerService {
   // Invoke runs one full invocation session. InvokeRequest.frames is the

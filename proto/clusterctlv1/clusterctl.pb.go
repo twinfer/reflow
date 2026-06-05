@@ -37,7 +37,7 @@
 package clusterctlv1
 
 import (
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -1595,7 +1595,7 @@ const file_clusterctlv1_clusterctl_proto_rawDesc = "" +
 	"TransferLP\x12'.reflow.clusterctl.v1.TransferLPRequest\x1a(.reflow.clusterctl.v1.TransferLPResponse\x12n\n" +
 	"\x0fListLPTransfers\x12,.reflow.clusterctl.v1.ListLPTransfersRequest\x1a-.reflow.clusterctl.v1.ListLPTransfersResponse\x12n\n" +
 	"\x0fRebalanceAdvise\x12,.reflow.clusterctl.v1.RebalanceAdviseRequest\x1a-.reflow.clusterctl.v1.RebalanceAdviseResponse\x12k\n" +
-	"\x0eRebalanceDrain\x12+.reflow.clusterctl.v1.RebalanceDrainRequest\x1a,.reflow.clusterctl.v1.RebalanceDrainResponseB;Z9github.com/twinfer/reflow/proto/clusterctlv1;clusterctlv1b\x06proto3"
+	"\x0eRebalanceDrain\x12+.reflow.clusterctl.v1.RebalanceDrainRequest\x1a,.reflow.clusterctl.v1.RebalanceDrainResponseB:Z8github.com/twinfer/reflw/proto/clusterctlv1;clusterctlv1b\x06proto3"
 
 var (
 	file_clusterctlv1_clusterctl_proto_rawDescOnce sync.Once

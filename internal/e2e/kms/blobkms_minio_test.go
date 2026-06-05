@@ -8,9 +8,9 @@ import (
 
 	"github.com/tink-crypto/tink-go/v2/core/registry"
 
-	"github.com/twinfer/reflow/internal/secretstore"
-	tinkkmsblob "github.com/twinfer/reflow/pkg/kms/blob"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/secretstore"
+	tinkkmsblob "github.com/twinfer/reflw/pkg/kms/blob"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // TestBlobKMS_Minio_RoundTrip exercises the production BlobKMS path

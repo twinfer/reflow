@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/twinfer/reflow/internal/secretstore"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/secretstore"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 func TestLookupForCASigning_HitAndMissCounters(t *testing.T) {

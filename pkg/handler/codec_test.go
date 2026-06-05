@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/twinfer/reflow/pkg/handler"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/pkg/handler"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 type sample struct {

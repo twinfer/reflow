@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflow/internal/auth"
-	"github.com/twinfer/reflow/internal/authz"
-	"github.com/twinfer/reflow/internal/config"
-	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/internal/ingress"
-	"github.com/twinfer/reflow/pkg/handler"
+	"github.com/twinfer/reflw/internal/auth"
+	"github.com/twinfer/reflw/internal/authz"
+	"github.com/twinfer/reflw/internal/config"
+	"github.com/twinfer/reflw/internal/engine"
+	"github.com/twinfer/reflw/internal/ingress"
+	"github.com/twinfer/reflw/pkg/handler"
 )
 
 // testIngressMiddleware returns the production authn middleware (no OIDC),

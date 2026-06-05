@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/twinfer/reflow/internal/engine/invoker"
-	"github.com/twinfer/reflow/internal/observability"
-	"github.com/twinfer/reflow/internal/storage/tables"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/engine/invoker"
+	"github.com/twinfer/reflw/internal/observability"
+	"github.com/twinfer/reflw/internal/storage/tables"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // PartitionRunner ties together the per-partition leader-only services: the

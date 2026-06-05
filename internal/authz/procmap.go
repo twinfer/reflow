@@ -6,10 +6,10 @@ import (
 	"github.com/cedar-policy/cedar-go"
 	"github.com/cedar-policy/cedar-go/types"
 
-	clusterctlv1connect "github.com/twinfer/reflow/proto/clusterctlv1/clusterctlv1connect"
-	configv1connect "github.com/twinfer/reflow/proto/configv1/configv1connect"
-	deliveryv1connect "github.com/twinfer/reflow/proto/deliveryv1/deliveryv1connect"
-	ingressv1connect "github.com/twinfer/reflow/proto/ingressv1/ingressv1connect"
+	clusterctlv1connect "github.com/twinfer/reflw/proto/clusterctlv1/clusterctlv1connect"
+	configv1connect "github.com/twinfer/reflw/proto/configv1/configv1connect"
+	deliveryv1connect "github.com/twinfer/reflw/proto/deliveryv1/deliveryv1connect"
+	ingressv1connect "github.com/twinfer/reflw/proto/ingressv1/ingressv1connect"
 )
 
 // Cedar action-group ids — the administrative planes of SAD §6.15.1. A policy

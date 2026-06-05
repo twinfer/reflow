@@ -9,10 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/twinfer/iflow/bpmn"
-	"github.com/twinfer/iflow/cmmn"
-	"github.com/twinfer/iflow/dmn"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflwos/bpmn"
+	"github.com/twinfer/reflwos/cmmn"
+	"github.com/twinfer/reflwos/dmn"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // modelReconcileInterval is the ticker backstop for the TableResolver; the

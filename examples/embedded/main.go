@@ -56,9 +56,9 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/twinfer/reflow/pkg/handler"
-	"github.com/twinfer/reflow/pkg/reflow"
-	"github.com/twinfer/reflow/pkg/webhook"
+	"github.com/twinfer/reflw/pkg/handler"
+	"github.com/twinfer/reflw/pkg/reflow"
+	"github.com/twinfer/reflw/pkg/webhook"
 )
 
 func main() {

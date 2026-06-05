@@ -10,8 +10,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/e2e"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/e2e"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // TestSmoke_ThreeNodeClusterInvocation is the PR-3 capstone: it brings

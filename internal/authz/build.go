@@ -6,7 +6,7 @@ import (
 	"github.com/cedar-policy/cedar-go"
 	"github.com/cedar-policy/cedar-go/types"
 
-	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflw/internal/auth"
 )
 
 // Cedar entity type names — must match schema.cedar verbatim.

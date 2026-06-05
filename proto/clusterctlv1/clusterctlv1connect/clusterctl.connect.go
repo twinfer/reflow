@@ -38,7 +38,7 @@ import (
 	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
-	clusterctlv1 "github.com/twinfer/reflow/proto/clusterctlv1"
+	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
 	http "net/http"
 	strings "strings"
 )

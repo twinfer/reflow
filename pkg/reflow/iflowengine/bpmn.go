@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/twinfer/iflow/bpmn"
-	"github.com/twinfer/reflow/internal/engine/invoker"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflwos/bpmn"
+	"github.com/twinfer/reflw/internal/engine/invoker"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // escalationPrefix tags a child ProcessFailed cause that originated from an

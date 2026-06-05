@@ -21,8 +21,8 @@ import (
 	"hash/fnv"
 	"sync/atomic"
 
-	"github.com/twinfer/reflow/internal/storage/keys"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/storage/keys"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // Partitioner maps a logical key tuple to a partition shard id.

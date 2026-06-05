@@ -5,9 +5,9 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
-	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+	discoveryv1 "github.com/twinfer/reflw/proto/discoveryv1"
+	"github.com/twinfer/reflw/proto/discoveryv1/discoveryv1connect"
+	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 )
 
 // discoveryService implements discoveryv1connect.DiscoveryServiceHandler.

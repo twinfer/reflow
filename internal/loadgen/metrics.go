@@ -8,8 +8,8 @@ import (
 	"github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/cockroachdb/pebble/v2"
 
-	"github.com/twinfer/reflow/internal/engine"
-	"github.com/twinfer/reflow/internal/storage"
+	"github.com/twinfer/reflw/internal/engine"
+	"github.com/twinfer/reflw/internal/storage"
 )
 
 // Sampler captures end-to-end invocation latency and periodic

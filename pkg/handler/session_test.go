@@ -4,8 +4,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/twinfer/reflow/pkg/handler/wire"
-	protocolv1 "github.com/twinfer/reflow/proto/protocolv1"
+	"github.com/twinfer/reflw/pkg/handler/wire"
+	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 )
 
 // frameSourceFromSlice replays a fixed slice of frames in order, then

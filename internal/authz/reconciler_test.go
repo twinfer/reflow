@@ -7,7 +7,7 @@ import (
 
 	"github.com/cedar-policy/cedar-go"
 
-	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflw/internal/auth"
 )
 
 // testLog discards reconcile-loop warnings so failing-path tests don't spam

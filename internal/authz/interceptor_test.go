@@ -7,7 +7,7 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/auth"
+	"github.com/twinfer/reflw/internal/auth"
 )
 
 // TestInterceptor_Authorize covers the enforcement decision + the

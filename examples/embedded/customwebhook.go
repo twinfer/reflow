@@ -9,7 +9,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/twinfer/reflow/pkg/webhook"
+	"github.com/twinfer/reflw/pkg/webhook"
 )
 
 // acmeVerifier demonstrates supporting a vendor Reflow ships no built-in

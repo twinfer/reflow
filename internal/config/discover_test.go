@@ -11,8 +11,8 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	discoveryv1 "github.com/twinfer/reflow/proto/discoveryv1"
-	"github.com/twinfer/reflow/proto/discoveryv1/discoveryv1connect"
+	discoveryv1 "github.com/twinfer/reflw/proto/discoveryv1"
+	"github.com/twinfer/reflw/proto/discoveryv1/discoveryv1connect"
 )
 
 // stubSigner records calls and returns a canned token.

@@ -13,10 +13,10 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflow/internal/certmgr"
-	"github.com/twinfer/reflow/pkg/reflowclient"
-	configv1 "github.com/twinfer/reflow/proto/configv1"
-	enginev1 "github.com/twinfer/reflow/proto/enginev1"
+	"github.com/twinfer/reflw/internal/certmgr"
+	"github.com/twinfer/reflw/pkg/reflowclient"
+	configv1 "github.com/twinfer/reflw/proto/configv1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // cmdCAInit generates a fresh cluster CA, encrypts the signing key
@@ -156,10 +156,10 @@ func cmdCADelete(ctx context.Context, args []string) error {
 	})
 }
 
-// dispatchCA routes "reflowd config ca <subcmd>" to the right handler.
+// dispatchCA routes "reflwd config ca <subcmd>" to the right handler.
 func dispatchCA(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: reflowd config ca {init|list|delete} [flags]")
+		return fmt.Errorf("usage: reflwd config ca {init|list|delete} [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -171,7 +171,7 @@ func dispatchCA(ctx context.Context, args []string) error {
 	case "delete":
 		return cmdCADelete(ctx, rest)
 	default:
-		return fmt.Errorf("reflowd config ca: unknown subcommand %q", sub)
+		return fmt.Errorf("reflwd config ca: unknown subcommand %q", sub)
 	}
 }
 

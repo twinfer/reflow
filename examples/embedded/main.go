@@ -1,7 +1,7 @@
 // embedded is the canonical "single-binary" example: one main() runs both
-// the reflow engine and the Go handlers in the same process, with NO HTTP
+// the reflw engine and the Go handlers in the same process, with NO HTTP
 // hop between them. The handlers are registered in a handler.Registry handed
-// to reflow.Run via Config.Handlers.InProcess; the engine dispatches to them
+// to reflw.Run via Config.Handlers.InProcess; the engine dispatches to them
 // directly over an in-process transport.
 //
 // Architecture:
@@ -12,7 +12,7 @@
 //	│  │ handler.Registry   │ ◄── in-process call ───┐ │
 //	│  └────────────────────┘                        │ │
 //	│  ┌────────────────────┐                        │ │
-//	│  │ reflow.Run engine  │ ── Handlers.InProcess ──┘ │
+//	│  │ reflw.Run engine  │ ── Handlers.InProcess ──┘ │
 //	│  │  + ingress HTTP    │                           │
 //	│  └────────────────────┘                           │
 //	└────────────────────────────────────────────────┘
@@ -39,11 +39,11 @@
 //
 // customwebhook.go adds a CUSTOM verifier ("acme") for a vendor Reflow
 // ships nothing for — implement webhook.Verifier, RegisterVerifier it
-// before reflow.Run, and name it in cfg.Webhooks.
+// before reflw.Run, and name it in cfg.Webhooks.
 //
 // To run handlers as a separate process instead (the remote model), host a
 // handler.NewServer on a listener and register its URL via
-// Config.Handlers.Endpoints. cmd/reflowd is the production engine binary.
+// Config.Handlers.Endpoints. cmd/reflwd is the production engine binary.
 package main
 
 import (
@@ -57,7 +57,7 @@ import (
 	"syscall"
 
 	"github.com/twinfer/reflw/pkg/handler"
-	"github.com/twinfer/reflw/pkg/reflow"
+	"github.com/twinfer/reflw/pkg/reflw"
 	"github.com/twinfer/reflw/pkg/webhook"
 )
 
@@ -93,7 +93,7 @@ func main() {
 	}
 
 	// Register a CUSTOM webhook verifier for a vendor Reflow ships no
-	// built-in for (see customwebhook.go). Must happen before reflow.Run,
+	// built-in for (see customwebhook.go). Must happen before reflw.Run,
 	// which validates cfg.Webhooks against the verifier registry.
 	webhook.RegisterVerifier(acmeVerifier{})
 
@@ -101,26 +101,26 @@ func main() {
 	// registers the Registry as a single inproc:// deployment at
 	// metadata-leader bootstrap and dispatches to it directly — no HTTP,
 	// no second listener.
-	dataDir, err := os.MkdirTemp("", "reflow-embedded-")
+	dataDir, err := os.MkdirTemp("", "reflw-embedded-")
 	if err != nil {
 		log.Error("mkdir tmp", "err", err)
 		os.Exit(1)
 	}
 	defer os.RemoveAll(dataDir)
 
-	cfg := reflow.Config{
-		Node: reflow.NodeConfig{
+	cfg := reflw.Config{
+		Node: reflw.NodeConfig{
 			ID:       1,
 			RaftAddr: "127.0.0.1:5410",
 		},
-		Storage: reflow.StorageConfig{
+		Storage: reflw.StorageConfig{
 			DataDir: filepath.Join(dataDir, "node1"),
 		},
-		Ingress: reflow.IngressConfig{
+		Ingress: reflw.IngressConfig{
 			Addr: "127.0.0.1:8080",
 		},
-		Metrics: reflow.MetricsConfig{Disabled: true},
-		Handlers: reflow.HandlersConfig{
+		Metrics: reflw.MetricsConfig{Disabled: true},
+		Handlers: reflw.HandlersConfig{
 			InProcess: reg,
 		},
 		// Mount a Stripe webhook at POST /webhooks/stripe. The route
@@ -132,7 +132,7 @@ func main() {
 		// NOTE: "stripe-signing" must exist in the secret store (configure
 		// cfg.KMS + a secret of that name); until it resolves the route
 		// answers 503. The greet/echo handlers above work without it.
-		Webhooks: []reflow.WebhookConfig{{
+		Webhooks: []reflw.WebhookConfig{{
 			Provider:   "stripe",
 			Path:       "/webhooks/stripe",
 			SecretName: "stripe-signing",
@@ -153,9 +153,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	host, err := reflow.Run(ctx, cfg)
+	host, err := reflw.Run(ctx, cfg)
 	if err != nil {
-		log.Error("reflow.Run", "err", err)
+		log.Error("reflw.Run", "err", err)
 		os.Exit(1)
 	}
 	log.Info("embedded: engine + in-process handlers live; submit via POST http://127.0.0.1:8080/invocation/Greeter/hello")

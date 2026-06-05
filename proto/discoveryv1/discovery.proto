@@ -11,14 +11,14 @@
 // vocabulary is owned by the session protocol.
 syntax = "proto3";
 
-package reflow.discovery.v1;
+package reflw.discovery.v1;
 
 import "protocolv1/protocol.proto";
 
 option go_package = "github.com/twinfer/reflw/proto/discoveryv1;discoveryv1";
 
 // DiscoveryService is the engine-to-handler capability probe. Served by
-// every reflow handler deployment over Connect alongside HandlerService.
+// every reflw handler deployment over Connect alongside HandlerService.
 service DiscoveryService {
   // Discover returns the (service, kind, handler_names) tuples this
   // deployment exposes. The engine calls this once at
@@ -50,6 +50,6 @@ message DiscoveryResponse {
 // invocation time.
 message DiscoveredHandler {
   string service = 1;
-  reflow.protocol.v1.Kind kind = 2;
+  reflw.protocol.v1.Kind kind = 2;
   repeated string handler_names = 3;
 }

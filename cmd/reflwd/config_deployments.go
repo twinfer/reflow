@@ -10,7 +10,7 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflw/pkg/reflowclient"
+	"github.com/twinfer/reflw/pkg/reflwclient"
 	configv1 "github.com/twinfer/reflw/proto/configv1"
 )
 
@@ -25,7 +25,7 @@ func cmdListDeployments(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
+	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
 		resp, err := cli.Config.ListDeployments(ctx, connect.NewRequest(&configv1.ListDeploymentsRequest{}))
 		if err != nil {
 			return err
@@ -53,7 +53,7 @@ func cmdDescribeDeployment(ctx context.Context, args []string) error {
 	if *id == "" {
 		return errors.New("--id is required")
 	}
-	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
+	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
 		resp, err := cli.Config.DescribeDeployment(ctx, connect.NewRequest(&configv1.DescribeDeploymentRequest{
 			DeploymentId: *id,
 		}))
@@ -88,7 +88,7 @@ func cmdDeleteDeployment(ctx context.Context, args []string) error {
 	if !*force {
 		return errors.New("--force is required (delete may break in-flight invocations)")
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
 		list, err := cli.Config.ListDeployments(rctx, connect.NewRequest(&configv1.ListDeploymentsRequest{}))
 		if err != nil {
 			return fmt.Errorf("read revision: %w", err)

@@ -25,7 +25,7 @@ import (
 // Historically skipped (subprocess loadnode lacked handler
 // registration); now live because handler registration runs through
 // the same Config admin RPC the production cluster uses, and the
-// handler sidecar survives the reflowd kill.
+// handler sidecar survives the reflwd kill.
 func TestChaos_LeaderSIGKILL(t *testing.T) {
 	const (
 		killGrace   = 1 * time.Second

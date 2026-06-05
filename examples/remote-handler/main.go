@@ -1,8 +1,8 @@
-// remote-handler is the canonical minimal example of a Go reflow
+// remote-handler is the canonical minimal example of a Go reflw
 // handler running out-of-process — i.e. dispatched over the wire by
-// the reflow engine rather than embedded in the engine binary.
+// the reflw engine rather than embedded in the engine binary.
 //
-// Build it, point a reflow.Config at the resulting URL via
+// Build it, point a reflw.Config at the resulting URL via
 // Config.Handlers.Endpoints, and the engine will discover its handlers
 // over GET /discover and route invocations to them over raw HTTP/2.
 //

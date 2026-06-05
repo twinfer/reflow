@@ -8,7 +8,7 @@
 // tag allocations below.
 syntax = "proto3";
 
-package reflow.engine.v1;
+package reflw.engine.v1;
 
 option go_package = "github.com/twinfer/reflw/proto/enginev1;enginev1";
 
@@ -165,7 +165,7 @@ message Command {
     UpsertSecret upsert_secret = 25;
     DeleteSecret delete_secret = 26;
     // UpsertModel / DeleteModel carry shard-0 ModelTable rows — BPMN/CMMN
-    // model definitions (model_ref + inlined XML) the per-node iflowengine
+    // model definitions (model_ref + inlined XML) the per-node processengine
     // TableResolver reconciles into parsed graphs + resolved
     // historyTimeToLive. Same CAS + notifier semantics as the secret pair;
     // the XML is inlined (models are KB-scale deployment artifacts, like a
@@ -205,9 +205,9 @@ message Command {
     CommitLPTransfer commit_lp_transfer = 35;
     FinishLPTransfer finish_lp_transfer = 36;
     AbortLPTransfer abort_lp_transfer = 37;
-    // Process-execution commands (iflow BPMN/CMMN durable backend). The
-    // partition leader's procSession runs the iflow engine on an instance
-    // and proposes ProcessAdvanced (new state blob + reflow-native
+    // Process-execution commands (reflwos BPMN/CMMN durable backend). The
+    // partition leader's procSession runs the reflwos engine on an instance
+    // and proposes ProcessAdvanced (new state blob + reflw-native
     // instructions); ProcessEvent feeds an instance one step — the start
     // event plus every service-task / timer / signal completion that wakes
     // it. Accepted only by shardID >= 1.
@@ -238,7 +238,7 @@ message Command {
     // autonomous rebalancer subtracts drained shards from the planner's
     // input set, naturally moving every LP owned by the drained shard
     // off via the same Command_InitiateLPTransfer path the manual
-    // `reflowd cluster transfer-lp` CLI uses. Honors
+    // `reflwd cluster transfer-lp` CLI uses. Honors
     // Envelope.precondition.if_table_revision_eq when set; bumps
     // RevisionTableRebalanceDrain on apply. Accepted only by shardID=0.
     SetRebalanceDrain set_rebalance_drain = 39;
@@ -320,7 +320,7 @@ message InvokeCommand {
 // ParentLink references the parent that spawned a callee. Exactly one case is
 // set. parent_id + call_index: an invocation parent (ctx.Call) — the callee's
 // JECallResult lands on the parent's journal at call_index + 1. process_parent:
-// an iflow process instance that dispatched a service task or child activity —
+// an reflwos process instance that dispatched a service task or child activity —
 // the callee's terminal apply delivers a Command_ProcessEvent back to the
 // instance instead (see applyTerminalCompletion / onProcessAdvanced terminal).
 message ParentLink {
@@ -1103,12 +1103,12 @@ message SignalSend {
   bytes payload = 3;
 }
 
-// ── Process-execution payloads (iflow BPMN/CMMN durable backend) ──
+// ── Process-execution payloads (reflwos BPMN/CMMN durable backend) ──
 //
-// One iflow process/case instance maps to a specialized virtual object:
+// One reflwos process/case instance maps to a specialized virtual object:
 // (service, instance_key) banded by tenant, state in ProcessInstanceTable.
-// Only the leader-side procSession links iflow; everything that crosses Raft
-// is reflow-native, so the apply arm (every replica) stays iflow-agnostic.
+// Only the leader-side procSession links reflwos; everything that crosses Raft
+// is reflw-native, so the apply arm (every replica) stays reflwos-agnostic.
 
 // ProcessEvent drives one instance one step. The start event carries
 // model_ref + kind (apply creates the record); later events leave them empty.
@@ -1126,11 +1126,11 @@ message ProcessEvent {
   ParentLink parent_link = 8;   // start only, when this instance is a child
 }
 
-// ProcessEventPayload is the per-turn input. `external` carries an opaque iflow
-// EngineEvent (start vars / an externally-injected message) — reflow never
-// parses it; only procSession decodes it. The other arms are reflow-native
+// ProcessEventPayload is the per-turn input. `external` carries an opaque reflwos
+// EngineEvent (start vars / an externally-injected message) — reflw never
+// parses it; only procSession decodes it. The other arms are reflw-native
 // feedback the apply path synthesizes when a dispatched task / timer / child
-// completes; procSession translates them into the iflow EngineEvent the engine
+// completes; procSession translates them into the reflwos EngineEvent the engine
 // expects. Reused by ProcessInboxEntry so the inbox stores a turn verbatim.
 message ProcessEventPayload {
   oneof of {
@@ -1174,7 +1174,7 @@ message ProcessChildCompleted {
 // ProcessMessageReceived feeds a correlated inbound message back to a parked
 // node — a BPMN message/signal catch that emitted SignalSubscribe. The read
 // path (onDeliverProcessMessage) stamps node_id from the matched
-// MessageSubscription; procSession turns it into the iflow resume event
+// MessageSubscription; procSession turns it into the reflwos resume event
 // (bpmn.SignalReceived{NodeID, Payload}). payload is the message body, a JSON
 // object of variables merged into the instance.
 message ProcessMessageReceived {
@@ -1205,9 +1205,9 @@ message ProcessTimer {
 }
 
 // ProcessAdvanced is the leader-only result of one Advance, proposed by
-// procSession via ProposeSelf. new_state is the opaque next iflow blob; the
-// instruction lists are reflow-native (procSession already translated the
-// iflow Commands), so the apply arm just writes new_state and turns each
+// procSession via ProposeSelf. new_state is the opaque next reflwos blob; the
+// instruction lists are reflw-native (procSession already translated the
+// reflwos Commands), so the apply arm just writes new_state and turns each
 // instruction into an Action.
 message ProcessAdvanced {
   fixed64 pk = 1;
@@ -1242,11 +1242,11 @@ message SignalSubscribe { string node_id = 1; string message_name = 2; string co
 // SignalUnsubscribe tears down a parked catch (event-gateway loser, or any catch
 // torn down while still subscribed). Carries only the catch node id — the engine
 // recovers the correlation from the per-instance proc_sub_idx reverse index (the
-// adapter's CancelWait has no correlation key; see iflow host.Correlation).
+// adapter's CancelWait has no correlation key; see reflwos host.Correlation).
 message SignalUnsubscribe { string node_id = 1; }
 
 // ProcessTerminal ends an instance. retention_ms is the model-declared history
-// window (the Camunda historyTimeToLive analog), stamped by the iflow adapter:
+// window (the Camunda historyTimeToLive analog), stamped by the reflwos adapter:
 // 0 = no retention (finishProcessInstance deletes the record immediately on
 // terminal, as before — observable only via the result delivered to a parent);
 // >0 retains the terminal record for the window, after which the leader's
@@ -1329,7 +1329,7 @@ message ProcessInstanceRecord {
   InvocationId root_id = 1;     // stable handle for id-keyed timer / dedup rows
   ModelRef model_ref = 2;       // pinned at start — version-skew safe
   ProcessKind kind = 3;
-  bytes state_blob = 4;         // opaque iflow ExecutionState / CaseState
+  bytes state_blob = 4;         // opaque reflwos ExecutionState / CaseState
   ProcessStatus status = 5;
   ParentLink parent_link = 6;   // set if this instance is a child
   // Inbox cursor for single-writer turn serialization. Events are appended to
@@ -1369,7 +1369,7 @@ message ProcessInboxEntry {
   uint64 logical_time_ms = 2;
 }
 
-// ModelRef pins one iflow model snapshot (iflow/modelstore.ModelRef).
+// ModelRef pins one reflwos model snapshot (reflwos/modelstore.ModelRef).
 message ModelRef {
   string kind = 1;
   string name = 2;
@@ -1401,7 +1401,7 @@ message SnapshotMeta {
   uint64 shard_id = 1;
   uint64 raft_index = 2;
   uint64 leader_epoch = 3;
-  string reflow_version = 4;
+  string reflw_version = 4;
   // Hex-encoded SHA-256 of the snapshot tar body.
   string checksum_sha256 = 5;
   fixed64 created_at_ms = 6;
@@ -1409,13 +1409,13 @@ message SnapshotMeta {
 
 // NodeHostMeta is the payload packed into dragonboat's GossipConfig.Meta
 // blob. Every NodeHost advertises it via gossip; peers retrieve it via
-// INodeHostRegistry.GetMeta(nodeHostID) and use it to dial the reflow
+// INodeHostRegistry.GetMeta(nodeHostID) and use it to dial the reflw
 // gRPC Delivery service for cross-partition outbox dispatch and the
-// reflow Admin service for SelfJoin / LeaderHint redirects.
+// reflw Admin service for SelfJoin / LeaderHint redirects.
 message NodeHostMeta {
   string grpc_endpoint = 1;
   // Admin Connect endpoint advertised so peers (joiners running
-  // SelfJoin and the `reflowd cluster ...` CLI following LeaderHint
+  // SelfJoin and the `reflwd cluster ...` CLI following LeaderHint
   // redirects) can discover the metadata leader's admin port via
   // gossip rather than requiring it preconfigured.
   string admin_endpoint = 2;
@@ -1536,7 +1536,7 @@ message SecretRecord {
 // and HashiCorp Vault Transit (hcvault://...). The first three self-
 // register via init(); Vault is opt-in via cfg.KMS.Vault.TokenFile.
 // Operators wiring additional providers register from main() before
-// reflow.Run.
+// reflw.Run.
 message RemoteEncryptedSecret {
   // gocloud.dev/blob URI: s3://bucket/key, gs://..., azblob://...,
   // file:///abs/path, mem://test/key.
@@ -1569,14 +1569,14 @@ message DeleteSecret {
 // shard 0's ModelTable, keyed by model_ref (kind+name+version — an immutable
 // snapshot id). The XML source is inlined: models are KB-scale artifacts (like
 // a deployment discovery manifest), so a blob pointer isn't warranted. Per-node
-// iflowengine TableResolvers reconcile each row into a parsed graph/case plus a
+// processengine TableResolvers reconcile each row into a parsed graph/case plus a
 // resolved historyTimeToLive on each ModelTable notifier wake.
 message ModelRecord {
   ModelRef model_ref = 1;
   bytes xml = 2;
   fixed64 registered_at_ms = 3;
   // bundle pins the DMN decisions and child processes/cases this model reaches
-  // at runtime (mirrors iflow's runtime.BPMNBundle). Optional: an empty/absent
+  // at runtime (mirrors reflwos's runtime.BPMNBundle). Optional: an empty/absent
   // bundle leaves child refs to the name convention and a BusinessRuleTask
   // decisionRef unresolvable (errors at eval, as before).
   ModelBundle bundle = 4;
@@ -1586,7 +1586,7 @@ message ModelRecord {
 // BusinessRuleTask's decisionRef resolves to, and which child model a
 // CallActivity/CaseTask calledElement resolves to. The per-node TableResolver
 // reads it at reconcile to build the decision runtimes and child-ref overrides.
-// Keys are the strings the iflow engine sees (decisionRef / calledElement);
+// Keys are the strings the reflwos engine sees (decisionRef / calledElement);
 // values are ModelTable refs (decisions → kind=dmn, children → kind=bpmn/cmmn).
 message ModelBundle {
   map<string, ModelRef> decisions = 1;
@@ -1658,7 +1658,7 @@ enum JoinTokenKind {
 // JoinTokenRecord is the persisted shape of one bootstrap token in shard
 // 0's JoinTokenTable. token_hash is sha256(token_plaintext); the
 // plaintext is shown exactly once at create-time and never persisted.
-// single_use=true (the default for `reflowd config create-join-token`)
+// single_use=true (the default for `reflwd config create-join-token`)
 // means the row carries `used=true` after the first MeshSign redemption,
 // and any subsequent redemption attempt fails CAS at the FSM apply path
 // and returns PermissionDenied. expiry_ms is wall-clock; the apply path
@@ -1744,7 +1744,7 @@ message BulkUpsertLPOwners {
   repeated LPOwnerRecord records = 1;
 }
 
-// RegisterNode is proposed against shard 0 when a reflowd process starts
+// RegisterNode is proposed against shard 0 when a reflwd process starts
 // and wants to publish or refresh its membership record.
 // the static peer list is identical on every node so the proposal is
 // idempotent; the apply arm updates last_seen_ms.

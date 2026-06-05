@@ -1,6 +1,6 @@
 # 9. Open Questions
 
-This document tracks resolved and outstanding architectural open questions for the Reflow engine.
+This document tracks resolved and outstanding architectural open questions for the Reflw engine.
 
 ---
 
@@ -20,4 +20,4 @@ This document tracks resolved and outstanding architectural open questions for t
 | 12 | Object storage for snapshots | Resolved | `SnapshotRepository` interface with filesystem and cloud drivers (S3/GCS/Azure via `gocloud.dev/blob`). Always optional — default deployment is local-only. Hot state never leaves Pebble; only snapshot artifacts and their metadata go to object storage. See §6.12. |
 | 13 | Authn/authz model for internal gRPC | Resolved | Authentication is mesh-only mTLS: `composeAuthFunc` resolves the `Principal` from the verified leaf's Common Name — a bare `<kind>/<name>` (node / operator / tenant; `internal/auth/mesh_authfunc.go`). A request with no client cert is the anonymous principal. Authz is Cedar (`internal/authz`, cedar-go), gated per procedure. The earlier OIDC bearer-JWT authenticator and path-glob starter policy were removed on `strip-to-core`. See §6.13. |
 | 14 | SDK transport for non-Go handlers | Resolved | The engine dials every handler over Connect bidi streaming (`handlerv1.HandlerService/InvokeStream`) carrying `protocolv1` frames. Same path for Go and non-Go SDKs; no transport variants. See §6.10. |
-| ... | Joining-node startup against a live cluster | Resolved | `HostConfig.JoinExisting bool` + `Cluster.JoinExisting` koanf key drive `nh.StartOnDiskReplica(nil, join=true, ...)`. On boot, `pkg/reflow/run.go:callSelfJoin` discovers the metadata leader via gossip-published `NodeHostMeta.admin_endpoint` and dials `ClusterCtl/SelfJoin` (gated to a `node/<self_id>` leaf-CN principal) before starting local shards. See §6.2 "Dynamic membership". |
+| ... | Joining-node startup against a live cluster | Resolved | `HostConfig.JoinExisting bool` + `Cluster.JoinExisting` koanf key drive `nh.StartOnDiskReplica(nil, join=true, ...)`. On boot, `pkg/reflw/run.go:callSelfJoin` discovers the metadata leader via gossip-published `NodeHostMeta.admin_endpoint` and dials `ClusterCtl/SelfJoin` (gated to a `node/<self_id>` leaf-CN principal) before starting local shards. See §6.2 "Dynamic membership". |

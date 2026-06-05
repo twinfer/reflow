@@ -11,7 +11,7 @@
 //
 // The in-proc tier stays the canonical "did we regress?" smoke for
 // dev-machine work because it isn't gated on Docker. This e2e tier
-// adds a second baseline that exercises the real reflowd binary,
+// adds a second baseline that exercises the real reflwd binary,
 // real TCP, real Docker network hops, real handler-container mTLS-
 // free engine→handler dispatch — numbers will trail in-proc by 2–5×
 // on latency because of those hops.
@@ -51,7 +51,7 @@ const (
 )
 
 // TestE2EPerf_SteadyState is the containerized perf baseline. Brings
-// up a 3-node reflowd cluster + loadhandler sidecar, drives the same
+// up a 3-node reflwd cluster + loadhandler sidecar, drives the same
 // 50qps/20s workload as the in-proc loadtest, and writes summary.md
 // (counts + latency percentiles) plus an empty pebble-stats.csv
 // under t.TempDir.
@@ -67,7 +67,7 @@ const (
 //	go test -tags=e2e -timeout=10m -count=1 \
 //	    -run=TestE2EPerf_SteadyState -v ./internal/e2e/perf/...
 //
-// Set REFLOW_E2E_LOGS=1 to stream reflowd container logs into t.Logf
+// Set REFLW_E2E_LOGS=1 to stream reflwd container logs into t.Logf
 // for diagnosing bring-up issues.
 func TestE2EPerf_SteadyState(t *testing.T) {
 	cluster := e2e.NewContainerCluster(t, e2e.ContainerClusterOptions{

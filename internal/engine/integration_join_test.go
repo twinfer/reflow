@@ -31,7 +31,7 @@ import (
 // loadgen.NewCluster does not currently wire up. The SPIFFE check
 // itself is unit-tested in internal/clusterctl/selfjoin_test.go
 // (TestCheckSelfJoinPrincipal_*); the redirect plumbing is
-// unit-tested in pkg/reflowclient/redirect_test.go
+// unit-tested in pkg/reflwclient/redirect_test.go
 // (TestCallWithLeaderRedirect_*).
 //
 // The test proves the joiner is a real cluster member on every shard:

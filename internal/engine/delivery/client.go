@@ -34,7 +34,7 @@ type EndpointResolver interface {
 	// PartitionLeaderHint returns the believed leader's NodeID for the
 	// given partition shard.
 	PartitionLeaderHint(shardID uint64) (uint64, bool)
-	// NodeEndpoint returns the reflow Delivery endpoint for the
+	// NodeEndpoint returns the reflw Delivery endpoint for the
 	// given NodeID, sourced from gossip Meta.
 	NodeEndpoint(nodeID uint64) (string, bool)
 }

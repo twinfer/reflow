@@ -30,7 +30,7 @@ func TestSafeMeshName_FallbackOnInvalid(t *testing.T) {
 	// the SHA-256 form so cert issuance keeps working for principals
 	// the operator chose freely.
 	got := safeMeshName("operator/john_doe")
-	if !strings.HasPrefix(got, "reflow-") || !strings.HasSuffix(got, ".mesh") {
+	if !strings.HasPrefix(got, "reflw-") || !strings.HasSuffix(got, ".mesh") {
 		t.Errorf("expected SHA-256 fallback form; got %q", got)
 	}
 }

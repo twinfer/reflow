@@ -19,7 +19,7 @@ func TestSplitURI(t *testing.T) {
 	}{
 		{"blobkms+s3://bucket/kek.bin", "s3://bucket", "kek.bin", ""},
 		{"blobkms+s3://bucket/path/kek.bin", "s3://bucket/path", "kek.bin", ""},
-		{"blobkms+file:///etc/reflow/kek.bin", "file:///etc/reflow", "kek.bin", ""},
+		{"blobkms+file:///etc/reflw/kek.bin", "file:///etc/reflw", "kek.bin", ""},
 		{"blobkms+mem://test/k", "mem://test", "k", ""},
 		{"blobkms+gs://b/x/y/z.bin", "gs://b/x/y", "z.bin", ""},
 		// Query-string-carrying URI (endpoint overrides, etc.). The

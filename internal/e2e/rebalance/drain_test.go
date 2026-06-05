@@ -2,7 +2,7 @@
 
 // Package rebalance_test exercises the autonomous LP balancer
 // (internal/engine/rebalance.Balancer) end-to-end against real
-// reflowd binaries. The integration tier
+// reflwd binaries. The integration tier
 // (internal/engine/integration_rebalance_test.go) covers the saga
 // at in-proc tier; this suite re-runs the same shape against the
 // compiled binary so binary-only startup ordering / signal handling
@@ -19,13 +19,13 @@ import (
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflw/internal/e2e"
-	"github.com/twinfer/reflw/pkg/reflowclient"
+	"github.com/twinfer/reflw/pkg/reflwclient"
 	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // TestE2EBalance_DrainShardRebalances brings up a 3-node, 3-shard
-// reflowd cluster in `rebalance.mode=auto` with tight knobs, marks
+// reflwd cluster in `rebalance.mode=auto` with tight knobs, marks
 // shard 2 drained via Config / ClusterCtl.RebalanceDrain, and asserts
 // the autonomous balancer (a) drains LPs off shard 2 within a bounded
 // window, AND (b) every LP transfer it initiated targets a non-drained
@@ -33,7 +33,7 @@ import (
 //
 // Mirrors integration_rebalance_test.go's
 // TestRebalance_DrainShard_DrainsProgressively, but against the
-// containerized reflowd binary — exercises the production startup
+// containerized reflwd binary — exercises the production startup
 // ordering and the admin-RPC path (round-robin retry on Unavailable),
 // neither of which the in-proc integration tier covers.
 //
@@ -47,11 +47,11 @@ func TestE2EBalance_DrainShardRebalances(t *testing.T) {
 		N:         3,
 		NumShards: 3,
 		ExtraEnv: map[string]string{
-			"REFLOW_REBALANCE_MODE":                          "auto",
-			"REFLOW_REBALANCE_MAX_CONCURRENT_TRANSFERS":      "8",
-			"REFLOW_REBALANCE_MIN_SECONDS_BETWEEN_TRANSFERS": "0",
-			"REFLOW_REBALANCE_SKEW_ENGAGE_PCT":               "5",
-			"REFLOW_REBALANCE_SKEW_DISENGAGE_PCT":            "1",
+			"REFLW_REBALANCE_MODE":                          "auto",
+			"REFLW_REBALANCE_MAX_CONCURRENT_TRANSFERS":      "8",
+			"REFLW_REBALANCE_MIN_SECONDS_BETWEEN_TRANSFERS": "0",
+			"REFLW_REBALANCE_SKEW_ENGAGE_PCT":               "5",
+			"REFLW_REBALANCE_SKEW_DISENGAGE_PCT":            "1",
 		},
 	})
 
@@ -236,12 +236,12 @@ func drainShard(ctx context.Context, cluster *e2e.ContainerCluster, shardID uint
 	return lastErr
 }
 
-// dialAdmin opens an insecure reflowclient against node's host-mapped
+// dialAdmin opens an insecure reflwclient against node's host-mapped
 // admin port. The caller owns Close. Mirrors the pattern in
 // internal/e2e/handler.go.
-func dialAdmin(ctx context.Context, node *e2e.ContainerNode) (*reflowclient.Client, error) {
+func dialAdmin(ctx context.Context, node *e2e.ContainerNode) (*reflwclient.Client, error) {
 	addr := stripScheme(node.AdminURLForTest())
-	return reflowclient.Dial(ctx, reflowclient.DialOptions{Addr: addr})
+	return reflwclient.Dial(ctx, reflwclient.DialOptions{Addr: addr})
 }
 
 func stripScheme(u string) string {

@@ -27,7 +27,7 @@ func retryBackoff() time.Duration {
 // dragonboat directly.
 var ErrShardClosed = errors.New("proposer: shard closed")
 
-// RaftProposer wraps a dragonboat NodeHost with reflow's envelope framing
+// RaftProposer wraps a dragonboat NodeHost with reflw's envelope framing
 // and dedup stamping.
 //
 // Mirrors restate crates/worker/src/partition/leadership/self_proposer.rs:36-58,

@@ -287,12 +287,12 @@ func TestApplyMultiNodeConfig_AdvertisedAddr_GossipMeta(t *testing.T) {
 		RaftAddr:           "0.0.0.0:9001",
 		RaftAdvertisedAddr: "toxiproxy:21002",
 		GossipBindAddr:     "0.0.0.0:9002",
-		GossipAdvAddr:      "reflowd-node2:9002",
+		GossipAdvAddr:      "reflwd-node2:9002",
 		GrpcEndpoint:       "toxiproxy:21012",
 		Peers: []Peer{
-			{NodeID: 1, RaftAddr: "toxiproxy:21001", GossipAddr: "reflowd-node1:9002"},
-			{NodeID: 2, RaftAddr: "toxiproxy:21002", GossipAddr: "reflowd-node2:9002"},
-			{NodeID: 3, RaftAddr: "toxiproxy:21003", GossipAddr: "reflowd-node3:9002"},
+			{NodeID: 1, RaftAddr: "toxiproxy:21001", GossipAddr: "reflwd-node1:9002"},
+			{NodeID: 2, RaftAddr: "toxiproxy:21002", GossipAddr: "reflwd-node2:9002"},
+			{NodeID: 3, RaftAddr: "toxiproxy:21003", GossipAddr: "reflwd-node3:9002"},
 		},
 	}
 	var nh config.NodeHostConfig
@@ -303,8 +303,8 @@ func TestApplyMultiNodeConfig_AdvertisedAddr_GossipMeta(t *testing.T) {
 	// (NewHost handles those); the contract it owns is the gossip Meta
 	// blob and Seed list, both of which should be unaffected by the
 	// advertised-addr split.
-	if nh.Gossip.AdvertiseAddress != "reflowd-node2:9002" {
-		t.Errorf("Gossip.AdvertiseAddress = %q; want reflowd-node2:9002", nh.Gossip.AdvertiseAddress)
+	if nh.Gossip.AdvertiseAddress != "reflwd-node2:9002" {
+		t.Errorf("Gossip.AdvertiseAddress = %q; want reflwd-node2:9002", nh.Gossip.AdvertiseAddress)
 	}
 	var meta enginev1.NodeHostMeta
 	if err := proto.Unmarshal(nh.Gossip.Meta, &meta); err != nil {

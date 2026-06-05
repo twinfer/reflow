@@ -75,7 +75,7 @@ func TestProcMap_ActionIDsUnique(t *testing.T) {
 // group as a parent edge (so `action in [Action::"<group>"]` matches at eval)
 // and reports ok=false for an unmapped procedure (interceptor default-deny).
 func TestActionEntity_StampsGroupParents(t *testing.T) {
-	uid, ent, ok := actionEntity("/reflow.delivery.v1.Delivery/Deliver")
+	uid, ent, ok := actionEntity("/reflw.delivery.v1.Delivery/Deliver")
 	if !ok {
 		t.Fatal("Deliver should be mapped")
 	}
@@ -86,7 +86,7 @@ func TestActionEntity_StampsGroupParents(t *testing.T) {
 	if !ent.Parents.Contains(mesh) {
 		t.Errorf("Deliver entity missing MeshActions parent edge")
 	}
-	if _, _, ok := actionEntity("/reflow.unknown.v1.Svc/Nope"); ok {
+	if _, _, ok := actionEntity("/reflw.unknown.v1.Svc/Nope"); ok {
 		t.Error("unmapped procedure should report ok=false")
 	}
 }

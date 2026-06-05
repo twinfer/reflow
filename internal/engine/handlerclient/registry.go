@@ -16,7 +16,7 @@ import (
 type Dialer func(deploymentID, rawURL string) (Client, error)
 
 // Signer mints request-level tokens stamped on engine→handler requests.
-// The concrete *creds.Signer in pkg/reflow/creds satisfies this
+// The concrete *creds.Signer in pkg/reflw/creds satisfies this
 // interface; the handlerclient layer depends only on the small method
 // set to honour the cmd→pkg→internal direction rule.
 type Signer interface {

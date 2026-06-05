@@ -12,7 +12,7 @@ import (
 	"github.com/twinfer/reflw/internal/storage"
 	"github.com/twinfer/reflw/internal/storage/keys"
 	"github.com/twinfer/reflw/internal/storage/tables"
-	iflowengine "github.com/twinfer/reflw/pkg/reflow/iflowengine"
+	"github.com/twinfer/reflw/pkg/reflw/processengine"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
@@ -55,7 +55,7 @@ func countSubscriptions(t *testing.T, p *Partition, name, corr string) int {
 }
 
 // TestProcess_MessageCorrelationReadPath drives a real BPMN message-catch model
-// through the real iflowengine.Adapter and the real partition state machine over
+// through the real processengine.Adapter and the real partition state machine over
 // the full correlation read path: start -> park + write subscription -> deliver a
 // correlated message -> fan ProcessMessageReceived to the instance + one-shot
 // consume the subscription -> resume -> terminal reap. Single partition, so the
@@ -68,11 +68,11 @@ func TestProcess_MessageCorrelationReadPath(t *testing.T) {
 	lp := keys.LPFromPartitionKey(pk)
 	procs, inbox := procStore(p)
 
-	res := iflowengine.NewMapResolver()
+	res := processengine.NewMapResolver()
 	if err := res.ParseBPMN("msgproc", "v1", []byte(msgCatchModelXML)); err != nil {
 		t.Fatalf("parse model: %v", err)
 	}
-	adapter := iflowengine.New(res)
+	adapter := processengine.New(res)
 
 	must := func(idx uint64, cmd *enginev1.Command) {
 		t.Helper()
@@ -218,11 +218,11 @@ func TestProcess_SubscribeCrossShardUsesOutbox(t *testing.T) {
 	lp := keys.LPFromPartitionKey(pk)
 	procs, _ := procStore(p)
 
-	res := iflowengine.NewMapResolver()
+	res := processengine.NewMapResolver()
 	if err := res.ParseBPMN("msgproc", "v1", []byte(msgCatchModelXML)); err != nil {
 		t.Fatalf("parse model: %v", err)
 	}
-	adapter := iflowengine.New(res)
+	adapter := processengine.New(res)
 
 	must := func(idx uint64, cmd *enginev1.Command) {
 		t.Helper()

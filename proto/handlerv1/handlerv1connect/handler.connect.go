@@ -42,7 +42,7 @@ const _ = connect.IsAtLeastVersion1_13_0
 
 const (
 	// HandlerServiceName is the fully-qualified name of the HandlerService service.
-	HandlerServiceName = "reflow.handler.v1.HandlerService"
+	HandlerServiceName = "reflw.handler.v1.HandlerService"
 )
 
 // These constants are the fully-qualified names of the RPCs defined in this package. They're
@@ -54,10 +54,10 @@ const (
 // period.
 const (
 	// HandlerServiceInvokeProcedure is the fully-qualified name of the HandlerService's Invoke RPC.
-	HandlerServiceInvokeProcedure = "/reflow.handler.v1.HandlerService/Invoke"
+	HandlerServiceInvokeProcedure = "/reflw.handler.v1.HandlerService/Invoke"
 )
 
-// HandlerServiceClient is a client for the reflow.handler.v1.HandlerService service.
+// HandlerServiceClient is a client for the reflw.handler.v1.HandlerService service.
 type HandlerServiceClient interface {
 	// Invoke runs one full invocation session. InvokeRequest.frames is the
 	// StartMessage frame followed by one frame per known journal entry
@@ -66,7 +66,7 @@ type HandlerServiceClient interface {
 	Invoke(context.Context, *connect.Request[handlerv1.InvokeRequest]) (*connect.Response[handlerv1.InvokeResponse], error)
 }
 
-// NewHandlerServiceClient constructs a client for the reflow.handler.v1.HandlerService service. By
+// NewHandlerServiceClient constructs a client for the reflw.handler.v1.HandlerService service. By
 // default, it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses,
 // and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the
 // connect.WithGRPC() or connect.WithGRPCWeb() options.
@@ -91,12 +91,12 @@ type handlerServiceClient struct {
 	invoke *connect.Client[handlerv1.InvokeRequest, handlerv1.InvokeResponse]
 }
 
-// Invoke calls reflow.handler.v1.HandlerService.Invoke.
+// Invoke calls reflw.handler.v1.HandlerService.Invoke.
 func (c *handlerServiceClient) Invoke(ctx context.Context, req *connect.Request[handlerv1.InvokeRequest]) (*connect.Response[handlerv1.InvokeResponse], error) {
 	return c.invoke.CallUnary(ctx, req)
 }
 
-// HandlerServiceHandler is an implementation of the reflow.handler.v1.HandlerService service.
+// HandlerServiceHandler is an implementation of the reflw.handler.v1.HandlerService service.
 type HandlerServiceHandler interface {
 	// Invoke runs one full invocation session. InvokeRequest.frames is the
 	// StartMessage frame followed by one frame per known journal entry
@@ -118,7 +118,7 @@ func NewHandlerServiceHandler(svc HandlerServiceHandler, opts ...connect.Handler
 		connect.WithSchema(handlerServiceMethods.ByName("Invoke")),
 		connect.WithHandlerOptions(opts...),
 	)
-	return "/reflow.handler.v1.HandlerService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return "/reflw.handler.v1.HandlerService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case HandlerServiceInvokeProcedure:
 			handlerServiceInvokeHandler.ServeHTTP(w, r)
@@ -132,5 +132,5 @@ func NewHandlerServiceHandler(svc HandlerServiceHandler, opts ...connect.Handler
 type UnimplementedHandlerServiceHandler struct{}
 
 func (UnimplementedHandlerServiceHandler) Invoke(context.Context, *connect.Request[handlerv1.InvokeRequest]) (*connect.Response[handlerv1.InvokeResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.handler.v1.HandlerService.Invoke is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.handler.v1.HandlerService.Invoke is not implemented"))
 }

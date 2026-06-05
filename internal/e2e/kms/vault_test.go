@@ -27,7 +27,7 @@ import (
 const (
 	vaultImage     = "hashicorp/vault:1.18"
 	vaultDevToken  = "root"
-	vaultTransitKey = "reflow-test"
+	vaultTransitKey = "reflw-test"
 )
 
 // vaultBackend bundles the dev-mode container's host endpoint

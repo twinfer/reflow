@@ -119,7 +119,7 @@ func (s *PebbleStore) IngestSSTs(ctx context.Context, paths []string) error {
 // writes strictly-increasing keys via SSTWriter.Set and calls
 // SSTWriter.Close to finalize; Close also fsyncs and closes the
 // underlying file. The destination store must be opened by the same
-// reflow binary (so the format matches) — Ingest fails otherwise.
+// reflw binary (so the format matches) — Ingest fails otherwise.
 //
 // Lives on PebbleStore so all sstable/objstorage type references stay
 // confined to this file; callers see only the narrow SSTWriter
@@ -136,7 +136,7 @@ func (s *PebbleStore) OpenSSTFile(path string) (SSTWriter, error) {
 	return &sstFileWriter{w: sstable.NewWriter(objstorageprovider.NewFileWritable(f), opts)}, nil
 }
 
-// sstFileWriter narrows *sstable.Writer to the two methods reflow
+// sstFileWriter narrows *sstable.Writer to the two methods reflw
 // uses. Keeping the wrapper at this layer means lp_transfer_sst.go
 // does not import pebble/sstable.
 type sstFileWriter struct {

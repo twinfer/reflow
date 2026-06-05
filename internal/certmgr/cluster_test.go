@@ -40,7 +40,7 @@ func (f *fakeKeys) LookupForCASigning(name string) ([]byte, error) {
 
 func newFakeBackends(t *testing.T, rowName, secretName string) (*fakeReader, *fakeKeys, *CA) {
 	t.Helper()
-	ca, err := MintCA("reflow-cluster-test-ca")
+	ca, err := MintCA("reflw-cluster-test-ca")
 	if err != nil {
 		t.Fatal(err)
 	}

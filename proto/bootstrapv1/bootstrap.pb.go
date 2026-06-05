@@ -1,7 +1,7 @@
 // Reflow Bootstrap service — kubeadm-style joiner credential exchange.
 //
 // The bootstrap surface is a single RPC: SignCSR. A joiner that has been
-// issued a one-time `reflowd config create-join-token` plaintext sends a
+// issued a one-time `reflwd config create-join-token` plaintext sends a
 // CertificateSigningRequest plus the token to a cluster member; the
 // member verifies the token against shard 0's JoinTokenTable, proposes
 // ConsumeJoinToken to atomically mark the row spent, then signs the CSR
@@ -19,7 +19,7 @@
 //
 // The endpoint is opt-in. Operators set cfg.Bootstrap.Addr to enable
 // it; production fleets typically enable it only on a couple of nodes
-// (the same nodes that will run `reflowd config create-join-token` for
+// (the same nodes that will run `reflwd config create-join-token` for
 // their region) and behind a firewall rule that allows freshly-imaged
 // hosts to reach the port.
 
@@ -55,7 +55,7 @@ type SignCSRRequest struct {
 	// operator must pick the name at create-token time.
 	CsrDer []byte `protobuf:"bytes,1,opt,name=csr_der,json=csrDer,proto3" json:"csr_der,omitempty"`
 	// Plaintext token, exactly as printed by
-	// `reflowd config create-join-token`. The server hashes it (sha256)
+	// `reflwd config create-join-token`. The server hashes it (sha256)
 	// and looks the row up in JoinTokenTable.
 	JoinToken     string `protobuf:"bytes,2,opt,name=join_token,json=joinToken,proto3" json:"join_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -189,7 +189,7 @@ var File_bootstrapv1_bootstrap_proto protoreflect.FileDescriptor
 
 const file_bootstrapv1_bootstrap_proto_rawDesc = "" +
 	"\n" +
-	"\x1bbootstrapv1/bootstrap.proto\x12\x13reflow.bootstrap.v1\"H\n" +
+	"\x1bbootstrapv1/bootstrap.proto\x12\x12reflw.bootstrap.v1\"H\n" +
 	"\x0eSignCSRRequest\x12\x17\n" +
 	"\acsr_der\x18\x01 \x01(\fR\x06csrDer\x12\x1d\n" +
 	"\n" +
@@ -199,9 +199,9 @@ const file_bootstrapv1_bootstrap_proto_rawDesc = "" +
 	"\fca_chain_pem\x18\x02 \x01(\fR\n" +
 	"caChainPem\x12(\n" +
 	"\x10assigned_node_id\x18\x03 \x01(\x04R\x0eassignedNodeId\x12%\n" +
-	"\x0eca_fingerprint\x18\x04 \x01(\tR\rcaFingerprint2`\n" +
-	"\bMeshSign\x12T\n" +
-	"\aSignCSR\x12#.reflow.bootstrap.v1.SignCSRRequest\x1a$.reflow.bootstrap.v1.SignCSRResponseB8Z6github.com/twinfer/reflw/proto/bootstrapv1;bootstrapv1b\x06proto3"
+	"\x0eca_fingerprint\x18\x04 \x01(\tR\rcaFingerprint2^\n" +
+	"\bMeshSign\x12R\n" +
+	"\aSignCSR\x12\".reflw.bootstrap.v1.SignCSRRequest\x1a#.reflw.bootstrap.v1.SignCSRResponseB8Z6github.com/twinfer/reflw/proto/bootstrapv1;bootstrapv1b\x06proto3"
 
 var (
 	file_bootstrapv1_bootstrap_proto_rawDescOnce sync.Once
@@ -217,12 +217,12 @@ func file_bootstrapv1_bootstrap_proto_rawDescGZIP() []byte {
 
 var file_bootstrapv1_bootstrap_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_bootstrapv1_bootstrap_proto_goTypes = []any{
-	(*SignCSRRequest)(nil),  // 0: reflow.bootstrap.v1.SignCSRRequest
-	(*SignCSRResponse)(nil), // 1: reflow.bootstrap.v1.SignCSRResponse
+	(*SignCSRRequest)(nil),  // 0: reflw.bootstrap.v1.SignCSRRequest
+	(*SignCSRResponse)(nil), // 1: reflw.bootstrap.v1.SignCSRResponse
 }
 var file_bootstrapv1_bootstrap_proto_depIdxs = []int32{
-	0, // 0: reflow.bootstrap.v1.MeshSign.SignCSR:input_type -> reflow.bootstrap.v1.SignCSRRequest
-	1, // 1: reflow.bootstrap.v1.MeshSign.SignCSR:output_type -> reflow.bootstrap.v1.SignCSRResponse
+	0, // 0: reflw.bootstrap.v1.MeshSign.SignCSR:input_type -> reflw.bootstrap.v1.SignCSRRequest
+	1, // 1: reflw.bootstrap.v1.MeshSign.SignCSR:output_type -> reflw.bootstrap.v1.SignCSRResponse
 	1, // [1:2] is the sub-list for method output_type
 	0, // [0:1] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name

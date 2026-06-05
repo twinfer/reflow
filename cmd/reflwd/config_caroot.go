@@ -14,7 +14,7 @@ import (
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflw/internal/certmgr"
-	"github.com/twinfer/reflw/pkg/reflowclient"
+	"github.com/twinfer/reflw/pkg/reflwclient"
 	configv1 "github.com/twinfer/reflw/proto/configv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
@@ -36,7 +36,7 @@ func cmdCAInit(ctx context.Context, args []string) error {
 	secretName := fs.String("secret-name", "ca/root/active", "SecretTable row name for the signing key")
 	kekURI := fs.String("kek-uri", "", "Tink KMS URI for wrapping the signing key (required)")
 	keyBlobURI := fs.String("key-blob-uri", "", "ciphertext destination for the wrapped signing key (gocloud.dev/blob; required)")
-	cn := fs.String("ca-cn", "reflow-cluster-ca", "CA subject CommonName")
+	cn := fs.String("ca-cn", "reflw-cluster-ca", "CA subject CommonName")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -73,7 +73,7 @@ func cmdCAInit(ctx context.Context, args []string) error {
 		RotationEpoch: uint32(time.Now().Unix()),
 		CreatedAtMs:   uint64(time.Now().UnixMilli()),
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
 		sec, err := cli.Config.ListSecrets(rctx, connect.NewRequest(&configv1.ListSecretsRequest{}))
 		if err != nil {
 			return fmt.Errorf("read secret revision: %w", err)
@@ -111,7 +111,7 @@ func cmdCAList(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
+	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
 		resp, err := cli.Config.ListCARoots(ctx, connect.NewRequest(&configv1.ListCARootsRequest{}))
 		if err != nil {
 			return err
@@ -138,7 +138,7 @@ func cmdCADelete(ctx context.Context, args []string) error {
 	if *name == "" {
 		return errors.New("--name is required")
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
 		list, err := cli.Config.ListCARoots(rctx, connect.NewRequest(&configv1.ListCARootsRequest{}))
 		if err != nil {
 			return fmt.Errorf("read revision: %w", err)
@@ -177,7 +177,7 @@ func dispatchCA(ctx context.Context, args []string) error {
 
 // spkiFingerprint is the operator-facing trust-anchor pin format used
 // across creds + the bootstrap CLI: sha256:<lowercase-hex>(SPKI).
-// Matches pkg/reflow/creds.SPKIFingerprint exactly.
+// Matches pkg/reflw/creds.SPKIFingerprint exactly.
 func spkiFingerprint(spki []byte) string {
 	sum := sha256.Sum256(spki)
 	return "sha256:" + hex.EncodeToString(sum[:])

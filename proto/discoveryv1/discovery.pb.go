@@ -146,7 +146,7 @@ func (x *DiscoveryResponse) GetHandlers() []*DiscoveredHandler {
 type DiscoveredHandler struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Service       string                 `protobuf:"bytes,1,opt,name=service,proto3" json:"service,omitempty"`
-	Kind          protocolv1.Kind        `protobuf:"varint,2,opt,name=kind,proto3,enum=reflow.protocol.v1.Kind" json:"kind,omitempty"`
+	Kind          protocolv1.Kind        `protobuf:"varint,2,opt,name=kind,proto3,enum=reflw.protocol.v1.Kind" json:"kind,omitempty"`
 	HandlerNames  []string               `protobuf:"bytes,3,rep,name=handler_names,json=handlerNames,proto3" json:"handler_names,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -207,18 +207,18 @@ var File_discoveryv1_discovery_proto protoreflect.FileDescriptor
 
 const file_discoveryv1_discovery_proto_rawDesc = "" +
 	"\n" +
-	"\x1bdiscoveryv1/discovery.proto\x12\x13reflow.discovery.v1\x1a\x19protocolv1/protocol.proto\"=\n" +
+	"\x1bdiscoveryv1/discovery.proto\x12\x12reflw.discovery.v1\x1a\x19protocolv1/protocol.proto\"=\n" +
 	"\x10DiscoveryRequest\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\tR\x0fprotocolVersion\"\x82\x01\n" +
+	"\x10protocol_version\x18\x01 \x01(\tR\x0fprotocolVersion\"\x81\x01\n" +
 	"\x11DiscoveryResponse\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\tR\x0fprotocolVersion\x12B\n" +
-	"\bhandlers\x18\x02 \x03(\v2&.reflow.discovery.v1.DiscoveredHandlerR\bhandlers\"\x80\x01\n" +
+	"\x10protocol_version\x18\x01 \x01(\tR\x0fprotocolVersion\x12A\n" +
+	"\bhandlers\x18\x02 \x03(\v2%.reflw.discovery.v1.DiscoveredHandlerR\bhandlers\"\x7f\n" +
 	"\x11DiscoveredHandler\x12\x18\n" +
-	"\aservice\x18\x01 \x01(\tR\aservice\x12,\n" +
-	"\x04kind\x18\x02 \x01(\x0e2\x18.reflow.protocol.v1.KindR\x04kind\x12#\n" +
-	"\rhandler_names\x18\x03 \x03(\tR\fhandlerNames2m\n" +
-	"\x10DiscoveryService\x12Y\n" +
-	"\bDiscover\x12%.reflow.discovery.v1.DiscoveryRequest\x1a&.reflow.discovery.v1.DiscoveryResponseB8Z6github.com/twinfer/reflw/proto/discoveryv1;discoveryv1b\x06proto3"
+	"\aservice\x18\x01 \x01(\tR\aservice\x12+\n" +
+	"\x04kind\x18\x02 \x01(\x0e2\x17.reflw.protocol.v1.KindR\x04kind\x12#\n" +
+	"\rhandler_names\x18\x03 \x03(\tR\fhandlerNames2k\n" +
+	"\x10DiscoveryService\x12W\n" +
+	"\bDiscover\x12$.reflw.discovery.v1.DiscoveryRequest\x1a%.reflw.discovery.v1.DiscoveryResponseB8Z6github.com/twinfer/reflw/proto/discoveryv1;discoveryv1b\x06proto3"
 
 var (
 	file_discoveryv1_discovery_proto_rawDescOnce sync.Once
@@ -234,16 +234,16 @@ func file_discoveryv1_discovery_proto_rawDescGZIP() []byte {
 
 var file_discoveryv1_discovery_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_discoveryv1_discovery_proto_goTypes = []any{
-	(*DiscoveryRequest)(nil),  // 0: reflow.discovery.v1.DiscoveryRequest
-	(*DiscoveryResponse)(nil), // 1: reflow.discovery.v1.DiscoveryResponse
-	(*DiscoveredHandler)(nil), // 2: reflow.discovery.v1.DiscoveredHandler
-	(protocolv1.Kind)(0),      // 3: reflow.protocol.v1.Kind
+	(*DiscoveryRequest)(nil),  // 0: reflw.discovery.v1.DiscoveryRequest
+	(*DiscoveryResponse)(nil), // 1: reflw.discovery.v1.DiscoveryResponse
+	(*DiscoveredHandler)(nil), // 2: reflw.discovery.v1.DiscoveredHandler
+	(protocolv1.Kind)(0),      // 3: reflw.protocol.v1.Kind
 }
 var file_discoveryv1_discovery_proto_depIdxs = []int32{
-	2, // 0: reflow.discovery.v1.DiscoveryResponse.handlers:type_name -> reflow.discovery.v1.DiscoveredHandler
-	3, // 1: reflow.discovery.v1.DiscoveredHandler.kind:type_name -> reflow.protocol.v1.Kind
-	0, // 2: reflow.discovery.v1.DiscoveryService.Discover:input_type -> reflow.discovery.v1.DiscoveryRequest
-	1, // 3: reflow.discovery.v1.DiscoveryService.Discover:output_type -> reflow.discovery.v1.DiscoveryResponse
+	2, // 0: reflw.discovery.v1.DiscoveryResponse.handlers:type_name -> reflw.discovery.v1.DiscoveredHandler
+	3, // 1: reflw.discovery.v1.DiscoveredHandler.kind:type_name -> reflw.protocol.v1.Kind
+	0, // 2: reflw.discovery.v1.DiscoveryService.Discover:input_type -> reflw.discovery.v1.DiscoveryRequest
+	1, // 3: reflw.discovery.v1.DiscoveryService.Discover:output_type -> reflw.discovery.v1.DiscoveryResponse
 	3, // [3:4] is the sub-list for method output_type
 	2, // [2:3] is the sub-list for method input_type
 	2, // [2:2] is the sub-list for extension type_name

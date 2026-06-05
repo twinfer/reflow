@@ -1,6 +1,6 @@
-// Package bootstrap implements reflow's MeshSign Connect RPC — the
+// Package bootstrap implements reflw's MeshSign Connect RPC — the
 // kubeadm-style joiner credential exchange. A joiner that has a one-time
-// `reflowd config create-join-token` plaintext sends a CertificateSigningRequest
+// `reflwd config create-join-token` plaintext sends a CertificateSigningRequest
 // plus the token; the server verifies the token against shard 0's
 // JoinTokenTable, proposes ConsumeJoinToken (which atomically marks
 // single_use rows as spent), and on success signs the CSR against the

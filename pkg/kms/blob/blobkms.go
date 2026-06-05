@@ -5,7 +5,7 @@
 // inside that bucket. Examples:
 //
 //	blobkms+s3://my-bucket/kek.bin
-//	blobkms+file:///etc/reflow/kek.bin
+//	blobkms+file:///etc/reflw/kek.bin
 //	blobkms+gs://my-bucket/keys/kek.bin
 //	blobkms+mem://test/kek.bin   (tests only)
 //
@@ -22,10 +22,10 @@
 // the boot key stays put — old ciphertexts still decrypt via the keyset's
 // non-primary keys.
 //
-// Registration: callers (typically pkg/reflow.Run via a blank import)
+// Registration: callers (typically pkg/reflw.Run via a blank import)
 // trigger the package init() to call registry.RegisterKMSClient once.
 // The Tink registry is process-global; sync.Once at the init site avoids
-// duplicate entries under repeated reflow.Run invocations (tests).
+// duplicate entries under repeated reflw.Run invocations (tests).
 //
 // Security note: the entire boundary is the access control on the KEK
 // blob. A reader who can fetch the blob recovers the boot key, decrypts
@@ -130,7 +130,7 @@ func aeadFromBytes(raw []byte) (tink.AEAD, error) {
 
 // InitKEK builds a fresh KEK blob: a random boot key concatenated with
 // a freshly-generated AES-256-GCM keyset encrypted by that boot key.
-// Operators call this once per cluster via `reflowd config init-kek`.
+// Operators call this once per cluster via `reflwd config init-kek`.
 func InitKEK() ([]byte, error) {
 	bootKey := make([]byte, BootKeySize)
 	if _, err := io.ReadFull(rand.Reader, bootKey); err != nil {
@@ -180,7 +180,7 @@ func newBootAEAD(bootKey []byte) (tink.AEAD, error) {
 // Examples:
 //
 //	blobkms+s3://bucket/path/kek.bin   -> s3://bucket/path, kek.bin
-//	blobkms+file:///etc/reflow/kek.bin -> file:///etc/reflow, kek.bin
+//	blobkms+file:///etc/reflw/kek.bin -> file:///etc/reflw, kek.bin
 //	blobkms+mem://test/k               -> mem://test, k
 //
 // Exported so admin validation and CLI code can reuse the parser
@@ -200,7 +200,7 @@ func SplitURI(uri string) (bucketURI, key string, err error) {
 //
 //	s3://bucket/path/kek.bin               -> s3://bucket/path, kek.bin
 //	s3://bucket/kek.bin?endpoint=…&region=… -> s3://bucket?endpoint=…&region=…, kek.bin
-//	file:///etc/reflow/kek.bin             -> file:///etc/reflow, kek.bin
+//	file:///etc/reflw/kek.bin             -> file:///etc/reflw, kek.bin
 //	mem://test/k                           -> mem://test, k
 func ParseGocloudURI(uri string) (bucketURI, key string, err error) {
 	schemeEnd := strings.Index(uri, "://")

@@ -125,7 +125,7 @@ func createLocalStackKey(t *testing.T, kmsCli *awssdkkms.KMS) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	out, err := kmsCli.CreateKeyWithContext(ctx, &awssdkkms.CreateKeyInput{
-		Description: aws.String("reflow e2e test"),
+		Description: aws.String("reflw e2e test"),
 		KeyUsage:    aws.String(awssdkkms.KeyUsageTypeEncryptDecrypt),
 	})
 	if err != nil {
@@ -165,7 +165,7 @@ func TestAWSKMS_LocalStack_RoundTrip(t *testing.T) {
 		t.Fatalf("GetAEAD: %v", err)
 	}
 	pt := []byte("hmac-payload-via-aws-kms")
-	aad := []byte("reflow-test")
+	aad := []byte("reflw-test")
 	ct, err := aead.Encrypt(pt, aad)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)

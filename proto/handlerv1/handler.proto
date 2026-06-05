@@ -19,7 +19,7 @@
 // payload bytes live inside Frame.header and Frame.payload.
 syntax = "proto3";
 
-package reflow.handler.v1;
+package reflw.handler.v1;
 
 import "protocolv1/protocol.proto";
 
@@ -36,11 +36,11 @@ service HandlerService {
 // InvokeRequest carries the StartMessage frame followed by the replay
 // frames the engine ships to open a session.
 message InvokeRequest {
-  repeated reflow.protocol.v1.Frame frames = 1;
+  repeated reflw.protocol.v1.Frame frames = 1;
 }
 
 // InvokeResponse carries the command frames the handler emitted plus the
 // terminal frame produced by one session run.
 message InvokeResponse {
-  repeated reflow.protocol.v1.Frame frames = 1;
+  repeated reflw.protocol.v1.Frame frames = 1;
 }

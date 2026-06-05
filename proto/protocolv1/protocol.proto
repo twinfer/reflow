@@ -23,10 +23,10 @@
 // (https://github.com/restatedev/service-protocol, MIT-licensed,
 // (c) 2023 Restate Software, Inc., Restate GmbH). The message shapes
 // and Command/Notification split derive from that design; field
-// numbering, package, comment prose, and message set are reflow's.
+// numbering, package, comment prose, and message set are reflw's.
 syntax = "proto3";
 
-package reflow.protocol.v1;
+package reflw.protocol.v1;
 
 option go_package = "github.com/twinfer/reflw/proto/protocolv1;protocolv1";
 
@@ -40,7 +40,7 @@ message Frame {
   // this entry occupies. Lets the SDK build its replay map without
   // decoding payloads to extract completion_id / matching awakeable
   // id. SDK→engine frames leave it unset (engine doesn't track a
-  // replay map); reflow's wire is happy with the field defaulting to 0.
+  // replay map); reflw's wire is happy with the field defaulting to 0.
   uint32 slot = 3;
 }
 

@@ -1,6 +1,6 @@
 # 11. Delivery History
 
-This document chronicles the historical progress and development phases of the Reflow engine.
+This document chronicles the historical progress and development phases of the Reflw engine.
 
 ---
 
@@ -103,8 +103,8 @@ into `EvictNode` proposals to shard 0. The cluster admin CLI lives in
 `reflwd cluster` (`add-node`, `remove-node`, `nodes list`,
 `partitions list`, `snapshot {create,list,delete}`).
 `SnapshotRepository` filesystem driver wired. Admin Connect surface is
-two services on one mTLS-protected listener: `reflow.clusterctl.v1.ClusterCtl`
-(fleet ops) and `reflow.config.v1.Config` (app config — deployments,
+two services on one mTLS-protected listener: `reflw.clusterctl.v1.ClusterCtl`
+(fleet ops) and `reflw.config.v1.Config` (app config — deployments,
 event sources, webhooks, secrets). The split mirrors Restate's
 `cluster-ctrl` vs `admin` naming, with `admin` flipped to `config` to
 avoid the overloaded word.
@@ -128,9 +128,9 @@ and Bearer-JWT verification against one or more OIDC issuers; mTLS wins
 when both are presented. The embedded starter policy
 (`internal/auth/starter_policy.json`, hot-reloaded from
 `cfg.Auth.PolicyFile`) is path-glob: `clusterctl` and `config` rules
-gate `/reflow.clusterctl.v1.ClusterCtl/*` and
-`/reflow.config.v1.Config/*` to `operator/*`; `delivery` gates
-`/reflow.delivery.v1.Delivery/*` to `node/*`; ingress paths default to
+gate `/reflw.clusterctl.v1.ClusterCtl/*` and
+`/reflw.config.v1.Config/*` to `operator/*`; `delivery` gates
+`/reflw.delivery.v1.Delivery/*` to `node/*`; ingress paths default to
 anonymous. See §6.13.
 
 - **Embedded metadata Raft group** (`shardID = 0`) hosted by the same
@@ -154,7 +154,7 @@ anonymous. See §6.13.
   eviction itself remains a Raft decision. No additional dependency
   (memberlist is already vendored inside `lni/dragonboat/v4`).
 - **Endpoint resolution + leader hint cache via gossip.** Every node
-  publishes its reflow gRPC endpoint via the gossip `Meta` blob and reads
+  publishes its reflw gRPC endpoint via the gossip `Meta` blob and reads
   `NodeHostRegistry.GetShardInfo` for `ShardView{LeaderID, Replicas,
   Term}`. Cross-partition delivery dials by `NodeHostID` without re-reading
   shard 0 on the hot path; `NOT_LEADER` triggers a fallback re-read.
@@ -188,14 +188,14 @@ add/remove operations.
   in the journal) → `InputCommandMessage.headers` (sorted-by-key for
   deterministic replay bytes) → `wireContext.metadata` →
   `handler.Context.Metadata()`. REST surface convention: HTTP headers
-  prefixed `Reflow-Meta-*` are lifted (lowercased + stripped) into the
+  prefixed `Reflw-Meta-*` are lifted (lowercased + stripped) into the
   proto field, so operator HMAC-verifier middleware can stamp facts
   the durable handler reads without re-verifying.
 - **`pkg/hostmux` operator primitive.** Trust-aware host dispatcher with
   atomic-swappable table for runtime reconfig. Lives in `pkg/` because
-  it is operator infrastructure, not engine machinery — Reflow itself
+  it is operator infrastructure, not engine machinery — Reflw itself
   does not import it. Enables multi-tenant SaaS via per-host
-  routing without Reflow owning tenant state.
+  routing without Reflw owning tenant state.
 
 ---
 
@@ -305,7 +305,7 @@ OIDC client secrets tomorrow) references the secret.
   the consumer; multiple consumers may share one secret name.
   Resolve failure preserves the previously-resolved bytes.
   Hand-instrumented Prometheus
-  (`reflow_secretstore_decrypt_total{kek_scheme}` /
+  (`reflw_secretstore_decrypt_total{kek_scheme}` /
   `_errors_total{name,kek_scheme,stage}` / `_seconds`) because
   Tink's `monitoring.RegisterMonitoringClient` lives in
   `tink-go/v2/internal/internalregistry` (blocked from external
@@ -383,7 +383,7 @@ full design.
   (`len(routing.Diff(current, desired)) / total_LPs`); hysteresis
   engage 15% / disengage 8%; defaults are conservative (1 concurrent
   transfer, 60s cooldown). Eight new metrics under
-  `reflow_rebalance_*`. CLI: `reflwd cluster rebalance-advise`
+  `reflw_rebalance_*`. CLI: `reflwd cluster rebalance-advise`
   (read-only) + `reflwd cluster rebalance-drain --shard=N [--stop]`.
 
 **Deferred to PR 5.1+:** capacity circuit breakers (Pebble L0,
@@ -413,9 +413,9 @@ wire SST upload RPC + dest Ingest end-to-end`.)
 - Operational docs: deployment recipes, backup/restore, upgrade
   procedure (using the per-DB storage format marker from §6.2).
 - **Non-Go SDKs (community-driven).** TypeScript / Python / Java / Kotlin
-  / Rust SDKs talk to reflow via the same `protocolv1` HTTP/2 wire as the
+  / Rust SDKs talk to reflw via the same `protocolv1` HTTP/2 wire as the
   Go SDK (§6.10). These ride on whatever effort the community
-  contributes; reflow itself guarantees the wire-protocol surface, not
+  contributes; reflw itself guarantees the wire-protocol surface, not
   the SDK quality across languages.
 
 ---
@@ -441,8 +441,8 @@ entry records their removal.
   anonymous; the per-procedure decision is now Cedar's.
 - **Authz → Cedar.** `internal/authz` evaluates `cedar-policy/cedar-go`
   policies, replacing the old path-glob / proto-annotation authz. The
-  foundational policy gates `/reflow.clusterctl.v1.ClusterCtl/*` and
-  `/reflow.config.v1.Config/*` to `operator/*` (one carve-out:
+  foundational policy gates `/reflw.clusterctl.v1.ClusterCtl/*` and
+  `/reflw.config.v1.Config/*` to `operator/*` (one carve-out:
   `SelfJoin` for `node/*`), and enforces full tenant isolation on the
   ingress data plane.
 - **Batteries removed.** Event sources, webhooks, OIDC ingress, quota,

@@ -20,15 +20,15 @@ func TestListenerSecurityLevel_GaugeShape(t *testing.T) {
 	m.ListenerSecurityLevel.WithLabelValues("ingress", "insecure").Set(0)
 
 	const expected = `
-# HELP reflow_listener_security_level Transport security level per gRPC listener. 0=NoSecurity, 1=IntegrityOnly, 2=PrivacyAndIntegrity.
-# TYPE reflow_listener_security_level gauge
-reflow_listener_security_level{driver="insecure",listener="ingress"} 0
-reflow_listener_security_level{driver="tls",listener="admin"} 2
-reflow_listener_security_level{driver="tls",listener="delivery"} 2
+# HELP reflw_listener_security_level Transport security level per gRPC listener. 0=NoSecurity, 1=IntegrityOnly, 2=PrivacyAndIntegrity.
+# TYPE reflw_listener_security_level gauge
+reflw_listener_security_level{driver="insecure",listener="ingress"} 0
+reflw_listener_security_level{driver="tls",listener="admin"} 2
+reflw_listener_security_level{driver="tls",listener="delivery"} 2
 `
 	if err := testutil.GatherAndCompare(reg,
 		strings.NewReader(expected),
-		"reflow_listener_security_level"); err != nil {
+		"reflw_listener_security_level"); err != nil {
 		t.Fatal(err)
 	}
 }

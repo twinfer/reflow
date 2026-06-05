@@ -11,15 +11,15 @@ import (
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
-// ProcessEngine runs one deterministic step of an iflow process/case instance.
-// It is injected (the iflow binding lives outside internal/engine — in
-// pkg/reflow or an iflow-side adapter) so the engine never imports iflow. This
+// ProcessEngine runs one deterministic step of an reflwos process/case instance.
+// It is injected (the reflwos binding lives outside internal/engine — in
+// pkg/reflw or an reflwos-side adapter) so the engine never imports reflwos. This
 // is the same dependency inversion WireDispatcher/InProcDialer use to keep
 // handler code out of the engine.
 //
 // Advance must be pure and deterministic with respect to (Record, Event,
 // LogicalTimeMs): the implementation reaches wall-clock time only through
-// LogicalTimeMs (fed to the iflow engine clock), so a turn re-driven on a new
+// LogicalTimeMs (fed to the reflwos engine clock), so a turn re-driven on a new
 // leader reproduces the same ProcessAdvanced byte-for-byte. Advance does no
 // external I/O; a model/evaluation failure of THIS instance is returned as an
 // error and the session converts it into a failed ProcessTerminal.
@@ -29,7 +29,7 @@ type ProcessEngine interface {
 
 // ProcessAdvanceInput is one turn's input: the instance's pinned record
 // (model_ref + kind + current state_blob) and the turn payload (Entry: an
-// opaque iflow event or reflow-native feedback, plus the stamped logical time
+// opaque reflwos event or reflw-native feedback, plus the stamped logical time
 // the engine clock reads). Pk/Service/InstanceKey are echoed onto the returned
 // ProcessAdvanced so the apply path can address the instance row.
 type ProcessAdvanceInput struct {
@@ -70,7 +70,7 @@ type processSession struct {
 var _ sessionHandle = (*processSession)(nil)
 
 // newProcessSession constructs an inactive session. Call start to spawn its
-// goroutine. entry is the turn payload (opaque iflow event or reflow-native
+// goroutine. entry is the turn payload (opaque reflwos event or reflw-native
 // feedback) plus the stamped logical instant the ProcessEngine feeds the clock.
 func newProcessSession(
 	parent context.Context,
@@ -100,7 +100,7 @@ func (s *processSession) abort()                { s.cancel() }
 func (s *processSession) Done() <-chan struct{} { return s.done }
 
 // advance runs one ProcessEngine turn, recovering a panic into an error. The
-// engine is an injected, possibly-third-party adapter (iflow); a bug in it (a
+// engine is an injected, possibly-third-party adapter (reflwos); a bug in it (a
 // nil-token deref, an out-of-range index reconstructing state) must fail the one
 // instance via run's terminal-failure path — never crash the durable node. This
 // mirrors the host driver's per-case recover and the FSM's log-and-continue rule.

@@ -1,5 +1,5 @@
 // Package wire is the shared protocol vocabulary spoken by both the
-// reflow engine (internal/engine/handlerclient) and the handler SDK
+// reflw engine (internal/engine/handlerclient) and the handler SDK
 // (pkg/handler). It contains the Codec interface, the Type* frame-code
 // constants, the Frame helpers, and Route — anything that needs the
 // same definition on both sides of an engine↔handler session.
@@ -15,13 +15,13 @@ import (
 
 // Codec encodes the inner protocolv1 message payloads carried inside a
 // Frame's payload field. The Frame envelope itself is always protobuf
-// for wire compatibility across reflow nodes and languages; Codec
+// for wire compatibility across reflw nodes and languages; Codec
 // controls only the inner message encoding (StartMessage,
 // OutputCommandMessage, etc.).
 //
 // Both sides of a session must agree on the codec. The engine and the
 // handler-side server are configured separately; the HTTP Content-Type
-// carries the codec name (application/vnd.reflow.invocation.v1+<codec>)
+// carries the codec name (application/vnd.reflw.invocation.v1+<codec>)
 // so the handler can verify negotiation succeeded.
 type Codec interface {
 	Marshal(v any) ([]byte, error)

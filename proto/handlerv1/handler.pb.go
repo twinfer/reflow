@@ -138,13 +138,13 @@ var File_handlerv1_handler_proto protoreflect.FileDescriptor
 
 const file_handlerv1_handler_proto_rawDesc = "" +
 	"\n" +
-	"\x17handlerv1/handler.proto\x12\x11reflow.handler.v1\x1a\x19protocolv1/protocol.proto\"B\n" +
-	"\rInvokeRequest\x121\n" +
-	"\x06frames\x18\x01 \x03(\v2\x19.reflow.protocol.v1.FrameR\x06frames\"C\n" +
-	"\x0eInvokeResponse\x121\n" +
-	"\x06frames\x18\x01 \x03(\v2\x19.reflow.protocol.v1.FrameR\x06frames2_\n" +
-	"\x0eHandlerService\x12M\n" +
-	"\x06Invoke\x12 .reflow.handler.v1.InvokeRequest\x1a!.reflow.handler.v1.InvokeResponseB4Z2github.com/twinfer/reflw/proto/handlerv1;handlerv1b\x06proto3"
+	"\x17handlerv1/handler.proto\x12\x10reflw.handler.v1\x1a\x19protocolv1/protocol.proto\"A\n" +
+	"\rInvokeRequest\x120\n" +
+	"\x06frames\x18\x01 \x03(\v2\x18.reflw.protocol.v1.FrameR\x06frames\"B\n" +
+	"\x0eInvokeResponse\x120\n" +
+	"\x06frames\x18\x01 \x03(\v2\x18.reflw.protocol.v1.FrameR\x06frames2]\n" +
+	"\x0eHandlerService\x12K\n" +
+	"\x06Invoke\x12\x1f.reflw.handler.v1.InvokeRequest\x1a .reflw.handler.v1.InvokeResponseB4Z2github.com/twinfer/reflw/proto/handlerv1;handlerv1b\x06proto3"
 
 var (
 	file_handlerv1_handler_proto_rawDescOnce sync.Once
@@ -160,15 +160,15 @@ func file_handlerv1_handler_proto_rawDescGZIP() []byte {
 
 var file_handlerv1_handler_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_handlerv1_handler_proto_goTypes = []any{
-	(*InvokeRequest)(nil),    // 0: reflow.handler.v1.InvokeRequest
-	(*InvokeResponse)(nil),   // 1: reflow.handler.v1.InvokeResponse
-	(*protocolv1.Frame)(nil), // 2: reflow.protocol.v1.Frame
+	(*InvokeRequest)(nil),    // 0: reflw.handler.v1.InvokeRequest
+	(*InvokeResponse)(nil),   // 1: reflw.handler.v1.InvokeResponse
+	(*protocolv1.Frame)(nil), // 2: reflw.protocol.v1.Frame
 }
 var file_handlerv1_handler_proto_depIdxs = []int32{
-	2, // 0: reflow.handler.v1.InvokeRequest.frames:type_name -> reflow.protocol.v1.Frame
-	2, // 1: reflow.handler.v1.InvokeResponse.frames:type_name -> reflow.protocol.v1.Frame
-	0, // 2: reflow.handler.v1.HandlerService.Invoke:input_type -> reflow.handler.v1.InvokeRequest
-	1, // 3: reflow.handler.v1.HandlerService.Invoke:output_type -> reflow.handler.v1.InvokeResponse
+	2, // 0: reflw.handler.v1.InvokeRequest.frames:type_name -> reflw.protocol.v1.Frame
+	2, // 1: reflw.handler.v1.InvokeResponse.frames:type_name -> reflw.protocol.v1.Frame
+	0, // 2: reflw.handler.v1.HandlerService.Invoke:input_type -> reflw.handler.v1.InvokeRequest
+	1, // 3: reflw.handler.v1.HandlerService.Invoke:output_type -> reflw.handler.v1.InvokeResponse
 	3, // [3:4] is the sub-list for method output_type
 	2, // [2:3] is the sub-list for method input_type
 	2, // [2:2] is the sub-list for extension type_name

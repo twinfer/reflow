@@ -18,7 +18,7 @@ import (
 )
 
 // Toxiproxy is the per-cluster network-chaos handle. It owns N sidecar
-// toxiproxy containers (one per source reflowd node) and exposes Cut /
+// toxiproxy containers (one per source reflwd node) and exposes Cut /
 // Heal primitives that match the bufconn PartitionMatrix's API:
 // `Cut(a, b)` is symmetric and unordered, equivalent to "the network
 // link between nodes a and b is dropped"; `CutDir(from, to)` is the
@@ -33,7 +33,7 @@ import (
 //     per-source-target ("cut A→B but leave C→B alive") structurally
 //     impossible at the address layer.
 //
-//   - We recover per-pair granularity by giving each reflowd container
+//   - We recover per-pair granularity by giving each reflwd container
 //     its own per-source toxiproxy sidecar and rewriting peer hostnames
 //     in that container's /etc/hosts to point at its sidecar's IP. The
 //     advertised port differs per target so each sidecar can host one
@@ -53,7 +53,7 @@ type Toxiproxy struct {
 // nodeID to target nodeID.
 type proxyKey struct{ from, to uint64 }
 
-// targetHost returns the hostname every reflowd container uses to
+// targetHost returns the hostname every reflwd container uses to
 // reach the raft listener of node `target`. The hostname is the same
 // cluster-wide; the per-source ExtraHosts override is what redirects
 // each source to its own sidecar. Bound to /etc/hosts via Docker
@@ -65,15 +65,15 @@ func targetHost(target uint64) string {
 // targetRaftPort returns the advertised raft port for node `target`.
 // Each node gets a unique port so a sidecar's per-target proxies can
 // listen on distinct ports without colliding. The bind port (where
-// reflowd actually listens for raft) is still `raftPort` from
-// cluster.go; toxiproxy upstreams point at <reflowd-node-N:raftPort>.
+// reflwd actually listens for raft) is still `raftPort` from
+// cluster.go; toxiproxy upstreams point at <reflwd-node-N:raftPort>.
 func targetRaftPort(target uint64) int {
 	return 19000 + int(target)
 }
 
 // sidecarIP returns the static IPAM address of the toxiproxy sidecar
 // assigned to source nodeID. Lives in the 10.X.0.20+ range (per-process
-// X chosen in network.go) so it never collides with reflowd-nodeIP
+// X chosen in network.go) so it never collides with reflwd-nodeIP
 // (10.X.0.10+).
 func sidecarIP(source uint64) string {
 	processSubnetMu.Lock()
@@ -81,7 +81,7 @@ func sidecarIP(source uint64) string {
 	return fmt.Sprintf("10.%d.0.%d", clusterOctet, 20+source)
 }
 
-// raftAdvertisedThrough is what reflowd publishes through gossip as its
+// raftAdvertisedThrough is what reflwd publishes through gossip as its
 // RaftAddress. Every peer's container resolves the hostname via the
 // per-container ExtraHosts to the local sidecar; the port encodes
 // which target the traffic is for.
@@ -89,7 +89,7 @@ func raftAdvertisedThrough(target uint64) string {
 	return fmt.Sprintf("%s:%d", targetHost(target), targetRaftPort(target))
 }
 
-// peerExtraHosts builds the docker --add-host entries reflowd-node-K
+// peerExtraHosts builds the docker --add-host entries reflwd-node-K
 // needs so that dragonboat's `dial peer-target-J` lands on tox-from-K.
 // For self (J == K) the route still points at the sidecar — raft
 // short-circuits self in practice, but a self-dial through the sidecar
@@ -110,7 +110,7 @@ func peerExtraHosts(source uint64) []string {
 
 // startToxiproxy brings up the N toxiproxy sidecars in parallel.
 // Each sidecar gets a static IP and a stable DNS alias on `nw` so the
-// reflowd containers' /etc/hosts overrides have a fixed target. After
+// reflwd containers' /etc/hosts overrides have a fixed target. After
 // every sidecar is healthy (control API responds at /version), the
 // per-source proxies are created via the toxiproxy HTTP client; the
 // returned Toxiproxy can then mutate proxy state mid-test.
@@ -168,7 +168,7 @@ func startToxiproxy(t testing.TB, ctx context.Context, nw *testcontainers.Docker
 		cli := tox.clients[source]
 		for target := uint64(1); target <= uint64(n); target++ {
 			listen := fmt.Sprintf("0.0.0.0:%d", targetRaftPort(target))
-			upstream := fmt.Sprintf("reflowd-node%d:%s", target, raftPort)
+			upstream := fmt.Sprintf("reflwd-node%d:%s", target, raftPort)
 			name := fmt.Sprintf("from%d_to%d_raft", source, target)
 			p, err := cli.CreateProxy(name, listen, upstream)
 			if err != nil {
@@ -183,7 +183,7 @@ func startToxiproxy(t testing.TB, ctx context.Context, nw *testcontainers.Docker
 // startOneSidecar runs a single toxiproxy container on the cluster
 // network with a stable IP + DNS alias. The control API on 8474 is
 // the only port the test process talks to; proxy listen ports are
-// internal-only (reachable from peer reflowd containers but never
+// internal-only (reachable from peer reflwd containers but never
 // host-mapped — chaos tests don't need them visible from outside).
 func startOneSidecar(ctx context.Context, nw *testcontainers.DockerNetwork, source uint64) (testcontainers.Container, *toxiclient.Client, error) {
 	alias := fmt.Sprintf("tox-from-%d", source)
@@ -214,7 +214,7 @@ func startOneSidecar(ctx context.Context, nw *testcontainers.DockerNetwork, sour
 		return c, nil, fmt.Errorf("start: %w", err)
 	}
 	// The host-mapped control endpoint is how the test process drives
-	// the toxiproxy API; the docker-internal IP is what reflowd
+	// the toxiproxy API; the docker-internal IP is what reflwd
 	// containers route through.
 	host, err := c.Host(ctx)
 	if err != nil {
@@ -424,6 +424,6 @@ func (t *Toxiproxy) lookup(from, to uint64) (*toxiclient.Proxy, error) {
 }
 
 // toxiproxyImage is pinned for reproducibility. Override via
-// REFLOW_E2E_TOXIPROXY_IMAGE; not exposed via the e2e API since this
+// REFLW_E2E_TOXIPROXY_IMAGE; not exposed via the e2e API since this
 // is a test-tier dependency, not something operators configure.
 const toxiproxyImage = "ghcr.io/shopify/toxiproxy:2.12.0"

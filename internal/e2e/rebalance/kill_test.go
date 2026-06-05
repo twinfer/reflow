@@ -38,11 +38,11 @@ func TestE2EBalance_KillMidTransfer(t *testing.T) {
 		N:         3,
 		NumShards: 3,
 		ExtraEnv: map[string]string{
-			"REFLOW_REBALANCE_MODE":                          "auto",
-			"REFLOW_REBALANCE_MAX_CONCURRENT_TRANSFERS":      "8",
-			"REFLOW_REBALANCE_MIN_SECONDS_BETWEEN_TRANSFERS": "0",
-			"REFLOW_REBALANCE_SKEW_ENGAGE_PCT":               "5",
-			"REFLOW_REBALANCE_SKEW_DISENGAGE_PCT":            "1",
+			"REFLW_REBALANCE_MODE":                          "auto",
+			"REFLW_REBALANCE_MAX_CONCURRENT_TRANSFERS":      "8",
+			"REFLW_REBALANCE_MIN_SECONDS_BETWEEN_TRANSFERS": "0",
+			"REFLW_REBALANCE_SKEW_ENGAGE_PCT":               "5",
+			"REFLW_REBALANCE_SKEW_DISENGAGE_PCT":            "1",
 		},
 	})
 

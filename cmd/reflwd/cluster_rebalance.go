@@ -10,7 +10,7 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflw/pkg/reflowclient"
+	"github.com/twinfer/reflw/pkg/reflwclient"
 	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
 )
 
@@ -24,7 +24,7 @@ func cmdRebalanceAdvise(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
+	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
 		resp, err := cli.Cluster.RebalanceAdvise(ctx, connect.NewRequest(&clusterctlv1.RebalanceAdviseRequest{}))
 		if err != nil {
 			return err
@@ -63,7 +63,7 @@ func cmdRebalanceDrain(ctx context.Context, args []string) error {
 		return errors.New("--shard is required (must be a partition shard id, not 0)")
 	}
 	drain := !*stop
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
 		adv, err := cli.Cluster.RebalanceAdvise(rctx, connect.NewRequest(&clusterctlv1.RebalanceAdviseRequest{}))
 		if err != nil {
 			return fmt.Errorf("read pre-drain advisory: %w", err)

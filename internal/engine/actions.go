@@ -128,7 +128,7 @@ type ActSignalLPTransferAbortAck struct {
 func (ActSignalLPTransferAbortAck) isAction() {}
 
 // ActAdvanceProcess asks the invoker to run one process-instance turn: load
-// the ProcessInstanceRecord, run the injected iflow engine on the carried
+// the ProcessInstanceRecord, run the injected reflwos engine on the carried
 // inbox entry, and propose ProcessAdvanced. Emitted by the ProcessEvent /
 // ProcessAdvanced apply arms when an inbox seq becomes the active turn.
 type ActAdvanceProcess struct {

@@ -4,16 +4,16 @@
 // cluster: handler deployments, event-source bindings, inbound
 // webhook bindings, and the named-secret table consumers reference.
 // It is the developer-facing counterpart to
-// reflow.clusterctl.v1.ClusterCtl (which owns cluster topology, DR,
+// reflw.clusterctl.v1.ClusterCtl (which owns cluster topology, DR,
 // and routing). Naming mirrors Restate's split between
 // `cluster-ctrl` (cluster admin) and `admin` (app config), with the
 // terminology flipped to avoid the overloaded word "admin".
 //
-// Every reflowd process hosts a Config Connect RPC server on the
+// Every reflwd process hosts a Config Connect RPC server on the
 // admin listener (same port as ClusterCtl in step 1; a follow-on may
 // move Config onto its own port if/when we want different network
 // exposure). The server is mTLS-protected; today's starter policy
-// gates /reflow.config.v1.Config/* to operator/* principals — same as
+// gates /reflw.config.v1.Config/* to operator/* principals — same as
 // ClusterCtl. The separation of services is the seam for later
 // delegating Config to a narrower credential (tenant admin, CI
 // service account) without loosening cluster-control authority.
@@ -1651,8 +1651,8 @@ func (x *LeaderHint) GetAdminEndpoint() string {
 }
 
 // CreateJoinTokenRequest configures a one-time bootstrap credential.
-//   - kind: NODE for a `reflowd run --join` flow, OPERATOR for
-//     `reflowd config issue-operator` (the operator generates the
+//   - kind: NODE for a `reflwd run --join` flow, OPERATOR for
+//     `reflwd config issue-operator` (the operator generates the
 //     keypair locally and submits a CSR — same RPC, different path
 //     into the cluster).
 //   - requested_name: the CN-name segment the joiner will use. For
@@ -1669,7 +1669,7 @@ func (x *LeaderHint) GetAdminEndpoint() string {
 //     for ephemeral CI scenarios.
 type CreateJoinTokenRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Kind          enginev1.JoinTokenKind `protobuf:"varint,1,opt,name=kind,proto3,enum=reflow.engine.v1.JoinTokenKind" json:"kind,omitempty"`
+	Kind          enginev1.JoinTokenKind `protobuf:"varint,1,opt,name=kind,proto3,enum=reflw.engine.v1.JoinTokenKind" json:"kind,omitempty"`
 	RequestedName string                 `protobuf:"bytes,2,opt,name=requested_name,json=requestedName,proto3" json:"requested_name,omitempty"`
 	TtlSeconds    uint64                 `protobuf:"varint,3,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`
 	SingleUse     bool                   `protobuf:"varint,4,opt,name=single_use,json=singleUse,proto3" json:"single_use,omitempty"`
@@ -1983,7 +1983,7 @@ func (x *ListJoinTokensResponse) GetTableRevision() uint64 {
 }
 
 // IssueOperatorRequest carries an operator-generated CSR. Replaces the
-// deleted `reflowd pki issue-operator` flow. The operator keypair never
+// deleted `reflwd pki issue-operator` flow. The operator keypair never
 // leaves the operator's machine; the server signs only the public key.
 type IssueOperatorRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -2105,7 +2105,7 @@ var File_configv1_config_proto protoreflect.FileDescriptor
 
 const file_configv1_config_proto_rawDesc = "" +
 	"\n" +
-	"\x15configv1/config.proto\x12\x10reflow.config.v1\x1a\x15enginev1/engine.proto\"\xc9\x01\n" +
+	"\x15configv1/config.proto\x12\x0freflw.config.v1\x1a\x15enginev1/engine.proto\"\xc9\x01\n" +
 	"\x19RegisterDeploymentRequest\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12.\n" +
 	"\x13max_journal_entries\x18\x02 \x01(\rR\x11maxJournalEntries\x126\n" +
@@ -2113,39 +2113,39 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\x15workflow_retention_ms\x18\x04 \x01(\x04R\x13workflowRetentionMs\"A\n" +
 	"\x1aRegisterDeploymentResponse\x12#\n" +
 	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\"\x18\n" +
-	"\x16ListDeploymentsRequest\"\x86\x01\n" +
-	"\x17ListDeploymentsResponse\x12D\n" +
-	"\vdeployments\x18\x01 \x03(\v2\".reflow.engine.v1.DeploymentRecordR\vdeployments\x12%\n" +
+	"\x16ListDeploymentsRequest\"\x85\x01\n" +
+	"\x17ListDeploymentsResponse\x12C\n" +
+	"\vdeployments\x18\x01 \x03(\v2!.reflw.engine.v1.DeploymentRecordR\vdeployments\x12%\n" +
 	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"@\n" +
 	"\x19DescribeDeploymentRequest\x12#\n" +
-	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\"`\n" +
-	"\x1aDescribeDeploymentResponse\x12B\n" +
+	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\"_\n" +
+	"\x1aDescribeDeploymentResponse\x12A\n" +
 	"\n" +
-	"deployment\x18\x01 \x01(\v2\".reflow.engine.v1.DeploymentRecordR\n" +
+	"deployment\x18\x01 \x01(\v2!.reflw.engine.v1.DeploymentRecordR\n" +
 	"deployment\"\x85\x01\n" +
 	"\x17DeleteDeploymentRequest\x12#\n" +
 	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\x12\x14\n" +
 	"\x05force\x18\x02 \x01(\bR\x05force\x12/\n" +
 	"\x14if_table_revision_eq\x18\x03 \x01(\x04R\x11ifTableRevisionEq\"A\n" +
 	"\x18DeleteDeploymentResponse\x12%\n" +
-	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"\xc7\x01\n" +
-	"\x12UpsertModelRequest\x127\n" +
-	"\tmodel_ref\x18\x01 \x01(\v2\x1a.reflow.engine.v1.ModelRefR\bmodelRef\x12\x10\n" +
+	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"\xc5\x01\n" +
+	"\x12UpsertModelRequest\x126\n" +
+	"\tmodel_ref\x18\x01 \x01(\v2\x19.reflw.engine.v1.ModelRefR\bmodelRef\x12\x10\n" +
 	"\x03xml\x18\x02 \x01(\fR\x03xml\x12/\n" +
-	"\x14if_table_revision_eq\x18\x03 \x01(\x04R\x11ifTableRevisionEq\x125\n" +
-	"\x06bundle\x18\x04 \x01(\v2\x1d.reflow.engine.v1.ModelBundleR\x06bundle\"<\n" +
+	"\x14if_table_revision_eq\x18\x03 \x01(\x04R\x11ifTableRevisionEq\x124\n" +
+	"\x06bundle\x18\x04 \x01(\v2\x1c.reflw.engine.v1.ModelBundleR\x06bundle\"<\n" +
 	"\x13UpsertModelResponse\x12%\n" +
 	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"\x13\n" +
-	"\x11ListModelsRequest\"t\n" +
-	"\x12ListModelsResponse\x127\n" +
-	"\arecords\x18\x01 \x03(\v2\x1d.reflow.engine.v1.ModelRecordR\arecords\x12%\n" +
-	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"O\n" +
-	"\x14DescribeModelRequest\x127\n" +
-	"\tmodel_ref\x18\x01 \x01(\v2\x1a.reflow.engine.v1.ModelRefR\bmodelRef\"N\n" +
-	"\x15DescribeModelResponse\x125\n" +
-	"\x06record\x18\x01 \x01(\v2\x1d.reflow.engine.v1.ModelRecordR\x06record\"~\n" +
-	"\x12DeleteModelRequest\x127\n" +
-	"\tmodel_ref\x18\x01 \x01(\v2\x1a.reflow.engine.v1.ModelRefR\bmodelRef\x12/\n" +
+	"\x11ListModelsRequest\"s\n" +
+	"\x12ListModelsResponse\x126\n" +
+	"\arecords\x18\x01 \x03(\v2\x1c.reflw.engine.v1.ModelRecordR\arecords\x12%\n" +
+	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"N\n" +
+	"\x14DescribeModelRequest\x126\n" +
+	"\tmodel_ref\x18\x01 \x01(\v2\x19.reflw.engine.v1.ModelRefR\bmodelRef\"M\n" +
+	"\x15DescribeModelResponse\x124\n" +
+	"\x06record\x18\x01 \x01(\v2\x1c.reflw.engine.v1.ModelRecordR\x06record\"}\n" +
+	"\x12DeleteModelRequest\x126\n" +
+	"\tmodel_ref\x18\x01 \x01(\v2\x19.reflw.engine.v1.ModelRefR\bmodelRef\x12/\n" +
 	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"<\n" +
 	"\x13DeleteModelResponse\x12%\n" +
 	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"s\n" +
@@ -2159,9 +2159,9 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\x1dGetClusterAuthzPolicyResponse\x12\x1f\n" +
 	"\vpolicy_text\x18\x01 \x01(\tR\n" +
 	"policyText\x12%\n" +
-	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"~\n" +
-	"\x13UpsertSecretRequest\x126\n" +
-	"\x06record\x18\x01 \x01(\v2\x1e.reflow.engine.v1.SecretRecordR\x06record\x12/\n" +
+	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"}\n" +
+	"\x13UpsertSecretRequest\x125\n" +
+	"\x06record\x18\x01 \x01(\v2\x1d.reflw.engine.v1.SecretRecordR\x06record\x12/\n" +
 	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"=\n" +
 	"\x14UpsertSecretResponse\x12%\n" +
 	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"Z\n" +
@@ -2170,12 +2170,12 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"=\n" +
 	"\x14DeleteSecretResponse\x12%\n" +
 	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"\x14\n" +
-	"\x12ListSecretsRequest\"v\n" +
-	"\x13ListSecretsResponse\x128\n" +
-	"\arecords\x18\x01 \x03(\v2\x1e.reflow.engine.v1.SecretRecordR\arecords\x12%\n" +
-	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"~\n" +
-	"\x13UpsertCARootRequest\x126\n" +
-	"\x06record\x18\x01 \x01(\v2\x1e.reflow.engine.v1.CARootRecordR\x06record\x12/\n" +
+	"\x12ListSecretsRequest\"u\n" +
+	"\x13ListSecretsResponse\x127\n" +
+	"\arecords\x18\x01 \x03(\v2\x1d.reflw.engine.v1.SecretRecordR\arecords\x12%\n" +
+	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"}\n" +
+	"\x13UpsertCARootRequest\x125\n" +
+	"\x06record\x18\x01 \x01(\v2\x1d.reflw.engine.v1.CARootRecordR\x06record\x12/\n" +
 	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"=\n" +
 	"\x14UpsertCARootResponse\x12%\n" +
 	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"Z\n" +
@@ -2184,16 +2184,16 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"=\n" +
 	"\x14DeleteCARootResponse\x12%\n" +
 	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"\x14\n" +
-	"\x12ListCARootsRequest\"v\n" +
-	"\x13ListCARootsResponse\x128\n" +
-	"\arecords\x18\x01 \x03(\v2\x1e.reflow.engine.v1.CARootRecordR\arecords\x12%\n" +
+	"\x12ListCARootsRequest\"u\n" +
+	"\x13ListCARootsResponse\x127\n" +
+	"\arecords\x18\x01 \x03(\v2\x1d.reflw.engine.v1.CARootRecordR\arecords\x12%\n" +
 	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"L\n" +
 	"\n" +
 	"LeaderHint\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12%\n" +
-	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint\"\xb4\x01\n" +
-	"\x16CreateJoinTokenRequest\x123\n" +
-	"\x04kind\x18\x01 \x01(\x0e2\x1f.reflow.engine.v1.JoinTokenKindR\x04kind\x12%\n" +
+	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint\"\xb3\x01\n" +
+	"\x16CreateJoinTokenRequest\x122\n" +
+	"\x04kind\x18\x01 \x01(\x0e2\x1e.reflw.engine.v1.JoinTokenKindR\x04kind\x12%\n" +
 	"\x0erequested_name\x18\x02 \x01(\tR\rrequestedName\x12\x1f\n" +
 	"\vttl_seconds\x18\x03 \x01(\x04R\n" +
 	"ttlSeconds\x12\x1d\n" +
@@ -2210,9 +2210,9 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"@\n" +
 	"\x17DeleteJoinTokenResponse\x12%\n" +
 	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"\x17\n" +
-	"\x15ListJoinTokensRequest\"|\n" +
-	"\x16ListJoinTokensResponse\x12;\n" +
-	"\arecords\x18\x01 \x03(\v2!.reflow.engine.v1.JoinTokenRecordR\arecords\x12%\n" +
+	"\x15ListJoinTokensRequest\"{\n" +
+	"\x16ListJoinTokensResponse\x12:\n" +
+	"\arecords\x18\x01 \x03(\v2 .reflw.engine.v1.JoinTokenRecordR\arecords\x12%\n" +
 	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"Z\n" +
 	"\x14IssueOperatorRequest\x12\x17\n" +
 	"\acsr_der\x18\x01 \x01(\fR\x06csrDer\x12)\n" +
@@ -2221,29 +2221,29 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\bcert_pem\x18\x01 \x01(\fR\acertPem\x12 \n" +
 	"\fca_chain_pem\x18\x02 \x01(\fR\n" +
 	"caChainPem\x12%\n" +
-	"\x0eca_fingerprint\x18\x03 \x01(\tR\rcaFingerprint2\xf9\x0f\n" +
-	"\x06Config\x12o\n" +
-	"\x12RegisterDeployment\x12+.reflow.config.v1.RegisterDeploymentRequest\x1a,.reflow.config.v1.RegisterDeploymentResponse\x12f\n" +
-	"\x0fListDeployments\x12(.reflow.config.v1.ListDeploymentsRequest\x1a).reflow.config.v1.ListDeploymentsResponse\x12o\n" +
-	"\x12DescribeDeployment\x12+.reflow.config.v1.DescribeDeploymentRequest\x1a,.reflow.config.v1.DescribeDeploymentResponse\x12i\n" +
-	"\x10DeleteDeployment\x12).reflow.config.v1.DeleteDeploymentRequest\x1a*.reflow.config.v1.DeleteDeploymentResponse\x12Z\n" +
-	"\vUpsertModel\x12$.reflow.config.v1.UpsertModelRequest\x1a%.reflow.config.v1.UpsertModelResponse\x12W\n" +
+	"\x0eca_fingerprint\x18\x03 \x01(\tR\rcaFingerprint2\xd0\x0f\n" +
+	"\x06Config\x12m\n" +
+	"\x12RegisterDeployment\x12*.reflw.config.v1.RegisterDeploymentRequest\x1a+.reflw.config.v1.RegisterDeploymentResponse\x12d\n" +
+	"\x0fListDeployments\x12'.reflw.config.v1.ListDeploymentsRequest\x1a(.reflw.config.v1.ListDeploymentsResponse\x12m\n" +
+	"\x12DescribeDeployment\x12*.reflw.config.v1.DescribeDeploymentRequest\x1a+.reflw.config.v1.DescribeDeploymentResponse\x12g\n" +
+	"\x10DeleteDeployment\x12(.reflw.config.v1.DeleteDeploymentRequest\x1a).reflw.config.v1.DeleteDeploymentResponse\x12X\n" +
+	"\vUpsertModel\x12#.reflw.config.v1.UpsertModelRequest\x1a$.reflw.config.v1.UpsertModelResponse\x12U\n" +
 	"\n" +
-	"ListModels\x12#.reflow.config.v1.ListModelsRequest\x1a$.reflow.config.v1.ListModelsResponse\x12`\n" +
-	"\rDescribeModel\x12&.reflow.config.v1.DescribeModelRequest\x1a'.reflow.config.v1.DescribeModelResponse\x12Z\n" +
-	"\vDeleteModel\x12$.reflow.config.v1.DeleteModelRequest\x1a%.reflow.config.v1.DeleteModelResponse\x12]\n" +
-	"\fUpsertSecret\x12%.reflow.config.v1.UpsertSecretRequest\x1a&.reflow.config.v1.UpsertSecretResponse\x12]\n" +
-	"\fDeleteSecret\x12%.reflow.config.v1.DeleteSecretRequest\x1a&.reflow.config.v1.DeleteSecretResponse\x12Z\n" +
-	"\vListSecrets\x12$.reflow.config.v1.ListSecretsRequest\x1a%.reflow.config.v1.ListSecretsResponse\x12]\n" +
-	"\fUpsertCARoot\x12%.reflow.config.v1.UpsertCARootRequest\x1a&.reflow.config.v1.UpsertCARootResponse\x12]\n" +
-	"\fDeleteCARoot\x12%.reflow.config.v1.DeleteCARootRequest\x1a&.reflow.config.v1.DeleteCARootResponse\x12Z\n" +
-	"\vListCARoots\x12$.reflow.config.v1.ListCARootsRequest\x1a%.reflow.config.v1.ListCARootsResponse\x12f\n" +
-	"\x0fCreateJoinToken\x12(.reflow.config.v1.CreateJoinTokenRequest\x1a).reflow.config.v1.CreateJoinTokenResponse\x12f\n" +
-	"\x0fDeleteJoinToken\x12(.reflow.config.v1.DeleteJoinTokenRequest\x1a).reflow.config.v1.DeleteJoinTokenResponse\x12c\n" +
-	"\x0eListJoinTokens\x12'.reflow.config.v1.ListJoinTokensRequest\x1a(.reflow.config.v1.ListJoinTokensResponse\x12`\n" +
-	"\rIssueOperator\x12&.reflow.config.v1.IssueOperatorRequest\x1a'.reflow.config.v1.IssueOperatorResponse\x12\x81\x01\n" +
-	"\x18UpsertClusterAuthzPolicy\x121.reflow.config.v1.UpsertClusterAuthzPolicyRequest\x1a2.reflow.config.v1.UpsertClusterAuthzPolicyResponse\x12x\n" +
-	"\x15GetClusterAuthzPolicy\x12..reflow.config.v1.GetClusterAuthzPolicyRequest\x1a/.reflow.config.v1.GetClusterAuthzPolicyResponseB2Z0github.com/twinfer/reflw/proto/configv1;configv1b\x06proto3"
+	"ListModels\x12\".reflw.config.v1.ListModelsRequest\x1a#.reflw.config.v1.ListModelsResponse\x12^\n" +
+	"\rDescribeModel\x12%.reflw.config.v1.DescribeModelRequest\x1a&.reflw.config.v1.DescribeModelResponse\x12X\n" +
+	"\vDeleteModel\x12#.reflw.config.v1.DeleteModelRequest\x1a$.reflw.config.v1.DeleteModelResponse\x12[\n" +
+	"\fUpsertSecret\x12$.reflw.config.v1.UpsertSecretRequest\x1a%.reflw.config.v1.UpsertSecretResponse\x12[\n" +
+	"\fDeleteSecret\x12$.reflw.config.v1.DeleteSecretRequest\x1a%.reflw.config.v1.DeleteSecretResponse\x12X\n" +
+	"\vListSecrets\x12#.reflw.config.v1.ListSecretsRequest\x1a$.reflw.config.v1.ListSecretsResponse\x12[\n" +
+	"\fUpsertCARoot\x12$.reflw.config.v1.UpsertCARootRequest\x1a%.reflw.config.v1.UpsertCARootResponse\x12[\n" +
+	"\fDeleteCARoot\x12$.reflw.config.v1.DeleteCARootRequest\x1a%.reflw.config.v1.DeleteCARootResponse\x12X\n" +
+	"\vListCARoots\x12#.reflw.config.v1.ListCARootsRequest\x1a$.reflw.config.v1.ListCARootsResponse\x12d\n" +
+	"\x0fCreateJoinToken\x12'.reflw.config.v1.CreateJoinTokenRequest\x1a(.reflw.config.v1.CreateJoinTokenResponse\x12d\n" +
+	"\x0fDeleteJoinToken\x12'.reflw.config.v1.DeleteJoinTokenRequest\x1a(.reflw.config.v1.DeleteJoinTokenResponse\x12a\n" +
+	"\x0eListJoinTokens\x12&.reflw.config.v1.ListJoinTokensRequest\x1a'.reflw.config.v1.ListJoinTokensResponse\x12^\n" +
+	"\rIssueOperator\x12%.reflw.config.v1.IssueOperatorRequest\x1a&.reflw.config.v1.IssueOperatorResponse\x12\x7f\n" +
+	"\x18UpsertClusterAuthzPolicy\x120.reflw.config.v1.UpsertClusterAuthzPolicyRequest\x1a1.reflw.config.v1.UpsertClusterAuthzPolicyResponse\x12v\n" +
+	"\x15GetClusterAuthzPolicy\x12-.reflw.config.v1.GetClusterAuthzPolicyRequest\x1a..reflw.config.v1.GetClusterAuthzPolicyResponseB2Z0github.com/twinfer/reflw/proto/configv1;configv1b\x06proto3"
 
 var (
 	file_configv1_config_proto_rawDescOnce sync.Once
@@ -2259,111 +2259,111 @@ func file_configv1_config_proto_rawDescGZIP() []byte {
 
 var file_configv1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
 var file_configv1_config_proto_goTypes = []any{
-	(*RegisterDeploymentRequest)(nil),        // 0: reflow.config.v1.RegisterDeploymentRequest
-	(*RegisterDeploymentResponse)(nil),       // 1: reflow.config.v1.RegisterDeploymentResponse
-	(*ListDeploymentsRequest)(nil),           // 2: reflow.config.v1.ListDeploymentsRequest
-	(*ListDeploymentsResponse)(nil),          // 3: reflow.config.v1.ListDeploymentsResponse
-	(*DescribeDeploymentRequest)(nil),        // 4: reflow.config.v1.DescribeDeploymentRequest
-	(*DescribeDeploymentResponse)(nil),       // 5: reflow.config.v1.DescribeDeploymentResponse
-	(*DeleteDeploymentRequest)(nil),          // 6: reflow.config.v1.DeleteDeploymentRequest
-	(*DeleteDeploymentResponse)(nil),         // 7: reflow.config.v1.DeleteDeploymentResponse
-	(*UpsertModelRequest)(nil),               // 8: reflow.config.v1.UpsertModelRequest
-	(*UpsertModelResponse)(nil),              // 9: reflow.config.v1.UpsertModelResponse
-	(*ListModelsRequest)(nil),                // 10: reflow.config.v1.ListModelsRequest
-	(*ListModelsResponse)(nil),               // 11: reflow.config.v1.ListModelsResponse
-	(*DescribeModelRequest)(nil),             // 12: reflow.config.v1.DescribeModelRequest
-	(*DescribeModelResponse)(nil),            // 13: reflow.config.v1.DescribeModelResponse
-	(*DeleteModelRequest)(nil),               // 14: reflow.config.v1.DeleteModelRequest
-	(*DeleteModelResponse)(nil),              // 15: reflow.config.v1.DeleteModelResponse
-	(*UpsertClusterAuthzPolicyRequest)(nil),  // 16: reflow.config.v1.UpsertClusterAuthzPolicyRequest
-	(*UpsertClusterAuthzPolicyResponse)(nil), // 17: reflow.config.v1.UpsertClusterAuthzPolicyResponse
-	(*GetClusterAuthzPolicyRequest)(nil),     // 18: reflow.config.v1.GetClusterAuthzPolicyRequest
-	(*GetClusterAuthzPolicyResponse)(nil),    // 19: reflow.config.v1.GetClusterAuthzPolicyResponse
-	(*UpsertSecretRequest)(nil),              // 20: reflow.config.v1.UpsertSecretRequest
-	(*UpsertSecretResponse)(nil),             // 21: reflow.config.v1.UpsertSecretResponse
-	(*DeleteSecretRequest)(nil),              // 22: reflow.config.v1.DeleteSecretRequest
-	(*DeleteSecretResponse)(nil),             // 23: reflow.config.v1.DeleteSecretResponse
-	(*ListSecretsRequest)(nil),               // 24: reflow.config.v1.ListSecretsRequest
-	(*ListSecretsResponse)(nil),              // 25: reflow.config.v1.ListSecretsResponse
-	(*UpsertCARootRequest)(nil),              // 26: reflow.config.v1.UpsertCARootRequest
-	(*UpsertCARootResponse)(nil),             // 27: reflow.config.v1.UpsertCARootResponse
-	(*DeleteCARootRequest)(nil),              // 28: reflow.config.v1.DeleteCARootRequest
-	(*DeleteCARootResponse)(nil),             // 29: reflow.config.v1.DeleteCARootResponse
-	(*ListCARootsRequest)(nil),               // 30: reflow.config.v1.ListCARootsRequest
-	(*ListCARootsResponse)(nil),              // 31: reflow.config.v1.ListCARootsResponse
-	(*LeaderHint)(nil),                       // 32: reflow.config.v1.LeaderHint
-	(*CreateJoinTokenRequest)(nil),           // 33: reflow.config.v1.CreateJoinTokenRequest
-	(*CreateJoinTokenResponse)(nil),          // 34: reflow.config.v1.CreateJoinTokenResponse
-	(*DeleteJoinTokenRequest)(nil),           // 35: reflow.config.v1.DeleteJoinTokenRequest
-	(*DeleteJoinTokenResponse)(nil),          // 36: reflow.config.v1.DeleteJoinTokenResponse
-	(*ListJoinTokensRequest)(nil),            // 37: reflow.config.v1.ListJoinTokensRequest
-	(*ListJoinTokensResponse)(nil),           // 38: reflow.config.v1.ListJoinTokensResponse
-	(*IssueOperatorRequest)(nil),             // 39: reflow.config.v1.IssueOperatorRequest
-	(*IssueOperatorResponse)(nil),            // 40: reflow.config.v1.IssueOperatorResponse
-	(*enginev1.DeploymentRecord)(nil),        // 41: reflow.engine.v1.DeploymentRecord
-	(*enginev1.ModelRef)(nil),                // 42: reflow.engine.v1.ModelRef
-	(*enginev1.ModelBundle)(nil),             // 43: reflow.engine.v1.ModelBundle
-	(*enginev1.ModelRecord)(nil),             // 44: reflow.engine.v1.ModelRecord
-	(*enginev1.SecretRecord)(nil),            // 45: reflow.engine.v1.SecretRecord
-	(*enginev1.CARootRecord)(nil),            // 46: reflow.engine.v1.CARootRecord
-	(enginev1.JoinTokenKind)(0),              // 47: reflow.engine.v1.JoinTokenKind
-	(*enginev1.JoinTokenRecord)(nil),         // 48: reflow.engine.v1.JoinTokenRecord
+	(*RegisterDeploymentRequest)(nil),        // 0: reflw.config.v1.RegisterDeploymentRequest
+	(*RegisterDeploymentResponse)(nil),       // 1: reflw.config.v1.RegisterDeploymentResponse
+	(*ListDeploymentsRequest)(nil),           // 2: reflw.config.v1.ListDeploymentsRequest
+	(*ListDeploymentsResponse)(nil),          // 3: reflw.config.v1.ListDeploymentsResponse
+	(*DescribeDeploymentRequest)(nil),        // 4: reflw.config.v1.DescribeDeploymentRequest
+	(*DescribeDeploymentResponse)(nil),       // 5: reflw.config.v1.DescribeDeploymentResponse
+	(*DeleteDeploymentRequest)(nil),          // 6: reflw.config.v1.DeleteDeploymentRequest
+	(*DeleteDeploymentResponse)(nil),         // 7: reflw.config.v1.DeleteDeploymentResponse
+	(*UpsertModelRequest)(nil),               // 8: reflw.config.v1.UpsertModelRequest
+	(*UpsertModelResponse)(nil),              // 9: reflw.config.v1.UpsertModelResponse
+	(*ListModelsRequest)(nil),                // 10: reflw.config.v1.ListModelsRequest
+	(*ListModelsResponse)(nil),               // 11: reflw.config.v1.ListModelsResponse
+	(*DescribeModelRequest)(nil),             // 12: reflw.config.v1.DescribeModelRequest
+	(*DescribeModelResponse)(nil),            // 13: reflw.config.v1.DescribeModelResponse
+	(*DeleteModelRequest)(nil),               // 14: reflw.config.v1.DeleteModelRequest
+	(*DeleteModelResponse)(nil),              // 15: reflw.config.v1.DeleteModelResponse
+	(*UpsertClusterAuthzPolicyRequest)(nil),  // 16: reflw.config.v1.UpsertClusterAuthzPolicyRequest
+	(*UpsertClusterAuthzPolicyResponse)(nil), // 17: reflw.config.v1.UpsertClusterAuthzPolicyResponse
+	(*GetClusterAuthzPolicyRequest)(nil),     // 18: reflw.config.v1.GetClusterAuthzPolicyRequest
+	(*GetClusterAuthzPolicyResponse)(nil),    // 19: reflw.config.v1.GetClusterAuthzPolicyResponse
+	(*UpsertSecretRequest)(nil),              // 20: reflw.config.v1.UpsertSecretRequest
+	(*UpsertSecretResponse)(nil),             // 21: reflw.config.v1.UpsertSecretResponse
+	(*DeleteSecretRequest)(nil),              // 22: reflw.config.v1.DeleteSecretRequest
+	(*DeleteSecretResponse)(nil),             // 23: reflw.config.v1.DeleteSecretResponse
+	(*ListSecretsRequest)(nil),               // 24: reflw.config.v1.ListSecretsRequest
+	(*ListSecretsResponse)(nil),              // 25: reflw.config.v1.ListSecretsResponse
+	(*UpsertCARootRequest)(nil),              // 26: reflw.config.v1.UpsertCARootRequest
+	(*UpsertCARootResponse)(nil),             // 27: reflw.config.v1.UpsertCARootResponse
+	(*DeleteCARootRequest)(nil),              // 28: reflw.config.v1.DeleteCARootRequest
+	(*DeleteCARootResponse)(nil),             // 29: reflw.config.v1.DeleteCARootResponse
+	(*ListCARootsRequest)(nil),               // 30: reflw.config.v1.ListCARootsRequest
+	(*ListCARootsResponse)(nil),              // 31: reflw.config.v1.ListCARootsResponse
+	(*LeaderHint)(nil),                       // 32: reflw.config.v1.LeaderHint
+	(*CreateJoinTokenRequest)(nil),           // 33: reflw.config.v1.CreateJoinTokenRequest
+	(*CreateJoinTokenResponse)(nil),          // 34: reflw.config.v1.CreateJoinTokenResponse
+	(*DeleteJoinTokenRequest)(nil),           // 35: reflw.config.v1.DeleteJoinTokenRequest
+	(*DeleteJoinTokenResponse)(nil),          // 36: reflw.config.v1.DeleteJoinTokenResponse
+	(*ListJoinTokensRequest)(nil),            // 37: reflw.config.v1.ListJoinTokensRequest
+	(*ListJoinTokensResponse)(nil),           // 38: reflw.config.v1.ListJoinTokensResponse
+	(*IssueOperatorRequest)(nil),             // 39: reflw.config.v1.IssueOperatorRequest
+	(*IssueOperatorResponse)(nil),            // 40: reflw.config.v1.IssueOperatorResponse
+	(*enginev1.DeploymentRecord)(nil),        // 41: reflw.engine.v1.DeploymentRecord
+	(*enginev1.ModelRef)(nil),                // 42: reflw.engine.v1.ModelRef
+	(*enginev1.ModelBundle)(nil),             // 43: reflw.engine.v1.ModelBundle
+	(*enginev1.ModelRecord)(nil),             // 44: reflw.engine.v1.ModelRecord
+	(*enginev1.SecretRecord)(nil),            // 45: reflw.engine.v1.SecretRecord
+	(*enginev1.CARootRecord)(nil),            // 46: reflw.engine.v1.CARootRecord
+	(enginev1.JoinTokenKind)(0),              // 47: reflw.engine.v1.JoinTokenKind
+	(*enginev1.JoinTokenRecord)(nil),         // 48: reflw.engine.v1.JoinTokenRecord
 }
 var file_configv1_config_proto_depIdxs = []int32{
-	41, // 0: reflow.config.v1.ListDeploymentsResponse.deployments:type_name -> reflow.engine.v1.DeploymentRecord
-	41, // 1: reflow.config.v1.DescribeDeploymentResponse.deployment:type_name -> reflow.engine.v1.DeploymentRecord
-	42, // 2: reflow.config.v1.UpsertModelRequest.model_ref:type_name -> reflow.engine.v1.ModelRef
-	43, // 3: reflow.config.v1.UpsertModelRequest.bundle:type_name -> reflow.engine.v1.ModelBundle
-	44, // 4: reflow.config.v1.ListModelsResponse.records:type_name -> reflow.engine.v1.ModelRecord
-	42, // 5: reflow.config.v1.DescribeModelRequest.model_ref:type_name -> reflow.engine.v1.ModelRef
-	44, // 6: reflow.config.v1.DescribeModelResponse.record:type_name -> reflow.engine.v1.ModelRecord
-	42, // 7: reflow.config.v1.DeleteModelRequest.model_ref:type_name -> reflow.engine.v1.ModelRef
-	45, // 8: reflow.config.v1.UpsertSecretRequest.record:type_name -> reflow.engine.v1.SecretRecord
-	45, // 9: reflow.config.v1.ListSecretsResponse.records:type_name -> reflow.engine.v1.SecretRecord
-	46, // 10: reflow.config.v1.UpsertCARootRequest.record:type_name -> reflow.engine.v1.CARootRecord
-	46, // 11: reflow.config.v1.ListCARootsResponse.records:type_name -> reflow.engine.v1.CARootRecord
-	47, // 12: reflow.config.v1.CreateJoinTokenRequest.kind:type_name -> reflow.engine.v1.JoinTokenKind
-	48, // 13: reflow.config.v1.ListJoinTokensResponse.records:type_name -> reflow.engine.v1.JoinTokenRecord
-	0,  // 14: reflow.config.v1.Config.RegisterDeployment:input_type -> reflow.config.v1.RegisterDeploymentRequest
-	2,  // 15: reflow.config.v1.Config.ListDeployments:input_type -> reflow.config.v1.ListDeploymentsRequest
-	4,  // 16: reflow.config.v1.Config.DescribeDeployment:input_type -> reflow.config.v1.DescribeDeploymentRequest
-	6,  // 17: reflow.config.v1.Config.DeleteDeployment:input_type -> reflow.config.v1.DeleteDeploymentRequest
-	8,  // 18: reflow.config.v1.Config.UpsertModel:input_type -> reflow.config.v1.UpsertModelRequest
-	10, // 19: reflow.config.v1.Config.ListModels:input_type -> reflow.config.v1.ListModelsRequest
-	12, // 20: reflow.config.v1.Config.DescribeModel:input_type -> reflow.config.v1.DescribeModelRequest
-	14, // 21: reflow.config.v1.Config.DeleteModel:input_type -> reflow.config.v1.DeleteModelRequest
-	20, // 22: reflow.config.v1.Config.UpsertSecret:input_type -> reflow.config.v1.UpsertSecretRequest
-	22, // 23: reflow.config.v1.Config.DeleteSecret:input_type -> reflow.config.v1.DeleteSecretRequest
-	24, // 24: reflow.config.v1.Config.ListSecrets:input_type -> reflow.config.v1.ListSecretsRequest
-	26, // 25: reflow.config.v1.Config.UpsertCARoot:input_type -> reflow.config.v1.UpsertCARootRequest
-	28, // 26: reflow.config.v1.Config.DeleteCARoot:input_type -> reflow.config.v1.DeleteCARootRequest
-	30, // 27: reflow.config.v1.Config.ListCARoots:input_type -> reflow.config.v1.ListCARootsRequest
-	33, // 28: reflow.config.v1.Config.CreateJoinToken:input_type -> reflow.config.v1.CreateJoinTokenRequest
-	35, // 29: reflow.config.v1.Config.DeleteJoinToken:input_type -> reflow.config.v1.DeleteJoinTokenRequest
-	37, // 30: reflow.config.v1.Config.ListJoinTokens:input_type -> reflow.config.v1.ListJoinTokensRequest
-	39, // 31: reflow.config.v1.Config.IssueOperator:input_type -> reflow.config.v1.IssueOperatorRequest
-	16, // 32: reflow.config.v1.Config.UpsertClusterAuthzPolicy:input_type -> reflow.config.v1.UpsertClusterAuthzPolicyRequest
-	18, // 33: reflow.config.v1.Config.GetClusterAuthzPolicy:input_type -> reflow.config.v1.GetClusterAuthzPolicyRequest
-	1,  // 34: reflow.config.v1.Config.RegisterDeployment:output_type -> reflow.config.v1.RegisterDeploymentResponse
-	3,  // 35: reflow.config.v1.Config.ListDeployments:output_type -> reflow.config.v1.ListDeploymentsResponse
-	5,  // 36: reflow.config.v1.Config.DescribeDeployment:output_type -> reflow.config.v1.DescribeDeploymentResponse
-	7,  // 37: reflow.config.v1.Config.DeleteDeployment:output_type -> reflow.config.v1.DeleteDeploymentResponse
-	9,  // 38: reflow.config.v1.Config.UpsertModel:output_type -> reflow.config.v1.UpsertModelResponse
-	11, // 39: reflow.config.v1.Config.ListModels:output_type -> reflow.config.v1.ListModelsResponse
-	13, // 40: reflow.config.v1.Config.DescribeModel:output_type -> reflow.config.v1.DescribeModelResponse
-	15, // 41: reflow.config.v1.Config.DeleteModel:output_type -> reflow.config.v1.DeleteModelResponse
-	21, // 42: reflow.config.v1.Config.UpsertSecret:output_type -> reflow.config.v1.UpsertSecretResponse
-	23, // 43: reflow.config.v1.Config.DeleteSecret:output_type -> reflow.config.v1.DeleteSecretResponse
-	25, // 44: reflow.config.v1.Config.ListSecrets:output_type -> reflow.config.v1.ListSecretsResponse
-	27, // 45: reflow.config.v1.Config.UpsertCARoot:output_type -> reflow.config.v1.UpsertCARootResponse
-	29, // 46: reflow.config.v1.Config.DeleteCARoot:output_type -> reflow.config.v1.DeleteCARootResponse
-	31, // 47: reflow.config.v1.Config.ListCARoots:output_type -> reflow.config.v1.ListCARootsResponse
-	34, // 48: reflow.config.v1.Config.CreateJoinToken:output_type -> reflow.config.v1.CreateJoinTokenResponse
-	36, // 49: reflow.config.v1.Config.DeleteJoinToken:output_type -> reflow.config.v1.DeleteJoinTokenResponse
-	38, // 50: reflow.config.v1.Config.ListJoinTokens:output_type -> reflow.config.v1.ListJoinTokensResponse
-	40, // 51: reflow.config.v1.Config.IssueOperator:output_type -> reflow.config.v1.IssueOperatorResponse
-	17, // 52: reflow.config.v1.Config.UpsertClusterAuthzPolicy:output_type -> reflow.config.v1.UpsertClusterAuthzPolicyResponse
-	19, // 53: reflow.config.v1.Config.GetClusterAuthzPolicy:output_type -> reflow.config.v1.GetClusterAuthzPolicyResponse
+	41, // 0: reflw.config.v1.ListDeploymentsResponse.deployments:type_name -> reflw.engine.v1.DeploymentRecord
+	41, // 1: reflw.config.v1.DescribeDeploymentResponse.deployment:type_name -> reflw.engine.v1.DeploymentRecord
+	42, // 2: reflw.config.v1.UpsertModelRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
+	43, // 3: reflw.config.v1.UpsertModelRequest.bundle:type_name -> reflw.engine.v1.ModelBundle
+	44, // 4: reflw.config.v1.ListModelsResponse.records:type_name -> reflw.engine.v1.ModelRecord
+	42, // 5: reflw.config.v1.DescribeModelRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
+	44, // 6: reflw.config.v1.DescribeModelResponse.record:type_name -> reflw.engine.v1.ModelRecord
+	42, // 7: reflw.config.v1.DeleteModelRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
+	45, // 8: reflw.config.v1.UpsertSecretRequest.record:type_name -> reflw.engine.v1.SecretRecord
+	45, // 9: reflw.config.v1.ListSecretsResponse.records:type_name -> reflw.engine.v1.SecretRecord
+	46, // 10: reflw.config.v1.UpsertCARootRequest.record:type_name -> reflw.engine.v1.CARootRecord
+	46, // 11: reflw.config.v1.ListCARootsResponse.records:type_name -> reflw.engine.v1.CARootRecord
+	47, // 12: reflw.config.v1.CreateJoinTokenRequest.kind:type_name -> reflw.engine.v1.JoinTokenKind
+	48, // 13: reflw.config.v1.ListJoinTokensResponse.records:type_name -> reflw.engine.v1.JoinTokenRecord
+	0,  // 14: reflw.config.v1.Config.RegisterDeployment:input_type -> reflw.config.v1.RegisterDeploymentRequest
+	2,  // 15: reflw.config.v1.Config.ListDeployments:input_type -> reflw.config.v1.ListDeploymentsRequest
+	4,  // 16: reflw.config.v1.Config.DescribeDeployment:input_type -> reflw.config.v1.DescribeDeploymentRequest
+	6,  // 17: reflw.config.v1.Config.DeleteDeployment:input_type -> reflw.config.v1.DeleteDeploymentRequest
+	8,  // 18: reflw.config.v1.Config.UpsertModel:input_type -> reflw.config.v1.UpsertModelRequest
+	10, // 19: reflw.config.v1.Config.ListModels:input_type -> reflw.config.v1.ListModelsRequest
+	12, // 20: reflw.config.v1.Config.DescribeModel:input_type -> reflw.config.v1.DescribeModelRequest
+	14, // 21: reflw.config.v1.Config.DeleteModel:input_type -> reflw.config.v1.DeleteModelRequest
+	20, // 22: reflw.config.v1.Config.UpsertSecret:input_type -> reflw.config.v1.UpsertSecretRequest
+	22, // 23: reflw.config.v1.Config.DeleteSecret:input_type -> reflw.config.v1.DeleteSecretRequest
+	24, // 24: reflw.config.v1.Config.ListSecrets:input_type -> reflw.config.v1.ListSecretsRequest
+	26, // 25: reflw.config.v1.Config.UpsertCARoot:input_type -> reflw.config.v1.UpsertCARootRequest
+	28, // 26: reflw.config.v1.Config.DeleteCARoot:input_type -> reflw.config.v1.DeleteCARootRequest
+	30, // 27: reflw.config.v1.Config.ListCARoots:input_type -> reflw.config.v1.ListCARootsRequest
+	33, // 28: reflw.config.v1.Config.CreateJoinToken:input_type -> reflw.config.v1.CreateJoinTokenRequest
+	35, // 29: reflw.config.v1.Config.DeleteJoinToken:input_type -> reflw.config.v1.DeleteJoinTokenRequest
+	37, // 30: reflw.config.v1.Config.ListJoinTokens:input_type -> reflw.config.v1.ListJoinTokensRequest
+	39, // 31: reflw.config.v1.Config.IssueOperator:input_type -> reflw.config.v1.IssueOperatorRequest
+	16, // 32: reflw.config.v1.Config.UpsertClusterAuthzPolicy:input_type -> reflw.config.v1.UpsertClusterAuthzPolicyRequest
+	18, // 33: reflw.config.v1.Config.GetClusterAuthzPolicy:input_type -> reflw.config.v1.GetClusterAuthzPolicyRequest
+	1,  // 34: reflw.config.v1.Config.RegisterDeployment:output_type -> reflw.config.v1.RegisterDeploymentResponse
+	3,  // 35: reflw.config.v1.Config.ListDeployments:output_type -> reflw.config.v1.ListDeploymentsResponse
+	5,  // 36: reflw.config.v1.Config.DescribeDeployment:output_type -> reflw.config.v1.DescribeDeploymentResponse
+	7,  // 37: reflw.config.v1.Config.DeleteDeployment:output_type -> reflw.config.v1.DeleteDeploymentResponse
+	9,  // 38: reflw.config.v1.Config.UpsertModel:output_type -> reflw.config.v1.UpsertModelResponse
+	11, // 39: reflw.config.v1.Config.ListModels:output_type -> reflw.config.v1.ListModelsResponse
+	13, // 40: reflw.config.v1.Config.DescribeModel:output_type -> reflw.config.v1.DescribeModelResponse
+	15, // 41: reflw.config.v1.Config.DeleteModel:output_type -> reflw.config.v1.DeleteModelResponse
+	21, // 42: reflw.config.v1.Config.UpsertSecret:output_type -> reflw.config.v1.UpsertSecretResponse
+	23, // 43: reflw.config.v1.Config.DeleteSecret:output_type -> reflw.config.v1.DeleteSecretResponse
+	25, // 44: reflw.config.v1.Config.ListSecrets:output_type -> reflw.config.v1.ListSecretsResponse
+	27, // 45: reflw.config.v1.Config.UpsertCARoot:output_type -> reflw.config.v1.UpsertCARootResponse
+	29, // 46: reflw.config.v1.Config.DeleteCARoot:output_type -> reflw.config.v1.DeleteCARootResponse
+	31, // 47: reflw.config.v1.Config.ListCARoots:output_type -> reflw.config.v1.ListCARootsResponse
+	34, // 48: reflw.config.v1.Config.CreateJoinToken:output_type -> reflw.config.v1.CreateJoinTokenResponse
+	36, // 49: reflw.config.v1.Config.DeleteJoinToken:output_type -> reflw.config.v1.DeleteJoinTokenResponse
+	38, // 50: reflw.config.v1.Config.ListJoinTokens:output_type -> reflw.config.v1.ListJoinTokensResponse
+	40, // 51: reflw.config.v1.Config.IssueOperator:output_type -> reflw.config.v1.IssueOperatorResponse
+	17, // 52: reflw.config.v1.Config.UpsertClusterAuthzPolicy:output_type -> reflw.config.v1.UpsertClusterAuthzPolicyResponse
+	19, // 53: reflw.config.v1.Config.GetClusterAuthzPolicy:output_type -> reflw.config.v1.GetClusterAuthzPolicyResponse
 	34, // [34:54] is the sub-list for method output_type
 	14, // [14:34] is the sub-list for method input_type
 	14, // [14:14] is the sub-list for extension type_name

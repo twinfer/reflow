@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflw/pkg/reflow/creds"
+	"github.com/twinfer/reflw/pkg/reflw/creds"
 )
 
 // TestMeshCerts_OperatorMTLSHandshake mints the cluster PKI and drives a real
 // mutual-TLS handshake over net.Pipe: a node/<id> server leaf vs an
-// operator/e2e client leaf, both built through pkg/reflow/creds exactly as
-// reflowd (delivery/admin listeners) and reflowclient build them. It asserts
+// operator/e2e client leaf, both built through pkg/reflw/creds exactly as
+// reflwd (delivery/admin listeners) and reflwclient build them. It asserts
 // the handshake completes and the server extracts operator/e2e from the
 // verified client chain — the property the admin authz interceptor depends
 // on. Runs without Docker, so it verifies the cert/SAN/CN wiring before the

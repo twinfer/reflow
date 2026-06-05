@@ -2,15 +2,15 @@
 // inbound vendor webhook signatures. Reflow ships built-in verifiers
 // for Stripe, GitHub, and Slack (each self-registers via init);
 // operators with bespoke schemes register their own implementation
-// with RegisterVerifier before reflow.Run.
+// with RegisterVerifier before reflw.Run.
 //
 // A Verifier is pure: Verify takes the request plus the signing secret
 // and returns the verified body, vendor metadata, and a best-effort
 // idempotency key. It performs no I/O and holds no cluster state.
 // Mounting verifiers as HTTP routes — resolving the secret from the
 // secret store, calling SubmitInvocation, mapping the result to an
-// HTTP status — lives in pkg/reflow's ExtraRoutes adapter, keyed off
-// reflow.Config.Webhooks (see pkg/reflow/webhook.go).
+// HTTP status — lives in pkg/reflw's ExtraRoutes adapter, keyed off
+// reflw.Config.Webhooks (see pkg/reflw/webhook.go).
 package webhook
 
 import (
@@ -41,7 +41,7 @@ import (
 //     load-bearing.
 type Verifier interface {
 	// Name is the config key that selects this verifier from
-	// reflow.Config.Webhooks[].Provider. Must match the registered
+	// reflw.Config.Webhooks[].Provider. Must match the registered
 	// name exactly. Convention: lowercase vendor name ("stripe",
 	// "github", "slack", "acme-internal").
 	Name() string
@@ -94,7 +94,7 @@ var (
 
 // RegisterVerifier installs a Verifier under its Name(). Intended to
 // be called from package init() or from operator main() before
-// reflow.Run. Panics on duplicate registration — a programming error,
+// reflw.Run. Panics on duplicate registration — a programming error,
 // not a runtime condition, since names are config-bound.
 func RegisterVerifier(v Verifier) {
 	if v == nil {
@@ -114,7 +114,7 @@ func RegisterVerifier(v Verifier) {
 
 // LookupVerifier returns the registered verifier for the given name.
 // The adapter calls this once per configured source at startup; an
-// unknown name aborts reflow.Run with a config-validation error.
+// unknown name aborts reflw.Run with a config-validation error.
 func LookupVerifier(name string) (Verifier, error) {
 	registryMu.RLock()
 	defer registryMu.RUnlock()

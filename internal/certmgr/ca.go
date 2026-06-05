@@ -19,7 +19,7 @@ import (
 // CA bundles a parsed self-signed root with its private key + PEM
 // material. Replaces internal/pki.CA (deleted in PR 4). The CA is used
 // by:
-//   - operator-driven CLI: `reflowd config ca init` mints one and ships
+//   - operator-driven CLI: `reflwd config ca init` mints one and ships
 //     it into shard 0;
 //   - tests (single-binary fixtures + the engine integration suite);
 //   - the BuiltinIssuer when an operator points cfg.X.Creds.TLS.Issuer

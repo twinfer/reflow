@@ -1589,7 +1589,7 @@ type Command_DeleteSecret struct {
 
 type Command_UpsertModel struct {
 	// UpsertModel / DeleteModel carry shard-0 ModelTable rows — BPMN/CMMN
-	// model definitions (model_ref + inlined XML) the per-node iflowengine
+	// model definitions (model_ref + inlined XML) the per-node processengine
 	// TableResolver reconciles into parsed graphs + resolved
 	// historyTimeToLive. Same CAS + notifier semantics as the secret pair;
 	// the XML is inlined (models are KB-scale deployment artifacts, like a
@@ -1668,9 +1668,9 @@ type Command_AbortLpTransfer struct {
 }
 
 type Command_ProcessEvent struct {
-	// Process-execution commands (iflow BPMN/CMMN durable backend). The
-	// partition leader's procSession runs the iflow engine on an instance
-	// and proposes ProcessAdvanced (new state blob + reflow-native
+	// Process-execution commands (reflwos BPMN/CMMN durable backend). The
+	// partition leader's procSession runs the reflwos engine on an instance
+	// and proposes ProcessAdvanced (new state blob + reflw-native
 	// instructions); ProcessEvent feeds an instance one step — the start
 	// event plus every service-task / timer / signal completion that wakes
 	// it. Accepted only by shardID >= 1.
@@ -1719,7 +1719,7 @@ type Command_SetRebalanceDrain struct {
 	// autonomous rebalancer subtracts drained shards from the planner's
 	// input set, naturally moving every LP owned by the drained shard
 	// off via the same Command_InitiateLPTransfer path the manual
-	// `reflowd cluster transfer-lp` CLI uses. Honors
+	// `reflwd cluster transfer-lp` CLI uses. Honors
 	// Envelope.precondition.if_table_revision_eq when set; bumps
 	// RevisionTableRebalanceDrain on apply. Accepted only by shardID=0.
 	SetRebalanceDrain *SetRebalanceDrain `protobuf:"bytes,39,opt,name=set_rebalance_drain,json=setRebalanceDrain,proto3,oneof"`
@@ -2056,7 +2056,7 @@ func (x *InvokeCommand) GetMetadata() map[string]string {
 // ParentLink references the parent that spawned a callee. Exactly one case is
 // set. parent_id + call_index: an invocation parent (ctx.Call) — the callee's
 // JECallResult lands on the parent's journal at call_index + 1. process_parent:
-// an iflow process instance that dispatched a service task or child activity —
+// an reflwos process instance that dispatched a service task or child activity —
 // the callee's terminal apply delivers a Command_ProcessEvent back to the
 // instance instead (see applyTerminalCompletion / onProcessAdvanced terminal).
 type ParentLink struct {
@@ -6205,7 +6205,7 @@ func (x *Completed) GetFailureCode() uint32 {
 //	of pending invocations waiting to run next.
 type KeyLeaseStatus struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
-	State             KeyLeaseStatus_State   `protobuf:"varint,1,opt,name=state,proto3,enum=reflow.engine.v1.KeyLeaseStatus_State" json:"state,omitempty"`
+	State             KeyLeaseStatus_State   `protobuf:"varint,1,opt,name=state,proto3,enum=reflw.engine.v1.KeyLeaseStatus_State" json:"state,omitempty"`
 	CurrentInvocation *InvocationId          `protobuf:"bytes,2,opt,name=current_invocation,json=currentInvocation,proto3" json:"current_invocation,omitempty"`
 	Queue             []*InvocationId        `protobuf:"bytes,3,rep,name=queue,proto3" json:"queue,omitempty"`
 	unknownFields     protoimpl.UnknownFields
@@ -6890,9 +6890,9 @@ type ProcessEvent struct {
 	InstanceKey   string                 `protobuf:"bytes,3,opt,name=instance_key,json=instanceKey,proto3" json:"instance_key,omitempty"`
 	LogicalTimeMs uint64                 `protobuf:"varint,4,opt,name=logical_time_ms,json=logicalTimeMs,proto3" json:"logical_time_ms,omitempty"`
 	Payload       *ProcessEventPayload   `protobuf:"bytes,5,opt,name=payload,proto3" json:"payload,omitempty"`
-	ModelRef      *ModelRef              `protobuf:"bytes,6,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`            // start only
-	Kind          ProcessKind            `protobuf:"varint,7,opt,name=kind,proto3,enum=reflow.engine.v1.ProcessKind" json:"kind,omitempty"` // start only
-	ParentLink    *ParentLink            `protobuf:"bytes,8,opt,name=parent_link,json=parentLink,proto3" json:"parent_link,omitempty"`      // start only, when this instance is a child
+	ModelRef      *ModelRef              `protobuf:"bytes,6,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`           // start only
+	Kind          ProcessKind            `protobuf:"varint,7,opt,name=kind,proto3,enum=reflw.engine.v1.ProcessKind" json:"kind,omitempty"` // start only
+	ParentLink    *ParentLink            `protobuf:"bytes,8,opt,name=parent_link,json=parentLink,proto3" json:"parent_link,omitempty"`     // start only, when this instance is a child
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6983,11 +6983,11 @@ func (x *ProcessEvent) GetParentLink() *ParentLink {
 	return nil
 }
 
-// ProcessEventPayload is the per-turn input. `external` carries an opaque iflow
-// EngineEvent (start vars / an externally-injected message) — reflow never
-// parses it; only procSession decodes it. The other arms are reflow-native
+// ProcessEventPayload is the per-turn input. `external` carries an opaque reflwos
+// EngineEvent (start vars / an externally-injected message) — reflw never
+// parses it; only procSession decodes it. The other arms are reflw-native
 // feedback the apply path synthesizes when a dispatched task / timer / child
-// completes; procSession translates them into the iflow EngineEvent the engine
+// completes; procSession translates them into the reflwos EngineEvent the engine
 // expects. Reused by ProcessInboxEntry so the inbox stores a turn verbatim.
 type ProcessEventPayload struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -7334,7 +7334,7 @@ func (x *ProcessChildCompleted) GetFailureMessage() string {
 // ProcessMessageReceived feeds a correlated inbound message back to a parked
 // node — a BPMN message/signal catch that emitted SignalSubscribe. The read
 // path (onDeliverProcessMessage) stamps node_id from the matched
-// MessageSubscription; procSession turns it into the iflow resume event
+// MessageSubscription; procSession turns it into the reflwos resume event
 // (bpmn.SignalReceived{NodeID, Payload}). payload is the message body, a JSON
 // object of variables merged into the instance.
 type ProcessMessageReceived struct {
@@ -7534,9 +7534,9 @@ func (x *ProcessTimer) GetSlot() uint32 {
 }
 
 // ProcessAdvanced is the leader-only result of one Advance, proposed by
-// procSession via ProposeSelf. new_state is the opaque next iflow blob; the
-// instruction lists are reflow-native (procSession already translated the
-// iflow Commands), so the apply arm just writes new_state and turns each
+// procSession via ProposeSelf. new_state is the opaque next reflwos blob; the
+// instruction lists are reflw-native (procSession already translated the
+// reflwos Commands), so the apply arm just writes new_state and turns each
 // instruction into an Action.
 type ProcessAdvanced struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -7846,7 +7846,7 @@ type ChildStart struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	ModelRef      *ModelRef              `protobuf:"bytes,2,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`
-	Kind          ProcessKind            `protobuf:"varint,3,opt,name=kind,proto3,enum=reflow.engine.v1.ProcessKind" json:"kind,omitempty"`
+	Kind          ProcessKind            `protobuf:"varint,3,opt,name=kind,proto3,enum=reflw.engine.v1.ProcessKind" json:"kind,omitempty"`
 	InstanceKey   string                 `protobuf:"bytes,4,opt,name=instance_key,json=instanceKey,proto3" json:"instance_key,omitempty"`
 	Vars          []byte                 `protobuf:"bytes,5,opt,name=vars,proto3" json:"vars,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -7981,7 +7981,7 @@ func (x *SignalSubscribe) GetCorrelationKey() string {
 // SignalUnsubscribe tears down a parked catch (event-gateway loser, or any catch
 // torn down while still subscribed). Carries only the catch node id — the engine
 // recovers the correlation from the per-instance proc_sub_idx reverse index (the
-// adapter's CancelWait has no correlation key; see iflow host.Correlation).
+// adapter's CancelWait has no correlation key; see reflwos host.Correlation).
 type SignalUnsubscribe struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -8027,7 +8027,7 @@ func (x *SignalUnsubscribe) GetNodeId() string {
 }
 
 // ProcessTerminal ends an instance. retention_ms is the model-declared history
-// window (the Camunda historyTimeToLive analog), stamped by the iflow adapter:
+// window (the Camunda historyTimeToLive analog), stamped by the reflwos adapter:
 // 0 = no retention (finishProcessInstance deletes the record immediately on
 // terminal, as before — observable only via the result delivered to a parent);
 // >0 retains the terminal record for the window, after which the leader's
@@ -8469,9 +8469,9 @@ type ProcessInstanceRecord struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	RootId     *InvocationId          `protobuf:"bytes,1,opt,name=root_id,json=rootId,proto3" json:"root_id,omitempty"`       // stable handle for id-keyed timer / dedup rows
 	ModelRef   *ModelRef              `protobuf:"bytes,2,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"` // pinned at start — version-skew safe
-	Kind       ProcessKind            `protobuf:"varint,3,opt,name=kind,proto3,enum=reflow.engine.v1.ProcessKind" json:"kind,omitempty"`
-	StateBlob  []byte                 `protobuf:"bytes,4,opt,name=state_blob,json=stateBlob,proto3" json:"state_blob,omitempty"` // opaque iflow ExecutionState / CaseState
-	Status     ProcessStatus          `protobuf:"varint,5,opt,name=status,proto3,enum=reflow.engine.v1.ProcessStatus" json:"status,omitempty"`
+	Kind       ProcessKind            `protobuf:"varint,3,opt,name=kind,proto3,enum=reflw.engine.v1.ProcessKind" json:"kind,omitempty"`
+	StateBlob  []byte                 `protobuf:"bytes,4,opt,name=state_blob,json=stateBlob,proto3" json:"state_blob,omitempty"` // opaque reflwos ExecutionState / CaseState
+	Status     ProcessStatus          `protobuf:"varint,5,opt,name=status,proto3,enum=reflw.engine.v1.ProcessStatus" json:"status,omitempty"`
 	ParentLink *ParentLink            `protobuf:"bytes,6,opt,name=parent_link,json=parentLink,proto3" json:"parent_link,omitempty"` // set if this instance is a child
 	// Inbox cursor for single-writer turn serialization. Events are appended to
 	// ProcessInboxTable at next_seq (then next_seq is bumped); active_seq is the
@@ -8680,7 +8680,7 @@ func (x *ProcessInboxEntry) GetLogicalTimeMs() uint64 {
 	return 0
 }
 
-// ModelRef pins one iflow model snapshot (iflow/modelstore.ModelRef).
+// ModelRef pins one reflwos model snapshot (reflwos/modelstore.ModelRef).
 type ModelRef struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Kind          string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
@@ -8750,11 +8750,11 @@ func (x *ModelRef) GetVersion() string {
 //
 // See SAD §6.12.
 type SnapshotMeta struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ShardId       uint64                 `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
-	RaftIndex     uint64                 `protobuf:"varint,2,opt,name=raft_index,json=raftIndex,proto3" json:"raft_index,omitempty"`
-	LeaderEpoch   uint64                 `protobuf:"varint,3,opt,name=leader_epoch,json=leaderEpoch,proto3" json:"leader_epoch,omitempty"`
-	ReflowVersion string                 `protobuf:"bytes,4,opt,name=reflow_version,json=reflowVersion,proto3" json:"reflow_version,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	ShardId      uint64                 `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
+	RaftIndex    uint64                 `protobuf:"varint,2,opt,name=raft_index,json=raftIndex,proto3" json:"raft_index,omitempty"`
+	LeaderEpoch  uint64                 `protobuf:"varint,3,opt,name=leader_epoch,json=leaderEpoch,proto3" json:"leader_epoch,omitempty"`
+	ReflwVersion string                 `protobuf:"bytes,4,opt,name=reflw_version,json=reflwVersion,proto3" json:"reflw_version,omitempty"`
 	// Hex-encoded SHA-256 of the snapshot tar body.
 	ChecksumSha256 string `protobuf:"bytes,5,opt,name=checksum_sha256,json=checksumSha256,proto3" json:"checksum_sha256,omitempty"`
 	CreatedAtMs    uint64 `protobuf:"fixed64,6,opt,name=created_at_ms,json=createdAtMs,proto3" json:"created_at_ms,omitempty"`
@@ -8813,9 +8813,9 @@ func (x *SnapshotMeta) GetLeaderEpoch() uint64 {
 	return 0
 }
 
-func (x *SnapshotMeta) GetReflowVersion() string {
+func (x *SnapshotMeta) GetReflwVersion() string {
 	if x != nil {
-		return x.ReflowVersion
+		return x.ReflwVersion
 	}
 	return ""
 }
@@ -8836,14 +8836,14 @@ func (x *SnapshotMeta) GetCreatedAtMs() uint64 {
 
 // NodeHostMeta is the payload packed into dragonboat's GossipConfig.Meta
 // blob. Every NodeHost advertises it via gossip; peers retrieve it via
-// INodeHostRegistry.GetMeta(nodeHostID) and use it to dial the reflow
+// INodeHostRegistry.GetMeta(nodeHostID) and use it to dial the reflw
 // gRPC Delivery service for cross-partition outbox dispatch and the
-// reflow Admin service for SelfJoin / LeaderHint redirects.
+// reflw Admin service for SelfJoin / LeaderHint redirects.
 type NodeHostMeta struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
 	GrpcEndpoint string                 `protobuf:"bytes,1,opt,name=grpc_endpoint,json=grpcEndpoint,proto3" json:"grpc_endpoint,omitempty"`
 	// Admin Connect endpoint advertised so peers (joiners running
-	// SelfJoin and the `reflowd cluster ...` CLI following LeaderHint
+	// SelfJoin and the `reflwd cluster ...` CLI following LeaderHint
 	// redirects) can discover the metadata leader's admin port via
 	// gossip rather than requiring it preconfigured.
 	AdminEndpoint string `protobuf:"bytes,2,opt,name=admin_endpoint,json=adminEndpoint,proto3" json:"admin_endpoint,omitempty"`
@@ -9374,7 +9374,7 @@ func (*SecretRecord_RemoteEncrypted) isSecretRecord_Source() {}
 // and HashiCorp Vault Transit (hcvault://...). The first three self-
 // register via init(); Vault is opt-in via cfg.KMS.Vault.TokenFile.
 // Operators wiring additional providers register from main() before
-// reflow.Run.
+// reflw.Run.
 type RemoteEncryptedSecret struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// gocloud.dev/blob URI: s3://bucket/key, gs://..., azblob://...,
@@ -9534,7 +9534,7 @@ func (x *DeleteSecret) GetName() string {
 // shard 0's ModelTable, keyed by model_ref (kind+name+version — an immutable
 // snapshot id). The XML source is inlined: models are KB-scale artifacts (like
 // a deployment discovery manifest), so a blob pointer isn't warranted. Per-node
-// iflowengine TableResolvers reconcile each row into a parsed graph/case plus a
+// processengine TableResolvers reconcile each row into a parsed graph/case plus a
 // resolved historyTimeToLive on each ModelTable notifier wake.
 type ModelRecord struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
@@ -9542,7 +9542,7 @@ type ModelRecord struct {
 	Xml            []byte                 `protobuf:"bytes,2,opt,name=xml,proto3" json:"xml,omitempty"`
 	RegisteredAtMs uint64                 `protobuf:"fixed64,3,opt,name=registered_at_ms,json=registeredAtMs,proto3" json:"registered_at_ms,omitempty"`
 	// bundle pins the DMN decisions and child processes/cases this model reaches
-	// at runtime (mirrors iflow's runtime.BPMNBundle). Optional: an empty/absent
+	// at runtime (mirrors reflwos's runtime.BPMNBundle). Optional: an empty/absent
 	// bundle leaves child refs to the name convention and a BusinessRuleTask
 	// decisionRef unresolvable (errors at eval, as before).
 	Bundle        *ModelBundle `protobuf:"bytes,4,opt,name=bundle,proto3" json:"bundle,omitempty"`
@@ -9612,7 +9612,7 @@ func (x *ModelRecord) GetBundle() *ModelBundle {
 // BusinessRuleTask's decisionRef resolves to, and which child model a
 // CallActivity/CaseTask calledElement resolves to. The per-node TableResolver
 // reads it at reconcile to build the decision runtimes and child-ref overrides.
-// Keys are the strings the iflow engine sees (decisionRef / calledElement);
+// Keys are the strings the reflwos engine sees (decisionRef / calledElement);
 // values are ModelTable refs (decisions → kind=dmn, children → kind=bpmn/cmmn).
 type ModelBundle struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -9956,7 +9956,7 @@ func (x *DeleteCARoot) GetName() string {
 // JoinTokenRecord is the persisted shape of one bootstrap token in shard
 // 0's JoinTokenTable. token_hash is sha256(token_plaintext); the
 // plaintext is shown exactly once at create-time and never persisted.
-// single_use=true (the default for `reflowd config create-join-token`)
+// single_use=true (the default for `reflwd config create-join-token`)
 // means the row carries `used=true` after the first MeshSign redemption,
 // and any subsequent redemption attempt fails CAS at the FSM apply path
 // and returns PermissionDenied. expiry_ms is wall-clock; the apply path
@@ -9969,7 +9969,7 @@ func (x *DeleteCARoot) GetName() string {
 type JoinTokenRecord struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TokenHash     []byte                 `protobuf:"bytes,1,opt,name=token_hash,json=tokenHash,proto3" json:"token_hash,omitempty"`
-	Kind          JoinTokenKind          `protobuf:"varint,2,opt,name=kind,proto3,enum=reflow.engine.v1.JoinTokenKind" json:"kind,omitempty"`
+	Kind          JoinTokenKind          `protobuf:"varint,2,opt,name=kind,proto3,enum=reflw.engine.v1.JoinTokenKind" json:"kind,omitempty"`
 	RequestedName string                 `protobuf:"bytes,3,opt,name=requested_name,json=requestedName,proto3" json:"requested_name,omitempty"`
 	ExpiryMs      uint64                 `protobuf:"fixed64,4,opt,name=expiry_ms,json=expiryMs,proto3" json:"expiry_ms,omitempty"`
 	SingleUse     bool                   `protobuf:"varint,5,opt,name=single_use,json=singleUse,proto3" json:"single_use,omitempty"`
@@ -10418,7 +10418,7 @@ func (x *BulkUpsertLPOwners) GetRecords() []*LPOwnerRecord {
 	return nil
 }
 
-// RegisterNode is proposed against shard 0 when a reflowd process starts
+// RegisterNode is proposed against shard 0 when a reflwd process starts
 // and wants to publish or refresh its membership record.
 // the static peer list is identical on every node so the proposal is
 // idempotent; the apply arm updates last_seen_ms.
@@ -10777,7 +10777,7 @@ func (x *EvictNode) GetNodeId() uint64 {
 type RebalanceStep struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	ShardId uint64                 `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
-	Kind    RebalanceStep_Kind     `protobuf:"varint,2,opt,name=kind,proto3,enum=reflow.engine.v1.RebalanceStep_Kind" json:"kind,omitempty"`
+	Kind    RebalanceStep_Kind     `protobuf:"varint,2,opt,name=kind,proto3,enum=reflw.engine.v1.RebalanceStep_Kind" json:"kind,omitempty"`
 	// add_node_id is the node being added (ADD_NON_VOTING, PROMOTE_TO_VOTER).
 	AddNodeId uint64 `protobuf:"varint,3,opt,name=add_node_id,json=addNodeId,proto3" json:"add_node_id,omitempty"`
 	// remove_node_id is the node being removed (DELETE_REPLICA).
@@ -10974,7 +10974,7 @@ type LPTransferRecord struct {
 	Lp                       uint32                 `protobuf:"varint,2,opt,name=lp,proto3" json:"lp,omitempty"`
 	SourceShard              uint64                 `protobuf:"varint,3,opt,name=source_shard,json=sourceShard,proto3" json:"source_shard,omitempty"`
 	DestShard                uint64                 `protobuf:"varint,4,opt,name=dest_shard,json=destShard,proto3" json:"dest_shard,omitempty"`
-	Phase                    LPTransferPhase        `protobuf:"varint,5,opt,name=phase,proto3,enum=reflow.engine.v1.LPTransferPhase" json:"phase,omitempty"`
+	Phase                    LPTransferPhase        `protobuf:"varint,5,opt,name=phase,proto3,enum=reflw.engine.v1.LPTransferPhase" json:"phase,omitempty"`
 	StartedAtMs              uint64                 `protobuf:"fixed64,6,opt,name=started_at_ms,json=startedAtMs,proto3" json:"started_at_ms,omitempty"`
 	LastEventMs              uint64                 `protobuf:"fixed64,7,opt,name=last_event_ms,json=lastEventMs,proto3" json:"last_event_ms,omitempty"`
 	ExpectedLpownersRevision uint64                 `protobuf:"varint,8,opt,name=expected_lpowners_revision,json=expectedLpownersRevision,proto3" json:"expected_lpowners_revision,omitempty"`
@@ -11143,7 +11143,7 @@ func (x *InitiateLPTransfer) GetDestShard() uint64 {
 type UpdateLPTransferPhase struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	TransferId string                 `protobuf:"bytes,1,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
-	Phase      LPTransferPhase        `protobuf:"varint,2,opt,name=phase,proto3,enum=reflow.engine.v1.LPTransferPhase" json:"phase,omitempty"`
+	Phase      LPTransferPhase        `protobuf:"varint,2,opt,name=phase,proto3,enum=reflw.engine.v1.LPTransferPhase" json:"phase,omitempty"`
 	// expected_lpowners_revision is re-stamped on FLIPPED only (so a
 	// resumed lpMover after FLIPPED knows the revision to start any
 	// follow-on CAS against). Zero on other transitions.
@@ -11930,7 +11930,7 @@ var File_enginev1_engine_proto protoreflect.FileDescriptor
 
 const file_enginev1_engine_proto_rawDesc = "" +
 	"\n" +
-	"\x15enginev1/engine.proto\x12\x10reflow.engine.v1\"G\n" +
+	"\x15enginev1/engine.proto\x12\x0freflw.engine.v1\"G\n" +
 	"\fInvocationId\x12#\n" +
 	"\rpartition_key\x18\x01 \x01(\x06R\fpartitionKey\x12\x12\n" +
 	"\x04uuid\x18\x02 \x01(\fR\x04uuid\"w\n" +
@@ -11938,10 +11938,10 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\fservice_name\x18\x01 \x01(\tR\vserviceName\x12!\n" +
 	"\fhandler_name\x18\x02 \x01(\tR\vhandlerName\x12\x1d\n" +
 	"\n" +
-	"object_key\x18\x03 \x01(\tR\tobjectKey\"\x9d\x01\n" +
-	"\x05Dedup\x12J\n" +
-	"\rself_proposal\x18\x01 \x01(\v2#.reflow.engine.v1.SelfProposalDedupH\x00R\fselfProposal\x12@\n" +
-	"\tarbitrary\x18\x02 \x01(\v2 .reflow.engine.v1.ArbitraryDedupH\x00R\tarbitraryB\x06\n" +
+	"object_key\x18\x03 \x01(\tR\tobjectKey\"\x9b\x01\n" +
+	"\x05Dedup\x12I\n" +
+	"\rself_proposal\x18\x01 \x01(\v2\".reflw.engine.v1.SelfProposalDedupH\x00R\fselfProposal\x12?\n" +
+	"\tarbitrary\x18\x02 \x01(\v2\x1f.reflw.engine.v1.ArbitraryDedupH\x00R\tarbitraryB\x06\n" +
 	"\x04kind\"H\n" +
 	"\x11SelfProposalDedup\x12!\n" +
 	"\fleader_epoch\x18\x01 \x01(\x04R\vleaderEpoch\x12\x10\n" +
@@ -11949,147 +11949,147 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x0eArbitraryDedup\x12\x1f\n" +
 	"\vproducer_id\x18\x01 \x01(\tR\n" +
 	"producerId\x12\x10\n" +
-	"\x03seq\x18\x02 \x01(\x04R\x03seq\"\xb5\x01\n" +
-	"\bEnvelope\x120\n" +
-	"\x06header\x18\x01 \x01(\v2\x18.reflow.engine.v1.HeaderR\x06header\x123\n" +
-	"\acommand\x18\x02 \x01(\v2\x19.reflow.engine.v1.CommandR\acommand\x12B\n" +
-	"\fprecondition\x18\x03 \x01(\v2\x1e.reflow.engine.v1.PreconditionR\fprecondition\"?\n" +
+	"\x03seq\x18\x02 \x01(\x04R\x03seq\"\xb2\x01\n" +
+	"\bEnvelope\x12/\n" +
+	"\x06header\x18\x01 \x01(\v2\x17.reflw.engine.v1.HeaderR\x06header\x122\n" +
+	"\acommand\x18\x02 \x01(\v2\x18.reflw.engine.v1.CommandR\acommand\x12A\n" +
+	"\fprecondition\x18\x03 \x01(\v2\x1d.reflw.engine.v1.PreconditionR\fprecondition\"?\n" +
 	"\fPrecondition\x12/\n" +
 	"\x14if_table_revision_eq\x18\x01 \x01(\x04R\x11ifTableRevisionEq\"O\n" +
 	"\rTableRevision\x12\x1a\n" +
 	"\brevision\x18\x01 \x01(\x04R\brevision\x12\"\n" +
-	"\rupdated_at_ms\x18\x02 \x01(\x06R\vupdatedAtMs\"y\n" +
-	"\x06Header\x12-\n" +
-	"\x05dedup\x18\x01 \x01(\v2\x17.reflow.engine.v1.DedupR\x05dedup\x12\"\n" +
+	"\rupdated_at_ms\x18\x02 \x01(\x06R\vupdatedAtMs\"x\n" +
+	"\x06Header\x12,\n" +
+	"\x05dedup\x18\x01 \x01(\v2\x16.reflw.engine.v1.DedupR\x05dedup\x12\"\n" +
 	"\rcreated_at_ms\x18\x02 \x01(\x06R\vcreatedAtMs\x12\x1c\n" +
-	"\tprincipal\x18\x04 \x01(\tR\tprincipal\"\xed\x1b\n" +
-	"\aCommand\x12K\n" +
-	"\x0fannounce_leader\x18\x01 \x01(\v2 .reflow.engine.v1.AnnounceLeaderH\x00R\x0eannounceLeader\x129\n" +
-	"\x06invoke\x18\x02 \x01(\v2\x1f.reflow.engine.v1.InvokeCommandH\x00R\x06invoke\x12H\n" +
-	"\x0einvoker_effect\x18\x03 \x01(\v2\x1f.reflow.engine.v1.InvokerEffectH\x00R\rinvokerEffect\x12?\n" +
-	"\vtimer_fired\x18\x04 \x01(\v2\x1c.reflow.engine.v1.TimerFiredH\x00R\n" +
-	"timerFired\x129\n" +
-	"\x05purge\x18\x05 \x01(\v2!.reflow.engine.v1.PurgeInvocationH\x00R\x05purge\x12E\n" +
-	"\rregister_node\x18\x06 \x01(\v2\x1e.reflow.engine.v1.RegisterNodeH\x00R\fregisterNode\x12^\n" +
-	"\x16update_partition_table\x18\a \x01(\v2&.reflow.engine.v1.UpdatePartitionTableH\x00R\x14updatePartitionTable\x12<\n" +
+	"\tprincipal\x18\x04 \x01(\tR\tprincipal\"\xc1\x1b\n" +
+	"\aCommand\x12J\n" +
+	"\x0fannounce_leader\x18\x01 \x01(\v2\x1f.reflw.engine.v1.AnnounceLeaderH\x00R\x0eannounceLeader\x128\n" +
+	"\x06invoke\x18\x02 \x01(\v2\x1e.reflw.engine.v1.InvokeCommandH\x00R\x06invoke\x12G\n" +
+	"\x0einvoker_effect\x18\x03 \x01(\v2\x1e.reflw.engine.v1.InvokerEffectH\x00R\rinvokerEffect\x12>\n" +
+	"\vtimer_fired\x18\x04 \x01(\v2\x1b.reflw.engine.v1.TimerFiredH\x00R\n" +
+	"timerFired\x128\n" +
+	"\x05purge\x18\x05 \x01(\v2 .reflw.engine.v1.PurgeInvocationH\x00R\x05purge\x12D\n" +
+	"\rregister_node\x18\x06 \x01(\v2\x1d.reflw.engine.v1.RegisterNodeH\x00R\fregisterNode\x12]\n" +
+	"\x16update_partition_table\x18\a \x01(\v2%.reflw.engine.v1.UpdatePartitionTableH\x00R\x14updatePartitionTable\x12;\n" +
 	"\n" +
-	"evict_node\x18\b \x01(\v2\x1b.reflow.engine.v1.EvictNodeH\x00R\tevictNode\x12X\n" +
-	"\x14begin_rebalance_step\x18\t \x01(\v2$.reflow.engine.v1.BeginRebalanceStepH\x00R\x12beginRebalanceStep\x12a\n" +
+	"evict_node\x18\b \x01(\v2\x1a.reflw.engine.v1.EvictNodeH\x00R\tevictNode\x12W\n" +
+	"\x14begin_rebalance_step\x18\t \x01(\v2#.reflw.engine.v1.BeginRebalanceStepH\x00R\x12beginRebalanceStep\x12`\n" +
 	"\x17complete_rebalance_step\x18\n" +
-	" \x01(\v2'.reflow.engine.v1.CompleteRebalanceStepH\x00R\x15completeRebalanceStep\x12U\n" +
-	"\x13deliver_call_result\x18\x10 \x01(\v2#.reflow.engine.v1.DeliverCallResultH\x00R\x11deliverCallResult\x12<\n" +
+	" \x01(\v2&.reflw.engine.v1.CompleteRebalanceStepH\x00R\x15completeRebalanceStep\x12T\n" +
+	"\x13deliver_call_result\x18\x10 \x01(\v2\".reflw.engine.v1.DeliverCallResultH\x00R\x11deliverCallResult\x12;\n" +
 	"\n" +
-	"outbox_ack\x18\x11 \x01(\v2\x1b.reflow.engine.v1.OutboxAckH\x00R\toutboxAck\x12W\n" +
-	"\x13register_deployment\x18\x12 \x01(\v2$.reflow.engine.v1.RegisterDeploymentH\x00R\x12registerDeployment\x12Q\n" +
-	"\x11delete_deployment\x18& \x01(\v2\".reflow.engine.v1.DeleteDeploymentH\x00R\x10deleteDeployment\x12^\n" +
-	"\x16promise_completion_ack\x18\x13 \x01(\v2&.reflow.engine.v1.PromiseCompletionAckH\x00R\x14promiseCompletionAck\x12K\n" +
-	"\x0freap_invocation\x18\x14 \x01(\v2 .reflow.engine.v1.ReapInvocationH\x00R\x0ereapInvocation\x12E\n" +
-	"\rupsert_secret\x18\x19 \x01(\v2\x1e.reflow.engine.v1.UpsertSecretH\x00R\fupsertSecret\x12E\n" +
-	"\rdelete_secret\x18\x1a \x01(\v2\x1e.reflow.engine.v1.DeleteSecretH\x00R\fdeleteSecret\x12B\n" +
-	"\fupsert_model\x184 \x01(\v2\x1d.reflow.engine.v1.UpsertModelH\x00R\vupsertModel\x12B\n" +
-	"\fdelete_model\x185 \x01(\v2\x1d.reflow.engine.v1.DeleteModelH\x00R\vdeleteModel\x12I\n" +
-	"\x0fupsert_lp_owner\x18\x1b \x01(\v2\x1f.reflow.engine.v1.UpsertLPOwnerH\x00R\rupsertLpOwner\x12I\n" +
-	"\x0fdelete_lp_owner\x18\x1c \x01(\v2\x1f.reflow.engine.v1.DeleteLPOwnerH\x00R\rdeleteLpOwner\x12Y\n" +
-	"\x15bulk_upsert_lp_owners\x18\x1d \x01(\v2$.reflow.engine.v1.BulkUpsertLPOwnersH\x00R\x12bulkUpsertLpOwners\x12X\n" +
-	"\x14initiate_lp_transfer\x18\x1e \x01(\v2$.reflow.engine.v1.InitiateLPTransferH\x00R\x12initiateLpTransfer\x12b\n" +
-	"\x18update_lp_transfer_phase\x18\x1f \x01(\v2'.reflow.engine.v1.UpdateLPTransferPhaseH\x00R\x15updateLpTransferPhase\x12R\n" +
-	"\x12remove_lp_transfer\x18  \x01(\v2\".reflow.engine.v1.RemoveLPTransferH\x00R\x10removeLpTransfer\x12O\n" +
-	"\x11begin_lp_transfer\x18! \x01(\v2!.reflow.engine.v1.BeginLPTransferH\x00R\x0fbeginLpTransfer\x12Y\n" +
-	"\x15apply_lp_transfer_sst\x18\" \x01(\v2$.reflow.engine.v1.ApplyLPTransferSSTH\x00R\x12applyLpTransferSst\x12R\n" +
-	"\x12commit_lp_transfer\x18# \x01(\v2\".reflow.engine.v1.CommitLPTransferH\x00R\x10commitLpTransfer\x12R\n" +
-	"\x12finish_lp_transfer\x18$ \x01(\v2\".reflow.engine.v1.FinishLPTransferH\x00R\x10finishLpTransfer\x12O\n" +
-	"\x11abort_lp_transfer\x18% \x01(\v2!.reflow.engine.v1.AbortLPTransferH\x00R\x0fabortLpTransfer\x12E\n" +
-	"\rprocess_event\x18( \x01(\v2\x1e.reflow.engine.v1.ProcessEventH\x00R\fprocessEvent\x12N\n" +
-	"\x10process_advanced\x18) \x01(\v2!.reflow.engine.v1.ProcessAdvancedH\x00R\x0fprocessAdvanced\x12a\n" +
-	"\x17deliver_process_message\x18* \x01(\v2'.reflow.engine.v1.DeliverProcessMessageH\x00R\x15deliverProcessMessage\x12Q\n" +
-	"\x11process_subscribe\x18+ \x01(\v2\".reflow.engine.v1.ProcessSubscribeH\x00R\x10processSubscribe\x12W\n" +
-	"\x13process_unsubscribe\x18, \x01(\v2$.reflow.engine.v1.ProcessUnsubscribeH\x00R\x12processUnsubscribe\x12[\n" +
-	"\x15reap_process_instance\x183 \x01(\v2%.reflow.engine.v1.ReapProcessInstanceH\x00R\x13reapProcessInstance\x12U\n" +
-	"\x13set_rebalance_drain\x18' \x01(\v2#.reflow.engine.v1.SetRebalanceDrainH\x00R\x11setRebalanceDrain\x12F\n" +
-	"\x0eupsert_ca_root\x18- \x01(\v2\x1e.reflow.engine.v1.UpsertCARootH\x00R\fupsertCaRoot\x12F\n" +
-	"\x0edelete_ca_root\x18. \x01(\v2\x1e.reflow.engine.v1.DeleteCARootH\x00R\fdeleteCaRoot\x12O\n" +
-	"\x11upsert_join_token\x18/ \x01(\v2!.reflow.engine.v1.UpsertJoinTokenH\x00R\x0fupsertJoinToken\x12R\n" +
-	"\x12consume_join_token\x180 \x01(\v2\".reflow.engine.v1.ConsumeJoinTokenH\x00R\x10consumeJoinToken\x12O\n" +
-	"\x11delete_join_token\x181 \x01(\v2!.reflow.engine.v1.DeleteJoinTokenH\x00R\x0fdeleteJoinToken\x12^\n" +
-	"\x16upsert_platform_config\x182 \x01(\v2&.reflow.engine.v1.UpsertPlatformConfigH\x00R\x14upsertPlatformConfigB\x06\n" +
+	"outbox_ack\x18\x11 \x01(\v2\x1a.reflw.engine.v1.OutboxAckH\x00R\toutboxAck\x12V\n" +
+	"\x13register_deployment\x18\x12 \x01(\v2#.reflw.engine.v1.RegisterDeploymentH\x00R\x12registerDeployment\x12P\n" +
+	"\x11delete_deployment\x18& \x01(\v2!.reflw.engine.v1.DeleteDeploymentH\x00R\x10deleteDeployment\x12]\n" +
+	"\x16promise_completion_ack\x18\x13 \x01(\v2%.reflw.engine.v1.PromiseCompletionAckH\x00R\x14promiseCompletionAck\x12J\n" +
+	"\x0freap_invocation\x18\x14 \x01(\v2\x1f.reflw.engine.v1.ReapInvocationH\x00R\x0ereapInvocation\x12D\n" +
+	"\rupsert_secret\x18\x19 \x01(\v2\x1d.reflw.engine.v1.UpsertSecretH\x00R\fupsertSecret\x12D\n" +
+	"\rdelete_secret\x18\x1a \x01(\v2\x1d.reflw.engine.v1.DeleteSecretH\x00R\fdeleteSecret\x12A\n" +
+	"\fupsert_model\x184 \x01(\v2\x1c.reflw.engine.v1.UpsertModelH\x00R\vupsertModel\x12A\n" +
+	"\fdelete_model\x185 \x01(\v2\x1c.reflw.engine.v1.DeleteModelH\x00R\vdeleteModel\x12H\n" +
+	"\x0fupsert_lp_owner\x18\x1b \x01(\v2\x1e.reflw.engine.v1.UpsertLPOwnerH\x00R\rupsertLpOwner\x12H\n" +
+	"\x0fdelete_lp_owner\x18\x1c \x01(\v2\x1e.reflw.engine.v1.DeleteLPOwnerH\x00R\rdeleteLpOwner\x12X\n" +
+	"\x15bulk_upsert_lp_owners\x18\x1d \x01(\v2#.reflw.engine.v1.BulkUpsertLPOwnersH\x00R\x12bulkUpsertLpOwners\x12W\n" +
+	"\x14initiate_lp_transfer\x18\x1e \x01(\v2#.reflw.engine.v1.InitiateLPTransferH\x00R\x12initiateLpTransfer\x12a\n" +
+	"\x18update_lp_transfer_phase\x18\x1f \x01(\v2&.reflw.engine.v1.UpdateLPTransferPhaseH\x00R\x15updateLpTransferPhase\x12Q\n" +
+	"\x12remove_lp_transfer\x18  \x01(\v2!.reflw.engine.v1.RemoveLPTransferH\x00R\x10removeLpTransfer\x12N\n" +
+	"\x11begin_lp_transfer\x18! \x01(\v2 .reflw.engine.v1.BeginLPTransferH\x00R\x0fbeginLpTransfer\x12X\n" +
+	"\x15apply_lp_transfer_sst\x18\" \x01(\v2#.reflw.engine.v1.ApplyLPTransferSSTH\x00R\x12applyLpTransferSst\x12Q\n" +
+	"\x12commit_lp_transfer\x18# \x01(\v2!.reflw.engine.v1.CommitLPTransferH\x00R\x10commitLpTransfer\x12Q\n" +
+	"\x12finish_lp_transfer\x18$ \x01(\v2!.reflw.engine.v1.FinishLPTransferH\x00R\x10finishLpTransfer\x12N\n" +
+	"\x11abort_lp_transfer\x18% \x01(\v2 .reflw.engine.v1.AbortLPTransferH\x00R\x0fabortLpTransfer\x12D\n" +
+	"\rprocess_event\x18( \x01(\v2\x1d.reflw.engine.v1.ProcessEventH\x00R\fprocessEvent\x12M\n" +
+	"\x10process_advanced\x18) \x01(\v2 .reflw.engine.v1.ProcessAdvancedH\x00R\x0fprocessAdvanced\x12`\n" +
+	"\x17deliver_process_message\x18* \x01(\v2&.reflw.engine.v1.DeliverProcessMessageH\x00R\x15deliverProcessMessage\x12P\n" +
+	"\x11process_subscribe\x18+ \x01(\v2!.reflw.engine.v1.ProcessSubscribeH\x00R\x10processSubscribe\x12V\n" +
+	"\x13process_unsubscribe\x18, \x01(\v2#.reflw.engine.v1.ProcessUnsubscribeH\x00R\x12processUnsubscribe\x12Z\n" +
+	"\x15reap_process_instance\x183 \x01(\v2$.reflw.engine.v1.ReapProcessInstanceH\x00R\x13reapProcessInstance\x12T\n" +
+	"\x13set_rebalance_drain\x18' \x01(\v2\".reflw.engine.v1.SetRebalanceDrainH\x00R\x11setRebalanceDrain\x12E\n" +
+	"\x0eupsert_ca_root\x18- \x01(\v2\x1d.reflw.engine.v1.UpsertCARootH\x00R\fupsertCaRoot\x12E\n" +
+	"\x0edelete_ca_root\x18. \x01(\v2\x1d.reflw.engine.v1.DeleteCARootH\x00R\fdeleteCaRoot\x12N\n" +
+	"\x11upsert_join_token\x18/ \x01(\v2 .reflw.engine.v1.UpsertJoinTokenH\x00R\x0fupsertJoinToken\x12Q\n" +
+	"\x12consume_join_token\x180 \x01(\v2!.reflw.engine.v1.ConsumeJoinTokenH\x00R\x10consumeJoinToken\x12N\n" +
+	"\x11delete_join_token\x181 \x01(\v2 .reflw.engine.v1.DeleteJoinTokenH\x00R\x0fdeleteJoinToken\x12]\n" +
+	"\x16upsert_platform_config\x182 \x01(\v2%.reflw.engine.v1.UpsertPlatformConfigH\x00R\x14upsertPlatformConfigB\x06\n" +
 	"\x04kind\"\xa8\x01\n" +
 	"\x0eAnnounceLeader\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12!\n" +
 	"\fleader_epoch\x18\x02 \x01(\x04R\vleaderEpoch\x12.\n" +
 	"\x13partition_key_start\x18\x03 \x01(\x06R\x11partitionKeyStart\x12*\n" +
-	"\x11partition_key_end\x18\x04 \x01(\x06R\x0fpartitionKeyEnd\"\xcf\x03\n" +
-	"\rInvokeCommand\x12C\n" +
-	"\rinvocation_id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\finvocationId\x12:\n" +
-	"\x06target\x18\x02 \x01(\v2\".reflow.engine.v1.InvocationTargetR\x06target\x12\x14\n" +
+	"\x11partition_key_end\x18\x04 \x01(\x06R\x0fpartitionKeyEnd\"\xcb\x03\n" +
+	"\rInvokeCommand\x12B\n" +
+	"\rinvocation_id\x18\x01 \x01(\v2\x1d.reflw.engine.v1.InvocationIdR\finvocationId\x129\n" +
+	"\x06target\x18\x02 \x01(\v2!.reflw.engine.v1.InvocationTargetR\x06target\x12\x14\n" +
 	"\x05input\x18\x03 \x01(\fR\x05input\x12'\n" +
-	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\x12=\n" +
-	"\vparent_link\x18\x05 \x01(\v2\x1c.reflow.engine.v1.ParentLinkR\n" +
+	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\x12<\n" +
+	"\vparent_link\x18\x05 \x01(\v2\x1b.reflw.engine.v1.ParentLinkR\n" +
 	"parentLink\x12#\n" +
 	"\rdeployment_id\x18\x06 \x01(\tR\fdeploymentId\x12\x12\n" +
-	"\x04kind\x18\a \x01(\rR\x04kind\x12I\n" +
-	"\bmetadata\x18\b \x03(\v2-.reflow.engine.v1.InvokeCommand.MetadataEntryR\bmetadata\x1a;\n" +
+	"\x04kind\x18\a \x01(\rR\x04kind\x12H\n" +
+	"\bmetadata\x18\b \x03(\v2,.reflw.engine.v1.InvokeCommand.MetadataEntryR\bmetadata\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb0\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xae\x01\n" +
 	"\n" +
-	"ParentLink\x12;\n" +
-	"\tparent_id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\bparentId\x12\x1d\n" +
+	"ParentLink\x12:\n" +
+	"\tparent_id\x18\x01 \x01(\v2\x1d.reflw.engine.v1.InvocationIdR\bparentId\x12\x1d\n" +
 	"\n" +
-	"call_index\x18\x02 \x01(\rR\tcallIndex\x12F\n" +
-	"\x0eprocess_parent\x18\x03 \x01(\v2\x1f.reflow.engine.v1.ProcessParentR\rprocessParent\"\x98\x01\n" +
+	"call_index\x18\x02 \x01(\rR\tcallIndex\x12E\n" +
+	"\x0eprocess_parent\x18\x03 \x01(\v2\x1e.reflw.engine.v1.ProcessParentR\rprocessParent\"\x98\x01\n" +
 	"\rProcessParent\x12\x0e\n" +
 	"\x02pk\x18\x01 \x01(\x06R\x02pk\x12\x18\n" +
 	"\aservice\x18\x02 \x01(\tR\aservice\x12!\n" +
 	"\finstance_key\x18\x03 \x01(\tR\vinstanceKey\x12\x17\n" +
 	"\anode_id\x18\x04 \x01(\tR\x06nodeId\x12!\n" +
-	"\finstance_idx\x18\x05 \x01(\tR\vinstanceIdx\"\xfe\x04\n" +
-	"\rInvokerEffect\x12C\n" +
-	"\rinvocation_id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\finvocationId\x12S\n" +
-	"\x10journal_appended\x18\x02 \x01(\v2&.reflow.engine.v1.JournalEntryAppendedH\x00R\x0fjournalAppended\x12E\n" +
-	"\tcompleted\x18\x03 \x01(\v2%.reflow.engine.v1.InvocationCompletedH\x00R\tcompleted\x12E\n" +
-	"\tsuspended\x18\x04 \x01(\v2%.reflow.engine.v1.InvocationSuspendedH\x00R\tsuspended\x12D\n" +
-	"\frun_proposal\x18\x05 \x01(\v2\x1f.reflow.engine.v1.JERunProposalH\x00R\vrunProposal\x12T\n" +
-	"\x12awakeable_resolved\x18\x06 \x01(\v2#.reflow.engine.v1.AwakeableResolvedH\x00R\x11awakeableResolved\x12N\n" +
-	"\x10signal_delivered\x18\a \x01(\v2!.reflow.engine.v1.SignalDeliveredH\x00R\x0fsignalDelivered\x12Q\n" +
-	"\x11promise_completed\x18\b \x01(\v2\".reflow.engine.v1.PromiseCompletedH\x00R\x10promiseCompletedB\x06\n" +
-	"\x04kind\"\xec\x01\n" +
+	"\finstance_idx\x18\x05 \x01(\tR\vinstanceIdx\"\xf6\x04\n" +
+	"\rInvokerEffect\x12B\n" +
+	"\rinvocation_id\x18\x01 \x01(\v2\x1d.reflw.engine.v1.InvocationIdR\finvocationId\x12R\n" +
+	"\x10journal_appended\x18\x02 \x01(\v2%.reflw.engine.v1.JournalEntryAppendedH\x00R\x0fjournalAppended\x12D\n" +
+	"\tcompleted\x18\x03 \x01(\v2$.reflw.engine.v1.InvocationCompletedH\x00R\tcompleted\x12D\n" +
+	"\tsuspended\x18\x04 \x01(\v2$.reflw.engine.v1.InvocationSuspendedH\x00R\tsuspended\x12C\n" +
+	"\frun_proposal\x18\x05 \x01(\v2\x1e.reflw.engine.v1.JERunProposalH\x00R\vrunProposal\x12S\n" +
+	"\x12awakeable_resolved\x18\x06 \x01(\v2\".reflw.engine.v1.AwakeableResolvedH\x00R\x11awakeableResolved\x12M\n" +
+	"\x10signal_delivered\x18\a \x01(\v2 .reflw.engine.v1.SignalDeliveredH\x00R\x0fsignalDelivered\x12P\n" +
+	"\x11promise_completed\x18\b \x01(\v2!.reflw.engine.v1.PromiseCompletedH\x00R\x10promiseCompletedB\x06\n" +
+	"\x04kind\"\xeb\x01\n" +
 	"\rJERunProposal\x12\x1f\n" +
 	"\ventry_index\x18\x01 \x01(\rR\n" +
 	"entryIndex\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\x12'\n" +
 	"\x0ffailure_message\x18\x03 \x01(\tR\x0efailureMessage\x12\x1c\n" +
 	"\tretryable\x18\x04 \x01(\bR\tretryable\x12\x18\n" +
-	"\aattempt\x18\x05 \x01(\rR\aattempt\x12C\n" +
-	"\fretry_policy\x18\x06 \x01(\v2 .reflow.engine.v1.RunRetryPolicyR\vretryPolicy\"u\n" +
+	"\aattempt\x18\x05 \x01(\rR\aattempt\x12B\n" +
+	"\fretry_policy\x18\x06 \x01(\v2\x1f.reflw.engine.v1.RunRetryPolicyR\vretryPolicy\"u\n" +
 	"\x11AwakeableResolved\x12!\n" +
 	"\fawakeable_id\x18\x01 \x01(\tR\vawakeableId\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\x12'\n" +
-	"\x0ffailure_message\x18\x03 \x01(\tR\x0efailureMessage\"\x88\x01\n" +
-	"\x0fSignalDelivered\x12:\n" +
-	"\x06target\x18\x01 \x01(\v2\".reflow.engine.v1.InvocationTargetR\x06target\x12\x1f\n" +
+	"\x0ffailure_message\x18\x03 \x01(\tR\x0efailureMessage\"\x87\x01\n" +
+	"\x0fSignalDelivered\x129\n" +
+	"\x06target\x18\x01 \x01(\v2!.reflw.engine.v1.InvocationTargetR\x06target\x12\x1f\n" +
 	"\vsignal_name\x18\x02 \x01(\tR\n" +
 	"signalName\x12\x18\n" +
-	"\apayload\x18\x03 \x01(\fR\apayload\"\xa0\x02\n" +
+	"\apayload\x18\x03 \x01(\fR\apayload\"\x9f\x02\n" +
 	"\x10PromiseCompleted\x12\x18\n" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12!\n" +
 	"\fworkflow_key\x18\x02 \x01(\tR\vworkflowKey\x12!\n" +
 	"\fpromise_name\x18\x03 \x01(\tR\vpromiseName\x12\x14\n" +
 	"\x05value\x18\x04 \x01(\fR\x05value\x12'\n" +
-	"\x0ffailure_message\x18\x05 \x01(\tR\x0efailureMessage\x12;\n" +
-	"\tcaller_id\x18\x06 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\bcallerId\x120\n" +
-	"\x14result_completion_id\x18\a \x01(\rR\x12resultCompletionId\"\xcc\x01\n" +
-	"\x14PromiseCompletionAck\x12;\n" +
-	"\tcaller_id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\bcallerId\x120\n" +
+	"\x0ffailure_message\x18\x05 \x01(\tR\x0efailureMessage\x12:\n" +
+	"\tcaller_id\x18\x06 \x01(\v2\x1d.reflw.engine.v1.InvocationIdR\bcallerId\x120\n" +
+	"\x14result_completion_id\x18\a \x01(\rR\x12resultCompletionId\"\xcb\x01\n" +
+	"\x14PromiseCompletionAck\x12:\n" +
+	"\tcaller_id\x18\x01 \x01(\v2\x1d.reflw.engine.v1.InvocationIdR\bcallerId\x120\n" +
 	"\x14result_completion_id\x18\x02 \x01(\rR\x12resultCompletionId\x12\x1c\n" +
 	"\tsucceeded\x18\x03 \x01(\bR\tsucceeded\x12'\n" +
-	"\x0ffailure_message\x18\x04 \x01(\tR\x0efailureMessage\"s\n" +
-	"\x0eReapInvocation\x12C\n" +
-	"\rinvocation_id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\finvocationId\x12\x1c\n" +
+	"\x0ffailure_message\x18\x04 \x01(\tR\x0efailureMessage\"r\n" +
+	"\x0eReapInvocation\x12B\n" +
+	"\rinvocation_id\x18\x01 \x01(\v2\x1d.reflw.engine.v1.InvocationIdR\finvocationId\x12\x1c\n" +
 	"\n" +
-	"fire_at_ms\x18\x02 \x01(\x06R\bfireAtMs\"q\n" +
+	"fire_at_ms\x18\x02 \x01(\x06R\bfireAtMs\"p\n" +
 	"\x14JournalEntryAppended\x12#\n" +
-	"\rcommand_index\x18\x01 \x01(\rR\fcommandIndex\x124\n" +
-	"\x05entry\x18\x02 \x01(\v2\x1e.reflow.engine.v1.JournalEntryR\x05entry\"\xe5\x01\n" +
+	"\rcommand_index\x18\x01 \x01(\rR\fcommandIndex\x123\n" +
+	"\x05entry\x18\x02 \x01(\v2\x1d.reflw.engine.v1.JournalEntryR\x05entry\"\xe5\x01\n" +
 	"\x13InvocationCompleted\x12\x16\n" +
 	"\x06output\x18\x01 \x01(\fR\x06output\x12'\n" +
 	"\x0ffailure_message\x18\x02 \x01(\tR\x0efailureMessage\x12!\n" +
@@ -12098,44 +12098,44 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x15workflow_retention_ms\x18\x05 \x01(\x04R\x13workflowRetentionMs\"6\n" +
 	"\x13InvocationSuspended\x12\x1f\n" +
 	"\vawaiting_on\x18\x01 \x03(\tR\n" +
-	"awaitingOn\"\xb0\x0e\n" +
+	"awaitingOn\"\x96\x0e\n" +
 	"\fJournalEntry\x12\x14\n" +
-	"\x05index\x18\x01 \x01(\rR\x05index\x121\n" +
-	"\x05input\x18\x02 \x01(\v2\x19.reflow.engine.v1.JEInputH\x00R\x05input\x121\n" +
-	"\x05sleep\x18\x03 \x01(\v2\x19.reflow.engine.v1.JESleepH\x00R\x05sleep\x12D\n" +
-	"\fsleep_result\x18\x04 \x01(\v2\x1f.reflow.engine.v1.JESleepResultH\x00R\vsleepResult\x12.\n" +
-	"\x04call\x18\x05 \x01(\v2\x18.reflow.engine.v1.JECallH\x00R\x04call\x12A\n" +
-	"\vcall_result\x18\x06 \x01(\v2\x1e.reflow.engine.v1.JECallResultH\x00R\n" +
-	"callResult\x12;\n" +
-	"\tget_state\x18\a \x01(\v2\x1c.reflow.engine.v1.JEGetStateH\x00R\bgetState\x12;\n" +
-	"\tset_state\x18\b \x01(\v2\x1c.reflow.engine.v1.JESetStateH\x00R\bsetState\x124\n" +
-	"\x06output\x18\t \x01(\v2\x1a.reflow.engine.v1.JEOutputH\x00R\x06output\x12+\n" +
+	"\x05index\x18\x01 \x01(\rR\x05index\x120\n" +
+	"\x05input\x18\x02 \x01(\v2\x18.reflw.engine.v1.JEInputH\x00R\x05input\x120\n" +
+	"\x05sleep\x18\x03 \x01(\v2\x18.reflw.engine.v1.JESleepH\x00R\x05sleep\x12C\n" +
+	"\fsleep_result\x18\x04 \x01(\v2\x1e.reflw.engine.v1.JESleepResultH\x00R\vsleepResult\x12-\n" +
+	"\x04call\x18\x05 \x01(\v2\x17.reflw.engine.v1.JECallH\x00R\x04call\x12@\n" +
+	"\vcall_result\x18\x06 \x01(\v2\x1d.reflw.engine.v1.JECallResultH\x00R\n" +
+	"callResult\x12:\n" +
+	"\tget_state\x18\a \x01(\v2\x1b.reflw.engine.v1.JEGetStateH\x00R\bgetState\x12:\n" +
+	"\tset_state\x18\b \x01(\v2\x1b.reflw.engine.v1.JESetStateH\x00R\bsetState\x123\n" +
+	"\x06output\x18\t \x01(\v2\x19.reflw.engine.v1.JEOutputH\x00R\x06output\x12*\n" +
 	"\x03run\x18\n" +
-	" \x01(\v2\x17.reflow.engine.v1.JERunH\x00R\x03run\x12=\n" +
-	"\tawakeable\x18\v \x01(\v2\x1d.reflow.engine.v1.JEAwakeableH\x00R\tawakeable\x12P\n" +
-	"\x10awakeable_result\x18\f \x01(\v2#.reflow.engine.v1.JEAwakeableResultH\x00R\x0fawakeableResult\x124\n" +
-	"\x06signal\x18\r \x01(\v2\x1a.reflow.engine.v1.JESignalH\x00R\x06signal\x12A\n" +
-	"\vclear_state\x18\x0e \x01(\v2\x1e.reflow.engine.v1.JEClearStateH\x00R\n" +
-	"clearState\x12K\n" +
-	"\x0fclear_all_state\x18\x10 \x01(\v2!.reflow.engine.v1.JEClearAllStateH\x00R\rclearAllState\x12B\n" +
-	"\fone_way_call\x18\x11 \x01(\v2\x1e.reflow.engine.v1.JEOneWayCallH\x00R\n" +
-	"oneWayCall\x12D\n" +
-	"\fawait_signal\x18\x12 \x01(\v2\x1f.reflow.engine.v1.JEAwaitSignalH\x00R\vawaitSignal\x12G\n" +
-	"\rsignal_result\x18\x13 \x01(\v2 .reflow.engine.v1.JESignalResultH\x00R\fsignalResult\x12A\n" +
-	"\vget_promise\x18\x14 \x01(\v2\x1e.reflow.engine.v1.JEGetPromiseH\x00R\n" +
-	"getPromise\x12J\n" +
-	"\x0epromise_result\x18\x15 \x01(\v2!.reflow.engine.v1.JEPromiseResultH\x00R\rpromiseResult\x12D\n" +
-	"\fpeek_promise\x18\x16 \x01(\v2\x1f.reflow.engine.v1.JEPeekPromiseH\x00R\vpeekPromise\x12P\n" +
-	"\x10complete_promise\x18\x17 \x01(\v2#.reflow.engine.v1.JECompletePromiseH\x00R\x0fcompletePromise\x12c\n" +
-	"\x17promise_complete_result\x18\x18 \x01(\v2).reflow.engine.v1.JEPromiseCompleteResultH\x00R\x15promiseCompleteResult\x12N\n" +
-	"\x10get_state_result\x18\x19 \x01(\v2\".reflow.engine.v1.JEGetStateResultH\x00R\x0egetStateResult\x12H\n" +
-	"\x0eget_state_keys\x18\x1a \x01(\v2 .reflow.engine.v1.JEGetStateKeysH\x00R\fgetStateKeys\x12[\n" +
-	"\x15get_state_keys_result\x18\x1b \x01(\v2&.reflow.engine.v1.JEGetStateKeysResultH\x00R\x12getStateKeysResult\x12X\n" +
-	"\x14get_eager_state_keys\x18\x1c \x01(\v2%.reflow.engine.v1.JEGetEagerStateKeysH\x00R\x11getEagerStateKeysB\a\n" +
-	"\x05entry\"\xa1\x01\n" +
+	" \x01(\v2\x16.reflw.engine.v1.JERunH\x00R\x03run\x12<\n" +
+	"\tawakeable\x18\v \x01(\v2\x1c.reflw.engine.v1.JEAwakeableH\x00R\tawakeable\x12O\n" +
+	"\x10awakeable_result\x18\f \x01(\v2\".reflw.engine.v1.JEAwakeableResultH\x00R\x0fawakeableResult\x123\n" +
+	"\x06signal\x18\r \x01(\v2\x19.reflw.engine.v1.JESignalH\x00R\x06signal\x12@\n" +
+	"\vclear_state\x18\x0e \x01(\v2\x1d.reflw.engine.v1.JEClearStateH\x00R\n" +
+	"clearState\x12J\n" +
+	"\x0fclear_all_state\x18\x10 \x01(\v2 .reflw.engine.v1.JEClearAllStateH\x00R\rclearAllState\x12A\n" +
+	"\fone_way_call\x18\x11 \x01(\v2\x1d.reflw.engine.v1.JEOneWayCallH\x00R\n" +
+	"oneWayCall\x12C\n" +
+	"\fawait_signal\x18\x12 \x01(\v2\x1e.reflw.engine.v1.JEAwaitSignalH\x00R\vawaitSignal\x12F\n" +
+	"\rsignal_result\x18\x13 \x01(\v2\x1f.reflw.engine.v1.JESignalResultH\x00R\fsignalResult\x12@\n" +
+	"\vget_promise\x18\x14 \x01(\v2\x1d.reflw.engine.v1.JEGetPromiseH\x00R\n" +
+	"getPromise\x12I\n" +
+	"\x0epromise_result\x18\x15 \x01(\v2 .reflw.engine.v1.JEPromiseResultH\x00R\rpromiseResult\x12C\n" +
+	"\fpeek_promise\x18\x16 \x01(\v2\x1e.reflw.engine.v1.JEPeekPromiseH\x00R\vpeekPromise\x12O\n" +
+	"\x10complete_promise\x18\x17 \x01(\v2\".reflw.engine.v1.JECompletePromiseH\x00R\x0fcompletePromise\x12b\n" +
+	"\x17promise_complete_result\x18\x18 \x01(\v2(.reflw.engine.v1.JEPromiseCompleteResultH\x00R\x15promiseCompleteResult\x12M\n" +
+	"\x10get_state_result\x18\x19 \x01(\v2!.reflw.engine.v1.JEGetStateResultH\x00R\x0egetStateResult\x12G\n" +
+	"\x0eget_state_keys\x18\x1a \x01(\v2\x1f.reflw.engine.v1.JEGetStateKeysH\x00R\fgetStateKeys\x12Z\n" +
+	"\x15get_state_keys_result\x18\x1b \x01(\v2%.reflw.engine.v1.JEGetStateKeysResultH\x00R\x12getStateKeysResult\x12W\n" +
+	"\x14get_eager_state_keys\x18\x1c \x01(\v2$.reflw.engine.v1.JEGetEagerStateKeysH\x00R\x11getEagerStateKeysB\a\n" +
+	"\x05entry\"\xa0\x01\n" +
 	"\aJEInput\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\fR\x05value\x12C\n" +
-	"\bmetadata\x18\x02 \x03(\v2'.reflow.engine.v1.JEInput.MetadataEntryR\bmetadata\x1a;\n" +
+	"\x05value\x18\x01 \x01(\fR\x05value\x12B\n" +
+	"\bmetadata\x18\x02 \x03(\v2&.reflw.engine.v1.JEInput.MetadataEntryR\bmetadata\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"'\n" +
@@ -12144,13 +12144,13 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"fire_at_ms\x18\x01 \x01(\x04R\bfireAtMs\"0\n" +
 	"\rJESleepResult\x12\x1f\n" +
 	"\vsleep_index\x18\x01 \x01(\rR\n" +
-	"sleepIndex\"\x83\x01\n" +
-	"\x06JECall\x12:\n" +
-	"\x06target\x18\x01 \x01(\v2\".reflow.engine.v1.InvocationTargetR\x06target\x12\x14\n" +
+	"sleepIndex\"\x82\x01\n" +
+	"\x06JECall\x129\n" +
+	"\x06target\x18\x01 \x01(\v2!.reflw.engine.v1.InvocationTargetR\x06target\x12\x14\n" +
 	"\x05input\x18\x02 \x01(\fR\x05input\x12'\n" +
-	"\x0fidempotency_key\x18\x03 \x01(\tR\x0eidempotencyKey\"\x89\x01\n" +
-	"\fJEOneWayCall\x12:\n" +
-	"\x06target\x18\x01 \x01(\v2\".reflow.engine.v1.InvocationTargetR\x06target\x12\x14\n" +
+	"\x0fidempotency_key\x18\x03 \x01(\tR\x0eidempotencyKey\"\x88\x01\n" +
+	"\fJEOneWayCall\x129\n" +
+	"\x06target\x18\x01 \x01(\v2!.reflw.engine.v1.InvocationTargetR\x06target\x12\x14\n" +
 	"\x05input\x18\x02 \x01(\fR\x05input\x12'\n" +
 	"\x0fidempotency_key\x18\x03 \x01(\tR\x0eidempotencyKey\"n\n" +
 	"\fJECallResult\x12\x1d\n" +
@@ -12192,9 +12192,9 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x11JEAwakeableResult\x12!\n" +
 	"\fawakeable_id\x18\x01 \x01(\tR\vawakeableId\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\x12'\n" +
-	"\x0ffailure_message\x18\x03 \x01(\tR\x0efailureMessage\"\x81\x01\n" +
-	"\bJESignal\x12:\n" +
-	"\x06target\x18\x01 \x01(\v2\".reflow.engine.v1.InvocationTargetR\x06target\x12\x1f\n" +
+	"\x0ffailure_message\x18\x03 \x01(\tR\x0efailureMessage\"\x80\x01\n" +
+	"\bJESignal\x129\n" +
+	"\x06target\x18\x01 \x01(\v2!.reflw.engine.v1.InvocationTargetR\x06target\x12\x1f\n" +
 	"\vsignal_name\x18\x02 \x01(\tR\n" +
 	"signalName\x12\x18\n" +
 	"\apayload\x18\x03 \x01(\fR\apayload\"b\n" +
@@ -12205,9 +12205,9 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x0eJESignalResult\x12\x1f\n" +
 	"\vsignal_name\x18\x01 \x01(\tR\n" +
 	"signalName\x12\x18\n" +
-	"\apayload\x18\x02 \x01(\fR\apayload\"f\n" +
-	"\rSignalAwaiter\x124\n" +
-	"\x05owner\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\x05owner\x12\x1f\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\"e\n" +
+	"\rSignalAwaiter\x123\n" +
+	"\x05owner\x18\x01 \x01(\v2\x1d.reflw.engine.v1.InvocationIdR\x05owner\x12\x1f\n" +
 	"\ventry_index\x18\x02 \x01(\rR\n" +
 	"entryIndex\"u\n" +
 	"\x10SignalInboxEntry\x12\x1f\n" +
@@ -12240,11 +12240,11 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\fworkflow_key\x18\x06 \x01(\tR\vworkflowKey\"`\n" +
 	"\x17JEPromiseCompleteResult\x12\x1c\n" +
 	"\tsucceeded\x18\x01 \x01(\bR\tsucceeded\x12'\n" +
-	"\x0ffailure_message\x18\x02 \x01(\tR\x0efailureMessage\"\xe6\x01\n" +
-	"\fPromiseValue\x125\n" +
-	"\apending\x18\x01 \x01(\v2\x19.reflow.engine.v1.PendingH\x00R\apending\x128\n" +
-	"\bresolved\x18\x02 \x01(\v2\x1a.reflow.engine.v1.ResolvedH\x00R\bresolved\x128\n" +
-	"\brejected\x18\x03 \x01(\v2\x1a.reflow.engine.v1.RejectedH\x00R\brejected\x12\"\n" +
+	"\x0ffailure_message\x18\x02 \x01(\tR\x0efailureMessage\"\xe3\x01\n" +
+	"\fPromiseValue\x124\n" +
+	"\apending\x18\x01 \x01(\v2\x18.reflw.engine.v1.PendingH\x00R\apending\x127\n" +
+	"\bresolved\x18\x02 \x01(\v2\x19.reflw.engine.v1.ResolvedH\x00R\bresolved\x127\n" +
+	"\brejected\x18\x03 \x01(\v2\x19.reflw.engine.v1.RejectedH\x00R\brejected\x12\"\n" +
 	"\rcreated_at_ms\x18\x04 \x01(\x06R\vcreatedAtMsB\a\n" +
 	"\x05state\"\t\n" +
 	"\aPending\"H\n" +
@@ -12253,67 +12253,67 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x0fcompleted_at_ms\x18\x02 \x01(\x06R\rcompletedAtMs\"[\n" +
 	"\bRejected\x12'\n" +
 	"\x0ffailure_message\x18\x01 \x01(\tR\x0efailureMessage\x12&\n" +
-	"\x0fcompleted_at_ms\x18\x02 \x01(\x06R\rcompletedAtMs\"g\n" +
-	"\x0ePromiseAwaiter\x124\n" +
-	"\x05owner\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\x05owner\x12\x1f\n" +
+	"\x0fcompleted_at_ms\x18\x02 \x01(\x06R\rcompletedAtMs\"f\n" +
+	"\x0ePromiseAwaiter\x123\n" +
+	"\x05owner\x18\x01 \x01(\v2\x1d.reflw.engine.v1.InvocationIdR\x05owner\x12\x1f\n" +
 	"\ventry_index\x18\x02 \x01(\rR\n" +
 	"entryIndex\" \n" +
 	"\fJEClearState\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\")\n" +
 	"\x13JEGetEagerStateKeys\x12\x12\n" +
-	"\x04keys\x18\x01 \x03(\tR\x04keys\"\x90\x01\n" +
+	"\x04keys\x18\x01 \x03(\tR\x04keys\"\x8f\x01\n" +
 	"\n" +
-	"TimerFired\x12C\n" +
-	"\rinvocation_id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\finvocationId\x12\x1f\n" +
+	"TimerFired\x12B\n" +
+	"\rinvocation_id\x18\x01 \x01(\v2\x1d.reflw.engine.v1.InvocationIdR\finvocationId\x12\x1f\n" +
 	"\vsleep_index\x18\x02 \x01(\rR\n" +
 	"sleepIndex\x12\x1c\n" +
 	"\n" +
-	"fire_at_ms\x18\x03 \x01(\x04R\bfireAtMs\"V\n" +
-	"\x0fPurgeInvocation\x12C\n" +
-	"\rinvocation_id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\finvocationId\"\xf1\x02\n" +
-	"\x10InvocationStatus\x12,\n" +
-	"\x04free\x18\x01 \x01(\v2\x16.reflow.engine.v1.FreeH\x00R\x04free\x12;\n" +
-	"\tscheduled\x18\x02 \x01(\v2\x1b.reflow.engine.v1.ScheduledH\x00R\tscheduled\x125\n" +
-	"\ainvoked\x18\x03 \x01(\v2\x19.reflow.engine.v1.InvokedH\x00R\ainvoked\x12;\n" +
-	"\tsuspended\x18\x04 \x01(\v2\x1b.reflow.engine.v1.SuspendedH\x00R\tsuspended\x12;\n" +
-	"\tcompleted\x18\x05 \x01(\v2\x1b.reflow.engine.v1.CompletedH\x00R\tcompleted\x12#\n" +
+	"fire_at_ms\x18\x03 \x01(\x04R\bfireAtMs\"U\n" +
+	"\x0fPurgeInvocation\x12B\n" +
+	"\rinvocation_id\x18\x01 \x01(\v2\x1d.reflw.engine.v1.InvocationIdR\finvocationId\"\xec\x02\n" +
+	"\x10InvocationStatus\x12+\n" +
+	"\x04free\x18\x01 \x01(\v2\x15.reflw.engine.v1.FreeH\x00R\x04free\x12:\n" +
+	"\tscheduled\x18\x02 \x01(\v2\x1a.reflw.engine.v1.ScheduledH\x00R\tscheduled\x124\n" +
+	"\ainvoked\x18\x03 \x01(\v2\x18.reflw.engine.v1.InvokedH\x00R\ainvoked\x12:\n" +
+	"\tsuspended\x18\x04 \x01(\v2\x1a.reflw.engine.v1.SuspendedH\x00R\tsuspended\x12:\n" +
+	"\tcompleted\x18\x05 \x01(\v2\x1a.reflw.engine.v1.CompletedH\x00R\tcompleted\x12#\n" +
 	"\rdeployment_id\x18\x06 \x01(\tR\fdeploymentId\x12\x12\n" +
 	"\x04kind\x18\a \x01(\rR\x04kindB\b\n" +
 	"\x06status\"\x06\n" +
-	"\x04Free\"\xc4\x02\n" +
-	"\tScheduled\x12:\n" +
-	"\x06target\x18\x01 \x01(\v2\".reflow.engine.v1.InvocationTargetR\x06target\x12\x14\n" +
+	"\x04Free\"\xc1\x02\n" +
+	"\tScheduled\x129\n" +
+	"\x06target\x18\x01 \x01(\v2!.reflw.engine.v1.InvocationTargetR\x06target\x12\x14\n" +
 	"\x05input\x18\x02 \x01(\fR\x05input\x12\"\n" +
-	"\rcreated_at_ms\x18\x03 \x01(\x06R\vcreatedAtMs\x12=\n" +
-	"\vparent_link\x18\x04 \x01(\v2\x1c.reflow.engine.v1.ParentLinkR\n" +
-	"parentLink\x12E\n" +
-	"\bmetadata\x18\x05 \x03(\v2).reflow.engine.v1.Scheduled.MetadataEntryR\bmetadata\x1a;\n" +
+	"\rcreated_at_ms\x18\x03 \x01(\x06R\vcreatedAtMs\x12<\n" +
+	"\vparent_link\x18\x04 \x01(\v2\x1b.reflw.engine.v1.ParentLinkR\n" +
+	"parentLink\x12D\n" +
+	"\bmetadata\x18\x05 \x03(\v2(.reflw.engine.v1.Scheduled.MetadataEntryR\bmetadata\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcc\x01\n" +
-	"\aInvoked\x12:\n" +
-	"\x06target\x18\x01 \x01(\v2\".reflow.engine.v1.InvocationTargetR\x06target\x12\"\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xca\x01\n" +
+	"\aInvoked\x129\n" +
+	"\x06target\x18\x01 \x01(\v2!.reflw.engine.v1.InvocationTargetR\x06target\x12\"\n" +
 	"\rcreated_at_ms\x18\x02 \x01(\x06R\vcreatedAtMs\x12\"\n" +
-	"\rinvoked_at_ms\x18\x03 \x01(\x06R\vinvokedAtMs\x12=\n" +
-	"\vparent_link\x18\x04 \x01(\v2\x1c.reflow.engine.v1.ParentLinkR\n" +
-	"parentLink\"\xcf\x01\n" +
-	"\tSuspended\x12:\n" +
-	"\x06target\x18\x01 \x01(\v2\".reflow.engine.v1.InvocationTargetR\x06target\x12&\n" +
+	"\rinvoked_at_ms\x18\x03 \x01(\x06R\vinvokedAtMs\x12<\n" +
+	"\vparent_link\x18\x04 \x01(\v2\x1b.reflw.engine.v1.ParentLinkR\n" +
+	"parentLink\"\xcd\x01\n" +
+	"\tSuspended\x129\n" +
+	"\x06target\x18\x01 \x01(\v2!.reflw.engine.v1.InvocationTargetR\x06target\x12&\n" +
 	"\x0fsuspended_at_ms\x18\x02 \x01(\x06R\rsuspendedAtMs\x12\x1f\n" +
 	"\vawaiting_on\x18\x03 \x03(\tR\n" +
-	"awaitingOn\x12=\n" +
-	"\vparent_link\x18\x04 \x01(\v2\x1c.reflow.engine.v1.ParentLinkR\n" +
-	"parentLink\"\xd3\x01\n" +
-	"\tCompleted\x12:\n" +
-	"\x06target\x18\x01 \x01(\v2\".reflow.engine.v1.InvocationTargetR\x06target\x12\x16\n" +
+	"awaitingOn\x12<\n" +
+	"\vparent_link\x18\x04 \x01(\v2\x1b.reflw.engine.v1.ParentLinkR\n" +
+	"parentLink\"\xd2\x01\n" +
+	"\tCompleted\x129\n" +
+	"\x06target\x18\x01 \x01(\v2!.reflw.engine.v1.InvocationTargetR\x06target\x12\x16\n" +
 	"\x06output\x18\x02 \x01(\fR\x06output\x12'\n" +
 	"\x0ffailure_message\x18\x03 \x01(\tR\x0efailureMessage\x12&\n" +
 	"\x0fcompleted_at_ms\x18\x04 \x01(\x06R\rcompletedAtMs\x12!\n" +
-	"\ffailure_code\x18\x05 \x01(\rR\vfailureCode\"\xf2\x01\n" +
-	"\x0eKeyLeaseStatus\x12<\n" +
-	"\x05state\x18\x01 \x01(\x0e2&.reflow.engine.v1.KeyLeaseStatus.StateR\x05state\x12M\n" +
-	"\x12current_invocation\x18\x02 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\x11currentInvocation\x124\n" +
-	"\x05queue\x18\x03 \x03(\v2\x1e.reflow.engine.v1.InvocationIdR\x05queue\"\x1d\n" +
+	"\ffailure_code\x18\x05 \x01(\rR\vfailureCode\"\xef\x01\n" +
+	"\x0eKeyLeaseStatus\x12;\n" +
+	"\x05state\x18\x01 \x01(\x0e2%.reflw.engine.v1.KeyLeaseStatus.StateR\x05state\x12L\n" +
+	"\x12current_invocation\x18\x02 \x01(\v2\x1d.reflw.engine.v1.InvocationIdR\x11currentInvocation\x123\n" +
+	"\x05queue\x18\x03 \x03(\v2\x1d.reflw.engine.v1.InvocationIdR\x05queue\"\x1d\n" +
 	"\x05State\x12\b\n" +
 	"\x04IDLE\x10\x00\x12\n" +
 	"\n" +
@@ -12326,57 +12326,57 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\rapplied_index\x18\x01 \x01(\x04R\fappliedIndex\x12!\n" +
 	"\fleader_epoch\x18\x02 \x01(\x04R\vleaderEpoch\x124\n" +
 	"\x16latest_announced_epoch\x18\x03 \x01(\x04R\x14latestAnnouncedEpoch\x12&\n" +
-	"\x0fnext_outbox_seq\x18\x04 \x01(\x04R\rnextOutboxSeq\"g\n" +
-	"\x0eAwakeableEntry\x124\n" +
-	"\x05owner\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\x05owner\x12\x1f\n" +
+	"\x0fnext_outbox_seq\x18\x04 \x01(\x04R\rnextOutboxSeq\"f\n" +
+	"\x0eAwakeableEntry\x123\n" +
+	"\x05owner\x18\x01 \x01(\v2\x1d.reflw.engine.v1.InvocationIdR\x05owner\x12\x1f\n" +
 	"\ventry_index\x18\x02 \x01(\rR\n" +
-	"entryIndex\"\xfa\x05\n" +
+	"entryIndex\"\xf1\x05\n" +
 	"\x0eOutboxEnvelope\x120\n" +
-	"\x14destination_shard_id\x18\x03 \x01(\x04R\x12destinationShardId\x129\n" +
-	"\x06invoke\x18\x01 \x01(\v2\x1f.reflow.engine.v1.InvokeCommandH\x00R\x06invoke\x126\n" +
-	"\x06signal\x18\x02 \x01(\v2\x1c.reflow.engine.v1.SignalSendH\x00R\x06signal\x12U\n" +
-	"\x13deliver_call_result\x18\x04 \x01(\v2#.reflow.engine.v1.DeliverCallResultH\x00R\x11deliverCallResult\x12<\n" +
+	"\x14destination_shard_id\x18\x03 \x01(\x04R\x12destinationShardId\x128\n" +
+	"\x06invoke\x18\x01 \x01(\v2\x1e.reflw.engine.v1.InvokeCommandH\x00R\x06invoke\x125\n" +
+	"\x06signal\x18\x02 \x01(\v2\x1b.reflw.engine.v1.SignalSendH\x00R\x06signal\x12T\n" +
+	"\x13deliver_call_result\x18\x04 \x01(\v2\".reflw.engine.v1.DeliverCallResultH\x00R\x11deliverCallResult\x12;\n" +
 	"\n" +
-	"outbox_ack\x18\x05 \x01(\v2\x1b.reflow.engine.v1.OutboxAckH\x00R\toutboxAck\x12S\n" +
-	"\x12promise_completion\x18\x06 \x01(\v2\".reflow.engine.v1.PromiseCompletedH\x00R\x11promiseCompletion\x12^\n" +
-	"\x16promise_completion_ack\x18\a \x01(\v2&.reflow.engine.v1.PromiseCompletionAckH\x00R\x14promiseCompletionAck\x12E\n" +
-	"\rprocess_event\x18\b \x01(\v2\x1e.reflow.engine.v1.ProcessEventH\x00R\fprocessEvent\x12Q\n" +
-	"\x11process_subscribe\x18\t \x01(\v2\".reflow.engine.v1.ProcessSubscribeH\x00R\x10processSubscribe\x12W\n" +
+	"outbox_ack\x18\x05 \x01(\v2\x1a.reflw.engine.v1.OutboxAckH\x00R\toutboxAck\x12R\n" +
+	"\x12promise_completion\x18\x06 \x01(\v2!.reflw.engine.v1.PromiseCompletedH\x00R\x11promiseCompletion\x12]\n" +
+	"\x16promise_completion_ack\x18\a \x01(\v2%.reflw.engine.v1.PromiseCompletionAckH\x00R\x14promiseCompletionAck\x12D\n" +
+	"\rprocess_event\x18\b \x01(\v2\x1d.reflw.engine.v1.ProcessEventH\x00R\fprocessEvent\x12P\n" +
+	"\x11process_subscribe\x18\t \x01(\v2!.reflw.engine.v1.ProcessSubscribeH\x00R\x10processSubscribe\x12V\n" +
 	"\x13process_unsubscribe\x18\n" +
-	" \x01(\v2$.reflow.engine.v1.ProcessUnsubscribeH\x00R\x12processUnsubscribeB\x06\n" +
-	"\x04kind\"\xb0\x01\n" +
-	"\x11DeliverCallResult\x12;\n" +
-	"\tparent_id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\bparentId\x12\x1d\n" +
+	" \x01(\v2#.reflw.engine.v1.ProcessUnsubscribeH\x00R\x12processUnsubscribeB\x06\n" +
+	"\x04kind\"\xaf\x01\n" +
+	"\x11DeliverCallResult\x12:\n" +
+	"\tparent_id\x18\x01 \x01(\v2\x1d.reflw.engine.v1.InvocationIdR\bparentId\x12\x1d\n" +
 	"\n" +
 	"call_index\x18\x02 \x01(\rR\tcallIndex\x12\x16\n" +
 	"\x06result\x18\x03 \x01(\fR\x06result\x12'\n" +
 	"\x0ffailure_message\x18\x04 \x01(\tR\x0efailureMessage\"Z\n" +
 	"\tOutboxAck\x12*\n" +
 	"\x11producer_shard_id\x18\x01 \x01(\x04R\x0fproducerShardId\x12!\n" +
-	"\fproducer_seq\x18\x02 \x01(\x04R\vproducerSeq\"\x83\x01\n" +
+	"\fproducer_seq\x18\x02 \x01(\x04R\vproducerSeq\"\x82\x01\n" +
 	"\n" +
-	"SignalSend\x12:\n" +
-	"\x06target\x18\x01 \x01(\v2\".reflow.engine.v1.InvocationTargetR\x06target\x12\x1f\n" +
+	"SignalSend\x129\n" +
+	"\x06target\x18\x01 \x01(\v2!.reflw.engine.v1.InvocationTargetR\x06target\x12\x1f\n" +
 	"\vsignal_name\x18\x02 \x01(\tR\n" +
 	"signalName\x12\x18\n" +
-	"\apayload\x18\x03 \x01(\fR\apayload\"\xef\x02\n" +
+	"\apayload\x18\x03 \x01(\fR\apayload\"\xeb\x02\n" +
 	"\fProcessEvent\x12\x0e\n" +
 	"\x02pk\x18\x01 \x01(\x06R\x02pk\x12\x18\n" +
 	"\aservice\x18\x02 \x01(\tR\aservice\x12!\n" +
 	"\finstance_key\x18\x03 \x01(\tR\vinstanceKey\x12&\n" +
-	"\x0flogical_time_ms\x18\x04 \x01(\x04R\rlogicalTimeMs\x12?\n" +
-	"\apayload\x18\x05 \x01(\v2%.reflow.engine.v1.ProcessEventPayloadR\apayload\x127\n" +
-	"\tmodel_ref\x18\x06 \x01(\v2\x1a.reflow.engine.v1.ModelRefR\bmodelRef\x121\n" +
-	"\x04kind\x18\a \x01(\x0e2\x1d.reflow.engine.v1.ProcessKindR\x04kind\x12=\n" +
-	"\vparent_link\x18\b \x01(\v2\x1c.reflow.engine.v1.ParentLinkR\n" +
-	"parentLink\"\xfd\x02\n" +
+	"\x0flogical_time_ms\x18\x04 \x01(\x04R\rlogicalTimeMs\x12>\n" +
+	"\apayload\x18\x05 \x01(\v2$.reflw.engine.v1.ProcessEventPayloadR\apayload\x126\n" +
+	"\tmodel_ref\x18\x06 \x01(\v2\x19.reflw.engine.v1.ModelRefR\bmodelRef\x120\n" +
+	"\x04kind\x18\a \x01(\x0e2\x1c.reflw.engine.v1.ProcessKindR\x04kind\x12<\n" +
+	"\vparent_link\x18\b \x01(\v2\x1b.reflw.engine.v1.ParentLinkR\n" +
+	"parentLink\"\xf9\x02\n" +
 	"\x13ProcessEventPayload\x12\x1c\n" +
-	"\bexternal\x18\x01 \x01(\fH\x00R\bexternal\x12O\n" +
-	"\x0etask_completed\x18\x02 \x01(\v2&.reflow.engine.v1.ProcessTaskCompletedH\x00R\rtaskCompleted\x12F\n" +
-	"\vtimer_fired\x18\x03 \x01(\v2#.reflow.engine.v1.ProcessTimerFiredH\x00R\n" +
-	"timerFired\x12R\n" +
-	"\x0fchild_completed\x18\x04 \x01(\v2'.reflow.engine.v1.ProcessChildCompletedH\x00R\x0echildCompleted\x12U\n" +
-	"\x10message_received\x18\x05 \x01(\v2(.reflow.engine.v1.ProcessMessageReceivedH\x00R\x0fmessageReceivedB\x04\n" +
+	"\bexternal\x18\x01 \x01(\fH\x00R\bexternal\x12N\n" +
+	"\x0etask_completed\x18\x02 \x01(\v2%.reflw.engine.v1.ProcessTaskCompletedH\x00R\rtaskCompleted\x12E\n" +
+	"\vtimer_fired\x18\x03 \x01(\v2\".reflw.engine.v1.ProcessTimerFiredH\x00R\n" +
+	"timerFired\x12Q\n" +
+	"\x0fchild_completed\x18\x04 \x01(\v2&.reflw.engine.v1.ProcessChildCompletedH\x00R\x0echildCompleted\x12T\n" +
+	"\x10message_received\x18\x05 \x01(\v2'.reflw.engine.v1.ProcessMessageReceivedH\x00R\x0fmessageReceivedB\x04\n" +
 	"\x02of\"\xab\x01\n" +
 	"\x14ProcessTaskCompleted\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12!\n" +
@@ -12397,35 +12397,35 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12!\n" +
 	"\fmessage_name\x18\x02 \x01(\tR\vmessageName\x12'\n" +
 	"\x0fcorrelation_key\x18\x03 \x01(\tR\x0ecorrelationKey\x12\x18\n" +
-	"\apayload\x18\x04 \x01(\fR\apayload\"c\n" +
+	"\apayload\x18\x04 \x01(\fR\apayload\"b\n" +
 	"\n" +
 	"TimerValue\x12\x1b\n" +
-	"\tsleep_idx\x18\x01 \x01(\rR\bsleepIdx\x128\n" +
-	"\aprocess\x18\x02 \x01(\v2\x1e.reflow.engine.v1.ProcessTimerR\aprocess\"x\n" +
+	"\tsleep_idx\x18\x01 \x01(\rR\bsleepIdx\x127\n" +
+	"\aprocess\x18\x02 \x01(\v2\x1d.reflw.engine.v1.ProcessTimerR\aprocess\"x\n" +
 	"\fProcessTimer\x12\x18\n" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12!\n" +
 	"\finstance_key\x18\x02 \x01(\tR\vinstanceKey\x12\x17\n" +
 	"\anode_id\x18\x03 \x01(\tR\x06nodeId\x12\x12\n" +
-	"\x04slot\x18\x04 \x01(\rR\x04slot\"\xb2\x04\n" +
+	"\x04slot\x18\x04 \x01(\rR\x04slot\"\xab\x04\n" +
 	"\x0fProcessAdvanced\x12\x0e\n" +
 	"\x02pk\x18\x01 \x01(\x06R\x02pk\x12\x18\n" +
 	"\aservice\x18\x02 \x01(\tR\aservice\x12!\n" +
 	"\finstance_key\x18\x03 \x01(\tR\vinstanceKey\x12\x1b\n" +
-	"\tnew_state\x18\x04 \x01(\fR\bnewState\x124\n" +
-	"\x06invoke\x18\x05 \x03(\v2\x1c.reflow.engine.v1.TaskInvokeR\x06invoke\x127\n" +
-	"\tarm_timer\x18\x06 \x03(\v2\x1a.reflow.engine.v1.TimerArmR\barmTimer\x12@\n" +
-	"\fcancel_timer\x18\a \x03(\v2\x1d.reflow.engine.v1.TimerCancelR\vcancelTimer\x12=\n" +
-	"\vstart_child\x18\b \x03(\v2\x1c.reflow.engine.v1.ChildStartR\n" +
-	"startChild\x12?\n" +
-	"\tsubscribe\x18\t \x03(\v2!.reflow.engine.v1.SignalSubscribeR\tsubscribe\x12=\n" +
+	"\tnew_state\x18\x04 \x01(\fR\bnewState\x123\n" +
+	"\x06invoke\x18\x05 \x03(\v2\x1b.reflw.engine.v1.TaskInvokeR\x06invoke\x126\n" +
+	"\tarm_timer\x18\x06 \x03(\v2\x19.reflw.engine.v1.TimerArmR\barmTimer\x12?\n" +
+	"\fcancel_timer\x18\a \x03(\v2\x1c.reflw.engine.v1.TimerCancelR\vcancelTimer\x12<\n" +
+	"\vstart_child\x18\b \x03(\v2\x1b.reflw.engine.v1.ChildStartR\n" +
+	"startChild\x12>\n" +
+	"\tsubscribe\x18\t \x03(\v2 .reflw.engine.v1.SignalSubscribeR\tsubscribe\x12<\n" +
 	"\bterminal\x18\n" +
-	" \x01(\v2!.reflow.engine.v1.ProcessTerminalR\bterminal\x12E\n" +
-	"\vunsubscribe\x18\v \x03(\v2#.reflow.engine.v1.SignalUnsubscribeR\vunsubscribe\"\x9a\x01\n" +
+	" \x01(\v2 .reflw.engine.v1.ProcessTerminalR\bterminal\x12D\n" +
+	"\vunsubscribe\x18\v \x03(\v2\".reflw.engine.v1.SignalUnsubscribeR\vunsubscribe\"\x99\x01\n" +
 	"\n" +
 	"TaskInvoke\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12!\n" +
-	"\finstance_idx\x18\x02 \x01(\tR\vinstanceIdx\x12:\n" +
-	"\x06target\x18\x03 \x01(\v2\".reflow.engine.v1.InvocationTargetR\x06target\x12\x14\n" +
+	"\finstance_idx\x18\x02 \x01(\tR\vinstanceIdx\x129\n" +
+	"\x06target\x18\x03 \x01(\v2!.reflw.engine.v1.InvocationTargetR\x06target\x12\x14\n" +
 	"\x05input\x18\x04 \x01(\fR\x05input\"U\n" +
 	"\bTimerArm\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1c\n" +
@@ -12434,12 +12434,12 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x04slot\x18\x03 \x01(\rR\x04slot\":\n" +
 	"\vTimerCancel\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x12\n" +
-	"\x04slot\x18\x02 \x01(\rR\x04slot\"\xc8\x01\n" +
+	"\x04slot\x18\x02 \x01(\rR\x04slot\"\xc6\x01\n" +
 	"\n" +
 	"ChildStart\x12\x17\n" +
-	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x127\n" +
-	"\tmodel_ref\x18\x02 \x01(\v2\x1a.reflow.engine.v1.ModelRefR\bmodelRef\x121\n" +
-	"\x04kind\x18\x03 \x01(\x0e2\x1d.reflow.engine.v1.ProcessKindR\x04kind\x12!\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x126\n" +
+	"\tmodel_ref\x18\x02 \x01(\v2\x19.reflw.engine.v1.ModelRefR\bmodelRef\x120\n" +
+	"\x04kind\x18\x03 \x01(\x0e2\x1c.reflw.engine.v1.ProcessKindR\x04kind\x12!\n" +
 	"\finstance_key\x18\x04 \x01(\tR\vinstanceKey\x12\x12\n" +
 	"\x04vars\x18\x05 \x01(\fR\x04vars\"v\n" +
 	"\x0fSignalSubscribe\x12\x17\n" +
@@ -12466,27 +12466,27 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\finstance_key\x18\x03 \x01(\tR\vinstanceKey\x12\x17\n" +
 	"\anode_id\x18\x04 \x01(\tR\x06nodeId\x12!\n" +
 	"\fmessage_name\x18\x05 \x01(\tR\vmessageName\x12'\n" +
-	"\x0fcorrelation_key\x18\x06 \x01(\tR\x0ecorrelationKey\"[\n" +
+	"\x0fcorrelation_key\x18\x06 \x01(\tR\x0ecorrelationKey\"Z\n" +
 	"\x10ProcessSubscribe\x12\x0e\n" +
-	"\x02pk\x18\x01 \x01(\x06R\x02pk\x127\n" +
-	"\x03sub\x18\x02 \x01(\v2%.reflow.engine.v1.MessageSubscriptionR\x03sub\"]\n" +
+	"\x02pk\x18\x01 \x01(\x06R\x02pk\x126\n" +
+	"\x03sub\x18\x02 \x01(\v2$.reflw.engine.v1.MessageSubscriptionR\x03sub\"\\\n" +
 	"\x12ProcessUnsubscribe\x12\x0e\n" +
-	"\x02pk\x18\x01 \x01(\x06R\x02pk\x127\n" +
-	"\x03sub\x18\x02 \x01(\v2%.reflow.engine.v1.MessageSubscriptionR\x03sub\"\xb5\x01\n" +
+	"\x02pk\x18\x01 \x01(\x06R\x02pk\x126\n" +
+	"\x03sub\x18\x02 \x01(\v2$.reflw.engine.v1.MessageSubscriptionR\x03sub\"\xb5\x01\n" +
 	"\x15DeliverProcessMessage\x12\x0e\n" +
 	"\x02pk\x18\x01 \x01(\x06R\x02pk\x12!\n" +
 	"\fmessage_name\x18\x02 \x01(\tR\vmessageName\x12'\n" +
 	"\x0fcorrelation_key\x18\x03 \x01(\tR\x0ecorrelationKey\x12\x18\n" +
 	"\apayload\x18\x04 \x01(\fR\apayload\x12&\n" +
-	"\x0flogical_time_ms\x18\x05 \x01(\x04R\rlogicalTimeMs\"\xb4\x04\n" +
-	"\x15ProcessInstanceRecord\x127\n" +
-	"\aroot_id\x18\x01 \x01(\v2\x1e.reflow.engine.v1.InvocationIdR\x06rootId\x127\n" +
-	"\tmodel_ref\x18\x02 \x01(\v2\x1a.reflow.engine.v1.ModelRefR\bmodelRef\x121\n" +
-	"\x04kind\x18\x03 \x01(\x0e2\x1d.reflow.engine.v1.ProcessKindR\x04kind\x12\x1d\n" +
+	"\x0flogical_time_ms\x18\x05 \x01(\x04R\rlogicalTimeMs\"\xaf\x04\n" +
+	"\x15ProcessInstanceRecord\x126\n" +
+	"\aroot_id\x18\x01 \x01(\v2\x1d.reflw.engine.v1.InvocationIdR\x06rootId\x126\n" +
+	"\tmodel_ref\x18\x02 \x01(\v2\x19.reflw.engine.v1.ModelRefR\bmodelRef\x120\n" +
+	"\x04kind\x18\x03 \x01(\x0e2\x1c.reflw.engine.v1.ProcessKindR\x04kind\x12\x1d\n" +
 	"\n" +
-	"state_blob\x18\x04 \x01(\fR\tstateBlob\x127\n" +
-	"\x06status\x18\x05 \x01(\x0e2\x1f.reflow.engine.v1.ProcessStatusR\x06status\x12=\n" +
-	"\vparent_link\x18\x06 \x01(\v2\x1c.reflow.engine.v1.ParentLinkR\n" +
+	"state_blob\x18\x04 \x01(\fR\tstateBlob\x126\n" +
+	"\x06status\x18\x05 \x01(\x0e2\x1e.reflw.engine.v1.ProcessStatusR\x06status\x12<\n" +
+	"\vparent_link\x18\x06 \x01(\v2\x1b.reflw.engine.v1.ParentLinkR\n" +
 	"parentLink\x12\x19\n" +
 	"\bnext_seq\x18\a \x01(\x04R\anextSeq\x12\x1d\n" +
 	"\n" +
@@ -12496,29 +12496,29 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	" \x01(\fR\x06output\x12'\n" +
 	"\x0ffailure_message\x18\v \x01(\tR\x0efailureMessage\x12\"\n" +
 	"\rcreated_at_ms\x18\f \x01(\x04R\vcreatedAtMs\x12\x1e\n" +
-	"\vended_at_ms\x18\r \x01(\x04R\tendedAtMs\"|\n" +
-	"\x11ProcessInboxEntry\x12?\n" +
-	"\apayload\x18\x01 \x01(\v2%.reflow.engine.v1.ProcessEventPayloadR\apayload\x12&\n" +
+	"\vended_at_ms\x18\r \x01(\x04R\tendedAtMs\"{\n" +
+	"\x11ProcessInboxEntry\x12>\n" +
+	"\apayload\x18\x01 \x01(\v2$.reflw.engine.v1.ProcessEventPayloadR\apayload\x12&\n" +
 	"\x0flogical_time_ms\x18\x02 \x01(\x04R\rlogicalTimeMs\"L\n" +
 	"\bModelRef\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
-	"\aversion\x18\x03 \x01(\tR\aversion\"\xdf\x01\n" +
+	"\aversion\x18\x03 \x01(\tR\aversion\"\xdd\x01\n" +
 	"\fSnapshotMeta\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x12\x1d\n" +
 	"\n" +
 	"raft_index\x18\x02 \x01(\x04R\traftIndex\x12!\n" +
-	"\fleader_epoch\x18\x03 \x01(\x04R\vleaderEpoch\x12%\n" +
-	"\x0ereflow_version\x18\x04 \x01(\tR\rreflowVersion\x12'\n" +
+	"\fleader_epoch\x18\x03 \x01(\x04R\vleaderEpoch\x12#\n" +
+	"\rreflw_version\x18\x04 \x01(\tR\freflwVersion\x12'\n" +
 	"\x0fchecksum_sha256\x18\x05 \x01(\tR\x0echecksumSha256\x12\"\n" +
 	"\rcreated_at_ms\x18\x06 \x01(\x06R\vcreatedAtMs\"Z\n" +
 	"\fNodeHostMeta\x12#\n" +
 	"\rgrpc_endpoint\x18\x01 \x01(\tR\fgrpcEndpoint\x12%\n" +
-	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint\"\xbb\x02\n" +
+	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint\"\xba\x02\n" +
 	"\x10DeploymentRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
-	"\x03url\x18\x02 \x01(\tR\x03url\x12?\n" +
-	"\bhandlers\x18\x04 \x03(\v2#.reflow.engine.v1.DeploymentHandlerR\bhandlers\x12(\n" +
+	"\x03url\x18\x02 \x01(\tR\x03url\x12>\n" +
+	"\bhandlers\x18\x04 \x03(\v2\".reflw.engine.v1.DeploymentHandlerR\bhandlers\x12(\n" +
 	"\x10registered_at_ms\x18\x05 \x01(\x06R\x0eregisteredAtMs\x12.\n" +
 	"\x13max_journal_entries\x18\x06 \x01(\rR\x11maxJournalEntries\x126\n" +
 	"\x17invocation_retention_ms\x18\a \x01(\x04R\x15invocationRetentionMs\x122\n" +
@@ -12526,59 +12526,59 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x11DeploymentHandler\x12\x18\n" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12\x18\n" +
 	"\ahandler\x18\x02 \x01(\tR\ahandler\x12\x12\n" +
-	"\x04kind\x18\x03 \x01(\rR\x04kind\"P\n" +
-	"\x12RegisterDeployment\x12:\n" +
-	"\x06record\x18\x01 \x01(\v2\".reflow.engine.v1.DeploymentRecordR\x06record\"\"\n" +
+	"\x04kind\x18\x03 \x01(\rR\x04kind\"O\n" +
+	"\x12RegisterDeployment\x129\n" +
+	"\x06record\x18\x01 \x01(\v2!.reflw.engine.v1.DeploymentRecordR\x06record\"\"\n" +
 	"\x10DeleteDeployment\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"Q\n" +
 	"\x14PlatformConfigRecord\x129\n" +
-	"\x19cluster_authz_policy_text\x18\x01 \x01(\tR\x16clusterAuthzPolicyText\"V\n" +
-	"\x14UpsertPlatformConfig\x12>\n" +
-	"\x06record\x18\x01 \x01(\v2&.reflow.engine.v1.PlatformConfigRecordR\x06record\"\x82\x01\n" +
+	"\x19cluster_authz_policy_text\x18\x01 \x01(\tR\x16clusterAuthzPolicyText\"U\n" +
+	"\x14UpsertPlatformConfig\x12=\n" +
+	"\x06record\x18\x01 \x01(\v2%.reflw.engine.v1.PlatformConfigRecordR\x06record\"\x81\x01\n" +
 	"\fSecretRecord\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12T\n" +
-	"\x10remote_encrypted\x18\x02 \x01(\v2'.reflow.engine.v1.RemoteEncryptedSecretH\x00R\x0fremoteEncryptedB\b\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12S\n" +
+	"\x10remote_encrypted\x18\x02 \x01(\v2&.reflw.engine.v1.RemoteEncryptedSecretH\x00R\x0fremoteEncryptedB\b\n" +
 	"\x06source\"K\n" +
 	"\x15RemoteEncryptedSecret\x12\x19\n" +
 	"\bblob_uri\x18\x01 \x01(\tR\ablobUri\x12\x17\n" +
-	"\akek_uri\x18\x02 \x01(\tR\x06kekUri\"F\n" +
-	"\fUpsertSecret\x126\n" +
-	"\x06record\x18\x01 \x01(\v2\x1e.reflow.engine.v1.SecretRecordR\x06record\"\"\n" +
+	"\akek_uri\x18\x02 \x01(\tR\x06kekUri\"E\n" +
+	"\fUpsertSecret\x125\n" +
+	"\x06record\x18\x01 \x01(\v2\x1d.reflw.engine.v1.SecretRecordR\x06record\"\"\n" +
 	"\fDeleteSecret\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\"\xb9\x01\n" +
-	"\vModelRecord\x127\n" +
-	"\tmodel_ref\x18\x01 \x01(\v2\x1a.reflow.engine.v1.ModelRefR\bmodelRef\x12\x10\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\"\xb7\x01\n" +
+	"\vModelRecord\x126\n" +
+	"\tmodel_ref\x18\x01 \x01(\v2\x19.reflw.engine.v1.ModelRefR\bmodelRef\x12\x10\n" +
 	"\x03xml\x18\x02 \x01(\fR\x03xml\x12(\n" +
-	"\x10registered_at_ms\x18\x03 \x01(\x06R\x0eregisteredAtMs\x125\n" +
-	"\x06bundle\x18\x04 \x01(\v2\x1d.reflow.engine.v1.ModelBundleR\x06bundle\"\xd5\x02\n" +
-	"\vModelBundle\x12J\n" +
-	"\tdecisions\x18\x01 \x03(\v2,.reflow.engine.v1.ModelBundle.DecisionsEntryR\tdecisions\x12G\n" +
-	"\bchildren\x18\x02 \x03(\v2+.reflow.engine.v1.ModelBundle.ChildrenEntryR\bchildren\x1aX\n" +
+	"\x10registered_at_ms\x18\x03 \x01(\x06R\x0eregisteredAtMs\x124\n" +
+	"\x06bundle\x18\x04 \x01(\v2\x1c.reflw.engine.v1.ModelBundleR\x06bundle\"\xd1\x02\n" +
+	"\vModelBundle\x12I\n" +
+	"\tdecisions\x18\x01 \x03(\v2+.reflw.engine.v1.ModelBundle.DecisionsEntryR\tdecisions\x12F\n" +
+	"\bchildren\x18\x02 \x03(\v2*.reflw.engine.v1.ModelBundle.ChildrenEntryR\bchildren\x1aW\n" +
 	"\x0eDecisionsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x120\n" +
-	"\x05value\x18\x02 \x01(\v2\x1a.reflow.engine.v1.ModelRefR\x05value:\x028\x01\x1aW\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12/\n" +
+	"\x05value\x18\x02 \x01(\v2\x19.reflw.engine.v1.ModelRefR\x05value:\x028\x01\x1aV\n" +
 	"\rChildrenEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x120\n" +
-	"\x05value\x18\x02 \x01(\v2\x1a.reflow.engine.v1.ModelRefR\x05value:\x028\x01\"D\n" +
-	"\vUpsertModel\x125\n" +
-	"\x06record\x18\x01 \x01(\v2\x1d.reflow.engine.v1.ModelRecordR\x06record\"F\n" +
-	"\vDeleteModel\x127\n" +
-	"\tmodel_ref\x18\x01 \x01(\v2\x1a.reflow.engine.v1.ModelRefR\bmodelRef\"\xd2\x01\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12/\n" +
+	"\x05value\x18\x02 \x01(\v2\x19.reflw.engine.v1.ModelRefR\x05value:\x028\x01\"C\n" +
+	"\vUpsertModel\x124\n" +
+	"\x06record\x18\x01 \x01(\v2\x1c.reflw.engine.v1.ModelRecordR\x06record\"E\n" +
+	"\vDeleteModel\x126\n" +
+	"\tmodel_ref\x18\x01 \x01(\v2\x19.reflw.engine.v1.ModelRefR\bmodelRef\"\xd2\x01\n" +
 	"\fCARootRecord\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x19\n" +
 	"\bcert_pem\x18\x02 \x01(\fR\acertPem\x12&\n" +
 	"\x0fkey_secret_name\x18\x03 \x01(\tR\rkeySecretName\x12 \n" +
 	"\vfingerprint\x18\x04 \x01(\tR\vfingerprint\x12%\n" +
 	"\x0erotation_epoch\x18\x05 \x01(\rR\rrotationEpoch\x12\"\n" +
-	"\rcreated_at_ms\x18\x06 \x01(\x06R\vcreatedAtMs\"F\n" +
-	"\fUpsertCARoot\x126\n" +
-	"\x06record\x18\x01 \x01(\v2\x1e.reflow.engine.v1.CARootRecordR\x06record\"\"\n" +
+	"\rcreated_at_ms\x18\x06 \x01(\x06R\vcreatedAtMs\"E\n" +
+	"\fUpsertCARoot\x125\n" +
+	"\x06record\x18\x01 \x01(\v2\x1d.reflw.engine.v1.CARootRecordR\x06record\"\"\n" +
 	"\fDeleteCARoot\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\"\x9f\x02\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\"\x9e\x02\n" +
 	"\x0fJoinTokenRecord\x12\x1d\n" +
 	"\n" +
-	"token_hash\x18\x01 \x01(\fR\ttokenHash\x123\n" +
-	"\x04kind\x18\x02 \x01(\x0e2\x1f.reflow.engine.v1.JoinTokenKindR\x04kind\x12%\n" +
+	"token_hash\x18\x01 \x01(\fR\ttokenHash\x122\n" +
+	"\x04kind\x18\x02 \x01(\x0e2\x1e.reflw.engine.v1.JoinTokenKindR\x04kind\x12%\n" +
 	"\x0erequested_name\x18\x03 \x01(\tR\rrequestedName\x12\x1b\n" +
 	"\texpiry_ms\x18\x04 \x01(\x06R\bexpiryMs\x12\x1d\n" +
 	"\n" +
@@ -12586,9 +12586,9 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x04used\x18\x06 \x01(\bR\x04used\x12\x1d\n" +
 	"\n" +
 	"created_by\x18\a \x01(\tR\tcreatedBy\x12\"\n" +
-	"\rcreated_at_ms\x18\b \x01(\x06R\vcreatedAtMs\"L\n" +
-	"\x0fUpsertJoinToken\x129\n" +
-	"\x06record\x18\x01 \x01(\v2!.reflow.engine.v1.JoinTokenRecordR\x06record\"1\n" +
+	"\rcreated_at_ms\x18\b \x01(\x06R\vcreatedAtMs\"K\n" +
+	"\x0fUpsertJoinToken\x128\n" +
+	"\x06record\x18\x01 \x01(\v2 .reflw.engine.v1.JoinTokenRecordR\x06record\"1\n" +
 	"\x10ConsumeJoinToken\x12\x1d\n" +
 	"\n" +
 	"token_hash\x18\x01 \x01(\fR\ttokenHash\"0\n" +
@@ -12597,40 +12597,40 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"token_hash\x18\x01 \x01(\fR\ttokenHash\":\n" +
 	"\rLPOwnerRecord\x12\x0e\n" +
 	"\x02lp\x18\x01 \x01(\rR\x02lp\x12\x19\n" +
-	"\bshard_id\x18\x02 \x01(\x04R\ashardId\"H\n" +
-	"\rUpsertLPOwner\x127\n" +
-	"\x06record\x18\x01 \x01(\v2\x1f.reflow.engine.v1.LPOwnerRecordR\x06record\"\x1f\n" +
+	"\bshard_id\x18\x02 \x01(\x04R\ashardId\"G\n" +
+	"\rUpsertLPOwner\x126\n" +
+	"\x06record\x18\x01 \x01(\v2\x1e.reflw.engine.v1.LPOwnerRecordR\x06record\"\x1f\n" +
 	"\rDeleteLPOwner\x12\x0e\n" +
-	"\x02lp\x18\x01 \x01(\rR\x02lp\"O\n" +
-	"\x12BulkUpsertLPOwners\x129\n" +
-	"\arecords\x18\x01 \x03(\v2\x1f.reflow.engine.v1.LPOwnerRecordR\arecords\"H\n" +
-	"\fRegisterNode\x128\n" +
-	"\x06member\x18\x01 \x01(\v2 .reflow.engine.v1.NodeMembershipR\x06member\"N\n" +
-	"\x14UpdatePartitionTable\x126\n" +
-	"\x05table\x18\x01 \x01(\v2 .reflow.engine.v1.PartitionTableR\x05table\"\x8a\x01\n" +
+	"\x02lp\x18\x01 \x01(\rR\x02lp\"N\n" +
+	"\x12BulkUpsertLPOwners\x128\n" +
+	"\arecords\x18\x01 \x03(\v2\x1e.reflw.engine.v1.LPOwnerRecordR\arecords\"G\n" +
+	"\fRegisterNode\x127\n" +
+	"\x06member\x18\x01 \x01(\v2\x1f.reflw.engine.v1.NodeMembershipR\x06member\"M\n" +
+	"\x14UpdatePartitionTable\x125\n" +
+	"\x05table\x18\x01 \x01(\v2\x1f.reflw.engine.v1.PartitionTableR\x05table\"\x8a\x01\n" +
 	"\x0eNodeMembership\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12\x1b\n" +
 	"\traft_addr\x18\x02 \x01(\tR\braftAddr\x12 \n" +
 	"\fnode_host_id\x18\x03 \x01(\tR\n" +
 	"nodeHostId\x12 \n" +
 	"\flast_seen_ms\x18\x04 \x01(\x03R\n" +
-	"lastSeenMs\"\xd8\x02\n" +
-	"\x0ePartitionTable\x12D\n" +
-	"\x06shards\x18\x01 \x03(\v2,.reflow.engine.v1.PartitionTable.ShardsEntryR\x06shards\x12)\n" +
-	"\x10assignment_epoch\x18\x02 \x01(\x04R\x0fassignmentEpoch\x129\n" +
-	"\apending\x18\x03 \x03(\v2\x1f.reflow.engine.v1.RebalanceStepR\apending\x12A\n" +
-	"\rmeta_replicas\x18\x04 \x01(\v2\x1c.reflow.engine.v1.ReplicaSetR\fmetaReplicas\x1aW\n" +
+	"lastSeenMs\"\xd4\x02\n" +
+	"\x0ePartitionTable\x12C\n" +
+	"\x06shards\x18\x01 \x03(\v2+.reflw.engine.v1.PartitionTable.ShardsEntryR\x06shards\x12)\n" +
+	"\x10assignment_epoch\x18\x02 \x01(\x04R\x0fassignmentEpoch\x128\n" +
+	"\apending\x18\x03 \x03(\v2\x1e.reflw.engine.v1.RebalanceStepR\apending\x12@\n" +
+	"\rmeta_replicas\x18\x04 \x01(\v2\x1b.reflw.engine.v1.ReplicaSetR\fmetaReplicas\x1aV\n" +
 	"\vShardsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\x04R\x03key\x122\n" +
-	"\x05value\x18\x02 \x01(\v2\x1c.reflow.engine.v1.ReplicaSetR\x05value:\x028\x01\"'\n" +
+	"\x03key\x18\x01 \x01(\x04R\x03key\x121\n" +
+	"\x05value\x18\x02 \x01(\v2\x1b.reflw.engine.v1.ReplicaSetR\x05value:\x028\x01\"'\n" +
 	"\n" +
 	"ReplicaSet\x12\x19\n" +
 	"\bnode_ids\x18\x01 \x03(\x04R\anodeIds\"$\n" +
 	"\tEvictNode\x12\x17\n" +
-	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\"\x9f\x02\n" +
+	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\"\x9e\x02\n" +
 	"\rRebalanceStep\x12\x19\n" +
-	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x128\n" +
-	"\x04kind\x18\x02 \x01(\x0e2$.reflow.engine.v1.RebalanceStep.KindR\x04kind\x12\x1e\n" +
+	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x127\n" +
+	"\x04kind\x18\x02 \x01(\x0e2#.reflw.engine.v1.RebalanceStep.KindR\x04kind\x12\x1e\n" +
 	"\vadd_node_id\x18\x03 \x01(\x04R\taddNodeId\x12$\n" +
 	"\x0eremove_node_id\x18\x04 \x01(\x04R\fremoveNodeId\x12\x17\n" +
 	"\astep_id\x18\x05 \x01(\x04R\x06stepId\"Z\n" +
@@ -12638,20 +12638,20 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eADD_NON_VOTING\x10\x01\x12\x14\n" +
 	"\x10PROMOTE_TO_VOTER\x10\x02\x12\x12\n" +
-	"\x0eDELETE_REPLICA\x10\x03\"I\n" +
-	"\x12BeginRebalanceStep\x123\n" +
-	"\x04step\x18\x01 \x01(\v2\x1f.reflow.engine.v1.RebalanceStepR\x04step\"K\n" +
+	"\x0eDELETE_REPLICA\x10\x03\"H\n" +
+	"\x12BeginRebalanceStep\x122\n" +
+	"\x04step\x18\x01 \x01(\v2\x1e.reflw.engine.v1.RebalanceStepR\x04step\"K\n" +
 	"\x15CompleteRebalanceStep\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x12\x17\n" +
-	"\astep_id\x18\x02 \x01(\x04R\x06stepId\"\xc4\x02\n" +
+	"\astep_id\x18\x02 \x01(\x04R\x06stepId\"\xc3\x02\n" +
 	"\x10LPTransferRecord\x12\x1f\n" +
 	"\vtransfer_id\x18\x01 \x01(\tR\n" +
 	"transferId\x12\x0e\n" +
 	"\x02lp\x18\x02 \x01(\rR\x02lp\x12!\n" +
 	"\fsource_shard\x18\x03 \x01(\x04R\vsourceShard\x12\x1d\n" +
 	"\n" +
-	"dest_shard\x18\x04 \x01(\x04R\tdestShard\x127\n" +
-	"\x05phase\x18\x05 \x01(\x0e2!.reflow.engine.v1.LPTransferPhaseR\x05phase\x12\"\n" +
+	"dest_shard\x18\x04 \x01(\x04R\tdestShard\x126\n" +
+	"\x05phase\x18\x05 \x01(\x0e2 .reflw.engine.v1.LPTransferPhaseR\x05phase\x12\"\n" +
 	"\rstarted_at_ms\x18\x06 \x01(\x06R\vstartedAtMs\x12\"\n" +
 	"\rlast_event_ms\x18\a \x01(\x06R\vlastEventMs\x12<\n" +
 	"\x1aexpected_lpowners_revision\x18\b \x01(\x04R\x18expectedLpownersRevision\"d\n" +
@@ -12660,11 +12660,11 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"transferId\x12\x0e\n" +
 	"\x02lp\x18\x02 \x01(\rR\x02lp\x12\x1d\n" +
 	"\n" +
-	"dest_shard\x18\x03 \x01(\x04R\tdestShard\"\xaf\x01\n" +
+	"dest_shard\x18\x03 \x01(\x04R\tdestShard\"\xae\x01\n" +
 	"\x15UpdateLPTransferPhase\x12\x1f\n" +
 	"\vtransfer_id\x18\x01 \x01(\tR\n" +
-	"transferId\x127\n" +
-	"\x05phase\x18\x02 \x01(\x0e2!.reflow.engine.v1.LPTransferPhaseR\x05phase\x12<\n" +
+	"transferId\x126\n" +
+	"\x05phase\x18\x02 \x01(\x0e2 .reflw.engine.v1.LPTransferPhaseR\x05phase\x12<\n" +
 	"\x1aexpected_lpowners_revision\x18\x03 \x01(\x04R\x18expectedLpownersRevision\"3\n" +
 	"\x10RemoveLPTransfer\x12\x1f\n" +
 	"\vtransfer_id\x18\x01 \x01(\tR\n" +
@@ -12680,14 +12680,14 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"transferId\x12\x0e\n" +
 	"\x02lp\x18\x02 \x01(\rR\x02lp\x12\x1d\n" +
 	"\n" +
-	"dest_shard\x18\x03 \x01(\x04R\tdestShard\"\xd2\x01\n" +
+	"dest_shard\x18\x03 \x01(\x04R\tdestShard\"\xd1\x01\n" +
 	"\x12ApplyLPTransferSST\x12\x1f\n" +
 	"\vtransfer_id\x18\x01 \x01(\tR\n" +
 	"transferId\x12\x0e\n" +
 	"\x02lp\x18\x02 \x01(\rR\x02lp\x12!\n" +
 	"\fsource_shard\x18\x03 \x01(\x04R\vsourceShard\x12\x17\n" +
-	"\asst_seq\x18\x04 \x01(\x04R\x06sstSeq\x124\n" +
-	"\x04ssts\x18\x05 \x03(\v2 .reflow.engine.v1.TransferSSTRefR\x04ssts\x12\x19\n" +
+	"\asst_seq\x18\x04 \x01(\x04R\x06sstSeq\x123\n" +
+	"\x04ssts\x18\x05 \x03(\v2\x1f.reflw.engine.v1.TransferSSTRefR\x04ssts\x12\x19\n" +
 	"\bis_final\x18\x06 \x01(\bR\aisFinal\"\xc9\x01\n" +
 	"\x0eTransferSSTRef\x12#\n" +
 	"\rrelative_path\x18\x01 \x01(\tR\frelativePath\x12\x1d\n" +
@@ -12768,361 +12768,361 @@ func file_enginev1_engine_proto_rawDescGZIP() []byte {
 var file_enginev1_engine_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
 var file_enginev1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 155)
 var file_enginev1_engine_proto_goTypes = []any{
-	(InvocationState)(0),            // 0: reflow.engine.v1.InvocationState
-	(ProcessKind)(0),                // 1: reflow.engine.v1.ProcessKind
-	(ProcessStatus)(0),              // 2: reflow.engine.v1.ProcessStatus
-	(JoinTokenKind)(0),              // 3: reflow.engine.v1.JoinTokenKind
-	(LPTransferPhase)(0),            // 4: reflow.engine.v1.LPTransferPhase
-	(KeyLeaseStatus_State)(0),       // 5: reflow.engine.v1.KeyLeaseStatus.State
-	(RebalanceStep_Kind)(0),         // 6: reflow.engine.v1.RebalanceStep.Kind
-	(*InvocationId)(nil),            // 7: reflow.engine.v1.InvocationId
-	(*InvocationTarget)(nil),        // 8: reflow.engine.v1.InvocationTarget
-	(*Dedup)(nil),                   // 9: reflow.engine.v1.Dedup
-	(*SelfProposalDedup)(nil),       // 10: reflow.engine.v1.SelfProposalDedup
-	(*ArbitraryDedup)(nil),          // 11: reflow.engine.v1.ArbitraryDedup
-	(*Envelope)(nil),                // 12: reflow.engine.v1.Envelope
-	(*Precondition)(nil),            // 13: reflow.engine.v1.Precondition
-	(*TableRevision)(nil),           // 14: reflow.engine.v1.TableRevision
-	(*Header)(nil),                  // 15: reflow.engine.v1.Header
-	(*Command)(nil),                 // 16: reflow.engine.v1.Command
-	(*AnnounceLeader)(nil),          // 17: reflow.engine.v1.AnnounceLeader
-	(*InvokeCommand)(nil),           // 18: reflow.engine.v1.InvokeCommand
-	(*ParentLink)(nil),              // 19: reflow.engine.v1.ParentLink
-	(*ProcessParent)(nil),           // 20: reflow.engine.v1.ProcessParent
-	(*InvokerEffect)(nil),           // 21: reflow.engine.v1.InvokerEffect
-	(*JERunProposal)(nil),           // 22: reflow.engine.v1.JERunProposal
-	(*AwakeableResolved)(nil),       // 23: reflow.engine.v1.AwakeableResolved
-	(*SignalDelivered)(nil),         // 24: reflow.engine.v1.SignalDelivered
-	(*PromiseCompleted)(nil),        // 25: reflow.engine.v1.PromiseCompleted
-	(*PromiseCompletionAck)(nil),    // 26: reflow.engine.v1.PromiseCompletionAck
-	(*ReapInvocation)(nil),          // 27: reflow.engine.v1.ReapInvocation
-	(*JournalEntryAppended)(nil),    // 28: reflow.engine.v1.JournalEntryAppended
-	(*InvocationCompleted)(nil),     // 29: reflow.engine.v1.InvocationCompleted
-	(*InvocationSuspended)(nil),     // 30: reflow.engine.v1.InvocationSuspended
-	(*JournalEntry)(nil),            // 31: reflow.engine.v1.JournalEntry
-	(*JEInput)(nil),                 // 32: reflow.engine.v1.JEInput
-	(*JESleep)(nil),                 // 33: reflow.engine.v1.JESleep
-	(*JESleepResult)(nil),           // 34: reflow.engine.v1.JESleepResult
-	(*JECall)(nil),                  // 35: reflow.engine.v1.JECall
-	(*JEOneWayCall)(nil),            // 36: reflow.engine.v1.JEOneWayCall
-	(*JECallResult)(nil),            // 37: reflow.engine.v1.JECallResult
-	(*JEGetState)(nil),              // 38: reflow.engine.v1.JEGetState
-	(*JEGetStateResult)(nil),        // 39: reflow.engine.v1.JEGetStateResult
-	(*JEGetStateKeys)(nil),          // 40: reflow.engine.v1.JEGetStateKeys
-	(*JEGetStateKeysResult)(nil),    // 41: reflow.engine.v1.JEGetStateKeysResult
-	(*JESetState)(nil),              // 42: reflow.engine.v1.JESetState
-	(*JEOutput)(nil),                // 43: reflow.engine.v1.JEOutput
-	(*JERun)(nil),                   // 44: reflow.engine.v1.JERun
-	(*RunRetryPolicy)(nil),          // 45: reflow.engine.v1.RunRetryPolicy
-	(*JEClearAllState)(nil),         // 46: reflow.engine.v1.JEClearAllState
-	(*JEAwakeable)(nil),             // 47: reflow.engine.v1.JEAwakeable
-	(*JEAwakeableResult)(nil),       // 48: reflow.engine.v1.JEAwakeableResult
-	(*JESignal)(nil),                // 49: reflow.engine.v1.JESignal
-	(*JEAwaitSignal)(nil),           // 50: reflow.engine.v1.JEAwaitSignal
-	(*JESignalResult)(nil),          // 51: reflow.engine.v1.JESignalResult
-	(*SignalAwaiter)(nil),           // 52: reflow.engine.v1.SignalAwaiter
-	(*SignalInboxEntry)(nil),        // 53: reflow.engine.v1.SignalInboxEntry
-	(*JEGetPromise)(nil),            // 54: reflow.engine.v1.JEGetPromise
-	(*JEPromiseResult)(nil),         // 55: reflow.engine.v1.JEPromiseResult
-	(*JEPeekPromise)(nil),           // 56: reflow.engine.v1.JEPeekPromise
-	(*JECompletePromise)(nil),       // 57: reflow.engine.v1.JECompletePromise
-	(*JEPromiseCompleteResult)(nil), // 58: reflow.engine.v1.JEPromiseCompleteResult
-	(*PromiseValue)(nil),            // 59: reflow.engine.v1.PromiseValue
-	(*Pending)(nil),                 // 60: reflow.engine.v1.Pending
-	(*Resolved)(nil),                // 61: reflow.engine.v1.Resolved
-	(*Rejected)(nil),                // 62: reflow.engine.v1.Rejected
-	(*PromiseAwaiter)(nil),          // 63: reflow.engine.v1.PromiseAwaiter
-	(*JEClearState)(nil),            // 64: reflow.engine.v1.JEClearState
-	(*JEGetEagerStateKeys)(nil),     // 65: reflow.engine.v1.JEGetEagerStateKeys
-	(*TimerFired)(nil),              // 66: reflow.engine.v1.TimerFired
-	(*PurgeInvocation)(nil),         // 67: reflow.engine.v1.PurgeInvocation
-	(*InvocationStatus)(nil),        // 68: reflow.engine.v1.InvocationStatus
-	(*Free)(nil),                    // 69: reflow.engine.v1.Free
-	(*Scheduled)(nil),               // 70: reflow.engine.v1.Scheduled
-	(*Invoked)(nil),                 // 71: reflow.engine.v1.Invoked
-	(*Suspended)(nil),               // 72: reflow.engine.v1.Suspended
-	(*Completed)(nil),               // 73: reflow.engine.v1.Completed
-	(*KeyLeaseStatus)(nil),          // 74: reflow.engine.v1.KeyLeaseStatus
-	(*DedupEntry)(nil),              // 75: reflow.engine.v1.DedupEntry
-	(*PartitionMeta)(nil),           // 76: reflow.engine.v1.PartitionMeta
-	(*AwakeableEntry)(nil),          // 77: reflow.engine.v1.AwakeableEntry
-	(*OutboxEnvelope)(nil),          // 78: reflow.engine.v1.OutboxEnvelope
-	(*DeliverCallResult)(nil),       // 79: reflow.engine.v1.DeliverCallResult
-	(*OutboxAck)(nil),               // 80: reflow.engine.v1.OutboxAck
-	(*SignalSend)(nil),              // 81: reflow.engine.v1.SignalSend
-	(*ProcessEvent)(nil),            // 82: reflow.engine.v1.ProcessEvent
-	(*ProcessEventPayload)(nil),     // 83: reflow.engine.v1.ProcessEventPayload
-	(*ProcessTaskCompleted)(nil),    // 84: reflow.engine.v1.ProcessTaskCompleted
-	(*ProcessTimerFired)(nil),       // 85: reflow.engine.v1.ProcessTimerFired
-	(*ProcessChildCompleted)(nil),   // 86: reflow.engine.v1.ProcessChildCompleted
-	(*ProcessMessageReceived)(nil),  // 87: reflow.engine.v1.ProcessMessageReceived
-	(*TimerValue)(nil),              // 88: reflow.engine.v1.TimerValue
-	(*ProcessTimer)(nil),            // 89: reflow.engine.v1.ProcessTimer
-	(*ProcessAdvanced)(nil),         // 90: reflow.engine.v1.ProcessAdvanced
-	(*TaskInvoke)(nil),              // 91: reflow.engine.v1.TaskInvoke
-	(*TimerArm)(nil),                // 92: reflow.engine.v1.TimerArm
-	(*TimerCancel)(nil),             // 93: reflow.engine.v1.TimerCancel
-	(*ChildStart)(nil),              // 94: reflow.engine.v1.ChildStart
-	(*SignalSubscribe)(nil),         // 95: reflow.engine.v1.SignalSubscribe
-	(*SignalUnsubscribe)(nil),       // 96: reflow.engine.v1.SignalUnsubscribe
-	(*ProcessTerminal)(nil),         // 97: reflow.engine.v1.ProcessTerminal
-	(*ReapProcessInstance)(nil),     // 98: reflow.engine.v1.ReapProcessInstance
-	(*MessageSubscription)(nil),     // 99: reflow.engine.v1.MessageSubscription
-	(*ProcessSubscribe)(nil),        // 100: reflow.engine.v1.ProcessSubscribe
-	(*ProcessUnsubscribe)(nil),      // 101: reflow.engine.v1.ProcessUnsubscribe
-	(*DeliverProcessMessage)(nil),   // 102: reflow.engine.v1.DeliverProcessMessage
-	(*ProcessInstanceRecord)(nil),   // 103: reflow.engine.v1.ProcessInstanceRecord
-	(*ProcessInboxEntry)(nil),       // 104: reflow.engine.v1.ProcessInboxEntry
-	(*ModelRef)(nil),                // 105: reflow.engine.v1.ModelRef
-	(*SnapshotMeta)(nil),            // 106: reflow.engine.v1.SnapshotMeta
-	(*NodeHostMeta)(nil),            // 107: reflow.engine.v1.NodeHostMeta
-	(*DeploymentRecord)(nil),        // 108: reflow.engine.v1.DeploymentRecord
-	(*DeploymentHandler)(nil),       // 109: reflow.engine.v1.DeploymentHandler
-	(*RegisterDeployment)(nil),      // 110: reflow.engine.v1.RegisterDeployment
-	(*DeleteDeployment)(nil),        // 111: reflow.engine.v1.DeleteDeployment
-	(*PlatformConfigRecord)(nil),    // 112: reflow.engine.v1.PlatformConfigRecord
-	(*UpsertPlatformConfig)(nil),    // 113: reflow.engine.v1.UpsertPlatformConfig
-	(*SecretRecord)(nil),            // 114: reflow.engine.v1.SecretRecord
-	(*RemoteEncryptedSecret)(nil),   // 115: reflow.engine.v1.RemoteEncryptedSecret
-	(*UpsertSecret)(nil),            // 116: reflow.engine.v1.UpsertSecret
-	(*DeleteSecret)(nil),            // 117: reflow.engine.v1.DeleteSecret
-	(*ModelRecord)(nil),             // 118: reflow.engine.v1.ModelRecord
-	(*ModelBundle)(nil),             // 119: reflow.engine.v1.ModelBundle
-	(*UpsertModel)(nil),             // 120: reflow.engine.v1.UpsertModel
-	(*DeleteModel)(nil),             // 121: reflow.engine.v1.DeleteModel
-	(*CARootRecord)(nil),            // 122: reflow.engine.v1.CARootRecord
-	(*UpsertCARoot)(nil),            // 123: reflow.engine.v1.UpsertCARoot
-	(*DeleteCARoot)(nil),            // 124: reflow.engine.v1.DeleteCARoot
-	(*JoinTokenRecord)(nil),         // 125: reflow.engine.v1.JoinTokenRecord
-	(*UpsertJoinToken)(nil),         // 126: reflow.engine.v1.UpsertJoinToken
-	(*ConsumeJoinToken)(nil),        // 127: reflow.engine.v1.ConsumeJoinToken
-	(*DeleteJoinToken)(nil),         // 128: reflow.engine.v1.DeleteJoinToken
-	(*LPOwnerRecord)(nil),           // 129: reflow.engine.v1.LPOwnerRecord
-	(*UpsertLPOwner)(nil),           // 130: reflow.engine.v1.UpsertLPOwner
-	(*DeleteLPOwner)(nil),           // 131: reflow.engine.v1.DeleteLPOwner
-	(*BulkUpsertLPOwners)(nil),      // 132: reflow.engine.v1.BulkUpsertLPOwners
-	(*RegisterNode)(nil),            // 133: reflow.engine.v1.RegisterNode
-	(*UpdatePartitionTable)(nil),    // 134: reflow.engine.v1.UpdatePartitionTable
-	(*NodeMembership)(nil),          // 135: reflow.engine.v1.NodeMembership
-	(*PartitionTable)(nil),          // 136: reflow.engine.v1.PartitionTable
-	(*ReplicaSet)(nil),              // 137: reflow.engine.v1.ReplicaSet
-	(*EvictNode)(nil),               // 138: reflow.engine.v1.EvictNode
-	(*RebalanceStep)(nil),           // 139: reflow.engine.v1.RebalanceStep
-	(*BeginRebalanceStep)(nil),      // 140: reflow.engine.v1.BeginRebalanceStep
-	(*CompleteRebalanceStep)(nil),   // 141: reflow.engine.v1.CompleteRebalanceStep
-	(*LPTransferRecord)(nil),        // 142: reflow.engine.v1.LPTransferRecord
-	(*InitiateLPTransfer)(nil),      // 143: reflow.engine.v1.InitiateLPTransfer
-	(*UpdateLPTransferPhase)(nil),   // 144: reflow.engine.v1.UpdateLPTransferPhase
-	(*RemoveLPTransfer)(nil),        // 145: reflow.engine.v1.RemoveLPTransfer
-	(*SetRebalanceDrain)(nil),       // 146: reflow.engine.v1.SetRebalanceDrain
-	(*RebalanceDrainRecord)(nil),    // 147: reflow.engine.v1.RebalanceDrainRecord
-	(*BeginLPTransfer)(nil),         // 148: reflow.engine.v1.BeginLPTransfer
-	(*ApplyLPTransferSST)(nil),      // 149: reflow.engine.v1.ApplyLPTransferSST
-	(*TransferSSTRef)(nil),          // 150: reflow.engine.v1.TransferSSTRef
-	(*CommitLPTransfer)(nil),        // 151: reflow.engine.v1.CommitLPTransfer
-	(*FinishLPTransfer)(nil),        // 152: reflow.engine.v1.FinishLPTransfer
-	(*AbortLPTransfer)(nil),         // 153: reflow.engine.v1.AbortLPTransfer
-	(*LPFreezeRow)(nil),             // 154: reflow.engine.v1.LPFreezeRow
-	(*LPStagingRow)(nil),            // 155: reflow.engine.v1.LPStagingRow
-	nil,                             // 156: reflow.engine.v1.InvokeCommand.MetadataEntry
-	nil,                             // 157: reflow.engine.v1.JEInput.MetadataEntry
-	nil,                             // 158: reflow.engine.v1.Scheduled.MetadataEntry
-	nil,                             // 159: reflow.engine.v1.ModelBundle.DecisionsEntry
-	nil,                             // 160: reflow.engine.v1.ModelBundle.ChildrenEntry
-	nil,                             // 161: reflow.engine.v1.PartitionTable.ShardsEntry
+	(InvocationState)(0),            // 0: reflw.engine.v1.InvocationState
+	(ProcessKind)(0),                // 1: reflw.engine.v1.ProcessKind
+	(ProcessStatus)(0),              // 2: reflw.engine.v1.ProcessStatus
+	(JoinTokenKind)(0),              // 3: reflw.engine.v1.JoinTokenKind
+	(LPTransferPhase)(0),            // 4: reflw.engine.v1.LPTransferPhase
+	(KeyLeaseStatus_State)(0),       // 5: reflw.engine.v1.KeyLeaseStatus.State
+	(RebalanceStep_Kind)(0),         // 6: reflw.engine.v1.RebalanceStep.Kind
+	(*InvocationId)(nil),            // 7: reflw.engine.v1.InvocationId
+	(*InvocationTarget)(nil),        // 8: reflw.engine.v1.InvocationTarget
+	(*Dedup)(nil),                   // 9: reflw.engine.v1.Dedup
+	(*SelfProposalDedup)(nil),       // 10: reflw.engine.v1.SelfProposalDedup
+	(*ArbitraryDedup)(nil),          // 11: reflw.engine.v1.ArbitraryDedup
+	(*Envelope)(nil),                // 12: reflw.engine.v1.Envelope
+	(*Precondition)(nil),            // 13: reflw.engine.v1.Precondition
+	(*TableRevision)(nil),           // 14: reflw.engine.v1.TableRevision
+	(*Header)(nil),                  // 15: reflw.engine.v1.Header
+	(*Command)(nil),                 // 16: reflw.engine.v1.Command
+	(*AnnounceLeader)(nil),          // 17: reflw.engine.v1.AnnounceLeader
+	(*InvokeCommand)(nil),           // 18: reflw.engine.v1.InvokeCommand
+	(*ParentLink)(nil),              // 19: reflw.engine.v1.ParentLink
+	(*ProcessParent)(nil),           // 20: reflw.engine.v1.ProcessParent
+	(*InvokerEffect)(nil),           // 21: reflw.engine.v1.InvokerEffect
+	(*JERunProposal)(nil),           // 22: reflw.engine.v1.JERunProposal
+	(*AwakeableResolved)(nil),       // 23: reflw.engine.v1.AwakeableResolved
+	(*SignalDelivered)(nil),         // 24: reflw.engine.v1.SignalDelivered
+	(*PromiseCompleted)(nil),        // 25: reflw.engine.v1.PromiseCompleted
+	(*PromiseCompletionAck)(nil),    // 26: reflw.engine.v1.PromiseCompletionAck
+	(*ReapInvocation)(nil),          // 27: reflw.engine.v1.ReapInvocation
+	(*JournalEntryAppended)(nil),    // 28: reflw.engine.v1.JournalEntryAppended
+	(*InvocationCompleted)(nil),     // 29: reflw.engine.v1.InvocationCompleted
+	(*InvocationSuspended)(nil),     // 30: reflw.engine.v1.InvocationSuspended
+	(*JournalEntry)(nil),            // 31: reflw.engine.v1.JournalEntry
+	(*JEInput)(nil),                 // 32: reflw.engine.v1.JEInput
+	(*JESleep)(nil),                 // 33: reflw.engine.v1.JESleep
+	(*JESleepResult)(nil),           // 34: reflw.engine.v1.JESleepResult
+	(*JECall)(nil),                  // 35: reflw.engine.v1.JECall
+	(*JEOneWayCall)(nil),            // 36: reflw.engine.v1.JEOneWayCall
+	(*JECallResult)(nil),            // 37: reflw.engine.v1.JECallResult
+	(*JEGetState)(nil),              // 38: reflw.engine.v1.JEGetState
+	(*JEGetStateResult)(nil),        // 39: reflw.engine.v1.JEGetStateResult
+	(*JEGetStateKeys)(nil),          // 40: reflw.engine.v1.JEGetStateKeys
+	(*JEGetStateKeysResult)(nil),    // 41: reflw.engine.v1.JEGetStateKeysResult
+	(*JESetState)(nil),              // 42: reflw.engine.v1.JESetState
+	(*JEOutput)(nil),                // 43: reflw.engine.v1.JEOutput
+	(*JERun)(nil),                   // 44: reflw.engine.v1.JERun
+	(*RunRetryPolicy)(nil),          // 45: reflw.engine.v1.RunRetryPolicy
+	(*JEClearAllState)(nil),         // 46: reflw.engine.v1.JEClearAllState
+	(*JEAwakeable)(nil),             // 47: reflw.engine.v1.JEAwakeable
+	(*JEAwakeableResult)(nil),       // 48: reflw.engine.v1.JEAwakeableResult
+	(*JESignal)(nil),                // 49: reflw.engine.v1.JESignal
+	(*JEAwaitSignal)(nil),           // 50: reflw.engine.v1.JEAwaitSignal
+	(*JESignalResult)(nil),          // 51: reflw.engine.v1.JESignalResult
+	(*SignalAwaiter)(nil),           // 52: reflw.engine.v1.SignalAwaiter
+	(*SignalInboxEntry)(nil),        // 53: reflw.engine.v1.SignalInboxEntry
+	(*JEGetPromise)(nil),            // 54: reflw.engine.v1.JEGetPromise
+	(*JEPromiseResult)(nil),         // 55: reflw.engine.v1.JEPromiseResult
+	(*JEPeekPromise)(nil),           // 56: reflw.engine.v1.JEPeekPromise
+	(*JECompletePromise)(nil),       // 57: reflw.engine.v1.JECompletePromise
+	(*JEPromiseCompleteResult)(nil), // 58: reflw.engine.v1.JEPromiseCompleteResult
+	(*PromiseValue)(nil),            // 59: reflw.engine.v1.PromiseValue
+	(*Pending)(nil),                 // 60: reflw.engine.v1.Pending
+	(*Resolved)(nil),                // 61: reflw.engine.v1.Resolved
+	(*Rejected)(nil),                // 62: reflw.engine.v1.Rejected
+	(*PromiseAwaiter)(nil),          // 63: reflw.engine.v1.PromiseAwaiter
+	(*JEClearState)(nil),            // 64: reflw.engine.v1.JEClearState
+	(*JEGetEagerStateKeys)(nil),     // 65: reflw.engine.v1.JEGetEagerStateKeys
+	(*TimerFired)(nil),              // 66: reflw.engine.v1.TimerFired
+	(*PurgeInvocation)(nil),         // 67: reflw.engine.v1.PurgeInvocation
+	(*InvocationStatus)(nil),        // 68: reflw.engine.v1.InvocationStatus
+	(*Free)(nil),                    // 69: reflw.engine.v1.Free
+	(*Scheduled)(nil),               // 70: reflw.engine.v1.Scheduled
+	(*Invoked)(nil),                 // 71: reflw.engine.v1.Invoked
+	(*Suspended)(nil),               // 72: reflw.engine.v1.Suspended
+	(*Completed)(nil),               // 73: reflw.engine.v1.Completed
+	(*KeyLeaseStatus)(nil),          // 74: reflw.engine.v1.KeyLeaseStatus
+	(*DedupEntry)(nil),              // 75: reflw.engine.v1.DedupEntry
+	(*PartitionMeta)(nil),           // 76: reflw.engine.v1.PartitionMeta
+	(*AwakeableEntry)(nil),          // 77: reflw.engine.v1.AwakeableEntry
+	(*OutboxEnvelope)(nil),          // 78: reflw.engine.v1.OutboxEnvelope
+	(*DeliverCallResult)(nil),       // 79: reflw.engine.v1.DeliverCallResult
+	(*OutboxAck)(nil),               // 80: reflw.engine.v1.OutboxAck
+	(*SignalSend)(nil),              // 81: reflw.engine.v1.SignalSend
+	(*ProcessEvent)(nil),            // 82: reflw.engine.v1.ProcessEvent
+	(*ProcessEventPayload)(nil),     // 83: reflw.engine.v1.ProcessEventPayload
+	(*ProcessTaskCompleted)(nil),    // 84: reflw.engine.v1.ProcessTaskCompleted
+	(*ProcessTimerFired)(nil),       // 85: reflw.engine.v1.ProcessTimerFired
+	(*ProcessChildCompleted)(nil),   // 86: reflw.engine.v1.ProcessChildCompleted
+	(*ProcessMessageReceived)(nil),  // 87: reflw.engine.v1.ProcessMessageReceived
+	(*TimerValue)(nil),              // 88: reflw.engine.v1.TimerValue
+	(*ProcessTimer)(nil),            // 89: reflw.engine.v1.ProcessTimer
+	(*ProcessAdvanced)(nil),         // 90: reflw.engine.v1.ProcessAdvanced
+	(*TaskInvoke)(nil),              // 91: reflw.engine.v1.TaskInvoke
+	(*TimerArm)(nil),                // 92: reflw.engine.v1.TimerArm
+	(*TimerCancel)(nil),             // 93: reflw.engine.v1.TimerCancel
+	(*ChildStart)(nil),              // 94: reflw.engine.v1.ChildStart
+	(*SignalSubscribe)(nil),         // 95: reflw.engine.v1.SignalSubscribe
+	(*SignalUnsubscribe)(nil),       // 96: reflw.engine.v1.SignalUnsubscribe
+	(*ProcessTerminal)(nil),         // 97: reflw.engine.v1.ProcessTerminal
+	(*ReapProcessInstance)(nil),     // 98: reflw.engine.v1.ReapProcessInstance
+	(*MessageSubscription)(nil),     // 99: reflw.engine.v1.MessageSubscription
+	(*ProcessSubscribe)(nil),        // 100: reflw.engine.v1.ProcessSubscribe
+	(*ProcessUnsubscribe)(nil),      // 101: reflw.engine.v1.ProcessUnsubscribe
+	(*DeliverProcessMessage)(nil),   // 102: reflw.engine.v1.DeliverProcessMessage
+	(*ProcessInstanceRecord)(nil),   // 103: reflw.engine.v1.ProcessInstanceRecord
+	(*ProcessInboxEntry)(nil),       // 104: reflw.engine.v1.ProcessInboxEntry
+	(*ModelRef)(nil),                // 105: reflw.engine.v1.ModelRef
+	(*SnapshotMeta)(nil),            // 106: reflw.engine.v1.SnapshotMeta
+	(*NodeHostMeta)(nil),            // 107: reflw.engine.v1.NodeHostMeta
+	(*DeploymentRecord)(nil),        // 108: reflw.engine.v1.DeploymentRecord
+	(*DeploymentHandler)(nil),       // 109: reflw.engine.v1.DeploymentHandler
+	(*RegisterDeployment)(nil),      // 110: reflw.engine.v1.RegisterDeployment
+	(*DeleteDeployment)(nil),        // 111: reflw.engine.v1.DeleteDeployment
+	(*PlatformConfigRecord)(nil),    // 112: reflw.engine.v1.PlatformConfigRecord
+	(*UpsertPlatformConfig)(nil),    // 113: reflw.engine.v1.UpsertPlatformConfig
+	(*SecretRecord)(nil),            // 114: reflw.engine.v1.SecretRecord
+	(*RemoteEncryptedSecret)(nil),   // 115: reflw.engine.v1.RemoteEncryptedSecret
+	(*UpsertSecret)(nil),            // 116: reflw.engine.v1.UpsertSecret
+	(*DeleteSecret)(nil),            // 117: reflw.engine.v1.DeleteSecret
+	(*ModelRecord)(nil),             // 118: reflw.engine.v1.ModelRecord
+	(*ModelBundle)(nil),             // 119: reflw.engine.v1.ModelBundle
+	(*UpsertModel)(nil),             // 120: reflw.engine.v1.UpsertModel
+	(*DeleteModel)(nil),             // 121: reflw.engine.v1.DeleteModel
+	(*CARootRecord)(nil),            // 122: reflw.engine.v1.CARootRecord
+	(*UpsertCARoot)(nil),            // 123: reflw.engine.v1.UpsertCARoot
+	(*DeleteCARoot)(nil),            // 124: reflw.engine.v1.DeleteCARoot
+	(*JoinTokenRecord)(nil),         // 125: reflw.engine.v1.JoinTokenRecord
+	(*UpsertJoinToken)(nil),         // 126: reflw.engine.v1.UpsertJoinToken
+	(*ConsumeJoinToken)(nil),        // 127: reflw.engine.v1.ConsumeJoinToken
+	(*DeleteJoinToken)(nil),         // 128: reflw.engine.v1.DeleteJoinToken
+	(*LPOwnerRecord)(nil),           // 129: reflw.engine.v1.LPOwnerRecord
+	(*UpsertLPOwner)(nil),           // 130: reflw.engine.v1.UpsertLPOwner
+	(*DeleteLPOwner)(nil),           // 131: reflw.engine.v1.DeleteLPOwner
+	(*BulkUpsertLPOwners)(nil),      // 132: reflw.engine.v1.BulkUpsertLPOwners
+	(*RegisterNode)(nil),            // 133: reflw.engine.v1.RegisterNode
+	(*UpdatePartitionTable)(nil),    // 134: reflw.engine.v1.UpdatePartitionTable
+	(*NodeMembership)(nil),          // 135: reflw.engine.v1.NodeMembership
+	(*PartitionTable)(nil),          // 136: reflw.engine.v1.PartitionTable
+	(*ReplicaSet)(nil),              // 137: reflw.engine.v1.ReplicaSet
+	(*EvictNode)(nil),               // 138: reflw.engine.v1.EvictNode
+	(*RebalanceStep)(nil),           // 139: reflw.engine.v1.RebalanceStep
+	(*BeginRebalanceStep)(nil),      // 140: reflw.engine.v1.BeginRebalanceStep
+	(*CompleteRebalanceStep)(nil),   // 141: reflw.engine.v1.CompleteRebalanceStep
+	(*LPTransferRecord)(nil),        // 142: reflw.engine.v1.LPTransferRecord
+	(*InitiateLPTransfer)(nil),      // 143: reflw.engine.v1.InitiateLPTransfer
+	(*UpdateLPTransferPhase)(nil),   // 144: reflw.engine.v1.UpdateLPTransferPhase
+	(*RemoveLPTransfer)(nil),        // 145: reflw.engine.v1.RemoveLPTransfer
+	(*SetRebalanceDrain)(nil),       // 146: reflw.engine.v1.SetRebalanceDrain
+	(*RebalanceDrainRecord)(nil),    // 147: reflw.engine.v1.RebalanceDrainRecord
+	(*BeginLPTransfer)(nil),         // 148: reflw.engine.v1.BeginLPTransfer
+	(*ApplyLPTransferSST)(nil),      // 149: reflw.engine.v1.ApplyLPTransferSST
+	(*TransferSSTRef)(nil),          // 150: reflw.engine.v1.TransferSSTRef
+	(*CommitLPTransfer)(nil),        // 151: reflw.engine.v1.CommitLPTransfer
+	(*FinishLPTransfer)(nil),        // 152: reflw.engine.v1.FinishLPTransfer
+	(*AbortLPTransfer)(nil),         // 153: reflw.engine.v1.AbortLPTransfer
+	(*LPFreezeRow)(nil),             // 154: reflw.engine.v1.LPFreezeRow
+	(*LPStagingRow)(nil),            // 155: reflw.engine.v1.LPStagingRow
+	nil,                             // 156: reflw.engine.v1.InvokeCommand.MetadataEntry
+	nil,                             // 157: reflw.engine.v1.JEInput.MetadataEntry
+	nil,                             // 158: reflw.engine.v1.Scheduled.MetadataEntry
+	nil,                             // 159: reflw.engine.v1.ModelBundle.DecisionsEntry
+	nil,                             // 160: reflw.engine.v1.ModelBundle.ChildrenEntry
+	nil,                             // 161: reflw.engine.v1.PartitionTable.ShardsEntry
 }
 var file_enginev1_engine_proto_depIdxs = []int32{
-	10,  // 0: reflow.engine.v1.Dedup.self_proposal:type_name -> reflow.engine.v1.SelfProposalDedup
-	11,  // 1: reflow.engine.v1.Dedup.arbitrary:type_name -> reflow.engine.v1.ArbitraryDedup
-	15,  // 2: reflow.engine.v1.Envelope.header:type_name -> reflow.engine.v1.Header
-	16,  // 3: reflow.engine.v1.Envelope.command:type_name -> reflow.engine.v1.Command
-	13,  // 4: reflow.engine.v1.Envelope.precondition:type_name -> reflow.engine.v1.Precondition
-	9,   // 5: reflow.engine.v1.Header.dedup:type_name -> reflow.engine.v1.Dedup
-	17,  // 6: reflow.engine.v1.Command.announce_leader:type_name -> reflow.engine.v1.AnnounceLeader
-	18,  // 7: reflow.engine.v1.Command.invoke:type_name -> reflow.engine.v1.InvokeCommand
-	21,  // 8: reflow.engine.v1.Command.invoker_effect:type_name -> reflow.engine.v1.InvokerEffect
-	66,  // 9: reflow.engine.v1.Command.timer_fired:type_name -> reflow.engine.v1.TimerFired
-	67,  // 10: reflow.engine.v1.Command.purge:type_name -> reflow.engine.v1.PurgeInvocation
-	133, // 11: reflow.engine.v1.Command.register_node:type_name -> reflow.engine.v1.RegisterNode
-	134, // 12: reflow.engine.v1.Command.update_partition_table:type_name -> reflow.engine.v1.UpdatePartitionTable
-	138, // 13: reflow.engine.v1.Command.evict_node:type_name -> reflow.engine.v1.EvictNode
-	140, // 14: reflow.engine.v1.Command.begin_rebalance_step:type_name -> reflow.engine.v1.BeginRebalanceStep
-	141, // 15: reflow.engine.v1.Command.complete_rebalance_step:type_name -> reflow.engine.v1.CompleteRebalanceStep
-	79,  // 16: reflow.engine.v1.Command.deliver_call_result:type_name -> reflow.engine.v1.DeliverCallResult
-	80,  // 17: reflow.engine.v1.Command.outbox_ack:type_name -> reflow.engine.v1.OutboxAck
-	110, // 18: reflow.engine.v1.Command.register_deployment:type_name -> reflow.engine.v1.RegisterDeployment
-	111, // 19: reflow.engine.v1.Command.delete_deployment:type_name -> reflow.engine.v1.DeleteDeployment
-	26,  // 20: reflow.engine.v1.Command.promise_completion_ack:type_name -> reflow.engine.v1.PromiseCompletionAck
-	27,  // 21: reflow.engine.v1.Command.reap_invocation:type_name -> reflow.engine.v1.ReapInvocation
-	116, // 22: reflow.engine.v1.Command.upsert_secret:type_name -> reflow.engine.v1.UpsertSecret
-	117, // 23: reflow.engine.v1.Command.delete_secret:type_name -> reflow.engine.v1.DeleteSecret
-	120, // 24: reflow.engine.v1.Command.upsert_model:type_name -> reflow.engine.v1.UpsertModel
-	121, // 25: reflow.engine.v1.Command.delete_model:type_name -> reflow.engine.v1.DeleteModel
-	130, // 26: reflow.engine.v1.Command.upsert_lp_owner:type_name -> reflow.engine.v1.UpsertLPOwner
-	131, // 27: reflow.engine.v1.Command.delete_lp_owner:type_name -> reflow.engine.v1.DeleteLPOwner
-	132, // 28: reflow.engine.v1.Command.bulk_upsert_lp_owners:type_name -> reflow.engine.v1.BulkUpsertLPOwners
-	143, // 29: reflow.engine.v1.Command.initiate_lp_transfer:type_name -> reflow.engine.v1.InitiateLPTransfer
-	144, // 30: reflow.engine.v1.Command.update_lp_transfer_phase:type_name -> reflow.engine.v1.UpdateLPTransferPhase
-	145, // 31: reflow.engine.v1.Command.remove_lp_transfer:type_name -> reflow.engine.v1.RemoveLPTransfer
-	148, // 32: reflow.engine.v1.Command.begin_lp_transfer:type_name -> reflow.engine.v1.BeginLPTransfer
-	149, // 33: reflow.engine.v1.Command.apply_lp_transfer_sst:type_name -> reflow.engine.v1.ApplyLPTransferSST
-	151, // 34: reflow.engine.v1.Command.commit_lp_transfer:type_name -> reflow.engine.v1.CommitLPTransfer
-	152, // 35: reflow.engine.v1.Command.finish_lp_transfer:type_name -> reflow.engine.v1.FinishLPTransfer
-	153, // 36: reflow.engine.v1.Command.abort_lp_transfer:type_name -> reflow.engine.v1.AbortLPTransfer
-	82,  // 37: reflow.engine.v1.Command.process_event:type_name -> reflow.engine.v1.ProcessEvent
-	90,  // 38: reflow.engine.v1.Command.process_advanced:type_name -> reflow.engine.v1.ProcessAdvanced
-	102, // 39: reflow.engine.v1.Command.deliver_process_message:type_name -> reflow.engine.v1.DeliverProcessMessage
-	100, // 40: reflow.engine.v1.Command.process_subscribe:type_name -> reflow.engine.v1.ProcessSubscribe
-	101, // 41: reflow.engine.v1.Command.process_unsubscribe:type_name -> reflow.engine.v1.ProcessUnsubscribe
-	98,  // 42: reflow.engine.v1.Command.reap_process_instance:type_name -> reflow.engine.v1.ReapProcessInstance
-	146, // 43: reflow.engine.v1.Command.set_rebalance_drain:type_name -> reflow.engine.v1.SetRebalanceDrain
-	123, // 44: reflow.engine.v1.Command.upsert_ca_root:type_name -> reflow.engine.v1.UpsertCARoot
-	124, // 45: reflow.engine.v1.Command.delete_ca_root:type_name -> reflow.engine.v1.DeleteCARoot
-	126, // 46: reflow.engine.v1.Command.upsert_join_token:type_name -> reflow.engine.v1.UpsertJoinToken
-	127, // 47: reflow.engine.v1.Command.consume_join_token:type_name -> reflow.engine.v1.ConsumeJoinToken
-	128, // 48: reflow.engine.v1.Command.delete_join_token:type_name -> reflow.engine.v1.DeleteJoinToken
-	113, // 49: reflow.engine.v1.Command.upsert_platform_config:type_name -> reflow.engine.v1.UpsertPlatformConfig
-	7,   // 50: reflow.engine.v1.InvokeCommand.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	8,   // 51: reflow.engine.v1.InvokeCommand.target:type_name -> reflow.engine.v1.InvocationTarget
-	19,  // 52: reflow.engine.v1.InvokeCommand.parent_link:type_name -> reflow.engine.v1.ParentLink
-	156, // 53: reflow.engine.v1.InvokeCommand.metadata:type_name -> reflow.engine.v1.InvokeCommand.MetadataEntry
-	7,   // 54: reflow.engine.v1.ParentLink.parent_id:type_name -> reflow.engine.v1.InvocationId
-	20,  // 55: reflow.engine.v1.ParentLink.process_parent:type_name -> reflow.engine.v1.ProcessParent
-	7,   // 56: reflow.engine.v1.InvokerEffect.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	28,  // 57: reflow.engine.v1.InvokerEffect.journal_appended:type_name -> reflow.engine.v1.JournalEntryAppended
-	29,  // 58: reflow.engine.v1.InvokerEffect.completed:type_name -> reflow.engine.v1.InvocationCompleted
-	30,  // 59: reflow.engine.v1.InvokerEffect.suspended:type_name -> reflow.engine.v1.InvocationSuspended
-	22,  // 60: reflow.engine.v1.InvokerEffect.run_proposal:type_name -> reflow.engine.v1.JERunProposal
-	23,  // 61: reflow.engine.v1.InvokerEffect.awakeable_resolved:type_name -> reflow.engine.v1.AwakeableResolved
-	24,  // 62: reflow.engine.v1.InvokerEffect.signal_delivered:type_name -> reflow.engine.v1.SignalDelivered
-	25,  // 63: reflow.engine.v1.InvokerEffect.promise_completed:type_name -> reflow.engine.v1.PromiseCompleted
-	45,  // 64: reflow.engine.v1.JERunProposal.retry_policy:type_name -> reflow.engine.v1.RunRetryPolicy
-	8,   // 65: reflow.engine.v1.SignalDelivered.target:type_name -> reflow.engine.v1.InvocationTarget
-	7,   // 66: reflow.engine.v1.PromiseCompleted.caller_id:type_name -> reflow.engine.v1.InvocationId
-	7,   // 67: reflow.engine.v1.PromiseCompletionAck.caller_id:type_name -> reflow.engine.v1.InvocationId
-	7,   // 68: reflow.engine.v1.ReapInvocation.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	31,  // 69: reflow.engine.v1.JournalEntryAppended.entry:type_name -> reflow.engine.v1.JournalEntry
-	32,  // 70: reflow.engine.v1.JournalEntry.input:type_name -> reflow.engine.v1.JEInput
-	33,  // 71: reflow.engine.v1.JournalEntry.sleep:type_name -> reflow.engine.v1.JESleep
-	34,  // 72: reflow.engine.v1.JournalEntry.sleep_result:type_name -> reflow.engine.v1.JESleepResult
-	35,  // 73: reflow.engine.v1.JournalEntry.call:type_name -> reflow.engine.v1.JECall
-	37,  // 74: reflow.engine.v1.JournalEntry.call_result:type_name -> reflow.engine.v1.JECallResult
-	38,  // 75: reflow.engine.v1.JournalEntry.get_state:type_name -> reflow.engine.v1.JEGetState
-	42,  // 76: reflow.engine.v1.JournalEntry.set_state:type_name -> reflow.engine.v1.JESetState
-	43,  // 77: reflow.engine.v1.JournalEntry.output:type_name -> reflow.engine.v1.JEOutput
-	44,  // 78: reflow.engine.v1.JournalEntry.run:type_name -> reflow.engine.v1.JERun
-	47,  // 79: reflow.engine.v1.JournalEntry.awakeable:type_name -> reflow.engine.v1.JEAwakeable
-	48,  // 80: reflow.engine.v1.JournalEntry.awakeable_result:type_name -> reflow.engine.v1.JEAwakeableResult
-	49,  // 81: reflow.engine.v1.JournalEntry.signal:type_name -> reflow.engine.v1.JESignal
-	64,  // 82: reflow.engine.v1.JournalEntry.clear_state:type_name -> reflow.engine.v1.JEClearState
-	46,  // 83: reflow.engine.v1.JournalEntry.clear_all_state:type_name -> reflow.engine.v1.JEClearAllState
-	36,  // 84: reflow.engine.v1.JournalEntry.one_way_call:type_name -> reflow.engine.v1.JEOneWayCall
-	50,  // 85: reflow.engine.v1.JournalEntry.await_signal:type_name -> reflow.engine.v1.JEAwaitSignal
-	51,  // 86: reflow.engine.v1.JournalEntry.signal_result:type_name -> reflow.engine.v1.JESignalResult
-	54,  // 87: reflow.engine.v1.JournalEntry.get_promise:type_name -> reflow.engine.v1.JEGetPromise
-	55,  // 88: reflow.engine.v1.JournalEntry.promise_result:type_name -> reflow.engine.v1.JEPromiseResult
-	56,  // 89: reflow.engine.v1.JournalEntry.peek_promise:type_name -> reflow.engine.v1.JEPeekPromise
-	57,  // 90: reflow.engine.v1.JournalEntry.complete_promise:type_name -> reflow.engine.v1.JECompletePromise
-	58,  // 91: reflow.engine.v1.JournalEntry.promise_complete_result:type_name -> reflow.engine.v1.JEPromiseCompleteResult
-	39,  // 92: reflow.engine.v1.JournalEntry.get_state_result:type_name -> reflow.engine.v1.JEGetStateResult
-	40,  // 93: reflow.engine.v1.JournalEntry.get_state_keys:type_name -> reflow.engine.v1.JEGetStateKeys
-	41,  // 94: reflow.engine.v1.JournalEntry.get_state_keys_result:type_name -> reflow.engine.v1.JEGetStateKeysResult
-	65,  // 95: reflow.engine.v1.JournalEntry.get_eager_state_keys:type_name -> reflow.engine.v1.JEGetEagerStateKeys
-	157, // 96: reflow.engine.v1.JEInput.metadata:type_name -> reflow.engine.v1.JEInput.MetadataEntry
-	8,   // 97: reflow.engine.v1.JECall.target:type_name -> reflow.engine.v1.InvocationTarget
-	8,   // 98: reflow.engine.v1.JEOneWayCall.target:type_name -> reflow.engine.v1.InvocationTarget
-	8,   // 99: reflow.engine.v1.JESignal.target:type_name -> reflow.engine.v1.InvocationTarget
-	7,   // 100: reflow.engine.v1.SignalAwaiter.owner:type_name -> reflow.engine.v1.InvocationId
-	60,  // 101: reflow.engine.v1.PromiseValue.pending:type_name -> reflow.engine.v1.Pending
-	61,  // 102: reflow.engine.v1.PromiseValue.resolved:type_name -> reflow.engine.v1.Resolved
-	62,  // 103: reflow.engine.v1.PromiseValue.rejected:type_name -> reflow.engine.v1.Rejected
-	7,   // 104: reflow.engine.v1.PromiseAwaiter.owner:type_name -> reflow.engine.v1.InvocationId
-	7,   // 105: reflow.engine.v1.TimerFired.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	7,   // 106: reflow.engine.v1.PurgeInvocation.invocation_id:type_name -> reflow.engine.v1.InvocationId
-	69,  // 107: reflow.engine.v1.InvocationStatus.free:type_name -> reflow.engine.v1.Free
-	70,  // 108: reflow.engine.v1.InvocationStatus.scheduled:type_name -> reflow.engine.v1.Scheduled
-	71,  // 109: reflow.engine.v1.InvocationStatus.invoked:type_name -> reflow.engine.v1.Invoked
-	72,  // 110: reflow.engine.v1.InvocationStatus.suspended:type_name -> reflow.engine.v1.Suspended
-	73,  // 111: reflow.engine.v1.InvocationStatus.completed:type_name -> reflow.engine.v1.Completed
-	8,   // 112: reflow.engine.v1.Scheduled.target:type_name -> reflow.engine.v1.InvocationTarget
-	19,  // 113: reflow.engine.v1.Scheduled.parent_link:type_name -> reflow.engine.v1.ParentLink
-	158, // 114: reflow.engine.v1.Scheduled.metadata:type_name -> reflow.engine.v1.Scheduled.MetadataEntry
-	8,   // 115: reflow.engine.v1.Invoked.target:type_name -> reflow.engine.v1.InvocationTarget
-	19,  // 116: reflow.engine.v1.Invoked.parent_link:type_name -> reflow.engine.v1.ParentLink
-	8,   // 117: reflow.engine.v1.Suspended.target:type_name -> reflow.engine.v1.InvocationTarget
-	19,  // 118: reflow.engine.v1.Suspended.parent_link:type_name -> reflow.engine.v1.ParentLink
-	8,   // 119: reflow.engine.v1.Completed.target:type_name -> reflow.engine.v1.InvocationTarget
-	5,   // 120: reflow.engine.v1.KeyLeaseStatus.state:type_name -> reflow.engine.v1.KeyLeaseStatus.State
-	7,   // 121: reflow.engine.v1.KeyLeaseStatus.current_invocation:type_name -> reflow.engine.v1.InvocationId
-	7,   // 122: reflow.engine.v1.KeyLeaseStatus.queue:type_name -> reflow.engine.v1.InvocationId
-	7,   // 123: reflow.engine.v1.AwakeableEntry.owner:type_name -> reflow.engine.v1.InvocationId
-	18,  // 124: reflow.engine.v1.OutboxEnvelope.invoke:type_name -> reflow.engine.v1.InvokeCommand
-	81,  // 125: reflow.engine.v1.OutboxEnvelope.signal:type_name -> reflow.engine.v1.SignalSend
-	79,  // 126: reflow.engine.v1.OutboxEnvelope.deliver_call_result:type_name -> reflow.engine.v1.DeliverCallResult
-	80,  // 127: reflow.engine.v1.OutboxEnvelope.outbox_ack:type_name -> reflow.engine.v1.OutboxAck
-	25,  // 128: reflow.engine.v1.OutboxEnvelope.promise_completion:type_name -> reflow.engine.v1.PromiseCompleted
-	26,  // 129: reflow.engine.v1.OutboxEnvelope.promise_completion_ack:type_name -> reflow.engine.v1.PromiseCompletionAck
-	82,  // 130: reflow.engine.v1.OutboxEnvelope.process_event:type_name -> reflow.engine.v1.ProcessEvent
-	100, // 131: reflow.engine.v1.OutboxEnvelope.process_subscribe:type_name -> reflow.engine.v1.ProcessSubscribe
-	101, // 132: reflow.engine.v1.OutboxEnvelope.process_unsubscribe:type_name -> reflow.engine.v1.ProcessUnsubscribe
-	7,   // 133: reflow.engine.v1.DeliverCallResult.parent_id:type_name -> reflow.engine.v1.InvocationId
-	8,   // 134: reflow.engine.v1.SignalSend.target:type_name -> reflow.engine.v1.InvocationTarget
-	83,  // 135: reflow.engine.v1.ProcessEvent.payload:type_name -> reflow.engine.v1.ProcessEventPayload
-	105, // 136: reflow.engine.v1.ProcessEvent.model_ref:type_name -> reflow.engine.v1.ModelRef
-	1,   // 137: reflow.engine.v1.ProcessEvent.kind:type_name -> reflow.engine.v1.ProcessKind
-	19,  // 138: reflow.engine.v1.ProcessEvent.parent_link:type_name -> reflow.engine.v1.ParentLink
-	84,  // 139: reflow.engine.v1.ProcessEventPayload.task_completed:type_name -> reflow.engine.v1.ProcessTaskCompleted
-	85,  // 140: reflow.engine.v1.ProcessEventPayload.timer_fired:type_name -> reflow.engine.v1.ProcessTimerFired
-	86,  // 141: reflow.engine.v1.ProcessEventPayload.child_completed:type_name -> reflow.engine.v1.ProcessChildCompleted
-	87,  // 142: reflow.engine.v1.ProcessEventPayload.message_received:type_name -> reflow.engine.v1.ProcessMessageReceived
-	89,  // 143: reflow.engine.v1.TimerValue.process:type_name -> reflow.engine.v1.ProcessTimer
-	91,  // 144: reflow.engine.v1.ProcessAdvanced.invoke:type_name -> reflow.engine.v1.TaskInvoke
-	92,  // 145: reflow.engine.v1.ProcessAdvanced.arm_timer:type_name -> reflow.engine.v1.TimerArm
-	93,  // 146: reflow.engine.v1.ProcessAdvanced.cancel_timer:type_name -> reflow.engine.v1.TimerCancel
-	94,  // 147: reflow.engine.v1.ProcessAdvanced.start_child:type_name -> reflow.engine.v1.ChildStart
-	95,  // 148: reflow.engine.v1.ProcessAdvanced.subscribe:type_name -> reflow.engine.v1.SignalSubscribe
-	97,  // 149: reflow.engine.v1.ProcessAdvanced.terminal:type_name -> reflow.engine.v1.ProcessTerminal
-	96,  // 150: reflow.engine.v1.ProcessAdvanced.unsubscribe:type_name -> reflow.engine.v1.SignalUnsubscribe
-	8,   // 151: reflow.engine.v1.TaskInvoke.target:type_name -> reflow.engine.v1.InvocationTarget
-	105, // 152: reflow.engine.v1.ChildStart.model_ref:type_name -> reflow.engine.v1.ModelRef
-	1,   // 153: reflow.engine.v1.ChildStart.kind:type_name -> reflow.engine.v1.ProcessKind
-	99,  // 154: reflow.engine.v1.ProcessSubscribe.sub:type_name -> reflow.engine.v1.MessageSubscription
-	99,  // 155: reflow.engine.v1.ProcessUnsubscribe.sub:type_name -> reflow.engine.v1.MessageSubscription
-	7,   // 156: reflow.engine.v1.ProcessInstanceRecord.root_id:type_name -> reflow.engine.v1.InvocationId
-	105, // 157: reflow.engine.v1.ProcessInstanceRecord.model_ref:type_name -> reflow.engine.v1.ModelRef
-	1,   // 158: reflow.engine.v1.ProcessInstanceRecord.kind:type_name -> reflow.engine.v1.ProcessKind
-	2,   // 159: reflow.engine.v1.ProcessInstanceRecord.status:type_name -> reflow.engine.v1.ProcessStatus
-	19,  // 160: reflow.engine.v1.ProcessInstanceRecord.parent_link:type_name -> reflow.engine.v1.ParentLink
-	83,  // 161: reflow.engine.v1.ProcessInboxEntry.payload:type_name -> reflow.engine.v1.ProcessEventPayload
-	109, // 162: reflow.engine.v1.DeploymentRecord.handlers:type_name -> reflow.engine.v1.DeploymentHandler
-	108, // 163: reflow.engine.v1.RegisterDeployment.record:type_name -> reflow.engine.v1.DeploymentRecord
-	112, // 164: reflow.engine.v1.UpsertPlatformConfig.record:type_name -> reflow.engine.v1.PlatformConfigRecord
-	115, // 165: reflow.engine.v1.SecretRecord.remote_encrypted:type_name -> reflow.engine.v1.RemoteEncryptedSecret
-	114, // 166: reflow.engine.v1.UpsertSecret.record:type_name -> reflow.engine.v1.SecretRecord
-	105, // 167: reflow.engine.v1.ModelRecord.model_ref:type_name -> reflow.engine.v1.ModelRef
-	119, // 168: reflow.engine.v1.ModelRecord.bundle:type_name -> reflow.engine.v1.ModelBundle
-	159, // 169: reflow.engine.v1.ModelBundle.decisions:type_name -> reflow.engine.v1.ModelBundle.DecisionsEntry
-	160, // 170: reflow.engine.v1.ModelBundle.children:type_name -> reflow.engine.v1.ModelBundle.ChildrenEntry
-	118, // 171: reflow.engine.v1.UpsertModel.record:type_name -> reflow.engine.v1.ModelRecord
-	105, // 172: reflow.engine.v1.DeleteModel.model_ref:type_name -> reflow.engine.v1.ModelRef
-	122, // 173: reflow.engine.v1.UpsertCARoot.record:type_name -> reflow.engine.v1.CARootRecord
-	3,   // 174: reflow.engine.v1.JoinTokenRecord.kind:type_name -> reflow.engine.v1.JoinTokenKind
-	125, // 175: reflow.engine.v1.UpsertJoinToken.record:type_name -> reflow.engine.v1.JoinTokenRecord
-	129, // 176: reflow.engine.v1.UpsertLPOwner.record:type_name -> reflow.engine.v1.LPOwnerRecord
-	129, // 177: reflow.engine.v1.BulkUpsertLPOwners.records:type_name -> reflow.engine.v1.LPOwnerRecord
-	135, // 178: reflow.engine.v1.RegisterNode.member:type_name -> reflow.engine.v1.NodeMembership
-	136, // 179: reflow.engine.v1.UpdatePartitionTable.table:type_name -> reflow.engine.v1.PartitionTable
-	161, // 180: reflow.engine.v1.PartitionTable.shards:type_name -> reflow.engine.v1.PartitionTable.ShardsEntry
-	139, // 181: reflow.engine.v1.PartitionTable.pending:type_name -> reflow.engine.v1.RebalanceStep
-	137, // 182: reflow.engine.v1.PartitionTable.meta_replicas:type_name -> reflow.engine.v1.ReplicaSet
-	6,   // 183: reflow.engine.v1.RebalanceStep.kind:type_name -> reflow.engine.v1.RebalanceStep.Kind
-	139, // 184: reflow.engine.v1.BeginRebalanceStep.step:type_name -> reflow.engine.v1.RebalanceStep
-	4,   // 185: reflow.engine.v1.LPTransferRecord.phase:type_name -> reflow.engine.v1.LPTransferPhase
-	4,   // 186: reflow.engine.v1.UpdateLPTransferPhase.phase:type_name -> reflow.engine.v1.LPTransferPhase
-	150, // 187: reflow.engine.v1.ApplyLPTransferSST.ssts:type_name -> reflow.engine.v1.TransferSSTRef
-	105, // 188: reflow.engine.v1.ModelBundle.DecisionsEntry.value:type_name -> reflow.engine.v1.ModelRef
-	105, // 189: reflow.engine.v1.ModelBundle.ChildrenEntry.value:type_name -> reflow.engine.v1.ModelRef
-	137, // 190: reflow.engine.v1.PartitionTable.ShardsEntry.value:type_name -> reflow.engine.v1.ReplicaSet
+	10,  // 0: reflw.engine.v1.Dedup.self_proposal:type_name -> reflw.engine.v1.SelfProposalDedup
+	11,  // 1: reflw.engine.v1.Dedup.arbitrary:type_name -> reflw.engine.v1.ArbitraryDedup
+	15,  // 2: reflw.engine.v1.Envelope.header:type_name -> reflw.engine.v1.Header
+	16,  // 3: reflw.engine.v1.Envelope.command:type_name -> reflw.engine.v1.Command
+	13,  // 4: reflw.engine.v1.Envelope.precondition:type_name -> reflw.engine.v1.Precondition
+	9,   // 5: reflw.engine.v1.Header.dedup:type_name -> reflw.engine.v1.Dedup
+	17,  // 6: reflw.engine.v1.Command.announce_leader:type_name -> reflw.engine.v1.AnnounceLeader
+	18,  // 7: reflw.engine.v1.Command.invoke:type_name -> reflw.engine.v1.InvokeCommand
+	21,  // 8: reflw.engine.v1.Command.invoker_effect:type_name -> reflw.engine.v1.InvokerEffect
+	66,  // 9: reflw.engine.v1.Command.timer_fired:type_name -> reflw.engine.v1.TimerFired
+	67,  // 10: reflw.engine.v1.Command.purge:type_name -> reflw.engine.v1.PurgeInvocation
+	133, // 11: reflw.engine.v1.Command.register_node:type_name -> reflw.engine.v1.RegisterNode
+	134, // 12: reflw.engine.v1.Command.update_partition_table:type_name -> reflw.engine.v1.UpdatePartitionTable
+	138, // 13: reflw.engine.v1.Command.evict_node:type_name -> reflw.engine.v1.EvictNode
+	140, // 14: reflw.engine.v1.Command.begin_rebalance_step:type_name -> reflw.engine.v1.BeginRebalanceStep
+	141, // 15: reflw.engine.v1.Command.complete_rebalance_step:type_name -> reflw.engine.v1.CompleteRebalanceStep
+	79,  // 16: reflw.engine.v1.Command.deliver_call_result:type_name -> reflw.engine.v1.DeliverCallResult
+	80,  // 17: reflw.engine.v1.Command.outbox_ack:type_name -> reflw.engine.v1.OutboxAck
+	110, // 18: reflw.engine.v1.Command.register_deployment:type_name -> reflw.engine.v1.RegisterDeployment
+	111, // 19: reflw.engine.v1.Command.delete_deployment:type_name -> reflw.engine.v1.DeleteDeployment
+	26,  // 20: reflw.engine.v1.Command.promise_completion_ack:type_name -> reflw.engine.v1.PromiseCompletionAck
+	27,  // 21: reflw.engine.v1.Command.reap_invocation:type_name -> reflw.engine.v1.ReapInvocation
+	116, // 22: reflw.engine.v1.Command.upsert_secret:type_name -> reflw.engine.v1.UpsertSecret
+	117, // 23: reflw.engine.v1.Command.delete_secret:type_name -> reflw.engine.v1.DeleteSecret
+	120, // 24: reflw.engine.v1.Command.upsert_model:type_name -> reflw.engine.v1.UpsertModel
+	121, // 25: reflw.engine.v1.Command.delete_model:type_name -> reflw.engine.v1.DeleteModel
+	130, // 26: reflw.engine.v1.Command.upsert_lp_owner:type_name -> reflw.engine.v1.UpsertLPOwner
+	131, // 27: reflw.engine.v1.Command.delete_lp_owner:type_name -> reflw.engine.v1.DeleteLPOwner
+	132, // 28: reflw.engine.v1.Command.bulk_upsert_lp_owners:type_name -> reflw.engine.v1.BulkUpsertLPOwners
+	143, // 29: reflw.engine.v1.Command.initiate_lp_transfer:type_name -> reflw.engine.v1.InitiateLPTransfer
+	144, // 30: reflw.engine.v1.Command.update_lp_transfer_phase:type_name -> reflw.engine.v1.UpdateLPTransferPhase
+	145, // 31: reflw.engine.v1.Command.remove_lp_transfer:type_name -> reflw.engine.v1.RemoveLPTransfer
+	148, // 32: reflw.engine.v1.Command.begin_lp_transfer:type_name -> reflw.engine.v1.BeginLPTransfer
+	149, // 33: reflw.engine.v1.Command.apply_lp_transfer_sst:type_name -> reflw.engine.v1.ApplyLPTransferSST
+	151, // 34: reflw.engine.v1.Command.commit_lp_transfer:type_name -> reflw.engine.v1.CommitLPTransfer
+	152, // 35: reflw.engine.v1.Command.finish_lp_transfer:type_name -> reflw.engine.v1.FinishLPTransfer
+	153, // 36: reflw.engine.v1.Command.abort_lp_transfer:type_name -> reflw.engine.v1.AbortLPTransfer
+	82,  // 37: reflw.engine.v1.Command.process_event:type_name -> reflw.engine.v1.ProcessEvent
+	90,  // 38: reflw.engine.v1.Command.process_advanced:type_name -> reflw.engine.v1.ProcessAdvanced
+	102, // 39: reflw.engine.v1.Command.deliver_process_message:type_name -> reflw.engine.v1.DeliverProcessMessage
+	100, // 40: reflw.engine.v1.Command.process_subscribe:type_name -> reflw.engine.v1.ProcessSubscribe
+	101, // 41: reflw.engine.v1.Command.process_unsubscribe:type_name -> reflw.engine.v1.ProcessUnsubscribe
+	98,  // 42: reflw.engine.v1.Command.reap_process_instance:type_name -> reflw.engine.v1.ReapProcessInstance
+	146, // 43: reflw.engine.v1.Command.set_rebalance_drain:type_name -> reflw.engine.v1.SetRebalanceDrain
+	123, // 44: reflw.engine.v1.Command.upsert_ca_root:type_name -> reflw.engine.v1.UpsertCARoot
+	124, // 45: reflw.engine.v1.Command.delete_ca_root:type_name -> reflw.engine.v1.DeleteCARoot
+	126, // 46: reflw.engine.v1.Command.upsert_join_token:type_name -> reflw.engine.v1.UpsertJoinToken
+	127, // 47: reflw.engine.v1.Command.consume_join_token:type_name -> reflw.engine.v1.ConsumeJoinToken
+	128, // 48: reflw.engine.v1.Command.delete_join_token:type_name -> reflw.engine.v1.DeleteJoinToken
+	113, // 49: reflw.engine.v1.Command.upsert_platform_config:type_name -> reflw.engine.v1.UpsertPlatformConfig
+	7,   // 50: reflw.engine.v1.InvokeCommand.invocation_id:type_name -> reflw.engine.v1.InvocationId
+	8,   // 51: reflw.engine.v1.InvokeCommand.target:type_name -> reflw.engine.v1.InvocationTarget
+	19,  // 52: reflw.engine.v1.InvokeCommand.parent_link:type_name -> reflw.engine.v1.ParentLink
+	156, // 53: reflw.engine.v1.InvokeCommand.metadata:type_name -> reflw.engine.v1.InvokeCommand.MetadataEntry
+	7,   // 54: reflw.engine.v1.ParentLink.parent_id:type_name -> reflw.engine.v1.InvocationId
+	20,  // 55: reflw.engine.v1.ParentLink.process_parent:type_name -> reflw.engine.v1.ProcessParent
+	7,   // 56: reflw.engine.v1.InvokerEffect.invocation_id:type_name -> reflw.engine.v1.InvocationId
+	28,  // 57: reflw.engine.v1.InvokerEffect.journal_appended:type_name -> reflw.engine.v1.JournalEntryAppended
+	29,  // 58: reflw.engine.v1.InvokerEffect.completed:type_name -> reflw.engine.v1.InvocationCompleted
+	30,  // 59: reflw.engine.v1.InvokerEffect.suspended:type_name -> reflw.engine.v1.InvocationSuspended
+	22,  // 60: reflw.engine.v1.InvokerEffect.run_proposal:type_name -> reflw.engine.v1.JERunProposal
+	23,  // 61: reflw.engine.v1.InvokerEffect.awakeable_resolved:type_name -> reflw.engine.v1.AwakeableResolved
+	24,  // 62: reflw.engine.v1.InvokerEffect.signal_delivered:type_name -> reflw.engine.v1.SignalDelivered
+	25,  // 63: reflw.engine.v1.InvokerEffect.promise_completed:type_name -> reflw.engine.v1.PromiseCompleted
+	45,  // 64: reflw.engine.v1.JERunProposal.retry_policy:type_name -> reflw.engine.v1.RunRetryPolicy
+	8,   // 65: reflw.engine.v1.SignalDelivered.target:type_name -> reflw.engine.v1.InvocationTarget
+	7,   // 66: reflw.engine.v1.PromiseCompleted.caller_id:type_name -> reflw.engine.v1.InvocationId
+	7,   // 67: reflw.engine.v1.PromiseCompletionAck.caller_id:type_name -> reflw.engine.v1.InvocationId
+	7,   // 68: reflw.engine.v1.ReapInvocation.invocation_id:type_name -> reflw.engine.v1.InvocationId
+	31,  // 69: reflw.engine.v1.JournalEntryAppended.entry:type_name -> reflw.engine.v1.JournalEntry
+	32,  // 70: reflw.engine.v1.JournalEntry.input:type_name -> reflw.engine.v1.JEInput
+	33,  // 71: reflw.engine.v1.JournalEntry.sleep:type_name -> reflw.engine.v1.JESleep
+	34,  // 72: reflw.engine.v1.JournalEntry.sleep_result:type_name -> reflw.engine.v1.JESleepResult
+	35,  // 73: reflw.engine.v1.JournalEntry.call:type_name -> reflw.engine.v1.JECall
+	37,  // 74: reflw.engine.v1.JournalEntry.call_result:type_name -> reflw.engine.v1.JECallResult
+	38,  // 75: reflw.engine.v1.JournalEntry.get_state:type_name -> reflw.engine.v1.JEGetState
+	42,  // 76: reflw.engine.v1.JournalEntry.set_state:type_name -> reflw.engine.v1.JESetState
+	43,  // 77: reflw.engine.v1.JournalEntry.output:type_name -> reflw.engine.v1.JEOutput
+	44,  // 78: reflw.engine.v1.JournalEntry.run:type_name -> reflw.engine.v1.JERun
+	47,  // 79: reflw.engine.v1.JournalEntry.awakeable:type_name -> reflw.engine.v1.JEAwakeable
+	48,  // 80: reflw.engine.v1.JournalEntry.awakeable_result:type_name -> reflw.engine.v1.JEAwakeableResult
+	49,  // 81: reflw.engine.v1.JournalEntry.signal:type_name -> reflw.engine.v1.JESignal
+	64,  // 82: reflw.engine.v1.JournalEntry.clear_state:type_name -> reflw.engine.v1.JEClearState
+	46,  // 83: reflw.engine.v1.JournalEntry.clear_all_state:type_name -> reflw.engine.v1.JEClearAllState
+	36,  // 84: reflw.engine.v1.JournalEntry.one_way_call:type_name -> reflw.engine.v1.JEOneWayCall
+	50,  // 85: reflw.engine.v1.JournalEntry.await_signal:type_name -> reflw.engine.v1.JEAwaitSignal
+	51,  // 86: reflw.engine.v1.JournalEntry.signal_result:type_name -> reflw.engine.v1.JESignalResult
+	54,  // 87: reflw.engine.v1.JournalEntry.get_promise:type_name -> reflw.engine.v1.JEGetPromise
+	55,  // 88: reflw.engine.v1.JournalEntry.promise_result:type_name -> reflw.engine.v1.JEPromiseResult
+	56,  // 89: reflw.engine.v1.JournalEntry.peek_promise:type_name -> reflw.engine.v1.JEPeekPromise
+	57,  // 90: reflw.engine.v1.JournalEntry.complete_promise:type_name -> reflw.engine.v1.JECompletePromise
+	58,  // 91: reflw.engine.v1.JournalEntry.promise_complete_result:type_name -> reflw.engine.v1.JEPromiseCompleteResult
+	39,  // 92: reflw.engine.v1.JournalEntry.get_state_result:type_name -> reflw.engine.v1.JEGetStateResult
+	40,  // 93: reflw.engine.v1.JournalEntry.get_state_keys:type_name -> reflw.engine.v1.JEGetStateKeys
+	41,  // 94: reflw.engine.v1.JournalEntry.get_state_keys_result:type_name -> reflw.engine.v1.JEGetStateKeysResult
+	65,  // 95: reflw.engine.v1.JournalEntry.get_eager_state_keys:type_name -> reflw.engine.v1.JEGetEagerStateKeys
+	157, // 96: reflw.engine.v1.JEInput.metadata:type_name -> reflw.engine.v1.JEInput.MetadataEntry
+	8,   // 97: reflw.engine.v1.JECall.target:type_name -> reflw.engine.v1.InvocationTarget
+	8,   // 98: reflw.engine.v1.JEOneWayCall.target:type_name -> reflw.engine.v1.InvocationTarget
+	8,   // 99: reflw.engine.v1.JESignal.target:type_name -> reflw.engine.v1.InvocationTarget
+	7,   // 100: reflw.engine.v1.SignalAwaiter.owner:type_name -> reflw.engine.v1.InvocationId
+	60,  // 101: reflw.engine.v1.PromiseValue.pending:type_name -> reflw.engine.v1.Pending
+	61,  // 102: reflw.engine.v1.PromiseValue.resolved:type_name -> reflw.engine.v1.Resolved
+	62,  // 103: reflw.engine.v1.PromiseValue.rejected:type_name -> reflw.engine.v1.Rejected
+	7,   // 104: reflw.engine.v1.PromiseAwaiter.owner:type_name -> reflw.engine.v1.InvocationId
+	7,   // 105: reflw.engine.v1.TimerFired.invocation_id:type_name -> reflw.engine.v1.InvocationId
+	7,   // 106: reflw.engine.v1.PurgeInvocation.invocation_id:type_name -> reflw.engine.v1.InvocationId
+	69,  // 107: reflw.engine.v1.InvocationStatus.free:type_name -> reflw.engine.v1.Free
+	70,  // 108: reflw.engine.v1.InvocationStatus.scheduled:type_name -> reflw.engine.v1.Scheduled
+	71,  // 109: reflw.engine.v1.InvocationStatus.invoked:type_name -> reflw.engine.v1.Invoked
+	72,  // 110: reflw.engine.v1.InvocationStatus.suspended:type_name -> reflw.engine.v1.Suspended
+	73,  // 111: reflw.engine.v1.InvocationStatus.completed:type_name -> reflw.engine.v1.Completed
+	8,   // 112: reflw.engine.v1.Scheduled.target:type_name -> reflw.engine.v1.InvocationTarget
+	19,  // 113: reflw.engine.v1.Scheduled.parent_link:type_name -> reflw.engine.v1.ParentLink
+	158, // 114: reflw.engine.v1.Scheduled.metadata:type_name -> reflw.engine.v1.Scheduled.MetadataEntry
+	8,   // 115: reflw.engine.v1.Invoked.target:type_name -> reflw.engine.v1.InvocationTarget
+	19,  // 116: reflw.engine.v1.Invoked.parent_link:type_name -> reflw.engine.v1.ParentLink
+	8,   // 117: reflw.engine.v1.Suspended.target:type_name -> reflw.engine.v1.InvocationTarget
+	19,  // 118: reflw.engine.v1.Suspended.parent_link:type_name -> reflw.engine.v1.ParentLink
+	8,   // 119: reflw.engine.v1.Completed.target:type_name -> reflw.engine.v1.InvocationTarget
+	5,   // 120: reflw.engine.v1.KeyLeaseStatus.state:type_name -> reflw.engine.v1.KeyLeaseStatus.State
+	7,   // 121: reflw.engine.v1.KeyLeaseStatus.current_invocation:type_name -> reflw.engine.v1.InvocationId
+	7,   // 122: reflw.engine.v1.KeyLeaseStatus.queue:type_name -> reflw.engine.v1.InvocationId
+	7,   // 123: reflw.engine.v1.AwakeableEntry.owner:type_name -> reflw.engine.v1.InvocationId
+	18,  // 124: reflw.engine.v1.OutboxEnvelope.invoke:type_name -> reflw.engine.v1.InvokeCommand
+	81,  // 125: reflw.engine.v1.OutboxEnvelope.signal:type_name -> reflw.engine.v1.SignalSend
+	79,  // 126: reflw.engine.v1.OutboxEnvelope.deliver_call_result:type_name -> reflw.engine.v1.DeliverCallResult
+	80,  // 127: reflw.engine.v1.OutboxEnvelope.outbox_ack:type_name -> reflw.engine.v1.OutboxAck
+	25,  // 128: reflw.engine.v1.OutboxEnvelope.promise_completion:type_name -> reflw.engine.v1.PromiseCompleted
+	26,  // 129: reflw.engine.v1.OutboxEnvelope.promise_completion_ack:type_name -> reflw.engine.v1.PromiseCompletionAck
+	82,  // 130: reflw.engine.v1.OutboxEnvelope.process_event:type_name -> reflw.engine.v1.ProcessEvent
+	100, // 131: reflw.engine.v1.OutboxEnvelope.process_subscribe:type_name -> reflw.engine.v1.ProcessSubscribe
+	101, // 132: reflw.engine.v1.OutboxEnvelope.process_unsubscribe:type_name -> reflw.engine.v1.ProcessUnsubscribe
+	7,   // 133: reflw.engine.v1.DeliverCallResult.parent_id:type_name -> reflw.engine.v1.InvocationId
+	8,   // 134: reflw.engine.v1.SignalSend.target:type_name -> reflw.engine.v1.InvocationTarget
+	83,  // 135: reflw.engine.v1.ProcessEvent.payload:type_name -> reflw.engine.v1.ProcessEventPayload
+	105, // 136: reflw.engine.v1.ProcessEvent.model_ref:type_name -> reflw.engine.v1.ModelRef
+	1,   // 137: reflw.engine.v1.ProcessEvent.kind:type_name -> reflw.engine.v1.ProcessKind
+	19,  // 138: reflw.engine.v1.ProcessEvent.parent_link:type_name -> reflw.engine.v1.ParentLink
+	84,  // 139: reflw.engine.v1.ProcessEventPayload.task_completed:type_name -> reflw.engine.v1.ProcessTaskCompleted
+	85,  // 140: reflw.engine.v1.ProcessEventPayload.timer_fired:type_name -> reflw.engine.v1.ProcessTimerFired
+	86,  // 141: reflw.engine.v1.ProcessEventPayload.child_completed:type_name -> reflw.engine.v1.ProcessChildCompleted
+	87,  // 142: reflw.engine.v1.ProcessEventPayload.message_received:type_name -> reflw.engine.v1.ProcessMessageReceived
+	89,  // 143: reflw.engine.v1.TimerValue.process:type_name -> reflw.engine.v1.ProcessTimer
+	91,  // 144: reflw.engine.v1.ProcessAdvanced.invoke:type_name -> reflw.engine.v1.TaskInvoke
+	92,  // 145: reflw.engine.v1.ProcessAdvanced.arm_timer:type_name -> reflw.engine.v1.TimerArm
+	93,  // 146: reflw.engine.v1.ProcessAdvanced.cancel_timer:type_name -> reflw.engine.v1.TimerCancel
+	94,  // 147: reflw.engine.v1.ProcessAdvanced.start_child:type_name -> reflw.engine.v1.ChildStart
+	95,  // 148: reflw.engine.v1.ProcessAdvanced.subscribe:type_name -> reflw.engine.v1.SignalSubscribe
+	97,  // 149: reflw.engine.v1.ProcessAdvanced.terminal:type_name -> reflw.engine.v1.ProcessTerminal
+	96,  // 150: reflw.engine.v1.ProcessAdvanced.unsubscribe:type_name -> reflw.engine.v1.SignalUnsubscribe
+	8,   // 151: reflw.engine.v1.TaskInvoke.target:type_name -> reflw.engine.v1.InvocationTarget
+	105, // 152: reflw.engine.v1.ChildStart.model_ref:type_name -> reflw.engine.v1.ModelRef
+	1,   // 153: reflw.engine.v1.ChildStart.kind:type_name -> reflw.engine.v1.ProcessKind
+	99,  // 154: reflw.engine.v1.ProcessSubscribe.sub:type_name -> reflw.engine.v1.MessageSubscription
+	99,  // 155: reflw.engine.v1.ProcessUnsubscribe.sub:type_name -> reflw.engine.v1.MessageSubscription
+	7,   // 156: reflw.engine.v1.ProcessInstanceRecord.root_id:type_name -> reflw.engine.v1.InvocationId
+	105, // 157: reflw.engine.v1.ProcessInstanceRecord.model_ref:type_name -> reflw.engine.v1.ModelRef
+	1,   // 158: reflw.engine.v1.ProcessInstanceRecord.kind:type_name -> reflw.engine.v1.ProcessKind
+	2,   // 159: reflw.engine.v1.ProcessInstanceRecord.status:type_name -> reflw.engine.v1.ProcessStatus
+	19,  // 160: reflw.engine.v1.ProcessInstanceRecord.parent_link:type_name -> reflw.engine.v1.ParentLink
+	83,  // 161: reflw.engine.v1.ProcessInboxEntry.payload:type_name -> reflw.engine.v1.ProcessEventPayload
+	109, // 162: reflw.engine.v1.DeploymentRecord.handlers:type_name -> reflw.engine.v1.DeploymentHandler
+	108, // 163: reflw.engine.v1.RegisterDeployment.record:type_name -> reflw.engine.v1.DeploymentRecord
+	112, // 164: reflw.engine.v1.UpsertPlatformConfig.record:type_name -> reflw.engine.v1.PlatformConfigRecord
+	115, // 165: reflw.engine.v1.SecretRecord.remote_encrypted:type_name -> reflw.engine.v1.RemoteEncryptedSecret
+	114, // 166: reflw.engine.v1.UpsertSecret.record:type_name -> reflw.engine.v1.SecretRecord
+	105, // 167: reflw.engine.v1.ModelRecord.model_ref:type_name -> reflw.engine.v1.ModelRef
+	119, // 168: reflw.engine.v1.ModelRecord.bundle:type_name -> reflw.engine.v1.ModelBundle
+	159, // 169: reflw.engine.v1.ModelBundle.decisions:type_name -> reflw.engine.v1.ModelBundle.DecisionsEntry
+	160, // 170: reflw.engine.v1.ModelBundle.children:type_name -> reflw.engine.v1.ModelBundle.ChildrenEntry
+	118, // 171: reflw.engine.v1.UpsertModel.record:type_name -> reflw.engine.v1.ModelRecord
+	105, // 172: reflw.engine.v1.DeleteModel.model_ref:type_name -> reflw.engine.v1.ModelRef
+	122, // 173: reflw.engine.v1.UpsertCARoot.record:type_name -> reflw.engine.v1.CARootRecord
+	3,   // 174: reflw.engine.v1.JoinTokenRecord.kind:type_name -> reflw.engine.v1.JoinTokenKind
+	125, // 175: reflw.engine.v1.UpsertJoinToken.record:type_name -> reflw.engine.v1.JoinTokenRecord
+	129, // 176: reflw.engine.v1.UpsertLPOwner.record:type_name -> reflw.engine.v1.LPOwnerRecord
+	129, // 177: reflw.engine.v1.BulkUpsertLPOwners.records:type_name -> reflw.engine.v1.LPOwnerRecord
+	135, // 178: reflw.engine.v1.RegisterNode.member:type_name -> reflw.engine.v1.NodeMembership
+	136, // 179: reflw.engine.v1.UpdatePartitionTable.table:type_name -> reflw.engine.v1.PartitionTable
+	161, // 180: reflw.engine.v1.PartitionTable.shards:type_name -> reflw.engine.v1.PartitionTable.ShardsEntry
+	139, // 181: reflw.engine.v1.PartitionTable.pending:type_name -> reflw.engine.v1.RebalanceStep
+	137, // 182: reflw.engine.v1.PartitionTable.meta_replicas:type_name -> reflw.engine.v1.ReplicaSet
+	6,   // 183: reflw.engine.v1.RebalanceStep.kind:type_name -> reflw.engine.v1.RebalanceStep.Kind
+	139, // 184: reflw.engine.v1.BeginRebalanceStep.step:type_name -> reflw.engine.v1.RebalanceStep
+	4,   // 185: reflw.engine.v1.LPTransferRecord.phase:type_name -> reflw.engine.v1.LPTransferPhase
+	4,   // 186: reflw.engine.v1.UpdateLPTransferPhase.phase:type_name -> reflw.engine.v1.LPTransferPhase
+	150, // 187: reflw.engine.v1.ApplyLPTransferSST.ssts:type_name -> reflw.engine.v1.TransferSSTRef
+	105, // 188: reflw.engine.v1.ModelBundle.DecisionsEntry.value:type_name -> reflw.engine.v1.ModelRef
+	105, // 189: reflw.engine.v1.ModelBundle.ChildrenEntry.value:type_name -> reflw.engine.v1.ModelRef
+	137, // 190: reflw.engine.v1.PartitionTable.ShardsEntry.value:type_name -> reflw.engine.v1.ReplicaSet
 	191, // [191:191] is the sub-list for method output_type
 	191, // [191:191] is the sub-list for method input_type
 	191, // [191:191] is the sub-list for extension type_name

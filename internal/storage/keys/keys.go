@@ -1,4 +1,4 @@
-// Package keys defines the Pebble key codec for a single reflow partition's
+// Package keys defines the Pebble key codec for a single reflw partition's
 // state store. Because each partition has its own Pebble DB, keys do NOT carry
 // a partition_id prefix — isolation is at the DB level.
 //
@@ -171,7 +171,7 @@ func DecodeInvocationID(buf []byte) (*enginev1.InvocationId, error) {
 func MetaKey() []byte { return []byte(metaPrefix) }
 
 // FormatVersionKey returns the singleton key for the per-DB storage format
-// version. Value is a 4-byte big-endian uint32. Lives in every reflow pebble
+// version. Value is a 4-byte big-endian uint32. Lives in every reflw pebble
 // DB (metadata shard + per-partition shards) so the local boot path can refuse
 // to open a DB written by an incompatible binary.
 func FormatVersionKey() []byte { return []byte(formatPrefix) }
@@ -454,7 +454,7 @@ func StatePrefixForObject(lp uint32, service, objectKey string) []byte {
 // ProcessPrefix returns the proc/ namespace prefix.
 func ProcessPrefix() []byte { return []byte(procPrefix) }
 
-// ProcessInstanceKey returns proc/<lp:4><service>/<instance_key>. One iflow
+// ProcessInstanceKey returns proc/<lp:4><service>/<instance_key>. One reflwos
 // process/case instance is stored per (service, instance_key); the value is a
 // marshaled enginev1.ProcessInstanceRecord. Mirrors StateKey's namespace
 // discipline — none of the components may contain '/'.
@@ -960,7 +960,7 @@ func ProcessSubIndexInstancePrefix(root *enginev1.InvocationId) ([]byte, error) 
 // consists entirely of 0xFF bytes — Pebble treats a nil UpperBound as "no
 // upper bound".
 //
-// This fixes the aliasing + overflow bug in the original reflow code which
+// This fixes the aliasing + overflow bug in the original reflw code which
 // did append(prefix[:n-1], prefix[n-1]+1).
 func PrefixUpperBound(prefix []byte) []byte {
 	out := append([]byte(nil), prefix...)

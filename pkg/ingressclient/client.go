@@ -1,6 +1,6 @@
-// Package ingressclient is a typed Connect client for the reflow
+// Package ingressclient is a typed Connect client for the reflw
 // ingress service. Callers (test harness, operator tools, embedded
-// programs) dial one of these against a reflow node's ingress
+// programs) dial one of these against a reflw node's ingress
 // listener and call SubmitInvocation / AwaitInvocation / etc.
 package ingressclient
 

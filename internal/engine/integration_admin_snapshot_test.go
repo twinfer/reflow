@@ -20,7 +20,7 @@ import (
 	"github.com/twinfer/reflw/internal/engine"
 	enginesnap "github.com/twinfer/reflw/internal/engine/snapshot"
 
-	"github.com/twinfer/reflw/pkg/reflow/creds"
+	"github.com/twinfer/reflw/pkg/reflw/creds"
 	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
 	"github.com/twinfer/reflw/proto/clusterctlv1/clusterctlv1connect"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
@@ -495,7 +495,7 @@ func TestAdminDeleteSnapshot(t *testing.T) {
 
 // TestAdminSnapshotRPCs_RejectFollower verifies CreateSnapshot and
 // DeleteSnapshot reject a non-leader caller with CodeUnavailable so
-// pkg/reflowclient.CallWithLeaderRedirect can chase the leader the same
+// pkg/reflwclient.CallWithLeaderRedirect can chase the leader the same
 // way it does for the other mutating RPCs. The LeaderHint *detail* is
 // gossip-driven and best-effort; the test rig doesn't publish admin
 // endpoints over gossip, so we only assert the code here.

@@ -4,16 +4,16 @@
 // cluster: handler deployments, event-source bindings, inbound
 // webhook bindings, and the named-secret table consumers reference.
 // It is the developer-facing counterpart to
-// reflow.clusterctl.v1.ClusterCtl (which owns cluster topology, DR,
+// reflw.clusterctl.v1.ClusterCtl (which owns cluster topology, DR,
 // and routing). Naming mirrors Restate's split between
 // `cluster-ctrl` (cluster admin) and `admin` (app config), with the
 // terminology flipped to avoid the overloaded word "admin".
 //
-// Every reflowd process hosts a Config Connect RPC server on the
+// Every reflwd process hosts a Config Connect RPC server on the
 // admin listener (same port as ClusterCtl in step 1; a follow-on may
 // move Config onto its own port if/when we want different network
 // exposure). The server is mTLS-protected; today's starter policy
-// gates /reflow.config.v1.Config/* to operator/* principals — same as
+// gates /reflw.config.v1.Config/* to operator/* principals — same as
 // ClusterCtl. The separation of services is the seam for later
 // delegating Config to a narrower credential (tenant admin, CI
 // service account) without loosening cluster-control authority.
@@ -27,7 +27,7 @@
 
 syntax = "proto3";
 
-package reflow.config.v1;
+package reflw.config.v1;
 
 import "enginev1/engine.proto";
 
@@ -59,14 +59,14 @@ service Config {
   // — in-flight invocations resolve their deployment record per
   // stream-open, and a delete breaks any open or replaying invocation
   // pinned to this id. force is the operator's "yes I accept the
-  // risk" acknowledgement; reflow does not currently scan partitions
+  // risk" acknowledgement; reflw does not currently scan partitions
   // for active references.
   rpc DeleteDeployment(DeleteDeploymentRequest) returns (DeleteDeploymentResponse);
 
   // UpsertModel / ListModels / DescribeModel / DeleteModel manage shard 0's
   // ModelTable — BPMN/CMMN model definitions (model_ref + inlined XML). Upsert
   // parses-to-validate before proposing Command_UpsertModel; the per-node
-  // iflowengine TableResolver reconciles rows into parsed graphs + resolved
+  // processengine TableResolver reconciles rows into parsed graphs + resolved
   // historyTimeToLive. Leader-only for mutating calls; List/Describe are
   // SyncRead. DeleteModel takes if_table_revision_eq for CAS (no force gate —
   // an in-flight instance pins its model_ref and fails on its next turn).
@@ -102,7 +102,7 @@ service Config {
   // hash + a JoinTokenRecord into shard 0's JoinTokenTable, and
   // returns the plaintext to the operator exactly once. Subsequent
   // List calls show only the hash. Operators redeem the plaintext via
-  // `reflowd run --join`. Leader-only.
+  // `reflwd run --join`. Leader-only.
   rpc CreateJoinToken(CreateJoinTokenRequest) returns (CreateJoinTokenResponse);
   // DeleteJoinToken removes a row by hex(token_hash) — surfaces in
   // ListJoinTokens. Idempotent.
@@ -115,7 +115,7 @@ service Config {
   // CSR, and receives the signed leaf + CA chain. Authorization is via
   // the existing operator/* policy gate; the in-server signer is the
   // same ClusterIssuer the bootstrap listener uses. Leader-only.
-  // Replaces the deleted `reflowd pki issue-operator` flow.
+  // Replaces the deleted `reflwd pki issue-operator` flow.
   rpc IssueOperator(IssueOperatorRequest) returns (IssueOperatorResponse);
 
   // UpsertClusterAuthzPolicy replaces shard 0's cluster-wide Cedar authz
@@ -151,7 +151,7 @@ message RegisterDeploymentResponse {
 
 message ListDeploymentsRequest {}
 message ListDeploymentsResponse {
-  repeated reflow.engine.v1.DeploymentRecord deployments = 1;
+  repeated reflw.engine.v1.DeploymentRecord deployments = 1;
   uint64 table_revision = 2;
 }
 
@@ -159,7 +159,7 @@ message DescribeDeploymentRequest {
   string deployment_id = 1;
 }
 message DescribeDeploymentResponse {
-  reflow.engine.v1.DeploymentRecord deployment = 1;
+  reflw.engine.v1.DeploymentRecord deployment = 1;
 }
 
 // DeleteDeploymentRequest names one deployment by id. force must be
@@ -179,29 +179,29 @@ message DeleteDeploymentResponse {
 // Model registration (shard 0 ModelTable). model_ref pins kind+name+version;
 // xml is the BPMN/CMMN source the server parses-to-validate before proposing.
 message UpsertModelRequest {
-  reflow.engine.v1.ModelRef model_ref = 1;
+  reflw.engine.v1.ModelRef model_ref = 1;
   bytes xml = 2;
   uint64 if_table_revision_eq = 3;
   // bundle is the optional decision/child ref-resolution map stored on the
   // ModelRecord (decisions → kind=dmn refs, children → kind=bpmn/cmmn refs).
-  reflow.engine.v1.ModelBundle bundle = 4;
+  reflw.engine.v1.ModelBundle bundle = 4;
 }
 message UpsertModelResponse {
   uint64 table_revision = 1;
 }
 message ListModelsRequest {}
 message ListModelsResponse {
-  repeated reflow.engine.v1.ModelRecord records = 1;
+  repeated reflw.engine.v1.ModelRecord records = 1;
   uint64 table_revision = 2;
 }
 message DescribeModelRequest {
-  reflow.engine.v1.ModelRef model_ref = 1;
+  reflw.engine.v1.ModelRef model_ref = 1;
 }
 message DescribeModelResponse {
-  reflow.engine.v1.ModelRecord record = 1;
+  reflw.engine.v1.ModelRecord record = 1;
 }
 message DeleteModelRequest {
-  reflow.engine.v1.ModelRef model_ref = 1;
+  reflw.engine.v1.ModelRef model_ref = 1;
   uint64 if_table_revision_eq = 2;
 }
 message DeleteModelResponse {
@@ -226,7 +226,7 @@ message GetClusterAuthzPolicyResponse {
 // UpsertSecretRequest carries one SecretRecord plus an optional CAS
 // guard. if_table_revision_eq=0 disables CAS.
 message UpsertSecretRequest {
-  reflow.engine.v1.SecretRecord record = 1;
+  reflw.engine.v1.SecretRecord record = 1;
   uint64 if_table_revision_eq = 2;
 }
 message UpsertSecretResponse {
@@ -243,14 +243,14 @@ message DeleteSecretResponse {
 
 message ListSecretsRequest {}
 message ListSecretsResponse {
-  repeated reflow.engine.v1.SecretRecord records = 1;
+  repeated reflw.engine.v1.SecretRecord records = 1;
   uint64 table_revision = 2;
 }
 
 // UpsertCARootRequest carries one CARootRecord plus an optional CAS
 // guard. if_table_revision_eq=0 disables CAS.
 message UpsertCARootRequest {
-  reflow.engine.v1.CARootRecord record = 1;
+  reflw.engine.v1.CARootRecord record = 1;
   uint64 if_table_revision_eq = 2;
 }
 message UpsertCARootResponse {
@@ -267,7 +267,7 @@ message DeleteCARootResponse {
 
 message ListCARootsRequest {}
 message ListCARootsResponse {
-  repeated reflow.engine.v1.CARootRecord records = 1;
+  repeated reflw.engine.v1.CARootRecord records = 1;
   uint64 table_revision = 2;
 }
 
@@ -283,8 +283,8 @@ message LeaderHint {
 
 
 // CreateJoinTokenRequest configures a one-time bootstrap credential.
-//   - kind: NODE for a `reflowd run --join` flow, OPERATOR for
-//     `reflowd config issue-operator` (the operator generates the
+//   - kind: NODE for a `reflwd run --join` flow, OPERATOR for
+//     `reflwd config issue-operator` (the operator generates the
 //     keypair locally and submits a CSR — same RPC, different path
 //     into the cluster).
 //   - requested_name: the CN-name segment the joiner will use. For
@@ -300,7 +300,7 @@ message LeaderHint {
 //     that can be redeemed repeatedly until expiry — used sparingly
 //     for ephemeral CI scenarios.
 message CreateJoinTokenRequest {
-  reflow.engine.v1.JoinTokenKind kind = 1;
+  reflw.engine.v1.JoinTokenKind kind = 1;
   string requested_name = 2;
   uint64 ttl_seconds = 3;
   bool single_use = 4;
@@ -325,12 +325,12 @@ message DeleteJoinTokenResponse {
 
 message ListJoinTokensRequest {}
 message ListJoinTokensResponse {
-  repeated reflow.engine.v1.JoinTokenRecord records = 1;
+  repeated reflw.engine.v1.JoinTokenRecord records = 1;
   uint64 table_revision = 2;
 }
 
 // IssueOperatorRequest carries an operator-generated CSR. Replaces the
-// deleted `reflowd pki issue-operator` flow. The operator keypair never
+// deleted `reflwd pki issue-operator` flow. The operator keypair never
 // leaves the operator's machine; the server signs only the public key.
 message IssueOperatorRequest {
   // DER-encoded x509.CertificateRequest. Subject.CommonName must be

@@ -165,7 +165,7 @@ func (l *Leadership) OnRaftLeaderChange(raftLeaderID uint64) {
 			// already issued self-proposals under, the DedupTable
 			// silently absorbs our AnnounceLeader as a duplicate, and
 			// Leadership.OnAnnounceLeader never fires. Net effect:
-			// raft says we're leader, reflow never knows, partition
+			// raft says we're leader, reflw never knows, partition
 			// stays headless until cluster teardown. Observed as ~3%
 			// invocations stuck Scheduled on the shard whose leader
 			// changed during partition heal.

@@ -1,6 +1,6 @@
 # 6. Component Design
 
-This document details the architecture and design of Reflow's core components.
+This document details the architecture and design of Reflw's core components.
 
 ---
 
@@ -23,7 +23,7 @@ separate code path, not part of ingress.
 - Return invocation ID to caller immediately (async / `/v1/send`) or
   long-poll until completion (`/v1/call`, `/v1/attach`).
 - Propagate caller-supplied metadata end-to-end: HTTP headers prefixed
-  `Reflow-Meta-*` (REST) or the typed `SubmitInvocationRequest.metadata`
+  `Reflw-Meta-*` (REST) or the typed `SubmitInvocationRequest.metadata`
   field (Connect) flow through `InvokeCommand.metadata` → `Scheduled.metadata`
   → `JEInput.metadata` → `InputCommandMessage.headers` → `handler.Context.Metadata()`.
   The engine never interprets the values. Designed for operator middleware
@@ -39,11 +39,11 @@ partition_id = hash(service_name + "/" + object_key) % num_partitions
 
 | Surface | Port (default) | Wire | Auth | Purpose |
 |--|--|--|--|--|
-| Connect ingress (`reflow.ingress.v1`) | 8080 | Connect/HTTP-2 | optional mTLS (`tenant/<n>` or `operator`) or anonymous; tenant-isolated by the Cedar policy (§6.15.8) | Typed SDK clients submit invocations, await results, resolve awakeables/promises |
+| Connect ingress (`reflw.ingress.v1`) | 8080 | Connect/HTTP-2 | optional mTLS (`tenant/<n>` or `operator`) or anonymous; tenant-isolated by the Cedar policy (§6.15.8) | Typed SDK clients submit invocations, await results, resolve awakeables/promises |
 | REST ingress (`/v1/*`) | 8080 (same listener) | HTTP/1.1+HTTP/2 + JSON envelope | same as Connect ingress | curl, Restate-style URL ergonomics; delegates to the Connect handlers via the in-process `*ingress.Server` |
-| Delivery (`reflow.delivery.v1`) | 8081 | Connect/HTTP-2 | mTLS, leaf CN `node/*` | Cross-partition / cross-node command forwarding |
-| ClusterCtl (`reflow.clusterctl.v1`) | 8082 (shared) | Connect/HTTP-2 | mTLS, leaf CN `operator/*` (+ `node/*` carve-out on `SelfJoin`) | Fleet ops: add/remove node, list partitions, snapshot mgmt, LP transfers + autonomous rebalancer drain |
-| Config (`reflow.config.v1`) | 8082 (same listener as ClusterCtl) | Connect/HTTP-2 | mTLS, leaf CN `operator/*` | App config: deployments, secrets, CA roots, join tokens, cluster authz policy — every kubectl-shaped admin operation operators run between deploys |
+| Delivery (`reflw.delivery.v1`) | 8081 | Connect/HTTP-2 | mTLS, leaf CN `node/*` | Cross-partition / cross-node command forwarding |
+| ClusterCtl (`reflw.clusterctl.v1`) | 8082 (shared) | Connect/HTTP-2 | mTLS, leaf CN `operator/*` (+ `node/*` carve-out on `SelfJoin`) | Fleet ops: add/remove node, list partitions, snapshot mgmt, LP transfers + autonomous rebalancer drain |
+| Config (`reflw.config.v1`) | 8082 (same listener as ClusterCtl) | Connect/HTTP-2 | mTLS, leaf CN `operator/*` | App config: deployments, secrets, CA roots, join tokens, cluster authz policy — every kubectl-shaped admin operation operators run between deploys |
 
 **Extension seam.** `ingress.Config.ExtraRoutes func(*Server) []connectserver.Route`
 mounts additional HTTP handlers on the Connect ingress listener without
@@ -54,10 +54,10 @@ uses — the Cedar policy is the authoritative gate.
 
 **Operator infrastructure: `pkg/hostmux`.** Multi-tenant SaaS deployments
 that need per-tenant or per-vendor host-based routing wire `pkg/hostmux.Mux`
-as one of `ExtraRoutes`. Reflow never imports the package itself —
+as one of `ExtraRoutes`. Reflw never imports the package itself —
 runtime mutation of the host table is a Go function call (`Mux.Set`)
 driven by the operator's tenant manager (file watcher, control-plane
-stream, polling against a tenant DB). Reflow does not durably store
+stream, polling against a tenant DB). Reflw does not durably store
 tenant config; secrets stay in the operator's secret store, no admin
 RPC owns it.
 
@@ -109,7 +109,7 @@ node:
   gossip_bind_addr: 10.0.0.2:9092
   delivery_addr: 10.0.0.2:8081
 storage:
-  data_dir: /var/lib/reflow
+  data_dir: /var/lib/reflw
 cluster:
   peers:
     - { node_id: 1, raft_addr: 10.0.0.1:9091, gossip_addr: 10.0.0.1:9092, node_host_id: <uuid> }
@@ -117,11 +117,11 @@ cluster:
     - { node_id: 3, raft_addr: 10.0.0.3:9091, gossip_addr: 10.0.0.3:9092, node_host_id: <uuid> }
 ```
 
-Each node, in order (`pkg/reflow/run.go:Run`):
+Each node, in order (`pkg/reflw/run.go:Run`):
 
 1. Validate config (`Node.ID`, `Node.RaftAddr`, `Storage.DataDir`). Multi-node
    deployments are *allowed* on insecure transport but `Run` emits a WARN log
-   (`pkg/reflow/run.go`) so the operator knows the cluster surface is
+   (`pkg/reflw/run.go`) so the operator knows the cluster surface is
    unauthenticated; mTLS is the production posture.
 2. Build the slog logger, register Prometheus collectors, optionally
    start `/metrics` HTTP server.
@@ -132,7 +132,7 @@ Each node, in order (`pkg/reflow/run.go:Run`):
    `NodeHostMeta{GrpcEndpoint = Node.DeliveryAddr}`
    (`internal/engine/host.go:applyMultiNodeConfig`). The NodeHost is up,
    gossip is running, but no shards have started.
-4. Build the Delivery surface (`pkg/reflow/run.go:96-187`): mTLS server
+4. Build the Delivery surface (`pkg/reflw/run.go:96-187`): mTLS server
    creds (cluster CA + node leaf), Connect handler hosted on an h2c
    `net/http` server wrapped by `internal/auth.HTTPMiddleware`,
    `delivery.Client` for outbound, and
@@ -154,8 +154,8 @@ Each node, in order (`pkg/reflow/run.go:Run`):
 7. Optionally build the snapshot producer (`snapshot.FSRepository` +
    `RunProducer` goroutine per shard).
 8. Optionally build the admin Connect surface: mTLS server creds,
-   one HTTP/2 listener hosting both `reflow.clusterctl.v1.ClusterCtl`
-   (fleet ops) and `reflow.config.v1.Config` (app config). Auth runs
+   one HTTP/2 listener hosting both `reflw.clusterctl.v1.ClusterCtl`
+   (fleet ops) and `reflw.config.v1.Config` (app config). Auth runs
    at the HTTP/Connect layer via `internal/auth.HTTPMiddleware`
    (mesh mTLS leaf-CN principal + Cedar authz). The naming mirrors
    Restate's `cluster-ctrl` vs `admin` split, with `admin` flipped to
@@ -192,7 +192,7 @@ reflwd cluster remove-node --node-id=2
   it proposes `CompleteRebalanceStep`, which updates the persisted
   replica set and bumps `assignment_epoch`.
 - **Joiner-driven add (`reflwd run` with `Cluster.JoinExisting=true`):**
-  `pkg/reflow/run.go:callSelfJoin` discovers the metadata leader via
+  `pkg/reflw/run.go:callSelfJoin` discovers the metadata leader via
   gossip-published `NodeHostMeta.admin_endpoint` and dials the
   leader's `ClusterCtl/SelfJoin` RPC before any local shard starts.
   `ClusterCtl/SelfJoin` shares `addNodeInternal` with the operator path
@@ -224,14 +224,14 @@ eventually-consistent gossip signal.
 - *Hint cache (dragonboat gossip):* `NodeHostRegistry.GetShardInfo` exposes
   `ShardView{LeaderID, Replicas map[replicaID]raftAddr, Term}` for every
   shard cluster-wide, refreshed by gossip. The per-nodehost `Meta` blob
-  carries the reflow gRPC endpoint so cross-partition delivery can dial
+  carries the reflw gRPC endpoint so cross-partition delivery can dial
   directly by `NodeHostID` without re-reading shard 0 on the hot path.
   On `NOT_LEADER` from the RPC, fall back to shard 0 and retry.
   Gossip is *never* a source of truth — it just makes routing fast and
   decouples node identity from raft addresses (k8s IP churn no longer
   requires a shard-0 proposal).
 
-**Partition shard count vs. LP count — two layers.** Reflow's routing
+**Partition shard count vs. LP count — two layers.** Reflw's routing
 is two-layer: a fixed pool of **16384 logical partitions (LPs)** maps to
 **N partition shards** (default `len(cfg.Cluster.Shards)` falling back to
 1 single-node). Ingress hashes `(service, object_key)` to an LP; shard 0's
@@ -268,7 +268,7 @@ to authoritative state changes.
 
 ### 6.2.1 Two-layer routing (LP → shard)
 
-Reflow routes through two layers, not one:
+Reflw routes through two layers, not one:
 
 ```
 ingress request
@@ -379,7 +379,7 @@ Each tick:
    in_flight`; gate by `min_seconds_between_transfers` cooldown
    against `max(started_at_ms)` across all `LPTransferRecord` rows.
 8. **Advisory**: log each candidate move and increment
-   `reflow_rebalance_decisions_total{outcome=would_transfer}` — never
+   `reflw_rebalance_decisions_total{outcome=would_transfer}` — never
    propose.
 9. **Auto**: propose `Command_InitiateLPTransfer` for the first
    `capacity` moves. Same path manual `reflwd cluster transfer-lp`
@@ -497,7 +497,7 @@ the storage batch commits):
 
 Restate's enum (`restate/crates/storage-api/src/invocation_status_table/mod.rs:142-155`)
 has seven variants: `Scheduled, Inboxed, Invoked, Suspended, Paused,
-Completed, Free`. Reflow has five: the two missing variants are
+Completed, Free`. Reflw has five: the two missing variants are
 `Inboxed` and `Paused`. Both omissions are deliberate.
 
 **No `Inboxed`.** Restate's `Inboxed(InboxedInvocation)`
@@ -507,13 +507,13 @@ the invocation sits in a per-key inbox waiting for the current holder
 to release. The inbox position lives *inside the invocation status
 row*.
 
-Reflow factors this gating out into `KeyLeaseStatus`
+Reflw factors this gating out into `KeyLeaseStatus`
 (`proto/enginev1/engine.proto:966`) — a separate row per
 `(service, object_key)` carrying the active invocation id and a FIFO
 queue. The invocation itself stays in `Scheduled` until the lease
 frees. The trade-off: one extra table lookup on apply, in exchange
 for a single FSM shape that's identical for ordinary invocations and
-queued VObject calls. The Restate model is denser; the reflow model
+queued VObject calls. The Restate model is denser; the reflw model
 is simpler to test.
 
 **No `Paused`.** Restate's `Paused(InFlightInvocationMetadata)`
@@ -524,7 +524,7 @@ resumed via `manual_resume.rs:49`. Restate keeps the two apart so the
 "paused" condition survives crashes and so the resume command is
 distinct from an automatic wake.
 
-Reflow doesn't expose an operator-pause primitive today. If it lands
+Reflw doesn't expose an operator-pause primitive today. If it lands
 later, the natural shape is a `Suspended` row whose `awaiting_on`
 includes a `pause:<reason>` waker, resumable via an Admin RPC that
 proposes the matching wake — no new status variant needed.
@@ -619,7 +619,7 @@ layer on top:
   transfer path is active.
 
 Cloud-backed repository drivers (S3, GCS, Azure Blob), retention policy,
-and operator-facing `reflow snapshot` commands are implemented via a single
+and operator-facing `reflw snapshot` commands are implemented via a single
 `BlobRepository` over `gocloud.dev/blob`.
 
 The metadata shard (`shardID=0`) participates in the same mechanism;
@@ -829,7 +829,7 @@ prefix and rebuilds the heap. No timers are lost.
 onto the heap (it is retried on the next fire-tick). The service NEVER
 holds its mutex across the propose call.
 
-**Raft tick loop:** dragonboat owns its own tick loop; reflow does not
+**Raft tick loop:** dragonboat owns its own tick loop; reflw does not
 intercept it. The original SAD claim that "the same timerfd drives Raft
 heartbeats" was incorrect and is removed.
 
@@ -880,11 +880,11 @@ closing the stream. The engine parks the invocation; when a waker fires
 re-issues the invocation from the top of replay.
 
 Inspired by Restate's service-protocol v7 / journal-v2; field
-numbering, package, and message set are reflow's. Discovery is a
+numbering, package, and message set are reflw's. Discovery is a
 separate one-shot probe defined in `proto/discoveryv1/discovery.proto`
 — issued at RegisterDeployment time, not per invocation.
 
-Compatibility: reflow tracks restate's wire format as a *best-effort*
+Compatibility: reflw tracks restate's wire format as a *best-effort*
 target so existing TS/Python/Java/Rust SDK semantics translate with
 minimal adaptation. We do not commit to bug-for-bug parity, nor to
 keeping pace with every Restate release.
@@ -910,10 +910,10 @@ Restate's protocol distinguishes four state-read commands:
 `GetEagerState` / `GetEagerStateKeys` (single-slot, value carried inline
 on the journal entry — SDK already has the answer locally from
 `StartMessage.state_map`) and `GetLazyState` / `GetLazyStateKeys`
-(two-slot, command + completion — engine resolves on apply). Reflow
+(two-slot, command + completion — engine resolves on apply). Reflw
 wires only **three** of the four:
 
-| Command             | Reflow wire path | Slot cost            |
+| Command             | Reflw wire path | Slot cost            |
 |---------------------|------------------|----------------------|
 | `GetLazyState`      | wired            | 2 (cmd + result)     |
 | `GetLazyStateKeys`  | wired            | 2 (cmd + result)     |
@@ -924,7 +924,7 @@ Individual cache-hit `GetState` reads are not journaled. The SDK reads
 from `wireContext.stateCache` (populated from `StartMessage.state_map`
 plus session writes) and returns the value silently — slot cost 0.
 
-**Why we skip per-read eager journaling.** Reflow's apply model gets
+**Why we skip per-read eager journaling.** Reflw's apply model gets
 eager-read determinism for free that Restate has to recover by journaling:
 
 - Virtual objects serialize. Only one session per `(service, object_key)`
@@ -949,7 +949,7 @@ The proto type `GetEagerStateCommandMessage` (was wire type 0x0407) and
 the journal-entry variant `JEGetEagerState` (was oneof tag 15) were
 deleted to avoid hinting at a path the engine doesn't implement.
 Tag 15 in `JournalEntry.entry` is free; tag 0x0407 in the protocolv1
-type-code space is free. Reflow is preproduction so we are not
+type-code space is free. Reflw is preproduction so we are not
 preserving them.
 
 **Why we keep `GetEagerStateKeys`.** `GetStateKeys` is a single bulk
@@ -1035,7 +1035,7 @@ This keeps the state machine logic decoupled from Pebble, enables unit testing w
 
 ## 6.12 Snapshot Repository
 
-Object storage is reflow's snapshot **archival** layer. It is optional: the
+Object storage is reflw's snapshot **archival** layer. It is optional: the
 default deployment uses only the local filesystem and remains
 zero-external-dep. When configured, it enables fast multi-node replica
 catch-up and operator-facing backup / restore / migration workflows.
@@ -1045,7 +1045,7 @@ catch-up and operator-facing backup / restore / migration workflows.
 - Hot partition state lives in local Pebble. Never in object storage.
 - Dedup, applied index, journal entries, timer table — all local.
 - Object storage holds *only* snapshot artifacts and their metadata.
-- A misconfigured or unreachable repository must not stop reflow from
+- A misconfigured or unreachable repository must not stop reflw from
   running. The local snapshot path is the always-available baseline.
 
 **Interface:**
@@ -1095,16 +1095,16 @@ and covers every scheme: `s3`, `gs`, `azblob`, `file`, `mem`.
 The archive is gzip-compressed tar; DR snapshots are cold and gzip is a
 ~30–50% size win over raw tar. The `.meta.json` sidecar (protojson-
 serialized `enginev1.SnapshotMeta`) carries `{shard_id, raft_index,
-leader_epoch, reflow_version, checksum_sha256, created_at_ms}` so an
+leader_epoch, reflw_version, checksum_sha256, created_at_ms}` so an
 operator listing a bucket can identify snapshots without unpacking them.
 
 **Configuration:** `Snapshot.URL` selects the bucket; gocloud's native
 `?prefix=` URL parameter places the archive under a sub-folder.
 
 ```
-file:///mnt/reflow-snaps          local fs / NFS / shared volume
-s3://my-bucket?prefix=reflow/     AWS S3
-gs://my-bucket?prefix=reflow/     Google Cloud Storage
+file:///mnt/reflw-snaps          local fs / NFS / shared volume
+s3://my-bucket?prefix=reflw/     AWS S3
+gs://my-bucket?prefix=reflw/     Google Cloud Storage
 azblob://my-container?prefix=…    Azure Blob Storage
 mem://                            in-memory (tests only)
 ```
@@ -1172,7 +1172,7 @@ encryption is not currently supported.
 
 ## 6.13 Authentication & Authorization
 
-Reflow's HTTP/2 surfaces (Connect ingress, REST `/v1/*`, Admin/Delivery)
+Reflw's HTTP/2 surfaces (Connect ingress, REST `/v1/*`, Admin/Delivery)
 share one inbound auth chain built on `connectrpc.com/authn`.
 **Authentication is mesh-only mTLS; authorization is Cedar (§6.15.8).**
 
@@ -1189,7 +1189,7 @@ SPIFFE-URI-SAN extractor and the OIDC bearer-JWT authenticator were removed
 on `strip-to-core`; there is no IdP path.)
 
 **Principal stamping.** The stamp handler (`policy_handler.go`) strips any
-forged inbound `X-Reflow-Principal` header, stamps the server-verified value,
+forged inbound `X-Reflw-Principal` header, stamps the server-verified value,
 and attaches the `Principal` via `auth.ContextWithPrincipal`, so the authz
 interceptor and downstream handlers match on a trusted value without
 re-parsing.
@@ -1207,17 +1207,17 @@ band 0.
 
 | Surface | Identity | Authz |
 |--|--|--|
-| ClusterCtl (`reflow.clusterctl.v1.ClusterCtl`) | mTLS `operator/*` (or `node/*` on SelfJoin) | operator god-mode; `SelfJoin` carve-out allows `node/*`, with `checkSelfJoinPrincipal` requiring the CN's `<id>` == `req.node_id` |
-| Config (`reflow.config.v1.Config`) | mTLS `operator/*` | operator god-mode |
-| Delivery (`reflow.delivery.v1.Delivery`) | mTLS `node/*` | mesh actions (node only) |
-| Ingress (`reflow.ingress.v1`) | optional mTLS (`tenant/<n>` or `operator`) or anonymous | tenant-isolated: `tenant/<n>` → own band, anonymous → band 0; `PurgeInvocation` is operator-only |
-| Engine → handler (`protocolv1`) | out of scope here — owned by `pkg/reflow/creds` + `pkg/handler.Config` |
+| ClusterCtl (`reflw.clusterctl.v1.ClusterCtl`) | mTLS `operator/*` (or `node/*` on SelfJoin) | operator god-mode; `SelfJoin` carve-out allows `node/*`, with `checkSelfJoinPrincipal` requiring the CN's `<id>` == `req.node_id` |
+| Config (`reflw.config.v1.Config`) | mTLS `operator/*` | operator god-mode |
+| Delivery (`reflw.delivery.v1.Delivery`) | mTLS `node/*` | mesh actions (node only) |
+| Ingress (`reflw.ingress.v1`) | optional mTLS (`tenant/<n>` or `operator`) or anonymous | tenant-isolated: `tenant/<n>` → own band, anonymous → band 0; `PurgeInvocation` is operator-only |
+| Engine → handler (`protocolv1`) | out of scope here — owned by `pkg/reflw/creds` + `pkg/handler.Config` |
 
 ---
 
 ## 6.14 Webhook Ingress
 
-Removed on `strip-to-core`. Reflow no longer has webhook ingress; the historical design is preserved in git history.
+Removed on `strip-to-core`. Reflw no longer has webhook ingress; the historical design is preserved in git history.
 
 ---
 
@@ -1229,7 +1229,7 @@ built on the pre-strip multi-tenant batteries (per-tenant OIDC, per-tenant
 encstore DEK, ingress quota, a durable audit log, and the logical-`TenantTable`
 tenant model). `strip-to-core` removed all of those, so the three-plane
 proposal below no longer reflects reality. What actually landed: koanf
-bootstrap config (`pkg/reflow.Config`, file + env) plus shard-0 tables
+bootstrap config (`pkg/reflw.Config`, file + env) plus shard-0 tables
 (`DeploymentRecord`, `SecretRecord`, `CARootRecord`, `JoinTokenRecord`,
 `PlatformConfigRecord`) reconciled per node, the `ClusterCtl` (fleet ops) /
 `Config` (app config) RPC split, and Cedar authz (§6.15.8). In-cluster
@@ -1263,10 +1263,10 @@ set plus env-var fallbacks beats a config-file abstraction.
 
 | Layer | Contents | Why local / Why fleet |
 |---|---|---|
-| **CLI flags + env (this node's bootstrap, restart-to-change)** | `--id`, `--raft`, `--raft-advertised`, `--gossip`, `--gossip-advertised`, `--delivery`, `--data-dir`, `--bootstrap` ∣ `--join=<addr> --join-token=<tok>` ∣ optional `--root-cert-pin=sha256:…`, `--shards=1,2,3`, `--log-level`, `--metrics`, `--ca-issuer={builtin,acme,static-files}` (overrides `PlatformConfig.pki.mode` on first `--bootstrap` only; subsequent joiners read mode from shard 0). Env-var fallback for every flag (`REFLOW_ID`, `REFLOW_DATA_DIR`, …). Cert material lives under `${data_dir}/certs/` owned by CertMagic; no `--tls-cert-file` flag. | Needed before this node can talk to anyone. Per-node and divergent by design (different IDs, ports, host-local paths). |
+| **CLI flags + env (this node's bootstrap, restart-to-change)** | `--id`, `--raft`, `--raft-advertised`, `--gossip`, `--gossip-advertised`, `--delivery`, `--data-dir`, `--bootstrap` ∣ `--join=<addr> --join-token=<tok>` ∣ optional `--root-cert-pin=sha256:…`, `--shards=1,2,3`, `--log-level`, `--metrics`, `--ca-issuer={builtin,acme,static-files}` (overrides `PlatformConfig.pki.mode` on first `--bootstrap` only; subsequent joiners read mode from shard 0). Env-var fallback for every flag (`REFLW_ID`, `REFLW_DATA_DIR`, …). Cert material lives under `${data_dir}/certs/` owned by CertMagic; no `--tls-cert-file` flag. | Needed before this node can talk to anyone. Per-node and divergent by design (different IDs, ports, host-local paths). |
 | **Shard-0 `PlatformConfigTable` (fleet-wide policy, runtime)** | Authoritative mesh root CA cert (PEM), PKI issuer mode + per-mode settings (§6.15.4), KMS provider enablement, audit retention + GC cadence, snapshot URL + interval + tiered retention + scratch dir, rebalance mode + thresholds, handler `EagerStateMaxBytes`, ingress behavior (`MaxBodyBytes`, `MaxPollMs`, `TrustedProxies`, REST on/off), admin behavior, default tenant quotas, cluster-default operator OIDC issuers, auth policy content | Fleet-wide policy; drift between nodes is a bug. Auditable (the audit log on shard 0 already records mutations) and dynamically reconfigurable without rolling restarts. |
 
-`pkg/reflow/config` package and the `koanf` + `koanf/providers/*`
+`pkg/reflw/config` package and the `koanf` + `koanf/providers/*`
 dependencies all delete. Bootstrap goes through `flag.FlagSet` +
 `os.Getenv` only, exposed via `cmd/reflwd serve [flags]`. The static
 `cfg.Cluster.Peers` topology disappears: first node uses
@@ -1342,7 +1342,7 @@ same pattern as KMS providers in `pkg/kms/{aws,gcp,blob,hcvault}/`:
 |---|---|---|
 | **`builtin`** (default sub-mode `signing_mode = local`) | No external CA; the cluster is its own CA. Default for non-k8s deployments. A custom `certmagic.Issuer` impl that signs leaves with a cluster root key stored in shard 0 as a `SecretRecord` — Tink keyset, KMS-wrapped at rest through the existing `internal/secretstore` KEK pipeline (`pkg/kms/{aws,gcp,blob,hcvault}/`). Per-node `SecretStore` Resolver decrypts at boot; plaintext `*ecdsa.PrivateKey` sits in `atomic.Pointer` and `crypto/x509.CreateCertificate` signs in-process. Every issuance is proposed through the FSM, so the audit log records every cert event (issuance, renewal, revocation). An opt-in `signing_mode = kms_remote` sub-mode keeps the private key inside the KMS HSM (see below). | `internal/certmgr` — `BuiltinIssuer` (`NewBuiltinIssuer`) wraps `crypto/x509` behind the `certmagic.Issuer` interface. |
 | **`acme`** | External ACME-compatible CA: Smallstep CA, HashiCorp Vault PKI's ACME endpoint, AWS Private CA, anything that speaks ACME. Best for organizations with an existing private-CA fleet. | `certmagic.ACMEIssuer` configured with `CA = <operator-provided-URL>`. Zero custom code; CertMagic already implements this. |
-| **`static-files`** | Kubernetes deployments using cert-manager (cert-manager-csi-driver, csi-driver-spiffe, trust-manager); operator-provisioned sidecar injection; any "the cert is already on disk and rotates externally" setup. | CertMagic's `CacheUnmanagedCertificatePEMFile` + a filesystem watcher that re-loads on cert change. ~50 LOC of wiring; no Issuer impl — the external system *is* the issuer, Reflow only consumes. |
+| **`static-files`** | Kubernetes deployments using cert-manager (cert-manager-csi-driver, csi-driver-spiffe, trust-manager); operator-provisioned sidecar injection; any "the cert is already on disk and rotates externally" setup. | CertMagic's `CacheUnmanagedCertificatePEMFile` + a filesystem watcher that re-loads on cert change. ~50 LOC of wiring; no Issuer impl — the external system *is* the issuer, Reflw only consumes. |
 
 Mode selection is `PlatformConfig.pki.mode` (so it's fleet-consistent
 and auditable; flipping `builtin` → `acme` is one platform-config
@@ -1352,22 +1352,22 @@ is no fleet config yet); subsequent joiners and steady-state operation
 read the mode from `PlatformConfigTable`.
 
 The `Issuer` interface is the single integration seam. Adding a fourth
-mode (Reflow ↔ Vault Transit via Vault's signing API, direct
+mode (Reflw ↔ Vault Transit via Vault's signing API, direct
 Kubernetes `CertificateRequest` CR creation, an HSM-backed signer) is
 one new implementor without disturbing existing modes.
 
 **Optional `signing_mode = kms_remote` for compliance:**
 
 For environments where the cluster root *private key must never enter
-Reflow's memory* (FIPS-mandated configurations, some financial-services
+Reflw's memory* (FIPS-mandated configurations, some financial-services
 and gov audits), the `builtin` Issuer accepts an opt-in sub-mode that
 swaps signer construction without changing the `Issuer` interface or
 any downstream code:
 
 | Sub-mode | Signer | Root key location |
 |---|---|---|
-| `local` (default) | Loads the SecretStore-resolved plaintext `*ecdsa.PrivateKey` into memory; `crypto/x509.CreateCertificate` signs in-process. | Encrypted at rest (Tink keyset, KMS-wrapped via `pkg/kms/`); plaintext in Reflow memory after boot. |
-| `kms_remote` | A `crypto.Signer` adapter whose `Sign(digest, opts)` dispatches to the KMS provider's asymmetric-sign API (AWS KMS `Sign`, GCP KMS `AsymmetricSign`, Vault Transit `sign`). Public key fetched once at startup; private key never accessible to Reflow. | Inside the KMS HSM; never extractable to any host. Every cert issuance is one KMS round-trip (~50–150ms — acceptable since issuance is rare: joins + ~monthly renewals, never on hot paths). |
+| `local` (default) | Loads the SecretStore-resolved plaintext `*ecdsa.PrivateKey` into memory; `crypto/x509.CreateCertificate` signs in-process. | Encrypted at rest (Tink keyset, KMS-wrapped via `pkg/kms/`); plaintext in Reflw memory after boot. |
+| `kms_remote` | A `crypto.Signer` adapter whose `Sign(digest, opts)` dispatches to the KMS provider's asymmetric-sign API (AWS KMS `Sign`, GCP KMS `AsymmetricSign`, Vault Transit `sign`). Public key fetched once at startup; private key never accessible to Reflw. | Inside the KMS HSM; never extractable to any host. Every cert issuance is one KMS round-trip (~50–150ms — acceptable since issuance is rare: joins + ~monthly renewals, never on hot paths). |
 
 `PlatformConfig.pki.builtin.signing_mode` selects between them;
 `signing_key_uri` carries the KMS URI in both cases (in `local` it's
@@ -1441,7 +1441,7 @@ dropped on `strip-to-core` — there is no remaining gap to migrate here.
 ### 6.15.7 Join-token bootstrap
 
 Replaces the offline cert-provisioning flow. Modeled on kubeadm's
-discovery-token pattern, adapted to Reflow's "everything-fleet-wide-
+discovery-token pattern, adapted to Reflw's "everything-fleet-wide-
 goes-through-Raft" shape so every cert event is audit-logged on
 shard 0 like every other state change.
 
@@ -1450,11 +1450,11 @@ shard 0 like every other state change.
 ```
 # 1. Operator mints a one-time token (any leader-resolved node):
 reflwd cluster token issue --node-id=4 --ttl=1h
-→ TOKEN=reflow-jt-<base32>
+→ TOKEN=reflw-jt-<base32>
 → ROOT_PIN=sha256:<hash>      # optional, printed alongside
 
 # 2. New node boots with the token:
-reflwd serve --id=4 --data-dir=/var/lib/reflow \
+reflwd serve --id=4 --data-dir=/var/lib/reflw \
               --raft=:5400 --gossip=:5401 --delivery=:5402 \
               --join=node1.example.com:5500 \
               --join-token=$TOKEN \
@@ -1557,7 +1557,7 @@ reflwd serve --id=4 --data-dir=/var/lib/reflow \
 
 Today's path-glob policy (`internal/auth/starter_policy.json`) can
 express plane separation ("`operator/*` may call
-`/reflow.clusterctl.v1.ClusterCtl/*`") but cannot express the
+`/reflw.clusterctl.v1.ClusterCtl/*`") but cannot express the
 predicate tenant isolation requires:
 *a TenantAdmin principal may mutate an EventSourceRecord only when
 `record.tenant_id == principal.tenant_id`*. That comparison lives on
@@ -1568,12 +1568,12 @@ an authz engine exists to centralize).
 
 The refactor moves authz onto Cedar
 (`github.com/cedar-policy/cedar-go` v1.6.2), with policies stored on
-shard 0 like the rest of cluster policy (§6.15.2). Cedar fits Reflow
+shard 0 like the rest of cluster policy (§6.15.2). Cedar fits Reflw
 because the security model is IAM-shaped — principals, actions,
 resources, context with attribute predicates — not a general-purpose
 policy language. The cedar-go dep is ~2-3 MB, the policy language is
 type-checked at upload time, and the AST is exposed for the
-structural lint passes Reflow uses to gate tenant uploads.
+structural lint passes Reflw uses to gate tenant uploads.
 
 **Schema — the trust shape (`pkg/authz/schema.cedar`, embedded via
 `//go:embed`):**
@@ -1720,7 +1720,7 @@ outside its own tenant.
 // Auto-generatable from a proto annotation; hand-written acceptable
 // for v1 — the surface is ~15 RPCs.
 var procedureMap = map[string]procEntry{
-    "/reflow.config.v1.Config/UpsertEventSource": {
+    "/reflw.config.v1.Config/UpsertEventSource": {
         action: "UpsertEventSource",
         resource: func(msg proto.Message) cedar.EntityUID {
             m := msg.(*configv1.UpsertEventSourceRequest)
@@ -1770,7 +1770,7 @@ microseconds against prepared policies.
 | Layer | What it catches | Cedar-go primitive |
 |---|---|---|
 | **(1) Schema validation** | Policy references a field that doesn't exist (e.g., `resource.secret_kek_uri` when the resource is `EventSourceRecord`). Policy violates an `appliesTo` clause (TenantAdmin on AddNode). | `x/exp/schema/validate.Validator` — ships in v1.6.2 |
-| **(2) AST structural lint** | Tenant policy without `resource.tenant_id == principal.tenant_id` in its `when` clause; tenant policy referencing a principal other than `TenantAdmin`; tenant policy referencing a resource type whose schema lacks `tenant_id`; tenant policy using `principal is ClusterOperator`. | Walks the `cedar/ast.PolicySet`; ~150 LOC. Reflow-specific. Caches the proven invariant at upload, so runtime eval doesn't need to re-prove it. |
+| **(2) AST structural lint** | Tenant policy without `resource.tenant_id == principal.tenant_id` in its `when` clause; tenant policy referencing a principal other than `TenantAdmin`; tenant policy referencing a resource type whose schema lacks `tenant_id`; tenant policy using `principal is ClusterOperator`. | Walks the `cedar/ast.PolicySet`; ~150 LOC. Reflw-specific. Caches the proven invariant at upload, so runtime eval doesn't need to re-prove it. |
 | **(3) Property-based invariant test** | On policy commit, generates *N* synthetic `(principal, resource)` pairs with mismatched `tenant_id`s via `rapid` (matches `internal/engine/pbt_test.go` style), asserts every result is `Deny`. Runs in CI on every `cluster_authz_policy_text` mutation; runs as a fast sample (~50 pairs) on every tenant policy upload. | `x/exp/batch.Authorize` for sweeping; `pgregory.net/rapid` for generation. |
 
 Honest caveat: cedar-go v1.6.2 does not ship the formal SMT-based
@@ -1778,14 +1778,14 @@ analyzer the Rust reference impl provides. Layers (1)+(2)+(3) cover
 the practical surface — schema rejects type errors, structural lint
 forbids ill-shaped tenant policies by *construction*, PBT catches
 escape attempts on random inputs. When cedar-go upstreams formal
-analysis (`x/exp/analyze` is an active workstream), Reflow layers
+analysis (`x/exp/analyze` is an active workstream), Reflw layers
 it on as a fourth check without disturbing the existing seam.
 
 **Storage + reconciler shape (matches the rest of §6.15):**
 
 | Where | What | Owner |
 |---|---|---|
-| Embedded binary (`pkg/authz/schema.cedar`, `//go:embed`) | Cedar schema — entities + actions. Versioned alongside protos; ships with the binary. | Reflow |
+| Embedded binary (`pkg/authz/schema.cedar`, `//go:embed`) | Cedar schema — entities + actions. Versioned alongside protos; ships with the binary. | Reflw |
 | `PlatformConfigTable.cluster_authz_policy_text` | The four foundational policies. Mutation via `Config.UpsertClusterAuthzPolicy` RPC. Pre-commit checks: schema validation + PBT invariant tests against the *cluster* policy. | Cluster operator |
 | `TenantRecord.tenant_authz_policy_text` | Optional per-tenant Cedar text — additive restrictions only. Mutation via `Config.UpsertTenantAuthzPolicy` RPC, scoped to the principal's tenant_id. Pre-commit checks: schema validation + structural lint (layer 2) + fast PBT sample. | Tenant admin |
 | Per-node | `atomic.Pointer[*cedar.PolicySet]` — compiled bundle of (cluster ∪ all tenants). Swapped post-reconcile on `PlatformConfigTable` / `TenantTable` notifier wake. | Reconciler |
@@ -1805,6 +1805,6 @@ it on as a fourth check without disturbing the existing seam.
 | Old (path-glob + principal string match) | New (Cedar) |
 |---|---|
 | Principal `"tenant-admin/12/alice"` ↔ glob `"tenant-admin/12/*"` | Principal `TenantAdmin::"alice@t12"` with attrs `{tenant_id=12, subject="alice"}` |
-| Path `/reflow.config.v1.Config/UpsertEventSource` ↔ glob `/reflow.config.v1.Config/*` | Action `Action::"UpsertEventSource"` |
+| Path `/reflw.config.v1.Config/UpsertEventSource` ↔ glob `/reflw.config.v1.Config/*` | Action `Action::"UpsertEventSource"` |
 | No record-level check — every handler must remember | Resource `EventSourceRecord::"kafka-prod"` with attrs `{tenant_id=12, name="kafka-prod"}` + the schema-enforced `when { resource.tenant_id == principal.tenant_id }` rule |
 | "Did principal tenant_id match record tenant_id?" lives in handler code (drifts, easy to forget) | Lives in one Cedar `when` clause + a structural lint that proves tenant uploads can't escape (single source of truth) |

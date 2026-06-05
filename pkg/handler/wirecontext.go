@@ -598,7 +598,7 @@ func (c *wireContext) Sleep(d time.Duration) Future {
 //     backoff timer.
 func (c *wireContext) Run(name string, fn RunFunc, opts ...RunOption) ([]byte, error) {
 	if fn == nil {
-		return nil, fmt.Errorf("reflow: ctx.Run fn must not be nil")
+		return nil, fmt.Errorf("reflw: ctx.Run fn must not be nil")
 	}
 	resolved := ApplyRunOptions(opts)
 	slot, allocErr := c.allocSlot(1)
@@ -862,7 +862,7 @@ func mintAwakeableID(ownerPartitionKey uint64) (string, error) {
 	var buf [16]byte
 	binary.BigEndian.PutUint64(buf[:8], ownerPartitionKey)
 	if _, err := rand.Read(buf[8:]); err != nil {
-		return "", fmt.Errorf("reflow: awakeable id rng: %w", err)
+		return "", fmt.Errorf("reflw: awakeable id rng: %w", err)
 	}
 	return "awk_" + base64.RawURLEncoding.EncodeToString(buf[:]), nil
 }
@@ -1045,7 +1045,7 @@ func (p *durablePromise) Resolve(value []byte) error {
 
 func (p *durablePromise) Reject(failure *Failure) error {
 	if failure == nil {
-		return fmt.Errorf("reflow: DurablePromise.Reject called with nil failure")
+		return fmt.Errorf("reflw: DurablePromise.Reject called with nil failure")
 	}
 	return p.complete(nil, failure)
 }

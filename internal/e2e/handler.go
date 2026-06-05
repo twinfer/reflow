@@ -15,8 +15,8 @@ import (
 	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/twinfer/reflw/pkg/reflow/creds"
-	"github.com/twinfer/reflw/pkg/reflowclient"
+	"github.com/twinfer/reflw/pkg/reflw/creds"
+	"github.com/twinfer/reflw/pkg/reflwclient"
 	configv1 "github.com/twinfer/reflw/proto/configv1"
 )
 
@@ -25,8 +25,8 @@ import (
 const loadhandlerInternalPort = "9100"
 
 // HandlerContainer is a sidecar running cmd/loadhandler on the same
-// docker network as the reflowd cluster. The engine dials it by DNS
-// name (http://loadhandler:9100) so killing a reflowd node does not
+// docker network as the reflwd cluster. The engine dials it by DNS
+// name (http://loadhandler:9100) so killing a reflwd node does not
 // drop the handler — the precondition that unblocks the previously
 // skipped TestChaos_LeaderSIGKILL flow once it ports to e2e.
 type HandlerContainer struct {
@@ -134,10 +134,10 @@ func RegisterHandler(ctx context.Context, cluster *ContainerCluster, h *HandlerC
 // one RegisterDeployment call. Returns Connect errors verbatim so the
 // caller can route on connect.Code.
 func registerOnce(ctx context.Context, adminURL, deploymentURL string, opCreds creds.Spec) error {
-	// reflowclient.Dial takes host:port + creds. Strip the scheme since
+	// reflwclient.Dial takes host:port + creds. Strip the scheme since
 	// the dialer derives http:// for insecure / https:// for TLS.
 	addr := stripScheme(adminURL)
-	cli, err := reflowclient.Dial(ctx, reflowclient.DialOptions{Addr: addr, Creds: opCreds})
+	cli, err := reflwclient.Dial(ctx, reflwclient.DialOptions{Addr: addr, Creds: opCreds})
 	if err != nil {
 		return fmt.Errorf("dial admin %s: %w", addr, err)
 	}

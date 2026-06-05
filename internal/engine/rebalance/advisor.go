@@ -3,7 +3,7 @@
 // the current LPOwnersTable vs the planner's desired distribution,
 // decides which transfers would close the skew (subject to hysteresis +
 // rate limits), and — in auto mode — proposes Command_InitiateLPTransfer
-// through the same path the manual `reflowd cluster transfer-lp` CLI
+// through the same path the manual `reflwd cluster transfer-lp` CLI
 // uses.
 //
 // Triggers in this version are limited to membership change and
@@ -15,7 +15,7 @@ import (
 	"github.com/twinfer/reflw/internal/engine/routing"
 )
 
-// Mode constants match pkg/reflow.RebalanceConfig.Mode values. Stringly
+// Mode constants match pkg/reflw.RebalanceConfig.Mode values. Stringly
 // typed so the proto + config + Decision layers share one vocabulary.
 const (
 	ModeOff      = "off"
@@ -72,7 +72,7 @@ type Move struct {
 // and (in auto mode) propose Command_InitiateLPTransfer for each
 // element of Proposed. SkippedReason is non-empty when Proposed is
 // empty and explains which gate fired — surfaced on the
-// reflow_rebalance_decisions_total counter and the RebalanceAdvise RPC.
+// reflw_rebalance_decisions_total counter and the RebalanceAdvise RPC.
 type Decision struct {
 	Mode          string
 	Engaged       bool

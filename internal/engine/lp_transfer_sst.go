@@ -30,7 +30,7 @@ const sstNsTimerPrimary = "timer_primary"
 // SST per non-empty LP-prefixed namespace plus one SST for the LP's
 // primary timer rows (extracted via the timer_lp walk). All SSTs are
 // written to outDir using sstable.WriterOptions sourced from the
-// store, so the destination — running the same reflow binary — can
+// store, so the destination — running the same reflw binary — can
 // Ingest them without format conversion.
 //
 // Empty namespaces are skipped (no file written, no TransferSSTRef

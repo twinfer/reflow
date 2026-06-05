@@ -8,7 +8,7 @@ import (
 	"connectrpc.com/authn"
 )
 
-// PrincipalHeader is the canonical HTTP header reflow stamps with the
+// PrincipalHeader is the canonical HTTP header reflw stamps with the
 // server-verified principal (e.g. "node/3", "operator/alice"). Inbound
 // values are stripped by the stamp handler to prevent forgery — only
 // the server-stamped header survives into downstream handlers.

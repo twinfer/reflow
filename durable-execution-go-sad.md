@@ -22,7 +22,7 @@ isolation all implemented. Non-Go SDKs outstanding.
 
 ## 1. Overview
 
-Reflow is a durable execution engine designed for Go shops that want a single
+Reflw is a durable execution engine designed for Go shops that want a single
 self-contained engine binary instead of a multi-component topology. Handlers
 are independent Go processes that the engine reaches over HTTP/2. It is
 inspired by Restate's design and borrows Restate's wire-level concepts where
@@ -33,7 +33,7 @@ deployment ergonomics.
 **One-line pitch.** *Single-binary durable-execution engine for Go. One
 engine, one data directory, your workflows survive crashes.*
 
-**Positioning.** Reflow is the right choice when:
+**Positioning.** Reflw is the right choice when:
 
 - Your stack is Go-first and you want durable execution backed by a single
   engine binary rather than a multi-component platform to operate.
@@ -43,7 +43,7 @@ engine, one data directory, your workflows survive crashes.*
 - You need an Apache-2.0-from-day-one license with no single-vendor
   dependency.
 
-Reflow is **not** the right choice when:
+Reflw is **not** the right choice when:
 
 - You need polyglot SDK parity today across TypeScript / Python / Java /
   Kotlin / Rust / Go. Use Restate.
@@ -93,10 +93,10 @@ one process with one data directory.
   tenant isolation — tenant LP-banding + Cedar — is implemented (see §6),
   but a full SaaS control plane is not a goal.
 - WASM-based handler execution.
-- **Polyglot SDK parity with Restate.** Reflow's first-class SDK is Go;
+- **Polyglot SDK parity with Restate.** Reflw's first-class SDK is Go;
   other languages are supported only via the wire protocol, on whatever
   cadence makes sense, with no commitment to feature parity across them.
-- **External coordination services.** Reflow will never require etcd,
+- **External coordination services.** Reflw will never require etcd,
   Consul, ZooKeeper, Kafka, a separate metadata server, or a separate log
   server to run. Cluster coordination is in-binary via an embedded
   metadata Raft group (see §6.2).
@@ -178,7 +178,7 @@ The per-key Virtual-Object gate uses `qmuntal/stateless` for clarity around
 the Active-reentry semantics (queue head promotion) — see §6.5.
 
 `go.mod` pins `cockroachdb/pebble/v2 v2.1.5` (the public Pebble API used
-by reflow's `StateStore`) and `lni/dragonboat/v4 v4.0.0-20250723143628-076c7f6497dc`
+by reflw's `StateStore`) and `lni/dragonboat/v4 v4.0.0-20250723143628-076c7f6497dc`
 (the pre-release that internally still uses pebble v1 for its log store).
 The two coexist because dragonboat's pebble dependency is package-isolated
 behind `cockroachdb/pebble` (no `/v2`) — go's module graph treats them as
@@ -189,7 +189,7 @@ its internal pebble.
 
 ## 6. Component Design
 
-This section details the architecture and design of Reflow's core components: Ingress, Cluster Manager, Partition Processor, FSM, and more.
+This section details the architecture and design of Reflw's core components: Ingress, Cluster Manager, Partition Processor, FSM, and more.
 
 👉 **Detailed documentation:** [Component Design](doc/06-component-design.md)
 
@@ -205,7 +205,7 @@ This section details the primary runtime data flows, execution sequences, crash 
 
 ## 8. Deployment Architecture
 
-This section describes the deployment options and topology layout of a Reflow cluster (Single-Node and Multi-Node).
+This section describes the deployment options and topology layout of a Reflw cluster (Single-Node and Multi-Node).
 
 👉 **Detailed documentation:** [Deployment Architecture](doc/08-deployment-architecture.md)
 
@@ -213,7 +213,7 @@ This section describes the deployment options and topology layout of a Reflow cl
 
 ## 9. Open Questions
 
-This section tracks resolved and outstanding architectural open questions for the Reflow engine.
+This section tracks resolved and outstanding architectural open questions for the Reflw engine.
 
 👉 **Detailed documentation:** [Open Questions](doc/09-open-questions.md)
 
@@ -229,7 +229,7 @@ This section tracks identified system risks, assessed likelihood/severity, and t
 
 ## 11. Delivery History
 
-This section chronicles the historical progress and development phases of the Reflow engine.
+This section chronicles the historical progress and development phases of the Reflw engine.
 
 👉 **Detailed documentation:** [Delivery History](doc/11-delivery-history.md)
 

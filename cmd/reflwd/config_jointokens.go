@@ -19,7 +19,7 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflw/pkg/reflowclient"
+	"github.com/twinfer/reflw/pkg/reflwclient"
 	configv1 "github.com/twinfer/reflw/proto/configv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
@@ -41,7 +41,7 @@ func cmdCreateJoinToken(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	return tlsFlags.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+	return tlsFlags.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
 		resp, err := cli.Config.CreateJoinToken(rctx, connect.NewRequest(&configv1.CreateJoinTokenRequest{
 			Kind:          tokenKind,
 			RequestedName: *name,
@@ -72,7 +72,7 @@ func cmdListJoinTokens(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return tlsFlags.withClient(ctx, func(cli *reflowclient.Client) error {
+	return tlsFlags.withClient(ctx, func(cli *reflwclient.Client) error {
 		resp, err := cli.Config.ListJoinTokens(ctx, connect.NewRequest(&configv1.ListJoinTokensRequest{}))
 		if err != nil {
 			return err
@@ -102,7 +102,7 @@ func cmdDeleteJoinToken(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("decode --hash: %w", err)
 	}
-	return tlsFlags.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+	return tlsFlags.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
 		list, err := cli.Config.ListJoinTokens(rctx, connect.NewRequest(&configv1.ListJoinTokensRequest{}))
 		if err != nil {
 			return fmt.Errorf("read revision: %w", err)
@@ -128,7 +128,7 @@ func cmdIssueOperator(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("issue-operator", flag.ContinueOnError)
 	tlsFlags := registerTLSFlags(fs)
 	name := fs.String("name", "", "operator name (required); becomes CN=operator/<name>")
-	out := fs.String("out", "", "output directory for operator-<name>.{crt,key,ca.crt}; default: ~/.reflow/operator-<name>")
+	out := fs.String("out", "", "output directory for operator-<name>.{crt,key,ca.crt}; default: ~/.reflw/operator-<name>")
 	validity := fs.Duration("validity", 30*24*time.Hour, "leaf validity (clamped by server)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -142,7 +142,7 @@ func cmdIssueOperator(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("resolve home dir: %w", err)
 		}
-		outDir = filepath.Join(home, ".reflow", "operator-"+*name)
+		outDir = filepath.Join(home, ".reflw", "operator-"+*name)
 	}
 	if err := os.MkdirAll(outDir, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", outDir, err)
@@ -160,7 +160,7 @@ func cmdIssueOperator(ctx context.Context, args []string) error {
 		return fmt.Errorf("build CSR: %w", err)
 	}
 
-	return tlsFlags.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+	return tlsFlags.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
 		resp, err := cli.Config.IssueOperator(rctx, connect.NewRequest(&configv1.IssueOperatorRequest{
 			CsrDer:          csrDER,
 			ValiditySeconds: uint64(validity.Seconds()),

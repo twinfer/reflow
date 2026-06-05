@@ -10,7 +10,7 @@ import (
 // DefaultPebbleCacheBytes is the node-global block-cache budget used when
 // the operator doesn't set one. It is shared across every shard DB on the
 // node (see NewSharedCaches). Pebble's own default is a small per-DB cache;
-// on reflow's one-DB-per-shard topology that default would multiply by
+// on reflw's one-DB-per-shard topology that default would multiply by
 // shard count and fragment the working set into N independent LRUs.
 const DefaultPebbleCacheBytes int64 = 256 << 20 // 256 MiB
 

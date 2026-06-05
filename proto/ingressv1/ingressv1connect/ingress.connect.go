@@ -3,7 +3,7 @@
 // Exposes the user-facing entrypoints for submitting invocations, awaiting
 // their results, and resolving awakeables. Served over Connect (HTTP/2)
 // with content-negotiated Connect / gRPC / gRPC-Web / HTTP-JSON; clients
-// pick a wire encoding by setting Content-Type. The default reflowd
+// pick a wire encoding by setting Content-Type. The default reflwd
 // config is single-partition (shard 1) but ingress is partition-agnostic
 // and routes via Host.Partitioner.
 
@@ -31,7 +31,7 @@ const _ = connect.IsAtLeastVersion1_13_0
 
 const (
 	// IngressName is the fully-qualified name of the Ingress service.
-	IngressName = "reflow.ingress.v1.Ingress"
+	IngressName = "reflw.ingress.v1.Ingress"
 )
 
 // These constants are the fully-qualified names of the RPCs defined in this package. They're
@@ -44,46 +44,46 @@ const (
 const (
 	// IngressSubmitInvocationProcedure is the fully-qualified name of the Ingress's SubmitInvocation
 	// RPC.
-	IngressSubmitInvocationProcedure = "/reflow.ingress.v1.Ingress/SubmitInvocation"
+	IngressSubmitInvocationProcedure = "/reflw.ingress.v1.Ingress/SubmitInvocation"
 	// IngressAwaitInvocationProcedure is the fully-qualified name of the Ingress's AwaitInvocation RPC.
-	IngressAwaitInvocationProcedure = "/reflow.ingress.v1.Ingress/AwaitInvocation"
+	IngressAwaitInvocationProcedure = "/reflw.ingress.v1.Ingress/AwaitInvocation"
 	// IngressResolveAwakeableProcedure is the fully-qualified name of the Ingress's ResolveAwakeable
 	// RPC.
-	IngressResolveAwakeableProcedure = "/reflow.ingress.v1.Ingress/ResolveAwakeable"
+	IngressResolveAwakeableProcedure = "/reflw.ingress.v1.Ingress/ResolveAwakeable"
 	// IngressDescribeInvocationProcedure is the fully-qualified name of the Ingress's
 	// DescribeInvocation RPC.
-	IngressDescribeInvocationProcedure = "/reflow.ingress.v1.Ingress/DescribeInvocation"
+	IngressDescribeInvocationProcedure = "/reflw.ingress.v1.Ingress/DescribeInvocation"
 	// IngressAttachInvocationProcedure is the fully-qualified name of the Ingress's AttachInvocation
 	// RPC.
-	IngressAttachInvocationProcedure = "/reflow.ingress.v1.Ingress/AttachInvocation"
+	IngressAttachInvocationProcedure = "/reflw.ingress.v1.Ingress/AttachInvocation"
 	// IngressGetInvocationOutputProcedure is the fully-qualified name of the Ingress's
 	// GetInvocationOutput RPC.
-	IngressGetInvocationOutputProcedure = "/reflow.ingress.v1.Ingress/GetInvocationOutput"
+	IngressGetInvocationOutputProcedure = "/reflw.ingress.v1.Ingress/GetInvocationOutput"
 	// IngressGetObjectStateProcedure is the fully-qualified name of the Ingress's GetObjectState RPC.
-	IngressGetObjectStateProcedure = "/reflow.ingress.v1.Ingress/GetObjectState"
+	IngressGetObjectStateProcedure = "/reflw.ingress.v1.Ingress/GetObjectState"
 	// IngressCancelInvocationProcedure is the fully-qualified name of the Ingress's CancelInvocation
 	// RPC.
-	IngressCancelInvocationProcedure = "/reflow.ingress.v1.Ingress/CancelInvocation"
+	IngressCancelInvocationProcedure = "/reflw.ingress.v1.Ingress/CancelInvocation"
 	// IngressResolveWorkflowPromiseProcedure is the fully-qualified name of the Ingress's
 	// ResolveWorkflowPromise RPC.
-	IngressResolveWorkflowPromiseProcedure = "/reflow.ingress.v1.Ingress/ResolveWorkflowPromise"
+	IngressResolveWorkflowPromiseProcedure = "/reflw.ingress.v1.Ingress/ResolveWorkflowPromise"
 	// IngressPurgeInvocationProcedure is the fully-qualified name of the Ingress's PurgeInvocation RPC.
-	IngressPurgeInvocationProcedure = "/reflow.ingress.v1.Ingress/PurgeInvocation"
+	IngressPurgeInvocationProcedure = "/reflw.ingress.v1.Ingress/PurgeInvocation"
 	// IngressListInvocationsProcedure is the fully-qualified name of the Ingress's ListInvocations RPC.
-	IngressListInvocationsProcedure = "/reflow.ingress.v1.Ingress/ListInvocations"
+	IngressListInvocationsProcedure = "/reflw.ingress.v1.Ingress/ListInvocations"
 	// IngressStartProcessProcedure is the fully-qualified name of the Ingress's StartProcess RPC.
-	IngressStartProcessProcedure = "/reflow.ingress.v1.Ingress/StartProcess"
+	IngressStartProcessProcedure = "/reflw.ingress.v1.Ingress/StartProcess"
 	// IngressDeliverMessageProcedure is the fully-qualified name of the Ingress's DeliverMessage RPC.
-	IngressDeliverMessageProcedure = "/reflow.ingress.v1.Ingress/DeliverMessage"
+	IngressDeliverMessageProcedure = "/reflw.ingress.v1.Ingress/DeliverMessage"
 	// IngressGetProcessInstanceProcedure is the fully-qualified name of the Ingress's
 	// GetProcessInstance RPC.
-	IngressGetProcessInstanceProcedure = "/reflow.ingress.v1.Ingress/GetProcessInstance"
+	IngressGetProcessInstanceProcedure = "/reflw.ingress.v1.Ingress/GetProcessInstance"
 	// IngressListProcessInstancesProcedure is the fully-qualified name of the Ingress's
 	// ListProcessInstances RPC.
-	IngressListProcessInstancesProcedure = "/reflow.ingress.v1.Ingress/ListProcessInstances"
+	IngressListProcessInstancesProcedure = "/reflw.ingress.v1.Ingress/ListProcessInstances"
 )
 
-// IngressClient is a client for the reflow.ingress.v1.Ingress service.
+// IngressClient is a client for the reflw.ingress.v1.Ingress service.
 type IngressClient interface {
 	// SubmitInvocation enqueues a new invocation. Returns the minted
 	// invocation ID; the caller polls AwaitInvocation for the result.
@@ -141,7 +141,7 @@ type IngressClient interface {
 	// ListProcessInstances). Optional service-name and state filters; capped by
 	// limit. Read-only — no proposal.
 	ListInvocations(context.Context, *connect.Request[ingressv1.ListInvocationsRequest]) (*connect.Response[ingressv1.ListInvocationsResponse], error)
-	// StartProcess launches a new iflow BPMN/CMMN instance. Routes to the
+	// StartProcess launches a new reflwos BPMN/CMMN instance. Routes to the
 	// partition owning (tenant, model name, instance_key) and proposes a start
 	// ProcessEvent (model_ref + kind set). Idempotent per (model, instance_key):
 	// a start for an already-existing instance is dropped by the apply path. When
@@ -169,7 +169,7 @@ type IngressClient interface {
 	ListProcessInstances(context.Context, *connect.Request[ingressv1.ListProcessInstancesRequest]) (*connect.Response[ingressv1.ListProcessInstancesResponse], error)
 }
 
-// NewIngressClient constructs a client for the reflow.ingress.v1.Ingress service. By default, it
+// NewIngressClient constructs a client for the reflw.ingress.v1.Ingress service. By default, it
 // uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses, and sends
 // uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the connect.WithGRPC() or
 // connect.WithGRPCWeb() options.
@@ -292,82 +292,82 @@ type ingressClient struct {
 	listProcessInstances   *connect.Client[ingressv1.ListProcessInstancesRequest, ingressv1.ListProcessInstancesResponse]
 }
 
-// SubmitInvocation calls reflow.ingress.v1.Ingress.SubmitInvocation.
+// SubmitInvocation calls reflw.ingress.v1.Ingress.SubmitInvocation.
 func (c *ingressClient) SubmitInvocation(ctx context.Context, req *connect.Request[ingressv1.SubmitInvocationRequest]) (*connect.Response[ingressv1.SubmitInvocationResponse], error) {
 	return c.submitInvocation.CallUnary(ctx, req)
 }
 
-// AwaitInvocation calls reflow.ingress.v1.Ingress.AwaitInvocation.
+// AwaitInvocation calls reflw.ingress.v1.Ingress.AwaitInvocation.
 func (c *ingressClient) AwaitInvocation(ctx context.Context, req *connect.Request[ingressv1.AwaitInvocationRequest]) (*connect.Response[ingressv1.AwaitInvocationResponse], error) {
 	return c.awaitInvocation.CallUnary(ctx, req)
 }
 
-// ResolveAwakeable calls reflow.ingress.v1.Ingress.ResolveAwakeable.
+// ResolveAwakeable calls reflw.ingress.v1.Ingress.ResolveAwakeable.
 func (c *ingressClient) ResolveAwakeable(ctx context.Context, req *connect.Request[ingressv1.ResolveAwakeableRequest]) (*connect.Response[ingressv1.ResolveAwakeableResponse], error) {
 	return c.resolveAwakeable.CallUnary(ctx, req)
 }
 
-// DescribeInvocation calls reflow.ingress.v1.Ingress.DescribeInvocation.
+// DescribeInvocation calls reflw.ingress.v1.Ingress.DescribeInvocation.
 func (c *ingressClient) DescribeInvocation(ctx context.Context, req *connect.Request[ingressv1.DescribeInvocationRequest]) (*connect.Response[ingressv1.DescribeInvocationResponse], error) {
 	return c.describeInvocation.CallUnary(ctx, req)
 }
 
-// AttachInvocation calls reflow.ingress.v1.Ingress.AttachInvocation.
+// AttachInvocation calls reflw.ingress.v1.Ingress.AttachInvocation.
 func (c *ingressClient) AttachInvocation(ctx context.Context, req *connect.Request[ingressv1.AttachInvocationRequest]) (*connect.Response[ingressv1.AttachInvocationResponse], error) {
 	return c.attachInvocation.CallUnary(ctx, req)
 }
 
-// GetInvocationOutput calls reflow.ingress.v1.Ingress.GetInvocationOutput.
+// GetInvocationOutput calls reflw.ingress.v1.Ingress.GetInvocationOutput.
 func (c *ingressClient) GetInvocationOutput(ctx context.Context, req *connect.Request[ingressv1.GetInvocationOutputRequest]) (*connect.Response[ingressv1.GetInvocationOutputResponse], error) {
 	return c.getInvocationOutput.CallUnary(ctx, req)
 }
 
-// GetObjectState calls reflow.ingress.v1.Ingress.GetObjectState.
+// GetObjectState calls reflw.ingress.v1.Ingress.GetObjectState.
 func (c *ingressClient) GetObjectState(ctx context.Context, req *connect.Request[ingressv1.GetObjectStateRequest]) (*connect.Response[ingressv1.GetObjectStateResponse], error) {
 	return c.getObjectState.CallUnary(ctx, req)
 }
 
-// CancelInvocation calls reflow.ingress.v1.Ingress.CancelInvocation.
+// CancelInvocation calls reflw.ingress.v1.Ingress.CancelInvocation.
 func (c *ingressClient) CancelInvocation(ctx context.Context, req *connect.Request[ingressv1.CancelInvocationRequest]) (*connect.Response[ingressv1.CancelInvocationResponse], error) {
 	return c.cancelInvocation.CallUnary(ctx, req)
 }
 
-// ResolveWorkflowPromise calls reflow.ingress.v1.Ingress.ResolveWorkflowPromise.
+// ResolveWorkflowPromise calls reflw.ingress.v1.Ingress.ResolveWorkflowPromise.
 func (c *ingressClient) ResolveWorkflowPromise(ctx context.Context, req *connect.Request[ingressv1.ResolveWorkflowPromiseRequest]) (*connect.Response[ingressv1.ResolveWorkflowPromiseResponse], error) {
 	return c.resolveWorkflowPromise.CallUnary(ctx, req)
 }
 
-// PurgeInvocation calls reflow.ingress.v1.Ingress.PurgeInvocation.
+// PurgeInvocation calls reflw.ingress.v1.Ingress.PurgeInvocation.
 func (c *ingressClient) PurgeInvocation(ctx context.Context, req *connect.Request[ingressv1.PurgeInvocationRequest]) (*connect.Response[ingressv1.PurgeInvocationResponse], error) {
 	return c.purgeInvocation.CallUnary(ctx, req)
 }
 
-// ListInvocations calls reflow.ingress.v1.Ingress.ListInvocations.
+// ListInvocations calls reflw.ingress.v1.Ingress.ListInvocations.
 func (c *ingressClient) ListInvocations(ctx context.Context, req *connect.Request[ingressv1.ListInvocationsRequest]) (*connect.Response[ingressv1.ListInvocationsResponse], error) {
 	return c.listInvocations.CallUnary(ctx, req)
 }
 
-// StartProcess calls reflow.ingress.v1.Ingress.StartProcess.
+// StartProcess calls reflw.ingress.v1.Ingress.StartProcess.
 func (c *ingressClient) StartProcess(ctx context.Context, req *connect.Request[ingressv1.StartProcessRequest]) (*connect.Response[ingressv1.StartProcessResponse], error) {
 	return c.startProcess.CallUnary(ctx, req)
 }
 
-// DeliverMessage calls reflow.ingress.v1.Ingress.DeliverMessage.
+// DeliverMessage calls reflw.ingress.v1.Ingress.DeliverMessage.
 func (c *ingressClient) DeliverMessage(ctx context.Context, req *connect.Request[ingressv1.DeliverMessageRequest]) (*connect.Response[ingressv1.DeliverMessageResponse], error) {
 	return c.deliverMessage.CallUnary(ctx, req)
 }
 
-// GetProcessInstance calls reflow.ingress.v1.Ingress.GetProcessInstance.
+// GetProcessInstance calls reflw.ingress.v1.Ingress.GetProcessInstance.
 func (c *ingressClient) GetProcessInstance(ctx context.Context, req *connect.Request[ingressv1.GetProcessInstanceRequest]) (*connect.Response[ingressv1.GetProcessInstanceResponse], error) {
 	return c.getProcessInstance.CallUnary(ctx, req)
 }
 
-// ListProcessInstances calls reflow.ingress.v1.Ingress.ListProcessInstances.
+// ListProcessInstances calls reflw.ingress.v1.Ingress.ListProcessInstances.
 func (c *ingressClient) ListProcessInstances(ctx context.Context, req *connect.Request[ingressv1.ListProcessInstancesRequest]) (*connect.Response[ingressv1.ListProcessInstancesResponse], error) {
 	return c.listProcessInstances.CallUnary(ctx, req)
 }
 
-// IngressHandler is an implementation of the reflow.ingress.v1.Ingress service.
+// IngressHandler is an implementation of the reflw.ingress.v1.Ingress service.
 type IngressHandler interface {
 	// SubmitInvocation enqueues a new invocation. Returns the minted
 	// invocation ID; the caller polls AwaitInvocation for the result.
@@ -425,7 +425,7 @@ type IngressHandler interface {
 	// ListProcessInstances). Optional service-name and state filters; capped by
 	// limit. Read-only — no proposal.
 	ListInvocations(context.Context, *connect.Request[ingressv1.ListInvocationsRequest]) (*connect.Response[ingressv1.ListInvocationsResponse], error)
-	// StartProcess launches a new iflow BPMN/CMMN instance. Routes to the
+	// StartProcess launches a new reflwos BPMN/CMMN instance. Routes to the
 	// partition owning (tenant, model name, instance_key) and proposes a start
 	// ProcessEvent (model_ref + kind set). Idempotent per (model, instance_key):
 	// a start for an already-existing instance is dropped by the apply path. When
@@ -550,7 +550,7 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 		connect.WithSchema(ingressMethods.ByName("ListProcessInstances")),
 		connect.WithHandlerOptions(opts...),
 	)
-	return "/reflow.ingress.v1.Ingress/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return "/reflw.ingress.v1.Ingress/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case IngressSubmitInvocationProcedure:
 			ingressSubmitInvocationHandler.ServeHTTP(w, r)
@@ -592,61 +592,61 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 type UnimplementedIngressHandler struct{}
 
 func (UnimplementedIngressHandler) SubmitInvocation(context.Context, *connect.Request[ingressv1.SubmitInvocationRequest]) (*connect.Response[ingressv1.SubmitInvocationResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.SubmitInvocation is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.SubmitInvocation is not implemented"))
 }
 
 func (UnimplementedIngressHandler) AwaitInvocation(context.Context, *connect.Request[ingressv1.AwaitInvocationRequest]) (*connect.Response[ingressv1.AwaitInvocationResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.AwaitInvocation is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.AwaitInvocation is not implemented"))
 }
 
 func (UnimplementedIngressHandler) ResolveAwakeable(context.Context, *connect.Request[ingressv1.ResolveAwakeableRequest]) (*connect.Response[ingressv1.ResolveAwakeableResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.ResolveAwakeable is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.ResolveAwakeable is not implemented"))
 }
 
 func (UnimplementedIngressHandler) DescribeInvocation(context.Context, *connect.Request[ingressv1.DescribeInvocationRequest]) (*connect.Response[ingressv1.DescribeInvocationResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.DescribeInvocation is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.DescribeInvocation is not implemented"))
 }
 
 func (UnimplementedIngressHandler) AttachInvocation(context.Context, *connect.Request[ingressv1.AttachInvocationRequest]) (*connect.Response[ingressv1.AttachInvocationResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.AttachInvocation is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.AttachInvocation is not implemented"))
 }
 
 func (UnimplementedIngressHandler) GetInvocationOutput(context.Context, *connect.Request[ingressv1.GetInvocationOutputRequest]) (*connect.Response[ingressv1.GetInvocationOutputResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.GetInvocationOutput is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.GetInvocationOutput is not implemented"))
 }
 
 func (UnimplementedIngressHandler) GetObjectState(context.Context, *connect.Request[ingressv1.GetObjectStateRequest]) (*connect.Response[ingressv1.GetObjectStateResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.GetObjectState is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.GetObjectState is not implemented"))
 }
 
 func (UnimplementedIngressHandler) CancelInvocation(context.Context, *connect.Request[ingressv1.CancelInvocationRequest]) (*connect.Response[ingressv1.CancelInvocationResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.CancelInvocation is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.CancelInvocation is not implemented"))
 }
 
 func (UnimplementedIngressHandler) ResolveWorkflowPromise(context.Context, *connect.Request[ingressv1.ResolveWorkflowPromiseRequest]) (*connect.Response[ingressv1.ResolveWorkflowPromiseResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.ResolveWorkflowPromise is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.ResolveWorkflowPromise is not implemented"))
 }
 
 func (UnimplementedIngressHandler) PurgeInvocation(context.Context, *connect.Request[ingressv1.PurgeInvocationRequest]) (*connect.Response[ingressv1.PurgeInvocationResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.PurgeInvocation is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.PurgeInvocation is not implemented"))
 }
 
 func (UnimplementedIngressHandler) ListInvocations(context.Context, *connect.Request[ingressv1.ListInvocationsRequest]) (*connect.Response[ingressv1.ListInvocationsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.ListInvocations is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.ListInvocations is not implemented"))
 }
 
 func (UnimplementedIngressHandler) StartProcess(context.Context, *connect.Request[ingressv1.StartProcessRequest]) (*connect.Response[ingressv1.StartProcessResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.StartProcess is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.StartProcess is not implemented"))
 }
 
 func (UnimplementedIngressHandler) DeliverMessage(context.Context, *connect.Request[ingressv1.DeliverMessageRequest]) (*connect.Response[ingressv1.DeliverMessageResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.DeliverMessage is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.DeliverMessage is not implemented"))
 }
 
 func (UnimplementedIngressHandler) GetProcessInstance(context.Context, *connect.Request[ingressv1.GetProcessInstanceRequest]) (*connect.Response[ingressv1.GetProcessInstanceResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.GetProcessInstance is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.GetProcessInstance is not implemented"))
 }
 
 func (UnimplementedIngressHandler) ListProcessInstances(context.Context, *connect.Request[ingressv1.ListProcessInstancesRequest]) (*connect.Response[ingressv1.ListProcessInstancesResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.ingress.v1.Ingress.ListProcessInstances is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.ListProcessInstances is not implemented"))
 }

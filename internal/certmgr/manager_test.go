@@ -11,7 +11,7 @@ import (
 )
 
 func TestManager_BuiltinIssuerProducesLeafWithPrincipalCN(t *testing.T) {
-	ca, err := MintCA("reflow-test-ca")
+	ca, err := MintCA("reflw-test-ca")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestManager_BuiltinIssuerProducesLeafWithPrincipalCN(t *testing.T) {
 
 func TestManager_ReopenSameNodeOK_DifferentNodeRefuses(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "cm")
-	ca, err := MintCA("reflow-test-ca")
+	ca, err := MintCA("reflw-test-ca")
 	if err != nil {
 		t.Fatal(err)
 	}

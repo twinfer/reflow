@@ -6,10 +6,10 @@ import (
 )
 
 // NewLogger returns a slog.Logger writing JSON to stderr at the requested
-// level. The "reflow" service name is bundled in via WithAttrs.
+// level. The "reflw" service name is bundled in via WithAttrs.
 func NewLogger(level slog.Level) *slog.Logger {
 	h := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})
-	return slog.New(h).With("service", "reflow")
+	return slog.New(h).With("service", "reflw")
 }
 
 // PartitionLogger returns a logger pre-tagged with the given partition

@@ -1,4 +1,4 @@
-// Package auth is reflow's authentication HTTP middleware layer for the
+// Package auth is reflw's authentication HTTP middleware layer for the
 // Connect-based ingress, admin, and delivery listeners. Authorization is a
 // separate concern, enforced downstream by the Cedar Connect interceptor in
 // internal/authz. The model is:

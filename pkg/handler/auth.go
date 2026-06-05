@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/twinfer/reflw/pkg/reflow/creds"
+	"github.com/twinfer/reflw/pkg/reflw/creds"
 )
 
 type authContextKey struct{}
@@ -66,7 +66,7 @@ func bearerToken(h string) (string, error) {
 }
 
 func deny(w http.ResponseWriter, log *slog.Logger, reason string, err error) {
-	w.Header().Set("WWW-Authenticate", `Bearer realm="reflow"`)
+	w.Header().Set("WWW-Authenticate", `Bearer realm="reflw"`)
 	w.WriteHeader(http.StatusUnauthorized)
 	log.Debug("sdk/server: auth denied", "reason", reason, "err", err)
 }

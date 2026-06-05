@@ -1,4 +1,4 @@
-// Command reflwd is the production reflow binary. It exposes three
+// Command reflwd is the production reflw binary. It exposes three
 // top-level subcommands:
 //
 //	reflwd run                 # start the engine
@@ -15,7 +15,7 @@
 // `reflwd config create-join-token` to mint a one-time joiner
 // credential, and `reflwd run --join` to redeem it. Every leaf carries
 // the principal Raw form (e.g. "node/1", "operator/alice") in its CN
-// that the reflow TLS layer matches against the listener's expected
+// that the reflw TLS layer matches against the listener's expected
 // role.
 //
 // Cluster and config subcommands talk to the admin Connect listener via
@@ -49,16 +49,16 @@
 // Cluster and config subcommands need the operator TLS flags (or
 // matching env vars):
 //
-//	--client-cert   $REFLOW_CLIENT_CERT
-//	--client-key    $REFLOW_CLIENT_KEY
-//	--ca            $REFLOW_CA_CERT
+//	--client-cert   $REFLW_CLIENT_CERT
+//	--client-key    $REFLW_CLIENT_KEY
+//	--ca            $REFLW_CA_CERT
 //
 // `reflwd run` reads layered configuration sources (later overrides
 // earlier):
 //
 //  1. Built-in defaults (single-node, shard 1, sensible ports).
-//  2. Optional config file from $REFLOW_CONFIG (YAML or JSON).
-//  3. REFLOW_* environment variables.
+//  2. Optional config file from $REFLW_CONFIG (YAML or JSON).
+//  3. REFLW_* environment variables.
 package main
 
 import (
@@ -138,11 +138,11 @@ func dispatchCluster(ctx context.Context, args []string) error {
 }
 
 func usage(w *os.File) {
-	fmt.Fprint(w, `reflwd — reflow engine + admin CLI
+	fmt.Fprint(w, `reflwd — reflw engine + admin CLI
 
 Engine:
   run                  Start the engine. Reads layered config:
-                         defaults → $REFLOW_CONFIG file → REFLOW_* env.
+                         defaults → $REFLW_CONFIG file → REFLW_* env.
 
 Cluster (ClusterCtl RPCs; fleet ops; --admin can be ANY node):
   cluster add-node              Register a new peer and start rebalance.

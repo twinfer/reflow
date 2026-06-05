@@ -12,7 +12,7 @@ import (
 // or an extended wait on an external completion. Handlers should
 // propagate it upward without further work; the next leader will resume
 // from the journal.
-var ErrSuspended = errors.New("reflow: invocation suspended")
+var ErrSuspended = errors.New("reflw: invocation suspended")
 
 // Failure is a typed terminal handler error. Returning a *Failure from a
 // handler or from a fn passed to Context.Run causes the invocation to
@@ -37,7 +37,7 @@ func (f *Failure) Error() string {
 	if f.Code == 0 {
 		return f.Message
 	}
-	return fmt.Sprintf("reflow: failure code=%d: %s", f.Code, f.Message)
+	return fmt.Sprintf("reflw: failure code=%d: %s", f.Code, f.Message)
 }
 
 // NewFailure constructs a *Failure with the given code and message.
@@ -45,13 +45,13 @@ func NewFailure(code uint32, message string) *Failure {
 	return &Failure{Code: code, Message: message}
 }
 
-// StepBudgetExhaustedCode is the reserved Failure.Code reflow assigns
+// StepBudgetExhaustedCode is the reserved Failure.Code reflw assigns
 // when a handler exceeds its per-invocation journal-entry cap. Callers
 // can errors.As / *Failure-type-assert and compare the code to
 // distinguish step-budget exhaustion from user-defined failures.
 const StepBudgetExhaustedCode uint32 = 9001
 
-// CancelledCode is the reserved Failure.Code reflow stamps onto an
+// CancelledCode is the reserved Failure.Code reflw stamps onto an
 // invocation that was terminated by a CancelInvocation request (or a
 // well-known __cancel__ signal). The canonical value lives in
 // pkg/handler/wire so the engine can reference it without importing
@@ -81,7 +81,7 @@ const SendSignalUnkeyedCode uint32 = 9003
 func NewSendSignalUnkeyedFailure(service, handler string) *Failure {
 	return &Failure{
 		Code:    SendSignalUnkeyedCode,
-		Message: fmt.Sprintf("reflow: SendSignal target %s/%s has empty key (signals require a keyed target)", service, handler),
+		Message: fmt.Sprintf("reflw: SendSignal target %s/%s has empty key (signals require a keyed target)", service, handler),
 	}
 }
 
@@ -96,7 +96,7 @@ const PromiseNotWorkflowCode uint32 = 9004
 func NewPromiseNotWorkflowFailure(service, handler string) *Failure {
 	return &Failure{
 		Code:    PromiseNotWorkflowCode,
-		Message: fmt.Sprintf("reflow: Context.Promise requires KIND_WORKFLOW or KIND_WORKFLOW_SHARED (handler %s/%s)", service, handler),
+		Message: fmt.Sprintf("reflw: Context.Promise requires KIND_WORKFLOW or KIND_WORKFLOW_SHARED (handler %s/%s)", service, handler),
 	}
 }
 
@@ -111,7 +111,7 @@ const PromiseAlreadyCompletedCode uint32 = 9005
 func NewPromiseAlreadyCompletedFailure(name string) *Failure {
 	return &Failure{
 		Code:    PromiseAlreadyCompletedCode,
-		Message: fmt.Sprintf("reflow: promise %q already completed", name),
+		Message: fmt.Sprintf("reflw: promise %q already completed", name),
 	}
 }
 
@@ -122,7 +122,7 @@ func NewPromiseAlreadyCompletedFailure(name string) *Failure {
 func NewStepBudgetExhaustedFailure(used, max uint32) *Failure {
 	return &Failure{
 		Code:    StepBudgetExhaustedCode,
-		Message: fmt.Sprintf("reflow: step budget exhausted (%d/%d entries)", used, max),
+		Message: fmt.Sprintf("reflw: step budget exhausted (%d/%d entries)", used, max),
 	}
 }
 

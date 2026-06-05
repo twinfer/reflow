@@ -1,4 +1,4 @@
-// Package observability holds reflow's Prometheus collectors and slog helpers.
+// Package observability holds reflw's Prometheus collectors and slog helpers.
 package observability
 
 import (
@@ -6,7 +6,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// Metrics is the set of reflow-emitted Prometheus collectors. Each label
+// Metrics is the set of reflw-emitted Prometheus collectors. Each label
 // matches restate's labelling style (kind, is_leader) so dashboards built
 // against either system are roughly comparable.
 //
@@ -90,7 +90,7 @@ type Metrics struct {
 	PebbleDiskSlow prometheus.Counter
 }
 
-// NewMetrics builds reflow's collectors. Pass nil to use the default
+// NewMetrics builds reflw's collectors. Pass nil to use the default
 // registry.
 func NewMetrics(reg prometheus.Registerer) *Metrics {
 	if reg == nil {
@@ -99,99 +99,99 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	f := promauto.With(reg)
 	return &Metrics{
 		ApplyTotal: f.NewCounterVec(prometheus.CounterOpts{
-			Name: "reflow_partition_apply_total",
+			Name: "reflw_partition_apply_total",
 			Help: "Number of Raft commands applied by the partition state machine.",
 		}, []string{"kind", "is_leader"}),
 		ApplyDurationMs: f.NewHistogramVec(prometheus.HistogramOpts{
-			Name:    "reflow_partition_apply_duration_ms",
+			Name:    "reflw_partition_apply_duration_ms",
 			Help:    "Latency of partition apply per command, in milliseconds.",
 			Buckets: prometheus.ExponentialBuckets(0.5, 2, 14),
 		}, []string{"kind"}),
 		JournalAppended: f.NewCounterVec(prometheus.CounterOpts{
-			Name: "reflow_partition_journal_appended_total",
+			Name: "reflw_partition_journal_appended_total",
 			Help: "Number of journal entries written by the partition state machine.",
 		}, []string{"entry"}),
 		TimerFired: f.NewCounter(prometheus.CounterOpts{
-			Name: "reflow_partition_timer_fired_total",
+			Name: "reflw_partition_timer_fired_total",
 			Help: "Number of durable timers fired by the timer service.",
 		}),
 		DedupHits: f.NewCounter(prometheus.CounterOpts{
-			Name: "reflow_partition_dedup_hits_total",
+			Name: "reflw_partition_dedup_hits_total",
 			Help: "Number of Raft commands skipped because they were duplicates.",
 		}),
 		ListenerSecurityLevel: f.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "reflow_listener_security_level",
+			Name: "reflw_listener_security_level",
 			Help: "Transport security level per gRPC listener. 0=NoSecurity, 1=IntegrityOnly, 2=PrivacyAndIntegrity.",
 		}, []string{"listener", "driver"}),
 		InvocationsCompleted: f.NewCounterVec(prometheus.CounterOpts{
-			Name: "reflow_invocations_completed_total",
+			Name: "reflw_invocations_completed_total",
 			Help: "Invocations that reached the Completed status, classified by outcome (success, failure, cancelled, step_budget_exhausted).",
 		}, []string{"service", "outcome"}),
 		IngressRESTRequests: f.NewCounterVec(prometheus.CounterOpts{
-			Name: "reflow_ingress_rest_requests_total",
+			Name: "reflw_ingress_rest_requests_total",
 			Help: "HTTP requests served by the /v1/* REST ingress facade, labeled by chi route template, method, and status class.",
 		}, []string{"route", "method", "status"}),
 		RebalanceMode: f.NewGauge(prometheus.GaugeOpts{
-			Name: "reflow_rebalance_mode",
+			Name: "reflw_rebalance_mode",
 			Help: "Autonomous LP rebalancer mode. 0=off, 1=advisory, 2=auto. Stamped once at start.",
 		}),
 		RebalanceEngaged: f.NewGauge(prometheus.GaugeOpts{
-			Name: "reflow_rebalance_engaged",
+			Name: "reflw_rebalance_engaged",
 			Help: "1 when the rebalancer's hysteresis band has it engaged, 0 otherwise.",
 		}),
 		RebalanceSkewPct: f.NewGauge(prometheus.GaugeOpts{
-			Name: "reflow_rebalance_skew_pct",
+			Name: "reflw_rebalance_skew_pct",
 			Help: "Mis-placement percentage observed by the rebalancer on the most recent tick.",
 		}),
 		RebalanceLPsPerShard: f.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "reflow_rebalance_lps_per_shard",
+			Name: "reflw_rebalance_lps_per_shard",
 			Help: "Number of LPs currently owned by each partition shard.",
 		}, []string{"shard"}),
 		RebalancePendingTransfers: f.NewGauge(prometheus.GaugeOpts{
-			Name: "reflow_rebalance_pending_transfers",
+			Name: "reflw_rebalance_pending_transfers",
 			Help: "Count of non-terminal LP transfers on the most recent rebalancer tick.",
 		}),
 		RebalanceDrainedShards: f.NewGauge(prometheus.GaugeOpts{
-			Name: "reflow_rebalance_drained_shards",
+			Name: "reflw_rebalance_drained_shards",
 			Help: "Count of shards in the RebalanceDrainTable on the most recent rebalancer tick.",
 		}),
 		RebalanceDecisions: f.NewCounterVec(prometheus.CounterOpts{
-			Name: "reflow_rebalance_decisions_total",
+			Name: "reflw_rebalance_decisions_total",
 			Help: "Rebalancer decisions, classified by outcome and reason.",
 		}, []string{"outcome", "reason"}),
 		LPTransferSSTSizeBytes: f.NewHistogram(prometheus.HistogramOpts{
-			Name:    "reflow_lp_transfer_sst_size_bytes",
+			Name:    "reflw_lp_transfer_sst_size_bytes",
 			Help:    "Size of LP-transfer SSTs built on the source side, in bytes.",
 			Buckets: prometheus.ExponentialBuckets(4096, 4, 10),
 		}),
 		LPTransferSSTUploadSeconds: f.NewHistogram(prometheus.HistogramOpts{
-			Name:    "reflow_lp_transfer_sst_upload_seconds",
+			Name:    "reflw_lp_transfer_sst_upload_seconds",
 			Help:    "Duration of one fan-out SST upload (source → every dest_shard replica), in seconds.",
 			Buckets: prometheus.ExponentialBuckets(0.01, 2, 14),
 		}),
 		LPTransferSSTIngestSeconds: f.NewHistogram(prometheus.HistogramOpts{
-			Name:    "reflow_lp_transfer_sst_ingest_seconds",
+			Name:    "reflw_lp_transfer_sst_ingest_seconds",
 			Help:    "Duration of pebble.DB.Ingest on the dest replica, in seconds.",
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
 		}),
 		LPTransferSSTUploadErrors: f.NewCounter(prometheus.CounterOpts{
-			Name: "reflow_lp_transfer_sst_upload_errors_total",
+			Name: "reflw_lp_transfer_sst_upload_errors_total",
 			Help: "Fan-out upload failures from the source. A non-zero rate signals an unreachable replica, an integrity mismatch, or UploadTimeout elapse.",
 		}),
 		PebbleCompactions: f.NewCounter(prometheus.CounterOpts{
-			Name: "reflow_pebble_compactions_total",
+			Name: "reflw_pebble_compactions_total",
 			Help: "Completed Pebble compactions across every shard DB on this node.",
 		}),
 		PebbleFlushes: f.NewCounter(prometheus.CounterOpts{
-			Name: "reflow_pebble_flushes_total",
+			Name: "reflw_pebble_flushes_total",
 			Help: "Completed Pebble memtable flushes across every shard DB on this node.",
 		}),
 		PebbleWriteStalls: f.NewCounter(prometheus.CounterOpts{
-			Name: "reflow_pebble_write_stalls_total",
+			Name: "reflw_pebble_write_stalls_total",
 			Help: "Pebble write-stall onsets (memtable / L0 back-pressure) across every shard DB on this node.",
 		}),
 		PebbleDiskSlow: f.NewCounter(prometheus.CounterOpts{
-			Name: "reflow_pebble_disk_slow_total",
+			Name: "reflw_pebble_disk_slow_total",
 			Help: "Slow-disk events reported by Pebble health checks across every shard DB on this node.",
 		}),
 	}

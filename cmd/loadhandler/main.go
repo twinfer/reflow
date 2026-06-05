@@ -1,6 +1,6 @@
 // Command loadhandler is a test-only HTTP/2 (h2c) handler endpoint
 // used by the e2e chaos harness. It runs as a sidecar container on the
-// same docker network as a reflowd cluster and is registered as a
+// same docker network as a reflwd cluster and is registered as a
 // deployment via Config.RegisterDeployment after cluster bring-up.
 //
 // Hosts a single service `e2e.Echo` with a single handler `echo` that

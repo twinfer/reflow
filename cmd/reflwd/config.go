@@ -9,12 +9,12 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflw/pkg/reflowclient"
+	"github.com/twinfer/reflw/pkg/reflwclient"
 	configv1 "github.com/twinfer/reflw/proto/configv1"
 )
 
 // dispatchConfig routes "reflwd config <subcmd> ..." to the right
-// handler. All subcommands target the reflow.config.v1.Config service
+// handler. All subcommands target the reflw.config.v1.Config service
 // hosted on the same admin Connect listener as ClusterCtl.
 func dispatchConfig(ctx context.Context, args []string) error {
 	if len(args) == 0 {
@@ -84,7 +84,7 @@ func cmdRegisterDeployment(ctx context.Context, args []string) error {
 	if *invRetention < 0 || *wfRetention < 0 {
 		return errors.New("retention durations must be non-negative")
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
 		resp, err := cli.Config.RegisterDeployment(rctx, connect.NewRequest(&configv1.RegisterDeploymentRequest{
 			Url:                   *rawURL,
 			MaxJournalEntries:     uint32(*maxJournal),
@@ -117,7 +117,7 @@ func cmdUpsertClusterAuthzPolicy(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("read policy file: %w", err)
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
 		resp, err := cli.Config.UpsertClusterAuthzPolicy(rctx, connect.NewRequest(&configv1.UpsertClusterAuthzPolicyRequest{
 			PolicyText:        string(text),
 			IfTableRevisionEq: *ifRev,
@@ -139,7 +139,7 @@ func cmdGetClusterAuthzPolicy(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
 		resp, err := cli.Config.GetClusterAuthzPolicy(rctx, connect.NewRequest(&configv1.GetClusterAuthzPolicyRequest{}))
 		if err != nil {
 			return err

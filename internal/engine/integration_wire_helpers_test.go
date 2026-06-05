@@ -64,7 +64,7 @@ func (c connectFakeImpl) Invoke(_ context.Context, req *connect.Request[handlerv
 	return connect.NewResponse(&handlerv1.InvokeResponse{Frames: b.sent}), nil
 }
 
-// mountFakeHandler builds an http.Handler that mimics a real reflow
+// mountFakeHandler builds an http.Handler that mimics a real reflw
 // handler deployment: DiscoveryService.Discover returning the provided
 // DiscoveryResponse, and HandlerService.InvokeStream driven by session.
 // Used by every wire integration test in this package.

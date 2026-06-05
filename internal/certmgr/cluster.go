@@ -297,7 +297,7 @@ func (c *ClusterIssuer) Issue(_ context.Context, csr *x509.CertificateRequest) (
 }
 
 // IssuerKey implements certmagic.Issuer.
-func (c *ClusterIssuer) IssuerKey() string { return "reflow-cluster" }
+func (c *ClusterIssuer) IssuerKey() string { return "reflw-cluster" }
 
 // IssueForPrincipal signs csr against the active cluster CA but stamps
 // the CN to principalRaw (e.g. "node/7", "operator/alice") rather than

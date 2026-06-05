@@ -71,7 +71,7 @@ func (k Kind) IsWorkflow() bool {
 //
 // Construct one with NewRegistry, then call RegisterService /
 // RegisterObject / RegisterWorkflow for each (service, handler) pair
-// before passing it to reflow.Run. Registration is concurrency-safe, but
+// before passing it to reflw.Run. Registration is concurrency-safe, but
 // registration after Run starts is not visible to in-flight invocations
 // — the engine snapshots the lookup at session startup time.
 type Registry struct {

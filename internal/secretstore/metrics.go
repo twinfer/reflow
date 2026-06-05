@@ -47,43 +47,43 @@ type Metrics struct {
 // NewMetrics builds the secretstore collectors. Pass nil to use the
 // default registry. registerOrExisting* tolerates re-registration in
 // the same process (tests, eventsource Manager sharing the
-// reflow_config_* series).
+// reflw_config_* series).
 func NewMetrics(reg prometheus.Registerer) *Metrics {
 	if reg == nil {
 		reg = prometheus.DefaultRegisterer
 	}
 	return &Metrics{
 		ReconcileErrors: registerOrExistingCounterVec(reg, prometheus.CounterOpts{
-			Name: "reflow_secretstore_reconcile_errors_total",
+			Name: "reflw_secretstore_reconcile_errors_total",
 			Help: "SecretStore reconciler failures. Key=\"*\" for table-level read errors; key=<name> for per-secret errors.",
 		}, []string{"key"}),
 		TableRevision: registerOrExistingGauge(reg, prometheus.GaugeOpts{
-			Name: "reflow_secretstore_table_revision",
+			Name: "reflw_secretstore_table_revision",
 			Help: "Latest CAS revision the local SecretStore reconciler observed via SyncRead.",
 		}),
 		ResolveErrors: registerOrExistingCounterVec(reg, prometheus.CounterOpts{
-			Name: "reflow_secretstore_resolve_errors_total",
+			Name: "reflw_secretstore_resolve_errors_total",
 			Help: "Per-source SecretStore resolution failures. The reconciler preserves the previous resolved bytes on error rather than dropping the name. Per-name detail goes to logs to keep label cardinality bounded.",
 		}, []string{"source"}),
 		DecryptTotal: registerOrExistingCounterVec(reg, prometheus.CounterOpts{
-			Name: "reflow_secretstore_decrypt_total",
+			Name: "reflw_secretstore_decrypt_total",
 			Help: "Successful SecretStore remote_encrypted decrypts, labelled by KEK URI scheme.",
 		}, []string{"kek_scheme"}),
 		DecryptErrors: registerOrExistingCounterVec(reg, prometheus.CounterOpts{
-			Name: "reflow_secretstore_decrypt_errors_total",
+			Name: "reflw_secretstore_decrypt_errors_total",
 			Help: "Errors during SecretStore remote_encrypted resolution. Stage values: parse, blob_open, blob_fetch, kms_lookup, kms_get_aead, decrypt. Per-name detail goes to logs to keep label cardinality bounded.",
 		}, []string{"kek_scheme", "stage"}),
 		DecryptSeconds: registerOrExistingHistogramVec(reg, prometheus.HistogramOpts{
-			Name:    "reflow_secretstore_decrypt_seconds",
+			Name:    "reflw_secretstore_decrypt_seconds",
 			Help:    "End-to-end latency of SecretStore remote_encrypted resolution: blob fetch + KMS lookup + Decrypt. Buckets cover 1ms–2s.",
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 12),
 		}, []string{"kek_scheme"}),
 		CASignTotal: registerOrExistingCounterVec(reg, prometheus.CounterOpts{
-			Name: "reflow_pki_ca_sign_total",
+			Name: "reflw_pki_ca_sign_total",
 			Help: "Successful CA-signing-key lookups via LookupForCASigning. Each increment maps to one signing operation by certmgr.ClusterIssuer.",
 		}, []string{"name"}),
 		CASignErrors: registerOrExistingCounterVec(reg, prometheus.CounterOpts{
-			Name: "reflow_pki_ca_sign_errors_total",
+			Name: "reflw_pki_ca_sign_errors_total",
 			Help: "CA-signing-key lookup failures. Reasons: missing (no secret row), unresolved (resolve still pending or in error).",
 		}, []string{"name", "reason"}),
 	}

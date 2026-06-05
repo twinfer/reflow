@@ -61,7 +61,7 @@ func reRollSubnet() {
 // config.isValidAdvertiseAddress) can use the cluster-known IPs without
 // runtime resolution.
 //
-// Each container is attached with both a stable DNS alias (reflowd-node1,
+// Each container is attached with both a stable DNS alias (reflwd-node1,
 // loadhandler, ...) and a fixed IPv4 address. Raft + delivery use DNS
 // (they accept hostnames); gossip uses the IP form.
 //
@@ -106,9 +106,9 @@ func newDockerNetwork(t testing.TB) *testcontainers.DockerNetwork {
 	return nil
 }
 
-// nodeIP returns the static IPv4 address assigned to reflowd-node<N>
+// nodeIP returns the static IPv4 address assigned to reflwd-node<N>
 // within the cluster's docker network. Per-cluster octet ranges:
-// .11..99 reserved for reflowd nodes; .100+ for sidecars.
+// .11..99 reserved for reflwd nodes; .100+ for sidecars.
 func nodeIP(nodeID uint64) string {
 	processSubnetMu.Lock()
 	defer processSubnetMu.Unlock()

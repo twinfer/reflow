@@ -23,7 +23,7 @@ import (
 	"github.com/twinfer/reflw/internal/engine/handlerclient/connectclient"
 	"github.com/twinfer/reflw/pkg/handler"
 	"github.com/twinfer/reflw/pkg/handler/wire"
-	"github.com/twinfer/reflw/pkg/reflow/creds"
+	"github.com/twinfer/reflw/pkg/reflw/creds"
 	discoveryv1 "github.com/twinfer/reflw/proto/discoveryv1"
 	"github.com/twinfer/reflw/proto/discoveryv1/discoveryv1connect"
 	handlerv1 "github.com/twinfer/reflw/proto/handlerv1"
@@ -236,7 +236,7 @@ func invokeOne(t *testing.T, client handlerclient.Client, route wire.Route, inpu
 }
 
 // buildStartFrames builds the Start + Input frame pair the engine normally
-// sends. The reflow-internal wire_session is bypassed here, so the helper
+// sends. The reflw-internal wire_session is bypassed here, so the helper
 // does the encoding itself. known_entries=1 because the only replay frame
 // is the InputCommandMessage at slot 0.
 func buildStartFrames(t *testing.T, route wire.Route, input []byte) []*protocolv1.Frame {
@@ -368,7 +368,7 @@ func TestServer_AuthRejectsForeignCA(t *testing.T) {
 	defer tr.CloseIdleConnections()
 
 	req, _ := http.NewRequest(http.MethodPost,
-		"http://"+ln.Addr().String()+"/reflow.handler.v1.HandlerService/Invoke",
+		"http://"+ln.Addr().String()+"/reflw.handler.v1.HandlerService/Invoke",
 		strings.NewReader(""))
 	req.Header.Set("Authorization", "Bearer "+tok)
 	resp, err := hc.Do(req)

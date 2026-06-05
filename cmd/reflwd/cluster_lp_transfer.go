@@ -10,7 +10,7 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflw/pkg/reflowclient"
+	"github.com/twinfer/reflw/pkg/reflwclient"
 	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
 )
 
@@ -30,7 +30,7 @@ func cmdTransferLP(ctx context.Context, args []string) error {
 	if *destShard == 0 {
 		return errors.New("--to-shard is required (must be a partition shard id, not 0)")
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
 		resp, err := cli.Cluster.TransferLP(rctx, connect.NewRequest(&clusterctlv1.TransferLPRequest{
 			Lp:        uint32(*lp),
 			DestShard: *destShard,
@@ -54,7 +54,7 @@ func cmdListLPTransfers(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
+	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
 		resp, err := cli.Cluster.ListLPTransfers(ctx, connect.NewRequest(&clusterctlv1.ListLPTransfersRequest{}))
 		if err != nil {
 			return err

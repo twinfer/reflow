@@ -2,15 +2,15 @@
 //
 // ClusterCtl owns the *physical* cluster operations: node membership,
 // partition topology, DR snapshots, and LP routing transfers. It is
-// the cluster-admin counterpart to reflow.config.v1.Config (which owns
+// the cluster-admin counterpart to reflw.config.v1.Config (which owns
 // app config — handler deployments, event sources, webhooks, secrets).
 // The naming mirrors Restate, where `cluster-ctrl` is the
 // cluster-administrator surface and `admin` is the app-config surface.
 //
-// Every reflowd process hosts a ClusterCtl Connect RPC server on a
+// Every reflwd process hosts a ClusterCtl Connect RPC server on a
 // dedicated port (typically :8082). The server is mTLS-protected; the
 // caller's leaf CN encodes its principal Raw form (e.g.
-// `operator/<name>` for operators). The `reflowd cluster ...` CLI is
+// `operator/<name>` for operators). The `reflwd cluster ...` CLI is
 // the canonical client. SelfJoin has a narrower carve-out: it accepts
 // a `node/*` principal, but only when the principal's NodeID equals
 // req.node_id (defense in depth behind the path-based authz rule).
@@ -18,7 +18,7 @@
 // Authorization lives in internal/auth (the shared starter authz policy
 // consumed by both the gRPC delivery interceptor and the Connect HTTP
 // middleware). The starter policy restricts
-// /reflow.clusterctl.v1.ClusterCtl/* to principals matching
+// /reflw.clusterctl.v1.ClusterCtl/* to principals matching
 // "operator/*", with the SelfJoin carve-out described above.
 //
 // Mutating RPCs (AddNode, RemoveNode, TransferLP, CreateSnapshot,
@@ -52,7 +52,7 @@ const _ = connect.IsAtLeastVersion1_13_0
 
 const (
 	// ClusterCtlName is the fully-qualified name of the ClusterCtl service.
-	ClusterCtlName = "reflow.clusterctl.v1.ClusterCtl"
+	ClusterCtlName = "reflw.clusterctl.v1.ClusterCtl"
 )
 
 // These constants are the fully-qualified names of the RPCs defined in this package. They're
@@ -64,42 +64,42 @@ const (
 // period.
 const (
 	// ClusterCtlAddNodeProcedure is the fully-qualified name of the ClusterCtl's AddNode RPC.
-	ClusterCtlAddNodeProcedure = "/reflow.clusterctl.v1.ClusterCtl/AddNode"
+	ClusterCtlAddNodeProcedure = "/reflw.clusterctl.v1.ClusterCtl/AddNode"
 	// ClusterCtlSelfJoinProcedure is the fully-qualified name of the ClusterCtl's SelfJoin RPC.
-	ClusterCtlSelfJoinProcedure = "/reflow.clusterctl.v1.ClusterCtl/SelfJoin"
+	ClusterCtlSelfJoinProcedure = "/reflw.clusterctl.v1.ClusterCtl/SelfJoin"
 	// ClusterCtlRemoveNodeProcedure is the fully-qualified name of the ClusterCtl's RemoveNode RPC.
-	ClusterCtlRemoveNodeProcedure = "/reflow.clusterctl.v1.ClusterCtl/RemoveNode"
+	ClusterCtlRemoveNodeProcedure = "/reflw.clusterctl.v1.ClusterCtl/RemoveNode"
 	// ClusterCtlListNodesProcedure is the fully-qualified name of the ClusterCtl's ListNodes RPC.
-	ClusterCtlListNodesProcedure = "/reflow.clusterctl.v1.ClusterCtl/ListNodes"
+	ClusterCtlListNodesProcedure = "/reflw.clusterctl.v1.ClusterCtl/ListNodes"
 	// ClusterCtlListPartitionsProcedure is the fully-qualified name of the ClusterCtl's ListPartitions
 	// RPC.
-	ClusterCtlListPartitionsProcedure = "/reflow.clusterctl.v1.ClusterCtl/ListPartitions"
+	ClusterCtlListPartitionsProcedure = "/reflw.clusterctl.v1.ClusterCtl/ListPartitions"
 	// ClusterCtlNodeLeadershipProcedure is the fully-qualified name of the ClusterCtl's NodeLeadership
 	// RPC.
-	ClusterCtlNodeLeadershipProcedure = "/reflow.clusterctl.v1.ClusterCtl/NodeLeadership"
+	ClusterCtlNodeLeadershipProcedure = "/reflw.clusterctl.v1.ClusterCtl/NodeLeadership"
 	// ClusterCtlCreateSnapshotProcedure is the fully-qualified name of the ClusterCtl's CreateSnapshot
 	// RPC.
-	ClusterCtlCreateSnapshotProcedure = "/reflow.clusterctl.v1.ClusterCtl/CreateSnapshot"
+	ClusterCtlCreateSnapshotProcedure = "/reflw.clusterctl.v1.ClusterCtl/CreateSnapshot"
 	// ClusterCtlListSnapshotsProcedure is the fully-qualified name of the ClusterCtl's ListSnapshots
 	// RPC.
-	ClusterCtlListSnapshotsProcedure = "/reflow.clusterctl.v1.ClusterCtl/ListSnapshots"
+	ClusterCtlListSnapshotsProcedure = "/reflw.clusterctl.v1.ClusterCtl/ListSnapshots"
 	// ClusterCtlDeleteSnapshotProcedure is the fully-qualified name of the ClusterCtl's DeleteSnapshot
 	// RPC.
-	ClusterCtlDeleteSnapshotProcedure = "/reflow.clusterctl.v1.ClusterCtl/DeleteSnapshot"
+	ClusterCtlDeleteSnapshotProcedure = "/reflw.clusterctl.v1.ClusterCtl/DeleteSnapshot"
 	// ClusterCtlTransferLPProcedure is the fully-qualified name of the ClusterCtl's TransferLP RPC.
-	ClusterCtlTransferLPProcedure = "/reflow.clusterctl.v1.ClusterCtl/TransferLP"
+	ClusterCtlTransferLPProcedure = "/reflw.clusterctl.v1.ClusterCtl/TransferLP"
 	// ClusterCtlListLPTransfersProcedure is the fully-qualified name of the ClusterCtl's
 	// ListLPTransfers RPC.
-	ClusterCtlListLPTransfersProcedure = "/reflow.clusterctl.v1.ClusterCtl/ListLPTransfers"
+	ClusterCtlListLPTransfersProcedure = "/reflw.clusterctl.v1.ClusterCtl/ListLPTransfers"
 	// ClusterCtlRebalanceAdviseProcedure is the fully-qualified name of the ClusterCtl's
 	// RebalanceAdvise RPC.
-	ClusterCtlRebalanceAdviseProcedure = "/reflow.clusterctl.v1.ClusterCtl/RebalanceAdvise"
+	ClusterCtlRebalanceAdviseProcedure = "/reflw.clusterctl.v1.ClusterCtl/RebalanceAdvise"
 	// ClusterCtlRebalanceDrainProcedure is the fully-qualified name of the ClusterCtl's RebalanceDrain
 	// RPC.
-	ClusterCtlRebalanceDrainProcedure = "/reflow.clusterctl.v1.ClusterCtl/RebalanceDrain"
+	ClusterCtlRebalanceDrainProcedure = "/reflw.clusterctl.v1.ClusterCtl/RebalanceDrain"
 )
 
-// ClusterCtlClient is a client for the reflow.clusterctl.v1.ClusterCtl service.
+// ClusterCtlClient is a client for the reflw.clusterctl.v1.ClusterCtl service.
 type ClusterCtlClient interface {
 	// AddNode registers a new peer with shard 0 and enqueues a rebalance
 	// sequence to give the new node a non-voting replica of every
@@ -162,7 +162,7 @@ type ClusterCtlClient interface {
 	RebalanceDrain(context.Context, *connect.Request[clusterctlv1.RebalanceDrainRequest]) (*connect.Response[clusterctlv1.RebalanceDrainResponse], error)
 }
 
-// NewClusterCtlClient constructs a client for the reflow.clusterctl.v1.ClusterCtl service. By
+// NewClusterCtlClient constructs a client for the reflw.clusterctl.v1.ClusterCtl service. By
 // default, it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses,
 // and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the
 // connect.WithGRPC() or connect.WithGRPCWeb() options.
@@ -271,72 +271,72 @@ type clusterCtlClient struct {
 	rebalanceDrain  *connect.Client[clusterctlv1.RebalanceDrainRequest, clusterctlv1.RebalanceDrainResponse]
 }
 
-// AddNode calls reflow.clusterctl.v1.ClusterCtl.AddNode.
+// AddNode calls reflw.clusterctl.v1.ClusterCtl.AddNode.
 func (c *clusterCtlClient) AddNode(ctx context.Context, req *connect.Request[clusterctlv1.AddNodeRequest]) (*connect.Response[clusterctlv1.AddNodeResponse], error) {
 	return c.addNode.CallUnary(ctx, req)
 }
 
-// SelfJoin calls reflow.clusterctl.v1.ClusterCtl.SelfJoin.
+// SelfJoin calls reflw.clusterctl.v1.ClusterCtl.SelfJoin.
 func (c *clusterCtlClient) SelfJoin(ctx context.Context, req *connect.Request[clusterctlv1.AddNodeRequest]) (*connect.Response[clusterctlv1.AddNodeResponse], error) {
 	return c.selfJoin.CallUnary(ctx, req)
 }
 
-// RemoveNode calls reflow.clusterctl.v1.ClusterCtl.RemoveNode.
+// RemoveNode calls reflw.clusterctl.v1.ClusterCtl.RemoveNode.
 func (c *clusterCtlClient) RemoveNode(ctx context.Context, req *connect.Request[clusterctlv1.RemoveNodeRequest]) (*connect.Response[clusterctlv1.RemoveNodeResponse], error) {
 	return c.removeNode.CallUnary(ctx, req)
 }
 
-// ListNodes calls reflow.clusterctl.v1.ClusterCtl.ListNodes.
+// ListNodes calls reflw.clusterctl.v1.ClusterCtl.ListNodes.
 func (c *clusterCtlClient) ListNodes(ctx context.Context, req *connect.Request[clusterctlv1.ListNodesRequest]) (*connect.Response[clusterctlv1.ListNodesResponse], error) {
 	return c.listNodes.CallUnary(ctx, req)
 }
 
-// ListPartitions calls reflow.clusterctl.v1.ClusterCtl.ListPartitions.
+// ListPartitions calls reflw.clusterctl.v1.ClusterCtl.ListPartitions.
 func (c *clusterCtlClient) ListPartitions(ctx context.Context, req *connect.Request[clusterctlv1.ListPartitionsRequest]) (*connect.Response[clusterctlv1.ListPartitionsResponse], error) {
 	return c.listPartitions.CallUnary(ctx, req)
 }
 
-// NodeLeadership calls reflow.clusterctl.v1.ClusterCtl.NodeLeadership.
+// NodeLeadership calls reflw.clusterctl.v1.ClusterCtl.NodeLeadership.
 func (c *clusterCtlClient) NodeLeadership(ctx context.Context, req *connect.Request[clusterctlv1.NodeLeadershipRequest]) (*connect.Response[clusterctlv1.NodeLeadershipResponse], error) {
 	return c.nodeLeadership.CallUnary(ctx, req)
 }
 
-// CreateSnapshot calls reflow.clusterctl.v1.ClusterCtl.CreateSnapshot.
+// CreateSnapshot calls reflw.clusterctl.v1.ClusterCtl.CreateSnapshot.
 func (c *clusterCtlClient) CreateSnapshot(ctx context.Context, req *connect.Request[clusterctlv1.CreateSnapshotRequest]) (*connect.Response[clusterctlv1.CreateSnapshotResponse], error) {
 	return c.createSnapshot.CallUnary(ctx, req)
 }
 
-// ListSnapshots calls reflow.clusterctl.v1.ClusterCtl.ListSnapshots.
+// ListSnapshots calls reflw.clusterctl.v1.ClusterCtl.ListSnapshots.
 func (c *clusterCtlClient) ListSnapshots(ctx context.Context, req *connect.Request[clusterctlv1.ListSnapshotsRequest]) (*connect.Response[clusterctlv1.ListSnapshotsResponse], error) {
 	return c.listSnapshots.CallUnary(ctx, req)
 }
 
-// DeleteSnapshot calls reflow.clusterctl.v1.ClusterCtl.DeleteSnapshot.
+// DeleteSnapshot calls reflw.clusterctl.v1.ClusterCtl.DeleteSnapshot.
 func (c *clusterCtlClient) DeleteSnapshot(ctx context.Context, req *connect.Request[clusterctlv1.DeleteSnapshotRequest]) (*connect.Response[clusterctlv1.DeleteSnapshotResponse], error) {
 	return c.deleteSnapshot.CallUnary(ctx, req)
 }
 
-// TransferLP calls reflow.clusterctl.v1.ClusterCtl.TransferLP.
+// TransferLP calls reflw.clusterctl.v1.ClusterCtl.TransferLP.
 func (c *clusterCtlClient) TransferLP(ctx context.Context, req *connect.Request[clusterctlv1.TransferLPRequest]) (*connect.Response[clusterctlv1.TransferLPResponse], error) {
 	return c.transferLP.CallUnary(ctx, req)
 }
 
-// ListLPTransfers calls reflow.clusterctl.v1.ClusterCtl.ListLPTransfers.
+// ListLPTransfers calls reflw.clusterctl.v1.ClusterCtl.ListLPTransfers.
 func (c *clusterCtlClient) ListLPTransfers(ctx context.Context, req *connect.Request[clusterctlv1.ListLPTransfersRequest]) (*connect.Response[clusterctlv1.ListLPTransfersResponse], error) {
 	return c.listLPTransfers.CallUnary(ctx, req)
 }
 
-// RebalanceAdvise calls reflow.clusterctl.v1.ClusterCtl.RebalanceAdvise.
+// RebalanceAdvise calls reflw.clusterctl.v1.ClusterCtl.RebalanceAdvise.
 func (c *clusterCtlClient) RebalanceAdvise(ctx context.Context, req *connect.Request[clusterctlv1.RebalanceAdviseRequest]) (*connect.Response[clusterctlv1.RebalanceAdviseResponse], error) {
 	return c.rebalanceAdvise.CallUnary(ctx, req)
 }
 
-// RebalanceDrain calls reflow.clusterctl.v1.ClusterCtl.RebalanceDrain.
+// RebalanceDrain calls reflw.clusterctl.v1.ClusterCtl.RebalanceDrain.
 func (c *clusterCtlClient) RebalanceDrain(ctx context.Context, req *connect.Request[clusterctlv1.RebalanceDrainRequest]) (*connect.Response[clusterctlv1.RebalanceDrainResponse], error) {
 	return c.rebalanceDrain.CallUnary(ctx, req)
 }
 
-// ClusterCtlHandler is an implementation of the reflow.clusterctl.v1.ClusterCtl service.
+// ClusterCtlHandler is an implementation of the reflw.clusterctl.v1.ClusterCtl service.
 type ClusterCtlHandler interface {
 	// AddNode registers a new peer with shard 0 and enqueues a rebalance
 	// sequence to give the new node a non-voting replica of every
@@ -484,7 +484,7 @@ func NewClusterCtlHandler(svc ClusterCtlHandler, opts ...connect.HandlerOption) 
 		connect.WithSchema(clusterCtlMethods.ByName("RebalanceDrain")),
 		connect.WithHandlerOptions(opts...),
 	)
-	return "/reflow.clusterctl.v1.ClusterCtl/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return "/reflw.clusterctl.v1.ClusterCtl/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ClusterCtlAddNodeProcedure:
 			clusterCtlAddNodeHandler.ServeHTTP(w, r)
@@ -522,53 +522,53 @@ func NewClusterCtlHandler(svc ClusterCtlHandler, opts ...connect.HandlerOption) 
 type UnimplementedClusterCtlHandler struct{}
 
 func (UnimplementedClusterCtlHandler) AddNode(context.Context, *connect.Request[clusterctlv1.AddNodeRequest]) (*connect.Response[clusterctlv1.AddNodeResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.AddNode is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.clusterctl.v1.ClusterCtl.AddNode is not implemented"))
 }
 
 func (UnimplementedClusterCtlHandler) SelfJoin(context.Context, *connect.Request[clusterctlv1.AddNodeRequest]) (*connect.Response[clusterctlv1.AddNodeResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.SelfJoin is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.clusterctl.v1.ClusterCtl.SelfJoin is not implemented"))
 }
 
 func (UnimplementedClusterCtlHandler) RemoveNode(context.Context, *connect.Request[clusterctlv1.RemoveNodeRequest]) (*connect.Response[clusterctlv1.RemoveNodeResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.RemoveNode is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.clusterctl.v1.ClusterCtl.RemoveNode is not implemented"))
 }
 
 func (UnimplementedClusterCtlHandler) ListNodes(context.Context, *connect.Request[clusterctlv1.ListNodesRequest]) (*connect.Response[clusterctlv1.ListNodesResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.ListNodes is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.clusterctl.v1.ClusterCtl.ListNodes is not implemented"))
 }
 
 func (UnimplementedClusterCtlHandler) ListPartitions(context.Context, *connect.Request[clusterctlv1.ListPartitionsRequest]) (*connect.Response[clusterctlv1.ListPartitionsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.ListPartitions is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.clusterctl.v1.ClusterCtl.ListPartitions is not implemented"))
 }
 
 func (UnimplementedClusterCtlHandler) NodeLeadership(context.Context, *connect.Request[clusterctlv1.NodeLeadershipRequest]) (*connect.Response[clusterctlv1.NodeLeadershipResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.NodeLeadership is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.clusterctl.v1.ClusterCtl.NodeLeadership is not implemented"))
 }
 
 func (UnimplementedClusterCtlHandler) CreateSnapshot(context.Context, *connect.Request[clusterctlv1.CreateSnapshotRequest]) (*connect.Response[clusterctlv1.CreateSnapshotResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.CreateSnapshot is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.clusterctl.v1.ClusterCtl.CreateSnapshot is not implemented"))
 }
 
 func (UnimplementedClusterCtlHandler) ListSnapshots(context.Context, *connect.Request[clusterctlv1.ListSnapshotsRequest]) (*connect.Response[clusterctlv1.ListSnapshotsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.ListSnapshots is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.clusterctl.v1.ClusterCtl.ListSnapshots is not implemented"))
 }
 
 func (UnimplementedClusterCtlHandler) DeleteSnapshot(context.Context, *connect.Request[clusterctlv1.DeleteSnapshotRequest]) (*connect.Response[clusterctlv1.DeleteSnapshotResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.DeleteSnapshot is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.clusterctl.v1.ClusterCtl.DeleteSnapshot is not implemented"))
 }
 
 func (UnimplementedClusterCtlHandler) TransferLP(context.Context, *connect.Request[clusterctlv1.TransferLPRequest]) (*connect.Response[clusterctlv1.TransferLPResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.TransferLP is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.clusterctl.v1.ClusterCtl.TransferLP is not implemented"))
 }
 
 func (UnimplementedClusterCtlHandler) ListLPTransfers(context.Context, *connect.Request[clusterctlv1.ListLPTransfersRequest]) (*connect.Response[clusterctlv1.ListLPTransfersResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.ListLPTransfers is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.clusterctl.v1.ClusterCtl.ListLPTransfers is not implemented"))
 }
 
 func (UnimplementedClusterCtlHandler) RebalanceAdvise(context.Context, *connect.Request[clusterctlv1.RebalanceAdviseRequest]) (*connect.Response[clusterctlv1.RebalanceAdviseResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.RebalanceAdvise is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.clusterctl.v1.ClusterCtl.RebalanceAdvise is not implemented"))
 }
 
 func (UnimplementedClusterCtlHandler) RebalanceDrain(context.Context, *connect.Request[clusterctlv1.RebalanceDrainRequest]) (*connect.Response[clusterctlv1.RebalanceDrainResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.clusterctl.v1.ClusterCtl.RebalanceDrain is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.clusterctl.v1.ClusterCtl.RebalanceDrain is not implemented"))
 }

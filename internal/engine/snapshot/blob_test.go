@@ -276,7 +276,7 @@ func TestBlob_PrefixedBucket(t *testing.T) {
 	ctx := context.Background()
 	// gocloud's native ?prefix= URL parameter wraps the bucket with
 	// PrefixedBucket — keys land under the configured sub-folder.
-	bucket, err := blob.OpenBucket(ctx, "mem://?prefix=reflow/snaps/")
+	bucket, err := blob.OpenBucket(ctx, "mem://?prefix=reflw/snaps/")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

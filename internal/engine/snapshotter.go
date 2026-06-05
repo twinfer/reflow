@@ -31,7 +31,7 @@ type StoreFactory func(path string) (storage.Store, error)
 // owning host shuts down.
 //
 // RecoverFromSnapshot performs the close → swap → reopen dance that was
-// missing from the original reflow code (local_snapshotter.go:88 removed the
+// missing from the original reflw code (local_snapshotter.go:88 removed the
 // data dir while the DB was still open). On any failure mid-recover the
 // original dataDir is restored from the side-saved .old copy.
 type Snapshotter struct {

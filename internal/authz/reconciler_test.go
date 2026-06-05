@@ -28,7 +28,7 @@ func (f fakeReader) ClusterAuthzPolicy(_ context.Context) (string, uint64, error
 // Allow under the foundational (open-ingress) set, Deny under an
 // operator-only set. Used to observe which policy set is live.
 func anonSubmit(e *Engine) cedar.Decision {
-	return evalReq(e, "/reflow.ingress.v1.Ingress/SubmitInvocation",
+	return evalReq(e, "/reflw.ingress.v1.Ingress/SubmitInvocation",
 		auth.Principal{}, TypeInvocation, "svc", nil)
 }
 

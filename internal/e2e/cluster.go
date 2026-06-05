@@ -22,10 +22,10 @@ import (
 
 	"github.com/twinfer/reflw/internal/engine/routing"
 	"github.com/twinfer/reflw/internal/loadgen"
-	"github.com/twinfer/reflw/pkg/reflow/creds"
+	"github.com/twinfer/reflw/pkg/reflw/creds"
 )
 
-// Internal container ports — every reflowd container listens on these.
+// Internal container ports — every reflwd container listens on these.
 // Inter-container traffic stays inside the docker user-defined network;
 // only ingress and admin are host-mapped (so the test process can dial
 // them from outside).
@@ -37,7 +37,7 @@ const (
 	adminPort    = "8082"
 )
 
-// ContainerCluster owns the docker network and the per-node reflowd
+// ContainerCluster owns the docker network and the per-node reflwd
 // containers. Test code interacts with it the same way it does with
 // loadgen.Cluster today: pick a node, submit invocations, poll results.
 // Lifecycle chaos (KillNode) is rooted on ContainerNode.Kill; network
@@ -65,7 +65,7 @@ type ContainerCluster struct {
 	certs *meshCerts
 }
 
-// NewContainerCluster brings up an mTLS reflowd cluster with N nodes on a
+// NewContainerCluster brings up an mTLS reflwd cluster with N nodes on a
 // fresh docker network. Defaults: N=3, NumShards=1. Delivery + admin run mTLS
 // off a per-cluster CA (node/<id> + operator/e2e leaves) so the foundational
 // Cedar policy authorizes the mesh + admin without a permissive bootstrap
@@ -105,7 +105,7 @@ func NewContainerCluster(t *testing.T, opts ContainerClusterOptions) *ContainerC
 	defer cancel()
 
 	// Toxiproxy sidecars first when enabled — they must be listening
-	// before reflowd containers start, because dragonboat's first
+	// before reflwd containers start, because dragonboat's first
 	// gossip+raft exchange races to dial advertised RaftAddresses, and
 	// those addresses already point at the sidecars via ExtraHosts.
 	var tx *Toxiproxy
@@ -314,8 +314,8 @@ func (c *ContainerCluster) AwaitAnyPartitionLeader(ctx context.Context, timeout 
 	return fmt.Errorf("no partition leader elected within %s", timeout)
 }
 
-// startReflowdContainer brings up one reflowd node attached to nw with
-// stable DNS alias reflowd-node<N>, the shared cluster config
+// startReflowdContainer brings up one reflwd node attached to nw with
+// stable DNS alias reflwd-node<N>, the shared cluster config
 // bind-mounted, and per-node env vars layered on top. Blocks until the
 // ingress port becomes reachable (basic engine-boot signal); deeper
 // readiness (raft leader, deployment registered) is asserted at the
@@ -328,13 +328,13 @@ func (c *ContainerCluster) AwaitAnyPartitionLeader(ctx context.Context, timeout 
 // per-target proxies.
 func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *testcontainers.DockerNetwork, cfgPath, caCertPath, nodeCertPath, nodeKeyPath string, nodeID uint64, withToxiproxy bool, extraEnv map[string]string, operatorCreds creds.Spec) (*ContainerNode, error) {
 	t.Helper()
-	alias := fmt.Sprintf("reflowd-node%d", nodeID)
+	alias := fmt.Sprintf("reflwd-node%d", nodeID)
 	ip := nodeIP(nodeID)
 	raftAdvertisedDefault := fmt.Sprintf("%s:%s", alias, raftPort)
 	raftAdv := raftAdvertisedDefault
 	if withToxiproxy {
 		// Sidecar mode: publish a target-keyed hostname + per-node port
-		// so other reflowd containers route their outbound raft dial
+		// so other reflwd containers route their outbound raft dial
 		// through their own tox-from-* sidecar (see toxiproxy.go).
 		raftAdv = raftAdvertisedThrough(nodeID)
 	}
@@ -345,26 +345,26 @@ func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *
 		Cmd:          []string{"run"},
 		ExposedPorts: []string{ingressPort + "/tcp", adminPort + "/tcp"},
 		Env: map[string]string{
-			"REFLOW_CONFIG":                    "/etc/reflowd/config.yaml",
-			"REFLOW_NODE_ID":                   fmt.Sprintf("%d", nodeID),
-			"REFLOW_NODE_RAFT_ADDR":            fmt.Sprintf("0.0.0.0:%s", raftPort),
-			"REFLOW_NODE_RAFT_ADVERTISED_ADDR": raftAdv,
+			"REFLW_CONFIG":                    "/etc/reflwd/config.yaml",
+			"REFLW_NODE_ID":                   fmt.Sprintf("%d", nodeID),
+			"REFLW_NODE_RAFT_ADDR":            fmt.Sprintf("0.0.0.0:%s", raftPort),
+			"REFLW_NODE_RAFT_ADVERTISED_ADDR": raftAdv,
 			// Gossip uses a fixed IP because dragonboat's memberlist
 			// rejects hostnames in AdvertiseAddress
 			// (config.isValidAdvertiseAddress). Bind to all interfaces
 			// for inter-container traffic; advertise the static IPAM IP.
-			"REFLOW_NODE_GOSSIP_BIND_ADDR": fmt.Sprintf("0.0.0.0:%s", gossipPort),
-			"REFLOW_NODE_GOSSIP_ADV_ADDR":  fmt.Sprintf("%s:%s", ip, gossipPort),
-			"REFLOW_NODE_DELIVERY_ADDR":    fmt.Sprintf("%s:%s", alias, deliveryPort),
-			"REFLOW_INGRESS_ADDR":          fmt.Sprintf("0.0.0.0:%s", ingressPort),
-			"REFLOW_ADMIN_ADDR":            fmt.Sprintf("0.0.0.0:%s", adminPort),
-			"REFLOW_METRICS_DISABLED":      "true",
+			"REFLW_NODE_GOSSIP_BIND_ADDR": fmt.Sprintf("0.0.0.0:%s", gossipPort),
+			"REFLW_NODE_GOSSIP_ADV_ADDR":  fmt.Sprintf("%s:%s", ip, gossipPort),
+			"REFLW_NODE_DELIVERY_ADDR":    fmt.Sprintf("%s:%s", alias, deliveryPort),
+			"REFLW_INGRESS_ADDR":          fmt.Sprintf("0.0.0.0:%s", ingressPort),
+			"REFLW_ADMIN_ADDR":            fmt.Sprintf("0.0.0.0:%s", adminPort),
+			"REFLW_METRICS_DISABLED":      "true",
 		},
 		Files: []testcontainers.ContainerFile{
-			{HostFilePath: cfgPath, ContainerFilePath: "/etc/reflowd/config.yaml", FileMode: 0o644},
+			{HostFilePath: cfgPath, ContainerFilePath: "/etc/reflwd/config.yaml", FileMode: 0o644},
 			{HostFilePath: caCertPath, ContainerFilePath: containerCAPath, FileMode: 0o644},
 			{HostFilePath: nodeCertPath, ContainerFilePath: containerCrtPath, FileMode: 0o644},
-			// World-readable: testcontainers copies mounts as root, but reflowd
+			// World-readable: testcontainers copies mounts as root, but reflwd
 			// runs as the nonroot image user — a 0600 key would be unreadable
 			// and delivery/admin creds.Build would bail at startup. Ephemeral
 			// throwaway test key, so 0644 inside the container is fine.
@@ -374,15 +374,15 @@ func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *
 			WithStartupTimeout(2 * time.Minute),
 	}
 	// Per-test ExtraEnv overrides win against harness defaults. Used to
-	// inject REFLOW_REBALANCE_* knobs and similar subsystem toggles
+	// inject REFLW_REBALANCE_* knobs and similar subsystem toggles
 	// that aren't surfaced by a typed ContainerClusterOptions field.
 	for k, v := range extraEnv {
 		req.Env[k] = v
 	}
-	// Stream reflowd container output to t.Logf when REFLOW_E2E_LOGS=1.
+	// Stream reflwd container output to t.Logf when REFLW_E2E_LOGS=1.
 	// Surfaces dragonboat / engine logs needed to debug bring-up failures
 	// without leaving them on for every green run.
-	if os.Getenv("REFLOW_E2E_LOGS") == "1" {
+	if os.Getenv("REFLW_E2E_LOGS") == "1" {
 		req.LogConsumerCfg = &testcontainers.LogConsumerConfig{
 			Consumers: []testcontainers.LogConsumer{&tLogConsumer{t: t, prefix: alias}},
 		}
@@ -406,7 +406,7 @@ func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *
 	// In toxiproxy mode, redirect every peer-target-* hostname this
 	// container might dial (raft advertised hosts are peer-target-*)
 	// to this node's sidecar IP. The sidecar's per-target proxies
-	// then forward to the actual reflowd-node-* listener.
+	// then forward to the actual reflwd-node-* listener.
 	if withToxiproxy {
 		hosts := peerExtraHosts(nodeID)
 		gcr.HostConfigModifier = func(hc *mobycontainer.HostConfig) {
@@ -435,10 +435,10 @@ func startReflowdContainer(ctx context.Context, t *testing.T, image string, nw *
 // writeClusterConfigYAML writes the cluster-wide YAML config to a fresh
 // path under t.TempDir() and returns the path. Same file is mounted
 // into every node — per-node deltas (NODE_ID, advertised addrs) layer
-// on top via REFLOW_* env vars. When `withToxiproxy` is true the peer
+// on top via REFLW_* env vars. When `withToxiproxy` is true the peer
 // raft_addr field uses the per-target hostname (peer-target-N) that
 // ExtraHosts routes via the local sidecar; matches what each node
-// publishes via REFLOW_NODE_RAFT_ADVERTISED_ADDR.
+// publishes via REFLW_NODE_RAFT_ADVERTISED_ADDR.
 func writeClusterConfigYAML(t *testing.T, n int, numShards uint64, withToxiproxy bool) string {
 	t.Helper()
 	type peer struct {
@@ -453,7 +453,7 @@ func writeClusterConfigYAML(t *testing.T, n int, numShards uint64, withToxiproxy
 	data := tmplData{NumShards: numShards}
 	for i := 0; i < n; i++ {
 		id := uint64(i + 1)
-		raft := fmt.Sprintf("reflowd-node%d:%s", id, raftPort)
+		raft := fmt.Sprintf("reflwd-node%d:%s", id, raftPort)
 		if withToxiproxy {
 			raft = raftAdvertisedThrough(id)
 		}
@@ -476,7 +476,7 @@ func writeClusterConfigYAML(t *testing.T, n int, numShards uint64, withToxiproxy
 }
 
 // tLogConsumer routes container stdout/stderr to a *testing.T's Logf.
-// Used only when REFLOW_E2E_LOGS=1 — silent otherwise.
+// Used only when REFLW_E2E_LOGS=1 — silent otherwise.
 type tLogConsumer struct {
 	t      *testing.T
 	prefix string
@@ -498,21 +498,21 @@ ingress:
   creds:
     driver: tls
     tls:
-      ca_file: /etc/reflowd/certs/ca.crt
-      cert_file: /etc/reflowd/certs/node.crt
-      key_file: /etc/reflowd/certs/node.key
+      ca_file: /etc/reflwd/certs/ca.crt
+      cert_file: /etc/reflwd/certs/node.crt
+      key_file: /etc/reflwd/certs/node.key
 delivery:
   creds:
     driver: tls
     tls:
-      ca_file: /etc/reflowd/certs/ca.crt
-      cert_file: /etc/reflowd/certs/node.crt
-      key_file: /etc/reflowd/certs/node.key
+      ca_file: /etc/reflwd/certs/ca.crt
+      cert_file: /etc/reflwd/certs/node.crt
+      key_file: /etc/reflwd/certs/node.key
 admin:
   creds:
     driver: tls
     tls:
-      ca_file: /etc/reflowd/certs/ca.crt
-      cert_file: /etc/reflowd/certs/node.crt
-      key_file: /etc/reflowd/certs/node.key
+      ca_file: /etc/reflwd/certs/ca.crt
+      cert_file: /etc/reflwd/certs/node.crt
+      key_file: /etc/reflwd/certs/node.key
 `

@@ -2,15 +2,15 @@
 //
 // ClusterCtl owns the *physical* cluster operations: node membership,
 // partition topology, DR snapshots, and LP routing transfers. It is
-// the cluster-admin counterpart to reflow.config.v1.Config (which owns
+// the cluster-admin counterpart to reflw.config.v1.Config (which owns
 // app config — handler deployments, event sources, webhooks, secrets).
 // The naming mirrors Restate, where `cluster-ctrl` is the
 // cluster-administrator surface and `admin` is the app-config surface.
 //
-// Every reflowd process hosts a ClusterCtl Connect RPC server on a
+// Every reflwd process hosts a ClusterCtl Connect RPC server on a
 // dedicated port (typically :8082). The server is mTLS-protected; the
 // caller's leaf CN encodes its principal Raw form (e.g.
-// `operator/<name>` for operators). The `reflowd cluster ...` CLI is
+// `operator/<name>` for operators). The `reflwd cluster ...` CLI is
 // the canonical client. SelfJoin has a narrower carve-out: it accepts
 // a `node/*` principal, but only when the principal's NodeID equals
 // req.node_id (defense in depth behind the path-based authz rule).
@@ -18,7 +18,7 @@
 // Authorization lives in internal/auth (the shared starter authz policy
 // consumed by both the gRPC delivery interceptor and the Connect HTTP
 // middleware). The starter policy restricts
-// /reflow.clusterctl.v1.ClusterCtl/* to principals matching
+// /reflw.clusterctl.v1.ClusterCtl/* to principals matching
 // "operator/*", with the SelfJoin carve-out described above.
 //
 // Mutating RPCs (AddNode, RemoveNode, TransferLP, CreateSnapshot,
@@ -1430,7 +1430,7 @@ func (x *RebalanceDrainResponse) GetTableRevision() uint64 {
 // LeaderHint is attached as a connect.Error detail on
 // connect.CodeUnavailable returned by mutating ClusterCtl RPCs when
 // the receiving node is not the metadata leader. Clients (joiner's
-// SelfJoin caller and the `reflowd cluster ...` CLI) extract it, dial
+// SelfJoin caller and the `reflwd cluster ...` CLI) extract it, dial
 // admin_endpoint, retry.
 type LeaderHint struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1488,7 +1488,7 @@ var File_clusterctlv1_clusterctl_proto protoreflect.FileDescriptor
 
 const file_clusterctlv1_clusterctl_proto_rawDesc = "" +
 	"\n" +
-	"\x1dclusterctlv1/clusterctl.proto\x12\x14reflow.clusterctl.v1\x1a\x15enginev1/engine.proto\"\xae\x01\n" +
+	"\x1dclusterctlv1/clusterctl.proto\x12\x13reflw.clusterctl.v1\x1a\x15enginev1/engine.proto\"\xae\x01\n" +
 	"\x0eAddNodeRequest\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12\x1b\n" +
 	"\traft_addr\x18\x02 \x01(\tR\braftAddr\x12\x1f\n" +
@@ -1503,16 +1503,16 @@ const file_clusterctlv1_clusterctl_proto_rawDesc = "" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\"?\n" +
 	"\x12RemoveNodeResponse\x12)\n" +
 	"\x10assignment_epoch\x18\x01 \x01(\x04R\x0fassignmentEpoch\"\x12\n" +
-	"\x10ListNodesRequest\"K\n" +
-	"\x11ListNodesResponse\x126\n" +
-	"\x05nodes\x18\x01 \x03(\v2 .reflow.engine.v1.NodeMembershipR\x05nodes\"\x17\n" +
-	"\x15ListPartitionsRequest\"P\n" +
-	"\x16ListPartitionsResponse\x126\n" +
-	"\x05table\x18\x01 \x01(\v2 .reflow.engine.v1.PartitionTableR\x05table\"\x17\n" +
-	"\x15NodeLeadershipRequest\"c\n" +
-	"\x16NodeLeadershipResponse\x12I\n" +
+	"\x10ListNodesRequest\"J\n" +
+	"\x11ListNodesResponse\x125\n" +
+	"\x05nodes\x18\x01 \x03(\v2\x1f.reflw.engine.v1.NodeMembershipR\x05nodes\"\x17\n" +
+	"\x15ListPartitionsRequest\"O\n" +
+	"\x16ListPartitionsResponse\x125\n" +
+	"\x05table\x18\x01 \x01(\v2\x1f.reflw.engine.v1.PartitionTableR\x05table\"\x17\n" +
+	"\x15NodeLeadershipRequest\"b\n" +
+	"\x16NodeLeadershipResponse\x12H\n" +
 	"\n" +
-	"partitions\x18\x01 \x03(\v2).reflow.clusterctl.v1.PartitionLeadershipR\n" +
+	"partitions\x18\x01 \x03(\v2(.reflw.clusterctl.v1.PartitionLeadershipR\n" +
 	"partitions\"p\n" +
 	"\x13PartitionLeadership\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x12\x1b\n" +
@@ -1532,9 +1532,9 @@ const file_clusterctlv1_clusterctl_proto_rawDesc = "" +
 	"\x05index\x18\x02 \x01(\x04R\x05index\x12\x1d\n" +
 	"\n" +
 	"size_bytes\x18\x03 \x01(\x03R\tsizeBytes\x12+\n" +
-	"\x12created_at_unix_ms\x18\x04 \x01(\x03R\x0fcreatedAtUnixMs\"X\n" +
-	"\x15ListSnapshotsResponse\x12?\n" +
-	"\tsnapshots\x18\x01 \x03(\v2!.reflow.clusterctl.v1.SnapshotRefR\tsnapshots\"H\n" +
+	"\x12created_at_unix_ms\x18\x04 \x01(\x03R\x0fcreatedAtUnixMs\"W\n" +
+	"\x15ListSnapshotsResponse\x12>\n" +
+	"\tsnapshots\x18\x01 \x03(\v2 .reflw.clusterctl.v1.SnapshotRefR\tsnapshots\"H\n" +
 	"\x15DeleteSnapshotRequest\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x12\x14\n" +
 	"\x05index\x18\x02 \x01(\x04R\x05index\"\x18\n" +
@@ -1546,25 +1546,25 @@ const file_clusterctlv1_clusterctl_proto_rawDesc = "" +
 	"\x12TransferLPResponse\x12\x1f\n" +
 	"\vtransfer_id\x18\x01 \x01(\tR\n" +
 	"transferId\"\x18\n" +
-	"\x16ListLPTransfersRequest\"~\n" +
-	"\x17ListLPTransfersResponse\x12<\n" +
-	"\arecords\x18\x01 \x03(\v2\".reflow.engine.v1.LPTransferRecordR\arecords\x12%\n" +
+	"\x16ListLPTransfersRequest\"}\n" +
+	"\x17ListLPTransfersResponse\x12;\n" +
+	"\arecords\x18\x01 \x03(\v2!.reflw.engine.v1.LPTransferRecordR\arecords\x12%\n" +
 	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"Y\n" +
 	"\rRebalanceMove\x12\x0e\n" +
 	"\x02lp\x18\x01 \x01(\rR\x02lp\x12\x1d\n" +
 	"\n" +
 	"from_shard\x18\x02 \x01(\x04R\tfromShard\x12\x19\n" +
 	"\bto_shard\x18\x03 \x01(\x04R\atoShard\"\x18\n" +
-	"\x16RebalanceAdviseRequest\"\xbd\x03\n" +
+	"\x16RebalanceAdviseRequest\"\xbb\x03\n" +
 	"\x17RebalanceAdviseResponse\x12\x12\n" +
 	"\x04mode\x18\x01 \x01(\tR\x04mode\x12\x18\n" +
 	"\aengaged\x18\x02 \x01(\bR\aengaged\x12\x19\n" +
 	"\bskew_pct\x18\x03 \x01(\x01R\askewPct\x12\x1b\n" +
 	"\tin_flight\x18\x04 \x01(\rR\binFlight\x12%\n" +
 	"\x0eskipped_reason\x18\x05 \x01(\tR\rskippedReason\x12%\n" +
-	"\x0edrained_shards\x18\x06 \x03(\x04R\rdrainedShards\x12b\n" +
-	"\rlps_per_shard\x18\a \x03(\v2>.reflow.clusterctl.v1.RebalanceAdviseResponse.LpsPerShardEntryR\vlpsPerShard\x12J\n" +
-	"\x0ewould_transfer\x18\b \x03(\v2#.reflow.clusterctl.v1.RebalanceMoveR\rwouldTransfer\x1a>\n" +
+	"\x0edrained_shards\x18\x06 \x03(\x04R\rdrainedShards\x12a\n" +
+	"\rlps_per_shard\x18\a \x03(\v2=.reflw.clusterctl.v1.RebalanceAdviseResponse.LpsPerShardEntryR\vlpsPerShard\x12I\n" +
+	"\x0ewould_transfer\x18\b \x03(\v2\".reflw.clusterctl.v1.RebalanceMoveR\rwouldTransfer\x1a>\n" +
 	"\x10LpsPerShardEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x04R\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\rR\x05value:\x028\x01\"y\n" +
@@ -1577,25 +1577,25 @@ const file_clusterctlv1_clusterctl_proto_rawDesc = "" +
 	"\n" +
 	"LeaderHint\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12%\n" +
-	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\xc8\n" +
+	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\xae\n" +
 	"\n" +
 	"\n" +
-	"ClusterCtl\x12V\n" +
-	"\aAddNode\x12$.reflow.clusterctl.v1.AddNodeRequest\x1a%.reflow.clusterctl.v1.AddNodeResponse\x12W\n" +
-	"\bSelfJoin\x12$.reflow.clusterctl.v1.AddNodeRequest\x1a%.reflow.clusterctl.v1.AddNodeResponse\x12_\n" +
+	"ClusterCtl\x12T\n" +
+	"\aAddNode\x12#.reflw.clusterctl.v1.AddNodeRequest\x1a$.reflw.clusterctl.v1.AddNodeResponse\x12U\n" +
+	"\bSelfJoin\x12#.reflw.clusterctl.v1.AddNodeRequest\x1a$.reflw.clusterctl.v1.AddNodeResponse\x12]\n" +
 	"\n" +
-	"RemoveNode\x12'.reflow.clusterctl.v1.RemoveNodeRequest\x1a(.reflow.clusterctl.v1.RemoveNodeResponse\x12\\\n" +
-	"\tListNodes\x12&.reflow.clusterctl.v1.ListNodesRequest\x1a'.reflow.clusterctl.v1.ListNodesResponse\x12k\n" +
-	"\x0eListPartitions\x12+.reflow.clusterctl.v1.ListPartitionsRequest\x1a,.reflow.clusterctl.v1.ListPartitionsResponse\x12k\n" +
-	"\x0eNodeLeadership\x12+.reflow.clusterctl.v1.NodeLeadershipRequest\x1a,.reflow.clusterctl.v1.NodeLeadershipResponse\x12k\n" +
-	"\x0eCreateSnapshot\x12+.reflow.clusterctl.v1.CreateSnapshotRequest\x1a,.reflow.clusterctl.v1.CreateSnapshotResponse\x12h\n" +
-	"\rListSnapshots\x12*.reflow.clusterctl.v1.ListSnapshotsRequest\x1a+.reflow.clusterctl.v1.ListSnapshotsResponse\x12k\n" +
-	"\x0eDeleteSnapshot\x12+.reflow.clusterctl.v1.DeleteSnapshotRequest\x1a,.reflow.clusterctl.v1.DeleteSnapshotResponse\x12_\n" +
+	"RemoveNode\x12&.reflw.clusterctl.v1.RemoveNodeRequest\x1a'.reflw.clusterctl.v1.RemoveNodeResponse\x12Z\n" +
+	"\tListNodes\x12%.reflw.clusterctl.v1.ListNodesRequest\x1a&.reflw.clusterctl.v1.ListNodesResponse\x12i\n" +
+	"\x0eListPartitions\x12*.reflw.clusterctl.v1.ListPartitionsRequest\x1a+.reflw.clusterctl.v1.ListPartitionsResponse\x12i\n" +
+	"\x0eNodeLeadership\x12*.reflw.clusterctl.v1.NodeLeadershipRequest\x1a+.reflw.clusterctl.v1.NodeLeadershipResponse\x12i\n" +
+	"\x0eCreateSnapshot\x12*.reflw.clusterctl.v1.CreateSnapshotRequest\x1a+.reflw.clusterctl.v1.CreateSnapshotResponse\x12f\n" +
+	"\rListSnapshots\x12).reflw.clusterctl.v1.ListSnapshotsRequest\x1a*.reflw.clusterctl.v1.ListSnapshotsResponse\x12i\n" +
+	"\x0eDeleteSnapshot\x12*.reflw.clusterctl.v1.DeleteSnapshotRequest\x1a+.reflw.clusterctl.v1.DeleteSnapshotResponse\x12]\n" +
 	"\n" +
-	"TransferLP\x12'.reflow.clusterctl.v1.TransferLPRequest\x1a(.reflow.clusterctl.v1.TransferLPResponse\x12n\n" +
-	"\x0fListLPTransfers\x12,.reflow.clusterctl.v1.ListLPTransfersRequest\x1a-.reflow.clusterctl.v1.ListLPTransfersResponse\x12n\n" +
-	"\x0fRebalanceAdvise\x12,.reflow.clusterctl.v1.RebalanceAdviseRequest\x1a-.reflow.clusterctl.v1.RebalanceAdviseResponse\x12k\n" +
-	"\x0eRebalanceDrain\x12+.reflow.clusterctl.v1.RebalanceDrainRequest\x1a,.reflow.clusterctl.v1.RebalanceDrainResponseB:Z8github.com/twinfer/reflw/proto/clusterctlv1;clusterctlv1b\x06proto3"
+	"TransferLP\x12&.reflw.clusterctl.v1.TransferLPRequest\x1a'.reflw.clusterctl.v1.TransferLPResponse\x12l\n" +
+	"\x0fListLPTransfers\x12+.reflw.clusterctl.v1.ListLPTransfersRequest\x1a,.reflw.clusterctl.v1.ListLPTransfersResponse\x12l\n" +
+	"\x0fRebalanceAdvise\x12+.reflw.clusterctl.v1.RebalanceAdviseRequest\x1a,.reflw.clusterctl.v1.RebalanceAdviseResponse\x12i\n" +
+	"\x0eRebalanceDrain\x12*.reflw.clusterctl.v1.RebalanceDrainRequest\x1a+.reflw.clusterctl.v1.RebalanceDrainResponseB:Z8github.com/twinfer/reflw/proto/clusterctlv1;clusterctlv1b\x06proto3"
 
 var (
 	file_clusterctlv1_clusterctl_proto_rawDescOnce sync.Once
@@ -1611,73 +1611,73 @@ func file_clusterctlv1_clusterctl_proto_rawDescGZIP() []byte {
 
 var file_clusterctlv1_clusterctl_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_clusterctlv1_clusterctl_proto_goTypes = []any{
-	(*AddNodeRequest)(nil),            // 0: reflow.clusterctl.v1.AddNodeRequest
-	(*AddNodeResponse)(nil),           // 1: reflow.clusterctl.v1.AddNodeResponse
-	(*RemoveNodeRequest)(nil),         // 2: reflow.clusterctl.v1.RemoveNodeRequest
-	(*RemoveNodeResponse)(nil),        // 3: reflow.clusterctl.v1.RemoveNodeResponse
-	(*ListNodesRequest)(nil),          // 4: reflow.clusterctl.v1.ListNodesRequest
-	(*ListNodesResponse)(nil),         // 5: reflow.clusterctl.v1.ListNodesResponse
-	(*ListPartitionsRequest)(nil),     // 6: reflow.clusterctl.v1.ListPartitionsRequest
-	(*ListPartitionsResponse)(nil),    // 7: reflow.clusterctl.v1.ListPartitionsResponse
-	(*NodeLeadershipRequest)(nil),     // 8: reflow.clusterctl.v1.NodeLeadershipRequest
-	(*NodeLeadershipResponse)(nil),    // 9: reflow.clusterctl.v1.NodeLeadershipResponse
-	(*PartitionLeadership)(nil),       // 10: reflow.clusterctl.v1.PartitionLeadership
-	(*CreateSnapshotRequest)(nil),     // 11: reflow.clusterctl.v1.CreateSnapshotRequest
-	(*CreateSnapshotResponse)(nil),    // 12: reflow.clusterctl.v1.CreateSnapshotResponse
-	(*ListSnapshotsRequest)(nil),      // 13: reflow.clusterctl.v1.ListSnapshotsRequest
-	(*SnapshotRef)(nil),               // 14: reflow.clusterctl.v1.SnapshotRef
-	(*ListSnapshotsResponse)(nil),     // 15: reflow.clusterctl.v1.ListSnapshotsResponse
-	(*DeleteSnapshotRequest)(nil),     // 16: reflow.clusterctl.v1.DeleteSnapshotRequest
-	(*DeleteSnapshotResponse)(nil),    // 17: reflow.clusterctl.v1.DeleteSnapshotResponse
-	(*TransferLPRequest)(nil),         // 18: reflow.clusterctl.v1.TransferLPRequest
-	(*TransferLPResponse)(nil),        // 19: reflow.clusterctl.v1.TransferLPResponse
-	(*ListLPTransfersRequest)(nil),    // 20: reflow.clusterctl.v1.ListLPTransfersRequest
-	(*ListLPTransfersResponse)(nil),   // 21: reflow.clusterctl.v1.ListLPTransfersResponse
-	(*RebalanceMove)(nil),             // 22: reflow.clusterctl.v1.RebalanceMove
-	(*RebalanceAdviseRequest)(nil),    // 23: reflow.clusterctl.v1.RebalanceAdviseRequest
-	(*RebalanceAdviseResponse)(nil),   // 24: reflow.clusterctl.v1.RebalanceAdviseResponse
-	(*RebalanceDrainRequest)(nil),     // 25: reflow.clusterctl.v1.RebalanceDrainRequest
-	(*RebalanceDrainResponse)(nil),    // 26: reflow.clusterctl.v1.RebalanceDrainResponse
-	(*LeaderHint)(nil),                // 27: reflow.clusterctl.v1.LeaderHint
-	nil,                               // 28: reflow.clusterctl.v1.RebalanceAdviseResponse.LpsPerShardEntry
-	(*enginev1.NodeMembership)(nil),   // 29: reflow.engine.v1.NodeMembership
-	(*enginev1.PartitionTable)(nil),   // 30: reflow.engine.v1.PartitionTable
-	(*enginev1.LPTransferRecord)(nil), // 31: reflow.engine.v1.LPTransferRecord
+	(*AddNodeRequest)(nil),            // 0: reflw.clusterctl.v1.AddNodeRequest
+	(*AddNodeResponse)(nil),           // 1: reflw.clusterctl.v1.AddNodeResponse
+	(*RemoveNodeRequest)(nil),         // 2: reflw.clusterctl.v1.RemoveNodeRequest
+	(*RemoveNodeResponse)(nil),        // 3: reflw.clusterctl.v1.RemoveNodeResponse
+	(*ListNodesRequest)(nil),          // 4: reflw.clusterctl.v1.ListNodesRequest
+	(*ListNodesResponse)(nil),         // 5: reflw.clusterctl.v1.ListNodesResponse
+	(*ListPartitionsRequest)(nil),     // 6: reflw.clusterctl.v1.ListPartitionsRequest
+	(*ListPartitionsResponse)(nil),    // 7: reflw.clusterctl.v1.ListPartitionsResponse
+	(*NodeLeadershipRequest)(nil),     // 8: reflw.clusterctl.v1.NodeLeadershipRequest
+	(*NodeLeadershipResponse)(nil),    // 9: reflw.clusterctl.v1.NodeLeadershipResponse
+	(*PartitionLeadership)(nil),       // 10: reflw.clusterctl.v1.PartitionLeadership
+	(*CreateSnapshotRequest)(nil),     // 11: reflw.clusterctl.v1.CreateSnapshotRequest
+	(*CreateSnapshotResponse)(nil),    // 12: reflw.clusterctl.v1.CreateSnapshotResponse
+	(*ListSnapshotsRequest)(nil),      // 13: reflw.clusterctl.v1.ListSnapshotsRequest
+	(*SnapshotRef)(nil),               // 14: reflw.clusterctl.v1.SnapshotRef
+	(*ListSnapshotsResponse)(nil),     // 15: reflw.clusterctl.v1.ListSnapshotsResponse
+	(*DeleteSnapshotRequest)(nil),     // 16: reflw.clusterctl.v1.DeleteSnapshotRequest
+	(*DeleteSnapshotResponse)(nil),    // 17: reflw.clusterctl.v1.DeleteSnapshotResponse
+	(*TransferLPRequest)(nil),         // 18: reflw.clusterctl.v1.TransferLPRequest
+	(*TransferLPResponse)(nil),        // 19: reflw.clusterctl.v1.TransferLPResponse
+	(*ListLPTransfersRequest)(nil),    // 20: reflw.clusterctl.v1.ListLPTransfersRequest
+	(*ListLPTransfersResponse)(nil),   // 21: reflw.clusterctl.v1.ListLPTransfersResponse
+	(*RebalanceMove)(nil),             // 22: reflw.clusterctl.v1.RebalanceMove
+	(*RebalanceAdviseRequest)(nil),    // 23: reflw.clusterctl.v1.RebalanceAdviseRequest
+	(*RebalanceAdviseResponse)(nil),   // 24: reflw.clusterctl.v1.RebalanceAdviseResponse
+	(*RebalanceDrainRequest)(nil),     // 25: reflw.clusterctl.v1.RebalanceDrainRequest
+	(*RebalanceDrainResponse)(nil),    // 26: reflw.clusterctl.v1.RebalanceDrainResponse
+	(*LeaderHint)(nil),                // 27: reflw.clusterctl.v1.LeaderHint
+	nil,                               // 28: reflw.clusterctl.v1.RebalanceAdviseResponse.LpsPerShardEntry
+	(*enginev1.NodeMembership)(nil),   // 29: reflw.engine.v1.NodeMembership
+	(*enginev1.PartitionTable)(nil),   // 30: reflw.engine.v1.PartitionTable
+	(*enginev1.LPTransferRecord)(nil), // 31: reflw.engine.v1.LPTransferRecord
 }
 var file_clusterctlv1_clusterctl_proto_depIdxs = []int32{
-	29, // 0: reflow.clusterctl.v1.ListNodesResponse.nodes:type_name -> reflow.engine.v1.NodeMembership
-	30, // 1: reflow.clusterctl.v1.ListPartitionsResponse.table:type_name -> reflow.engine.v1.PartitionTable
-	10, // 2: reflow.clusterctl.v1.NodeLeadershipResponse.partitions:type_name -> reflow.clusterctl.v1.PartitionLeadership
-	14, // 3: reflow.clusterctl.v1.ListSnapshotsResponse.snapshots:type_name -> reflow.clusterctl.v1.SnapshotRef
-	31, // 4: reflow.clusterctl.v1.ListLPTransfersResponse.records:type_name -> reflow.engine.v1.LPTransferRecord
-	28, // 5: reflow.clusterctl.v1.RebalanceAdviseResponse.lps_per_shard:type_name -> reflow.clusterctl.v1.RebalanceAdviseResponse.LpsPerShardEntry
-	22, // 6: reflow.clusterctl.v1.RebalanceAdviseResponse.would_transfer:type_name -> reflow.clusterctl.v1.RebalanceMove
-	0,  // 7: reflow.clusterctl.v1.ClusterCtl.AddNode:input_type -> reflow.clusterctl.v1.AddNodeRequest
-	0,  // 8: reflow.clusterctl.v1.ClusterCtl.SelfJoin:input_type -> reflow.clusterctl.v1.AddNodeRequest
-	2,  // 9: reflow.clusterctl.v1.ClusterCtl.RemoveNode:input_type -> reflow.clusterctl.v1.RemoveNodeRequest
-	4,  // 10: reflow.clusterctl.v1.ClusterCtl.ListNodes:input_type -> reflow.clusterctl.v1.ListNodesRequest
-	6,  // 11: reflow.clusterctl.v1.ClusterCtl.ListPartitions:input_type -> reflow.clusterctl.v1.ListPartitionsRequest
-	8,  // 12: reflow.clusterctl.v1.ClusterCtl.NodeLeadership:input_type -> reflow.clusterctl.v1.NodeLeadershipRequest
-	11, // 13: reflow.clusterctl.v1.ClusterCtl.CreateSnapshot:input_type -> reflow.clusterctl.v1.CreateSnapshotRequest
-	13, // 14: reflow.clusterctl.v1.ClusterCtl.ListSnapshots:input_type -> reflow.clusterctl.v1.ListSnapshotsRequest
-	16, // 15: reflow.clusterctl.v1.ClusterCtl.DeleteSnapshot:input_type -> reflow.clusterctl.v1.DeleteSnapshotRequest
-	18, // 16: reflow.clusterctl.v1.ClusterCtl.TransferLP:input_type -> reflow.clusterctl.v1.TransferLPRequest
-	20, // 17: reflow.clusterctl.v1.ClusterCtl.ListLPTransfers:input_type -> reflow.clusterctl.v1.ListLPTransfersRequest
-	23, // 18: reflow.clusterctl.v1.ClusterCtl.RebalanceAdvise:input_type -> reflow.clusterctl.v1.RebalanceAdviseRequest
-	25, // 19: reflow.clusterctl.v1.ClusterCtl.RebalanceDrain:input_type -> reflow.clusterctl.v1.RebalanceDrainRequest
-	1,  // 20: reflow.clusterctl.v1.ClusterCtl.AddNode:output_type -> reflow.clusterctl.v1.AddNodeResponse
-	1,  // 21: reflow.clusterctl.v1.ClusterCtl.SelfJoin:output_type -> reflow.clusterctl.v1.AddNodeResponse
-	3,  // 22: reflow.clusterctl.v1.ClusterCtl.RemoveNode:output_type -> reflow.clusterctl.v1.RemoveNodeResponse
-	5,  // 23: reflow.clusterctl.v1.ClusterCtl.ListNodes:output_type -> reflow.clusterctl.v1.ListNodesResponse
-	7,  // 24: reflow.clusterctl.v1.ClusterCtl.ListPartitions:output_type -> reflow.clusterctl.v1.ListPartitionsResponse
-	9,  // 25: reflow.clusterctl.v1.ClusterCtl.NodeLeadership:output_type -> reflow.clusterctl.v1.NodeLeadershipResponse
-	12, // 26: reflow.clusterctl.v1.ClusterCtl.CreateSnapshot:output_type -> reflow.clusterctl.v1.CreateSnapshotResponse
-	15, // 27: reflow.clusterctl.v1.ClusterCtl.ListSnapshots:output_type -> reflow.clusterctl.v1.ListSnapshotsResponse
-	17, // 28: reflow.clusterctl.v1.ClusterCtl.DeleteSnapshot:output_type -> reflow.clusterctl.v1.DeleteSnapshotResponse
-	19, // 29: reflow.clusterctl.v1.ClusterCtl.TransferLP:output_type -> reflow.clusterctl.v1.TransferLPResponse
-	21, // 30: reflow.clusterctl.v1.ClusterCtl.ListLPTransfers:output_type -> reflow.clusterctl.v1.ListLPTransfersResponse
-	24, // 31: reflow.clusterctl.v1.ClusterCtl.RebalanceAdvise:output_type -> reflow.clusterctl.v1.RebalanceAdviseResponse
-	26, // 32: reflow.clusterctl.v1.ClusterCtl.RebalanceDrain:output_type -> reflow.clusterctl.v1.RebalanceDrainResponse
+	29, // 0: reflw.clusterctl.v1.ListNodesResponse.nodes:type_name -> reflw.engine.v1.NodeMembership
+	30, // 1: reflw.clusterctl.v1.ListPartitionsResponse.table:type_name -> reflw.engine.v1.PartitionTable
+	10, // 2: reflw.clusterctl.v1.NodeLeadershipResponse.partitions:type_name -> reflw.clusterctl.v1.PartitionLeadership
+	14, // 3: reflw.clusterctl.v1.ListSnapshotsResponse.snapshots:type_name -> reflw.clusterctl.v1.SnapshotRef
+	31, // 4: reflw.clusterctl.v1.ListLPTransfersResponse.records:type_name -> reflw.engine.v1.LPTransferRecord
+	28, // 5: reflw.clusterctl.v1.RebalanceAdviseResponse.lps_per_shard:type_name -> reflw.clusterctl.v1.RebalanceAdviseResponse.LpsPerShardEntry
+	22, // 6: reflw.clusterctl.v1.RebalanceAdviseResponse.would_transfer:type_name -> reflw.clusterctl.v1.RebalanceMove
+	0,  // 7: reflw.clusterctl.v1.ClusterCtl.AddNode:input_type -> reflw.clusterctl.v1.AddNodeRequest
+	0,  // 8: reflw.clusterctl.v1.ClusterCtl.SelfJoin:input_type -> reflw.clusterctl.v1.AddNodeRequest
+	2,  // 9: reflw.clusterctl.v1.ClusterCtl.RemoveNode:input_type -> reflw.clusterctl.v1.RemoveNodeRequest
+	4,  // 10: reflw.clusterctl.v1.ClusterCtl.ListNodes:input_type -> reflw.clusterctl.v1.ListNodesRequest
+	6,  // 11: reflw.clusterctl.v1.ClusterCtl.ListPartitions:input_type -> reflw.clusterctl.v1.ListPartitionsRequest
+	8,  // 12: reflw.clusterctl.v1.ClusterCtl.NodeLeadership:input_type -> reflw.clusterctl.v1.NodeLeadershipRequest
+	11, // 13: reflw.clusterctl.v1.ClusterCtl.CreateSnapshot:input_type -> reflw.clusterctl.v1.CreateSnapshotRequest
+	13, // 14: reflw.clusterctl.v1.ClusterCtl.ListSnapshots:input_type -> reflw.clusterctl.v1.ListSnapshotsRequest
+	16, // 15: reflw.clusterctl.v1.ClusterCtl.DeleteSnapshot:input_type -> reflw.clusterctl.v1.DeleteSnapshotRequest
+	18, // 16: reflw.clusterctl.v1.ClusterCtl.TransferLP:input_type -> reflw.clusterctl.v1.TransferLPRequest
+	20, // 17: reflw.clusterctl.v1.ClusterCtl.ListLPTransfers:input_type -> reflw.clusterctl.v1.ListLPTransfersRequest
+	23, // 18: reflw.clusterctl.v1.ClusterCtl.RebalanceAdvise:input_type -> reflw.clusterctl.v1.RebalanceAdviseRequest
+	25, // 19: reflw.clusterctl.v1.ClusterCtl.RebalanceDrain:input_type -> reflw.clusterctl.v1.RebalanceDrainRequest
+	1,  // 20: reflw.clusterctl.v1.ClusterCtl.AddNode:output_type -> reflw.clusterctl.v1.AddNodeResponse
+	1,  // 21: reflw.clusterctl.v1.ClusterCtl.SelfJoin:output_type -> reflw.clusterctl.v1.AddNodeResponse
+	3,  // 22: reflw.clusterctl.v1.ClusterCtl.RemoveNode:output_type -> reflw.clusterctl.v1.RemoveNodeResponse
+	5,  // 23: reflw.clusterctl.v1.ClusterCtl.ListNodes:output_type -> reflw.clusterctl.v1.ListNodesResponse
+	7,  // 24: reflw.clusterctl.v1.ClusterCtl.ListPartitions:output_type -> reflw.clusterctl.v1.ListPartitionsResponse
+	9,  // 25: reflw.clusterctl.v1.ClusterCtl.NodeLeadership:output_type -> reflw.clusterctl.v1.NodeLeadershipResponse
+	12, // 26: reflw.clusterctl.v1.ClusterCtl.CreateSnapshot:output_type -> reflw.clusterctl.v1.CreateSnapshotResponse
+	15, // 27: reflw.clusterctl.v1.ClusterCtl.ListSnapshots:output_type -> reflw.clusterctl.v1.ListSnapshotsResponse
+	17, // 28: reflw.clusterctl.v1.ClusterCtl.DeleteSnapshot:output_type -> reflw.clusterctl.v1.DeleteSnapshotResponse
+	19, // 29: reflw.clusterctl.v1.ClusterCtl.TransferLP:output_type -> reflw.clusterctl.v1.TransferLPResponse
+	21, // 30: reflw.clusterctl.v1.ClusterCtl.ListLPTransfers:output_type -> reflw.clusterctl.v1.ListLPTransfersResponse
+	24, // 31: reflw.clusterctl.v1.ClusterCtl.RebalanceAdvise:output_type -> reflw.clusterctl.v1.RebalanceAdviseResponse
+	26, // 32: reflw.clusterctl.v1.ClusterCtl.RebalanceDrain:output_type -> reflw.clusterctl.v1.RebalanceDrainResponse
 	20, // [20:33] is the sub-list for method output_type
 	7,  // [7:20] is the sub-list for method input_type
 	7,  // [7:7] is the sub-list for extension type_name

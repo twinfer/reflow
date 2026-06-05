@@ -16,12 +16,12 @@ import (
 
 // UpsertModel validates a BPMN/CMMN model definition and proposes
 // Command_UpsertModel to shard 0's ModelTable. Validation runs through the
-// injected s.validateModel: when the process plane is enabled pkg/reflow wires
-// iflowengine.ValidateModel (real parse + static validation), so a
+// injected s.validateModel: when the process plane is enabled pkg/reflw wires
+// processengine.ValidateModel (real parse + static validation), so a
 // structurally-broken model is rejected here with InvalidArgument instead of
 // being committed to Raft and failing silently per-node at reconcile. Without
 // the process plane it falls back to a shallow well-formed-XML check (config
-// must not depend on iflow). The per-node TableResolver parse stays as
+// must not depend on reflwos). The per-node TableResolver parse stays as
 // defense-in-depth for version skew. CAS via if_table_revision_eq.
 func (s *Server) UpsertModel(ctx context.Context, req *connect.Request[configv1.UpsertModelRequest]) (*connect.Response[configv1.UpsertModelResponse], error) {
 	if err := s.requireLeader(); err != nil {
@@ -143,18 +143,18 @@ func (s *Server) readModelRevision(ctx context.Context) (uint64, error) {
 	return list.TableRevision, nil
 }
 
-// validateModelXML is the fallback gate when no iflow-backed validator is
+// validateModelXML is the fallback gate when no reflwos-backed validator is
 // injected (process plane disabled): kind must be bpmn or cmmn and the bytes
 // must be well-formed XML. It deliberately does NOT semantically parse BPMN/CMMN
-// (that would couple config to iflow). With the process plane on, pkg/reflow
-// injects iflowengine.ValidateModel instead, which catches structural defects
+// (that would couple config to reflwos). With the process plane on, pkg/reflw
+// injects processengine.ValidateModel instead, which catches structural defects
 // this check cannot. Signature matches that injected func so the two are
 // interchangeable in NewServer.
 // validateBundle structurally checks a model's ref-resolution bundle: decision
 // refs must name a dmn model, child refs a bpmn/cmmn model, and every ref must
 // carry a name. It does NOT consult the table (cross-row existence is resolved
 // per-node by the TableResolver) nor parse the model — pure proto checks, so
-// config stays iflow-free. A nil/empty bundle is valid.
+// config stays reflwos-free. A nil/empty bundle is valid.
 func validateBundle(b *enginev1.ModelBundle) error {
 	if b == nil {
 		return nil

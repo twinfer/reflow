@@ -8,7 +8,7 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflw/pkg/reflowclient"
+	"github.com/twinfer/reflw/pkg/reflwclient"
 	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
@@ -32,7 +32,7 @@ func cmdPurgeInvocation(ctx context.Context, args []string) error {
 	if *id == "" {
 		return errors.New("--id is required")
 	}
-	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
+	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
 		resp, err := cli.Ingress.PurgeInvocation(ctx, connect.NewRequest(&ingressv1.PurgeInvocationRequest{
 			InvocationId: *id,
 		}))

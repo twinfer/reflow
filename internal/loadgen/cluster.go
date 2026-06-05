@@ -1,4 +1,4 @@
-// Package loadgen wires up reflow engine clusters for the load and
+// Package loadgen wires up reflw engine clusters for the load and
 // chaos harness.
 //
 // Production code does not import this package. The cluster bootstrap
@@ -90,7 +90,7 @@ type Node interface {
 	Kill()
 }
 
-// InProcessNode owns one in-process reflowd node: the engine Host, the
+// InProcessNode owns one in-process reflwd node: the engine Host, the
 // Delivery Connect server / listener, and the pooled Delivery client the
 // host's outbox uses for cross-shard dispatch. Implements Node.
 type InProcessNode struct {
@@ -107,7 +107,7 @@ type InProcessNode struct {
 	raftAddr       string
 	// pebbleCache / pebbleFileCache are this node's shared Pebble caches
 	// (nil when the test supplied its own PebbleOptions). Unref'd in
-	// Close after Host.Close, mirroring the production pkg/reflow path.
+	// Close after Host.Close, mirroring the production pkg/reflw path.
 	pebbleCache     *pebble.Cache
 	pebbleFileCache *pebble.FileCache
 }
@@ -283,7 +283,7 @@ func (c *Cluster) Close() {
 // has a leader on some node. Mirrors the production bootstrap
 // staging order — Hosts → Delivery clients → Delivery servers →
 // shards — so the harness exercises the same wiring path as
-// pkg/reflow.Run.
+// pkg/reflw.Run.
 func NewCluster(t testing.TB, opts ClusterOptions) *Cluster {
 	t.Helper()
 	if opts.N <= 0 {
@@ -376,7 +376,7 @@ func NewCluster(t testing.TB, opts ClusterOptions) *Cluster {
 // AwaitAnyMetadataLeader blocks until some node leads shard 0. Reaches
 // into the engine-internal MetadataRunner on in-process nodes; non
 // in-process nodes are skipped, and callers in that path rely on
-// AwaitAnyPartitionLeader as the convergence proxy — pkg/reflow.Run
+// AwaitAnyPartitionLeader as the convergence proxy — pkg/reflw.Run
 // sequences metadata → partitions internally, so any partition leader
 // implies metadata has converged.
 func (c *Cluster) AwaitAnyMetadataLeader(ctx context.Context) error {

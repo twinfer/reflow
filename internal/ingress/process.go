@@ -17,7 +17,7 @@ import (
 	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
-// StartProcess launches a new iflow BPMN/CMMN instance. It routes by
+// StartProcess launches a new reflwos BPMN/CMMN instance. It routes by
 // (model name, instance_key) — the same scheme the worker's
 // procSession and ChildStart use — and proposes a start ProcessEvent (model_ref
 // + kind set, which makes the apply path create the instance record). When the

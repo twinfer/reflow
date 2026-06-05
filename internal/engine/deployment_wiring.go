@@ -209,7 +209,7 @@ func newHandlerRegistry(signer handlerclient.Signer, inprocDialer handlerclient.
 
 // HandlerClients exposes the handlerclient registry so operators can
 // install custom dialers or codecs in their own bootstrap (before
-// remote deployments are registered). The reflowd binary uses the
+// remote deployments are registered). The reflwd binary uses the
 // defaults from newHandlerRegistry.
 func (h *Host) HandlerClients() *handlerclient.Registry {
 	return h.handlerRegistry

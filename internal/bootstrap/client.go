@@ -45,7 +45,7 @@ type JoinOptions struct {
 	// Addr is the bootstrap listener address (e.g. "node1.example.com:8443").
 	Addr string
 	// Token is the plaintext join token printed by
-	// `reflowd config create-join-token`.
+	// `reflwd config create-join-token`.
 	Token string
 	// Kind is "node" or "operator" — determines the CSR CN prefix and
 	// (for operator tokens) the requested name.

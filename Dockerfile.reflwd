@@ -34,8 +34,8 @@ COPY --from=builder /out/reflwd /reflwd
 # Distroless nonroot is UID 65532; /home/nonroot is the canonical
 # writable location for that user. Chaos tests that need persistence
 # across SIGKILL bind-mount a host dir on top via testcontainers
-# Mounts — REFLOW_STORAGE_DATA_DIR overrides this default anyway.
-ENV REFLOW_STORAGE_DATA_DIR=/home/nonroot/reflow
+# Mounts — REFLW_STORAGE_DATA_DIR overrides this default anyway.
+ENV REFLW_STORAGE_DATA_DIR=/home/nonroot/reflow
 
 ENTRYPOINT ["/reflwd"]
 CMD ["run"]

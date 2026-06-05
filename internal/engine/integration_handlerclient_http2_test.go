@@ -52,7 +52,7 @@ func callRegisterDeployment(ctx context.Context, srv *config.Server, url string)
 // round-trip + deployment-swap tests. Two endpoints:
 //
 //   - GET /discover                                    → DiscoveryResponse
-//   - POST /reflow.handler.v1.HandlerService/InvokeStream → Connect bidi
+//   - POST /reflw.handler.v1.HandlerService/InvokeStream → Connect bidi
 //     reads the engine's StartMessage frame, writes OutputCommandMessage
 //     and EndMessage frames back, then drains the request stream.
 //

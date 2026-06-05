@@ -1,5 +1,5 @@
 // Package storage defines the byte-level key/value abstraction backing a
-// reflow partition. Each partition owns its own Store; isolation is at the DB
+// reflw partition. Each partition owns its own Store; isolation is at the DB
 // level, so keys do NOT carry a partition_id prefix (see internal/storage/keys).
 package storage
 

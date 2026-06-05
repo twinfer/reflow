@@ -13,14 +13,14 @@ import (
 // action id is the bare method name (procmap.go); evalReq and ic.authorize both
 // resolve these through actionEntity.
 const (
-	actRegisterDeployment = "/reflow.config.v1.Config/RegisterDeployment"
-	actAddNode            = "/reflow.clusterctl.v1.ClusterCtl/AddNode"
-	actSelfJoin           = "/reflow.clusterctl.v1.ClusterCtl/SelfJoin"
-	actDeliver            = "/reflow.delivery.v1.Delivery/Deliver"
-	actUploadSST          = "/reflow.delivery.v1.Delivery/UploadLPTransferSST"
-	actSubmitInvocation   = "/reflow.ingress.v1.Ingress/SubmitInvocation"
-	actAwaitInvocation    = "/reflow.ingress.v1.Ingress/AwaitInvocation"
-	actPurgeInvocation    = "/reflow.ingress.v1.Ingress/PurgeInvocation"
+	actRegisterDeployment = "/reflw.config.v1.Config/RegisterDeployment"
+	actAddNode            = "/reflw.clusterctl.v1.ClusterCtl/AddNode"
+	actSelfJoin           = "/reflw.clusterctl.v1.ClusterCtl/SelfJoin"
+	actDeliver            = "/reflw.delivery.v1.Delivery/Deliver"
+	actUploadSST          = "/reflw.delivery.v1.Delivery/UploadLPTransferSST"
+	actSubmitInvocation   = "/reflw.ingress.v1.Ingress/SubmitInvocation"
+	actAwaitInvocation    = "/reflw.ingress.v1.Ingress/AwaitInvocation"
+	actPurgeInvocation    = "/reflw.ingress.v1.Ingress/PurgeInvocation"
 )
 
 func mustEngine(t *testing.T, policies string) *Engine {

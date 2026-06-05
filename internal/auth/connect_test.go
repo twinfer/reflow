@@ -44,7 +44,7 @@ func TestHTTPMiddleware_StampsPrincipalFromTLS(t *testing.T) {
 	})
 
 	leaf := &x509.Certificate{Subject: pkix.Name{CommonName: "operator/alice"}}
-	r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
+	r := httptest.NewRequest("POST", "/reflw.clusterctl.v1.ClusterCtl/ListNodes", nil)
 	r.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf}}}
 	// Forged header — the stamp handler must drop it before stamping the
 	// server-computed value.
@@ -79,7 +79,7 @@ func TestHTTPMiddleware_MalformedCNLeafRejected(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			mw := newTestMW(t)
 			leaf := &x509.Certificate{Subject: pkix.Name{CommonName: cn}}
-			r := httptest.NewRequest("POST", "/reflow.clusterctl.v1.ClusterCtl/ListNodes", nil)
+			r := httptest.NewRequest("POST", "/reflw.clusterctl.v1.ClusterCtl/ListNodes", nil)
 			r.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf}}}
 			w := httptest.NewRecorder()
 			mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })).ServeHTTP(w, r)

@@ -8,14 +8,14 @@ import (
 	"testing"
 
 	"github.com/twinfer/reflw/internal/certmgr"
-	"github.com/twinfer/reflw/pkg/reflow/creds"
+	"github.com/twinfer/reflw/pkg/reflw/creds"
 )
 
 // Container-side mount paths for the mesh PKI. Every node mounts its own
 // node/<id> leaf at the same path, so the config.yaml creds stanza is static
 // across nodes.
 const (
-	containerCertDir = "/etc/reflowd/certs"
+	containerCertDir = "/etc/reflwd/certs"
 	containerCAPath  = containerCertDir + "/ca.crt"
 	containerCrtPath = containerCertDir + "/node.crt"
 	containerKeyPath = containerCertDir + "/node.key"
@@ -36,7 +36,7 @@ type meshCerts struct {
 // ca.crt + operator.{crt,key} into a temp dir. Fatal on error.
 func newMeshCerts(t *testing.T) *meshCerts {
 	t.Helper()
-	ca, err := certmgr.MintCA("reflow-e2e-ca")
+	ca, err := certmgr.MintCA("reflw-e2e-ca")
 	if err != nil {
 		t.Fatalf("e2e: mint CA: %v", err)
 	}
@@ -62,7 +62,7 @@ func newMeshCerts(t *testing.T) *meshCerts {
 // returns the host cert + key paths to mount into the node's container.
 func (m *meshCerts) nodeLeaf(t *testing.T, nodeID uint64) (certPath, keyPath string) {
 	t.Helper()
-	alias := fmt.Sprintf("reflowd-node%d", nodeID)
+	alias := fmt.Sprintf("reflwd-node%d", nodeID)
 	cert, key, err := m.ca.IssueLeaf(certmgr.IssueLeafOptions{
 		Kind:  certmgr.CALeafNode,
 		Name:  fmt.Sprintf("%d", nodeID),
@@ -93,7 +93,7 @@ func (m *meshCerts) operatorSpec() creds.Spec {
 }
 
 // operatorClientTLS is the *tls.Config the ingress client dials with — the
-// same operator/e2e mTLS material as operatorSpec, built through pkg/reflow/creds
+// same operator/e2e mTLS material as operatorSpec, built through pkg/reflw/creds
 // so it matches the server side exactly. Ingress runs mTLS in the e2e tier (not
 // h2c) because Docker Desktop's port proxy mangles cleartext HTTP/2 request
 // bodies; HTTP/2-over-TLS rides through opaquely, same as the admin port. The

@@ -17,13 +17,13 @@ import (
 
 	"google.golang.org/grpc/credentials/tls/certprovider"
 
-	"github.com/twinfer/reflw/pkg/reflow/creds"
+	"github.com/twinfer/reflw/pkg/reflw/creds"
 )
 
 // testCAAndLeaf builds a self-signed CA + a leaf signed by it carrying
 // CN=principalRaw (the post-PR-1 mesh-leaf identity shape). Returns
 // the CA PEM and a creds.Signer wrapping the leaf. Kept inline because
-// the helper in pkg/reflow/creds/*_test.go lives in a different package.
+// the helper in pkg/reflw/creds/*_test.go lives in a different package.
 func testCAAndLeaf(t *testing.T, principalRaw string) (caPEM []byte, signer *creds.Signer, principal string) {
 	t.Helper()
 	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

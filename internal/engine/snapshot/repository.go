@@ -1,4 +1,4 @@
-// Package snapshot is the off-host snapshot archive for reflow's
+// Package snapshot is the off-host snapshot archive for reflw's
 // partition shards.
 //
 // Dragonboat already streams snapshots between live replicas

@@ -1,4 +1,4 @@
-// Package config implements reflow's Config Connect RPC surface —
+// Package config implements reflw's Config Connect RPC surface —
 // the app-config side of the admin port. It owns the per-RPC business
 // logic for handler deployments, event sources, webhook sources, and
 // the named-secret table consumers reference. Cluster topology, DR,
@@ -9,12 +9,12 @@
 // MetadataRunner.Proposer().ProposeSelfCAS, so all calls must reach
 // the metadata leader. Non-leader nodes return CodeUnavailable with a
 // configv1.LeaderHint detail attached;
-// pkg/reflowclient.CallWithLeaderRedirect is the canonical retry
+// pkg/reflwclient.CallWithLeaderRedirect is the canonical retry
 // helper.
 //
 // AutoSeed entry points (AutoSeed for deployments, AutoSeedEventSource
 // for event sources) are leader-gate-less in-process helpers used by
-// pkg/reflow.Run during cold start to seed config from the bootstrap
+// pkg/reflw.Run during cold start to seed config from the bootstrap
 // koanf source.
 package config
 
@@ -60,9 +60,9 @@ type Server struct {
 	// CA. Optional: when nil (e.g. before a CA root exists), the
 	// IssueOperator RPC returns FailedPrecondition.
 	operatorIssuer *certmgr.ClusterIssuer
-	// validateModel gates UpsertModel. pkg/reflow injects an iflow-backed
+	// validateModel gates UpsertModel. pkg/reflw injects an reflwos-backed
 	// parser+static-validator when the process plane is enabled; nil falls
-	// back to validateModelXML (config cannot import iflow). Never nil after
+	// back to validateModelXML (config cannot import reflwos). Never nil after
 	// NewServer.
 	validateModel func(kind string, xml []byte) error
 
@@ -81,8 +81,8 @@ type Config struct {
 	// to sign operator-supplied CSRs against the active cluster CA.
 	OperatorIssuer *certmgr.ClusterIssuer
 	// ValidateModel, when non-nil, validates a model definition at
-	// registration time (UpsertModel). pkg/reflow injects
-	// iflowengine.ValidateModel when the process plane is enabled; nil
+	// registration time (UpsertModel). pkg/reflw injects
+	// processengine.ValidateModel when the process plane is enabled; nil
 	// falls back to the shallow well-formed-XML check.
 	ValidateModel func(kind string, xml []byte) error
 }
@@ -181,7 +181,7 @@ func (s *Server) RegisterDeployment(ctx context.Context, req *connect.Request[co
 }
 
 // registerDeployment is the leader-side body, also called by
-// pkg/reflow/run.go's autoSeedEndpoints via AutoSeed.
+// pkg/reflw/run.go's autoSeedEndpoints via AutoSeed.
 func (s *Server) registerDeployment(ctx context.Context, req *configv1.RegisterDeploymentRequest) (*configv1.RegisterDeploymentResponse, error) {
 	raw := req.GetUrl()
 	if raw == "" {
@@ -327,7 +327,7 @@ func (s *Server) readDeploymentRevision(ctx context.Context) (uint64, error) {
 	return list.TableRevision, nil
 }
 
-// AutoSeed is the in-process registration path used by pkg/reflow's
+// AutoSeed is the in-process registration path used by pkg/reflw's
 // autoSeedEndpoints and by engine integration tests. Same body as
 // RegisterDeployment minus the leader gate (callers wait for
 // leadership themselves). budget=0 → engine default.
@@ -349,7 +349,7 @@ func (s *Server) AutoSeedWithBudget(ctx context.Context, url string, budget uint
 }
 
 // AutoSeedLocal registers an in-process deployment without a network
-// discovery probe: the caller (pkg/reflow) supplies the handler set
+// discovery probe: the caller (pkg/reflw) supplies the handler set
 // directly — synthesized from the local handler.Registry via
 // handler.LocalDiscovery — and rawURL is the internal inproc:// address the
 // engine's in-process handlerclient dialer is keyed on. Like AutoSeed it
@@ -695,7 +695,7 @@ func (s *Server) readCARootRevision(ctx context.Context) (uint64, error) {
 // queries narrow the time window and paginate.
 // validateCARootRecord enforces shape rules on a CARootRecord. The
 // signing key is NOT loaded here: the per-node ClusterIssuer surfaces
-// resolve errors via reflow_pki_ca_sign_errors_total, and coupling
+// resolve errors via reflw_pki_ca_sign_errors_total, and coupling
 // admin RPC availability to KMS+blob reachability would be wrong.
 func validateCARootRecord(rec *enginev1.CARootRecord) error {
 	if rec.GetName() == "" {
@@ -716,7 +716,7 @@ func validateCARootRecord(rec *enginev1.CARootRecord) error {
 // validateSecretRecord enforces shape rules on a SecretRecord. No
 // decrypt attempt — coupling admin RPC availability to KMS+blob
 // reachability is the wrong trade-off; the SecretStore reconciler
-// surfaces resolve errors via reflow_secretstore_decrypt_errors_total.
+// surfaces resolve errors via reflw_secretstore_decrypt_errors_total.
 func validateSecretRecord(rec *enginev1.SecretRecord) error {
 	if rec.GetName() == "" {
 		return errors.New("name is required")

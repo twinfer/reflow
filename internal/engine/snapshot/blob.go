@@ -21,7 +21,7 @@ import (
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 
 	// Register every supported scheme. Including all drivers in one
-	// binary is a deliberate trade-off (~10MB binary growth) so reflowd
+	// binary is a deliberate trade-off (~10MB binary growth) so reflwd
 	// can switch between local-fs and cloud storage by config alone.
 	_ "gocloud.dev/blob/azureblob"
 	_ "gocloud.dev/blob/fileblob"
@@ -329,7 +329,7 @@ func (r *archiveReader) Close() error {
 // OpenBucket opens a gocloud.dev/blob bucket from a URL string. Thin
 // wrapper around blob.OpenBucket; kept as a seam in case future schemes
 // want pre-open normalization. Supports gocloud's native `?prefix=…`
-// query parameter for sub-folder layouts (e.g. `s3://mybucket?prefix=reflow/`).
+// query parameter for sub-folder layouts (e.g. `s3://mybucket?prefix=reflw/`).
 func OpenBucket(ctx context.Context, urlStr string) (*blob.Bucket, error) {
 	b, err := blob.OpenBucket(ctx, urlStr)
 	if err != nil {

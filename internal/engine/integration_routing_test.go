@@ -21,7 +21,7 @@ import (
 //     the planner is built from the bootstrap PartitionTable's shard ids
 //     (= 1..NumPartitionShards; here S=1).
 //   - The Partitioner agrees with the seed for arbitrary partition_keys
-//     (once the reconciler runs; PR 1 wires it in pkg/reflow/run.go, so
+//     (once the reconciler runs; PR 1 wires it in pkg/reflw/run.go, so
 //     this engine-level test installs the snapshot manually).
 func TestIntegration_LPOwnersBootstrapSeed(t *testing.T) {
 	t.Parallel()

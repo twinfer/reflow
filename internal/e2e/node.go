@@ -17,14 +17,14 @@ import (
 
 	"github.com/twinfer/reflw/internal/loadgen"
 	"github.com/twinfer/reflw/pkg/ingressclient"
-	"github.com/twinfer/reflw/pkg/reflow/creds"
-	"github.com/twinfer/reflw/pkg/reflowclient"
+	"github.com/twinfer/reflw/pkg/reflw/creds"
+	"github.com/twinfer/reflw/pkg/reflwclient"
 	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
-// ContainerNode is one reflowd container plus an ingress client dialed
+// ContainerNode is one reflwd container plus an ingress client dialed
 // against its host-mapped ingress port. Implements loadgen.Node so the
 // workload + invariants helpers in internal/loadgen work against the
 // containerized cluster unchanged. The interface is verified by the
@@ -136,7 +136,7 @@ func (n *ContainerNode) DescribeInvocation(ctx context.Context, id *enginev1.Inv
 // the operator admin surface (see ClusterCtl/NodeLeadership), so this dials
 // the admin URL rather than the ingress client.
 func (n *ContainerNode) ListPartitions(ctx context.Context) ([]loadgen.PartitionInfo, error) {
-	cli, err := reflowclient.Dial(ctx, reflowclient.DialOptions{Addr: stripScheme(n.AdminURLForTest()), Creds: n.operatorCreds})
+	cli, err := reflwclient.Dial(ctx, reflwclient.DialOptions{Addr: stripScheme(n.AdminURLForTest()), Creds: n.operatorCreds})
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +167,7 @@ func (n *ContainerNode) RaftAddr() string { return n.raftAddr }
 func (n *ContainerNode) NodeID() uint64 { return n.nodeID }
 
 // AdminEndpoint returns the docker-internal admin advertise value
-// (e.g. "reflowd-node1:8082"). Used by the cluster helper that picks
+// (e.g. "reflwd-node1:8082"). Used by the cluster helper that picks
 // the seed admin endpoint for RegisterDeployment.
 func (n *ContainerNode) AdminEndpoint() string { return n.adminEndpoint }
 
@@ -226,11 +226,11 @@ func (n *ContainerNode) Close() {
 
 // Kill terminates the container abruptly via Docker API ContainerKill
 // with SIGKILL — bypasses any in-container graceful shutdown so the
-// reflowd process exits without flushing the Pebble WAL. This is the
+// reflwd process exits without flushing the Pebble WAL. This is the
 // chaos primitive the in-process Node cannot match.
 //
 // The container itself is NOT removed; the writable layer (including
-// the Pebble + dragonboat data dir at /home/nonroot/reflow) persists
+// the Pebble + dragonboat data dir at /home/nonroot/reflw) persists
 // so Restart can bring the node back from its on-disk state. To fully
 // tear the container down, call Close.
 func (n *ContainerNode) Kill() {
@@ -258,7 +258,7 @@ func (n *ContainerNode) Kill() {
 }
 
 // Restart re-starts a previously-killed container. The data dir
-// (/home/nonroot/reflow) survives the kill+start cycle because it
+// (/home/nonroot/reflw) survives the kill+start cycle because it
 // lives inside the container's writable layer and `docker start`
 // reuses it. After Start succeeds the host-mapped ingress + admin
 // ports may have changed (Docker re-binds on restart), so the

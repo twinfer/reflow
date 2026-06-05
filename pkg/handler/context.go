@@ -7,7 +7,7 @@ import (
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
-// Context is the durable-execution handle every reflow handler receives.
+// Context is the durable-execution handle every reflw handler receives.
 // Every method on Context is journaled: on replay, the same call sequence
 // returns the same values, so the handler body can be re-run safely after
 // a crash without re-executing its side effects.
@@ -234,7 +234,7 @@ type Context interface {
 	//   Resolve(v) / Reject(err): 2 slots (JECompletePromise +
 	//                                      JEPromiseCompleteResult)
 	// Promise-heavy workflows hitting the cap will surface as
-	// reflow_invocations_completed_total{outcome="step_budget_exhausted"};
+	// reflw_invocations_completed_total{outcome="step_budget_exhausted"};
 	// raise max_journal_entries on the DeploymentRecord rather than
 	// silently truncating handler logic.
 	Promise(name string) DurablePromise

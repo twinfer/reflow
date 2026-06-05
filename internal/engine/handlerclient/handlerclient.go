@@ -8,7 +8,7 @@
 //
 // Transports register by URL scheme on the Registry. connectclient is the
 // remote transport: a Connect RPC client calling
-// /reflow.handler.v1.HandlerService/Invoke for both h2c (http://) and TLS
+// /reflw.handler.v1.HandlerService/Invoke for both h2c (http://) and TLS
 // (https://) deployments. Translation between protocolv1 commands /
 // notifications and enginev1.JournalEntry lives in the invoker's
 // wire-session path, not here.

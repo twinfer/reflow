@@ -50,7 +50,7 @@ const lpTransferAckProducer = "lptransfer-ack/"
 // LPSSTUploader is the side-channel SST shipping seam used by
 // LPTransferService.runScan. Uploads bypass Raft (the per-replica
 // dest's apply path Ingests the file locally). In production the
-// wrapper in pkg/reflow fans out to every replica hosting destShard;
+// wrapper in pkg/reflw fans out to every replica hosting destShard;
 // nil in single-node deployments where every transfer resolves to
 // the local store (saga short-circuits before runScan).
 type LPSSTUploader interface {

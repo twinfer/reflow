@@ -1,7 +1,7 @@
 // Reflow Bootstrap service — kubeadm-style joiner credential exchange.
 //
 // The bootstrap surface is a single RPC: SignCSR. A joiner that has been
-// issued a one-time `reflowd config create-join-token` plaintext sends a
+// issued a one-time `reflwd config create-join-token` plaintext sends a
 // CertificateSigningRequest plus the token to a cluster member; the
 // member verifies the token against shard 0's JoinTokenTable, proposes
 // ConsumeJoinToken to atomically mark the row spent, then signs the CSR
@@ -19,13 +19,13 @@
 //
 // The endpoint is opt-in. Operators set cfg.Bootstrap.Addr to enable
 // it; production fleets typically enable it only on a couple of nodes
-// (the same nodes that will run `reflowd config create-join-token` for
+// (the same nodes that will run `reflwd config create-join-token` for
 // their region) and behind a firewall rule that allows freshly-imaged
 // hosts to reach the port.
 
 syntax = "proto3";
 
-package reflow.bootstrap.v1;
+package reflw.bootstrap.v1;
 
 option go_package = "github.com/twinfer/reflw/proto/bootstrapv1;bootstrapv1";
 
@@ -54,7 +54,7 @@ message SignCSRRequest {
   // operator must pick the name at create-token time.
   bytes csr_der = 1;
   // Plaintext token, exactly as printed by
-  // `reflowd config create-join-token`. The server hashes it (sha256)
+  // `reflwd config create-join-token`. The server hashes it (sha256)
   // and looks the row up in JoinTokenTable.
   string join_token = 2;
 }

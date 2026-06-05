@@ -86,7 +86,7 @@ const (
 // NOT return it to dragonboat (which would halt the shard).
 var errLPFrozen = errors.New("partition: LP frozen for transfer")
 
-// Partition is the dragonboat IOnDiskStateMachine for one reflow partition.
+// Partition is the dragonboat IOnDiskStateMachine for one reflw partition.
 //
 // Important contract notes (dragonboat v4 statemachine/disk.go):
 //   - Update returning an error halts the shard. Logical/unknown command bugs
@@ -808,7 +808,7 @@ func (p *Partition) reclaimFiredProcessTimer(batch storage.Batch, ev *enginev1.P
 // enqueueInstanceEvent creates the instance on the start event, appends the
 // event payload to the per-instance inbox, and — when no turn is in flight —
 // activates it (emitting ActAdvanceProcess so the leader's procSession runs one
-// iflow step). Turn serialization is the inbox cursor on ProcessInstanceRecord:
+// reflwos step). Turn serialization is the inbox cursor on ProcessInstanceRecord:
 // concurrent events for one instance queue behind the active turn rather than
 // racing the state blob. Logical/stale conditions log and return nil — never an
 // error, which would halt the shard. The caller owns the freeze gate (the
@@ -1237,7 +1237,7 @@ func (p *Partition) onReapProcessInstance(batch storage.Batch, cmd *enginev1.Rea
 }
 
 // actuateProcessInstructions turns a non-terminal turn's instruction lists into
-// reflow-native side effects: a service task becomes an invocation carrying a
+// reflw-native side effects: a service task becomes an invocation carrying a
 // process_parent link (its result feeds back via applyTerminalCompletion); a
 // timer becomes a process timer (fires as a Command_ProcessEvent); a child start
 // becomes a ProcessEvent(start) addressed to the child, itself process-parented
@@ -2355,7 +2355,7 @@ func (p *Partition) applyTerminalCompletion(
 		}
 		actions = append(actions, parentActs...)
 	} else if pp := pl.GetProcessParent(); pp != nil {
-		// This invocation was an iflow service task. Feed its result back to the
+		// This invocation was an reflwos service task. Feed its result back to the
 		// awaiting node as a ProcessEvent{task_completed} instead of a
 		// JECallResult. Delivery pushes its own actions (same-shard activation /
 		// outbox dispatch) onto the collector, so nothing is appended here.

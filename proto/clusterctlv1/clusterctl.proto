@@ -2,15 +2,15 @@
 //
 // ClusterCtl owns the *physical* cluster operations: node membership,
 // partition topology, DR snapshots, and LP routing transfers. It is
-// the cluster-admin counterpart to reflow.config.v1.Config (which owns
+// the cluster-admin counterpart to reflw.config.v1.Config (which owns
 // app config — handler deployments, event sources, webhooks, secrets).
 // The naming mirrors Restate, where `cluster-ctrl` is the
 // cluster-administrator surface and `admin` is the app-config surface.
 //
-// Every reflowd process hosts a ClusterCtl Connect RPC server on a
+// Every reflwd process hosts a ClusterCtl Connect RPC server on a
 // dedicated port (typically :8082). The server is mTLS-protected; the
 // caller's leaf CN encodes its principal Raw form (e.g.
-// `operator/<name>` for operators). The `reflowd cluster ...` CLI is
+// `operator/<name>` for operators). The `reflwd cluster ...` CLI is
 // the canonical client. SelfJoin has a narrower carve-out: it accepts
 // a `node/*` principal, but only when the principal's NodeID equals
 // req.node_id (defense in depth behind the path-based authz rule).
@@ -18,7 +18,7 @@
 // Authorization lives in internal/auth (the shared starter authz policy
 // consumed by both the gRPC delivery interceptor and the Connect HTTP
 // middleware). The starter policy restricts
-// /reflow.clusterctl.v1.ClusterCtl/* to principals matching
+// /reflw.clusterctl.v1.ClusterCtl/* to principals matching
 // "operator/*", with the SelfJoin carve-out described above.
 //
 // Mutating RPCs (AddNode, RemoveNode, TransferLP, CreateSnapshot,
@@ -30,7 +30,7 @@
 
 syntax = "proto3";
 
-package reflow.clusterctl.v1;
+package reflw.clusterctl.v1;
 
 import "enginev1/engine.proto";
 
@@ -120,12 +120,12 @@ message RemoveNodeResponse {
 
 message ListNodesRequest {}
 message ListNodesResponse {
-  repeated reflow.engine.v1.NodeMembership nodes = 1;
+  repeated reflw.engine.v1.NodeMembership nodes = 1;
 }
 
 message ListPartitionsRequest {}
 message ListPartitionsResponse {
-  reflow.engine.v1.PartitionTable table = 1;
+  reflw.engine.v1.PartitionTable table = 1;
 }
 
 message NodeLeadershipRequest {}
@@ -180,7 +180,7 @@ message TransferLPResponse {
 
 message ListLPTransfersRequest {}
 message ListLPTransfersResponse {
-  repeated reflow.engine.v1.LPTransferRecord records = 1;
+  repeated reflw.engine.v1.LPTransferRecord records = 1;
   uint64 table_revision = 2;
 }
 
@@ -243,7 +243,7 @@ message RebalanceDrainResponse {
 // LeaderHint is attached as a connect.Error detail on
 // connect.CodeUnavailable returned by mutating ClusterCtl RPCs when
 // the receiving node is not the metadata leader. Clients (joiner's
-// SelfJoin caller and the `reflowd cluster ...` CLI) extract it, dial
+// SelfJoin caller and the `reflwd cluster ...` CLI) extract it, dial
 // admin_endpoint, retry.
 message LeaderHint {
   uint64 node_id = 1;

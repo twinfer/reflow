@@ -121,7 +121,7 @@ func TestMultiNode_StaticThreeNodeBootstrap(t *testing.T) {
 }
 
 // TestMultiNode_GossipMetaCarriesGrpcEndpoint asserts that every node
-// publishes its reflow Delivery gRPC endpoint via gossip NodeHostMeta and
+// publishes its reflw Delivery gRPC endpoint via gossip NodeHostMeta and
 // peers can resolve it via Host.NodeEndpoint.
 func TestMultiNode_GossipMetaCarriesGrpcEndpoint(t *testing.T) {
 	rigs, _ := bringUpThreeNodeCluster(t)

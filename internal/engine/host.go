@@ -31,7 +31,7 @@ import (
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
-// HostConfig configures a reflow node (a process hosting one or more
+// HostConfig configures a reflw node (a process hosting one or more
 // partitions). Single-node deployments use NodeID=1 with Peers empty;
 // multi-node deployments populate Peers with every cluster member
 // (including self) and supply gossip + Delivery endpoint addresses.
@@ -75,13 +75,13 @@ type HostConfig struct {
 	// GossipAdvAddr is the address advertised to other peers for NAT
 	// traversal. Falls back to GossipBindAddr when empty.
 	GossipAdvAddr string
-	// GrpcEndpoint is this node's reflow Delivery gRPC endpoint. It is
+	// GrpcEndpoint is this node's reflw Delivery gRPC endpoint. It is
 	// published via gossip NodeHostMeta so peers can dial it for
 	// cross-partition outbox dispatch. Required when Peers is non-empty.
 	GrpcEndpoint string
-	// AdminEndpoint is this node's reflow Admin Connect endpoint.
+	// AdminEndpoint is this node's reflw Admin Connect endpoint.
 	// Published via gossip NodeHostMeta so peers (notably joiners
-	// calling SelfJoin and the `reflowd cluster ...` CLI following
+	// calling SelfJoin and the `reflwd cluster ...` CLI following
 	// LeaderHint redirects) can
 	// dial the metadata leader without preconfiguration. Optional but
 	// recommended when Peers is non-empty; an empty value disables
@@ -98,7 +98,7 @@ type HostConfig struct {
 	CrossShardSender CrossShardSender
 
 	// LPSSTUploader is the side-channel SST shipper handed to each
-	// partition's LPTransferService. Wired up in pkg/reflow over the
+	// partition's LPTransferService. Wired up in pkg/reflw over the
 	// delivery Connect listener; nil in single-node deployments.
 	LPSSTUploader LPSSTUploader
 
@@ -111,7 +111,7 @@ type HostConfig struct {
 	// Metrics carries the Prometheus collectors observed by the partition
 	// apply path and the timer service. nil disables observation; the
 	// engine never constructs its own — wiring is owned by the caller
-	// (pkg/reflow) to keep the registry decision out of internal/engine.
+	// (pkg/reflw) to keep the registry decision out of internal/engine.
 	Metrics *observability.Metrics
 
 	// OnSnapshotPersisted, when non-nil, is invoked after a successful
@@ -149,15 +149,15 @@ type HostConfig struct {
 	// InProcDialer, when non-nil, is registered on the handlerclient
 	// Registry under the "inproc" scheme so a single-binary deployment can
 	// run its handler in-process with no HTTP. The bridge is assembled in
-	// pkg/reflow (internal/engine cannot import pkg/handler); nil keeps the
+	// pkg/reflw (internal/engine cannot import pkg/handler); nil keeps the
 	// engine remote-only — the production multi-node path.
 	InProcDialer handlerclient.Dialer
 
-	// ProcessEngine, when non-nil, runs iflow process/case instances in-process
+	// ProcessEngine, when non-nil, runs reflwos process/case instances in-process
 	// on the partition leader (the procSession path). Like InProcDialer it is
-	// assembled outside internal/engine (the iflow binding lives in pkg/reflow
-	// or an iflow-side adapter) and injected here so the engine never imports
-	// iflow. nil disables process execution.
+	// assembled outside internal/engine (the reflwos binding lives in pkg/reflw
+	// or an reflwos-side adapter) and injected here so the engine never imports
+	// reflwos. nil disables process execution.
 	ProcessEngine invoker.ProcessEngine
 
 	// EagerStateMaxBytes caps the eager-state snapshot the invoker ships
@@ -173,20 +173,20 @@ type HostConfig struct {
 	// shard-0 FSM apply path after batch commit. Each notifier is
 	// per-table; consumers (the eventsource Reconciler, etc.) Subscribe
 	// for the receive end. Zero value disables all notifications (the
-	// FSM no-ops on nil notifier handles). pkg/reflow wires this up
+	// FSM no-ops on nil notifier handles). pkg/reflw wires this up
 	// before NewHost.
 	ClusterNotifiers cluster.Notifiers
 
 	// Rebalance configures the autonomous LP rebalancer started on
 	// metadata-shard leadership. Zero value (Mode unset) disables the
 	// loop entirely; the runner skips the goroutine spawn in
-	// onBecomeLeader. pkg/reflow.withDefaults defaults Mode to "off",
+	// onBecomeLeader. pkg/reflw.withDefaults defaults Mode to "off",
 	// so the production default is also disabled.
 	Rebalance rebalance.Config
 }
 
 // Peer is a static cluster member known at bootstrap. NodeHostID may be
-// left empty; reflow then derives a deterministic ID from NodeID. The
+// left empty; reflw then derives a deterministic ID from NodeID. The
 // derivation is identical on every node, so the static map of
 // NodeID → NodeHostID is consistent cluster-wide without coordination.
 type Peer struct {
@@ -333,7 +333,7 @@ func NewHost(ctx context.Context, cfg HostConfig) (*Host, error) {
 	h.nh = nh
 	// Safety-net lifecycle watcher: when ctx is cancelled, self-close
 	// even if no explicit Close was called. Catches leaks in tests that
-	// forget to defer Close; production code (pkg/reflow.Run) closes
+	// forget to defer Close; production code (pkg/reflw.Run) closes
 	// explicitly so this never fires there.
 	if ctx != nil {
 		go func() {
@@ -346,7 +346,7 @@ func NewHost(ctx context.Context, cfg HostConfig) (*Host, error) {
 
 // applyMultiNodeConfig wires the dragonboat NodeHostConfig fields that
 // turn on cross-host gossip + NodeHostID-keyed targets, and packs the
-// reflow gRPC Delivery endpoint into the gossip Meta blob so peers can
+// reflw gRPC Delivery endpoint into the gossip Meta blob so peers can
 // resolve it via INodeHostRegistry.GetMeta.
 func applyMultiNodeConfig(nhConfig *config.NodeHostConfig, cfg *HostConfig) error {
 	self := findPeer(cfg.Peers, cfg.NodeID)
@@ -674,7 +674,7 @@ func (h *Host) Secrets(ctx context.Context) (*cluster.SecretList, error) {
 }
 
 // Models SyncReads every ModelRecord from shard 0 plus the table's CAS
-// revision. Used by the admin RPCs and the per-node iflowengine TableResolver.
+// revision. Used by the admin RPCs and the per-node processengine TableResolver.
 func (h *Host) Models(ctx context.Context) (*cluster.ModelList, error) {
 	res, err := h.nh.SyncRead(ctx, 0, cluster.LookupModels{})
 	if err != nil {
@@ -1147,7 +1147,7 @@ func (h *Host) Partitions() map[uint64]*PartitionRunner {
 // Close stops every partition and the NodeHost. Idempotent and
 // concurrency-safe: callers race here via the ctx-watcher goroutine
 // installed by NewHost and an explicit Close from the test or
-// pkg/reflow.Run shutdown path. The first call wins; subsequent calls
+// pkg/reflw.Run shutdown path. The first call wins; subsequent calls
 // observe the closed state under h.mu and return immediately.
 func (h *Host) Close() error {
 	h.mu.Lock()
@@ -1275,7 +1275,7 @@ func (h *Host) PartitionLeaderHint(shardID uint64) (uint64, bool) {
 	return view.LeaderID, true
 }
 
-// NodeEndpoint returns the reflow Delivery gRPC endpoint advertised via
+// NodeEndpoint returns the reflw Delivery gRPC endpoint advertised via
 // gossip NodeHostMeta by the peer with the given NodeID. Returns
 // ("", false) when gossip is off, the peer is unknown, or its Meta blob
 // has not yet propagated.

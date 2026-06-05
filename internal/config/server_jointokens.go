@@ -22,7 +22,7 @@ import (
 )
 
 // operatorMaxValidity caps IssueOperator leaf lifetimes. Mirrors the
-// historic `reflowd pki issue-operator --validity` default.
+// historic `reflwd pki issue-operator --validity` default.
 const operatorMaxValidity = 30 * 24 * time.Hour
 
 // joinTokenPlaintextEntropy is the byte length of the random portion of
@@ -159,7 +159,7 @@ func (s *Server) IssueOperator(
 	}
 	if s.operatorIssuer == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("config: cluster CA not yet active; run `reflowd config ca init` first"))
+			errors.New("config: cluster CA not yet active; run `reflwd config ca init` first"))
 	}
 	csrDER := req.Msg.GetCsrDer()
 	if len(csrDER) == 0 {

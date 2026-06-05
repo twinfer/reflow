@@ -83,7 +83,7 @@ func startMinio(t *testing.T) *minioBackend {
 	}
 	mb := &minioBackend{
 		endpoint:  fmt.Sprintf("http://%s:%s", host, port.Port()),
-		bucket:    "reflow-snapshots-" + randHex(t, 8),
+		bucket:    "reflw-snapshots-" + randHex(t, 8),
 		container: c,
 	}
 	mb.createBucket(t)

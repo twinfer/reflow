@@ -1,7 +1,7 @@
 // Reflow Bootstrap service — kubeadm-style joiner credential exchange.
 //
 // The bootstrap surface is a single RPC: SignCSR. A joiner that has been
-// issued a one-time `reflowd config create-join-token` plaintext sends a
+// issued a one-time `reflwd config create-join-token` plaintext sends a
 // CertificateSigningRequest plus the token to a cluster member; the
 // member verifies the token against shard 0's JoinTokenTable, proposes
 // ConsumeJoinToken to atomically mark the row spent, then signs the CSR
@@ -19,7 +19,7 @@
 //
 // The endpoint is opt-in. Operators set cfg.Bootstrap.Addr to enable
 // it; production fleets typically enable it only on a couple of nodes
-// (the same nodes that will run `reflowd config create-join-token` for
+// (the same nodes that will run `reflwd config create-join-token` for
 // their region) and behind a firewall rule that allows freshly-imaged
 // hosts to reach the port.
 
@@ -47,7 +47,7 @@ const _ = connect.IsAtLeastVersion1_13_0
 
 const (
 	// MeshSignName is the fully-qualified name of the MeshSign service.
-	MeshSignName = "reflow.bootstrap.v1.MeshSign"
+	MeshSignName = "reflw.bootstrap.v1.MeshSign"
 )
 
 // These constants are the fully-qualified names of the RPCs defined in this package. They're
@@ -59,10 +59,10 @@ const (
 // period.
 const (
 	// MeshSignSignCSRProcedure is the fully-qualified name of the MeshSign's SignCSR RPC.
-	MeshSignSignCSRProcedure = "/reflow.bootstrap.v1.MeshSign/SignCSR"
+	MeshSignSignCSRProcedure = "/reflw.bootstrap.v1.MeshSign/SignCSR"
 )
 
-// MeshSignClient is a client for the reflow.bootstrap.v1.MeshSign service.
+// MeshSignClient is a client for the reflw.bootstrap.v1.MeshSign service.
 type MeshSignClient interface {
 	// SignCSR verifies join_token against shard 0's JoinTokenTable,
 	// proposes ConsumeJoinToken (which atomically marks single_use rows as
@@ -80,10 +80,10 @@ type MeshSignClient interface {
 	SignCSR(context.Context, *connect.Request[bootstrapv1.SignCSRRequest]) (*connect.Response[bootstrapv1.SignCSRResponse], error)
 }
 
-// NewMeshSignClient constructs a client for the reflow.bootstrap.v1.MeshSign service. By default,
-// it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses, and
-// sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the connect.WithGRPC()
-// or connect.WithGRPCWeb() options.
+// NewMeshSignClient constructs a client for the reflw.bootstrap.v1.MeshSign service. By default, it
+// uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses, and sends
+// uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the connect.WithGRPC() or
+// connect.WithGRPCWeb() options.
 //
 // The URL supplied here should be the base URL for the Connect or gRPC server (for example,
 // http://api.acme.com or https://acme.com/grpc).
@@ -105,12 +105,12 @@ type meshSignClient struct {
 	signCSR *connect.Client[bootstrapv1.SignCSRRequest, bootstrapv1.SignCSRResponse]
 }
 
-// SignCSR calls reflow.bootstrap.v1.MeshSign.SignCSR.
+// SignCSR calls reflw.bootstrap.v1.MeshSign.SignCSR.
 func (c *meshSignClient) SignCSR(ctx context.Context, req *connect.Request[bootstrapv1.SignCSRRequest]) (*connect.Response[bootstrapv1.SignCSRResponse], error) {
 	return c.signCSR.CallUnary(ctx, req)
 }
 
-// MeshSignHandler is an implementation of the reflow.bootstrap.v1.MeshSign service.
+// MeshSignHandler is an implementation of the reflw.bootstrap.v1.MeshSign service.
 type MeshSignHandler interface {
 	// SignCSR verifies join_token against shard 0's JoinTokenTable,
 	// proposes ConsumeJoinToken (which atomically marks single_use rows as
@@ -141,7 +141,7 @@ func NewMeshSignHandler(svc MeshSignHandler, opts ...connect.HandlerOption) (str
 		connect.WithSchema(meshSignMethods.ByName("SignCSR")),
 		connect.WithHandlerOptions(opts...),
 	)
-	return "/reflow.bootstrap.v1.MeshSign/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return "/reflw.bootstrap.v1.MeshSign/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case MeshSignSignCSRProcedure:
 			meshSignSignCSRHandler.ServeHTTP(w, r)
@@ -155,5 +155,5 @@ func NewMeshSignHandler(svc MeshSignHandler, opts ...connect.HandlerOption) (str
 type UnimplementedMeshSignHandler struct{}
 
 func (UnimplementedMeshSignHandler) SignCSR(context.Context, *connect.Request[bootstrapv1.SignCSRRequest]) (*connect.Response[bootstrapv1.SignCSRResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.bootstrap.v1.MeshSign.SignCSR is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.bootstrap.v1.MeshSign.SignCSR is not implemented"))
 }

@@ -34,7 +34,7 @@ const _ = connect.IsAtLeastVersion1_13_0
 
 const (
 	// DiscoveryServiceName is the fully-qualified name of the DiscoveryService service.
-	DiscoveryServiceName = "reflow.discovery.v1.DiscoveryService"
+	DiscoveryServiceName = "reflw.discovery.v1.DiscoveryService"
 )
 
 // These constants are the fully-qualified names of the RPCs defined in this package. They're
@@ -47,10 +47,10 @@ const (
 const (
 	// DiscoveryServiceDiscoverProcedure is the fully-qualified name of the DiscoveryService's Discover
 	// RPC.
-	DiscoveryServiceDiscoverProcedure = "/reflow.discovery.v1.DiscoveryService/Discover"
+	DiscoveryServiceDiscoverProcedure = "/reflw.discovery.v1.DiscoveryService/Discover"
 )
 
-// DiscoveryServiceClient is a client for the reflow.discovery.v1.DiscoveryService service.
+// DiscoveryServiceClient is a client for the reflw.discovery.v1.DiscoveryService service.
 type DiscoveryServiceClient interface {
 	// Discover returns the (service, kind, handler_names) tuples this
 	// deployment exposes. The engine calls this once at
@@ -58,7 +58,7 @@ type DiscoveryServiceClient interface {
 	Discover(context.Context, *connect.Request[discoveryv1.DiscoveryRequest]) (*connect.Response[discoveryv1.DiscoveryResponse], error)
 }
 
-// NewDiscoveryServiceClient constructs a client for the reflow.discovery.v1.DiscoveryService
+// NewDiscoveryServiceClient constructs a client for the reflw.discovery.v1.DiscoveryService
 // service. By default, it uses the Connect protocol with the binary Protobuf Codec, asks for
 // gzipped responses, and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply
 // the connect.WithGRPC() or connect.WithGRPCWeb() options.
@@ -83,12 +83,12 @@ type discoveryServiceClient struct {
 	discover *connect.Client[discoveryv1.DiscoveryRequest, discoveryv1.DiscoveryResponse]
 }
 
-// Discover calls reflow.discovery.v1.DiscoveryService.Discover.
+// Discover calls reflw.discovery.v1.DiscoveryService.Discover.
 func (c *discoveryServiceClient) Discover(ctx context.Context, req *connect.Request[discoveryv1.DiscoveryRequest]) (*connect.Response[discoveryv1.DiscoveryResponse], error) {
 	return c.discover.CallUnary(ctx, req)
 }
 
-// DiscoveryServiceHandler is an implementation of the reflow.discovery.v1.DiscoveryService service.
+// DiscoveryServiceHandler is an implementation of the reflw.discovery.v1.DiscoveryService service.
 type DiscoveryServiceHandler interface {
 	// Discover returns the (service, kind, handler_names) tuples this
 	// deployment exposes. The engine calls this once at
@@ -109,7 +109,7 @@ func NewDiscoveryServiceHandler(svc DiscoveryServiceHandler, opts ...connect.Han
 		connect.WithSchema(discoveryServiceMethods.ByName("Discover")),
 		connect.WithHandlerOptions(opts...),
 	)
-	return "/reflow.discovery.v1.DiscoveryService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return "/reflw.discovery.v1.DiscoveryService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DiscoveryServiceDiscoverProcedure:
 			discoveryServiceDiscoverHandler.ServeHTTP(w, r)
@@ -123,5 +123,5 @@ func NewDiscoveryServiceHandler(svc DiscoveryServiceHandler, opts ...connect.Han
 type UnimplementedDiscoveryServiceHandler struct{}
 
 func (UnimplementedDiscoveryServiceHandler) Discover(context.Context, *connect.Request[discoveryv1.DiscoveryRequest]) (*connect.Response[discoveryv1.DiscoveryResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.discovery.v1.DiscoveryService.Discover is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.discovery.v1.DiscoveryService.Discover is not implemented"))
 }

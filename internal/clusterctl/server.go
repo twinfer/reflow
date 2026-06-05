@@ -1,4 +1,4 @@
-// Package clusterctl implements reflow's ClusterCtl Connect RPC
+// Package clusterctl implements reflw's ClusterCtl Connect RPC
 // surface — the cluster-operator side of the admin port. It owns the
 // per-RPC business logic for cluster topology (AddNode, SelfJoin,
 // RemoveNode, ListNodes, ListPartitions), DR snapshots (Create / List
@@ -10,7 +10,7 @@
 // MetadataRunner.Proposer().ProposeSelf, so all calls must reach the
 // metadata leader. Non-leader nodes return CodeUnavailable with a
 // clusterctlv1.LeaderHint detail attached;
-// pkg/reflowclient.CallWithLeaderRedirect is the canonical retry
+// pkg/reflwclient.CallWithLeaderRedirect is the canonical retry
 // helper.
 package clusterctl
 
@@ -80,7 +80,7 @@ func NewServer(cfg Config) (*Server, error) {
 		cfg.Log = slog.Default()
 	}
 	if cfg.ScratchDir == "" {
-		cfg.ScratchDir = filepath.Join(os.TempDir(), "reflow-clusterctl-scratch")
+		cfg.ScratchDir = filepath.Join(os.TempDir(), "reflw-clusterctl-scratch")
 	}
 	if err := os.MkdirAll(cfg.ScratchDir, 0o755); err != nil {
 		return nil, fmt.Errorf("clusterctl: scratch dir: %w", err)
@@ -106,7 +106,7 @@ func (s *Server) NewHandler(opts ...connect.HandlerOption) (string, http.Handler
 // requireLeader returns CodeUnavailable when this node is not the
 // metadata leader, attaching a LeaderHint detail (node_id +
 // admin_endpoint resolved via gossip NodeHostMeta) so clients can
-// redirect via pkg/reflowclient.CallWithLeaderRedirect.
+// redirect via pkg/reflwclient.CallWithLeaderRedirect.
 func (s *Server) requireLeader() error {
 	if s.runner.IsLeader() {
 		return nil

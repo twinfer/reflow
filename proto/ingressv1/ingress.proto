@@ -3,12 +3,12 @@
 // Exposes the user-facing entrypoints for submitting invocations, awaiting
 // their results, and resolving awakeables. Served over Connect (HTTP/2)
 // with content-negotiated Connect / gRPC / gRPC-Web / HTTP-JSON; clients
-// pick a wire encoding by setting Content-Type. The default reflowd
+// pick a wire encoding by setting Content-Type. The default reflwd
 // config is single-partition (shard 1) but ingress is partition-agnostic
 // and routes via Host.Partitioner.
 syntax = "proto3";
 
-package reflow.ingress.v1;
+package reflw.ingress.v1;
 
 import "enginev1/engine.proto";
 
@@ -82,7 +82,7 @@ service Ingress {
   // limit. Read-only — no proposal.
   rpc ListInvocations(ListInvocationsRequest) returns (ListInvocationsResponse);
 
-  // StartProcess launches a new iflow BPMN/CMMN instance. Routes to the
+  // StartProcess launches a new reflwos BPMN/CMMN instance. Routes to the
   // partition owning (tenant, model name, instance_key) and proposes a start
   // ProcessEvent (model_ref + kind set). Idempotent per (model, instance_key):
   // a start for an already-existing instance is dropped by the apply path. When
@@ -135,7 +135,7 @@ message SubmitInvocationRequest {
 }
 
 message SubmitInvocationResponse {
-  reflow.engine.v1.InvocationId invocation_id = 1;
+  reflw.engine.v1.InvocationId invocation_id = 1;
   // String form of the invocation ID, for users that pass it back via URL.
   // Format: "inv_<partition_key:base16>_<uuid:base32>".
   string invocation_id_str = 2;
@@ -144,7 +144,7 @@ message SubmitInvocationResponse {
 message AwaitInvocationRequest {
   // Either a stringified id (preferred) or the raw struct.
   string invocation_id = 1;
-  reflow.engine.v1.InvocationId invocation_id_proto = 2;
+  reflw.engine.v1.InvocationId invocation_id_proto = 2;
   // Server-side timeout in milliseconds. Capped at 60_000 by the server.
   uint32 timeout_ms = 3;
 }
@@ -174,16 +174,16 @@ message ResolveAwakeableResponse {
 
 message DescribeInvocationRequest {
   string invocation_id = 1;
-  reflow.engine.v1.InvocationId invocation_id_proto = 2;
+  reflw.engine.v1.InvocationId invocation_id_proto = 2;
 }
 
 message DescribeInvocationResponse {
-  reflow.engine.v1.InvocationStatus status = 1;
+  reflw.engine.v1.InvocationStatus status = 1;
 }
 
 message AttachInvocationRequest {
   string invocation_id = 1;
-  reflow.engine.v1.InvocationId invocation_id_proto = 2;
+  reflw.engine.v1.InvocationId invocation_id_proto = 2;
   // Server-side timeout in milliseconds. 0 means use the
   // default-deadline interceptor's bound (2s). Capped at 60_000 by the
   // server.
@@ -199,7 +199,7 @@ message AttachInvocationResponse {
 
 message GetInvocationOutputRequest {
   string invocation_id = 1;
-  reflow.engine.v1.InvocationId invocation_id_proto = 2;
+  reflw.engine.v1.InvocationId invocation_id_proto = 2;
 }
 
 message GetObjectStateRequest {
@@ -232,7 +232,7 @@ message GetInvocationOutputResponse {
 message CancelInvocationRequest {
   // Either a stringified id (preferred) or the raw struct.
   string invocation_id = 1;
-  reflow.engine.v1.InvocationId invocation_id_proto = 2;
+  reflw.engine.v1.InvocationId invocation_id_proto = 2;
 }
 
 message CancelInvocationResponse {
@@ -246,7 +246,7 @@ message CancelInvocationResponse {
 message PurgeInvocationRequest {
   // Either a stringified id (preferred) or the raw struct.
   string invocation_id = 1;
-  reflow.engine.v1.InvocationId invocation_id_proto = 2;
+  reflw.engine.v1.InvocationId invocation_id_proto = 2;
 }
 
 message PurgeInvocationResponse {
@@ -258,7 +258,7 @@ message PurgeInvocationResponse {
 message StartProcessRequest {
   // model_ref.kind is "bpmn" or "cmmn"; model_ref.name is the routing service;
   // model_ref.version pins the model snapshot the worker resolves.
-  reflow.engine.v1.ModelRef model_ref = 1;
+  reflw.engine.v1.ModelRef model_ref = 1;
   // Optional caller-chosen instance key. Empty → the server mints a random one.
   string instance_key = 2;
   // Start variables: a JSON object merged into the new instance.
@@ -291,7 +291,7 @@ message DeliverMessageResponse {
 message GetProcessInstanceRequest {
   // model_ref.name + the caller's tenant + instance_key select the routing
   // partition (model_ref.kind/version are ignored for the read).
-  reflow.engine.v1.ModelRef model_ref = 1;
+  reflw.engine.v1.ModelRef model_ref = 1;
   string instance_key = 2;
 }
 
@@ -302,8 +302,8 @@ message GetProcessInstanceResponse {
   // terminal status until its history window elapses.
   bool present = 1;
   // The remaining fields are meaningful only when present=true.
-  reflow.engine.v1.ProcessStatus status = 2;
-  reflow.engine.v1.ProcessKind kind = 3;
+  reflw.engine.v1.ProcessStatus status = 2;
+  reflw.engine.v1.ProcessKind kind = 3;
   // active_seq is the seq of the turn in flight, or 0 when the instance is idle
   // (parked on a timer or message/signal wait). next_seq is the inbox append
   // cursor; next_seq-1-active_seq is the count of queued-but-not-yet-run events.
@@ -328,9 +328,9 @@ message GetProcessInstanceResponse {
 message ListProcessInstancesRequest {
   // model_ref.name (when set) filters to one model; empty lists every model in
   // the caller's tenant band. model_ref.kind/version are ignored.
-  reflow.engine.v1.ModelRef model_ref = 1;
+  reflw.engine.v1.ModelRef model_ref = 1;
   // Optional status filter; empty = any status.
-  repeated reflow.engine.v1.ProcessStatus status_filter = 2;
+  repeated reflw.engine.v1.ProcessStatus status_filter = 2;
   // Max rows per page; 0 = the server default cap. Doubles as the page size.
   uint32 limit = 3;
   // Optional created_at window [created_after_ms, created_before_ms): keep only
@@ -354,8 +354,8 @@ message ListProcessInstancesResponse {
 message ProcessInstanceSummary {
   string service = 1;
   string instance_key = 2;
-  reflow.engine.v1.ProcessStatus status = 3;
-  reflow.engine.v1.ProcessKind kind = 4;
+  reflw.engine.v1.ProcessStatus status = 3;
+  reflw.engine.v1.ProcessKind kind = 4;
   uint64 active_seq = 5;
   uint64 next_seq = 6;
   uint32 outstanding = 7;
@@ -368,7 +368,7 @@ message ListInvocationsRequest {
   // in the caller's tenant band.
   string service = 1;
   // Optional state filter; empty = any state.
-  repeated reflow.engine.v1.InvocationState state_filter = 2;
+  repeated reflw.engine.v1.InvocationState state_filter = 2;
   // Max rows per page; 0 = the server default cap. Doubles as the page size.
   uint32 limit = 3;
   // Optional created_at window [created_after_ms, created_before_ms): keep only
@@ -391,9 +391,9 @@ message ListInvocationsResponse {
 }
 
 message InvocationSummary {
-  reflow.engine.v1.InvocationId id = 1;
-  reflow.engine.v1.InvocationTarget target = 2;
-  reflow.engine.v1.InvocationState state = 3;
+  reflw.engine.v1.InvocationId id = 1;
+  reflw.engine.v1.InvocationTarget target = 2;
+  reflw.engine.v1.InvocationState state = 3;
   string deployment_id = 4;
   uint64 created_at_ms = 5;
   uint64 completed_at_ms = 6;

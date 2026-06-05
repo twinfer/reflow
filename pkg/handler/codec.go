@@ -33,7 +33,7 @@ import (
 //
 // To layer behaviors (encryption, compression), wrap a base codec —
 // e.g. NewEncryptingCodec(JSONCodec{}, key). Each layer should append a
-// content tag to a metadata sidecar; reflow has no per-entry metadata
+// content tag to a metadata sidecar; reflw has no per-entry metadata
 // channel today, so composition is left to the user.
 type PayloadCodec interface {
 	// Name returns a short, stable identifier for the codec. Used for

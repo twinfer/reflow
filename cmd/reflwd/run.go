@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/twinfer/reflw/internal/bootstrap"
-	"github.com/twinfer/reflw/pkg/reflow"
-	"github.com/twinfer/reflw/pkg/reflow/config"
+	"github.com/twinfer/reflw/pkg/reflw"
+	"github.com/twinfer/reflw/pkg/reflw/config"
 )
 
 // cmdRun is the "reflwd run" subcommand: load layered config and start
@@ -22,8 +22,8 @@ import (
 // earlier):
 //
 //  1. Built-in defaults (single-node, shard 1, sensible ports).
-//  2. Optional config file from $REFLOW_CONFIG (YAML or JSON).
-//  3. REFLOW_* environment variables.
+//  2. Optional config file from $REFLW_CONFIG (YAML or JSON).
+//  3. REFLW_* environment variables.
 //
 // Joiner flags:
 //
@@ -58,7 +58,7 @@ func cmdRun(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	host, err := reflow.Run(ctx, cfg)
+	host, err := reflw.Run(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -73,11 +73,11 @@ func cmdRun(args []string) error {
 // directory under cfg.Storage.DataDir. The on-disk layout (leaf.crt,
 // leaf.key, ca.crt) is what operators wire into cfg.Admin.Creds /
 // cfg.Delivery.Creds / cfg.Ingress.Creds via CertFile/KeyFile/CAFile so
-// the subsequent reflow.Run pick up the freshly-issued material.
+// the subsequent reflw.Run pick up the freshly-issued material.
 //
 // The function exits without starting the engine if it fails — the
 // joiner is expected to retry with corrected flags, not partially boot.
-func runJoinerPreflight(addr, token, pin, extraHostsCSV string, cfg reflow.Config) error {
+func runJoinerPreflight(addr, token, pin, extraHostsCSV string, cfg reflw.Config) error {
 	dir := filepath.Join(cfg.Storage.DataDir, "bootstrap")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)
@@ -147,12 +147,12 @@ func splitCSV(s string) []string {
 }
 
 // loadConfig layers built-in defaults, an optional config file, and
-// REFLOW_* env vars (in that order — later sources win).
-func loadConfig() (reflow.Config, error) {
+// REFLW_* env vars (in that order — later sources win).
+func loadConfig() (reflw.Config, error) {
 	sources := []config.Source{
 		config.FromMap(defaultValues()),
 	}
-	if path := os.Getenv("REFLOW_CONFIG"); path != "" {
+	if path := os.Getenv("REFLW_CONFIG"); path != "" {
 		sources = append(sources, config.FromFile(path))
 	}
 	sources = append(sources, config.FromEnv())
@@ -170,7 +170,7 @@ func defaultValues() map[string]any {
 		"node.id":          uint64(1),
 		"node.raft_addr":   "127.0.0.1:9091",
 		"storage.data_dir": "./data",
-		// Ingress is the user-facing API; reflow.Run starts it
+		// Ingress is the user-facing API; reflw.Run starts it
 		// unconditionally and applies this same default if the operator
 		// leaves Addr empty. Surfaced here so users can see the canonical
 		// port without reading library code.
@@ -180,7 +180,7 @@ func defaultValues() map[string]any {
 		// Admin + snapshot defaults. The admin server starts when
 		// Admin.Addr is set, so leaving it populated is safe for
 		// single-node out of the box. The snapshot producer is disabled
-		// by default (Interval=0); operators opt in via REFLOW_SNAPSHOT_
+		// by default (Interval=0); operators opt in via REFLW_SNAPSHOT_
 		// INTERVAL once they have a sustained DR plan.
 		"admin.addr":           ":8082",
 		"snapshot.retain":      24,

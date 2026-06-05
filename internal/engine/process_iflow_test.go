@@ -9,7 +9,7 @@ import (
 	"github.com/twinfer/reflw/internal/engine/invoker"
 	"github.com/twinfer/reflw/internal/engine/routing"
 	"github.com/twinfer/reflw/internal/storage/keys"
-	iflowengine "github.com/twinfer/reflw/pkg/reflow/iflowengine"
+	"github.com/twinfer/reflw/pkg/reflw/processengine"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
@@ -44,13 +44,13 @@ func hasInvokeNode(invs []*enginev1.TaskInvoke, node string) bool {
 }
 
 // TestProcess_IflowAdapterLifecycle drives a real BPMN model through the real
-// iflowengine.Adapter and the real partition state machine across a full
+// processengine.Adapter and the real partition state machine across a full
 // lifecycle: start -> service-task invoke -> task completion -> terminal reap.
 //
 // The invoker is not run; the service task's completion is delivered as the
 // ProcessEvent{task_completed} the invoker's process_parent branch would itself
 // produce (see TestProcess_ServiceTaskResultFeedsBackToParent for that path).
-// Capability execution is covered by the iflowengine bridge unit tests.
+// Capability execution is covered by the processengine bridge unit tests.
 func TestProcess_IflowAdapterLifecycle(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	const svc, key = "echo", "i1"
@@ -58,11 +58,11 @@ func TestProcess_IflowAdapterLifecycle(t *testing.T) {
 	lp := keys.LPFromPartitionKey(pk)
 	procs, _ := procStore(p)
 
-	res := iflowengine.NewMapResolver()
+	res := processengine.NewMapResolver()
 	if err := res.ParseBPMN("echo", "v1", []byte(echoModelXML)); err != nil {
 		t.Fatalf("parse model: %v", err)
 	}
-	adapter := iflowengine.New(res)
+	adapter := processengine.New(res)
 
 	must := func(idx uint64, cmd *enginev1.Command) {
 		t.Helper()

@@ -98,7 +98,7 @@ func (b *BuiltinIssuer) Issue(_ context.Context, csr *x509.CertificateRequest) (
 // IssuerKey implements certmagic.Issuer. A constant value is correct:
 // every Manager owns a private FileStorage tree, so cross-tenant
 // collisions cannot happen here.
-func (b *BuiltinIssuer) IssuerKey() string { return "reflow-builtin" }
+func (b *BuiltinIssuer) IssuerKey() string { return "reflw-builtin" }
 
 // splitPrincipal parses "<role>/<name>" into a CALeafKind + name. Returns
 // ok=false on anything that doesn't match the expected shape; node, operator,

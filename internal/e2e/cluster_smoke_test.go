@@ -15,15 +15,15 @@ import (
 )
 
 // TestSmoke_ThreeNodeClusterInvocation is the PR-3 capstone: it brings
-// up a 3-node insecure reflowd cluster + a loadhandler sidecar, registers
+// up a 3-node insecure reflwd cluster + a loadhandler sidecar, registers
 // the deployment, submits a single invocation through one node's ingress,
 // and polls until DescribeInvocation reports Completed. Exercises:
 //
-//   - end-to-end cluster bring-up (3 reflowd containers, network DNS,
+//   - end-to-end cluster bring-up (3 reflwd containers, network DNS,
 //     gossip rendezvous, raft election, ingress + admin listeners);
 //   - Config.RegisterDeployment over the admin Connect RPC;
 //   - engine → handler routing across container boundaries (engine in
-//     reflowd-node*, handler in the loadhandler sidecar);
+//     reflwd-node*, handler in the loadhandler sidecar);
 //   - Ingress.SubmitInvocation + Ingress.DescribeInvocation polling.
 func TestSmoke_ThreeNodeClusterInvocation(t *testing.T) {
 	cluster := e2e.NewContainerCluster(t, e2e.ContainerClusterOptions{N: 3, NumShards: 1})

@@ -9,13 +9,13 @@ import (
 
 	"github.com/twinfer/reflw/internal/config"
 	"github.com/twinfer/reflw/internal/loadgen"
-	"github.com/twinfer/reflw/pkg/reflow/iflowengine"
+	"github.com/twinfer/reflw/pkg/reflw/processengine"
 	configv1 "github.com/twinfer/reflw/proto/configv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // validBPMN is a minimal executable process: start → end. Parses and passes
-// iflow static validation.
+// reflwos static validation.
 const validBPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="test">
   <process id="p" isExecutable="true">
@@ -26,9 +26,9 @@ const validBPMN = `<?xml version="1.0" encoding="UTF-8"?>
 </definitions>`
 
 // staticInvalidBPMN is well-formed XML and parses cleanly, but an endEvent with
-// an outgoing flow is a structural defect (iflow BPM001). The shallow
+// an outgoing flow is a structural defect (reflwos BPM001). The shallow
 // well-formed-XML check the config layer applies without an injected validator
-// would accept it; iflowengine.ValidateModel must reject it.
+// would accept it; processengine.ValidateModel must reject it.
 const staticInvalidBPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="test">
   <process id="p" isExecutable="true">
@@ -40,11 +40,11 @@ const staticInvalidBPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </process>
 </definitions>`
 
-// TestConfig_ModelValidationGate verifies the injected iflow validator gates
+// TestConfig_ModelValidationGate verifies the injected reflwos validator gates
 // UpsertModel: a structurally-broken-but-well-formed model is rejected with
 // InvalidArgument and never enters the Raft log (the silent-per-node-reconcile
 // failure the seam closes), while a valid model registers and lists. This is
-// the exact wiring pkg/reflow/run.go installs when the process plane is on.
+// the exact wiring pkg/reflw/run.go installs when the process plane is on.
 func TestConfig_ModelValidationGate(t *testing.T) {
 	cluster := loadgen.NewCluster(t, loadgen.ClusterOptions{N: 1})
 	defer cluster.Close()
@@ -59,7 +59,7 @@ func TestConfig_ModelValidationGate(t *testing.T) {
 	srv, err := config.NewServer(config.Config{
 		Host:          host,
 		Runner:        host.MetadataRunner(),
-		ValidateModel: iflowengine.ValidateModel, // the production injection
+		ValidateModel: processengine.ValidateModel, // the production injection
 	})
 	if err != nil {
 		t.Fatalf("config.NewServer: %v", err)

@@ -1,6 +1,6 @@
 // Package handler is the durable-execution SDK + the handler-side Connect
 // server that hosts it. Authors register handlers in a *Registry, wrap it
-// in NewServer, and Serve on a listener. The reflow engine discovers the
+// in NewServer, and Serve on a listener. The reflw engine discovers the
 // deployment via DiscoveryService.Discover and opens a session over
 // HandlerService.InvokeStream, both Connect RPCs over HTTP/2.
 package handler
@@ -17,7 +17,7 @@ import (
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflw/pkg/handler/wire"
-	"github.com/twinfer/reflw/pkg/reflow/creds"
+	"github.com/twinfer/reflw/pkg/reflw/creds"
 	"github.com/twinfer/reflw/proto/discoveryv1/discoveryv1connect"
 	"github.com/twinfer/reflw/proto/handlerv1/handlerv1connect"
 )
@@ -60,10 +60,10 @@ type Config struct {
 	MaxRecvBytes int
 }
 
-// Server hosts a reflow handler over HTTP/2. Routes:
-//   - /reflow.handler.v1.HandlerService/InvokeStream — bidi-streaming
+// Server hosts a reflw handler over HTTP/2. Routes:
+//   - /reflw.handler.v1.HandlerService/InvokeStream — bidi-streaming
 //     session over Connect.
-//   - /reflow.discovery.v1.DiscoveryService/Discover — capability probe
+//   - /reflw.discovery.v1.DiscoveryService/Discover — capability probe
 //     over Connect.
 //
 // Accepts HTTP/1.1, h2c (engine's bidi path), and HTTP/2 over TLS via

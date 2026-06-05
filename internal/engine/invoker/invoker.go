@@ -46,9 +46,9 @@ type Config struct {
 	// Operators tune via Config.Handlers.EagerStateMaxBytes.
 	EagerStateMaxBytes uint32
 
-	// ProcessEngine runs iflow process/case turns in-process. Nil disables
+	// ProcessEngine runs reflwos process/case turns in-process. Nil disables
 	// process execution (StartProcessTurn drops with a warn). Injected so the
-	// engine package never imports iflow.
+	// engine package never imports reflwos.
 	ProcessEngine ProcessEngine
 
 	// ProcessInstanceTable / ProcessInboxTable back the process-execution path;
@@ -112,7 +112,7 @@ type Invoker struct {
 
 	// Process-execution path. procSessions tracks in-flight process turns
 	// (one per instance, keyed by procSessionKey); processEngine is nil when
-	// no iflow binding is injected.
+	// no reflwos binding is injected.
 	processEngine    ProcessEngine
 	processInstances tables.ProcessInstanceTable
 	processInbox     tables.ProcessInboxTable
@@ -419,7 +419,7 @@ func (i *Invoker) AbortInvocation(id *enginev1.InvocationId) {
 }
 
 // StartProcessTurn spawns a one-shot processSession for the instance: run the
-// iflow engine on event and propose ProcessAdvanced. The apply path serializes
+// reflwos engine on event and propose ProcessAdvanced. The apply path serializes
 // turns per instance via the process inbox, so a session never overlaps another
 // for the same instance under normal operation; a lingering session (e.g. a
 // resume racing a fresh activation) is detected and the duplicate dropped.

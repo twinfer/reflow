@@ -14,11 +14,11 @@ import (
 	"github.com/twinfer/reflw/internal/e2e"
 )
 
-// TestSmoke_SingleNodeReflowdBoots builds the Dockerfile.reflowd image,
-// starts a one-node reflowd container with minimal env-var config, and
+// TestSmoke_SingleNodeReflowdBoots builds the Dockerfile.reflwd image,
+// starts a one-node reflwd container with minimal env-var config, and
 // asserts the ingress listener becomes reachable. Covers the image
 // build path, the e2e doctor preflight, and the env-driven boot of
-// `reflowd run` against a real container — the foundation every later
+// `reflwd run` against a real container — the foundation every later
 // e2e test stacks on.
 func TestSmoke_SingleNodeReflowdBoots(t *testing.T) {
 	e2e.SkipUnlessDocker(t)
@@ -33,12 +33,12 @@ func TestSmoke_SingleNodeReflowdBoots(t *testing.T) {
 		Image: image,
 		Cmd:   []string{"run"},
 		Env: map[string]string{
-			"REFLOW_NODE_ID":        "1",
-			"REFLOW_NODE_RAFT_ADDR": "0.0.0.0:9001",
-			"REFLOW_INGRESS_ADDR":   "0.0.0.0:8080",
+			"REFLW_NODE_ID":        "1",
+			"REFLW_NODE_RAFT_ADDR": "0.0.0.0:9001",
+			"REFLW_INGRESS_ADDR":   "0.0.0.0:8080",
 			// Disable metrics so the test doesn't depend on Prometheus
 			// scrape being ready; ingress liveness is what we assert.
-			"REFLOW_METRICS_DISABLED": "true",
+			"REFLW_METRICS_DISABLED": "true",
 		},
 		ExposedPorts: []string{"8080/tcp"},
 		WaitingFor: wait.ForListeningPort("8080/tcp").
@@ -49,7 +49,7 @@ func TestSmoke_SingleNodeReflowdBoots(t *testing.T) {
 		Started:          true,
 	})
 	if err != nil {
-		t.Fatalf("start reflowd container: %v", err)
+		t.Fatalf("start reflwd container: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = testcontainers.TerminateContainer(c)

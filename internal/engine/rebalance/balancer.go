@@ -33,7 +33,7 @@ type Proposer interface {
 }
 
 // Config is the inert configuration for one Balancer. All fields except
-// Mode are knob values already defaulted by pkg/reflow.withDefaults; the
+// Mode are knob values already defaulted by pkg/reflw.withDefaults; the
 // balancer trusts them.
 type Config struct {
 	Mode                       string

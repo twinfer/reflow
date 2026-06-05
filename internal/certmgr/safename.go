@@ -29,5 +29,5 @@ func safeMeshName(principal string) string {
 		return got
 	}
 	sum := sha256.Sum256([]byte(principal))
-	return "reflow-" + hex.EncodeToString(sum[:8]) + ".mesh"
+	return "reflw-" + hex.EncodeToString(sum[:8]) + ".mesh"
 }

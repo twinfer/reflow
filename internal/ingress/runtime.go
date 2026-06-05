@@ -16,7 +16,7 @@ import (
 )
 
 // Config is the minimum the ingress runtime needs. Mirrors the public
-// pkg/reflow.IngressConfig but kept internal so engine packages don't
+// pkg/reflw.IngressConfig but kept internal so engine packages don't
 // pull in the public surface.
 type Config struct {
 	// Addr is the listen address. Connect content-negotiates Connect /
@@ -31,7 +31,7 @@ type Config struct {
 	// middleware (auth.HTTPMiddleware). REQUIRED — Start returns an
 	// error when nil. Anonymous traffic is permitted only by the policy
 	// (the embedded starter policy includes an ingress_open allow rule
-	// for /reflow.ingress.v1.Ingress/* with no principal restriction),
+	// for /reflw.ingress.v1.Ingress/* with no principal restriction),
 	// not by skipping the middleware. Tests that intentionally bypass
 	// auth must pass an explicit identity passthrough.
 	Middleware func(http.Handler) http.Handler

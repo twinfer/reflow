@@ -11,11 +11,11 @@ import (
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
-// ProcessInstanceTable stores one iflow process/case instance per
+// ProcessInstanceTable stores one reflwos process/case instance per
 // (service, instance_key) at proc/<lp:4><service>/<instance_key>. The value is
-// a ProcessInstanceRecord whose state_blob is the opaque iflow
-// ExecutionState/CaseState — reflow never parses it; only the partition
-// leader's procSession (which links iflow) decodes it to run Advance.
+// a ProcessInstanceRecord whose state_blob is the opaque reflwos
+// ExecutionState/CaseState — reflw never parses it; only the partition
+// leader's procSession (which links reflwos) decodes it to run Advance.
 //
 // Single-writer per instance is the key-lease FSM in
 // internal/engine/object_fsm.go: each inbound ProcessEvent is one serialized

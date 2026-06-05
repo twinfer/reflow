@@ -383,7 +383,7 @@ func (t SecretTable) List() ([]*enginev1.SecretRecord, error) {
 
 // ModelTable persists ModelRecord rows keyed by (kind, name, version). Lives on
 // shard 0 alongside the other cluster-managed config tables. Per-node
-// iflowengine TableResolvers SyncRead-iterate this table on each TableNotifier
+// processengine TableResolvers SyncRead-iterate this table on each TableNotifier
 // wake to re-parse each BPMN/CMMN model into an in-memory graph cache.
 type ModelTable struct{ S storage.Reader }
 

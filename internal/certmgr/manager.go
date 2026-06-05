@@ -1,4 +1,4 @@
-// Package certmgr is the cert-lifecycle layer for reflow's mesh leaves.
+// Package certmgr is the cert-lifecycle layer for reflw's mesh leaves.
 // One Manager per node-process owns a certmagic.Cache + Config backed by
 // a per-node FileStorage tree (locked against concurrent processes), a
 // pluggable Issuer (the BuiltinIssuer wraps internal/pki today; PR 3+
@@ -9,7 +9,7 @@
 // rotations are picked up transparently on the next handshake.
 //
 // CertMagic identifies certs by a "domain name" string that must pass
-// idna.ToASCII; reflow principals contain '/' which fails that check,
+// idna.ToASCII; reflw principals contain '/' which fails that check,
 // so the Manager maps each principal to a deterministic IDNA-clean
 // mesh name (see safeMeshName). The Issuer ignores the inbound CSR's
 // SAN/CN and writes the principal Raw form into the leaf's CN itself.

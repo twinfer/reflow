@@ -16,10 +16,10 @@ import (
 // verifier for. Three steps to add your own:
 //
 //  1. Implement webhook.Verifier (Name + Verify), as below.
-//  2. Register it before reflow.Run with webhook.RegisterVerifier(acmeVerifier{})
+//  2. Register it before reflw.Run with webhook.RegisterVerifier(acmeVerifier{})
 //     (see main). The built-in stripe/github/slack verifiers self-register
 //     the same way from their package init.
-//  3. Reference it by Name() in reflow.Config.Webhooks[].Provider ("acme").
+//  3. Reference it by Name() in reflw.Config.Webhooks[].Provider ("acme").
 //
 // "acme" here is HMAC-SHA256 of the raw body, hex-encoded in an
 // X-Acme-Signature header — swap the header names / algorithm for your

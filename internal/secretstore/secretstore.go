@@ -113,8 +113,8 @@ func (r *Resolver) Lookup(name string) ([]byte, bool) {
 
 // LookupForCASigning is Lookup specialised for the cluster CA signing
 // key resolved via the same Reconcile pipeline. Each call increments
-// reflow_pki_ca_sign_total{name} on hit, or
-// reflow_pki_ca_sign_errors_total{name, reason} on miss; the caller
+// reflw_pki_ca_sign_total{name} on hit, or
+// reflw_pki_ca_sign_errors_total{name, reason} on miss; the caller
 // (certmgr.ClusterIssuer) is expected to emit one audit log entry per
 // signing operation alongside this metric. Per-name labelling is safe
 // here because the row set is bounded (typically one "active" row;

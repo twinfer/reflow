@@ -1,6 +1,6 @@
 # 8. Deployment Architecture
 
-This document describes the deployment options and topology layout of a Reflow cluster.
+This document describes the deployment options and topology layout of a Reflw cluster.
 
 ---
 

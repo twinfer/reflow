@@ -1,7 +1,7 @@
 //go:build e2e
 
 // Package e2e is the containerized end-to-end harness driving real
-// reflowd binaries inside Docker. Chaos, eventsource, kms, and snapshot
+// reflwd binaries inside Docker. Chaos, eventsource, kms, and snapshot
 // suites under internal/e2e/... share this package's primitives.
 //
 // All files carry the e2e build tag so the package is invisible to
@@ -22,26 +22,26 @@ import (
 )
 
 const (
-	reflowdImageRepo     = "reflow/reflowd"
-	reflowdImageTag      = "e2e"
-	loadhandlerImageRepo = "reflow/loadhandler"
+	reflwdImageRepo     = "reflw/reflwd"
+	reflwdImageTag      = "e2e"
+	loadhandlerImageRepo = "reflw/loadhandler"
 	loadhandlerImageTag  = "e2e"
 )
 
 var (
-	reflowdImageOnce sync.Once
-	reflowdImageRef  string
-	reflowdImageErr  error
+	reflwdImageOnce sync.Once
+	reflwdImageRef  string
+	reflwdImageErr  error
 
 	loadhandlerImageOnce sync.Once
 	loadhandlerImageRef  string
 	loadhandlerImageErr  error
 )
 
-// ReflowdImage returns a Docker image reference for the reflowd binary
-// under test. The first call builds via Dockerfile.reflowd at the repo
+// ReflowdImage returns a Docker image reference for the reflwd binary
+// under test. The first call builds via Dockerfile.reflwd at the repo
 // root and caches the resulting tag; subsequent calls in the same
-// `go test` invocation reuse it. CI prebuild + REFLOW_E2E_IMAGE
+// `go test` invocation reuse it. CI prebuild + REFLW_E2E_IMAGE
 // short-circuits the build entirely.
 //
 // Skips the test (rather than failing it) if Docker is unavailable —
@@ -49,28 +49,28 @@ var (
 // passing on hosts without a daemon.
 func ReflowdImage(t testing.TB) string {
 	t.Helper()
-	if env := os.Getenv("REFLOW_E2E_IMAGE"); env != "" {
+	if env := os.Getenv("REFLW_E2E_IMAGE"); env != "" {
 		return env
 	}
-	reflowdImageOnce.Do(func() {
-		reflowdImageRef, reflowdImageErr = buildReflowdImage()
+	reflwdImageOnce.Do(func() {
+		reflwdImageRef, reflwdImageErr = buildReflowdImage()
 	})
-	if reflowdImageErr != nil {
-		t.Skipf("e2e: reflowd image build failed: %v", reflowdImageErr)
+	if reflwdImageErr != nil {
+		t.Skipf("e2e: reflwd image build failed: %v", reflwdImageErr)
 	}
-	return reflowdImageRef
+	return reflwdImageRef
 }
 
 func buildReflowdImage() (string, error) {
-	return buildImage("Dockerfile.reflwd", reflowdImageRepo, reflowdImageTag)
+	return buildImage("Dockerfile.reflwd", reflwdImageRepo, reflwdImageTag)
 }
 
 // LoadhandlerImage returns the Docker image reference for the sidecar
 // handler under test. Same shape as ReflowdImage: cached behind
-// sync.Once, REFLOW_E2E_LOADHANDLER_IMAGE overrides the build.
+// sync.Once, REFLW_E2E_LOADHANDLER_IMAGE overrides the build.
 func LoadhandlerImage(t testing.TB) string {
 	t.Helper()
-	if env := os.Getenv("REFLOW_E2E_LOADHANDLER_IMAGE"); env != "" {
+	if env := os.Getenv("REFLW_E2E_LOADHANDLER_IMAGE"); env != "" {
 		return env
 	}
 	loadhandlerImageOnce.Do(func() {

@@ -11,15 +11,15 @@ import (
 	connect "connectrpc.com/connect"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/twinfer/reflw/pkg/reflowclient"
+	"github.com/twinfer/reflw/pkg/reflwclient"
 	configv1 "github.com/twinfer/reflw/proto/configv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // cmdRegisterModel uploads a BPMN/CMMN/DMN model file into shard 0's ModelTable.
-// The server validates the model (real iflow parse + static validation when the
+// The server validates the model (real reflwos parse + static validation when the
 // process plane is on) and the optional bundle before proposing; each node's
-// iflowengine TableResolver reconciles the row into a parsed graph + decision
+// processengine TableResolver reconciles the row into a parsed graph + decision
 // runtimes + child-ref overrides + historyTimeToLive on the next notifier wake.
 //
 // --bundle is an optional protojson ModelBundle pinning the DMN decisions and
@@ -62,7 +62,7 @@ func cmdRegisterModel(ctx context.Context, args []string) error {
 			return fmt.Errorf("parse bundle json: %w", err)
 		}
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
 		resp, err := cli.Config.UpsertModel(rctx, connect.NewRequest(&configv1.UpsertModelRequest{
 			ModelRef:          &enginev1.ModelRef{Kind: *kind, Name: *name, Version: *version},
 			Xml:               xmlBytes,
@@ -86,7 +86,7 @@ func cmdListModels(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
+	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
 		resp, err := cli.Config.ListModels(ctx, connect.NewRequest(&configv1.ListModelsRequest{}))
 		if err != nil {
 			return err
@@ -124,7 +124,7 @@ func cmdDescribeModel(ctx context.Context, args []string) error {
 	if *name == "" {
 		return errors.New("--name is required")
 	}
-	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
+	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
 		resp, err := cli.Config.DescribeModel(ctx, connect.NewRequest(&configv1.DescribeModelRequest{
 			ModelRef: &enginev1.ModelRef{Kind: *kind, Name: *name, Version: *version},
 		}))
@@ -160,7 +160,7 @@ func cmdDeleteModel(ctx context.Context, args []string) error {
 	if *name == "" {
 		return errors.New("--name is required")
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
 		list, err := cli.Config.ListModels(rctx, connect.NewRequest(&configv1.ListModelsRequest{}))
 		if err != nil {
 			return fmt.Errorf("read revision: %w", err)

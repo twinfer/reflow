@@ -103,19 +103,19 @@ func TestLoad_TransferUnderLoad(t *testing.T) {
 	// Scale knobs — env-overridable so this test doubles as a tunable
 	// probe for the "ship SSTs via IngestAndExcise?" threshold. Defaults
 	// reproduce the committed reference numbers; raise them to push L0:
-	//   REFLOW_LOADTEST_SEED_ROWS        (default 3000)  rows seeded per LP/replica → per-hop SST size
-	//   REFLOW_LOADTEST_SEED_VALUE_BYTES (default 512)   value bytes per seeded row
-	//   REFLOW_LOADTEST_DURATION_SEC     (default 30)    workload + transfer-chain duration
-	//   REFLOW_LOADTEST_LP_COUNT         (default 5)     number of high-LPs chain-transferred
-	//   REFLOW_LOADTEST_HOP_TIMEOUT_SEC  (default 60)    per-hop saga timeout (raise for big SSTs)
-	seedRows := envInt(t, "REFLOW_LOADTEST_SEED_ROWS", 3000)
-	seedValueBytes := envInt(t, "REFLOW_LOADTEST_SEED_VALUE_BYTES", 512)
-	duration := time.Duration(envInt(t, "REFLOW_LOADTEST_DURATION_SEC", 30)) * time.Second
-	hopTimeout := time.Duration(envInt(t, "REFLOW_LOADTEST_HOP_TIMEOUT_SEC", 60)) * time.Second
+	//   REFLW_LOADTEST_SEED_ROWS        (default 3000)  rows seeded per LP/replica → per-hop SST size
+	//   REFLW_LOADTEST_SEED_VALUE_BYTES (default 512)   value bytes per seeded row
+	//   REFLW_LOADTEST_DURATION_SEC     (default 30)    workload + transfer-chain duration
+	//   REFLW_LOADTEST_LP_COUNT         (default 5)     number of high-LPs chain-transferred
+	//   REFLW_LOADTEST_HOP_TIMEOUT_SEC  (default 60)    per-hop saga timeout (raise for big SSTs)
+	seedRows := envInt(t, "REFLW_LOADTEST_SEED_ROWS", 3000)
+	seedValueBytes := envInt(t, "REFLW_LOADTEST_SEED_VALUE_BYTES", 512)
+	duration := time.Duration(envInt(t, "REFLW_LOADTEST_DURATION_SEC", 30)) * time.Second
+	hopTimeout := time.Duration(envInt(t, "REFLW_LOADTEST_HOP_TIMEOUT_SEC", 60)) * time.Second
 
 	// Populated LPs to chain-transfer. All >= FirstTenantedLP (64) so the
 	// band-0 workload never routes to them.
-	transferLPs := buildTransferLPs(envInt(t, "REFLOW_LOADTEST_LP_COUNT", 5))
+	transferLPs := buildTransferLPs(envInt(t, "REFLW_LOADTEST_LP_COUNT", 5))
 	t.Logf("scale: seed_rows=%d seed_value_bytes=%d (~%d KiB/hop SST) duration=%s lp_count=%d hop_timeout=%s",
 		seedRows, seedValueBytes, seedRows*seedValueBytes/1024, duration, len(transferLPs), hopTimeout)
 

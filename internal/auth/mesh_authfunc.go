@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"connectrpc.com/authn"
-	"github.com/twinfer/reflw/pkg/reflow/creds"
+	"github.com/twinfer/reflw/pkg/reflw/creds"
 )
 
 // meshAuthFunc returns an authn.AuthFunc that extracts a Principal

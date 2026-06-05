@@ -4,7 +4,7 @@
 // Unlike awskms / gcpkms, Vault requires an explicit token (and
 // optionally a TLS config) to construct the client, so this package
 // does NOT self-register from init(). Operators opt in by populating
-// cfg.KMS.Vault.TokenFile (and optionally Address); pkg/reflow.Run
+// cfg.KMS.Vault.TokenFile (and optionally Address); pkg/reflw.Run
 // invokes Register at startup if the token file is set.
 //
 // URI form follows Tink's convention:

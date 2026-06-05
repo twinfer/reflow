@@ -12,7 +12,7 @@ import (
 	"github.com/twinfer/reflw/internal/engine/routing"
 	"github.com/twinfer/reflw/internal/ingress"
 	"github.com/twinfer/reflw/pkg/ingressclient"
-	iflowengine "github.com/twinfer/reflw/pkg/reflow/iflowengine"
+	"github.com/twinfer/reflw/pkg/reflw/processengine"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
@@ -39,7 +39,7 @@ const e2eMessageCatchBPMN = `<?xml version="1.0" encoding="UTF-8"?>
 // bringUpHostWithProcessEngine boots a single-node host (shard 0 + shard 1) with
 // the given ProcessEngine wired in and the ingress transport started. Mirrors
 // bringUpHostWithIngress but for the process plane (no handler deployment).
-func bringUpHostWithProcessEngine(t *testing.T, pe *iflowengine.Adapter) (*engine.Host, *ingressclient.Client) {
+func bringUpHostWithProcessEngine(t *testing.T, pe *processengine.Adapter) (*engine.Host, *ingressclient.Client) {
 	t.Helper()
 	dir := t.TempDir()
 	h, err := engine.NewHost(context.Background(), engine.HostConfig{
@@ -97,11 +97,11 @@ func bringUpHostWithProcessEngine(t *testing.T, pe *iflowengine.Adapter) (*engin
 // LookupProcessInstance, the subscribe actuation, and the delivery read path
 // together against real Raft + the real adapter.
 func TestIngress_StartProcessThenDeliverMessage(t *testing.T) {
-	res := iflowengine.NewMapResolver()
+	res := processengine.NewMapResolver()
 	if err := res.ParseBPMN("msgproc", "v1", []byte(e2eMessageCatchBPMN)); err != nil {
 		t.Fatalf("parse model: %v", err)
 	}
-	h, cli := bringUpHostWithProcessEngine(t, iflowengine.New(res))
+	h, cli := bringUpHostWithProcessEngine(t, processengine.New(res))
 
 	const svc, instKey = "msgproc", "o-1"
 	shardID := h.Partitioner().ShardForKey(routing.PartitionKey(svc, instKey))
@@ -205,11 +205,11 @@ func TestIngress_StartProcessThenDeliverMessage(t *testing.T) {
 // parked on its message catch), with service and status filters applied. Single
 // node, so the fan-out resolves every band LP to the one partition shard.
 func TestIngress_ListProcessInstances(t *testing.T) {
-	res := iflowengine.NewMapResolver()
+	res := processengine.NewMapResolver()
 	if err := res.ParseBPMN("msgproc", "v1", []byte(e2eMessageCatchBPMN)); err != nil {
 		t.Fatalf("parse model: %v", err)
 	}
-	_, cli := bringUpHostWithProcessEngine(t, iflowengine.New(res))
+	_, cli := bringUpHostWithProcessEngine(t, processengine.New(res))
 
 	const svc = "msgproc"
 	instKeys := []string{"o-1", "o-2", "o-3"}

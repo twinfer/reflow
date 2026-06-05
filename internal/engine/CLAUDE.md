@@ -33,7 +33,7 @@ Hard rules:
 - **Returning an error from `Update` halts the shard** (dragonboat v4 `statemachine/disk.go:113`). Logical / unknown-command / bad-envelope failures MUST be logged-and-continued; the applied-index still bumps. Only genuine storage failures return.
 - **Don't add new side effects directly to `Update`.** Express them as a new `Action`, drain via the collector, dispatch in `dispatchActions`. Anything proposed back into Raft from the dispatch path needs its own goroutine (the Invoker's session model is the existing template).
 
-Mirrors restate `crates/worker/src/partition/state_machine/actions.rs`. Reflow's set is intentionally narrower — no notification/abort/ingress-response actions; wake path uses respawn-via-`ActInvoke`. Don't reintroduce the missing variants without a concurrent-reader plan.
+Mirrors restate `crates/worker/src/partition/state_machine/actions.rs`. Reflw's set is intentionally narrower — no notification/abort/ingress-response actions; wake path uses respawn-via-`ActInvoke`. Don't reintroduce the missing variants without a concurrent-reader plan.
 
 ## In-batch read coherence
 
@@ -59,7 +59,7 @@ Two callbacks, two goroutines:
 Two failure modes you must keep covered when editing `leadership.go`:
 
 - **Re-run candidacy from both `Follower` and `Candidate`.** Under load, a Candidate whose announce never landed can be re-elected by dragonboat — a Follower-only guard would silently swallow the signal and the partition stays headless. Symptom: invocations stranded in `Scheduled`, observed in `TestChaos_LeaderLoss`.
-- **Bump `leaderEpoch` past `latestAnnouncedEpoch`, not just past our own prior value.** SelfProposal dedup keys are `(leader_epoch, seq)` with no node_id; two leaders sharing an epoch collide on disk, and the new leader's `AnnounceLeader` gets silently dropped as a duplicate. Symptom: raft says we're leader, reflow never knows, partition is headless until restart.
+- **Bump `leaderEpoch` past `latestAnnouncedEpoch`, not just past our own prior value.** SelfProposal dedup keys are `(leader_epoch, seq)` with no node_id; two leaders sharing an epoch collide on disk, and the new leader's `AnnounceLeader` gets silently dropped as a duplicate. Symptom: raft says we're leader, reflw never knows, partition is headless until restart.
 
 Both are commented in `OnRaftLeaderChange`; mirror that level of comment density when you touch this code.
 
@@ -102,7 +102,7 @@ Pebble v1.1.5 detail: `Checkpoint` requires the destination dir **not to exist**
 
 ## Proposer (RaftProposer)
 
-- Wraps `dragonboat.NodeHost.SyncPropose` with reflow envelope framing + dedup stamping.
+- Wraps `dragonboat.NodeHost.SyncPropose` with reflw envelope framing + dedup stamping.
 - OnDisk state machine ⇒ proposals use `GetNoOPSession`, not a regular client session.
 - `SyncPropose` requires a `Context` with a deadline; the proposer attaches a 5s default when the caller didn't.
 - `SetEpoch(epoch)` resets `nextSeq` to 0. Always call it on `onBecomeLeader` / leader-epoch bump. If you change SelfProposal seq allocation, preserve this reset — re-using `(epoch, seq)` triggers dedup absorption (silent message loss).

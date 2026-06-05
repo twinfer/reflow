@@ -291,7 +291,7 @@ func (r *metadataRebalancer) runStep(ctx context.Context, step *enginev1.Rebalan
 // static peer list first and then falling back to the on-disk
 // MembershipTable that RegisterNode populates. The fallback lets the
 // rebalancer add nodes that joined after bootstrap (the
-// `reflowd cluster add-node` workflow).
+// `reflwd cluster add-node` workflow).
 func (r *metadataRebalancer) resolveNodeHostID(nodeID uint64) string {
 	if nhID := r.host.nodeHostIDOf(nodeID); nhID != "" {
 		return nhID

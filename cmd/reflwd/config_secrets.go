@@ -21,7 +21,7 @@ import (
 	tinkkmsblob "github.com/twinfer/reflw/pkg/kms/blob"
 	_ "github.com/twinfer/reflw/pkg/kms/gcpkms"
 
-	"github.com/twinfer/reflw/pkg/reflowclient"
+	"github.com/twinfer/reflw/pkg/reflwclient"
 	configv1 "github.com/twinfer/reflw/proto/configv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
@@ -83,7 +83,7 @@ func cmdInitKEK(ctx context.Context, args []string) error {
 func cmdCreateSecret(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("create-secret", flag.ContinueOnError)
 	name := fs.String("name", "", "secret name (used as AAD and as the SecretTable key; required)")
-	kekURI := fs.String("kek-uri", "", "Tink KMS URI (e.g. blobkms+file:///etc/reflow/kek.bin) (required)")
+	kekURI := fs.String("kek-uri", "", "Tink KMS URI (e.g. blobkms+file:///etc/reflw/kek.bin) (required)")
 	blobURI := fs.String("blob-uri", "", "ciphertext destination URI (gocloud.dev/blob) (required)")
 	input := fs.String("input", "", "read plaintext from this file (default: stdin)")
 	tls := registerTLSFlags(fs)
@@ -118,7 +118,7 @@ func cmdCreateSecret(ctx context.Context, args []string) error {
 			},
 		},
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
 		list, err := cli.Config.ListSecrets(rctx, connect.NewRequest(&configv1.ListSecretsRequest{}))
 		if err != nil {
 			return fmt.Errorf("read revision: %w", err)
@@ -151,7 +151,7 @@ func cmdDeleteSecret(ctx context.Context, args []string) error {
 	if *name == "" {
 		return errors.New("--name is required")
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflowclient.Client) error {
+	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
 		list, err := cli.Config.ListSecrets(rctx, connect.NewRequest(&configv1.ListSecretsRequest{}))
 		if err != nil {
 			return fmt.Errorf("read revision: %w", err)
@@ -178,7 +178,7 @@ func cmdListSecrets(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return tls.withClient(ctx, func(cli *reflowclient.Client) error {
+	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
 		resp, err := cli.Config.ListSecrets(ctx, connect.NewRequest(&configv1.ListSecretsRequest{}))
 		if err != nil {
 			return err

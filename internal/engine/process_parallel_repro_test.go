@@ -9,25 +9,25 @@ import (
 	"github.com/twinfer/reflw/internal/engine/invoker"
 	"github.com/twinfer/reflw/internal/engine/routing"
 	"github.com/twinfer/reflw/internal/storage/keys"
-	iflowengine "github.com/twinfer/reflw/pkg/reflow/iflowengine"
+	"github.com/twinfer/reflw/pkg/reflw/processengine"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // These drive the parallel-join and MI models through the REAL partition state
-// machine + REAL iflowengine adapter, hand-delivering each service-task
+// machine + REAL processengine adapter, hand-delivering each service-task
 // completion the way the invoker's process_parent branch would — isolating
 // adapter-translate + apply-path (inbox cursor, actuation, blob persist/reload)
 // from the invoker/bridge.
 //
 // They were written to localize the durable conformance gaps (parallel join, MI)
 // and PASS — confirming the adapter and apply path were always correct for these
-// shapes. The pure-engine differential (iflow/bpmn/engine_reflow_roundtrip_test.go)
+// shapes. The pure-engine differential (reflwos/bpmn/engine_reflw_roundtrip_test.go)
 // likewise proved ExecutionState round-trips faithfully per turn. The real gap
 // was a lost-wakeup race in invoker.StartProcessTurn — a cursor-driven activation
 // for the next inbox seq was dropped while the prior turn's session was still
 // being reclaimed, freezing any model with concurrent feedback at the join turn —
 // fixed by invoker.redriveActiveTurn. These remain as apply-path regression
-// guards; the race itself is exercised end-to-end by betsyconf's reflow suite.
+// guards; the race itself is exercised end-to-end by betsyconf's reflw suite.
 
 // Start -> parallelGateway(split) -> a, b -> parallelGateway(join) -> End.
 const reproParallelJoinXML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -64,11 +64,11 @@ func TestProcess_Iflow_ParallelJoin_ApplyPath(t *testing.T) {
 	lp := keys.LPFromPartitionKey(pk)
 	procs, _ := procStore(p)
 
-	res := iflowengine.NewMapResolver()
+	res := processengine.NewMapResolver()
 	if err := res.ParseBPMN("pj", "v1", []byte(reproParallelJoinXML)); err != nil {
 		t.Fatalf("parse model: %v", err)
 	}
-	adapter := iflowengine.New(res)
+	adapter := processengine.New(res)
 
 	var idx uint64
 	must := func(cmd *enginev1.Command) {
@@ -157,11 +157,11 @@ func TestProcess_Iflow_MINumeric_ApplyPath(t *testing.T) {
 	lp := keys.LPFromPartitionKey(pk)
 	procs, _ := procStore(p)
 
-	res := iflowengine.NewMapResolver()
+	res := processengine.NewMapResolver()
 	if err := res.ParseBPMN("mi", "v1", []byte(reproMINumericXML)); err != nil {
 		t.Fatalf("parse model: %v", err)
 	}
-	adapter := iflowengine.New(res)
+	adapter := processengine.New(res)
 
 	var idx uint64
 	must := func(cmd *enginev1.Command) {

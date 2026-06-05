@@ -85,7 +85,7 @@ func TestCluster_RegisterNodePersists(t *testing.T) {
 	mem := &enginev1.NodeMembership{
 		NodeId:     3,
 		RaftAddr:   "10.0.0.3:9091",
-		NodeHostId: "reflowd-node-3",
+		NodeHostId: "reflwd-node-3",
 		LastSeenMs: 1700000000,
 	}
 	cmd := &enginev1.Command{

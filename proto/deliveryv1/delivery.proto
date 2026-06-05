@@ -1,6 +1,6 @@
 // Reflow inter-node Delivery service.
 //
-// Every reflowd process hosts a Delivery gRPC server. When a shard's
+// Every reflwd process hosts a Delivery gRPC server. When a shard's
 // leader-side OutboxService sees an OutboxEnvelope whose
 // destination_shard_id does not match the local shard, it dials the
 // destination shard's current leader via this service and streams the
@@ -16,11 +16,11 @@
 //
 // Authorization: every RPC on this service requires a "node" principal.
 // The starter grpc-go authz policy in internal/auth/starter_policy.json
-// restricts /reflow.delivery.v1.Delivery/* to principals matching
+// restricts /reflw.delivery.v1.Delivery/* to principals matching
 // "node/*"; operators may override via Config.Auth.PolicyFile.
 syntax = "proto3";
 
-package reflow.delivery.v1;
+package reflw.delivery.v1;
 
 import "enginev1/engine.proto";
 
@@ -57,7 +57,7 @@ message DeliverRequest {
   uint64 shard_id = 1;
   string producer_id = 2;
   uint64 seq = 3;
-  reflow.engine.v1.Command command = 4;
+  reflw.engine.v1.Command command = 4;
 }
 
 // DeliverResponse is the single reply for a DeliverRequest. The seq

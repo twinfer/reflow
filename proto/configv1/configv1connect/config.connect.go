@@ -4,16 +4,16 @@
 // cluster: handler deployments, event-source bindings, inbound
 // webhook bindings, and the named-secret table consumers reference.
 // It is the developer-facing counterpart to
-// reflow.clusterctl.v1.ClusterCtl (which owns cluster topology, DR,
+// reflw.clusterctl.v1.ClusterCtl (which owns cluster topology, DR,
 // and routing). Naming mirrors Restate's split between
 // `cluster-ctrl` (cluster admin) and `admin` (app config), with the
 // terminology flipped to avoid the overloaded word "admin".
 //
-// Every reflowd process hosts a Config Connect RPC server on the
+// Every reflwd process hosts a Config Connect RPC server on the
 // admin listener (same port as ClusterCtl in step 1; a follow-on may
 // move Config onto its own port if/when we want different network
 // exposure). The server is mTLS-protected; today's starter policy
-// gates /reflow.config.v1.Config/* to operator/* principals — same as
+// gates /reflw.config.v1.Config/* to operator/* principals — same as
 // ClusterCtl. The separation of services is the seam for later
 // delegating Config to a narrower credential (tenant admin, CI
 // service account) without loosening cluster-control authority.
@@ -49,7 +49,7 @@ const _ = connect.IsAtLeastVersion1_13_0
 
 const (
 	// ConfigName is the fully-qualified name of the Config service.
-	ConfigName = "reflow.config.v1.Config"
+	ConfigName = "reflw.config.v1.Config"
 )
 
 // These constants are the fully-qualified names of the RPCs defined in this package. They're
@@ -62,51 +62,51 @@ const (
 const (
 	// ConfigRegisterDeploymentProcedure is the fully-qualified name of the Config's RegisterDeployment
 	// RPC.
-	ConfigRegisterDeploymentProcedure = "/reflow.config.v1.Config/RegisterDeployment"
+	ConfigRegisterDeploymentProcedure = "/reflw.config.v1.Config/RegisterDeployment"
 	// ConfigListDeploymentsProcedure is the fully-qualified name of the Config's ListDeployments RPC.
-	ConfigListDeploymentsProcedure = "/reflow.config.v1.Config/ListDeployments"
+	ConfigListDeploymentsProcedure = "/reflw.config.v1.Config/ListDeployments"
 	// ConfigDescribeDeploymentProcedure is the fully-qualified name of the Config's DescribeDeployment
 	// RPC.
-	ConfigDescribeDeploymentProcedure = "/reflow.config.v1.Config/DescribeDeployment"
+	ConfigDescribeDeploymentProcedure = "/reflw.config.v1.Config/DescribeDeployment"
 	// ConfigDeleteDeploymentProcedure is the fully-qualified name of the Config's DeleteDeployment RPC.
-	ConfigDeleteDeploymentProcedure = "/reflow.config.v1.Config/DeleteDeployment"
+	ConfigDeleteDeploymentProcedure = "/reflw.config.v1.Config/DeleteDeployment"
 	// ConfigUpsertModelProcedure is the fully-qualified name of the Config's UpsertModel RPC.
-	ConfigUpsertModelProcedure = "/reflow.config.v1.Config/UpsertModel"
+	ConfigUpsertModelProcedure = "/reflw.config.v1.Config/UpsertModel"
 	// ConfigListModelsProcedure is the fully-qualified name of the Config's ListModels RPC.
-	ConfigListModelsProcedure = "/reflow.config.v1.Config/ListModels"
+	ConfigListModelsProcedure = "/reflw.config.v1.Config/ListModels"
 	// ConfigDescribeModelProcedure is the fully-qualified name of the Config's DescribeModel RPC.
-	ConfigDescribeModelProcedure = "/reflow.config.v1.Config/DescribeModel"
+	ConfigDescribeModelProcedure = "/reflw.config.v1.Config/DescribeModel"
 	// ConfigDeleteModelProcedure is the fully-qualified name of the Config's DeleteModel RPC.
-	ConfigDeleteModelProcedure = "/reflow.config.v1.Config/DeleteModel"
+	ConfigDeleteModelProcedure = "/reflw.config.v1.Config/DeleteModel"
 	// ConfigUpsertSecretProcedure is the fully-qualified name of the Config's UpsertSecret RPC.
-	ConfigUpsertSecretProcedure = "/reflow.config.v1.Config/UpsertSecret"
+	ConfigUpsertSecretProcedure = "/reflw.config.v1.Config/UpsertSecret"
 	// ConfigDeleteSecretProcedure is the fully-qualified name of the Config's DeleteSecret RPC.
-	ConfigDeleteSecretProcedure = "/reflow.config.v1.Config/DeleteSecret"
+	ConfigDeleteSecretProcedure = "/reflw.config.v1.Config/DeleteSecret"
 	// ConfigListSecretsProcedure is the fully-qualified name of the Config's ListSecrets RPC.
-	ConfigListSecretsProcedure = "/reflow.config.v1.Config/ListSecrets"
+	ConfigListSecretsProcedure = "/reflw.config.v1.Config/ListSecrets"
 	// ConfigUpsertCARootProcedure is the fully-qualified name of the Config's UpsertCARoot RPC.
-	ConfigUpsertCARootProcedure = "/reflow.config.v1.Config/UpsertCARoot"
+	ConfigUpsertCARootProcedure = "/reflw.config.v1.Config/UpsertCARoot"
 	// ConfigDeleteCARootProcedure is the fully-qualified name of the Config's DeleteCARoot RPC.
-	ConfigDeleteCARootProcedure = "/reflow.config.v1.Config/DeleteCARoot"
+	ConfigDeleteCARootProcedure = "/reflw.config.v1.Config/DeleteCARoot"
 	// ConfigListCARootsProcedure is the fully-qualified name of the Config's ListCARoots RPC.
-	ConfigListCARootsProcedure = "/reflow.config.v1.Config/ListCARoots"
+	ConfigListCARootsProcedure = "/reflw.config.v1.Config/ListCARoots"
 	// ConfigCreateJoinTokenProcedure is the fully-qualified name of the Config's CreateJoinToken RPC.
-	ConfigCreateJoinTokenProcedure = "/reflow.config.v1.Config/CreateJoinToken"
+	ConfigCreateJoinTokenProcedure = "/reflw.config.v1.Config/CreateJoinToken"
 	// ConfigDeleteJoinTokenProcedure is the fully-qualified name of the Config's DeleteJoinToken RPC.
-	ConfigDeleteJoinTokenProcedure = "/reflow.config.v1.Config/DeleteJoinToken"
+	ConfigDeleteJoinTokenProcedure = "/reflw.config.v1.Config/DeleteJoinToken"
 	// ConfigListJoinTokensProcedure is the fully-qualified name of the Config's ListJoinTokens RPC.
-	ConfigListJoinTokensProcedure = "/reflow.config.v1.Config/ListJoinTokens"
+	ConfigListJoinTokensProcedure = "/reflw.config.v1.Config/ListJoinTokens"
 	// ConfigIssueOperatorProcedure is the fully-qualified name of the Config's IssueOperator RPC.
-	ConfigIssueOperatorProcedure = "/reflow.config.v1.Config/IssueOperator"
+	ConfigIssueOperatorProcedure = "/reflw.config.v1.Config/IssueOperator"
 	// ConfigUpsertClusterAuthzPolicyProcedure is the fully-qualified name of the Config's
 	// UpsertClusterAuthzPolicy RPC.
-	ConfigUpsertClusterAuthzPolicyProcedure = "/reflow.config.v1.Config/UpsertClusterAuthzPolicy"
+	ConfigUpsertClusterAuthzPolicyProcedure = "/reflw.config.v1.Config/UpsertClusterAuthzPolicy"
 	// ConfigGetClusterAuthzPolicyProcedure is the fully-qualified name of the Config's
 	// GetClusterAuthzPolicy RPC.
-	ConfigGetClusterAuthzPolicyProcedure = "/reflow.config.v1.Config/GetClusterAuthzPolicy"
+	ConfigGetClusterAuthzPolicyProcedure = "/reflw.config.v1.Config/GetClusterAuthzPolicy"
 )
 
-// ConfigClient is a client for the reflow.config.v1.Config service.
+// ConfigClient is a client for the reflw.config.v1.Config service.
 type ConfigClient interface {
 	// RegisterDeployment introduces a new handler deployment to the
 	// cluster. The engine dials <url>, issues a discovery GET to
@@ -130,13 +130,13 @@ type ConfigClient interface {
 	// — in-flight invocations resolve their deployment record per
 	// stream-open, and a delete breaks any open or replaying invocation
 	// pinned to this id. force is the operator's "yes I accept the
-	// risk" acknowledgement; reflow does not currently scan partitions
+	// risk" acknowledgement; reflw does not currently scan partitions
 	// for active references.
 	DeleteDeployment(context.Context, *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error)
 	// UpsertModel / ListModels / DescribeModel / DeleteModel manage shard 0's
 	// ModelTable — BPMN/CMMN model definitions (model_ref + inlined XML). Upsert
 	// parses-to-validate before proposing Command_UpsertModel; the per-node
-	// iflowengine TableResolver reconciles rows into parsed graphs + resolved
+	// processengine TableResolver reconciles rows into parsed graphs + resolved
 	// historyTimeToLive. Leader-only for mutating calls; List/Describe are
 	// SyncRead. DeleteModel takes if_table_revision_eq for CAS (no force gate —
 	// an in-flight instance pins its model_ref and fails on its next turn).
@@ -169,7 +169,7 @@ type ConfigClient interface {
 	// hash + a JoinTokenRecord into shard 0's JoinTokenTable, and
 	// returns the plaintext to the operator exactly once. Subsequent
 	// List calls show only the hash. Operators redeem the plaintext via
-	// `reflowd run --join`. Leader-only.
+	// `reflwd run --join`. Leader-only.
 	CreateJoinToken(context.Context, *connect.Request[configv1.CreateJoinTokenRequest]) (*connect.Response[configv1.CreateJoinTokenResponse], error)
 	// DeleteJoinToken removes a row by hex(token_hash) — surfaces in
 	// ListJoinTokens. Idempotent.
@@ -181,7 +181,7 @@ type ConfigClient interface {
 	// CSR, and receives the signed leaf + CA chain. Authorization is via
 	// the existing operator/* policy gate; the in-server signer is the
 	// same ClusterIssuer the bootstrap listener uses. Leader-only.
-	// Replaces the deleted `reflowd pki issue-operator` flow.
+	// Replaces the deleted `reflwd pki issue-operator` flow.
 	IssueOperator(context.Context, *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error)
 	// UpsertClusterAuthzPolicy replaces shard 0's cluster-wide Cedar authz
 	// policy text (PlatformConfigRecord). The server runs layer-1 schema
@@ -193,7 +193,7 @@ type ConfigClient interface {
 	GetClusterAuthzPolicy(context.Context, *connect.Request[configv1.GetClusterAuthzPolicyRequest]) (*connect.Response[configv1.GetClusterAuthzPolicyResponse], error)
 }
 
-// NewConfigClient constructs a client for the reflow.config.v1.Config service. By default, it uses
+// NewConfigClient constructs a client for the reflw.config.v1.Config service. By default, it uses
 // the Connect protocol with the binary Protobuf Codec, asks for gzipped responses, and sends
 // uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the connect.WithGRPC() or
 // connect.WithGRPCWeb() options.
@@ -351,107 +351,107 @@ type configClient struct {
 	getClusterAuthzPolicy    *connect.Client[configv1.GetClusterAuthzPolicyRequest, configv1.GetClusterAuthzPolicyResponse]
 }
 
-// RegisterDeployment calls reflow.config.v1.Config.RegisterDeployment.
+// RegisterDeployment calls reflw.config.v1.Config.RegisterDeployment.
 func (c *configClient) RegisterDeployment(ctx context.Context, req *connect.Request[configv1.RegisterDeploymentRequest]) (*connect.Response[configv1.RegisterDeploymentResponse], error) {
 	return c.registerDeployment.CallUnary(ctx, req)
 }
 
-// ListDeployments calls reflow.config.v1.Config.ListDeployments.
+// ListDeployments calls reflw.config.v1.Config.ListDeployments.
 func (c *configClient) ListDeployments(ctx context.Context, req *connect.Request[configv1.ListDeploymentsRequest]) (*connect.Response[configv1.ListDeploymentsResponse], error) {
 	return c.listDeployments.CallUnary(ctx, req)
 }
 
-// DescribeDeployment calls reflow.config.v1.Config.DescribeDeployment.
+// DescribeDeployment calls reflw.config.v1.Config.DescribeDeployment.
 func (c *configClient) DescribeDeployment(ctx context.Context, req *connect.Request[configv1.DescribeDeploymentRequest]) (*connect.Response[configv1.DescribeDeploymentResponse], error) {
 	return c.describeDeployment.CallUnary(ctx, req)
 }
 
-// DeleteDeployment calls reflow.config.v1.Config.DeleteDeployment.
+// DeleteDeployment calls reflw.config.v1.Config.DeleteDeployment.
 func (c *configClient) DeleteDeployment(ctx context.Context, req *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error) {
 	return c.deleteDeployment.CallUnary(ctx, req)
 }
 
-// UpsertModel calls reflow.config.v1.Config.UpsertModel.
+// UpsertModel calls reflw.config.v1.Config.UpsertModel.
 func (c *configClient) UpsertModel(ctx context.Context, req *connect.Request[configv1.UpsertModelRequest]) (*connect.Response[configv1.UpsertModelResponse], error) {
 	return c.upsertModel.CallUnary(ctx, req)
 }
 
-// ListModels calls reflow.config.v1.Config.ListModels.
+// ListModels calls reflw.config.v1.Config.ListModels.
 func (c *configClient) ListModels(ctx context.Context, req *connect.Request[configv1.ListModelsRequest]) (*connect.Response[configv1.ListModelsResponse], error) {
 	return c.listModels.CallUnary(ctx, req)
 }
 
-// DescribeModel calls reflow.config.v1.Config.DescribeModel.
+// DescribeModel calls reflw.config.v1.Config.DescribeModel.
 func (c *configClient) DescribeModel(ctx context.Context, req *connect.Request[configv1.DescribeModelRequest]) (*connect.Response[configv1.DescribeModelResponse], error) {
 	return c.describeModel.CallUnary(ctx, req)
 }
 
-// DeleteModel calls reflow.config.v1.Config.DeleteModel.
+// DeleteModel calls reflw.config.v1.Config.DeleteModel.
 func (c *configClient) DeleteModel(ctx context.Context, req *connect.Request[configv1.DeleteModelRequest]) (*connect.Response[configv1.DeleteModelResponse], error) {
 	return c.deleteModel.CallUnary(ctx, req)
 }
 
-// UpsertSecret calls reflow.config.v1.Config.UpsertSecret.
+// UpsertSecret calls reflw.config.v1.Config.UpsertSecret.
 func (c *configClient) UpsertSecret(ctx context.Context, req *connect.Request[configv1.UpsertSecretRequest]) (*connect.Response[configv1.UpsertSecretResponse], error) {
 	return c.upsertSecret.CallUnary(ctx, req)
 }
 
-// DeleteSecret calls reflow.config.v1.Config.DeleteSecret.
+// DeleteSecret calls reflw.config.v1.Config.DeleteSecret.
 func (c *configClient) DeleteSecret(ctx context.Context, req *connect.Request[configv1.DeleteSecretRequest]) (*connect.Response[configv1.DeleteSecretResponse], error) {
 	return c.deleteSecret.CallUnary(ctx, req)
 }
 
-// ListSecrets calls reflow.config.v1.Config.ListSecrets.
+// ListSecrets calls reflw.config.v1.Config.ListSecrets.
 func (c *configClient) ListSecrets(ctx context.Context, req *connect.Request[configv1.ListSecretsRequest]) (*connect.Response[configv1.ListSecretsResponse], error) {
 	return c.listSecrets.CallUnary(ctx, req)
 }
 
-// UpsertCARoot calls reflow.config.v1.Config.UpsertCARoot.
+// UpsertCARoot calls reflw.config.v1.Config.UpsertCARoot.
 func (c *configClient) UpsertCARoot(ctx context.Context, req *connect.Request[configv1.UpsertCARootRequest]) (*connect.Response[configv1.UpsertCARootResponse], error) {
 	return c.upsertCARoot.CallUnary(ctx, req)
 }
 
-// DeleteCARoot calls reflow.config.v1.Config.DeleteCARoot.
+// DeleteCARoot calls reflw.config.v1.Config.DeleteCARoot.
 func (c *configClient) DeleteCARoot(ctx context.Context, req *connect.Request[configv1.DeleteCARootRequest]) (*connect.Response[configv1.DeleteCARootResponse], error) {
 	return c.deleteCARoot.CallUnary(ctx, req)
 }
 
-// ListCARoots calls reflow.config.v1.Config.ListCARoots.
+// ListCARoots calls reflw.config.v1.Config.ListCARoots.
 func (c *configClient) ListCARoots(ctx context.Context, req *connect.Request[configv1.ListCARootsRequest]) (*connect.Response[configv1.ListCARootsResponse], error) {
 	return c.listCARoots.CallUnary(ctx, req)
 }
 
-// CreateJoinToken calls reflow.config.v1.Config.CreateJoinToken.
+// CreateJoinToken calls reflw.config.v1.Config.CreateJoinToken.
 func (c *configClient) CreateJoinToken(ctx context.Context, req *connect.Request[configv1.CreateJoinTokenRequest]) (*connect.Response[configv1.CreateJoinTokenResponse], error) {
 	return c.createJoinToken.CallUnary(ctx, req)
 }
 
-// DeleteJoinToken calls reflow.config.v1.Config.DeleteJoinToken.
+// DeleteJoinToken calls reflw.config.v1.Config.DeleteJoinToken.
 func (c *configClient) DeleteJoinToken(ctx context.Context, req *connect.Request[configv1.DeleteJoinTokenRequest]) (*connect.Response[configv1.DeleteJoinTokenResponse], error) {
 	return c.deleteJoinToken.CallUnary(ctx, req)
 }
 
-// ListJoinTokens calls reflow.config.v1.Config.ListJoinTokens.
+// ListJoinTokens calls reflw.config.v1.Config.ListJoinTokens.
 func (c *configClient) ListJoinTokens(ctx context.Context, req *connect.Request[configv1.ListJoinTokensRequest]) (*connect.Response[configv1.ListJoinTokensResponse], error) {
 	return c.listJoinTokens.CallUnary(ctx, req)
 }
 
-// IssueOperator calls reflow.config.v1.Config.IssueOperator.
+// IssueOperator calls reflw.config.v1.Config.IssueOperator.
 func (c *configClient) IssueOperator(ctx context.Context, req *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error) {
 	return c.issueOperator.CallUnary(ctx, req)
 }
 
-// UpsertClusterAuthzPolicy calls reflow.config.v1.Config.UpsertClusterAuthzPolicy.
+// UpsertClusterAuthzPolicy calls reflw.config.v1.Config.UpsertClusterAuthzPolicy.
 func (c *configClient) UpsertClusterAuthzPolicy(ctx context.Context, req *connect.Request[configv1.UpsertClusterAuthzPolicyRequest]) (*connect.Response[configv1.UpsertClusterAuthzPolicyResponse], error) {
 	return c.upsertClusterAuthzPolicy.CallUnary(ctx, req)
 }
 
-// GetClusterAuthzPolicy calls reflow.config.v1.Config.GetClusterAuthzPolicy.
+// GetClusterAuthzPolicy calls reflw.config.v1.Config.GetClusterAuthzPolicy.
 func (c *configClient) GetClusterAuthzPolicy(ctx context.Context, req *connect.Request[configv1.GetClusterAuthzPolicyRequest]) (*connect.Response[configv1.GetClusterAuthzPolicyResponse], error) {
 	return c.getClusterAuthzPolicy.CallUnary(ctx, req)
 }
 
-// ConfigHandler is an implementation of the reflow.config.v1.Config service.
+// ConfigHandler is an implementation of the reflw.config.v1.Config service.
 type ConfigHandler interface {
 	// RegisterDeployment introduces a new handler deployment to the
 	// cluster. The engine dials <url>, issues a discovery GET to
@@ -475,13 +475,13 @@ type ConfigHandler interface {
 	// — in-flight invocations resolve their deployment record per
 	// stream-open, and a delete breaks any open or replaying invocation
 	// pinned to this id. force is the operator's "yes I accept the
-	// risk" acknowledgement; reflow does not currently scan partitions
+	// risk" acknowledgement; reflw does not currently scan partitions
 	// for active references.
 	DeleteDeployment(context.Context, *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error)
 	// UpsertModel / ListModels / DescribeModel / DeleteModel manage shard 0's
 	// ModelTable — BPMN/CMMN model definitions (model_ref + inlined XML). Upsert
 	// parses-to-validate before proposing Command_UpsertModel; the per-node
-	// iflowengine TableResolver reconciles rows into parsed graphs + resolved
+	// processengine TableResolver reconciles rows into parsed graphs + resolved
 	// historyTimeToLive. Leader-only for mutating calls; List/Describe are
 	// SyncRead. DeleteModel takes if_table_revision_eq for CAS (no force gate —
 	// an in-flight instance pins its model_ref and fails on its next turn).
@@ -514,7 +514,7 @@ type ConfigHandler interface {
 	// hash + a JoinTokenRecord into shard 0's JoinTokenTable, and
 	// returns the plaintext to the operator exactly once. Subsequent
 	// List calls show only the hash. Operators redeem the plaintext via
-	// `reflowd run --join`. Leader-only.
+	// `reflwd run --join`. Leader-only.
 	CreateJoinToken(context.Context, *connect.Request[configv1.CreateJoinTokenRequest]) (*connect.Response[configv1.CreateJoinTokenResponse], error)
 	// DeleteJoinToken removes a row by hex(token_hash) — surfaces in
 	// ListJoinTokens. Idempotent.
@@ -526,7 +526,7 @@ type ConfigHandler interface {
 	// CSR, and receives the signed leaf + CA chain. Authorization is via
 	// the existing operator/* policy gate; the in-server signer is the
 	// same ClusterIssuer the bootstrap listener uses. Leader-only.
-	// Replaces the deleted `reflowd pki issue-operator` flow.
+	// Replaces the deleted `reflwd pki issue-operator` flow.
 	IssueOperator(context.Context, *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error)
 	// UpsertClusterAuthzPolicy replaces shard 0's cluster-wide Cedar authz
 	// policy text (PlatformConfigRecord). The server runs layer-1 schema
@@ -665,7 +665,7 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 		connect.WithSchema(configMethods.ByName("GetClusterAuthzPolicy")),
 		connect.WithHandlerOptions(opts...),
 	)
-	return "/reflow.config.v1.Config/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return "/reflw.config.v1.Config/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ConfigRegisterDeploymentProcedure:
 			configRegisterDeploymentHandler.ServeHTTP(w, r)
@@ -717,81 +717,81 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 type UnimplementedConfigHandler struct{}
 
 func (UnimplementedConfigHandler) RegisterDeployment(context.Context, *connect.Request[configv1.RegisterDeploymentRequest]) (*connect.Response[configv1.RegisterDeploymentResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.RegisterDeployment is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.RegisterDeployment is not implemented"))
 }
 
 func (UnimplementedConfigHandler) ListDeployments(context.Context, *connect.Request[configv1.ListDeploymentsRequest]) (*connect.Response[configv1.ListDeploymentsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.ListDeployments is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.ListDeployments is not implemented"))
 }
 
 func (UnimplementedConfigHandler) DescribeDeployment(context.Context, *connect.Request[configv1.DescribeDeploymentRequest]) (*connect.Response[configv1.DescribeDeploymentResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DescribeDeployment is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.DescribeDeployment is not implemented"))
 }
 
 func (UnimplementedConfigHandler) DeleteDeployment(context.Context, *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DeleteDeployment is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.DeleteDeployment is not implemented"))
 }
 
 func (UnimplementedConfigHandler) UpsertModel(context.Context, *connect.Request[configv1.UpsertModelRequest]) (*connect.Response[configv1.UpsertModelResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.UpsertModel is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.UpsertModel is not implemented"))
 }
 
 func (UnimplementedConfigHandler) ListModels(context.Context, *connect.Request[configv1.ListModelsRequest]) (*connect.Response[configv1.ListModelsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.ListModels is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.ListModels is not implemented"))
 }
 
 func (UnimplementedConfigHandler) DescribeModel(context.Context, *connect.Request[configv1.DescribeModelRequest]) (*connect.Response[configv1.DescribeModelResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DescribeModel is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.DescribeModel is not implemented"))
 }
 
 func (UnimplementedConfigHandler) DeleteModel(context.Context, *connect.Request[configv1.DeleteModelRequest]) (*connect.Response[configv1.DeleteModelResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DeleteModel is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.DeleteModel is not implemented"))
 }
 
 func (UnimplementedConfigHandler) UpsertSecret(context.Context, *connect.Request[configv1.UpsertSecretRequest]) (*connect.Response[configv1.UpsertSecretResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.UpsertSecret is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.UpsertSecret is not implemented"))
 }
 
 func (UnimplementedConfigHandler) DeleteSecret(context.Context, *connect.Request[configv1.DeleteSecretRequest]) (*connect.Response[configv1.DeleteSecretResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DeleteSecret is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.DeleteSecret is not implemented"))
 }
 
 func (UnimplementedConfigHandler) ListSecrets(context.Context, *connect.Request[configv1.ListSecretsRequest]) (*connect.Response[configv1.ListSecretsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.ListSecrets is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.ListSecrets is not implemented"))
 }
 
 func (UnimplementedConfigHandler) UpsertCARoot(context.Context, *connect.Request[configv1.UpsertCARootRequest]) (*connect.Response[configv1.UpsertCARootResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.UpsertCARoot is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.UpsertCARoot is not implemented"))
 }
 
 func (UnimplementedConfigHandler) DeleteCARoot(context.Context, *connect.Request[configv1.DeleteCARootRequest]) (*connect.Response[configv1.DeleteCARootResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DeleteCARoot is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.DeleteCARoot is not implemented"))
 }
 
 func (UnimplementedConfigHandler) ListCARoots(context.Context, *connect.Request[configv1.ListCARootsRequest]) (*connect.Response[configv1.ListCARootsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.ListCARoots is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.ListCARoots is not implemented"))
 }
 
 func (UnimplementedConfigHandler) CreateJoinToken(context.Context, *connect.Request[configv1.CreateJoinTokenRequest]) (*connect.Response[configv1.CreateJoinTokenResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.CreateJoinToken is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.CreateJoinToken is not implemented"))
 }
 
 func (UnimplementedConfigHandler) DeleteJoinToken(context.Context, *connect.Request[configv1.DeleteJoinTokenRequest]) (*connect.Response[configv1.DeleteJoinTokenResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.DeleteJoinToken is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.DeleteJoinToken is not implemented"))
 }
 
 func (UnimplementedConfigHandler) ListJoinTokens(context.Context, *connect.Request[configv1.ListJoinTokensRequest]) (*connect.Response[configv1.ListJoinTokensResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.ListJoinTokens is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.ListJoinTokens is not implemented"))
 }
 
 func (UnimplementedConfigHandler) IssueOperator(context.Context, *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.IssueOperator is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.IssueOperator is not implemented"))
 }
 
 func (UnimplementedConfigHandler) UpsertClusterAuthzPolicy(context.Context, *connect.Request[configv1.UpsertClusterAuthzPolicyRequest]) (*connect.Response[configv1.UpsertClusterAuthzPolicyResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.UpsertClusterAuthzPolicy is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.UpsertClusterAuthzPolicy is not implemented"))
 }
 
 func (UnimplementedConfigHandler) GetClusterAuthzPolicy(context.Context, *connect.Request[configv1.GetClusterAuthzPolicyRequest]) (*connect.Response[configv1.GetClusterAuthzPolicyResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflow.config.v1.Config.GetClusterAuthzPolicy is not implemented"))
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.GetClusterAuthzPolicy is not implemented"))
 }

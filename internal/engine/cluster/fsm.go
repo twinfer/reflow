@@ -1470,7 +1470,7 @@ type (
 	LookupSecrets struct{}
 
 	// LookupModels returns *ModelList — every ModelRecord on shard 0 plus
-	// the table's CAS revision in one SyncRead. The per-node iflowengine
+	// the table's CAS revision in one SyncRead. The per-node processengine
 	// TableResolver calls this on each ModelTable notifier wake.
 	LookupModels struct{}
 

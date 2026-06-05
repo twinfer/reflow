@@ -26,7 +26,7 @@ import (
 // randomObjectKey); any LP >= FirstTenantedLP is therefore never the target of a
 // live invocation, so transferring it cannot misroute traffic. That matters
 // because the in-process loadgen host does NOT run the routing reconciler (only
-// pkg/reflow.Run does), so Host.Partitioner() routes statically and would not
+// pkg/reflw.Run does), so Host.Partitioner() routes statically and would not
 // follow an LP that flipped owners mid-run.
 
 // FirstTenantedLP is the lowest LP in the region reserved for the transfer
@@ -123,7 +123,7 @@ func SeedLPState(cluster *Cluster, shard uint64, lp uint32, svc string, rows, va
 }
 
 // InitiateLPTransfer proposes Command_InitiateLPTransfer on shard 0 via the
-// metadata leader's proposer — the same command the reflowd cluster
+// metadata leader's proposer — the same command the reflwd cluster
 // transfer-lp CLI and the autonomous balancer emit. The lpMover saga on
 // the metadata leader drives the phases. destShard MUST differ from the
 // LP's current owner (the apply arm rejects a self-transfer).

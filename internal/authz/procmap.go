@@ -45,7 +45,9 @@ type procEntry struct {
 // RPC fails tests until it is classified into a plane — no silent authz gap.
 var procMap = map[string]procEntry{
 	// ----- Ingress: data plane -----
-	ingressv1connect.IngressSubmitInvocationProcedure:       {"SubmitInvocation", []string{groupIngress}},
+	// SubmitInvocation has no RPC procedure (it moved to the REST facade
+	// POST /v1/…); its Cedar action still exists and the REST kernel
+	// authorizes against it via Interceptor.AuthorizeIngressAction.
 	ingressv1connect.IngressAwaitInvocationProcedure:        {"AwaitInvocation", []string{groupIngress}},
 	ingressv1connect.IngressAttachInvocationProcedure:       {"AttachInvocation", []string{groupIngress}},
 	ingressv1connect.IngressGetInvocationOutputProcedure:    {"GetInvocationOutput", []string{groupIngress}},
@@ -126,19 +128,27 @@ func isIngressProcedure(procedure string) bool {
 	return slices.Contains(e.groups, groupIngress)
 }
 
-// actionEntity returns the Cedar action UID for a procedure plus its entity
-// carrying the plane-group parent edges, so `action in [Action::"<group>"]`
+// buildActionEntity returns the Cedar action UID for an action id plus its
+// entity carrying the plane-group parent edges, so `action in [Action::"<group>"]`
 // resolves against the entity map (cedar.Authorize never consults the schema).
-// ok is false for an unmapped procedure — the interceptor default-denies those.
+// Shared by actionEntity (the RPC path, keyed on procedure) and the REST
+// facade's Interceptor.AuthorizeIngressAction (keyed on a bare action id).
+func buildActionEntity(action string, groups []string) (cedar.EntityUID, types.Entity) {
+	uid := cedar.NewEntityUID(actionType, cedar.String(action))
+	parents := make([]cedar.EntityUID, len(groups))
+	for i, g := range groups {
+		parents[i] = cedar.NewEntityUID(actionType, cedar.String(g))
+	}
+	return uid, types.Entity{UID: uid, Parents: types.NewEntityUIDSet(parents...)}
+}
+
+// actionEntity returns the action entity for a Connect procedure. ok is false
+// for an unmapped procedure — the interceptor default-denies those.
 func actionEntity(procedure string) (cedar.EntityUID, types.Entity, bool) {
 	e, ok := procMap[procedure]
 	if !ok {
 		return cedar.EntityUID{}, types.Entity{}, false
 	}
-	uid := cedar.NewEntityUID(actionType, cedar.String(e.action))
-	parents := make([]cedar.EntityUID, len(e.groups))
-	for i, g := range e.groups {
-		parents[i] = cedar.NewEntityUID(actionType, cedar.String(g))
-	}
-	return uid, types.Entity{UID: uid, Parents: types.NewEntityUIDSet(parents...)}, true
+	uid, ent := buildActionEntity(e.action, e.groups)
+	return uid, ent, true
 }

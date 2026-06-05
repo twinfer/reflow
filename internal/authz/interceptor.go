@@ -98,6 +98,34 @@ func (i *Interceptor) authorize(ctx context.Context, procedure string) error {
 	return i.deny(principal)
 }
 
+// AuthorizeIngressAction authorizes a REST-facade ingress call (the /v1/*
+// data-plane routes, which are not Connect procedures and so are absent from
+// procMap). action is the bare Cedar action id ("SubmitInvocation",
+// "StartProcess") and groups its plane-group parents (groupIngress) — supplied
+// directly rather than looked up. It evaluates against the singleton Invocation
+// resource, exactly as authorize() does for ingress procedures, and returns a
+// connect.Error (Unauthenticated / PermissionDenied) on denial so the REST
+// kernel maps the code to 401/403.
+func (i *Interceptor) AuthorizeIngressAction(ctx context.Context, action string, groups ...string) error {
+	principal, _ := auth.PrincipalFromContext(ctx)
+	pUID, pEnt := PrincipalEntity(principal)
+	aUID, aEnt := buildActionEntity(action, groups)
+	resUID := InvocationResourceUID
+	resEnt := types.Entity{UID: resUID, Attributes: types.NewRecord(types.RecordMap{
+		"service": types.String(""),
+	})}
+	decision, _ := i.engine.Authorize(cedar.Request{
+		Principal: pUID,
+		Action:    aUID,
+		Resource:  resUID,
+	}, types.EntityMap{pUID: pEnt, aUID: aEnt, resUID: resEnt})
+	if decision == cedar.Allow {
+		return nil
+	}
+	i.log.Warn("authz: denied REST ingress action", "action", action, "principal", principal.String())
+	return i.deny(principal)
+}
+
 // deny maps a denial to the right Connect code: anonymous callers get
 // Unauthenticated (plus a WWW-Authenticate: Bearer challenge when an OIDC path
 // exists), known principals get PermissionDenied. Messages are opaque so authz

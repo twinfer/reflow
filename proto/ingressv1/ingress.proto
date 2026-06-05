@@ -15,9 +15,10 @@ import "enginev1/engine.proto";
 option go_package = "github.com/twinfer/reflw/proto/ingressv1;ingressv1";
 
 service Ingress {
-  // SubmitInvocation enqueues a new invocation. Returns the minted
-  // invocation ID; the caller polls AwaitInvocation for the result.
-  rpc SubmitInvocation(SubmitInvocationRequest) returns (SubmitInvocationResponse);
+  // Submitting an invocation is done over the REST data-plane facade
+  // (POST /v1/{service}[/{object_key}]/{handler}), not an RPC — see
+  // internal/ingress/invoke_http.go. The RPCs below are by-invocation-id
+  // reads/awaits plus the process plane.
 
   // AwaitInvocation blocks (up to deadline) until the named invocation
   // reaches Completed and returns its output. Server-side polling of
@@ -110,35 +111,6 @@ service Ingress {
   // fanning out across the shards owning the band's LPs. Optional model-name and
   // status filters; capped by limit.
   rpc ListProcessInstances(ListProcessInstancesRequest) returns (ListProcessInstancesResponse);
-}
-
-message SubmitInvocationRequest {
-  string service = 1;
-  string handler = 2;
-  // Optional object key. Empty for unkeyed services.
-  string object_key = 3;
-  // Handler input bytes (JSON, proto, anything — the SDK opaquely
-  // passes it through).
-  bytes input = 4;
-  // Optional idempotency key. When set, the engine dedups submissions
-  // against the (service, handler, object_key, idempotency_key) tuple
-  // so a retried Submit returns the same invocation_id.
-  string idempotency_key = 5;
-  // Opaque caller-supplied metadata, persisted with the invocation and
-  // surfaced to the handler via ctx.Metadata(). Typical use is for
-  // webhook-style adapters: an HTTP middleware verifies a vendor
-  // signature (Stripe-Signature, X-GitHub-Event, …) and stashes the
-  // verified facts here so the durable handler can route without
-  // re-verifying. The engine never interprets the values — they ride
-  // along on JEInput and reach the SDK as InputCommandMessage.headers.
-  map<string, string> metadata = 6;
-}
-
-message SubmitInvocationResponse {
-  reflw.engine.v1.InvocationId invocation_id = 1;
-  // String form of the invocation ID, for users that pass it back via URL.
-  // Format: "inv_<partition_key:base16>_<uuid:base32>".
-  string invocation_id_str = 2;
 }
 
 message AwaitInvocationRequest {

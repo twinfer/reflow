@@ -17,32 +17,57 @@ const (
 	awaitPollInterval = 50 * time.Millisecond
 )
 
-// AwaitInvocation polls SyncRead until the named invocation reaches the
-// Completed status or the timeout fires. Uses server-side polling and
-// bounds the wait at awaitMaxTimeout so a stalled handler can't hold
-// the stream open indefinitely.
+// Outcome is the terminal result of an awaited invocation — the shape the
+// AwaitInvocation RPC returns, reused so the REST kernel (invoke_http.go) and
+// the RPC agree. Completed is false when the await timed out before the
+// invocation reached a terminal status.
+type Outcome struct {
+	Output         []byte
+	FailureMessage string
+	FailureCode    uint32
+	Completed      bool
+}
+
+// Await long-polls until the invocation reaches a terminal status or timeoutMs
+// fires (clamped to (0, awaitMaxTimeout]; 0 → awaitMaxTimeout). The non-RPC
+// core extracted from AwaitInvocation; errors are connect.Errors.
+func (s *Server) Await(ctx context.Context, id *enginev1.InvocationId, timeoutMs uint32) (*Outcome, error) {
+	shardID, err := s.shardForID(id)
+	if err != nil {
+		return nil, err
+	}
+	c, err := s.pollUntilCompleted(ctx, id, shardID, timeoutMs)
+	if err != nil {
+		return nil, err
+	}
+	if c == nil {
+		return &Outcome{Completed: false}, nil
+	}
+	return &Outcome{
+		Output:         c.GetOutput(),
+		FailureMessage: c.GetFailureMessage(),
+		FailureCode:    c.GetFailureCode(),
+		Completed:      true,
+	}, nil
+}
+
+// AwaitInvocation is the Connect RPC shell over Await. It bounds the wait at
+// awaitMaxTimeout so a stalled handler can't hold the stream open indefinitely.
 func (s *Server) AwaitInvocation(ctx context.Context, req *connect.Request[ingressv1.AwaitInvocationRequest]) (*connect.Response[ingressv1.AwaitInvocationResponse], error) {
 	msg := req.Msg
 	id, err := resolveID(msg.GetInvocationId(), msg.GetInvocationIdProto())
 	if err != nil {
 		return nil, err
 	}
-	shardID, err := s.shardForID(id)
+	out, err := s.Await(ctx, id, msg.GetTimeoutMs())
 	if err != nil {
 		return nil, err
-	}
-	c, err := s.pollUntilCompleted(ctx, id, shardID, msg.GetTimeoutMs())
-	if err != nil {
-		return nil, err
-	}
-	if c == nil {
-		return connect.NewResponse(&ingressv1.AwaitInvocationResponse{Completed: false}), nil
 	}
 	return connect.NewResponse(&ingressv1.AwaitInvocationResponse{
-		Output:         c.GetOutput(),
-		FailureMessage: c.GetFailureMessage(),
-		FailureCode:    c.GetFailureCode(),
-		Completed:      true,
+		Output:         out.Output,
+		FailureMessage: out.FailureMessage,
+		FailureCode:    out.FailureCode,
+		Completed:      out.Completed,
 	}), nil
 }
 

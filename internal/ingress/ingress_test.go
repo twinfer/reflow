@@ -125,10 +125,12 @@ func bringUpHostWithIngress(t *testing.T, reg *handler.Registry) (*engine.Host, 
 		}
 	}
 
+	ic := testAuthzInterceptor(t)
 	rt, err := ingress.Start(context.Background(), h, ingress.Config{
 		Addr:             "127.0.0.1:0",
 		Middleware:       testIngressMiddleware(t),
-		AuthzInterceptor: testAuthzInterceptor(t),
+		AuthzInterceptor: ic,
+		RESTAuthorizer:   ic,
 	})
 	if err != nil {
 		t.Fatalf("ingress.Start: %v", err)
@@ -154,17 +156,16 @@ func TestIngress_SubmitAndAwaitEcho(t *testing.T) {
 	}
 	_, _, cli := bringUpHostWithIngress(t, reg)
 
-	submitResp, err := cli.SubmitInvocation(context.Background(), connect.NewRequest(&ingressv1.SubmitInvocationRequest{
+	idStr, err := cli.Submit(context.Background(), ingressclient.SubmitArgs{
 		Service: "Echo",
 		Handler: "echo",
 		Input:   []byte("hello"),
-	}))
+	})
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
-	idStr := submitResp.Msg.GetInvocationIdStr()
 	if idStr == "" {
-		t.Fatalf("submit: missing invocation_id_str")
+		t.Fatalf("submit: missing invocation_id")
 	}
 
 	var awaitMsg *ingressv1.AwaitInvocationResponse
@@ -209,17 +210,16 @@ func TestIngress_ListInvocations(t *testing.T) {
 	inputs := []string{"a", "b", "c"}
 	for _, in := range inputs {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		submitResp, err := cli.SubmitInvocation(ctx, connect.NewRequest(&ingressv1.SubmitInvocationRequest{
+		idStr, err := cli.Submit(ctx, ingressclient.SubmitArgs{
 			Service: "Echo",
 			Handler: "echo",
 			Input:   []byte(in),
-		}))
+		})
 		cancel()
 		if err != nil {
 			t.Fatalf("submit %s: %v", in, err)
 		}
 		// Await completion so the row settles into a known COMPLETED state.
-		idStr := submitResp.Msg.GetInvocationIdStr()
 		deadline := time.Now().Add(5 * time.Second)
 		completed := false
 		for time.Now().Before(deadline) {
@@ -343,15 +343,14 @@ func TestIngress_DescribeInvocation(t *testing.T) {
 	}
 	_, _, cli := bringUpHostWithIngress(t, reg)
 
-	submitResp, err := cli.SubmitInvocation(context.Background(), connect.NewRequest(&ingressv1.SubmitInvocationRequest{
+	idStr, err := cli.Submit(context.Background(), ingressclient.SubmitArgs{
 		Service: "Echo",
 		Handler: "echo",
 		Input:   []byte("x"),
-	}))
+	})
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
-	idStr := submitResp.Msg.GetInvocationIdStr()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		desc, err := cli.DescribeInvocation(context.Background(), connect.NewRequest(&ingressv1.DescribeInvocationRequest{InvocationId: idStr}))
@@ -379,15 +378,14 @@ func TestIngress_AttachAndGetOutput(t *testing.T) {
 	}
 	_, _, cli := bringUpHostWithIngress(t, reg)
 
-	submitResp, err := cli.SubmitInvocation(context.Background(), connect.NewRequest(&ingressv1.SubmitInvocationRequest{
+	idStr, err := cli.Submit(context.Background(), ingressclient.SubmitArgs{
 		Service: "Echo",
 		Handler: "echo",
 		Input:   []byte("phase3"),
-	}))
+	})
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
-	idStr := submitResp.Msg.GetInvocationIdStr()
 
 	var attach *ingressv1.AttachInvocationResponse
 	deadline := time.Now().Add(5 * time.Second)
@@ -448,16 +446,15 @@ func TestIngress_GetObjectState(t *testing.T) {
 	}
 	_, _, cli := bringUpHostWithIngress(t, reg)
 
-	submitResp, err := cli.SubmitInvocation(context.Background(), connect.NewRequest(&ingressv1.SubmitInvocationRequest{
+	idStr, err := cli.Submit(context.Background(), ingressclient.SubmitArgs{
 		Service:   "Stater",
 		Handler:   "set",
 		ObjectKey: "obj-1",
 		Input:     []byte("payload"),
-	}))
+	})
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
-	idStr := submitResp.Msg.GetInvocationIdStr()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -502,15 +499,17 @@ func TestIngress_GetObjectState(t *testing.T) {
 	}
 }
 
-// TestIngress_SubmitRejectsEmptyService verifies the InvalidArgument path.
+// TestIngress_SubmitRejectsEmptyService verifies the InvalidArgument path on
+// the server's Submit core directly — an empty service can't be expressed as a
+// valid REST URL, so this exercises the validation at its source.
 func TestIngress_SubmitRejectsEmptyService(t *testing.T) {
 	reg := handler.NewRegistry()
-	_, _, cli := bringUpHostWithIngress(t, reg)
+	_, rt, _ := bringUpHostWithIngress(t, reg)
 
-	_, err := cli.SubmitInvocation(context.Background(), connect.NewRequest(&ingressv1.SubmitInvocationRequest{
+	_, err := rt.Server().Submit(context.Background(), ingress.SubmitArgs{
 		Service: "",
 		Handler: "echo",
-	}))
+	})
 	if err == nil {
 		t.Fatal("submit with empty service unexpectedly OK")
 	}

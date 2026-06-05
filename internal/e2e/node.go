@@ -5,8 +5,10 @@ package e2e
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 	dockerclient "github.com/moby/moby/client"
 	"github.com/testcontainers/testcontainers-go"
 
+	"github.com/twinfer/reflw/internal/ingress"
 	"github.com/twinfer/reflw/internal/loadgen"
 	"github.com/twinfer/reflw/pkg/ingressclient"
 	"github.com/twinfer/reflw/pkg/reflw/creds"
@@ -54,14 +57,26 @@ type ContainerNode struct {
 	paused     bool
 }
 
-// ingressRetryable reports whether an ingress RPC error is a transient
-// transport hiccup worth redialing for. Docker Desktop's port proxy
-// occasionally drops the first stream on a freshly-dialed mTLS HTTP/2
-// connection ("unexpected EOF" → CodeUnavailable); a fresh dial then
-// succeeds. The retrying callers (RegisterHandler, the leadership probe)
-// already absorb this; single-shot ingress calls need to as well.
+// ingressRetryable reports whether an ingress error is a transient transport
+// hiccup worth redialing for. Docker Desktop's port proxy occasionally drops
+// the first stream on a freshly-dialed mTLS HTTP/2 connection ("unexpected
+// EOF"); a fresh dial then succeeds. Handles all three error shapes the ingress
+// surfaces: the REST Submit *HTTPStatusError (retry only 503), Connect RPC
+// errors (retry CodeUnavailable), and raw transport failures on the REST path
+// (any net.Error — these arrive uncoded).
 func ingressRetryable(err error) bool {
-	return connect.CodeOf(err) == connect.CodeUnavailable
+	if err == nil {
+		return false
+	}
+	var he *ingressclient.HTTPStatusError
+	if errors.As(err, &he) {
+		return he.Status == http.StatusServiceUnavailable
+	}
+	if connect.CodeOf(err) == connect.CodeUnavailable {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne)
 }
 
 // dropIngress closes + clears the cached ingress client so the next call
@@ -75,10 +90,10 @@ func (n *ContainerNode) dropIngress() {
 	}
 }
 
-// SubmitInvocation routes through Ingress.SubmitInvocation on this node;
-// the server mints the invocation id and forwards to the destination
-// shard via its Partitioner. Retries on a transient transport error with a
-// fresh connection (see ingressRetryable).
+// SubmitInvocation submits via this node's REST data-plane facade
+// (POST /v1/…); the server mints the invocation id and forwards to the
+// destination shard via its Partitioner. Retries on a transient transport
+// error with a fresh connection (see ingressRetryable).
 func (n *ContainerNode) SubmitInvocation(ctx context.Context, service, handler, objectKey string, input []byte) (*enginev1.InvocationId, error) {
 	var lastErr error
 	for attempt := 0; attempt < 4; attempt++ {
@@ -86,14 +101,18 @@ func (n *ContainerNode) SubmitInvocation(ctx context.Context, service, handler, 
 		if err != nil {
 			return nil, err
 		}
-		resp, err := cli.SubmitInvocation(ctx, connect.NewRequest(&ingressv1.SubmitInvocationRequest{
+		idStr, err := cli.Submit(ctx, ingressclient.SubmitArgs{
 			Service:   service,
 			Handler:   handler,
 			ObjectKey: objectKey,
 			Input:     input,
-		}))
+		})
 		if err == nil {
-			return resp.Msg.GetInvocationId(), nil
+			id, perr := ingress.ParseInvocationID(idStr)
+			if perr != nil {
+				return nil, perr
+			}
+			return id, nil
 		}
 		lastErr = err
 		if !ingressRetryable(err) {

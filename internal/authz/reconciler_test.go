@@ -24,11 +24,13 @@ func (f fakeReader) ClusterAuthzPolicy(_ context.Context) (string, uint64, error
 	return f.text, f.rev, f.err
 }
 
-// anonSubmit returns the engine's decision for an anonymous SubmitInvocation —
-// Allow under the foundational (open-ingress) set, Deny under an
-// operator-only set. Used to observe which policy set is live.
-func anonSubmit(e *Engine) cedar.Decision {
-	return evalReq(e, "/reflw.ingress.v1.Ingress/SubmitInvocation",
+// anonIngress returns the engine's decision for an anonymous ingress call
+// (AwaitInvocation, a representative IngressActions procedure) — Allow under
+// the foundational (open-ingress) set, Deny under an operator-only set. Used to
+// observe which policy set is live. (SubmitInvocation moved to the REST facade
+// and is no longer a Connect procedure; its Cedar action is unchanged.)
+func anonIngress(e *Engine) cedar.Decision {
+	return evalReq(e, "/reflw.ingress.v1.Ingress/AwaitInvocation",
 		auth.Principal{}, TypeInvocation, "svc", nil)
 }
 
@@ -38,8 +40,8 @@ func anonSubmit(e *Engine) cedar.Decision {
 func TestReconcileOnce_EmptyKeepsFoundational(t *testing.T) {
 	e := mustEngine(t, FoundationalClusterPolicies)
 	e.reconcileOnce(context.Background(), fakeReader{text: ""}, testLog)
-	if got := anonSubmit(e); got != cedar.Allow {
-		t.Fatalf("empty reconcile clobbered foundational; anon submit = %v want Allow", got)
+	if got := anonIngress(e); got != cedar.Allow {
+		t.Fatalf("empty reconcile clobbered foundational; anon ingress = %v want Allow", got)
 	}
 }
 
@@ -47,13 +49,13 @@ func TestReconcileOnce_EmptyKeepsFoundational(t *testing.T) {
 // the live set: an operator-only policy makes anonymous ingress Deny.
 func TestReconcileOnce_ValidPolicySwaps(t *testing.T) {
 	e := mustEngine(t, FoundationalClusterPolicies)
-	if got := anonSubmit(e); got != cedar.Allow {
-		t.Fatalf("precondition: anon submit = %v want Allow", got)
+	if got := anonIngress(e); got != cedar.Allow {
+		t.Fatalf("precondition: anon ingress = %v want Allow", got)
 	}
 	e.reconcileOnce(context.Background(),
 		fakeReader{text: `permit (principal is ClusterOperator, action, resource);`, rev: 1}, testLog)
-	if got := anonSubmit(e); got != cedar.Deny {
-		t.Fatalf("operator-only policy not applied; anon submit = %v want Deny", got)
+	if got := anonIngress(e); got != cedar.Deny {
+		t.Fatalf("operator-only policy not applied; anon ingress = %v want Deny", got)
 	}
 }
 
@@ -64,8 +66,8 @@ func TestReconcileOnce_InvalidKeepsPrevious(t *testing.T) {
 	e := mustEngine(t, FoundationalClusterPolicies)
 	e.reconcileOnce(context.Background(),
 		fakeReader{text: `permit (principal is Bogus, action, resource);`, rev: 2}, testLog)
-	if got := anonSubmit(e); got != cedar.Allow {
-		t.Fatalf("invalid policy was applied; anon submit = %v want Allow (foundational kept)", got)
+	if got := anonIngress(e); got != cedar.Allow {
+		t.Fatalf("invalid policy was applied; anon ingress = %v want Allow (foundational kept)", got)
 	}
 }
 
@@ -75,8 +77,8 @@ func TestReconcileOnce_ReadErrorKeepsPrevious(t *testing.T) {
 	e := mustEngine(t, FoundationalClusterPolicies)
 	e.reconcileOnce(context.Background(),
 		fakeReader{err: context.DeadlineExceeded}, testLog)
-	if got := anonSubmit(e); got != cedar.Allow {
-		t.Fatalf("read error disturbed live set; anon submit = %v want Allow", got)
+	if got := anonIngress(e); got != cedar.Allow {
+		t.Fatalf("read error disturbed live set; anon ingress = %v want Allow", got)
 	}
 }
 

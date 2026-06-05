@@ -12,6 +12,7 @@ import (
 
 	"github.com/twinfer/reflw/internal/connectserver"
 	"github.com/twinfer/reflw/internal/engine"
+	"github.com/twinfer/reflw/internal/observability"
 	"github.com/twinfer/reflw/proto/ingressv1/ingressv1connect"
 )
 
@@ -43,11 +44,19 @@ type Config struct {
 	// ExtraRoutes builds additional connectserver.Routes mounted on the
 	// same listener as the Connect ingress. Called once after Start
 	// constructs the in-process Server, so the caller can wire handlers
-	// (notably the REST facade at /v1/*) that need *Server directly.
-	// The caller is responsible for wrapping each handler with the auth
-	// middleware (the same instance passed in Middleware); Start does
-	// not double-wrap.
+	// (notably webhook receivers) that need *Server directly. The caller
+	// is responsible for wrapping each handler with the auth middleware
+	// (the same instance passed in Middleware); Start does not double-wrap.
+	// Webhooks deliberately skip it (HMAC is their gate).
 	ExtraRoutes func(srv *Server) []connectserver.Route
+	// RESTAuthorizer, when non-nil, mounts the first-class REST data-plane
+	// facade (POST /v1/{service}/{handler}[/{key}], /v1/processes/{name},
+	// /v1/cases/{name}) behind Middleware, authorizing each call via Cedar.
+	// *authz.Interceptor satisfies it. Nil disables the REST facade (the
+	// Connect RPCs still serve).
+	RESTAuthorizer IngressAuthorizer
+	// Metrics records IngressRESTRequests for the REST facade. Optional.
+	Metrics *observability.Metrics
 }
 
 // Runtime is a started ingress server. Close it to stop the listener
@@ -82,6 +91,21 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 		connect.WithInterceptors(cfg.AuthzInterceptor, withDefaultDeadline(defaultLookupTimeout)),
 	)
 	routes := []connectserver.Route{{Path: path, Handler: cfg.Middleware(handler)}}
+	if cfg.RESTAuthorizer != nil {
+		ic := InvokeConfig{
+			Invoker:    srv,
+			Starter:    srv,
+			Authorizer: cfg.RESTAuthorizer,
+			Metrics:    cfg.Metrics,
+			Log:        cfg.Log,
+		}
+		routes = append(routes,
+			connectserver.Route{Path: "POST /v1/processes/{name}", Handler: cfg.Middleware(StartProcessHTTP(ic, false))},
+			connectserver.Route{Path: "POST /v1/cases/{name}", Handler: cfg.Middleware(StartProcessHTTP(ic, true))},
+			connectserver.Route{Path: "POST /v1/{service}/{key}/{handler}", Handler: cfg.Middleware(InvokeHTTP(ic, true))},
+			connectserver.Route{Path: "POST /v1/{service}/{handler}", Handler: cfg.Middleware(InvokeHTTP(ic, false))},
+		)
+	}
 	if cfg.ExtraRoutes != nil {
 		routes = append(routes, cfg.ExtraRoutes(srv)...)
 	}

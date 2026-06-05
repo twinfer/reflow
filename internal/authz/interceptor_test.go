@@ -35,7 +35,7 @@ func TestInterceptor_Authorize(t *testing.T) {
 		{"node-deliver-allow", ctx(node), actDeliver, 0},
 		{"node-selfjoin-allow", ctx(node), actSelfJoin, 0},
 		{"node-config-denied", ctx(node), actRegisterDeployment, connect.CodePermissionDenied},
-		{"anon-submit-open", context.Background(), actSubmitInvocation, 0},
+		{"anon-await-open", context.Background(), actAwaitInvocation, 0},
 		{"anon-config-unauth", context.Background(), actRegisterDeployment, connect.CodeUnauthenticated},
 		{"anon-addnode-unauth", context.Background(), actAddNode, connect.CodeUnauthenticated},
 	}

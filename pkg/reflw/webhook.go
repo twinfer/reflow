@@ -14,12 +14,18 @@ import (
 	"github.com/twinfer/reflw/internal/connectserver"
 	"github.com/twinfer/reflw/internal/ingress"
 	"github.com/twinfer/reflw/pkg/webhook"
-	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
 // ingressRPCPrefix is the path the Connect ingress handler mounts on.
 // Webhook routes must not collide with it.
 const ingressRPCPrefix = "/reflw.ingress.v1.Ingress/"
+
+// restFacadePrefix is reserved for the first-class REST data-plane facade
+// (/v1/{service}/{handler}, /v1/processes/{name}, …). Webhook paths must not
+// shadow it: an exact webhook path under /v1/ would out-rank the facade's
+// wildcard routes on the shared ServeMux.
+const restFacadePrefix = "/v1/"
 
 // webhookSubmitTimeout bounds the durable submit independent of the
 // vendor's connection: a sender disconnect must not abort an accepted
@@ -27,10 +33,10 @@ const ingressRPCPrefix = "/reflw.ingress.v1.Ingress/"
 const webhookSubmitTimeout = 15 * time.Second
 
 // invocationSubmitter is the slice of *ingress.Server the webhook adapter
-// uses — just SubmitInvocation. Narrowing to an interface lets the
-// adapter be unit-tested with a fake submitter, no engine host required.
+// uses — just Submit. Narrowing to an interface lets the adapter be
+// unit-tested with a fake submitter, no engine host required.
 type invocationSubmitter interface {
-	SubmitInvocation(ctx context.Context, req *connect.Request[ingressv1.SubmitInvocationRequest]) (*connect.Response[ingressv1.SubmitInvocationResponse], error)
+	Submit(ctx context.Context, a ingress.SubmitArgs) (*enginev1.InvocationId, error)
 }
 
 var _ invocationSubmitter = (*ingress.Server)(nil)
@@ -97,14 +103,14 @@ func webhookHandler(wh WebhookConfig, submit invocationSubmitter, secrets secret
 		// Decouple the durable submit from the vendor's connection.
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), webhookSubmitTimeout)
 		defer cancel()
-		resp, err := submit.SubmitInvocation(ctx, connect.NewRequest(&ingressv1.SubmitInvocationRequest{
+		id, err := submit.Submit(ctx, ingress.SubmitArgs{
 			Service:        wh.Service,
 			Handler:        wh.Handler,
 			ObjectKey:      wh.ObjectKey,
 			Input:          ev.Body,
 			IdempotencyKey: ev.IdempotencyKey,
 			Metadata:       ev.Metadata,
-		}))
+		})
 		if err != nil {
 			code := connect.CodeOf(err)
 			log.Error("webhook: submit failed",
@@ -114,7 +120,7 @@ func webhookHandler(wh WebhookConfig, submit invocationSubmitter, secrets secret
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		_ = json.NewEncoder(w).Encode(map[string]string{"invocation_id": resp.Msg.GetInvocationIdStr()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"invocation_id": ingress.FormatInvocationID(id)})
 	})
 }
 
@@ -152,6 +158,9 @@ func validateWebhooks(whs []WebhookConfig) error {
 		}
 		if strings.HasPrefix(wh.Path, ingressRPCPrefix) {
 			return fmt.Errorf("webhooks[%d]: path %q collides with the ingress RPC prefix %q", i, wh.Path, ingressRPCPrefix)
+		}
+		if strings.HasPrefix(wh.Path, restFacadePrefix) {
+			return fmt.Errorf("webhooks[%d]: path %q collides with the reserved REST facade prefix %q", i, wh.Path, restFacadePrefix)
 		}
 		if _, dup := seen[wh.Path]; dup {
 			return fmt.Errorf("webhooks[%d]: duplicate path %q", i, wh.Path)

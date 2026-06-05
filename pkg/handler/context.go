@@ -31,12 +31,13 @@ type Context interface {
 	// timely shutdown propagates.
 	Context() context.Context
 
-	// Input returns the input payload as passed to SubmitInvocation.
+	// Input returns the input payload as passed at submit time.
 	// Same value on every replay; nil when no input was provided.
 	Input() []byte
 
-	// Metadata returns the caller-supplied map stamped onto the
-	// SubmitInvocationRequest. Read-only at the handler — mutations to
+	// Metadata returns the caller-supplied map stamped at submit time
+	// (the Reflw-Meta-* headers on the REST facade). Read-only at the
+	// handler — mutations to
 	// the returned map are local. Useful for webhook adapters: an HTTP
 	// middleware verifies a vendor signature and stashes the verified
 	// facts (event id, event type, tenant) here so the durable handler

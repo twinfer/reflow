@@ -18,7 +18,6 @@ const (
 	actSelfJoin           = "/reflw.clusterctl.v1.ClusterCtl/SelfJoin"
 	actDeliver            = "/reflw.delivery.v1.Delivery/Deliver"
 	actUploadSST          = "/reflw.delivery.v1.Delivery/UploadLPTransferSST"
-	actSubmitInvocation   = "/reflw.ingress.v1.Ingress/SubmitInvocation"
 	actAwaitInvocation    = "/reflw.ingress.v1.Ingress/AwaitInvocation"
 	actPurgeInvocation    = "/reflw.ingress.v1.Ingress/PurgeInvocation"
 )
@@ -85,18 +84,18 @@ func TestAuthorize_PlaneSeparation(t *testing.T) {
 	}{
 		{"operator-config", operator, actRegisterDeployment, TypeDeploymentRecord, "kafka", cedar.Allow},
 		{"operator-addnode", operator, actAddNode, TypePlatformConfig, "cluster", cedar.Allow},
-		{"operator-submit", operator, actSubmitInvocation, TypeInvocation, "svc", cedar.Allow},
+		{"operator-await", operator, actAwaitInvocation, TypeInvocation, "svc", cedar.Allow},
 		{"node-deliver", node, actDeliver, TypePlatformConfig, "cluster", cedar.Allow},
 		{"node-upload-sst", node, actUploadSST, TypePlatformConfig, "cluster", cedar.Allow},
 		{"node-selfjoin", node, actSelfJoin, TypePlatformConfig, "cluster", cedar.Allow},
 		{"node-config-denied", node, actRegisterDeployment, TypeDeploymentRecord, "kafka", cedar.Deny},
 		{"node-addnode-denied", node, actAddNode, TypePlatformConfig, "cluster", cedar.Deny},
-		{"anon-submit-open", anon, actSubmitInvocation, TypeInvocation, "svc", cedar.Allow},
+		{"anon-await-open", anon, actAwaitInvocation, TypeInvocation, "svc", cedar.Allow},
 		{"anon-config-denied", anon, actRegisterDeployment, TypeDeploymentRecord, "kafka", cedar.Deny},
 		{"anon-addnode-denied", anon, actAddNode, TypePlatformConfig, "cluster", cedar.Deny},
 		// PurgeInvocation rides the ingress listener but is operator-only:
 		// out of IngressActions, so only the operator god-mode rule reaches
-		// it — anonymous/node are denied even though SubmitInvocation isn't.
+		// it — anonymous/node are denied even though AwaitInvocation isn't.
 		{"operator-purge", operator, actPurgeInvocation, TypeInvocation, "svc", cedar.Allow},
 		{"anon-purge-denied", anon, actPurgeInvocation, TypeInvocation, "svc", cedar.Deny},
 		{"node-purge-denied", node, actPurgeInvocation, TypeInvocation, "svc", cedar.Deny},

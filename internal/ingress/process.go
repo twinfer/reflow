@@ -17,46 +17,58 @@ import (
 	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
-// StartProcess launches a new reflwos BPMN/CMMN instance. It routes by
-// (model name, instance_key) — the same scheme the worker's
-// procSession and ChildStart use — and proposes a start ProcessEvent (model_ref
-// + kind set, which makes the apply path create the instance record). When the
-// caller leaves instance_key empty the server mints a random one; a caller-
-// supplied key makes the start idempotent (the apply path drops a start for an
+// StartProcessArgs is the transport-agnostic input to StartProcessCore — the
+// fields the StartProcess RPC carries, shared by the RPC shell and the REST
+// process facade (invoke_http.go). Version may be empty (the REST facade
+// dispatches by name only).
+type StartProcessArgs struct {
+	Name        string
+	Kind        string // "bpmn" | "cmmn"
+	Version     string
+	InstanceKey string
+	Vars        []byte
+}
+
+// StartProcessCore launches a new reflwos BPMN/CMMN instance. It routes by
+// (model name, instance_key) — the same scheme the worker's procSession and
+// ChildStart use — and proposes a start ProcessEvent (model_ref + kind set,
+// which makes the apply path create the instance record). When the caller
+// leaves instance_key empty the server mints a random one; a caller-supplied
+// key makes the start idempotent (the apply path drops a start for an
 // already-existing instance, and the deterministic producerID dedups retries).
-func (s *Server) StartProcess(ctx context.Context, req *connect.Request[ingressv1.StartProcessRequest]) (*connect.Response[ingressv1.StartProcessResponse], error) {
-	msg := req.Msg
-	mr := msg.GetModelRef()
-	if mr.GetName() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("model_ref.name is required"))
+// Returns (partition_key, instance_key). The non-RPC core extracted from the
+// StartProcess RPC; errors are connect.Errors.
+func (s *Server) StartProcessCore(ctx context.Context, a StartProcessArgs) (uint64, string, error) {
+	if a.Name == "" {
+		return 0, "", connect.NewError(connect.CodeInvalidArgument, errors.New("model_ref.name is required"))
 	}
-	kind, err := processKindFromString(mr.GetKind())
+	kind, err := processKindFromString(a.Kind)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return 0, "", connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	instanceKey := msg.GetInstanceKey()
+	instanceKey := a.InstanceKey
 	if instanceKey == "" {
 		k, kerr := mintProcessInstanceKey()
 		if kerr != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("mint instance key: %w", kerr))
+			return 0, "", connect.NewError(connect.CodeInternal, fmt.Errorf("mint instance key: %w", kerr))
 		}
 		instanceKey = k
 	}
 
-	pk := routing.PartitionKey(mr.GetName(), instanceKey)
+	pk := routing.PartitionKey(a.Name, instanceKey)
 	shardID := s.host.Partitioner().ShardForKey(pk)
 	runner := s.host.Partition(shardID)
 	if runner == nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no partition for shard %d", shardID))
+		return 0, "", connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no partition for shard %d", shardID))
 	}
 
 	cmd := &enginev1.Command{Kind: &enginev1.Command_ProcessEvent{ProcessEvent: &enginev1.ProcessEvent{
 		Pk:          pk,
-		Service:     mr.GetName(),
+		Service:     a.Name,
 		InstanceKey: instanceKey,
-		Payload:     &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_External{External: msg.GetVars()}},
-		ModelRef:    mr,
+		Payload:     &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_External{External: a.Vars}},
+		ModelRef:    &enginev1.ModelRef{Kind: a.Kind, Name: a.Name, Version: a.Version},
 		Kind:        kind,
 	}}}
 	// Deterministic per (instance pk, key): a retried StartProcess dedups at the
@@ -65,9 +77,26 @@ func (s *Server) StartProcess(ctx context.Context, req *connect.Request[ingressv
 	producerID := "startproc/" + strconv.FormatUint(pk, 16) + "/" + instanceKey
 	if err := runner.Proposer().ProposeIngress(ctx, producerID, 1, cmd); err != nil {
 		if errors.Is(err, engine.ErrShardClosed) {
-			return nil, connect.NewError(connect.CodeUnavailable, errors.New("shard closed"))
+			return 0, "", connect.NewError(connect.CodeUnavailable, errors.New("shard closed"))
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("propose start process: %w", err))
+		return 0, "", connect.NewError(connect.CodeInternal, fmt.Errorf("propose start process: %w", err))
+	}
+	return pk, instanceKey, nil
+}
+
+// StartProcess is the Connect RPC shell over StartProcessCore.
+func (s *Server) StartProcess(ctx context.Context, req *connect.Request[ingressv1.StartProcessRequest]) (*connect.Response[ingressv1.StartProcessResponse], error) {
+	msg := req.Msg
+	mr := msg.GetModelRef()
+	pk, instanceKey, err := s.StartProcessCore(ctx, StartProcessArgs{
+		Name:        mr.GetName(),
+		Kind:        mr.GetKind(),
+		Version:     mr.GetVersion(),
+		InstanceKey: msg.GetInstanceKey(),
+		Vars:        msg.GetVars(),
+	})
+	if err != nil {
+		return nil, err
 	}
 	return connect.NewResponse(&ingressv1.StartProcessResponse{Pk: pk, InstanceKey: instanceKey}), nil
 }

@@ -4,14 +4,12 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"testing"
 	"time"
 
-	connect "connectrpc.com/connect"
-
 	"github.com/twinfer/reflw/pkg/ingressclient"
 	"github.com/twinfer/reflw/pkg/reflw"
-	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
 // freeAddr returns a free 127.0.0.1 port. Bind-and-release; cheap, fine
@@ -75,20 +73,19 @@ func TestRun_StartsIngressListener(t *testing.T) {
 
 	callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer callCancel()
-	_, err = cli.SubmitInvocation(callCtx, connect.NewRequest(&ingressv1.SubmitInvocationRequest{
+	_, err = cli.Submit(callCtx, ingressclient.SubmitArgs{
 		Service: "Greeter",
 		Handler: "hello",
-	}))
+	})
 	if err == nil {
-		t.Fatal("expected error from SubmitInvocation against unregistered handler; got nil")
+		t.Fatal("expected error from Submit against unregistered handler; got nil")
 	}
-	var connectErr *connect.Error
-	if !errors.As(err, &connectErr) {
-		t.Fatalf("expected *connect.Error; got %v", err)
+	var statusErr *ingressclient.HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("expected *ingressclient.HTTPStatusError; got %v", err)
 	}
-	if connectErr.Code() != connect.CodeFailedPrecondition {
-		t.Fatalf("SubmitInvocation code = %v; want FailedPrecondition: %v",
-			connectErr.Code(), err)
+	if statusErr.Status != http.StatusPreconditionFailed {
+		t.Fatalf("Submit status = %d; want 412 (FailedPrecondition): %v", statusErr.Status, err)
 	}
 }
 

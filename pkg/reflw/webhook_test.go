@@ -18,22 +18,23 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
+	"github.com/twinfer/reflw/internal/ingress"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
-// fakeSubmitter records the SubmitInvocation requests the webhook
-// adapter builds and returns a canned response (or err, when set).
+// fakeSubmitter records the SubmitArgs the webhook adapter builds and
+// returns a canned invocation id (or err, when set).
 type fakeSubmitter struct {
-	reqs []*ingressv1.SubmitInvocationRequest
+	args []ingress.SubmitArgs
 	err  error
 }
 
-func (f *fakeSubmitter) SubmitInvocation(_ context.Context, req *connect.Request[ingressv1.SubmitInvocationRequest]) (*connect.Response[ingressv1.SubmitInvocationResponse], error) {
-	f.reqs = append(f.reqs, req.Msg)
+func (f *fakeSubmitter) Submit(_ context.Context, a ingress.SubmitArgs) (*enginev1.InvocationId, error) {
+	f.args = append(f.args, a)
 	if f.err != nil {
 		return nil, f.err
 	}
-	return connect.NewResponse(&ingressv1.SubmitInvocationResponse{InvocationIdStr: "inv-test-1"}), nil
+	return &enginev1.InvocationId{PartitionKey: 1, Uuid: make([]byte, 16)}, nil
 }
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -84,21 +85,21 @@ func TestWebhookHandler_Success(t *testing.T) {
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("status=%d body=%s; want 202", w.Code, w.Body.String())
 	}
-	if len(fake.reqs) != 1 {
-		t.Fatalf("submitter calls=%d; want 1", len(fake.reqs))
+	if len(fake.args) != 1 {
+		t.Fatalf("submitter calls=%d; want 1", len(fake.args))
 	}
-	got := fake.reqs[0]
-	if got.GetService() != "WebhookRouter" || got.GetHandler() != "OnStripeEvent" {
-		t.Errorf("target=%s/%s; want WebhookRouter/OnStripeEvent", got.GetService(), got.GetHandler())
+	got := fake.args[0]
+	if got.Service != "WebhookRouter" || got.Handler != "OnStripeEvent" {
+		t.Errorf("target=%s/%s; want WebhookRouter/OnStripeEvent", got.Service, got.Handler)
 	}
-	if !bytes.Equal(got.GetInput(), body) {
-		t.Errorf("input mismatch: got %s", got.GetInput())
+	if !bytes.Equal(got.Input, body) {
+		t.Errorf("input mismatch: got %s", got.Input)
 	}
-	if got.GetIdempotencyKey() != "evt_1" {
-		t.Errorf("idempotency_key=%q; want evt_1 (Stripe event id)", got.GetIdempotencyKey())
+	if got.IdempotencyKey != "evt_1" {
+		t.Errorf("idempotency_key=%q; want evt_1 (Stripe event id)", got.IdempotencyKey)
 	}
-	if got.GetMetadata()["webhook_vendor"] != "stripe" {
-		t.Errorf("metadata[webhook_vendor]=%q; want stripe", got.GetMetadata()["webhook_vendor"])
+	if got.Metadata["webhook_vendor"] != "stripe" {
+		t.Errorf("metadata[webhook_vendor]=%q; want stripe", got.Metadata["webhook_vendor"])
 	}
 	var resp map[string]string
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
@@ -122,8 +123,8 @@ func TestWebhookHandler_BadSignature(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status=%d; want 401", w.Code)
 	}
-	if len(fake.reqs) != 0 {
-		t.Errorf("submitter called %d times on bad signature; want 0", len(fake.reqs))
+	if len(fake.args) != 0 {
+		t.Errorf("submitter called %d times on bad signature; want 0", len(fake.args))
 	}
 }
 
@@ -138,7 +139,7 @@ func TestWebhookHandler_MissingSecret(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d; want 503", w.Code)
 	}
-	if len(fake.reqs) != 0 {
+	if len(fake.args) != 0 {
 		t.Errorf("submitter called on missing secret")
 	}
 }
@@ -153,7 +154,7 @@ func TestWebhookHandler_NonPOST(t *testing.T) {
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status=%d; want 405", w.Code)
 	}
-	if len(fake.reqs) != 0 {
+	if len(fake.args) != 0 {
 		t.Errorf("submitter called on GET")
 	}
 }
@@ -196,10 +197,10 @@ func TestWebhookHandler_ForwardsIdempotencyKey(t *testing.T) {
 			t.Fatalf("delivery %d status=%d; want 202", i, w.Code)
 		}
 	}
-	if len(fake.reqs) != 2 {
-		t.Fatalf("submitter calls=%d; want 2", len(fake.reqs))
+	if len(fake.args) != 2 {
+		t.Fatalf("submitter calls=%d; want 2", len(fake.args))
 	}
-	if k0, k1 := fake.reqs[0].GetIdempotencyKey(), fake.reqs[1].GetIdempotencyKey(); k0 != "evt_dup" || k1 != "evt_dup" {
+	if k0, k1 := fake.args[0].IdempotencyKey, fake.args[1].IdempotencyKey; k0 != "evt_dup" || k1 != "evt_dup" {
 		t.Errorf("idempotency keys=%q,%q; want both evt_dup", k0, k1)
 	}
 }

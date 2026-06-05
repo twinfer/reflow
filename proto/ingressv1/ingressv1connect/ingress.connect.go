@@ -42,9 +42,6 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// IngressSubmitInvocationProcedure is the fully-qualified name of the Ingress's SubmitInvocation
-	// RPC.
-	IngressSubmitInvocationProcedure = "/reflw.ingress.v1.Ingress/SubmitInvocation"
 	// IngressAwaitInvocationProcedure is the fully-qualified name of the Ingress's AwaitInvocation RPC.
 	IngressAwaitInvocationProcedure = "/reflw.ingress.v1.Ingress/AwaitInvocation"
 	// IngressResolveAwakeableProcedure is the fully-qualified name of the Ingress's ResolveAwakeable
@@ -85,9 +82,6 @@ const (
 
 // IngressClient is a client for the reflw.ingress.v1.Ingress service.
 type IngressClient interface {
-	// SubmitInvocation enqueues a new invocation. Returns the minted
-	// invocation ID; the caller polls AwaitInvocation for the result.
-	SubmitInvocation(context.Context, *connect.Request[ingressv1.SubmitInvocationRequest]) (*connect.Response[ingressv1.SubmitInvocationResponse], error)
 	// AwaitInvocation blocks (up to deadline) until the named invocation
 	// reaches Completed and returns its output. Server-side polling of
 	// SyncRead today; SSE/streaming is a future evolution.
@@ -180,12 +174,6 @@ func NewIngressClient(httpClient connect.HTTPClient, baseURL string, opts ...con
 	baseURL = strings.TrimRight(baseURL, "/")
 	ingressMethods := ingressv1.File_ingressv1_ingress_proto.Services().ByName("Ingress").Methods()
 	return &ingressClient{
-		submitInvocation: connect.NewClient[ingressv1.SubmitInvocationRequest, ingressv1.SubmitInvocationResponse](
-			httpClient,
-			baseURL+IngressSubmitInvocationProcedure,
-			connect.WithSchema(ingressMethods.ByName("SubmitInvocation")),
-			connect.WithClientOptions(opts...),
-		),
 		awaitInvocation: connect.NewClient[ingressv1.AwaitInvocationRequest, ingressv1.AwaitInvocationResponse](
 			httpClient,
 			baseURL+IngressAwaitInvocationProcedure,
@@ -275,7 +263,6 @@ func NewIngressClient(httpClient connect.HTTPClient, baseURL string, opts ...con
 
 // ingressClient implements IngressClient.
 type ingressClient struct {
-	submitInvocation       *connect.Client[ingressv1.SubmitInvocationRequest, ingressv1.SubmitInvocationResponse]
 	awaitInvocation        *connect.Client[ingressv1.AwaitInvocationRequest, ingressv1.AwaitInvocationResponse]
 	resolveAwakeable       *connect.Client[ingressv1.ResolveAwakeableRequest, ingressv1.ResolveAwakeableResponse]
 	describeInvocation     *connect.Client[ingressv1.DescribeInvocationRequest, ingressv1.DescribeInvocationResponse]
@@ -290,11 +277,6 @@ type ingressClient struct {
 	deliverMessage         *connect.Client[ingressv1.DeliverMessageRequest, ingressv1.DeliverMessageResponse]
 	getProcessInstance     *connect.Client[ingressv1.GetProcessInstanceRequest, ingressv1.GetProcessInstanceResponse]
 	listProcessInstances   *connect.Client[ingressv1.ListProcessInstancesRequest, ingressv1.ListProcessInstancesResponse]
-}
-
-// SubmitInvocation calls reflw.ingress.v1.Ingress.SubmitInvocation.
-func (c *ingressClient) SubmitInvocation(ctx context.Context, req *connect.Request[ingressv1.SubmitInvocationRequest]) (*connect.Response[ingressv1.SubmitInvocationResponse], error) {
-	return c.submitInvocation.CallUnary(ctx, req)
 }
 
 // AwaitInvocation calls reflw.ingress.v1.Ingress.AwaitInvocation.
@@ -369,9 +351,6 @@ func (c *ingressClient) ListProcessInstances(ctx context.Context, req *connect.R
 
 // IngressHandler is an implementation of the reflw.ingress.v1.Ingress service.
 type IngressHandler interface {
-	// SubmitInvocation enqueues a new invocation. Returns the minted
-	// invocation ID; the caller polls AwaitInvocation for the result.
-	SubmitInvocation(context.Context, *connect.Request[ingressv1.SubmitInvocationRequest]) (*connect.Response[ingressv1.SubmitInvocationResponse], error)
 	// AwaitInvocation blocks (up to deadline) until the named invocation
 	// reaches Completed and returns its output. Server-side polling of
 	// SyncRead today; SSE/streaming is a future evolution.
@@ -460,12 +439,6 @@ type IngressHandler interface {
 // and JSON codecs. They also support gzip compression.
 func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (string, http.Handler) {
 	ingressMethods := ingressv1.File_ingressv1_ingress_proto.Services().ByName("Ingress").Methods()
-	ingressSubmitInvocationHandler := connect.NewUnaryHandler(
-		IngressSubmitInvocationProcedure,
-		svc.SubmitInvocation,
-		connect.WithSchema(ingressMethods.ByName("SubmitInvocation")),
-		connect.WithHandlerOptions(opts...),
-	)
 	ingressAwaitInvocationHandler := connect.NewUnaryHandler(
 		IngressAwaitInvocationProcedure,
 		svc.AwaitInvocation,
@@ -552,8 +525,6 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 	)
 	return "/reflw.ingress.v1.Ingress/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case IngressSubmitInvocationProcedure:
-			ingressSubmitInvocationHandler.ServeHTTP(w, r)
 		case IngressAwaitInvocationProcedure:
 			ingressAwaitInvocationHandler.ServeHTTP(w, r)
 		case IngressResolveAwakeableProcedure:
@@ -590,10 +561,6 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 
 // UnimplementedIngressHandler returns CodeUnimplemented from all methods.
 type UnimplementedIngressHandler struct{}
-
-func (UnimplementedIngressHandler) SubmitInvocation(context.Context, *connect.Request[ingressv1.SubmitInvocationRequest]) (*connect.Response[ingressv1.SubmitInvocationResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.SubmitInvocation is not implemented"))
-}
 
 func (UnimplementedIngressHandler) AwaitInvocation(context.Context, *connect.Request[ingressv1.AwaitInvocationRequest]) (*connect.Response[ingressv1.AwaitInvocationResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.AwaitInvocation is not implemented"))

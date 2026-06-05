@@ -21,7 +21,6 @@ import (
 	"github.com/twinfer/reflw/internal/engine"
 	"github.com/twinfer/reflw/internal/engine/routing"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
-	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 	"github.com/twinfer/reflw/proto/ingressv1/ingressv1connect"
 	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 )
@@ -45,21 +44,33 @@ func NewServer(h *engine.Host, log *slog.Logger) *Server {
 	return &Server{host: h, log: log}
 }
 
-// SubmitInvocation mints a fresh InvocationId stamped with the
-// partition_key derived from (service, object_key), then proposes an
-// InvokeCommand via the owning partition's ingress proposer. Returns
-// the id; the caller may poll AwaitInvocation or use AttachInvocation
-// to wait for the result.
-func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingressv1.SubmitInvocationRequest]) (*connect.Response[ingressv1.SubmitInvocationResponse], error) {
-	msg := req.Msg
-	if msg.GetService() == "" || msg.GetHandler() == "" {
+// SubmitArgs is the transport-agnostic input to a durable submit — the
+// fields the former SubmitInvocation RPC carried, shared by the Connect
+// RPC shell and the REST kernel (invoke_http.go) / webhook adapter.
+type SubmitArgs struct {
+	Service        string
+	Handler        string
+	ObjectKey      string
+	Input          []byte
+	IdempotencyKey string
+	Metadata       map[string]string
+}
+
+// Submit mints a fresh InvocationId stamped with the partition_key derived
+// from (service, object_key), then proposes an InvokeCommand via the owning
+// partition's ingress proposer. Returns the id (or a prior id on an
+// idempotency / workflow-key hit). The non-RPC core extracted from the
+// former SubmitInvocation RPC: errors are connect.Errors so every transport
+// maps the same codes.
+func (s *Server) Submit(ctx context.Context, a SubmitArgs) (*enginev1.InvocationId, error) {
+	if a.Service == "" || a.Handler == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("service and handler are required"))
 	}
 
 	target := &enginev1.InvocationTarget{
-		ServiceName: msg.GetService(),
-		HandlerName: msg.GetHandler(),
-		ObjectKey:   msg.GetObjectKey(),
+		ServiceName: a.Service,
+		HandlerName: a.Handler,
+		ObjectKey:   a.ObjectKey,
 	}
 
 	shardID := s.routeToShard(target)
@@ -74,7 +85,7 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 	// new one or proposing again. A losing race (two ingress callers
 	// miss the lookup, both propose) is handled authoritatively in the
 	// apply path's onInvoke: the second InvokeCommand is dropped.
-	if ik := msg.GetIdempotencyKey(); ik != "" {
+	if ik := a.IdempotencyKey; ik != "" {
 		res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupIdempotency{
 			Service:        target.GetServiceName(),
 			Handler:        target.GetHandlerName(),
@@ -83,10 +94,7 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 		})
 		if err == nil {
 			if prior, ok := res.(*enginev1.InvocationId); ok && prior != nil {
-				return connect.NewResponse(&ingressv1.SubmitInvocationResponse{
-					InvocationId:    prior,
-					InvocationIdStr: FormatInvocationID(prior),
-				}), nil
+				return prior, nil
 			}
 		}
 		// SyncRead errors fall through to propose; the apply-path dedup
@@ -123,10 +131,7 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 		})
 		if err == nil {
 			if prior, ok := res.(*enginev1.InvocationId); ok && prior != nil {
-				return connect.NewResponse(&ingressv1.SubmitInvocationResponse{
-					InvocationId:    prior,
-					InvocationIdStr: FormatInvocationID(prior),
-				}), nil
+				return prior, nil
 			}
 		}
 		// SyncRead errors fall through to propose; apply-path dedup is
@@ -141,11 +146,11 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 	cmd := &enginev1.Command{Kind: &enginev1.Command_Invoke{Invoke: &enginev1.InvokeCommand{
 		InvocationId:   id,
 		Target:         target,
-		Input:          msg.GetInput(),
-		IdempotencyKey: msg.GetIdempotencyKey(),
+		Input:          a.Input,
+		IdempotencyKey: a.IdempotencyKey,
 		DeploymentId:   info.DeploymentID,
 		Kind:           info.Kind,
-		Metadata:       msg.GetMetadata(),
+		Metadata:       a.Metadata,
 	}}}
 	producerID := "http/" + FormatInvocationID(id)
 	if err := runner.Proposer().ProposeIngress(ctx, producerID, 1, cmd); err != nil {
@@ -154,10 +159,7 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("propose invoke: %w", err))
 	}
-	return connect.NewResponse(&ingressv1.SubmitInvocationResponse{
-		InvocationId:    id,
-		InvocationIdStr: FormatInvocationID(id),
-	}), nil
+	return id, nil
 }
 
 // routeToShard picks the owning partition for a target by hashing

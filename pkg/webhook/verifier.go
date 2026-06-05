@@ -61,11 +61,11 @@ type Verifier interface {
 // VerifiedEvent is the result of a successful signature check.
 //
 // Body holds the buffered, signature-verified request bytes. The
-// adapter uses this as SubmitInvocationRequest.Input — passing the
-// verified bytes (not re-reading r.Body) ensures the payload that got
-// dispatched is exactly the one whose signature passed.
+// adapter uses this as the submit Input — passing the verified bytes
+// (not re-reading r.Body) ensures the payload that got dispatched is
+// exactly the one whose signature passed.
 //
-// Metadata becomes SubmitInvocationRequest.metadata and flows durable
+// Metadata becomes the submit metadata and flows durable
 // to the handler's ctx.Metadata() (Scheduled.metadata → JEInput.metadata
 // → InputCommandMessage.headers). Convention: every verifier stamps
 // MetadataKeyVendor so handlers can branch on origin without parsing
@@ -73,8 +73,8 @@ type Verifier interface {
 //
 // IdempotencyKey is a best-effort stable event identifier (GitHub's
 // X-GitHub-Delivery, the Stripe/Slack event id). When non-empty the
-// adapter sets it as SubmitInvocationRequest.idempotency_key so the
-// engine dedups vendor retries to a single invocation. Empty means no
+// adapter sets it as the submit idempotency key so the engine dedups
+// vendor retries to a single invocation. Empty means no
 // submit-level dedup — correctness is unaffected.
 type VerifiedEvent struct {
 	Body           []byte

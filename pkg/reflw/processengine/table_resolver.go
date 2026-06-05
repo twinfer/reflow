@@ -163,22 +163,52 @@ func (r *TableResolver) Reconcile(records []*enginev1.ModelRecord) {
 	defer r.reconcileMu.Unlock()
 	prev := r.live.Load()
 
-	// First pass: compile every DMN row into a runtime. A DMN that fails to
-	// compile is skipped here; a model referencing it then fails its second-pass
-	// parse and preserves-prev.
-	dmnRuntimes := make(map[modelKey]*dmn.Runtime)
+	// First pass (a): parse every DMN row's definitions, keyed by ref. Parsing
+	// here (not compiling yet) lets the import resolver hand back already-parsed
+	// defs with no further I/O — the no-per-turn-I/O contract holds because all of
+	// this runs at reconcile, off the apply path.
+	dmnDefs := make(map[modelKey]*dmn.Definitions)
 	for _, rec := range records {
 		ref := rec.GetModelRef()
 		if ref.GetKind() != "dmn" || ref.GetName() == "" {
 			continue
 		}
-		rt, err := dmn.NewRuntime(rec.GetXml())
+		d, err := dmn.Parse(rec.GetXml())
 		if err != nil {
-			r.log.Warn("processengine: dmn compile failed; dependent models will preserve-prev",
+			r.log.Warn("processengine: dmn parse failed; dependent models will preserve-prev",
 				"name", ref.GetName(), "version", ref.GetVersion(), "err", err)
 			continue
 		}
-		dmnRuntimes[keyOf(ref)] = rt
+		dmnDefs[keyOf(ref)] = d
+	}
+
+	// First pass (b): build the pins-only import resolver. The namespace→defs map
+	// is the UNION of every row's bundle.imports pins (computed at registration by
+	// RegisterModelSet). There is deliberately NO namespace-index fallback: an
+	// import resolves only to the exact ref it was pinned to. A cross-row
+	// collision on a namespace (version churn) is broken deterministically toward
+	// the greatest ref so every node's cache converges.
+	importDefs := buildImportDefs(records, dmnDefs)
+	resolver := func(namespace, _ /*locationURI*/, _ /*baseDir*/ string) (*dmn.Definitions, error) {
+		if d := importDefs[namespace]; d != nil {
+			return d, nil
+		}
+		return nil, fmt.Errorf("%w: dmn import namespace %q (no bundle pin)", ErrModelNotFound, namespace)
+	}
+
+	// First pass (c): compile each DMN with the resolver so imported types
+	// resolve. NewRuntimeFromModel reuses the parsed defs — no double parse. A DMN
+	// that fails to compile (e.g. an unpinned import) is skipped; a model
+	// referencing it then fails its second-pass parse and preserves-prev.
+	dmnRuntimes := make(map[modelKey]*dmn.Runtime, len(dmnDefs))
+	for key, d := range dmnDefs {
+		rt, err := dmn.NewRuntimeFromModel(d, dmn.WithModelResolver(resolver))
+		if err != nil {
+			r.log.Warn("processengine: dmn compile failed; dependent models will preserve-prev",
+				"name", key.name, "version", key.version, "err", err)
+			continue
+		}
+		dmnRuntimes[key] = rt
 	}
 
 	// Second pass: materialize BPMN/CMMN models (DMN rows are consumed above, not
@@ -259,4 +289,42 @@ func resolveChildren(b *enginev1.ModelBundle) map[string]*enginev1.ModelRef {
 	out := make(map[string]*enginev1.ModelRef, len(b.GetChildren()))
 	maps.Copy(out, b.GetChildren())
 	return out
+}
+
+// buildImportDefs aggregates every model's bundle.imports pins into a single
+// namespace→defs map. There is no namespace-index fallback — only pinned edges
+// resolve. On a cross-row collision (two rows pinning the same namespace to
+// different refs — version churn) the greatest ref wins, so every node converges
+// on the same map regardless of record iteration order.
+func buildImportDefs(records []*enginev1.ModelRecord, dmnDefs map[modelKey]*dmn.Definitions) map[string]*dmn.Definitions {
+	chosen := make(map[string]*enginev1.ModelRef)
+	for _, rec := range records {
+		for ns, ref := range rec.GetBundle().GetImports() {
+			if ref.GetName() == "" {
+				continue
+			}
+			if cur, ok := chosen[ns]; !ok || refLess(cur, ref) {
+				chosen[ns] = ref
+			}
+		}
+	}
+	out := make(map[string]*dmn.Definitions, len(chosen))
+	for ns, ref := range chosen {
+		if d := dmnDefs[keyOf(ref)]; d != nil {
+			out[ns] = d
+		}
+	}
+	return out
+}
+
+// refLess orders ModelRefs by (kind, name, version) for a deterministic
+// collision tiebreak.
+func refLess(a, b *enginev1.ModelRef) bool {
+	if a.GetKind() != b.GetKind() {
+		return a.GetKind() < b.GetKind()
+	}
+	if a.GetName() != b.GetName() {
+		return a.GetName() < b.GetName()
+	}
+	return a.GetVersion() < b.GetVersion()
 }

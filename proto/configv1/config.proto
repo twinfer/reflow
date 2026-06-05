@@ -63,14 +63,19 @@ service Config {
   // for active references.
   rpc DeleteDeployment(DeleteDeploymentRequest) returns (DeleteDeploymentResponse);
 
-  // UpsertModel / ListModels / DescribeModel / DeleteModel manage shard 0's
-  // ModelTable — BPMN/CMMN model definitions (model_ref + inlined XML). Upsert
-  // parses-to-validate before proposing Command_UpsertModel; the per-node
-  // processengine TableResolver reconciles rows into parsed graphs + resolved
-  // historyTimeToLive. Leader-only for mutating calls; List/Describe are
-  // SyncRead. DeleteModel takes if_table_revision_eq for CAS (no force gate —
+  // RegisterModelSet / ListModels / DescribeModel / DeleteModel manage shard 0's
+  // ModelTable — BPMN/CMMN/DMN model definitions (model_ref + inlined XML).
+  // RegisterModelSet atomically registers a model plus its transitively-
+  // referenced dependencies: the server parses every entry, auto-derives each
+  // model's bundle (DMN imports, BusinessRuleTask decisions, child processes/
+  // cases), validates the set ∪ existing-table is dependency-closed and
+  // cycle-free, and proposes one Command_UpsertModelSet under a single CAS. A
+  // one-entry set is a single-model register. The per-node processengine
+  // TableResolver reconciles rows into parsed graphs + decision/import resolvers
+  // + resolved historyTimeToLive. Leader-only for mutating calls; List/Describe
+  // are SyncRead. DeleteModel takes if_table_revision_eq for CAS (no force gate —
   // an in-flight instance pins its model_ref and fails on its next turn).
-  rpc UpsertModel(UpsertModelRequest) returns (UpsertModelResponse);
+  rpc RegisterModelSet(RegisterModelSetRequest) returns (RegisterModelSetResponse);
   rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
   rpc DescribeModel(DescribeModelRequest) returns (DescribeModelResponse);
   rpc DeleteModel(DeleteModelRequest) returns (DeleteModelResponse);
@@ -176,17 +181,22 @@ message DeleteDeploymentResponse {
   uint64 table_revision = 1;
 }
 
-// Model registration (shard 0 ModelTable). model_ref pins kind+name+version;
-// xml is the BPMN/CMMN source the server parses-to-validate before proposing.
-message UpsertModelRequest {
+// Model registration (shard 0 ModelTable). Each ModelSetEntry pins
+// kind+name+version + the BPMN/CMMN/DMN XML source. The server derives the
+// bundle (decisions/children/imports) for every entry — clients never author
+// bundles. A RegisterModelSetRequest is the model + its dependency closure;
+// the server validates the closure (set ∪ existing table) before proposing.
+message ModelSetEntry {
   reflw.engine.v1.ModelRef model_ref = 1;
   bytes xml = 2;
-  uint64 if_table_revision_eq = 3;
-  // bundle is the optional decision/child ref-resolution map stored on the
-  // ModelRecord (decisions → kind=dmn refs, children → kind=bpmn/cmmn refs).
-  reflw.engine.v1.ModelBundle bundle = 4;
 }
-message UpsertModelResponse {
+message RegisterModelSetRequest {
+  repeated ModelSetEntry entries = 1;
+  // if_table_revision_eq guards the whole set against a concurrent ModelTable
+  // change between the server's closure read and the apply (0 disables CAS).
+  uint64 if_table_revision_eq = 2;
+}
+message RegisterModelSetResponse {
   uint64 table_revision = 1;
 }
 message ListModelsRequest {}

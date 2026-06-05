@@ -164,13 +164,14 @@ message Command {
     // Accepted only by shardID=0.
     UpsertSecret upsert_secret = 25;
     DeleteSecret delete_secret = 26;
-    // UpsertModel / DeleteModel carry shard-0 ModelTable rows — BPMN/CMMN
-    // model definitions (model_ref + inlined XML) the per-node processengine
-    // TableResolver reconciles into parsed graphs + resolved
-    // historyTimeToLive. Same CAS + notifier semantics as the secret pair;
-    // the XML is inlined (models are KB-scale deployment artifacts, like a
-    // discovery manifest). Accepted only by shardID=0.
-    UpsertModel upsert_model = 52;
+    // UpsertModelSet / DeleteModel carry shard-0 ModelTable rows — BPMN/CMMN/DMN
+    // model definitions (model_ref + inlined XML + computed bundle) the per-node
+    // processengine TableResolver reconciles into parsed graphs + decision/import
+    // resolvers + resolved historyTimeToLive. Same CAS + notifier semantics as
+    // the secret pair; the XML is inlined (models are KB-scale deployment
+    // artifacts, like a discovery manifest). UpsertModelSet writes a model plus
+    // its dependency closure in one atomic apply. Accepted only by shardID=0.
+    UpsertModelSet upsert_model_set = 54;
     DeleteModel delete_model = 53;
     // UpsertLPOwner / DeleteLPOwner / BulkUpsertLPOwners carry shard-0
     // LPOwnersTable mutations — the (lp → shard_id) routing table that
@@ -1583,22 +1584,32 @@ message ModelRecord {
 }
 
 // ModelBundle is the explicit ref-resolution map for a model: which DMN model a
-// BusinessRuleTask's decisionRef resolves to, and which child model a
-// CallActivity/CaseTask calledElement resolves to. The per-node TableResolver
-// reads it at reconcile to build the decision runtimes and child-ref overrides.
-// Keys are the strings the reflwos engine sees (decisionRef / calledElement);
-// values are ModelTable refs (decisions → kind=dmn, children → kind=bpmn/cmmn).
+// BusinessRuleTask's decisionRef resolves to, which child model a
+// CallActivity/CaseTask calledElement resolves to, and which DMN model each of a
+// DMN model's <import>s resolves to. The per-node TableResolver reads it at
+// reconcile to build the decision runtimes, child-ref overrides, and the DMN
+// import resolver. Computed server-side by RegisterModelSet; never hand-authored.
 message ModelBundle {
+  // decisions / children key on the engine-facing string (BusinessRuleTask
+  // decisionRef / CallActivity-or-CaseTask calledElement); values are
+  // ModelTable refs (decisions → kind=dmn, children → kind=bpmn/cmmn).
   map<string, ModelRef> decisions = 1;
   map<string, ModelRef> children = 2;
+  // imports keys on the DMN <import> NAMESPACE (the dmn.Import.namespace attr —
+  // exactly what reflwos's scanModels passes its resolver). Each value is the
+  // kind=dmn ModelTable ref the import resolves to. The runtime resolver keys on
+  // namespace via the union of these pins (no namespace-index fallback).
+  map<string, ModelRef> imports = 3;
 }
 
-// UpsertModel is the Command_UpsertModel payload. Apply arm CAS-checks
-// Envelope.precondition, writes ModelTable[model_ref] = record, bumps
-// RevisionTableModel, and fires the ModelTable notifier so each node's
-// TableResolver wakes and re-parses. Accepted only by shardID=0.
-message UpsertModel {
-  ModelRecord record = 1;
+// UpsertModelSet is the Command_UpsertModelSet payload: a model plus its
+// transitively-referenced DMN/BPMN/CMMN dependencies, written atomically. Apply
+// arm CAS-checks Envelope.precondition once, writes ModelTable[model_ref] =
+// record for every record, bumps RevisionTableModel once, and fires the
+// ModelTable notifier once so each node's TableResolver wakes and re-parses.
+// Mirrors BulkUpsertLPOwners' multi-row shape. Accepted only by shardID=0.
+message UpsertModelSet {
+  repeated ModelRecord records = 1;
 }
 
 // DeleteModel is the Command_DeleteModel payload. Same CAS + notifier

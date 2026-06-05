@@ -9,72 +9,118 @@ import (
 	"os"
 
 	connect "connectrpc.com/connect"
-	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/twinfer/reflw/pkg/reflwclient"
 	configv1 "github.com/twinfer/reflw/proto/configv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
-// cmdRegisterModel uploads a BPMN/CMMN/DMN model file into shard 0's ModelTable.
-// The server validates the model (real reflwos parse + static validation when the
-// process plane is on) and the optional bundle before proposing; each node's
-// processengine TableResolver reconciles the row into a parsed graph + decision
-// runtimes + child-ref overrides + historyTimeToLive on the next notifier wake.
+// cmdRegisterModel registers a model — or a dependency-closed set of models —
+// into shard 0's ModelTable via RegisterModelSet. The server parses every entry,
+// derives each model's bundle (decisions / children / imports), validates the set
+// ∪ existing table is dependency-closed and cycle-free, and writes all rows under
+// one atomic CAS'd proposal. Each node's processengine TableResolver reconciles
+// the rows into parsed graphs + decision/import resolvers on the next notifier
+// wake. Bundles are computed server-side — there is no --bundle flag.
 //
-// --bundle is an optional protojson ModelBundle pinning the DMN decisions and
-// child processes/cases this model reaches, e.g.
+// Single model:
 //
-//	{"decisions":{"checkCredit":{"kind":"dmn","name":"CreditCheck","version":"v1"}},
-//	 "children":{"ship":{"kind":"bpmn","name":"Shipping","version":"v1"}}}
+//	reflwd config register-model --file=order.bpmn --kind=bpmn --name=Order --version=v1 [--admin=ADDR]
 //
-//	reflwd config register-model --file=order.bpmn --kind=bpmn --name=Order --version=v1 [--bundle=order.bundle.json] [--admin=ADDR]
+// A set (a model + its imported DMNs / referenced decisions / child processes),
+// via a JSON manifest of [{"file","kind","name","version"}, ...]:
+//
+//	reflwd config register-model --manifest=order.set.json [--admin=ADDR]
 func cmdRegisterModel(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("register-model", flag.ContinueOnError)
 	tls := registerTLSFlags(fs)
-	file := fs.String("file", "", "path to a BPMN/CMMN/DMN model XML file (required)")
-	kind := fs.String("kind", "bpmn", "model kind: bpmn, cmmn or dmn")
-	name := fs.String("name", "", "model name (required)")
-	version := fs.String("version", "", "model version")
-	bundleFile := fs.String("bundle", "", "path to a protojson ModelBundle pinning decision/child refs (optional)")
+	file := fs.String("file", "", "path to a single BPMN/CMMN/DMN model XML file")
+	kind := fs.String("kind", "bpmn", "model kind for --file: bpmn, cmmn or dmn")
+	name := fs.String("name", "", "model name for --file")
+	version := fs.String("version", "", "model version for --file")
+	manifest := fs.String("manifest", "", "path to a JSON manifest [{file,kind,name,version},...] registering a model set")
 	ifRev := fs.Uint64("if-revision", 0, "CAS guard: only apply if the model-table revision equals this (0 disables)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *file == "" {
-		return errors.New("--file is required")
-	}
-	if *name == "" {
-		return errors.New("--name is required")
-	}
-	xmlBytes, err := os.ReadFile(*file)
+	entries, err := buildModelSetEntries(*file, *kind, *name, *version, *manifest)
 	if err != nil {
-		return fmt.Errorf("read model file: %w", err)
-	}
-	var bundle *enginev1.ModelBundle
-	if *bundleFile != "" {
-		raw, err := os.ReadFile(*bundleFile)
-		if err != nil {
-			return fmt.Errorf("read bundle file: %w", err)
-		}
-		bundle = &enginev1.ModelBundle{}
-		if err := protojson.Unmarshal(raw, bundle); err != nil {
-			return fmt.Errorf("parse bundle json: %w", err)
-		}
+		return err
 	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
-		resp, err := cli.Config.UpsertModel(rctx, connect.NewRequest(&configv1.UpsertModelRequest{
-			ModelRef:          &enginev1.ModelRef{Kind: *kind, Name: *name, Version: *version},
-			Xml:               xmlBytes,
-			Bundle:            bundle,
+		resp, err := cli.Config.RegisterModelSet(rctx, connect.NewRequest(&configv1.RegisterModelSetRequest{
+			Entries:           entries,
 			IfTableRevisionEq: *ifRev,
 		}))
 		if err != nil {
 			return err
 		}
-		fmt.Printf("RegisterModel ok (%s/%s/%s, table_revision=%d)\n", *kind, *name, *version, resp.Msg.GetTableRevision())
+		fmt.Printf("RegisterModelSet ok (%d model(s), table_revision=%d)\n", len(entries), resp.Msg.GetTableRevision())
 		return nil
 	})
+}
+
+// manifestEntry is one row of a --manifest file.
+type manifestEntry struct {
+	File    string `json:"file"`
+	Kind    string `json:"kind"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+// buildModelSetEntries assembles RegisterModelSet entries from either a single
+// --file (+ --kind/--name/--version) or a --manifest list. Exactly one of the two
+// must be supplied.
+func buildModelSetEntries(file, kind, name, version, manifest string) ([]*configv1.ModelSetEntry, error) {
+	switch {
+	case manifest != "" && file != "":
+		return nil, errors.New("pass either --file or --manifest, not both")
+	case manifest != "":
+		raw, err := os.ReadFile(manifest)
+		if err != nil {
+			return nil, fmt.Errorf("read manifest: %w", err)
+		}
+		var rows []manifestEntry
+		if err := json.Unmarshal(raw, &rows); err != nil {
+			return nil, fmt.Errorf("parse manifest json: %w", err)
+		}
+		if len(rows) == 0 {
+			return nil, errors.New("manifest is empty")
+		}
+		entries := make([]*configv1.ModelSetEntry, 0, len(rows))
+		for i, row := range rows {
+			if row.File == "" || row.Name == "" {
+				return nil, fmt.Errorf("manifest entry %d: file and name are required", i)
+			}
+			xmlBytes, err := os.ReadFile(row.File)
+			if err != nil {
+				return nil, fmt.Errorf("read manifest entry %d (%s): %w", i, row.File, err)
+			}
+			k := row.Kind
+			if k == "" {
+				k = "bpmn"
+			}
+			entries = append(entries, &configv1.ModelSetEntry{
+				ModelRef: &enginev1.ModelRef{Kind: k, Name: row.Name, Version: row.Version},
+				Xml:      xmlBytes,
+			})
+		}
+		return entries, nil
+	case file != "":
+		if name == "" {
+			return nil, errors.New("--name is required with --file")
+		}
+		xmlBytes, err := os.ReadFile(file)
+		if err != nil {
+			return nil, fmt.Errorf("read model file: %w", err)
+		}
+		return []*configv1.ModelSetEntry{{
+			ModelRef: &enginev1.ModelRef{Kind: kind, Name: name, Version: version},
+			Xml:      xmlBytes,
+		}}, nil
+	default:
+		return nil, errors.New("pass --file (single model) or --manifest (model set)")
+	}
 }
 
 // cmdListModels invokes Config/ListModels and prints each model's ref +

@@ -1006,7 +1006,7 @@ type Command struct {
 	//	*Command_ReapInvocation
 	//	*Command_UpsertSecret
 	//	*Command_DeleteSecret
-	//	*Command_UpsertModel
+	//	*Command_UpsertModelSet
 	//	*Command_DeleteModel
 	//	*Command_UpsertLpOwner
 	//	*Command_DeleteLpOwner
@@ -1236,10 +1236,10 @@ func (x *Command) GetDeleteSecret() *DeleteSecret {
 	return nil
 }
 
-func (x *Command) GetUpsertModel() *UpsertModel {
+func (x *Command) GetUpsertModelSet() *UpsertModelSet {
 	if x != nil {
-		if x, ok := x.Kind.(*Command_UpsertModel); ok {
-			return x.UpsertModel
+		if x, ok := x.Kind.(*Command_UpsertModelSet); ok {
+			return x.UpsertModelSet
 		}
 	}
 	return nil
@@ -1587,14 +1587,15 @@ type Command_DeleteSecret struct {
 	DeleteSecret *DeleteSecret `protobuf:"bytes,26,opt,name=delete_secret,json=deleteSecret,proto3,oneof"`
 }
 
-type Command_UpsertModel struct {
-	// UpsertModel / DeleteModel carry shard-0 ModelTable rows — BPMN/CMMN
-	// model definitions (model_ref + inlined XML) the per-node processengine
-	// TableResolver reconciles into parsed graphs + resolved
-	// historyTimeToLive. Same CAS + notifier semantics as the secret pair;
-	// the XML is inlined (models are KB-scale deployment artifacts, like a
-	// discovery manifest). Accepted only by shardID=0.
-	UpsertModel *UpsertModel `protobuf:"bytes,52,opt,name=upsert_model,json=upsertModel,proto3,oneof"`
+type Command_UpsertModelSet struct {
+	// UpsertModelSet / DeleteModel carry shard-0 ModelTable rows — BPMN/CMMN/DMN
+	// model definitions (model_ref + inlined XML + computed bundle) the per-node
+	// processengine TableResolver reconciles into parsed graphs + decision/import
+	// resolvers + resolved historyTimeToLive. Same CAS + notifier semantics as
+	// the secret pair; the XML is inlined (models are KB-scale deployment
+	// artifacts, like a discovery manifest). UpsertModelSet writes a model plus
+	// its dependency closure in one atomic apply. Accepted only by shardID=0.
+	UpsertModelSet *UpsertModelSet `protobuf:"bytes,54,opt,name=upsert_model_set,json=upsertModelSet,proto3,oneof"`
 }
 
 type Command_DeleteModel struct {
@@ -1806,7 +1807,7 @@ func (*Command_UpsertSecret) isCommand_Kind() {}
 
 func (*Command_DeleteSecret) isCommand_Kind() {}
 
-func (*Command_UpsertModel) isCommand_Kind() {}
+func (*Command_UpsertModelSet) isCommand_Kind() {}
 
 func (*Command_DeleteModel) isCommand_Kind() {}
 
@@ -9609,15 +9610,23 @@ func (x *ModelRecord) GetBundle() *ModelBundle {
 }
 
 // ModelBundle is the explicit ref-resolution map for a model: which DMN model a
-// BusinessRuleTask's decisionRef resolves to, and which child model a
-// CallActivity/CaseTask calledElement resolves to. The per-node TableResolver
-// reads it at reconcile to build the decision runtimes and child-ref overrides.
-// Keys are the strings the reflwos engine sees (decisionRef / calledElement);
-// values are ModelTable refs (decisions → kind=dmn, children → kind=bpmn/cmmn).
+// BusinessRuleTask's decisionRef resolves to, which child model a
+// CallActivity/CaseTask calledElement resolves to, and which DMN model each of a
+// DMN model's <import>s resolves to. The per-node TableResolver reads it at
+// reconcile to build the decision runtimes, child-ref overrides, and the DMN
+// import resolver. Computed server-side by RegisterModelSet; never hand-authored.
 type ModelBundle struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Decisions     map[string]*ModelRef   `protobuf:"bytes,1,rep,name=decisions,proto3" json:"decisions,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	Children      map[string]*ModelRef   `protobuf:"bytes,2,rep,name=children,proto3" json:"children,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// decisions / children key on the engine-facing string (BusinessRuleTask
+	// decisionRef / CallActivity-or-CaseTask calledElement); values are
+	// ModelTable refs (decisions → kind=dmn, children → kind=bpmn/cmmn).
+	Decisions map[string]*ModelRef `protobuf:"bytes,1,rep,name=decisions,proto3" json:"decisions,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Children  map[string]*ModelRef `protobuf:"bytes,2,rep,name=children,proto3" json:"children,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// imports keys on the DMN <import> NAMESPACE (the dmn.Import.namespace attr —
+	// exactly what reflwos's scanModels passes its resolver). Each value is the
+	// kind=dmn ModelTable ref the import resolves to. The runtime resolver keys on
+	// namespace via the union of these pins (no namespace-index fallback).
+	Imports       map[string]*ModelRef `protobuf:"bytes,3,rep,name=imports,proto3" json:"imports,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9666,31 +9675,40 @@ func (x *ModelBundle) GetChildren() map[string]*ModelRef {
 	return nil
 }
 
-// UpsertModel is the Command_UpsertModel payload. Apply arm CAS-checks
-// Envelope.precondition, writes ModelTable[model_ref] = record, bumps
-// RevisionTableModel, and fires the ModelTable notifier so each node's
-// TableResolver wakes and re-parses. Accepted only by shardID=0.
-type UpsertModel struct {
+func (x *ModelBundle) GetImports() map[string]*ModelRef {
+	if x != nil {
+		return x.Imports
+	}
+	return nil
+}
+
+// UpsertModelSet is the Command_UpsertModelSet payload: a model plus its
+// transitively-referenced DMN/BPMN/CMMN dependencies, written atomically. Apply
+// arm CAS-checks Envelope.precondition once, writes ModelTable[model_ref] =
+// record for every record, bumps RevisionTableModel once, and fires the
+// ModelTable notifier once so each node's TableResolver wakes and re-parses.
+// Mirrors BulkUpsertLPOwners' multi-row shape. Accepted only by shardID=0.
+type UpsertModelSet struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Record        *ModelRecord           `protobuf:"bytes,1,opt,name=record,proto3" json:"record,omitempty"`
+	Records       []*ModelRecord         `protobuf:"bytes,1,rep,name=records,proto3" json:"records,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *UpsertModel) Reset() {
-	*x = UpsertModel{}
+func (x *UpsertModelSet) Reset() {
+	*x = UpsertModelSet{}
 	mi := &file_enginev1_engine_proto_msgTypes[113]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *UpsertModel) String() string {
+func (x *UpsertModelSet) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*UpsertModel) ProtoMessage() {}
+func (*UpsertModelSet) ProtoMessage() {}
 
-func (x *UpsertModel) ProtoReflect() protoreflect.Message {
+func (x *UpsertModelSet) ProtoReflect() protoreflect.Message {
 	mi := &file_enginev1_engine_proto_msgTypes[113]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -9702,14 +9720,14 @@ func (x *UpsertModel) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use UpsertModel.ProtoReflect.Descriptor instead.
-func (*UpsertModel) Descriptor() ([]byte, []int) {
+// Deprecated: Use UpsertModelSet.ProtoReflect.Descriptor instead.
+func (*UpsertModelSet) Descriptor() ([]byte, []int) {
 	return file_enginev1_engine_proto_rawDescGZIP(), []int{113}
 }
 
-func (x *UpsertModel) GetRecord() *ModelRecord {
+func (x *UpsertModelSet) GetRecords() []*ModelRecord {
 	if x != nil {
-		return x.Record
+		return x.Records
 	}
 	return nil
 }
@@ -11962,7 +11980,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x06Header\x12,\n" +
 	"\x05dedup\x18\x01 \x01(\v2\x16.reflw.engine.v1.DedupR\x05dedup\x12\"\n" +
 	"\rcreated_at_ms\x18\x02 \x01(\x06R\vcreatedAtMs\x12\x1c\n" +
-	"\tprincipal\x18\x04 \x01(\tR\tprincipal\"\xc1\x1b\n" +
+	"\tprincipal\x18\x04 \x01(\tR\tprincipal\"\xcb\x1b\n" +
 	"\aCommand\x12J\n" +
 	"\x0fannounce_leader\x18\x01 \x01(\v2\x1f.reflw.engine.v1.AnnounceLeaderH\x00R\x0eannounceLeader\x128\n" +
 	"\x06invoke\x18\x02 \x01(\v2\x1e.reflw.engine.v1.InvokeCommandH\x00R\x06invoke\x12G\n" +
@@ -11985,8 +12003,8 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x16promise_completion_ack\x18\x13 \x01(\v2%.reflw.engine.v1.PromiseCompletionAckH\x00R\x14promiseCompletionAck\x12J\n" +
 	"\x0freap_invocation\x18\x14 \x01(\v2\x1f.reflw.engine.v1.ReapInvocationH\x00R\x0ereapInvocation\x12D\n" +
 	"\rupsert_secret\x18\x19 \x01(\v2\x1d.reflw.engine.v1.UpsertSecretH\x00R\fupsertSecret\x12D\n" +
-	"\rdelete_secret\x18\x1a \x01(\v2\x1d.reflw.engine.v1.DeleteSecretH\x00R\fdeleteSecret\x12A\n" +
-	"\fupsert_model\x184 \x01(\v2\x1c.reflw.engine.v1.UpsertModelH\x00R\vupsertModel\x12A\n" +
+	"\rdelete_secret\x18\x1a \x01(\v2\x1d.reflw.engine.v1.DeleteSecretH\x00R\fdeleteSecret\x12K\n" +
+	"\x10upsert_model_set\x186 \x01(\v2\x1f.reflw.engine.v1.UpsertModelSetH\x00R\x0eupsertModelSet\x12A\n" +
 	"\fdelete_model\x185 \x01(\v2\x1c.reflw.engine.v1.DeleteModelH\x00R\vdeleteModel\x12H\n" +
 	"\x0fupsert_lp_owner\x18\x1b \x01(\v2\x1e.reflw.engine.v1.UpsertLPOwnerH\x00R\rupsertLpOwner\x12H\n" +
 	"\x0fdelete_lp_owner\x18\x1c \x01(\v2\x1e.reflw.engine.v1.DeleteLPOwnerH\x00R\rdeleteLpOwner\x12X\n" +
@@ -12550,18 +12568,22 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\tmodel_ref\x18\x01 \x01(\v2\x19.reflw.engine.v1.ModelRefR\bmodelRef\x12\x10\n" +
 	"\x03xml\x18\x02 \x01(\fR\x03xml\x12(\n" +
 	"\x10registered_at_ms\x18\x03 \x01(\x06R\x0eregisteredAtMs\x124\n" +
-	"\x06bundle\x18\x04 \x01(\v2\x1c.reflw.engine.v1.ModelBundleR\x06bundle\"\xd1\x02\n" +
+	"\x06bundle\x18\x04 \x01(\v2\x1c.reflw.engine.v1.ModelBundleR\x06bundle\"\xed\x03\n" +
 	"\vModelBundle\x12I\n" +
 	"\tdecisions\x18\x01 \x03(\v2+.reflw.engine.v1.ModelBundle.DecisionsEntryR\tdecisions\x12F\n" +
-	"\bchildren\x18\x02 \x03(\v2*.reflw.engine.v1.ModelBundle.ChildrenEntryR\bchildren\x1aW\n" +
+	"\bchildren\x18\x02 \x03(\v2*.reflw.engine.v1.ModelBundle.ChildrenEntryR\bchildren\x12C\n" +
+	"\aimports\x18\x03 \x03(\v2).reflw.engine.v1.ModelBundle.ImportsEntryR\aimports\x1aW\n" +
 	"\x0eDecisionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12/\n" +
 	"\x05value\x18\x02 \x01(\v2\x19.reflw.engine.v1.ModelRefR\x05value:\x028\x01\x1aV\n" +
 	"\rChildrenEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12/\n" +
-	"\x05value\x18\x02 \x01(\v2\x19.reflw.engine.v1.ModelRefR\x05value:\x028\x01\"C\n" +
-	"\vUpsertModel\x124\n" +
-	"\x06record\x18\x01 \x01(\v2\x1c.reflw.engine.v1.ModelRecordR\x06record\"E\n" +
+	"\x05value\x18\x02 \x01(\v2\x19.reflw.engine.v1.ModelRefR\x05value:\x028\x01\x1aU\n" +
+	"\fImportsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12/\n" +
+	"\x05value\x18\x02 \x01(\v2\x19.reflw.engine.v1.ModelRefR\x05value:\x028\x01\"H\n" +
+	"\x0eUpsertModelSet\x126\n" +
+	"\arecords\x18\x01 \x03(\v2\x1c.reflw.engine.v1.ModelRecordR\arecords\"E\n" +
 	"\vDeleteModel\x126\n" +
 	"\tmodel_ref\x18\x01 \x01(\v2\x19.reflw.engine.v1.ModelRefR\bmodelRef\"\xd2\x01\n" +
 	"\fCARootRecord\x12\x12\n" +
@@ -12766,7 +12788,7 @@ func file_enginev1_engine_proto_rawDescGZIP() []byte {
 }
 
 var file_enginev1_engine_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
-var file_enginev1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 155)
+var file_enginev1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 156)
 var file_enginev1_engine_proto_goTypes = []any{
 	(InvocationState)(0),            // 0: reflw.engine.v1.InvocationState
 	(ProcessKind)(0),                // 1: reflw.engine.v1.ProcessKind
@@ -12888,7 +12910,7 @@ var file_enginev1_engine_proto_goTypes = []any{
 	(*DeleteSecret)(nil),            // 117: reflw.engine.v1.DeleteSecret
 	(*ModelRecord)(nil),             // 118: reflw.engine.v1.ModelRecord
 	(*ModelBundle)(nil),             // 119: reflw.engine.v1.ModelBundle
-	(*UpsertModel)(nil),             // 120: reflw.engine.v1.UpsertModel
+	(*UpsertModelSet)(nil),          // 120: reflw.engine.v1.UpsertModelSet
 	(*DeleteModel)(nil),             // 121: reflw.engine.v1.DeleteModel
 	(*CARootRecord)(nil),            // 122: reflw.engine.v1.CARootRecord
 	(*UpsertCARoot)(nil),            // 123: reflw.engine.v1.UpsertCARoot
@@ -12929,7 +12951,8 @@ var file_enginev1_engine_proto_goTypes = []any{
 	nil,                             // 158: reflw.engine.v1.Scheduled.MetadataEntry
 	nil,                             // 159: reflw.engine.v1.ModelBundle.DecisionsEntry
 	nil,                             // 160: reflw.engine.v1.ModelBundle.ChildrenEntry
-	nil,                             // 161: reflw.engine.v1.PartitionTable.ShardsEntry
+	nil,                             // 161: reflw.engine.v1.ModelBundle.ImportsEntry
+	nil,                             // 162: reflw.engine.v1.PartitionTable.ShardsEntry
 }
 var file_enginev1_engine_proto_depIdxs = []int32{
 	10,  // 0: reflw.engine.v1.Dedup.self_proposal:type_name -> reflw.engine.v1.SelfProposalDedup
@@ -12956,7 +12979,7 @@ var file_enginev1_engine_proto_depIdxs = []int32{
 	27,  // 21: reflw.engine.v1.Command.reap_invocation:type_name -> reflw.engine.v1.ReapInvocation
 	116, // 22: reflw.engine.v1.Command.upsert_secret:type_name -> reflw.engine.v1.UpsertSecret
 	117, // 23: reflw.engine.v1.Command.delete_secret:type_name -> reflw.engine.v1.DeleteSecret
-	120, // 24: reflw.engine.v1.Command.upsert_model:type_name -> reflw.engine.v1.UpsertModel
+	120, // 24: reflw.engine.v1.Command.upsert_model_set:type_name -> reflw.engine.v1.UpsertModelSet
 	121, // 25: reflw.engine.v1.Command.delete_model:type_name -> reflw.engine.v1.DeleteModel
 	130, // 26: reflw.engine.v1.Command.upsert_lp_owner:type_name -> reflw.engine.v1.UpsertLPOwner
 	131, // 27: reflw.engine.v1.Command.delete_lp_owner:type_name -> reflw.engine.v1.DeleteLPOwner
@@ -13103,31 +13126,33 @@ var file_enginev1_engine_proto_depIdxs = []int32{
 	119, // 168: reflw.engine.v1.ModelRecord.bundle:type_name -> reflw.engine.v1.ModelBundle
 	159, // 169: reflw.engine.v1.ModelBundle.decisions:type_name -> reflw.engine.v1.ModelBundle.DecisionsEntry
 	160, // 170: reflw.engine.v1.ModelBundle.children:type_name -> reflw.engine.v1.ModelBundle.ChildrenEntry
-	118, // 171: reflw.engine.v1.UpsertModel.record:type_name -> reflw.engine.v1.ModelRecord
-	105, // 172: reflw.engine.v1.DeleteModel.model_ref:type_name -> reflw.engine.v1.ModelRef
-	122, // 173: reflw.engine.v1.UpsertCARoot.record:type_name -> reflw.engine.v1.CARootRecord
-	3,   // 174: reflw.engine.v1.JoinTokenRecord.kind:type_name -> reflw.engine.v1.JoinTokenKind
-	125, // 175: reflw.engine.v1.UpsertJoinToken.record:type_name -> reflw.engine.v1.JoinTokenRecord
-	129, // 176: reflw.engine.v1.UpsertLPOwner.record:type_name -> reflw.engine.v1.LPOwnerRecord
-	129, // 177: reflw.engine.v1.BulkUpsertLPOwners.records:type_name -> reflw.engine.v1.LPOwnerRecord
-	135, // 178: reflw.engine.v1.RegisterNode.member:type_name -> reflw.engine.v1.NodeMembership
-	136, // 179: reflw.engine.v1.UpdatePartitionTable.table:type_name -> reflw.engine.v1.PartitionTable
-	161, // 180: reflw.engine.v1.PartitionTable.shards:type_name -> reflw.engine.v1.PartitionTable.ShardsEntry
-	139, // 181: reflw.engine.v1.PartitionTable.pending:type_name -> reflw.engine.v1.RebalanceStep
-	137, // 182: reflw.engine.v1.PartitionTable.meta_replicas:type_name -> reflw.engine.v1.ReplicaSet
-	6,   // 183: reflw.engine.v1.RebalanceStep.kind:type_name -> reflw.engine.v1.RebalanceStep.Kind
-	139, // 184: reflw.engine.v1.BeginRebalanceStep.step:type_name -> reflw.engine.v1.RebalanceStep
-	4,   // 185: reflw.engine.v1.LPTransferRecord.phase:type_name -> reflw.engine.v1.LPTransferPhase
-	4,   // 186: reflw.engine.v1.UpdateLPTransferPhase.phase:type_name -> reflw.engine.v1.LPTransferPhase
-	150, // 187: reflw.engine.v1.ApplyLPTransferSST.ssts:type_name -> reflw.engine.v1.TransferSSTRef
-	105, // 188: reflw.engine.v1.ModelBundle.DecisionsEntry.value:type_name -> reflw.engine.v1.ModelRef
-	105, // 189: reflw.engine.v1.ModelBundle.ChildrenEntry.value:type_name -> reflw.engine.v1.ModelRef
-	137, // 190: reflw.engine.v1.PartitionTable.ShardsEntry.value:type_name -> reflw.engine.v1.ReplicaSet
-	191, // [191:191] is the sub-list for method output_type
-	191, // [191:191] is the sub-list for method input_type
-	191, // [191:191] is the sub-list for extension type_name
-	191, // [191:191] is the sub-list for extension extendee
-	0,   // [0:191] is the sub-list for field type_name
+	161, // 171: reflw.engine.v1.ModelBundle.imports:type_name -> reflw.engine.v1.ModelBundle.ImportsEntry
+	118, // 172: reflw.engine.v1.UpsertModelSet.records:type_name -> reflw.engine.v1.ModelRecord
+	105, // 173: reflw.engine.v1.DeleteModel.model_ref:type_name -> reflw.engine.v1.ModelRef
+	122, // 174: reflw.engine.v1.UpsertCARoot.record:type_name -> reflw.engine.v1.CARootRecord
+	3,   // 175: reflw.engine.v1.JoinTokenRecord.kind:type_name -> reflw.engine.v1.JoinTokenKind
+	125, // 176: reflw.engine.v1.UpsertJoinToken.record:type_name -> reflw.engine.v1.JoinTokenRecord
+	129, // 177: reflw.engine.v1.UpsertLPOwner.record:type_name -> reflw.engine.v1.LPOwnerRecord
+	129, // 178: reflw.engine.v1.BulkUpsertLPOwners.records:type_name -> reflw.engine.v1.LPOwnerRecord
+	135, // 179: reflw.engine.v1.RegisterNode.member:type_name -> reflw.engine.v1.NodeMembership
+	136, // 180: reflw.engine.v1.UpdatePartitionTable.table:type_name -> reflw.engine.v1.PartitionTable
+	162, // 181: reflw.engine.v1.PartitionTable.shards:type_name -> reflw.engine.v1.PartitionTable.ShardsEntry
+	139, // 182: reflw.engine.v1.PartitionTable.pending:type_name -> reflw.engine.v1.RebalanceStep
+	137, // 183: reflw.engine.v1.PartitionTable.meta_replicas:type_name -> reflw.engine.v1.ReplicaSet
+	6,   // 184: reflw.engine.v1.RebalanceStep.kind:type_name -> reflw.engine.v1.RebalanceStep.Kind
+	139, // 185: reflw.engine.v1.BeginRebalanceStep.step:type_name -> reflw.engine.v1.RebalanceStep
+	4,   // 186: reflw.engine.v1.LPTransferRecord.phase:type_name -> reflw.engine.v1.LPTransferPhase
+	4,   // 187: reflw.engine.v1.UpdateLPTransferPhase.phase:type_name -> reflw.engine.v1.LPTransferPhase
+	150, // 188: reflw.engine.v1.ApplyLPTransferSST.ssts:type_name -> reflw.engine.v1.TransferSSTRef
+	105, // 189: reflw.engine.v1.ModelBundle.DecisionsEntry.value:type_name -> reflw.engine.v1.ModelRef
+	105, // 190: reflw.engine.v1.ModelBundle.ChildrenEntry.value:type_name -> reflw.engine.v1.ModelRef
+	105, // 191: reflw.engine.v1.ModelBundle.ImportsEntry.value:type_name -> reflw.engine.v1.ModelRef
+	137, // 192: reflw.engine.v1.PartitionTable.ShardsEntry.value:type_name -> reflw.engine.v1.ReplicaSet
+	193, // [193:193] is the sub-list for method output_type
+	193, // [193:193] is the sub-list for method input_type
+	193, // [193:193] is the sub-list for extension type_name
+	193, // [193:193] is the sub-list for extension extendee
+	0,   // [0:193] is the sub-list for field type_name
 }
 
 func init() { file_enginev1_engine_proto_init() }
@@ -13158,7 +13183,7 @@ func file_enginev1_engine_proto_init() {
 		(*Command_ReapInvocation)(nil),
 		(*Command_UpsertSecret)(nil),
 		(*Command_DeleteSecret)(nil),
-		(*Command_UpsertModel)(nil),
+		(*Command_UpsertModelSet)(nil),
 		(*Command_DeleteModel)(nil),
 		(*Command_UpsertLpOwner)(nil),
 		(*Command_DeleteLpOwner)(nil),
@@ -13261,7 +13286,7 @@ func file_enginev1_engine_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_enginev1_engine_proto_rawDesc), len(file_enginev1_engine_proto_rawDesc)),
 			NumEnums:      7,
-			NumMessages:   155,
+			NumMessages:   156,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

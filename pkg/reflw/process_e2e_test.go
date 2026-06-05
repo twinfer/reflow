@@ -86,7 +86,7 @@ func TestProcess_RegisterReconcileRun(t *testing.T) {
 	// Register the model through the Config RPC → shard 0 ModelTable.
 	eng := host.Engine()
 	csrv, err := config.NewServer(config.Config{
-		Host: eng, Runner: eng.MetadataRunner(), ValidateModel: processengine.ValidateModel,
+		Host: eng, Runner: eng.MetadataRunner(), PlanModelSet: processengine.PlanModelSet,
 	})
 	if err != nil {
 		t.Fatalf("config.NewServer: %v", err)
@@ -94,11 +94,13 @@ func TestProcess_RegisterReconcileRun(t *testing.T) {
 	ccli, closeC := newLoopbackConfigClient(t, ctx, csrv)
 	defer closeC()
 	modelRef := &enginev1.ModelRef{Kind: "bpmn", Name: "E2E", Version: "v1"}
-	if _, err := ccli.UpsertModel(ctx, connect.NewRequest(&configv1.UpsertModelRequest{
-		ModelRef: modelRef,
-		Xml:      []byte(e2eStartEndBPMN),
+	if _, err := ccli.RegisterModelSet(ctx, connect.NewRequest(&configv1.RegisterModelSetRequest{
+		Entries: []*configv1.ModelSetEntry{{
+			ModelRef: modelRef,
+			Xml:      []byte(e2eStartEndBPMN),
+		}},
 	})); err != nil {
-		t.Fatalf("UpsertModel: %v", err)
+		t.Fatalf("RegisterModelSet: %v", err)
 	}
 
 	icli, err := ingressclient.Dial(ingressclient.Options{BaseURL: "http://" + ingressAddr})

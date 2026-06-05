@@ -70,8 +70,8 @@ const (
 	ConfigDescribeDeploymentProcedure = "/reflw.config.v1.Config/DescribeDeployment"
 	// ConfigDeleteDeploymentProcedure is the fully-qualified name of the Config's DeleteDeployment RPC.
 	ConfigDeleteDeploymentProcedure = "/reflw.config.v1.Config/DeleteDeployment"
-	// ConfigUpsertModelProcedure is the fully-qualified name of the Config's UpsertModel RPC.
-	ConfigUpsertModelProcedure = "/reflw.config.v1.Config/UpsertModel"
+	// ConfigRegisterModelSetProcedure is the fully-qualified name of the Config's RegisterModelSet RPC.
+	ConfigRegisterModelSetProcedure = "/reflw.config.v1.Config/RegisterModelSet"
 	// ConfigListModelsProcedure is the fully-qualified name of the Config's ListModels RPC.
 	ConfigListModelsProcedure = "/reflw.config.v1.Config/ListModels"
 	// ConfigDescribeModelProcedure is the fully-qualified name of the Config's DescribeModel RPC.
@@ -133,14 +133,19 @@ type ConfigClient interface {
 	// risk" acknowledgement; reflw does not currently scan partitions
 	// for active references.
 	DeleteDeployment(context.Context, *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error)
-	// UpsertModel / ListModels / DescribeModel / DeleteModel manage shard 0's
-	// ModelTable — BPMN/CMMN model definitions (model_ref + inlined XML). Upsert
-	// parses-to-validate before proposing Command_UpsertModel; the per-node
-	// processengine TableResolver reconciles rows into parsed graphs + resolved
-	// historyTimeToLive. Leader-only for mutating calls; List/Describe are
-	// SyncRead. DeleteModel takes if_table_revision_eq for CAS (no force gate —
+	// RegisterModelSet / ListModels / DescribeModel / DeleteModel manage shard 0's
+	// ModelTable — BPMN/CMMN/DMN model definitions (model_ref + inlined XML).
+	// RegisterModelSet atomically registers a model plus its transitively-
+	// referenced dependencies: the server parses every entry, auto-derives each
+	// model's bundle (DMN imports, BusinessRuleTask decisions, child processes/
+	// cases), validates the set ∪ existing-table is dependency-closed and
+	// cycle-free, and proposes one Command_UpsertModelSet under a single CAS. A
+	// one-entry set is a single-model register. The per-node processengine
+	// TableResolver reconciles rows into parsed graphs + decision/import resolvers
+	// + resolved historyTimeToLive. Leader-only for mutating calls; List/Describe
+	// are SyncRead. DeleteModel takes if_table_revision_eq for CAS (no force gate —
 	// an in-flight instance pins its model_ref and fails on its next turn).
-	UpsertModel(context.Context, *connect.Request[configv1.UpsertModelRequest]) (*connect.Response[configv1.UpsertModelResponse], error)
+	RegisterModelSet(context.Context, *connect.Request[configv1.RegisterModelSetRequest]) (*connect.Response[configv1.RegisterModelSetResponse], error)
 	ListModels(context.Context, *connect.Request[configv1.ListModelsRequest]) (*connect.Response[configv1.ListModelsResponse], error)
 	DescribeModel(context.Context, *connect.Request[configv1.DescribeModelRequest]) (*connect.Response[configv1.DescribeModelResponse], error)
 	DeleteModel(context.Context, *connect.Request[configv1.DeleteModelRequest]) (*connect.Response[configv1.DeleteModelResponse], error)
@@ -228,10 +233,10 @@ func NewConfigClient(httpClient connect.HTTPClient, baseURL string, opts ...conn
 			connect.WithSchema(configMethods.ByName("DeleteDeployment")),
 			connect.WithClientOptions(opts...),
 		),
-		upsertModel: connect.NewClient[configv1.UpsertModelRequest, configv1.UpsertModelResponse](
+		registerModelSet: connect.NewClient[configv1.RegisterModelSetRequest, configv1.RegisterModelSetResponse](
 			httpClient,
-			baseURL+ConfigUpsertModelProcedure,
-			connect.WithSchema(configMethods.ByName("UpsertModel")),
+			baseURL+ConfigRegisterModelSetProcedure,
+			connect.WithSchema(configMethods.ByName("RegisterModelSet")),
 			connect.WithClientOptions(opts...),
 		),
 		listModels: connect.NewClient[configv1.ListModelsRequest, configv1.ListModelsResponse](
@@ -333,7 +338,7 @@ type configClient struct {
 	listDeployments          *connect.Client[configv1.ListDeploymentsRequest, configv1.ListDeploymentsResponse]
 	describeDeployment       *connect.Client[configv1.DescribeDeploymentRequest, configv1.DescribeDeploymentResponse]
 	deleteDeployment         *connect.Client[configv1.DeleteDeploymentRequest, configv1.DeleteDeploymentResponse]
-	upsertModel              *connect.Client[configv1.UpsertModelRequest, configv1.UpsertModelResponse]
+	registerModelSet         *connect.Client[configv1.RegisterModelSetRequest, configv1.RegisterModelSetResponse]
 	listModels               *connect.Client[configv1.ListModelsRequest, configv1.ListModelsResponse]
 	describeModel            *connect.Client[configv1.DescribeModelRequest, configv1.DescribeModelResponse]
 	deleteModel              *connect.Client[configv1.DeleteModelRequest, configv1.DeleteModelResponse]
@@ -371,9 +376,9 @@ func (c *configClient) DeleteDeployment(ctx context.Context, req *connect.Reques
 	return c.deleteDeployment.CallUnary(ctx, req)
 }
 
-// UpsertModel calls reflw.config.v1.Config.UpsertModel.
-func (c *configClient) UpsertModel(ctx context.Context, req *connect.Request[configv1.UpsertModelRequest]) (*connect.Response[configv1.UpsertModelResponse], error) {
-	return c.upsertModel.CallUnary(ctx, req)
+// RegisterModelSet calls reflw.config.v1.Config.RegisterModelSet.
+func (c *configClient) RegisterModelSet(ctx context.Context, req *connect.Request[configv1.RegisterModelSetRequest]) (*connect.Response[configv1.RegisterModelSetResponse], error) {
+	return c.registerModelSet.CallUnary(ctx, req)
 }
 
 // ListModels calls reflw.config.v1.Config.ListModels.
@@ -478,14 +483,19 @@ type ConfigHandler interface {
 	// risk" acknowledgement; reflw does not currently scan partitions
 	// for active references.
 	DeleteDeployment(context.Context, *connect.Request[configv1.DeleteDeploymentRequest]) (*connect.Response[configv1.DeleteDeploymentResponse], error)
-	// UpsertModel / ListModels / DescribeModel / DeleteModel manage shard 0's
-	// ModelTable — BPMN/CMMN model definitions (model_ref + inlined XML). Upsert
-	// parses-to-validate before proposing Command_UpsertModel; the per-node
-	// processengine TableResolver reconciles rows into parsed graphs + resolved
-	// historyTimeToLive. Leader-only for mutating calls; List/Describe are
-	// SyncRead. DeleteModel takes if_table_revision_eq for CAS (no force gate —
+	// RegisterModelSet / ListModels / DescribeModel / DeleteModel manage shard 0's
+	// ModelTable — BPMN/CMMN/DMN model definitions (model_ref + inlined XML).
+	// RegisterModelSet atomically registers a model plus its transitively-
+	// referenced dependencies: the server parses every entry, auto-derives each
+	// model's bundle (DMN imports, BusinessRuleTask decisions, child processes/
+	// cases), validates the set ∪ existing-table is dependency-closed and
+	// cycle-free, and proposes one Command_UpsertModelSet under a single CAS. A
+	// one-entry set is a single-model register. The per-node processengine
+	// TableResolver reconciles rows into parsed graphs + decision/import resolvers
+	// + resolved historyTimeToLive. Leader-only for mutating calls; List/Describe
+	// are SyncRead. DeleteModel takes if_table_revision_eq for CAS (no force gate —
 	// an in-flight instance pins its model_ref and fails on its next turn).
-	UpsertModel(context.Context, *connect.Request[configv1.UpsertModelRequest]) (*connect.Response[configv1.UpsertModelResponse], error)
+	RegisterModelSet(context.Context, *connect.Request[configv1.RegisterModelSetRequest]) (*connect.Response[configv1.RegisterModelSetResponse], error)
 	ListModels(context.Context, *connect.Request[configv1.ListModelsRequest]) (*connect.Response[configv1.ListModelsResponse], error)
 	DescribeModel(context.Context, *connect.Request[configv1.DescribeModelRequest]) (*connect.Response[configv1.DescribeModelResponse], error)
 	DeleteModel(context.Context, *connect.Request[configv1.DeleteModelRequest]) (*connect.Response[configv1.DeleteModelResponse], error)
@@ -569,10 +579,10 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 		connect.WithSchema(configMethods.ByName("DeleteDeployment")),
 		connect.WithHandlerOptions(opts...),
 	)
-	configUpsertModelHandler := connect.NewUnaryHandler(
-		ConfigUpsertModelProcedure,
-		svc.UpsertModel,
-		connect.WithSchema(configMethods.ByName("UpsertModel")),
+	configRegisterModelSetHandler := connect.NewUnaryHandler(
+		ConfigRegisterModelSetProcedure,
+		svc.RegisterModelSet,
+		connect.WithSchema(configMethods.ByName("RegisterModelSet")),
 		connect.WithHandlerOptions(opts...),
 	)
 	configListModelsHandler := connect.NewUnaryHandler(
@@ -675,8 +685,8 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 			configDescribeDeploymentHandler.ServeHTTP(w, r)
 		case ConfigDeleteDeploymentProcedure:
 			configDeleteDeploymentHandler.ServeHTTP(w, r)
-		case ConfigUpsertModelProcedure:
-			configUpsertModelHandler.ServeHTTP(w, r)
+		case ConfigRegisterModelSetProcedure:
+			configRegisterModelSetHandler.ServeHTTP(w, r)
 		case ConfigListModelsProcedure:
 			configListModelsHandler.ServeHTTP(w, r)
 		case ConfigDescribeModelProcedure:
@@ -732,8 +742,8 @@ func (UnimplementedConfigHandler) DeleteDeployment(context.Context, *connect.Req
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.DeleteDeployment is not implemented"))
 }
 
-func (UnimplementedConfigHandler) UpsertModel(context.Context, *connect.Request[configv1.UpsertModelRequest]) (*connect.Response[configv1.UpsertModelResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.UpsertModel is not implemented"))
+func (UnimplementedConfigHandler) RegisterModelSet(context.Context, *connect.Request[configv1.RegisterModelSetRequest]) (*connect.Response[configv1.RegisterModelSetResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.RegisterModelSet is not implemented"))
 }
 
 func (UnimplementedConfigHandler) ListModels(context.Context, *connect.Request[configv1.ListModelsRequest]) (*connect.Response[configv1.ListModelsResponse], error) {

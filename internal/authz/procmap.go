@@ -81,7 +81,7 @@ var procMap = map[string]procEntry{
 	configv1connect.ConfigDeleteSecretProcedure:       {"DeleteSecret", []string{groupTenantConfig}},
 	configv1connect.ConfigRegisterDeploymentProcedure: {"RegisterDeployment", []string{groupTenantConfig}},
 	configv1connect.ConfigDeleteDeploymentProcedure:   {"DeleteDeployment", []string{groupTenantConfig}},
-	configv1connect.ConfigUpsertModelProcedure:        {"UpsertModel", []string{groupTenantConfig}},
+	configv1connect.ConfigRegisterModelSetProcedure:   {"RegisterModelSet", []string{groupTenantConfig}},
 	configv1connect.ConfigDeleteModelProcedure:        {"DeleteModel", []string{groupTenantConfig}},
 
 	// ----- Config: tenant-config reads -----

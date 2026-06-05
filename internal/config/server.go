@@ -60,14 +60,27 @@ type Server struct {
 	// CA. Optional: when nil (e.g. before a CA root exists), the
 	// IssueOperator RPC returns FailedPrecondition.
 	operatorIssuer *certmgr.ClusterIssuer
-	// validateModel gates UpsertModel. pkg/reflw injects an reflwos-backed
-	// parser+static-validator when the process plane is enabled; nil falls
-	// back to validateModelXML (config cannot import reflwos). Never nil after
-	// NewServer.
-	validateModel func(kind string, xml []byte) error
+	// planModelSet validates a RegisterModelSet against the existing ModelTable
+	// and returns the ModelRecords (with derived bundles) to write. pkg/reflw
+	// injects processengine.PlanModelSet when the process plane is enabled; nil
+	// falls back to shallowPlanModelSet (config cannot import reflwos). Never nil
+	// after NewServer.
+	planModelSet PlanModelSetFunc
 
 	adminCallTimeout time.Duration
 }
+
+// PlanModelSetFunc validates a set of proposed models against the existing
+// ModelTable and returns the ModelRecords to write, each with its bundle
+// (decisions / children / imports) computed. Input records carry only model_ref +
+// xml (any input bundle is ignored — the planner derives it). It must reject a
+// set that isn't dependency-closed or that contains an invalid/cyclic model.
+// pkg/reflw injects processengine.PlanModelSet when the process plane is enabled;
+// nil falls back to shallowPlanModelSet, a well-formed-XML check with empty
+// bundles (config cannot import reflwos). Using *enginev1.ModelRecord for the
+// input keeps the seam proto-only so the reflwos-backed planner needn't import
+// this package.
+type PlanModelSetFunc func(entries []*enginev1.ModelRecord, existing []*enginev1.ModelRecord) ([]*enginev1.ModelRecord, error)
 
 // Config groups the constructor inputs.
 type Config struct {
@@ -80,11 +93,11 @@ type Config struct {
 	// OperatorIssuer, when non-nil, enables the IssueOperator RPC. Used
 	// to sign operator-supplied CSRs against the active cluster CA.
 	OperatorIssuer *certmgr.ClusterIssuer
-	// ValidateModel, when non-nil, validates a model definition at
-	// registration time (UpsertModel). pkg/reflw injects
-	// processengine.ValidateModel when the process plane is enabled; nil
-	// falls back to the shallow well-formed-XML check.
-	ValidateModel func(kind string, xml []byte) error
+	// PlanModelSet, when non-nil, validates a RegisterModelSet and derives each
+	// model's bundle. pkg/reflw injects processengine.PlanModelSet when the
+	// process plane is enabled; nil falls back to a shallow well-formed-XML check
+	// with empty bundles (config cannot import reflwos).
+	PlanModelSet PlanModelSetFunc
 }
 
 // NewServer constructs the Config server.
@@ -95,9 +108,9 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	validateModel := cfg.ValidateModel
-	if validateModel == nil {
-		validateModel = validateModelXML
+	planModelSet := cfg.PlanModelSet
+	if planModelSet == nil {
+		planModelSet = shallowPlanModelSet
 	}
 	return &Server{
 		host:             cfg.Host,
@@ -105,7 +118,7 @@ func NewServer(cfg Config) (*Server, error) {
 		log:              cfg.Log,
 		signer:           cfg.Signer,
 		operatorIssuer:   cfg.OperatorIssuer,
-		validateModel:    validateModel,
+		planModelSet:     planModelSet,
 		adminCallTimeout: 30 * time.Second,
 	}, nil
 }

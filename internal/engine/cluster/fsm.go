@@ -282,8 +282,8 @@ func (f *FSM) applyCommand(
 		return f.applyUpsertSecret(batch, env, k.UpsertSecret, raftIndex)
 	case *enginev1.Command_DeleteSecret:
 		return f.applyDeleteSecret(batch, env, k.DeleteSecret, raftIndex)
-	case *enginev1.Command_UpsertModel:
-		return f.applyUpsertModel(batch, env, k.UpsertModel, raftIndex)
+	case *enginev1.Command_UpsertModelSet:
+		return f.applyUpsertModelSet(batch, env, k.UpsertModelSet, raftIndex)
 	case *enginev1.Command_DeleteModel:
 		return f.applyDeleteModel(batch, env, k.DeleteModel, raftIndex)
 	case *enginev1.Command_UpsertLpOwner:
@@ -554,16 +554,21 @@ func (f *FSM) applyDeleteSecret(
 	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.SecretTable}}, nil
 }
 
-func (f *FSM) applyUpsertModel(
+// applyUpsertModelSet writes N ModelRecords (a model + its dependency closure)
+// atomically: one CAS check against RevisionTableModel, N Puts into the in-flight
+// batch, one revision Bump, one ModelTable notifier. All-or-nothing via the
+// single per-apply batch.Commit. Mirrors applyBulkUpsertLPOwners. Malformed
+// records are skipped (warn-and-continue, per the apply-path contract); a genuine
+// storage failure halts the shard.
+func (f *FSM) applyUpsertModelSet(
 	batch storage.Batch,
 	env *enginev1.Envelope,
-	cmd *enginev1.UpsertModel,
+	cmd *enginev1.UpsertModelSet,
 	raftIndex uint64,
 ) (*applyResult, error) {
-	rec := cmd.GetRecord()
-	ref := rec.GetModelRef()
-	if ref.GetKind() == "" || ref.GetName() == "" {
-		f.cfg.Log.Warn("cluster: UpsertModel missing model_ref kind/name; ignoring",
+	records := cmd.GetRecords()
+	if len(records) == 0 {
+		f.cfg.Log.Warn("cluster: UpsertModelSet with no records; ignoring",
 			"raft_index", raftIndex)
 		return &applyResult{}, nil
 	}
@@ -575,9 +580,24 @@ func (f *FSM) applyUpsertModel(
 		return nil, nil
 	}
 	nowMs := env.GetHeader().GetCreatedAtMs()
-	rec.RegisteredAtMs = nowMs // deterministic stamp from the proposer's header clock
-	if err := (ModelTable{S: batch}).Put(batch, rec); err != nil {
-		return nil, fmt.Errorf("cluster: write model: %w", err)
+	wrote := false
+	for _, rec := range records {
+		ref := rec.GetModelRef()
+		if ref.GetKind() == "" || ref.GetName() == "" {
+			f.cfg.Log.Warn("cluster: UpsertModelSet record missing model_ref kind/name; skipping",
+				"raft_index", raftIndex)
+			continue
+		}
+		rec.RegisteredAtMs = nowMs // deterministic stamp from the proposer's header clock
+		if err := (ModelTable{S: batch}).Put(batch, rec); err != nil {
+			return nil, fmt.Errorf("cluster: write model %s/%s/%s: %w",
+				ref.GetKind(), ref.GetName(), ref.GetVersion(), err)
+		}
+		wrote = true
+	}
+	if !wrote {
+		// Every record was malformed; nothing written, so don't bump or notify.
+		return &applyResult{}, nil
 	}
 	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableModel, nowMs); err != nil {
 		return nil, fmt.Errorf("cluster: bump model revision: %w", err)

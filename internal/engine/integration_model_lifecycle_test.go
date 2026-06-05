@@ -27,8 +27,8 @@ const validBPMN = `<?xml version="1.0" encoding="UTF-8"?>
 
 // staticInvalidBPMN is well-formed XML and parses cleanly, but an endEvent with
 // an outgoing flow is a structural defect (reflwos BPM001). The shallow
-// well-formed-XML check the config layer applies without an injected validator
-// would accept it; processengine.ValidateModel must reject it.
+// well-formed-XML check the config layer applies without an injected planner
+// would accept it; processengine.PlanModelSet must reject it.
 const staticInvalidBPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="test">
   <process id="p" isExecutable="true">
@@ -40,8 +40,8 @@ const staticInvalidBPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </process>
 </definitions>`
 
-// TestConfig_ModelValidationGate verifies the injected reflwos validator gates
-// UpsertModel: a structurally-broken-but-well-formed model is rejected with
+// TestConfig_ModelValidationGate verifies the injected reflwos planner gates
+// RegisterModelSet: a structurally-broken-but-well-formed model is rejected with
 // InvalidArgument and never enters the Raft log (the silent-per-node-reconcile
 // failure the seam closes), while a valid model registers and lists. This is
 // the exact wiring pkg/reflw/run.go installs when the process plane is on.
@@ -57,9 +57,9 @@ func TestConfig_ModelValidationGate(t *testing.T) {
 	host := findMetadataLeader(t, cluster).Host
 
 	srv, err := config.NewServer(config.Config{
-		Host:          host,
-		Runner:        host.MetadataRunner(),
-		ValidateModel: processengine.ValidateModel, // the production injection
+		Host:         host,
+		Runner:       host.MetadataRunner(),
+		PlanModelSet: processengine.PlanModelSet, // the production injection
 	})
 	if err != nil {
 		t.Fatalf("config.NewServer: %v", err)
@@ -70,15 +70,17 @@ func TestConfig_ModelValidationGate(t *testing.T) {
 	defer closeCli()
 
 	// A structurally-invalid model is rejected at the gate, not committed.
-	_, err = cli.UpsertModel(ctx, connect.NewRequest(&configv1.UpsertModelRequest{
-		ModelRef: &enginev1.ModelRef{Kind: "bpmn", Name: "Broken", Version: "v1"},
-		Xml:      []byte(staticInvalidBPMN),
+	_, err = cli.RegisterModelSet(ctx, connect.NewRequest(&configv1.RegisterModelSetRequest{
+		Entries: []*configv1.ModelSetEntry{{
+			ModelRef: &enginev1.ModelRef{Kind: "bpmn", Name: "Broken", Version: "v1"},
+			Xml:      []byte(staticInvalidBPMN),
+		}},
 	}))
 	if err == nil {
-		t.Fatal("UpsertModel accepted a statically-invalid model; want InvalidArgument")
+		t.Fatal("RegisterModelSet accepted a statically-invalid model; want InvalidArgument")
 	}
 	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
-		t.Fatalf("UpsertModel(invalid) code = %v, want InvalidArgument: %v", got, err)
+		t.Fatalf("RegisterModelSet(invalid) code = %v, want InvalidArgument: %v", got, err)
 	}
 
 	// It must not have landed: the table is still empty.
@@ -91,15 +93,17 @@ func TestConfig_ModelValidationGate(t *testing.T) {
 	}
 
 	// A valid model registers and bumps the revision.
-	upResp, err := cli.UpsertModel(ctx, connect.NewRequest(&configv1.UpsertModelRequest{
-		ModelRef: &enginev1.ModelRef{Kind: "bpmn", Name: "Good", Version: "v1"},
-		Xml:      []byte(validBPMN),
+	upResp, err := cli.RegisterModelSet(ctx, connect.NewRequest(&configv1.RegisterModelSetRequest{
+		Entries: []*configv1.ModelSetEntry{{
+			ModelRef: &enginev1.ModelRef{Kind: "bpmn", Name: "Good", Version: "v1"},
+			Xml:      []byte(validBPMN),
+		}},
 	}))
 	if err != nil {
-		t.Fatalf("UpsertModel(valid): %v", err)
+		t.Fatalf("RegisterModelSet(valid): %v", err)
 	}
 	if upResp.Msg.GetTableRevision() == 0 {
-		t.Fatal("table_revision after valid upsert is 0; want >0")
+		t.Fatal("table_revision after valid register is 0; want >0")
 	}
 
 	listResp, err = cli.ListModels(ctx, connect.NewRequest(&configv1.ListModelsRequest{}))

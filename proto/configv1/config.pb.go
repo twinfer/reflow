@@ -456,34 +456,33 @@ func (x *DeleteDeploymentResponse) GetTableRevision() uint64 {
 	return 0
 }
 
-// Model registration (shard 0 ModelTable). model_ref pins kind+name+version;
-// xml is the BPMN/CMMN source the server parses-to-validate before proposing.
-type UpsertModelRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	ModelRef          *enginev1.ModelRef     `protobuf:"bytes,1,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`
-	Xml               []byte                 `protobuf:"bytes,2,opt,name=xml,proto3" json:"xml,omitempty"`
-	IfTableRevisionEq uint64                 `protobuf:"varint,3,opt,name=if_table_revision_eq,json=ifTableRevisionEq,proto3" json:"if_table_revision_eq,omitempty"`
-	// bundle is the optional decision/child ref-resolution map stored on the
-	// ModelRecord (decisions → kind=dmn refs, children → kind=bpmn/cmmn refs).
-	Bundle        *enginev1.ModelBundle `protobuf:"bytes,4,opt,name=bundle,proto3" json:"bundle,omitempty"`
+// Model registration (shard 0 ModelTable). Each ModelSetEntry pins
+// kind+name+version + the BPMN/CMMN/DMN XML source. The server derives the
+// bundle (decisions/children/imports) for every entry — clients never author
+// bundles. A RegisterModelSetRequest is the model + its dependency closure;
+// the server validates the closure (set ∪ existing table) before proposing.
+type ModelSetEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ModelRef      *enginev1.ModelRef     `protobuf:"bytes,1,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`
+	Xml           []byte                 `protobuf:"bytes,2,opt,name=xml,proto3" json:"xml,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *UpsertModelRequest) Reset() {
-	*x = UpsertModelRequest{}
+func (x *ModelSetEntry) Reset() {
+	*x = ModelSetEntry{}
 	mi := &file_configv1_config_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *UpsertModelRequest) String() string {
+func (x *ModelSetEntry) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*UpsertModelRequest) ProtoMessage() {}
+func (*ModelSetEntry) ProtoMessage() {}
 
-func (x *UpsertModelRequest) ProtoReflect() protoreflect.Message {
+func (x *ModelSetEntry) ProtoReflect() protoreflect.Message {
 	mi := &file_configv1_config_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -495,60 +494,49 @@ func (x *UpsertModelRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use UpsertModelRequest.ProtoReflect.Descriptor instead.
-func (*UpsertModelRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use ModelSetEntry.ProtoReflect.Descriptor instead.
+func (*ModelSetEntry) Descriptor() ([]byte, []int) {
 	return file_configv1_config_proto_rawDescGZIP(), []int{8}
 }
 
-func (x *UpsertModelRequest) GetModelRef() *enginev1.ModelRef {
+func (x *ModelSetEntry) GetModelRef() *enginev1.ModelRef {
 	if x != nil {
 		return x.ModelRef
 	}
 	return nil
 }
 
-func (x *UpsertModelRequest) GetXml() []byte {
+func (x *ModelSetEntry) GetXml() []byte {
 	if x != nil {
 		return x.Xml
 	}
 	return nil
 }
 
-func (x *UpsertModelRequest) GetIfTableRevisionEq() uint64 {
-	if x != nil {
-		return x.IfTableRevisionEq
-	}
-	return 0
+type RegisterModelSetRequest struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Entries []*ModelSetEntry       `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	// if_table_revision_eq guards the whole set against a concurrent ModelTable
+	// change between the server's closure read and the apply (0 disables CAS).
+	IfTableRevisionEq uint64 `protobuf:"varint,2,opt,name=if_table_revision_eq,json=ifTableRevisionEq,proto3" json:"if_table_revision_eq,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
-func (x *UpsertModelRequest) GetBundle() *enginev1.ModelBundle {
-	if x != nil {
-		return x.Bundle
-	}
-	return nil
-}
-
-type UpsertModelResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TableRevision uint64                 `protobuf:"varint,1,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *UpsertModelResponse) Reset() {
-	*x = UpsertModelResponse{}
+func (x *RegisterModelSetRequest) Reset() {
+	*x = RegisterModelSetRequest{}
 	mi := &file_configv1_config_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *UpsertModelResponse) String() string {
+func (x *RegisterModelSetRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*UpsertModelResponse) ProtoMessage() {}
+func (*RegisterModelSetRequest) ProtoMessage() {}
 
-func (x *UpsertModelResponse) ProtoReflect() protoreflect.Message {
+func (x *RegisterModelSetRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_configv1_config_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -560,12 +548,63 @@ func (x *UpsertModelResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use UpsertModelResponse.ProtoReflect.Descriptor instead.
-func (*UpsertModelResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use RegisterModelSetRequest.ProtoReflect.Descriptor instead.
+func (*RegisterModelSetRequest) Descriptor() ([]byte, []int) {
 	return file_configv1_config_proto_rawDescGZIP(), []int{9}
 }
 
-func (x *UpsertModelResponse) GetTableRevision() uint64 {
+func (x *RegisterModelSetRequest) GetEntries() []*ModelSetEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+func (x *RegisterModelSetRequest) GetIfTableRevisionEq() uint64 {
+	if x != nil {
+		return x.IfTableRevisionEq
+	}
+	return 0
+}
+
+type RegisterModelSetResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TableRevision uint64                 `protobuf:"varint,1,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegisterModelSetResponse) Reset() {
+	*x = RegisterModelSetResponse{}
+	mi := &file_configv1_config_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterModelSetResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterModelSetResponse) ProtoMessage() {}
+
+func (x *RegisterModelSetResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_configv1_config_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterModelSetResponse.ProtoReflect.Descriptor instead.
+func (*RegisterModelSetResponse) Descriptor() ([]byte, []int) {
+	return file_configv1_config_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *RegisterModelSetResponse) GetTableRevision() uint64 {
 	if x != nil {
 		return x.TableRevision
 	}
@@ -580,7 +619,7 @@ type ListModelsRequest struct {
 
 func (x *ListModelsRequest) Reset() {
 	*x = ListModelsRequest{}
-	mi := &file_configv1_config_proto_msgTypes[10]
+	mi := &file_configv1_config_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -592,7 +631,7 @@ func (x *ListModelsRequest) String() string {
 func (*ListModelsRequest) ProtoMessage() {}
 
 func (x *ListModelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[10]
+	mi := &file_configv1_config_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -605,7 +644,7 @@ func (x *ListModelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListModelsRequest.ProtoReflect.Descriptor instead.
 func (*ListModelsRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{10}
+	return file_configv1_config_proto_rawDescGZIP(), []int{11}
 }
 
 type ListModelsResponse struct {
@@ -618,7 +657,7 @@ type ListModelsResponse struct {
 
 func (x *ListModelsResponse) Reset() {
 	*x = ListModelsResponse{}
-	mi := &file_configv1_config_proto_msgTypes[11]
+	mi := &file_configv1_config_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -630,7 +669,7 @@ func (x *ListModelsResponse) String() string {
 func (*ListModelsResponse) ProtoMessage() {}
 
 func (x *ListModelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[11]
+	mi := &file_configv1_config_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -643,7 +682,7 @@ func (x *ListModelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListModelsResponse.ProtoReflect.Descriptor instead.
 func (*ListModelsResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{11}
+	return file_configv1_config_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ListModelsResponse) GetRecords() []*enginev1.ModelRecord {
@@ -669,7 +708,7 @@ type DescribeModelRequest struct {
 
 func (x *DescribeModelRequest) Reset() {
 	*x = DescribeModelRequest{}
-	mi := &file_configv1_config_proto_msgTypes[12]
+	mi := &file_configv1_config_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -681,7 +720,7 @@ func (x *DescribeModelRequest) String() string {
 func (*DescribeModelRequest) ProtoMessage() {}
 
 func (x *DescribeModelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[12]
+	mi := &file_configv1_config_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -694,7 +733,7 @@ func (x *DescribeModelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeModelRequest.ProtoReflect.Descriptor instead.
 func (*DescribeModelRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{12}
+	return file_configv1_config_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *DescribeModelRequest) GetModelRef() *enginev1.ModelRef {
@@ -713,7 +752,7 @@ type DescribeModelResponse struct {
 
 func (x *DescribeModelResponse) Reset() {
 	*x = DescribeModelResponse{}
-	mi := &file_configv1_config_proto_msgTypes[13]
+	mi := &file_configv1_config_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -725,7 +764,7 @@ func (x *DescribeModelResponse) String() string {
 func (*DescribeModelResponse) ProtoMessage() {}
 
 func (x *DescribeModelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[13]
+	mi := &file_configv1_config_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -738,7 +777,7 @@ func (x *DescribeModelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeModelResponse.ProtoReflect.Descriptor instead.
 func (*DescribeModelResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{13}
+	return file_configv1_config_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *DescribeModelResponse) GetRecord() *enginev1.ModelRecord {
@@ -758,7 +797,7 @@ type DeleteModelRequest struct {
 
 func (x *DeleteModelRequest) Reset() {
 	*x = DeleteModelRequest{}
-	mi := &file_configv1_config_proto_msgTypes[14]
+	mi := &file_configv1_config_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -770,7 +809,7 @@ func (x *DeleteModelRequest) String() string {
 func (*DeleteModelRequest) ProtoMessage() {}
 
 func (x *DeleteModelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[14]
+	mi := &file_configv1_config_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -783,7 +822,7 @@ func (x *DeleteModelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteModelRequest.ProtoReflect.Descriptor instead.
 func (*DeleteModelRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{14}
+	return file_configv1_config_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *DeleteModelRequest) GetModelRef() *enginev1.ModelRef {
@@ -809,7 +848,7 @@ type DeleteModelResponse struct {
 
 func (x *DeleteModelResponse) Reset() {
 	*x = DeleteModelResponse{}
-	mi := &file_configv1_config_proto_msgTypes[15]
+	mi := &file_configv1_config_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -821,7 +860,7 @@ func (x *DeleteModelResponse) String() string {
 func (*DeleteModelResponse) ProtoMessage() {}
 
 func (x *DeleteModelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[15]
+	mi := &file_configv1_config_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -834,7 +873,7 @@ func (x *DeleteModelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteModelResponse.ProtoReflect.Descriptor instead.
 func (*DeleteModelResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{15}
+	return file_configv1_config_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *DeleteModelResponse) GetTableRevision() uint64 {
@@ -855,7 +894,7 @@ type UpsertClusterAuthzPolicyRequest struct {
 
 func (x *UpsertClusterAuthzPolicyRequest) Reset() {
 	*x = UpsertClusterAuthzPolicyRequest{}
-	mi := &file_configv1_config_proto_msgTypes[16]
+	mi := &file_configv1_config_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -867,7 +906,7 @@ func (x *UpsertClusterAuthzPolicyRequest) String() string {
 func (*UpsertClusterAuthzPolicyRequest) ProtoMessage() {}
 
 func (x *UpsertClusterAuthzPolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[16]
+	mi := &file_configv1_config_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -880,7 +919,7 @@ func (x *UpsertClusterAuthzPolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertClusterAuthzPolicyRequest.ProtoReflect.Descriptor instead.
 func (*UpsertClusterAuthzPolicyRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{16}
+	return file_configv1_config_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *UpsertClusterAuthzPolicyRequest) GetPolicyText() string {
@@ -906,7 +945,7 @@ type UpsertClusterAuthzPolicyResponse struct {
 
 func (x *UpsertClusterAuthzPolicyResponse) Reset() {
 	*x = UpsertClusterAuthzPolicyResponse{}
-	mi := &file_configv1_config_proto_msgTypes[17]
+	mi := &file_configv1_config_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -918,7 +957,7 @@ func (x *UpsertClusterAuthzPolicyResponse) String() string {
 func (*UpsertClusterAuthzPolicyResponse) ProtoMessage() {}
 
 func (x *UpsertClusterAuthzPolicyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[17]
+	mi := &file_configv1_config_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -931,7 +970,7 @@ func (x *UpsertClusterAuthzPolicyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertClusterAuthzPolicyResponse.ProtoReflect.Descriptor instead.
 func (*UpsertClusterAuthzPolicyResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{17}
+	return file_configv1_config_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *UpsertClusterAuthzPolicyResponse) GetTableRevision() uint64 {
@@ -949,7 +988,7 @@ type GetClusterAuthzPolicyRequest struct {
 
 func (x *GetClusterAuthzPolicyRequest) Reset() {
 	*x = GetClusterAuthzPolicyRequest{}
-	mi := &file_configv1_config_proto_msgTypes[18]
+	mi := &file_configv1_config_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -961,7 +1000,7 @@ func (x *GetClusterAuthzPolicyRequest) String() string {
 func (*GetClusterAuthzPolicyRequest) ProtoMessage() {}
 
 func (x *GetClusterAuthzPolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[18]
+	mi := &file_configv1_config_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -974,7 +1013,7 @@ func (x *GetClusterAuthzPolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetClusterAuthzPolicyRequest.ProtoReflect.Descriptor instead.
 func (*GetClusterAuthzPolicyRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{18}
+	return file_configv1_config_proto_rawDescGZIP(), []int{19}
 }
 
 type GetClusterAuthzPolicyResponse struct {
@@ -987,7 +1026,7 @@ type GetClusterAuthzPolicyResponse struct {
 
 func (x *GetClusterAuthzPolicyResponse) Reset() {
 	*x = GetClusterAuthzPolicyResponse{}
-	mi := &file_configv1_config_proto_msgTypes[19]
+	mi := &file_configv1_config_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -999,7 +1038,7 @@ func (x *GetClusterAuthzPolicyResponse) String() string {
 func (*GetClusterAuthzPolicyResponse) ProtoMessage() {}
 
 func (x *GetClusterAuthzPolicyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[19]
+	mi := &file_configv1_config_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1012,7 +1051,7 @@ func (x *GetClusterAuthzPolicyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetClusterAuthzPolicyResponse.ProtoReflect.Descriptor instead.
 func (*GetClusterAuthzPolicyResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{19}
+	return file_configv1_config_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *GetClusterAuthzPolicyResponse) GetPolicyText() string {
@@ -1041,7 +1080,7 @@ type UpsertSecretRequest struct {
 
 func (x *UpsertSecretRequest) Reset() {
 	*x = UpsertSecretRequest{}
-	mi := &file_configv1_config_proto_msgTypes[20]
+	mi := &file_configv1_config_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1053,7 +1092,7 @@ func (x *UpsertSecretRequest) String() string {
 func (*UpsertSecretRequest) ProtoMessage() {}
 
 func (x *UpsertSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[20]
+	mi := &file_configv1_config_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1066,7 +1105,7 @@ func (x *UpsertSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertSecretRequest.ProtoReflect.Descriptor instead.
 func (*UpsertSecretRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{20}
+	return file_configv1_config_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *UpsertSecretRequest) GetRecord() *enginev1.SecretRecord {
@@ -1092,7 +1131,7 @@ type UpsertSecretResponse struct {
 
 func (x *UpsertSecretResponse) Reset() {
 	*x = UpsertSecretResponse{}
-	mi := &file_configv1_config_proto_msgTypes[21]
+	mi := &file_configv1_config_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1104,7 +1143,7 @@ func (x *UpsertSecretResponse) String() string {
 func (*UpsertSecretResponse) ProtoMessage() {}
 
 func (x *UpsertSecretResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[21]
+	mi := &file_configv1_config_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1117,7 +1156,7 @@ func (x *UpsertSecretResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertSecretResponse.ProtoReflect.Descriptor instead.
 func (*UpsertSecretResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{21}
+	return file_configv1_config_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *UpsertSecretResponse) GetTableRevision() uint64 {
@@ -1137,7 +1176,7 @@ type DeleteSecretRequest struct {
 
 func (x *DeleteSecretRequest) Reset() {
 	*x = DeleteSecretRequest{}
-	mi := &file_configv1_config_proto_msgTypes[22]
+	mi := &file_configv1_config_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1149,7 +1188,7 @@ func (x *DeleteSecretRequest) String() string {
 func (*DeleteSecretRequest) ProtoMessage() {}
 
 func (x *DeleteSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[22]
+	mi := &file_configv1_config_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1162,7 +1201,7 @@ func (x *DeleteSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSecretRequest.ProtoReflect.Descriptor instead.
 func (*DeleteSecretRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{22}
+	return file_configv1_config_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *DeleteSecretRequest) GetName() string {
@@ -1188,7 +1227,7 @@ type DeleteSecretResponse struct {
 
 func (x *DeleteSecretResponse) Reset() {
 	*x = DeleteSecretResponse{}
-	mi := &file_configv1_config_proto_msgTypes[23]
+	mi := &file_configv1_config_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1200,7 +1239,7 @@ func (x *DeleteSecretResponse) String() string {
 func (*DeleteSecretResponse) ProtoMessage() {}
 
 func (x *DeleteSecretResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[23]
+	mi := &file_configv1_config_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1213,7 +1252,7 @@ func (x *DeleteSecretResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSecretResponse.ProtoReflect.Descriptor instead.
 func (*DeleteSecretResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{23}
+	return file_configv1_config_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *DeleteSecretResponse) GetTableRevision() uint64 {
@@ -1231,7 +1270,7 @@ type ListSecretsRequest struct {
 
 func (x *ListSecretsRequest) Reset() {
 	*x = ListSecretsRequest{}
-	mi := &file_configv1_config_proto_msgTypes[24]
+	mi := &file_configv1_config_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1243,7 +1282,7 @@ func (x *ListSecretsRequest) String() string {
 func (*ListSecretsRequest) ProtoMessage() {}
 
 func (x *ListSecretsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[24]
+	mi := &file_configv1_config_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1256,7 +1295,7 @@ func (x *ListSecretsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSecretsRequest.ProtoReflect.Descriptor instead.
 func (*ListSecretsRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{24}
+	return file_configv1_config_proto_rawDescGZIP(), []int{25}
 }
 
 type ListSecretsResponse struct {
@@ -1269,7 +1308,7 @@ type ListSecretsResponse struct {
 
 func (x *ListSecretsResponse) Reset() {
 	*x = ListSecretsResponse{}
-	mi := &file_configv1_config_proto_msgTypes[25]
+	mi := &file_configv1_config_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1281,7 +1320,7 @@ func (x *ListSecretsResponse) String() string {
 func (*ListSecretsResponse) ProtoMessage() {}
 
 func (x *ListSecretsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[25]
+	mi := &file_configv1_config_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1294,7 +1333,7 @@ func (x *ListSecretsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSecretsResponse.ProtoReflect.Descriptor instead.
 func (*ListSecretsResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{25}
+	return file_configv1_config_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ListSecretsResponse) GetRecords() []*enginev1.SecretRecord {
@@ -1323,7 +1362,7 @@ type UpsertCARootRequest struct {
 
 func (x *UpsertCARootRequest) Reset() {
 	*x = UpsertCARootRequest{}
-	mi := &file_configv1_config_proto_msgTypes[26]
+	mi := &file_configv1_config_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1335,7 +1374,7 @@ func (x *UpsertCARootRequest) String() string {
 func (*UpsertCARootRequest) ProtoMessage() {}
 
 func (x *UpsertCARootRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[26]
+	mi := &file_configv1_config_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1348,7 +1387,7 @@ func (x *UpsertCARootRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertCARootRequest.ProtoReflect.Descriptor instead.
 func (*UpsertCARootRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{26}
+	return file_configv1_config_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *UpsertCARootRequest) GetRecord() *enginev1.CARootRecord {
@@ -1374,7 +1413,7 @@ type UpsertCARootResponse struct {
 
 func (x *UpsertCARootResponse) Reset() {
 	*x = UpsertCARootResponse{}
-	mi := &file_configv1_config_proto_msgTypes[27]
+	mi := &file_configv1_config_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1386,7 +1425,7 @@ func (x *UpsertCARootResponse) String() string {
 func (*UpsertCARootResponse) ProtoMessage() {}
 
 func (x *UpsertCARootResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[27]
+	mi := &file_configv1_config_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1399,7 +1438,7 @@ func (x *UpsertCARootResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertCARootResponse.ProtoReflect.Descriptor instead.
 func (*UpsertCARootResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{27}
+	return file_configv1_config_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *UpsertCARootResponse) GetTableRevision() uint64 {
@@ -1419,7 +1458,7 @@ type DeleteCARootRequest struct {
 
 func (x *DeleteCARootRequest) Reset() {
 	*x = DeleteCARootRequest{}
-	mi := &file_configv1_config_proto_msgTypes[28]
+	mi := &file_configv1_config_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1431,7 +1470,7 @@ func (x *DeleteCARootRequest) String() string {
 func (*DeleteCARootRequest) ProtoMessage() {}
 
 func (x *DeleteCARootRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[28]
+	mi := &file_configv1_config_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1444,7 +1483,7 @@ func (x *DeleteCARootRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteCARootRequest.ProtoReflect.Descriptor instead.
 func (*DeleteCARootRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{28}
+	return file_configv1_config_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *DeleteCARootRequest) GetName() string {
@@ -1470,7 +1509,7 @@ type DeleteCARootResponse struct {
 
 func (x *DeleteCARootResponse) Reset() {
 	*x = DeleteCARootResponse{}
-	mi := &file_configv1_config_proto_msgTypes[29]
+	mi := &file_configv1_config_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1482,7 +1521,7 @@ func (x *DeleteCARootResponse) String() string {
 func (*DeleteCARootResponse) ProtoMessage() {}
 
 func (x *DeleteCARootResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[29]
+	mi := &file_configv1_config_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1495,7 +1534,7 @@ func (x *DeleteCARootResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteCARootResponse.ProtoReflect.Descriptor instead.
 func (*DeleteCARootResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{29}
+	return file_configv1_config_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *DeleteCARootResponse) GetTableRevision() uint64 {
@@ -1513,7 +1552,7 @@ type ListCARootsRequest struct {
 
 func (x *ListCARootsRequest) Reset() {
 	*x = ListCARootsRequest{}
-	mi := &file_configv1_config_proto_msgTypes[30]
+	mi := &file_configv1_config_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1525,7 +1564,7 @@ func (x *ListCARootsRequest) String() string {
 func (*ListCARootsRequest) ProtoMessage() {}
 
 func (x *ListCARootsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[30]
+	mi := &file_configv1_config_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1538,7 +1577,7 @@ func (x *ListCARootsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCARootsRequest.ProtoReflect.Descriptor instead.
 func (*ListCARootsRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{30}
+	return file_configv1_config_proto_rawDescGZIP(), []int{31}
 }
 
 type ListCARootsResponse struct {
@@ -1551,7 +1590,7 @@ type ListCARootsResponse struct {
 
 func (x *ListCARootsResponse) Reset() {
 	*x = ListCARootsResponse{}
-	mi := &file_configv1_config_proto_msgTypes[31]
+	mi := &file_configv1_config_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1563,7 +1602,7 @@ func (x *ListCARootsResponse) String() string {
 func (*ListCARootsResponse) ProtoMessage() {}
 
 func (x *ListCARootsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[31]
+	mi := &file_configv1_config_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1576,7 +1615,7 @@ func (x *ListCARootsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCARootsResponse.ProtoReflect.Descriptor instead.
 func (*ListCARootsResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{31}
+	return file_configv1_config_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ListCARootsResponse) GetRecords() []*enginev1.CARootRecord {
@@ -1608,7 +1647,7 @@ type LeaderHint struct {
 
 func (x *LeaderHint) Reset() {
 	*x = LeaderHint{}
-	mi := &file_configv1_config_proto_msgTypes[32]
+	mi := &file_configv1_config_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1620,7 +1659,7 @@ func (x *LeaderHint) String() string {
 func (*LeaderHint) ProtoMessage() {}
 
 func (x *LeaderHint) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[32]
+	mi := &file_configv1_config_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1633,7 +1672,7 @@ func (x *LeaderHint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaderHint.ProtoReflect.Descriptor instead.
 func (*LeaderHint) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{32}
+	return file_configv1_config_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *LeaderHint) GetNodeId() uint64 {
@@ -1679,7 +1718,7 @@ type CreateJoinTokenRequest struct {
 
 func (x *CreateJoinTokenRequest) Reset() {
 	*x = CreateJoinTokenRequest{}
-	mi := &file_configv1_config_proto_msgTypes[33]
+	mi := &file_configv1_config_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1691,7 +1730,7 @@ func (x *CreateJoinTokenRequest) String() string {
 func (*CreateJoinTokenRequest) ProtoMessage() {}
 
 func (x *CreateJoinTokenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[33]
+	mi := &file_configv1_config_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1704,7 +1743,7 @@ func (x *CreateJoinTokenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateJoinTokenRequest.ProtoReflect.Descriptor instead.
 func (*CreateJoinTokenRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{33}
+	return file_configv1_config_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *CreateJoinTokenRequest) GetKind() enginev1.JoinTokenKind {
@@ -1748,7 +1787,7 @@ type CreateJoinTokenResponse struct {
 
 func (x *CreateJoinTokenResponse) Reset() {
 	*x = CreateJoinTokenResponse{}
-	mi := &file_configv1_config_proto_msgTypes[34]
+	mi := &file_configv1_config_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1760,7 +1799,7 @@ func (x *CreateJoinTokenResponse) String() string {
 func (*CreateJoinTokenResponse) ProtoMessage() {}
 
 func (x *CreateJoinTokenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[34]
+	mi := &file_configv1_config_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1773,7 +1812,7 @@ func (x *CreateJoinTokenResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateJoinTokenResponse.ProtoReflect.Descriptor instead.
 func (*CreateJoinTokenResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{34}
+	return file_configv1_config_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *CreateJoinTokenResponse) GetToken() string {
@@ -1808,7 +1847,7 @@ type DeleteJoinTokenRequest struct {
 
 func (x *DeleteJoinTokenRequest) Reset() {
 	*x = DeleteJoinTokenRequest{}
-	mi := &file_configv1_config_proto_msgTypes[35]
+	mi := &file_configv1_config_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1820,7 +1859,7 @@ func (x *DeleteJoinTokenRequest) String() string {
 func (*DeleteJoinTokenRequest) ProtoMessage() {}
 
 func (x *DeleteJoinTokenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[35]
+	mi := &file_configv1_config_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1833,7 +1872,7 @@ func (x *DeleteJoinTokenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteJoinTokenRequest.ProtoReflect.Descriptor instead.
 func (*DeleteJoinTokenRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{35}
+	return file_configv1_config_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *DeleteJoinTokenRequest) GetTokenHash() []byte {
@@ -1859,7 +1898,7 @@ type DeleteJoinTokenResponse struct {
 
 func (x *DeleteJoinTokenResponse) Reset() {
 	*x = DeleteJoinTokenResponse{}
-	mi := &file_configv1_config_proto_msgTypes[36]
+	mi := &file_configv1_config_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1871,7 +1910,7 @@ func (x *DeleteJoinTokenResponse) String() string {
 func (*DeleteJoinTokenResponse) ProtoMessage() {}
 
 func (x *DeleteJoinTokenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[36]
+	mi := &file_configv1_config_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1884,7 +1923,7 @@ func (x *DeleteJoinTokenResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteJoinTokenResponse.ProtoReflect.Descriptor instead.
 func (*DeleteJoinTokenResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{36}
+	return file_configv1_config_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *DeleteJoinTokenResponse) GetTableRevision() uint64 {
@@ -1902,7 +1941,7 @@ type ListJoinTokensRequest struct {
 
 func (x *ListJoinTokensRequest) Reset() {
 	*x = ListJoinTokensRequest{}
-	mi := &file_configv1_config_proto_msgTypes[37]
+	mi := &file_configv1_config_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1914,7 +1953,7 @@ func (x *ListJoinTokensRequest) String() string {
 func (*ListJoinTokensRequest) ProtoMessage() {}
 
 func (x *ListJoinTokensRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[37]
+	mi := &file_configv1_config_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1927,7 +1966,7 @@ func (x *ListJoinTokensRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListJoinTokensRequest.ProtoReflect.Descriptor instead.
 func (*ListJoinTokensRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{37}
+	return file_configv1_config_proto_rawDescGZIP(), []int{38}
 }
 
 type ListJoinTokensResponse struct {
@@ -1940,7 +1979,7 @@ type ListJoinTokensResponse struct {
 
 func (x *ListJoinTokensResponse) Reset() {
 	*x = ListJoinTokensResponse{}
-	mi := &file_configv1_config_proto_msgTypes[38]
+	mi := &file_configv1_config_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1952,7 +1991,7 @@ func (x *ListJoinTokensResponse) String() string {
 func (*ListJoinTokensResponse) ProtoMessage() {}
 
 func (x *ListJoinTokensResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[38]
+	mi := &file_configv1_config_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1965,7 +2004,7 @@ func (x *ListJoinTokensResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListJoinTokensResponse.ProtoReflect.Descriptor instead.
 func (*ListJoinTokensResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{38}
+	return file_configv1_config_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ListJoinTokensResponse) GetRecords() []*enginev1.JoinTokenRecord {
@@ -1999,7 +2038,7 @@ type IssueOperatorRequest struct {
 
 func (x *IssueOperatorRequest) Reset() {
 	*x = IssueOperatorRequest{}
-	mi := &file_configv1_config_proto_msgTypes[39]
+	mi := &file_configv1_config_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2011,7 +2050,7 @@ func (x *IssueOperatorRequest) String() string {
 func (*IssueOperatorRequest) ProtoMessage() {}
 
 func (x *IssueOperatorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[39]
+	mi := &file_configv1_config_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2024,7 +2063,7 @@ func (x *IssueOperatorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IssueOperatorRequest.ProtoReflect.Descriptor instead.
 func (*IssueOperatorRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{39}
+	return file_configv1_config_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *IssueOperatorRequest) GetCsrDer() []byte {
@@ -2052,7 +2091,7 @@ type IssueOperatorResponse struct {
 
 func (x *IssueOperatorResponse) Reset() {
 	*x = IssueOperatorResponse{}
-	mi := &file_configv1_config_proto_msgTypes[40]
+	mi := &file_configv1_config_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2064,7 +2103,7 @@ func (x *IssueOperatorResponse) String() string {
 func (*IssueOperatorResponse) ProtoMessage() {}
 
 func (x *IssueOperatorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[40]
+	mi := &file_configv1_config_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2077,7 +2116,7 @@ func (x *IssueOperatorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IssueOperatorResponse.ProtoReflect.Descriptor instead.
 func (*IssueOperatorResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{40}
+	return file_configv1_config_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *IssueOperatorResponse) GetCertPem() []byte {
@@ -2128,13 +2167,14 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\x05force\x18\x02 \x01(\bR\x05force\x12/\n" +
 	"\x14if_table_revision_eq\x18\x03 \x01(\x04R\x11ifTableRevisionEq\"A\n" +
 	"\x18DeleteDeploymentResponse\x12%\n" +
-	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"\xc5\x01\n" +
-	"\x12UpsertModelRequest\x126\n" +
+	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"Y\n" +
+	"\rModelSetEntry\x126\n" +
 	"\tmodel_ref\x18\x01 \x01(\v2\x19.reflw.engine.v1.ModelRefR\bmodelRef\x12\x10\n" +
-	"\x03xml\x18\x02 \x01(\fR\x03xml\x12/\n" +
-	"\x14if_table_revision_eq\x18\x03 \x01(\x04R\x11ifTableRevisionEq\x124\n" +
-	"\x06bundle\x18\x04 \x01(\v2\x1c.reflw.engine.v1.ModelBundleR\x06bundle\"<\n" +
-	"\x13UpsertModelResponse\x12%\n" +
+	"\x03xml\x18\x02 \x01(\fR\x03xml\"\x84\x01\n" +
+	"\x17RegisterModelSetRequest\x128\n" +
+	"\aentries\x18\x01 \x03(\v2\x1e.reflw.config.v1.ModelSetEntryR\aentries\x12/\n" +
+	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"A\n" +
+	"\x18RegisterModelSetResponse\x12%\n" +
 	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"\x13\n" +
 	"\x11ListModelsRequest\"s\n" +
 	"\x12ListModelsResponse\x126\n" +
@@ -2221,13 +2261,13 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\bcert_pem\x18\x01 \x01(\fR\acertPem\x12 \n" +
 	"\fca_chain_pem\x18\x02 \x01(\fR\n" +
 	"caChainPem\x12%\n" +
-	"\x0eca_fingerprint\x18\x03 \x01(\tR\rcaFingerprint2\xd0\x0f\n" +
+	"\x0eca_fingerprint\x18\x03 \x01(\tR\rcaFingerprint2\xdf\x0f\n" +
 	"\x06Config\x12m\n" +
 	"\x12RegisterDeployment\x12*.reflw.config.v1.RegisterDeploymentRequest\x1a+.reflw.config.v1.RegisterDeploymentResponse\x12d\n" +
 	"\x0fListDeployments\x12'.reflw.config.v1.ListDeploymentsRequest\x1a(.reflw.config.v1.ListDeploymentsResponse\x12m\n" +
 	"\x12DescribeDeployment\x12*.reflw.config.v1.DescribeDeploymentRequest\x1a+.reflw.config.v1.DescribeDeploymentResponse\x12g\n" +
-	"\x10DeleteDeployment\x12(.reflw.config.v1.DeleteDeploymentRequest\x1a).reflw.config.v1.DeleteDeploymentResponse\x12X\n" +
-	"\vUpsertModel\x12#.reflw.config.v1.UpsertModelRequest\x1a$.reflw.config.v1.UpsertModelResponse\x12U\n" +
+	"\x10DeleteDeployment\x12(.reflw.config.v1.DeleteDeploymentRequest\x1a).reflw.config.v1.DeleteDeploymentResponse\x12g\n" +
+	"\x10RegisterModelSet\x12(.reflw.config.v1.RegisterModelSetRequest\x1a).reflw.config.v1.RegisterModelSetResponse\x12U\n" +
 	"\n" +
 	"ListModels\x12\".reflw.config.v1.ListModelsRequest\x1a#.reflw.config.v1.ListModelsResponse\x12^\n" +
 	"\rDescribeModel\x12%.reflw.config.v1.DescribeModelRequest\x1a&.reflw.config.v1.DescribeModelResponse\x12X\n" +
@@ -2257,7 +2297,7 @@ func file_configv1_config_proto_rawDescGZIP() []byte {
 	return file_configv1_config_proto_rawDescData
 }
 
-var file_configv1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
+var file_configv1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
 var file_configv1_config_proto_goTypes = []any{
 	(*RegisterDeploymentRequest)(nil),        // 0: reflw.config.v1.RegisterDeploymentRequest
 	(*RegisterDeploymentResponse)(nil),       // 1: reflw.config.v1.RegisterDeploymentResponse
@@ -2267,42 +2307,42 @@ var file_configv1_config_proto_goTypes = []any{
 	(*DescribeDeploymentResponse)(nil),       // 5: reflw.config.v1.DescribeDeploymentResponse
 	(*DeleteDeploymentRequest)(nil),          // 6: reflw.config.v1.DeleteDeploymentRequest
 	(*DeleteDeploymentResponse)(nil),         // 7: reflw.config.v1.DeleteDeploymentResponse
-	(*UpsertModelRequest)(nil),               // 8: reflw.config.v1.UpsertModelRequest
-	(*UpsertModelResponse)(nil),              // 9: reflw.config.v1.UpsertModelResponse
-	(*ListModelsRequest)(nil),                // 10: reflw.config.v1.ListModelsRequest
-	(*ListModelsResponse)(nil),               // 11: reflw.config.v1.ListModelsResponse
-	(*DescribeModelRequest)(nil),             // 12: reflw.config.v1.DescribeModelRequest
-	(*DescribeModelResponse)(nil),            // 13: reflw.config.v1.DescribeModelResponse
-	(*DeleteModelRequest)(nil),               // 14: reflw.config.v1.DeleteModelRequest
-	(*DeleteModelResponse)(nil),              // 15: reflw.config.v1.DeleteModelResponse
-	(*UpsertClusterAuthzPolicyRequest)(nil),  // 16: reflw.config.v1.UpsertClusterAuthzPolicyRequest
-	(*UpsertClusterAuthzPolicyResponse)(nil), // 17: reflw.config.v1.UpsertClusterAuthzPolicyResponse
-	(*GetClusterAuthzPolicyRequest)(nil),     // 18: reflw.config.v1.GetClusterAuthzPolicyRequest
-	(*GetClusterAuthzPolicyResponse)(nil),    // 19: reflw.config.v1.GetClusterAuthzPolicyResponse
-	(*UpsertSecretRequest)(nil),              // 20: reflw.config.v1.UpsertSecretRequest
-	(*UpsertSecretResponse)(nil),             // 21: reflw.config.v1.UpsertSecretResponse
-	(*DeleteSecretRequest)(nil),              // 22: reflw.config.v1.DeleteSecretRequest
-	(*DeleteSecretResponse)(nil),             // 23: reflw.config.v1.DeleteSecretResponse
-	(*ListSecretsRequest)(nil),               // 24: reflw.config.v1.ListSecretsRequest
-	(*ListSecretsResponse)(nil),              // 25: reflw.config.v1.ListSecretsResponse
-	(*UpsertCARootRequest)(nil),              // 26: reflw.config.v1.UpsertCARootRequest
-	(*UpsertCARootResponse)(nil),             // 27: reflw.config.v1.UpsertCARootResponse
-	(*DeleteCARootRequest)(nil),              // 28: reflw.config.v1.DeleteCARootRequest
-	(*DeleteCARootResponse)(nil),             // 29: reflw.config.v1.DeleteCARootResponse
-	(*ListCARootsRequest)(nil),               // 30: reflw.config.v1.ListCARootsRequest
-	(*ListCARootsResponse)(nil),              // 31: reflw.config.v1.ListCARootsResponse
-	(*LeaderHint)(nil),                       // 32: reflw.config.v1.LeaderHint
-	(*CreateJoinTokenRequest)(nil),           // 33: reflw.config.v1.CreateJoinTokenRequest
-	(*CreateJoinTokenResponse)(nil),          // 34: reflw.config.v1.CreateJoinTokenResponse
-	(*DeleteJoinTokenRequest)(nil),           // 35: reflw.config.v1.DeleteJoinTokenRequest
-	(*DeleteJoinTokenResponse)(nil),          // 36: reflw.config.v1.DeleteJoinTokenResponse
-	(*ListJoinTokensRequest)(nil),            // 37: reflw.config.v1.ListJoinTokensRequest
-	(*ListJoinTokensResponse)(nil),           // 38: reflw.config.v1.ListJoinTokensResponse
-	(*IssueOperatorRequest)(nil),             // 39: reflw.config.v1.IssueOperatorRequest
-	(*IssueOperatorResponse)(nil),            // 40: reflw.config.v1.IssueOperatorResponse
-	(*enginev1.DeploymentRecord)(nil),        // 41: reflw.engine.v1.DeploymentRecord
-	(*enginev1.ModelRef)(nil),                // 42: reflw.engine.v1.ModelRef
-	(*enginev1.ModelBundle)(nil),             // 43: reflw.engine.v1.ModelBundle
+	(*ModelSetEntry)(nil),                    // 8: reflw.config.v1.ModelSetEntry
+	(*RegisterModelSetRequest)(nil),          // 9: reflw.config.v1.RegisterModelSetRequest
+	(*RegisterModelSetResponse)(nil),         // 10: reflw.config.v1.RegisterModelSetResponse
+	(*ListModelsRequest)(nil),                // 11: reflw.config.v1.ListModelsRequest
+	(*ListModelsResponse)(nil),               // 12: reflw.config.v1.ListModelsResponse
+	(*DescribeModelRequest)(nil),             // 13: reflw.config.v1.DescribeModelRequest
+	(*DescribeModelResponse)(nil),            // 14: reflw.config.v1.DescribeModelResponse
+	(*DeleteModelRequest)(nil),               // 15: reflw.config.v1.DeleteModelRequest
+	(*DeleteModelResponse)(nil),              // 16: reflw.config.v1.DeleteModelResponse
+	(*UpsertClusterAuthzPolicyRequest)(nil),  // 17: reflw.config.v1.UpsertClusterAuthzPolicyRequest
+	(*UpsertClusterAuthzPolicyResponse)(nil), // 18: reflw.config.v1.UpsertClusterAuthzPolicyResponse
+	(*GetClusterAuthzPolicyRequest)(nil),     // 19: reflw.config.v1.GetClusterAuthzPolicyRequest
+	(*GetClusterAuthzPolicyResponse)(nil),    // 20: reflw.config.v1.GetClusterAuthzPolicyResponse
+	(*UpsertSecretRequest)(nil),              // 21: reflw.config.v1.UpsertSecretRequest
+	(*UpsertSecretResponse)(nil),             // 22: reflw.config.v1.UpsertSecretResponse
+	(*DeleteSecretRequest)(nil),              // 23: reflw.config.v1.DeleteSecretRequest
+	(*DeleteSecretResponse)(nil),             // 24: reflw.config.v1.DeleteSecretResponse
+	(*ListSecretsRequest)(nil),               // 25: reflw.config.v1.ListSecretsRequest
+	(*ListSecretsResponse)(nil),              // 26: reflw.config.v1.ListSecretsResponse
+	(*UpsertCARootRequest)(nil),              // 27: reflw.config.v1.UpsertCARootRequest
+	(*UpsertCARootResponse)(nil),             // 28: reflw.config.v1.UpsertCARootResponse
+	(*DeleteCARootRequest)(nil),              // 29: reflw.config.v1.DeleteCARootRequest
+	(*DeleteCARootResponse)(nil),             // 30: reflw.config.v1.DeleteCARootResponse
+	(*ListCARootsRequest)(nil),               // 31: reflw.config.v1.ListCARootsRequest
+	(*ListCARootsResponse)(nil),              // 32: reflw.config.v1.ListCARootsResponse
+	(*LeaderHint)(nil),                       // 33: reflw.config.v1.LeaderHint
+	(*CreateJoinTokenRequest)(nil),           // 34: reflw.config.v1.CreateJoinTokenRequest
+	(*CreateJoinTokenResponse)(nil),          // 35: reflw.config.v1.CreateJoinTokenResponse
+	(*DeleteJoinTokenRequest)(nil),           // 36: reflw.config.v1.DeleteJoinTokenRequest
+	(*DeleteJoinTokenResponse)(nil),          // 37: reflw.config.v1.DeleteJoinTokenResponse
+	(*ListJoinTokensRequest)(nil),            // 38: reflw.config.v1.ListJoinTokensRequest
+	(*ListJoinTokensResponse)(nil),           // 39: reflw.config.v1.ListJoinTokensResponse
+	(*IssueOperatorRequest)(nil),             // 40: reflw.config.v1.IssueOperatorRequest
+	(*IssueOperatorResponse)(nil),            // 41: reflw.config.v1.IssueOperatorResponse
+	(*enginev1.DeploymentRecord)(nil),        // 42: reflw.engine.v1.DeploymentRecord
+	(*enginev1.ModelRef)(nil),                // 43: reflw.engine.v1.ModelRef
 	(*enginev1.ModelRecord)(nil),             // 44: reflw.engine.v1.ModelRecord
 	(*enginev1.SecretRecord)(nil),            // 45: reflw.engine.v1.SecretRecord
 	(*enginev1.CARootRecord)(nil),            // 46: reflw.engine.v1.CARootRecord
@@ -2310,14 +2350,14 @@ var file_configv1_config_proto_goTypes = []any{
 	(*enginev1.JoinTokenRecord)(nil),         // 48: reflw.engine.v1.JoinTokenRecord
 }
 var file_configv1_config_proto_depIdxs = []int32{
-	41, // 0: reflw.config.v1.ListDeploymentsResponse.deployments:type_name -> reflw.engine.v1.DeploymentRecord
-	41, // 1: reflw.config.v1.DescribeDeploymentResponse.deployment:type_name -> reflw.engine.v1.DeploymentRecord
-	42, // 2: reflw.config.v1.UpsertModelRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
-	43, // 3: reflw.config.v1.UpsertModelRequest.bundle:type_name -> reflw.engine.v1.ModelBundle
+	42, // 0: reflw.config.v1.ListDeploymentsResponse.deployments:type_name -> reflw.engine.v1.DeploymentRecord
+	42, // 1: reflw.config.v1.DescribeDeploymentResponse.deployment:type_name -> reflw.engine.v1.DeploymentRecord
+	43, // 2: reflw.config.v1.ModelSetEntry.model_ref:type_name -> reflw.engine.v1.ModelRef
+	8,  // 3: reflw.config.v1.RegisterModelSetRequest.entries:type_name -> reflw.config.v1.ModelSetEntry
 	44, // 4: reflw.config.v1.ListModelsResponse.records:type_name -> reflw.engine.v1.ModelRecord
-	42, // 5: reflw.config.v1.DescribeModelRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
+	43, // 5: reflw.config.v1.DescribeModelRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
 	44, // 6: reflw.config.v1.DescribeModelResponse.record:type_name -> reflw.engine.v1.ModelRecord
-	42, // 7: reflw.config.v1.DeleteModelRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
+	43, // 7: reflw.config.v1.DeleteModelRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
 	45, // 8: reflw.config.v1.UpsertSecretRequest.record:type_name -> reflw.engine.v1.SecretRecord
 	45, // 9: reflw.config.v1.ListSecretsResponse.records:type_name -> reflw.engine.v1.SecretRecord
 	46, // 10: reflw.config.v1.UpsertCARootRequest.record:type_name -> reflw.engine.v1.CARootRecord
@@ -2328,42 +2368,42 @@ var file_configv1_config_proto_depIdxs = []int32{
 	2,  // 15: reflw.config.v1.Config.ListDeployments:input_type -> reflw.config.v1.ListDeploymentsRequest
 	4,  // 16: reflw.config.v1.Config.DescribeDeployment:input_type -> reflw.config.v1.DescribeDeploymentRequest
 	6,  // 17: reflw.config.v1.Config.DeleteDeployment:input_type -> reflw.config.v1.DeleteDeploymentRequest
-	8,  // 18: reflw.config.v1.Config.UpsertModel:input_type -> reflw.config.v1.UpsertModelRequest
-	10, // 19: reflw.config.v1.Config.ListModels:input_type -> reflw.config.v1.ListModelsRequest
-	12, // 20: reflw.config.v1.Config.DescribeModel:input_type -> reflw.config.v1.DescribeModelRequest
-	14, // 21: reflw.config.v1.Config.DeleteModel:input_type -> reflw.config.v1.DeleteModelRequest
-	20, // 22: reflw.config.v1.Config.UpsertSecret:input_type -> reflw.config.v1.UpsertSecretRequest
-	22, // 23: reflw.config.v1.Config.DeleteSecret:input_type -> reflw.config.v1.DeleteSecretRequest
-	24, // 24: reflw.config.v1.Config.ListSecrets:input_type -> reflw.config.v1.ListSecretsRequest
-	26, // 25: reflw.config.v1.Config.UpsertCARoot:input_type -> reflw.config.v1.UpsertCARootRequest
-	28, // 26: reflw.config.v1.Config.DeleteCARoot:input_type -> reflw.config.v1.DeleteCARootRequest
-	30, // 27: reflw.config.v1.Config.ListCARoots:input_type -> reflw.config.v1.ListCARootsRequest
-	33, // 28: reflw.config.v1.Config.CreateJoinToken:input_type -> reflw.config.v1.CreateJoinTokenRequest
-	35, // 29: reflw.config.v1.Config.DeleteJoinToken:input_type -> reflw.config.v1.DeleteJoinTokenRequest
-	37, // 30: reflw.config.v1.Config.ListJoinTokens:input_type -> reflw.config.v1.ListJoinTokensRequest
-	39, // 31: reflw.config.v1.Config.IssueOperator:input_type -> reflw.config.v1.IssueOperatorRequest
-	16, // 32: reflw.config.v1.Config.UpsertClusterAuthzPolicy:input_type -> reflw.config.v1.UpsertClusterAuthzPolicyRequest
-	18, // 33: reflw.config.v1.Config.GetClusterAuthzPolicy:input_type -> reflw.config.v1.GetClusterAuthzPolicyRequest
+	9,  // 18: reflw.config.v1.Config.RegisterModelSet:input_type -> reflw.config.v1.RegisterModelSetRequest
+	11, // 19: reflw.config.v1.Config.ListModels:input_type -> reflw.config.v1.ListModelsRequest
+	13, // 20: reflw.config.v1.Config.DescribeModel:input_type -> reflw.config.v1.DescribeModelRequest
+	15, // 21: reflw.config.v1.Config.DeleteModel:input_type -> reflw.config.v1.DeleteModelRequest
+	21, // 22: reflw.config.v1.Config.UpsertSecret:input_type -> reflw.config.v1.UpsertSecretRequest
+	23, // 23: reflw.config.v1.Config.DeleteSecret:input_type -> reflw.config.v1.DeleteSecretRequest
+	25, // 24: reflw.config.v1.Config.ListSecrets:input_type -> reflw.config.v1.ListSecretsRequest
+	27, // 25: reflw.config.v1.Config.UpsertCARoot:input_type -> reflw.config.v1.UpsertCARootRequest
+	29, // 26: reflw.config.v1.Config.DeleteCARoot:input_type -> reflw.config.v1.DeleteCARootRequest
+	31, // 27: reflw.config.v1.Config.ListCARoots:input_type -> reflw.config.v1.ListCARootsRequest
+	34, // 28: reflw.config.v1.Config.CreateJoinToken:input_type -> reflw.config.v1.CreateJoinTokenRequest
+	36, // 29: reflw.config.v1.Config.DeleteJoinToken:input_type -> reflw.config.v1.DeleteJoinTokenRequest
+	38, // 30: reflw.config.v1.Config.ListJoinTokens:input_type -> reflw.config.v1.ListJoinTokensRequest
+	40, // 31: reflw.config.v1.Config.IssueOperator:input_type -> reflw.config.v1.IssueOperatorRequest
+	17, // 32: reflw.config.v1.Config.UpsertClusterAuthzPolicy:input_type -> reflw.config.v1.UpsertClusterAuthzPolicyRequest
+	19, // 33: reflw.config.v1.Config.GetClusterAuthzPolicy:input_type -> reflw.config.v1.GetClusterAuthzPolicyRequest
 	1,  // 34: reflw.config.v1.Config.RegisterDeployment:output_type -> reflw.config.v1.RegisterDeploymentResponse
 	3,  // 35: reflw.config.v1.Config.ListDeployments:output_type -> reflw.config.v1.ListDeploymentsResponse
 	5,  // 36: reflw.config.v1.Config.DescribeDeployment:output_type -> reflw.config.v1.DescribeDeploymentResponse
 	7,  // 37: reflw.config.v1.Config.DeleteDeployment:output_type -> reflw.config.v1.DeleteDeploymentResponse
-	9,  // 38: reflw.config.v1.Config.UpsertModel:output_type -> reflw.config.v1.UpsertModelResponse
-	11, // 39: reflw.config.v1.Config.ListModels:output_type -> reflw.config.v1.ListModelsResponse
-	13, // 40: reflw.config.v1.Config.DescribeModel:output_type -> reflw.config.v1.DescribeModelResponse
-	15, // 41: reflw.config.v1.Config.DeleteModel:output_type -> reflw.config.v1.DeleteModelResponse
-	21, // 42: reflw.config.v1.Config.UpsertSecret:output_type -> reflw.config.v1.UpsertSecretResponse
-	23, // 43: reflw.config.v1.Config.DeleteSecret:output_type -> reflw.config.v1.DeleteSecretResponse
-	25, // 44: reflw.config.v1.Config.ListSecrets:output_type -> reflw.config.v1.ListSecretsResponse
-	27, // 45: reflw.config.v1.Config.UpsertCARoot:output_type -> reflw.config.v1.UpsertCARootResponse
-	29, // 46: reflw.config.v1.Config.DeleteCARoot:output_type -> reflw.config.v1.DeleteCARootResponse
-	31, // 47: reflw.config.v1.Config.ListCARoots:output_type -> reflw.config.v1.ListCARootsResponse
-	34, // 48: reflw.config.v1.Config.CreateJoinToken:output_type -> reflw.config.v1.CreateJoinTokenResponse
-	36, // 49: reflw.config.v1.Config.DeleteJoinToken:output_type -> reflw.config.v1.DeleteJoinTokenResponse
-	38, // 50: reflw.config.v1.Config.ListJoinTokens:output_type -> reflw.config.v1.ListJoinTokensResponse
-	40, // 51: reflw.config.v1.Config.IssueOperator:output_type -> reflw.config.v1.IssueOperatorResponse
-	17, // 52: reflw.config.v1.Config.UpsertClusterAuthzPolicy:output_type -> reflw.config.v1.UpsertClusterAuthzPolicyResponse
-	19, // 53: reflw.config.v1.Config.GetClusterAuthzPolicy:output_type -> reflw.config.v1.GetClusterAuthzPolicyResponse
+	10, // 38: reflw.config.v1.Config.RegisterModelSet:output_type -> reflw.config.v1.RegisterModelSetResponse
+	12, // 39: reflw.config.v1.Config.ListModels:output_type -> reflw.config.v1.ListModelsResponse
+	14, // 40: reflw.config.v1.Config.DescribeModel:output_type -> reflw.config.v1.DescribeModelResponse
+	16, // 41: reflw.config.v1.Config.DeleteModel:output_type -> reflw.config.v1.DeleteModelResponse
+	22, // 42: reflw.config.v1.Config.UpsertSecret:output_type -> reflw.config.v1.UpsertSecretResponse
+	24, // 43: reflw.config.v1.Config.DeleteSecret:output_type -> reflw.config.v1.DeleteSecretResponse
+	26, // 44: reflw.config.v1.Config.ListSecrets:output_type -> reflw.config.v1.ListSecretsResponse
+	28, // 45: reflw.config.v1.Config.UpsertCARoot:output_type -> reflw.config.v1.UpsertCARootResponse
+	30, // 46: reflw.config.v1.Config.DeleteCARoot:output_type -> reflw.config.v1.DeleteCARootResponse
+	32, // 47: reflw.config.v1.Config.ListCARoots:output_type -> reflw.config.v1.ListCARootsResponse
+	35, // 48: reflw.config.v1.Config.CreateJoinToken:output_type -> reflw.config.v1.CreateJoinTokenResponse
+	37, // 49: reflw.config.v1.Config.DeleteJoinToken:output_type -> reflw.config.v1.DeleteJoinTokenResponse
+	39, // 50: reflw.config.v1.Config.ListJoinTokens:output_type -> reflw.config.v1.ListJoinTokensResponse
+	41, // 51: reflw.config.v1.Config.IssueOperator:output_type -> reflw.config.v1.IssueOperatorResponse
+	18, // 52: reflw.config.v1.Config.UpsertClusterAuthzPolicy:output_type -> reflw.config.v1.UpsertClusterAuthzPolicyResponse
+	20, // 53: reflw.config.v1.Config.GetClusterAuthzPolicy:output_type -> reflw.config.v1.GetClusterAuthzPolicyResponse
 	34, // [34:54] is the sub-list for method output_type
 	14, // [14:34] is the sub-list for method input_type
 	14, // [14:14] is the sub-list for extension type_name
@@ -2382,7 +2422,7 @@ func file_configv1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_configv1_config_proto_rawDesc), len(file_configv1_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   41,
+			NumMessages:   42,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

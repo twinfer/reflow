@@ -262,14 +262,16 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		modelTableResolver = processengine.NewTableResolver(logger)
 		modelResolver = modelTableResolver
 	}
-	// validateModel gates config.UpsertModel with the real reflwos parser+static
-	// validator whenever the process plane is active (injected or table-backed),
-	// so a structurally-broken model is rejected at registration instead of
+	// modelPlanner backs config.RegisterModelSet with the real reflwos planner
+	// whenever the process plane is active (injected or table-backed): it parses
+	// every entry, derives each model's bundle (decisions/children/imports), and
+	// validates the set ∪ existing table is dependency-closed and cycle-free — so
+	// a broken or unresolved-import model is rejected at registration instead of
 	// failing silently per-node at reconcile. Nil otherwise → config falls back
-	// to its shallow well-formed-XML check.
-	var modelValidator func(kind string, xml []byte) error
+	// to its shallow well-formed-XML check with empty bundles.
+	var modelPlanner config.PlanModelSetFunc
 	if modelResolver != nil {
-		modelValidator = processengine.ValidateModel
+		modelPlanner = processengine.PlanModelSet
 	}
 	if modelResolver != nil {
 		hcfg.ProcessEngine = processengine.New(modelResolver)
@@ -415,7 +417,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		secretNotifier:         secretNotifier,
 		modelNotifier:          modelNotifier,
 		modelTableResolver:     modelTableResolver,
-		modelValidator:         modelValidator,
+		modelPlanner:           modelPlanner,
 		caRootNotifier:         caRootNotifier,
 		joinTokenNotifier:      joinTokenNotifier,
 		lpOwnersNotifier:       lpOwnersNotifier,
@@ -575,7 +577,7 @@ type startupDeps struct {
 	secretNotifier         *cluster.TableNotifier
 	modelNotifier          *cluster.TableNotifier
 	modelTableResolver     *processengine.TableResolver
-	modelValidator         func(kind string, xml []byte) error
+	modelPlanner           config.PlanModelSetFunc
 	caRootNotifier         *cluster.TableNotifier
 	joinTokenNotifier      *cluster.TableNotifier
 	lpOwnersNotifier       *cluster.TableNotifier
@@ -732,9 +734,10 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		Runner: runner,
 		Log:    logger,
 	}
-	// With the process plane on, gate UpsertModel with the real reflwos
-	// parser+static-validator; nil otherwise → config's shallow XML check.
-	configCfg.ValidateModel = d.modelValidator
+	// With the process plane on, back RegisterModelSet with the real reflwos
+	// planner (derives bundles + validates the dependency closure); nil otherwise
+	// → config's shallow XML check with empty bundles.
+	configCfg.PlanModelSet = d.modelPlanner
 	// Avoid the typed-nil interface trap: only assign the Signer field
 	// when the underlying *creds.Signer is non-nil.
 	if handlerSigner != nil {

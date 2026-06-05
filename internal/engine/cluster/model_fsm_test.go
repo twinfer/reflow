@@ -9,11 +9,13 @@ import (
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
-func TestCluster_UpsertModelPersistsBumpsAndDeletes(t *testing.T) {
+func TestCluster_UpsertModelSetPersistsBumpsAndDeletes(t *testing.T) {
 	f, _, st := newTestFSM(t)
 	ref := &enginev1.ModelRef{Kind: "bpmn", Name: "Order", Version: "v1"}
-	cmd := &enginev1.Command{Kind: &enginev1.Command_UpsertModel{
-		UpsertModel: &enginev1.UpsertModel{Record: &enginev1.ModelRecord{ModelRef: ref, Xml: []byte("<definitions/>")}},
+	cmd := &enginev1.Command{Kind: &enginev1.Command_UpsertModelSet{
+		UpsertModelSet: &enginev1.UpsertModelSet{Records: []*enginev1.ModelRecord{
+			{ModelRef: ref, Xml: []byte("<definitions/>")},
+		}},
 	}}
 	if _, err := f.Update([]statemachine.Entry{{Index: 1, Cmd: envelope(t, cmd)}}); err != nil {
 		t.Fatal(err)
@@ -62,11 +64,13 @@ func TestCluster_UpsertModelPersistsBumpsAndDeletes(t *testing.T) {
 	}
 }
 
-func TestCluster_UpsertModelCASMismatch(t *testing.T) {
+func TestCluster_UpsertModelSetCASMismatch(t *testing.T) {
 	f, _, st := newTestFSM(t)
 	ref := &enginev1.ModelRef{Kind: "bpmn", Name: "Order", Version: "v1"}
-	cmd := &enginev1.Command{Kind: &enginev1.Command_UpsertModel{
-		UpsertModel: &enginev1.UpsertModel{Record: &enginev1.ModelRecord{ModelRef: ref, Xml: []byte("<definitions/>")}},
+	cmd := &enginev1.Command{Kind: &enginev1.Command_UpsertModelSet{
+		UpsertModelSet: &enginev1.UpsertModelSet{Records: []*enginev1.ModelRecord{
+			{ModelRef: ref, Xml: []byte("<definitions/>")},
+		}},
 	}}
 	// Precondition revision=99 while the current model revision is 0 → CAS fails:
 	// no row written, ResultValueFailedPrecondition stamped.
@@ -91,6 +95,44 @@ func TestCluster_UpsertModelCASMismatch(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("CAS-failed upsert wrote a row: %+v", got)
+	}
+}
+
+// TestCluster_UpsertModelSetAtomicMultiRow verifies a set writes every record
+// and bumps the revision exactly once (the atomic dependency-closure write).
+func TestCluster_UpsertModelSetAtomicMultiRow(t *testing.T) {
+	f, _, st := newTestFSM(t)
+	recs := []*enginev1.ModelRecord{
+		{ModelRef: &enginev1.ModelRef{Kind: "dmn", Name: "Lib", Version: "v1"}, Xml: []byte("<definitions/>")},
+		{ModelRef: &enginev1.ModelRef{Kind: "dmn", Name: "Main", Version: "v1"}, Xml: []byte("<definitions/>")},
+		{ModelRef: &enginev1.ModelRef{Kind: "bpmn", Name: "Order", Version: "v1"}, Xml: []byte("<definitions/>")},
+	}
+	cmd := &enginev1.Command{Kind: &enginev1.Command_UpsertModelSet{
+		UpsertModelSet: &enginev1.UpsertModelSet{Records: recs},
+	}}
+	if _, err := f.Update([]statemachine.Entry{{Index: 1, Cmd: envelope(t, cmd)}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recs {
+		ref := r.GetModelRef()
+		got, err := (ModelTable{S: st}).Get(ref.GetKind(), ref.GetName(), ref.GetVersion())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == nil {
+			t.Fatalf("record %s/%s/%s not written", ref.GetKind(), ref.GetName(), ref.GetVersion())
+		}
+	}
+	// One Bump for the whole set, not one per record.
+	rev, err := (RevisionTable{S: st}).Get(RevisionTableModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev != 1 {
+		t.Errorf("model revision = %d, want 1 (single bump for the set)", rev)
+	}
+	if ml := mustLookup[*ModelList](t, f, LookupModels{}); len(ml.Records) != 3 {
+		t.Errorf("LookupModels = %d records, want 3", len(ml.Records))
 	}
 }
 

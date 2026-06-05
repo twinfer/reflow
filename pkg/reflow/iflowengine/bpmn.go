@@ -200,11 +200,10 @@ func (a *Adapter) translateBPMN(in invoker.ProcessAdvanceInput, graph *bpmn.Proc
 		}
 	}
 
-	tenant := singleTenantID
 	for _, c := range cmds {
 		switch t := c.(type) {
 		case bpmn.RunServiceTask:
-			input, err := encodeBridgeInput(t.ServiceRef, t.Inputs, t.ExtensionsXML, tenant)
+			input, err := encodeBridgeInput(t.ServiceRef, t.Inputs, t.ExtensionsXML)
 			if err != nil {
 				return nil, fmt.Errorf("iflowengine: encode bridge input: %w", err)
 			}

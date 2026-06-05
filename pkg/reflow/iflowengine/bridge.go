@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/twinfer/iflow/capability"
-	"github.com/twinfer/iflow/identity"
 	"github.com/twinfer/reflow/pkg/handler"
 	enginev1 "github.com/twinfer/reflow/proto/enginev1"
 )
@@ -29,12 +28,12 @@ const (
 // bridge handler reads from ctx.Input(). It carries the iflow capability ref plus
 // everything capability.Handler.Execute needs. Marshaled deterministically
 // (struct field order + sorted map keys) so the enclosing ProcessAdvanced is
-// byte-stable under replay.
+// byte-stable under replay. No tenant: reflow is single-tenant (iflow's tenancy
+// is a dboshost-driver concern), so the capability.Request Principal is zero.
 type BridgeInput struct {
-	Ref    string         `json:"ref"`
-	Vars   map[string]any `json:"vars,omitempty"`
-	Ext    []byte         `json:"ext,omitempty"`
-	Tenant string         `json:"tenant,omitempty"`
+	Ref  string         `json:"ref"`
+	Vars map[string]any `json:"vars,omitempty"`
+	Ext  []byte         `json:"ext,omitempty"`
 }
 
 // bridgeTarget is the InvocationTarget every RunServiceTask routes to.
@@ -42,8 +41,8 @@ func bridgeTarget() *enginev1.InvocationTarget {
 	return &enginev1.InvocationTarget{ServiceName: BridgeService, HandlerName: BridgeHandler}
 }
 
-func encodeBridgeInput(ref string, vars map[string]any, ext []byte, tenant string) ([]byte, error) {
-	return json.Marshal(BridgeInput{Ref: ref, Vars: vars, Ext: ext, Tenant: tenant})
+func encodeBridgeInput(ref string, vars map[string]any, ext []byte) ([]byte, error) {
+	return json.Marshal(BridgeInput{Ref: ref, Vars: vars, Ext: ext})
 }
 
 // bridgeFailureCode is the Failure.Code the bridge stamps on a terminal
@@ -143,7 +142,6 @@ func runCapability(ctx context.Context, capReg *capability.Registry, bi BridgeIn
 	}
 	out, err := h.Execute(ctx, capability.Request{
 		Ref:           bi.Ref,
-		Principal:     identity.Principal{TenantID: bi.Tenant},
 		Vars:          bi.Vars,
 		ExtensionsXML: bi.Ext,
 	})

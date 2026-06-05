@@ -143,11 +143,10 @@ func (a *Adapter) translateCMMN(in invoker.ProcessAdvanceInput, cmds []cmmn.Comm
 		}
 	}
 
-	tenant := singleTenantID
 	for _, c := range cmds {
 		switch t := c.(type) {
 		case cmmn.RunTask:
-			if err := a.translateCMMNRunTask(in, adv, t, tenant); err != nil {
+			if err := a.translateCMMNRunTask(in, adv, t); err != nil {
 				return nil, err
 			}
 		case cmmn.RunProcessTask:
@@ -195,14 +194,14 @@ func (a *Adapter) translateCMMN(in invoker.ProcessAdvanceInput, cmds []cmmn.Comm
 // translateCMMNRunTask handles the polymorphic RunTask: a leaf task → Invoke, a
 // timer listener → ArmTimer, user/plain event listeners → park (no-op). Other
 // kinds (human task, decision, milestone, stage) are unsupported this iteration.
-func (a *Adapter) translateCMMNRunTask(in invoker.ProcessAdvanceInput, adv *enginev1.ProcessAdvanced, t cmmn.RunTask, tenant string) error {
+func (a *Adapter) translateCMMNRunTask(in invoker.ProcessAdvanceInput, adv *enginev1.ProcessAdvanced, t cmmn.RunTask) error {
 	switch t.Kind {
 	case cmmn.KindTask:
 		ref, err := cmmnTaskRef(t)
 		if err != nil {
 			return err
 		}
-		input, err := encodeBridgeInput(ref, t.Vars, t.ExtensionsXML, tenant)
+		input, err := encodeBridgeInput(ref, t.Vars, t.ExtensionsXML)
 		if err != nil {
 			return fmt.Errorf("iflowengine: encode bridge input: %w", err)
 		}

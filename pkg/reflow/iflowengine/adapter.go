@@ -57,9 +57,3 @@ func (a *Adapter) Advance(_ context.Context, in invoker.ProcessAdvanceInput) (*e
 		return nil, fmt.Errorf("iflowengine: unknown process kind %v", k)
 	}
 }
-
-// singleTenantID is the fixed iflow identity.Principal.TenantID for reflow's
-// single-tenant engine (multi-tenancy is a deployment concern, not an engine
-// concept). iflow still wants a tenant string for its keying; a stable constant
-// keeps that deterministic.
-const singleTenantID = "0"

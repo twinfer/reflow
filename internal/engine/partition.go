@@ -3407,6 +3407,28 @@ type ProcessInstancesLookupResult struct {
 	Instances []ProcessInstanceSummary
 }
 
+// LookupProcessInstanceHistory reads one instance's append-only activity timeline
+// (proc_hist rows) in seq order, resuming strictly past AfterSeq (0 = from the
+// first event) and capped at Limit events (0 = no cap). Present mirrors
+// LookupProcessInstance: false when the instance never started or was reaped (the
+// history is range-deleted with the record). Single-shard — history for one
+// instance lives on the shard owning its LP, so this never fans out.
+type LookupProcessInstanceHistory struct {
+	Service     string
+	InstanceKey string
+	AfterSeq    uint64
+	Limit       int
+}
+
+func (LookupProcessInstanceHistory) isLookup() {}
+
+// ProcessInstanceHistoryLookupResult is the value returned by
+// Lookup(LookupProcessInstanceHistory).
+type ProcessInstanceHistoryLookupResult struct {
+	Present bool
+	Events  []*enginev1.ProcessHistoryEvent
+}
+
 // LookupInvocations lists every invocation on this shard (one namespace scan of
 // inv/) — the invocation-plane twin of LookupProcessInstances. Service (target
 // service name) and StateFilter are optional prunes; the created_at window
@@ -3482,6 +3504,8 @@ func (p *Partition) Lookup(query any) (any, error) {
 		return ProcessInstanceLookupResult{Record: rec, Present: ok}, nil
 	case LookupProcessInstances:
 		return p.lookupProcessInstances(store, q)
+	case LookupProcessInstanceHistory:
+		return p.lookupProcessInstanceHistory(store, q)
 	case LookupInvocations:
 		return p.lookupInvocations(store, q)
 	default:
@@ -3549,6 +3573,35 @@ func (p *Partition) lookupProcessInstances(store storage.Store, q LookupProcessI
 		return ProcessInstancesLookupResult{}, err
 	}
 	return ProcessInstancesLookupResult{Instances: out}, nil
+}
+
+// lookupProcessInstanceHistory returns one instance's activity timeline, resolving
+// the instance record first (the authoritative Present signal, mirroring
+// LookupProcessInstance) then scanning its proc_hist rows by the record's root id.
+// Capped at Limit via the shared scanList substrate. Backs the ingress
+// GetProcessInstanceHistory point read.
+func (p *Partition) lookupProcessInstanceHistory(store storage.Store, q LookupProcessInstanceHistory) (ProcessInstanceHistoryLookupResult, error) {
+	lp := keys.LPFromPartitionKey(routing.PartitionKey(q.Service, q.InstanceKey))
+	rec, ok, err := (tables.ProcessInstanceTable{S: store}).Get(lp, q.Service, q.InstanceKey)
+	if err != nil {
+		return ProcessInstanceHistoryLookupResult{}, err
+	}
+	if !ok {
+		return ProcessInstanceHistoryLookupResult{Present: false}, nil
+	}
+	histT := tables.ProcessHistoryTable{S: store}
+	events, err := scanList(q.Limit, func(emit func(*enginev1.ProcessHistoryEvent) bool) error {
+		return histT.ScanByInstance(rec.GetRootId(), q.AfterSeq, func(ev *enginev1.ProcessHistoryEvent) error {
+			if emit(ev) {
+				return errListLimitReached
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return ProcessInstanceHistoryLookupResult{}, err
+	}
+	return ProcessInstanceHistoryLookupResult{Present: true, Events: events}, nil
 }
 
 // lookupInvocations scans every invocation on this shard (one inv/ namespace

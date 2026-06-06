@@ -78,6 +78,9 @@ const (
 	// IngressListProcessInstancesProcedure is the fully-qualified name of the Ingress's
 	// ListProcessInstances RPC.
 	IngressListProcessInstancesProcedure = "/reflw.ingress.v1.Ingress/ListProcessInstances"
+	// IngressGetProcessInstanceHistoryProcedure is the fully-qualified name of the Ingress's
+	// GetProcessInstanceHistory RPC.
+	IngressGetProcessInstanceHistoryProcedure = "/reflw.ingress.v1.Ingress/GetProcessInstanceHistory"
 )
 
 // IngressClient is a client for the reflw.ingress.v1.Ingress service.
@@ -161,6 +164,14 @@ type IngressClient interface {
 	// fanning out across the shards owning the band's LPs. Optional model-name and
 	// status filters; capped by limit.
 	ListProcessInstances(context.Context, *connect.Request[ingressv1.ListProcessInstancesRequest]) (*connect.Response[ingressv1.ListProcessInstancesResponse], error)
+	// GetProcessInstanceHistory reads one instance's append-only activity timeline
+	// (start, inbound events, task dispatch/complete, timer arm/fire, child
+	// start/complete, subscribe/unsubscribe, message received, terminal), routed by
+	// (tenant, model name, instance_key) like GetProcessInstance. Read-only — no
+	// proposal. The timeline is bounded live (keep-last-N) and survives a terminal
+	// only within the instance's retention window (historyTimeToLive); present=false
+	// means the instance never started or was reaped. Page forward with after_seq.
+	GetProcessInstanceHistory(context.Context, *connect.Request[ingressv1.GetProcessInstanceHistoryRequest]) (*connect.Response[ingressv1.GetProcessInstanceHistoryResponse], error)
 }
 
 // NewIngressClient constructs a client for the reflw.ingress.v1.Ingress service. By default, it
@@ -258,25 +269,32 @@ func NewIngressClient(httpClient connect.HTTPClient, baseURL string, opts ...con
 			connect.WithSchema(ingressMethods.ByName("ListProcessInstances")),
 			connect.WithClientOptions(opts...),
 		),
+		getProcessInstanceHistory: connect.NewClient[ingressv1.GetProcessInstanceHistoryRequest, ingressv1.GetProcessInstanceHistoryResponse](
+			httpClient,
+			baseURL+IngressGetProcessInstanceHistoryProcedure,
+			connect.WithSchema(ingressMethods.ByName("GetProcessInstanceHistory")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // ingressClient implements IngressClient.
 type ingressClient struct {
-	awaitInvocation        *connect.Client[ingressv1.AwaitInvocationRequest, ingressv1.AwaitInvocationResponse]
-	resolveAwakeable       *connect.Client[ingressv1.ResolveAwakeableRequest, ingressv1.ResolveAwakeableResponse]
-	describeInvocation     *connect.Client[ingressv1.DescribeInvocationRequest, ingressv1.DescribeInvocationResponse]
-	attachInvocation       *connect.Client[ingressv1.AttachInvocationRequest, ingressv1.AttachInvocationResponse]
-	getInvocationOutput    *connect.Client[ingressv1.GetInvocationOutputRequest, ingressv1.GetInvocationOutputResponse]
-	getObjectState         *connect.Client[ingressv1.GetObjectStateRequest, ingressv1.GetObjectStateResponse]
-	cancelInvocation       *connect.Client[ingressv1.CancelInvocationRequest, ingressv1.CancelInvocationResponse]
-	resolveWorkflowPromise *connect.Client[ingressv1.ResolveWorkflowPromiseRequest, ingressv1.ResolveWorkflowPromiseResponse]
-	purgeInvocation        *connect.Client[ingressv1.PurgeInvocationRequest, ingressv1.PurgeInvocationResponse]
-	listInvocations        *connect.Client[ingressv1.ListInvocationsRequest, ingressv1.ListInvocationsResponse]
-	startProcess           *connect.Client[ingressv1.StartProcessRequest, ingressv1.StartProcessResponse]
-	deliverMessage         *connect.Client[ingressv1.DeliverMessageRequest, ingressv1.DeliverMessageResponse]
-	getProcessInstance     *connect.Client[ingressv1.GetProcessInstanceRequest, ingressv1.GetProcessInstanceResponse]
-	listProcessInstances   *connect.Client[ingressv1.ListProcessInstancesRequest, ingressv1.ListProcessInstancesResponse]
+	awaitInvocation           *connect.Client[ingressv1.AwaitInvocationRequest, ingressv1.AwaitInvocationResponse]
+	resolveAwakeable          *connect.Client[ingressv1.ResolveAwakeableRequest, ingressv1.ResolveAwakeableResponse]
+	describeInvocation        *connect.Client[ingressv1.DescribeInvocationRequest, ingressv1.DescribeInvocationResponse]
+	attachInvocation          *connect.Client[ingressv1.AttachInvocationRequest, ingressv1.AttachInvocationResponse]
+	getInvocationOutput       *connect.Client[ingressv1.GetInvocationOutputRequest, ingressv1.GetInvocationOutputResponse]
+	getObjectState            *connect.Client[ingressv1.GetObjectStateRequest, ingressv1.GetObjectStateResponse]
+	cancelInvocation          *connect.Client[ingressv1.CancelInvocationRequest, ingressv1.CancelInvocationResponse]
+	resolveWorkflowPromise    *connect.Client[ingressv1.ResolveWorkflowPromiseRequest, ingressv1.ResolveWorkflowPromiseResponse]
+	purgeInvocation           *connect.Client[ingressv1.PurgeInvocationRequest, ingressv1.PurgeInvocationResponse]
+	listInvocations           *connect.Client[ingressv1.ListInvocationsRequest, ingressv1.ListInvocationsResponse]
+	startProcess              *connect.Client[ingressv1.StartProcessRequest, ingressv1.StartProcessResponse]
+	deliverMessage            *connect.Client[ingressv1.DeliverMessageRequest, ingressv1.DeliverMessageResponse]
+	getProcessInstance        *connect.Client[ingressv1.GetProcessInstanceRequest, ingressv1.GetProcessInstanceResponse]
+	listProcessInstances      *connect.Client[ingressv1.ListProcessInstancesRequest, ingressv1.ListProcessInstancesResponse]
+	getProcessInstanceHistory *connect.Client[ingressv1.GetProcessInstanceHistoryRequest, ingressv1.GetProcessInstanceHistoryResponse]
 }
 
 // AwaitInvocation calls reflw.ingress.v1.Ingress.AwaitInvocation.
@@ -347,6 +365,11 @@ func (c *ingressClient) GetProcessInstance(ctx context.Context, req *connect.Req
 // ListProcessInstances calls reflw.ingress.v1.Ingress.ListProcessInstances.
 func (c *ingressClient) ListProcessInstances(ctx context.Context, req *connect.Request[ingressv1.ListProcessInstancesRequest]) (*connect.Response[ingressv1.ListProcessInstancesResponse], error) {
 	return c.listProcessInstances.CallUnary(ctx, req)
+}
+
+// GetProcessInstanceHistory calls reflw.ingress.v1.Ingress.GetProcessInstanceHistory.
+func (c *ingressClient) GetProcessInstanceHistory(ctx context.Context, req *connect.Request[ingressv1.GetProcessInstanceHistoryRequest]) (*connect.Response[ingressv1.GetProcessInstanceHistoryResponse], error) {
+	return c.getProcessInstanceHistory.CallUnary(ctx, req)
 }
 
 // IngressHandler is an implementation of the reflw.ingress.v1.Ingress service.
@@ -430,6 +453,14 @@ type IngressHandler interface {
 	// fanning out across the shards owning the band's LPs. Optional model-name and
 	// status filters; capped by limit.
 	ListProcessInstances(context.Context, *connect.Request[ingressv1.ListProcessInstancesRequest]) (*connect.Response[ingressv1.ListProcessInstancesResponse], error)
+	// GetProcessInstanceHistory reads one instance's append-only activity timeline
+	// (start, inbound events, task dispatch/complete, timer arm/fire, child
+	// start/complete, subscribe/unsubscribe, message received, terminal), routed by
+	// (tenant, model name, instance_key) like GetProcessInstance. Read-only — no
+	// proposal. The timeline is bounded live (keep-last-N) and survives a terminal
+	// only within the instance's retention window (historyTimeToLive); present=false
+	// means the instance never started or was reaped. Page forward with after_seq.
+	GetProcessInstanceHistory(context.Context, *connect.Request[ingressv1.GetProcessInstanceHistoryRequest]) (*connect.Response[ingressv1.GetProcessInstanceHistoryResponse], error)
 }
 
 // NewIngressHandler builds an HTTP handler from the service implementation. It returns the path on
@@ -523,6 +554,12 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 		connect.WithSchema(ingressMethods.ByName("ListProcessInstances")),
 		connect.WithHandlerOptions(opts...),
 	)
+	ingressGetProcessInstanceHistoryHandler := connect.NewUnaryHandler(
+		IngressGetProcessInstanceHistoryProcedure,
+		svc.GetProcessInstanceHistory,
+		connect.WithSchema(ingressMethods.ByName("GetProcessInstanceHistory")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/reflw.ingress.v1.Ingress/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case IngressAwaitInvocationProcedure:
@@ -553,6 +590,8 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 			ingressGetProcessInstanceHandler.ServeHTTP(w, r)
 		case IngressListProcessInstancesProcedure:
 			ingressListProcessInstancesHandler.ServeHTTP(w, r)
+		case IngressGetProcessInstanceHistoryProcedure:
+			ingressGetProcessInstanceHistoryHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -616,4 +655,8 @@ func (UnimplementedIngressHandler) GetProcessInstance(context.Context, *connect.
 
 func (UnimplementedIngressHandler) ListProcessInstances(context.Context, *connect.Request[ingressv1.ListProcessInstancesRequest]) (*connect.Response[ingressv1.ListProcessInstancesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.ListProcessInstances is not implemented"))
+}
+
+func (UnimplementedIngressHandler) GetProcessInstanceHistory(context.Context, *connect.Request[ingressv1.GetProcessInstanceHistoryRequest]) (*connect.Response[ingressv1.GetProcessInstanceHistoryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.GetProcessInstanceHistory is not implemented"))
 }

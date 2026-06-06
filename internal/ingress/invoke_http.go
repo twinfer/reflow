@@ -11,9 +11,12 @@ import (
 	"strings"
 
 	connect "connectrpc.com/connect"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/twinfer/reflw/internal/observability"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
 // The REST data-plane facade ("/v1/*"): a single HTTP→durable-invocation kernel
@@ -32,9 +35,10 @@ const (
 
 	// Cedar action ids + plane group authorized by the REST routes — the same
 	// ids the RPC path uses in procMap, so policy treats REST identically.
-	actionSubmitInvocation = "SubmitInvocation"
-	actionStartProcess     = "StartProcess"
-	groupIngressActions    = "IngressActions"
+	actionSubmitInvocation          = "SubmitInvocation"
+	actionStartProcess              = "StartProcess"
+	actionGetProcessInstanceHistory = "GetProcessInstanceHistory"
+	groupIngressActions             = "IngressActions"
 )
 
 // Invoker is the durable-submit seam the REST kernel and webhook adapter use.
@@ -49,6 +53,13 @@ type ProcessStarter interface {
 	StartProcessCore(ctx context.Context, a StartProcessArgs) (uint64, string, error)
 }
 
+// ProcessReader reads process-instance observability (the activity timeline).
+// *Server satisfies it. Kept as an interface so the REST kernel is unit-testable
+// with a fake and needs no engine import beyond enginev1.
+type ProcessReader interface {
+	GetProcessInstanceHistoryCore(ctx context.Context, name, instanceKey string, afterSeq uint64, limit int) (present bool, events []*enginev1.ProcessHistoryEvent, nextAfterSeq uint64, err error)
+}
+
 // IngressAuthorizer authorizes a REST-facade ingress call by Cedar action id.
 // *authz.Interceptor satisfies it; kept as an interface so this package needs
 // no authz import and the kernel is unit-testable with a fake.
@@ -59,12 +70,14 @@ type IngressAuthorizer interface {
 var (
 	_ Invoker        = (*Server)(nil)
 	_ ProcessStarter = (*Server)(nil)
+	_ ProcessReader  = (*Server)(nil)
 )
 
 // InvokeConfig wires the REST data-plane kernel.
 type InvokeConfig struct {
 	Invoker      Invoker
 	Starter      ProcessStarter
+	Reader       ProcessReader
 	Authorizer   IngressAuthorizer
 	Metrics      *observability.Metrics
 	MaxBodyBytes int64
@@ -196,6 +209,52 @@ func StartProcessHTTP(cfg InvokeConfig, isCase bool) http.Handler {
 	})
 }
 
+// GetProcessHistoryHTTP builds the handler for GET
+// /v1/processes/{name}/{key}/history — one instance's activity timeline as
+// protojson ({present, events, next_after_seq}). ?after_seq= and ?limit= page
+// forward. A reaped/never-started instance (present=false) maps to 404.
+func GetProcessHistoryHTTP(cfg InvokeConfig) http.Handler {
+	const route = "/v1/processes/{name}/{key}/history"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sc := &statusCapture{ResponseWriter: w, status: http.StatusOK}
+		defer func() { recordREST(cfg.Metrics, route, r.Method, sc.status) }()
+
+		if r.Method != http.MethodGet {
+			http.Error(sc, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if err := cfg.Authorizer.AuthorizeIngressAction(r.Context(), actionGetProcessInstanceHistory, groupIngressActions); err != nil {
+			writeConnErr(sc, err)
+			return
+		}
+		afterSeq, err := parseUintParam(r.URL.Query().Get("after_seq"))
+		if err != nil {
+			http.Error(sc, "invalid after_seq", http.StatusBadRequest)
+			return
+		}
+		limit, err := parseIntParam(r.URL.Query().Get("limit"))
+		if err != nil {
+			http.Error(sc, "invalid limit", http.StatusBadRequest)
+			return
+		}
+		present, events, nextAfterSeq, err := cfg.Reader.GetProcessInstanceHistoryCore(
+			r.Context(), r.PathValue("name"), r.PathValue("key"), afterSeq, limit)
+		if err != nil {
+			writeConnErr(sc, err)
+			return
+		}
+		if !present {
+			http.Error(sc, "process instance not found", http.StatusNotFound)
+			return
+		}
+		writeProtoJSON(sc, http.StatusOK, &ingressv1.GetProcessInstanceHistoryResponse{
+			Present:      present,
+			Events:       events,
+			NextAfterSeq: nextAfterSeq,
+		})
+	})
+}
+
 // statusCapture records the first status written, for the REST metric.
 type statusCapture struct {
 	http.ResponseWriter
@@ -215,6 +274,20 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeProtoJSON renders a proto message as canonical protojson — the same
+// encoding the Connect HTTP-JSON codec uses, so the REST facade and the RPC
+// surface agree on enum/field names.
+func writeProtoJSON(w http.ResponseWriter, code int, m proto.Message) {
+	b, err := protojson.Marshal(m)
+	if err != nil {
+		http.Error(w, "encode response", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_, _ = w.Write(b)
 }
 
 // writeConnErr maps a connect.Error to an HTTP status + plain message. Auth
@@ -288,6 +361,28 @@ func parseTimeoutMs(s string) uint32 {
 		return 0
 	}
 	return uint32(n)
+}
+
+// parseUintParam parses a uint64 query param; empty → 0. Unlike parseTimeoutMs a
+// malformed value is an error (the history cursor must not be silently dropped).
+func parseUintParam(s string) (uint64, error) {
+	if s == "" {
+		return 0, nil
+	}
+	return strconv.ParseUint(s, 10, 64)
+}
+
+// parseIntParam parses a non-negative int query param; empty → 0 (the server
+// default cap). Malformed or negative is an error.
+func parseIntParam(s string) (int, error) {
+	if s == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseUint(s, 10, 31)
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
 }
 
 func recordREST(m *observability.Metrics, route, method string, status int) {

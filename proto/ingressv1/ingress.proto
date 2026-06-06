@@ -111,6 +111,15 @@ service Ingress {
   // fanning out across the shards owning the band's LPs. Optional model-name and
   // status filters; capped by limit.
   rpc ListProcessInstances(ListProcessInstancesRequest) returns (ListProcessInstancesResponse);
+
+  // GetProcessInstanceHistory reads one instance's append-only activity timeline
+  // (start, inbound events, task dispatch/complete, timer arm/fire, child
+  // start/complete, subscribe/unsubscribe, message received, terminal), routed by
+  // (tenant, model name, instance_key) like GetProcessInstance. Read-only — no
+  // proposal. The timeline is bounded live (keep-last-N) and survives a terminal
+  // only within the instance's retention window (historyTimeToLive); present=false
+  // means the instance never started or was reaped. Page forward with after_seq.
+  rpc GetProcessInstanceHistory(GetProcessInstanceHistoryRequest) returns (GetProcessInstanceHistoryResponse);
 }
 
 message AwaitInvocationRequest {
@@ -295,6 +304,30 @@ message GetProcessInstanceResponse {
   bytes output = 7;
   uint64 created_at_ms = 8;
   uint64 ended_at_ms = 9;
+}
+
+message GetProcessInstanceHistoryRequest {
+  // model_ref.name + the caller's tenant + instance_key select the routing
+  // partition (model_ref.kind/version are ignored for the read).
+  reflw.engine.v1.ModelRef model_ref = 1;
+  string instance_key = 2;
+  // Resume strictly past this event seq (0 = from the first event). Pair with the
+  // response's next_after_seq to page a long timeline forward.
+  uint64 after_seq = 3;
+  // Max events per page; 0 = the server default cap. Doubles as the page size.
+  uint32 limit = 4;
+}
+
+message GetProcessInstanceHistoryResponse {
+  // present mirrors GetProcessInstance: false when no record exists — the instance
+  // never started, or reached a terminal and was reaped (or its retention window
+  // elapsed). events is empty (not absent) for a present instance with no timeline
+  // rows in this page.
+  bool present = 1;
+  repeated reflw.engine.v1.ProcessHistoryEvent events = 2;
+  // The seq to pass back as after_seq for the next page; 0 when the page did not
+  // fill to limit (end of timeline).
+  uint64 next_after_seq = 3;
 }
 
 message ListProcessInstancesRequest {

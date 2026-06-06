@@ -239,6 +239,59 @@ func (s *Server) ListProcessInstances(ctx context.Context, req *connect.Request[
 	return connect.NewResponse(&ingressv1.ListProcessInstancesResponse{Instances: out, NextPageToken: nextToken}), nil
 }
 
+// GetProcessInstanceHistoryCore reads one instance's activity timeline, routed by
+// (model name, instance_key) — the same routing GetProcessInstance uses. present
+// is false when no record exists (never started or reaped). nextAfterSeq is the
+// cursor to pass back to page forward, 0 when the page did not fill to limit (end
+// of timeline). limit is clamped to the server list cap. The non-RPC core shared
+// by the RPC shell and the REST history facade; errors are connect.Errors.
+func (s *Server) GetProcessInstanceHistoryCore(ctx context.Context, name, instanceKey string, afterSeq uint64, limit int) (bool, []*enginev1.ProcessHistoryEvent, uint64, error) {
+	if name == "" {
+		return false, nil, 0, connect.NewError(connect.CodeInvalidArgument, errors.New("model_ref.name is required"))
+	}
+	if instanceKey == "" {
+		return false, nil, 0, connect.NewError(connect.CodeInvalidArgument, errors.New("instance_key is required"))
+	}
+	limit = clampListLimit(limit)
+	pk := routing.PartitionKey(name, instanceKey)
+	shardID := s.host.Partitioner().ShardForKey(pk)
+	res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupProcessInstanceHistory{
+		Service:     name,
+		InstanceKey: instanceKey,
+		AfterSeq:    afterSeq,
+		Limit:       limit,
+	})
+	if err != nil {
+		return false, nil, 0, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup process instance history: %w", err))
+	}
+	r, ok := res.(engine.ProcessInstanceHistoryLookupResult)
+	if !ok {
+		return false, nil, 0, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup process instance history: unexpected type %T", res))
+	}
+	var nextAfterSeq uint64
+	if len(r.Events) >= limit {
+		nextAfterSeq = r.Events[len(r.Events)-1].GetSeq()
+	}
+	return r.Present, r.Events, nextAfterSeq, nil
+}
+
+// GetProcessInstanceHistory is the Connect RPC shell over
+// GetProcessInstanceHistoryCore — a linearizable, paged read of one instance's
+// activity timeline. It proposes nothing.
+func (s *Server) GetProcessInstanceHistory(ctx context.Context, req *connect.Request[ingressv1.GetProcessInstanceHistoryRequest]) (*connect.Response[ingressv1.GetProcessInstanceHistoryResponse], error) {
+	msg := req.Msg
+	present, events, nextAfterSeq, err := s.GetProcessInstanceHistoryCore(
+		ctx, msg.GetModelRef().GetName(), msg.GetInstanceKey(), msg.GetAfterSeq(), int(msg.GetLimit()))
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&ingressv1.GetProcessInstanceHistoryResponse{
+		Present:      present,
+		Events:       events,
+		NextAfterSeq: nextAfterSeq,
+	}), nil
+}
+
 // processKindFromString maps the wire model_ref.kind onto the ProcessKind enum.
 func processKindFromString(kind string) (enginev1.ProcessKind, error) {
 	switch kind {

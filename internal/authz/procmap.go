@@ -48,19 +48,20 @@ var procMap = map[string]procEntry{
 	// SubmitInvocation has no RPC procedure (it moved to the REST facade
 	// POST /v1/…); its Cedar action still exists and the REST kernel
 	// authorizes against it via Interceptor.AuthorizeIngressAction.
-	ingressv1connect.IngressAwaitInvocationProcedure:        {"AwaitInvocation", []string{groupIngress}},
-	ingressv1connect.IngressAttachInvocationProcedure:       {"AttachInvocation", []string{groupIngress}},
-	ingressv1connect.IngressGetInvocationOutputProcedure:    {"GetInvocationOutput", []string{groupIngress}},
-	ingressv1connect.IngressDescribeInvocationProcedure:     {"DescribeInvocation", []string{groupIngress}},
-	ingressv1connect.IngressListInvocationsProcedure:        {"ListInvocations", []string{groupIngress}},
-	ingressv1connect.IngressCancelInvocationProcedure:       {"CancelInvocation", []string{groupIngress}},
-	ingressv1connect.IngressResolveAwakeableProcedure:       {"ResolveAwakeable", []string{groupIngress}},
-	ingressv1connect.IngressResolveWorkflowPromiseProcedure: {"ResolveWorkflowPromise", []string{groupIngress}},
-	ingressv1connect.IngressGetObjectStateProcedure:         {"GetObjectState", []string{groupIngress}},
-	ingressv1connect.IngressStartProcessProcedure:           {"StartProcess", []string{groupIngress}},
-	ingressv1connect.IngressDeliverMessageProcedure:         {"DeliverMessage", []string{groupIngress}},
-	ingressv1connect.IngressGetProcessInstanceProcedure:     {"GetProcessInstance", []string{groupIngress}},
-	ingressv1connect.IngressListProcessInstancesProcedure:   {"ListProcessInstances", []string{groupIngress}},
+	ingressv1connect.IngressAwaitInvocationProcedure:           {"AwaitInvocation", []string{groupIngress}},
+	ingressv1connect.IngressAttachInvocationProcedure:          {"AttachInvocation", []string{groupIngress}},
+	ingressv1connect.IngressGetInvocationOutputProcedure:       {"GetInvocationOutput", []string{groupIngress}},
+	ingressv1connect.IngressDescribeInvocationProcedure:        {"DescribeInvocation", []string{groupIngress}},
+	ingressv1connect.IngressListInvocationsProcedure:           {"ListInvocations", []string{groupIngress}},
+	ingressv1connect.IngressCancelInvocationProcedure:          {"CancelInvocation", []string{groupIngress}},
+	ingressv1connect.IngressResolveAwakeableProcedure:          {"ResolveAwakeable", []string{groupIngress}},
+	ingressv1connect.IngressResolveWorkflowPromiseProcedure:    {"ResolveWorkflowPromise", []string{groupIngress}},
+	ingressv1connect.IngressGetObjectStateProcedure:            {"GetObjectState", []string{groupIngress}},
+	ingressv1connect.IngressStartProcessProcedure:              {"StartProcess", []string{groupIngress}},
+	ingressv1connect.IngressDeliverMessageProcedure:            {"DeliverMessage", []string{groupIngress}},
+	ingressv1connect.IngressGetProcessInstanceProcedure:        {"GetProcessInstance", []string{groupIngress}},
+	ingressv1connect.IngressListProcessInstancesProcedure:      {"ListProcessInstances", []string{groupIngress}},
+	ingressv1connect.IngressGetProcessInstanceHistoryProcedure: {"GetProcessInstanceHistory", []string{groupIngress}},
 
 	// ----- Ingress: operator-only maintenance (no open plane) -----
 	// PurgeInvocation permanently deletes a Completed invocation's durable

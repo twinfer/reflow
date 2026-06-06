@@ -95,6 +95,7 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 		ic := InvokeConfig{
 			Invoker:    srv,
 			Starter:    srv,
+			Reader:     srv,
 			Authorizer: cfg.RESTAuthorizer,
 			Metrics:    cfg.Metrics,
 			Log:        cfg.Log,
@@ -102,6 +103,7 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 		routes = append(routes,
 			connectserver.Route{Path: "POST /v1/processes/{name}", Handler: cfg.Middleware(StartProcessHTTP(ic, false))},
 			connectserver.Route{Path: "POST /v1/cases/{name}", Handler: cfg.Middleware(StartProcessHTTP(ic, true))},
+			connectserver.Route{Path: "GET /v1/processes/{name}/{key}/history", Handler: cfg.Middleware(GetProcessHistoryHTTP(ic))},
 			connectserver.Route{Path: "POST /v1/{service}/{key}/{handler}", Handler: cfg.Middleware(InvokeHTTP(ic, true))},
 			connectserver.Route{Path: "POST /v1/{service}/{handler}", Handler: cfg.Middleware(InvokeHTTP(ic, false))},
 		)

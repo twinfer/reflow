@@ -200,6 +200,99 @@ func TestIngress_StartProcessThenDeliverMessage(t *testing.T) {
 	}
 }
 
+// TestIngress_GetProcessInstanceHistory proves the activity-timeline read path
+// against the live host: a real BPMN instance parks on its message catch, and the
+// public GetProcessInstanceHistory RPC returns its recorded timeline — the start
+// event (STARTED) and the message subscription (SUBSCRIBED) — in seq order, with
+// after_seq paging strictly past a cursor.
+func TestIngress_GetProcessInstanceHistory(t *testing.T) {
+	res := processengine.NewMapResolver()
+	if err := res.ParseBPMN("msgproc", "v1", []byte(e2eMessageCatchBPMN)); err != nil {
+		t.Fatalf("parse model: %v", err)
+	}
+	_, cli := bringUpHostWithProcessEngine(t, processengine.New(res))
+
+	const svc, instKey = "msgproc", "h-1"
+	startCtx, startCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer startCancel()
+	if _, err := cli.StartProcess(startCtx, connect.NewRequest(&ingressv1.StartProcessRequest{
+		ModelRef:    &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"},
+		InstanceKey: instKey,
+		Vars:        []byte(`{"orderId":"A-1"}`),
+	})); err != nil {
+		t.Fatalf("StartProcess: %v", err)
+	}
+
+	hist := func(after uint64, limit uint32) *ingressv1.GetProcessInstanceHistoryResponse {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		resp, err := cli.GetProcessInstanceHistory(ctx, connect.NewRequest(&ingressv1.GetProcessInstanceHistoryRequest{
+			ModelRef: &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"}, InstanceKey: instKey,
+			AfterSeq: after, Limit: limit,
+		}))
+		if err != nil {
+			t.Fatalf("GetProcessInstanceHistory: %v", err)
+		}
+		return resp.Msg
+	}
+
+	// Wait until the start turn recorded both the inbound start (STARTED) and the
+	// outbound subscribe (SUBSCRIBED) in the same committed batch.
+	deadline := time.Now().Add(10 * time.Second)
+	var got *ingressv1.GetProcessInstanceHistoryResponse
+	for time.Now().Before(deadline) {
+		got = hist(0, 0)
+		if got.GetPresent() && len(got.GetEvents()) >= 2 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !got.GetPresent() || len(got.GetEvents()) < 2 {
+		t.Fatalf("history present=%v len=%d, want present with >=2 events", got.GetPresent(), len(got.GetEvents()))
+	}
+	evs := got.GetEvents()
+	for i, ev := range evs {
+		if ev.GetSeq() != uint64(i+1) {
+			t.Fatalf("event[%d] seq=%d, want %d", i, ev.GetSeq(), i+1)
+		}
+	}
+	if evs[0].GetKind() != enginev1.ProcessHistoryKind_PROCESS_HISTORY_STARTED {
+		t.Fatalf("event[0] kind=%v, want STARTED", evs[0].GetKind())
+	}
+	subscribed := false
+	for _, ev := range evs {
+		if ev.GetKind() == enginev1.ProcessHistoryKind_PROCESS_HISTORY_SUBSCRIBED {
+			subscribed = true
+		}
+	}
+	if !subscribed {
+		t.Fatalf("no SUBSCRIBED event in timeline: %+v", evs)
+	}
+
+	// after_seq=1 resumes strictly past the start event.
+	page := hist(1, 0)
+	if len(page.GetEvents()) == 0 || page.GetEvents()[0].GetSeq() != 2 {
+		t.Fatalf("after_seq=1 first seq = %v, want 2", page.GetEvents())
+	}
+
+	// An unknown instance reports present=false (not an error).
+	if r := hist(0, 0); !r.GetPresent() {
+		t.Fatal("sanity: known instance should be present")
+	}
+	unknownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	unknown, err := cli.GetProcessInstanceHistory(unknownCtx, connect.NewRequest(&ingressv1.GetProcessInstanceHistoryRequest{
+		ModelRef: &enginev1.ModelRef{Name: svc}, InstanceKey: "no-such-instance",
+	}))
+	if err != nil {
+		t.Fatalf("GetProcessInstanceHistory(unknown): %v", err)
+	}
+	if unknown.Msg.GetPresent() {
+		t.Fatalf("unknown instance reported present")
+	}
+}
+
 // TestIngress_ListProcessInstances proves the band-scoped fan-out: several parked
 // instances of one model are enumerated by ListProcessInstances (each running,
 // parked on its message catch), with service and status filters applied. Single

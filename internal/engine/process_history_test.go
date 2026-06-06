@@ -84,6 +84,76 @@ func TestProcess_HistoryStreamRecorded(t *testing.T) {
 	}
 }
 
+// TestProcess_HistoryLookup pins the Lookup(LookupProcessInstanceHistory) read
+// surface that backs the ingress GetProcessInstanceHistory RPC: Present mirrors
+// the record, events come back in seq order, AfterSeq resumes strictly past a
+// cursor, Limit caps the page, and an absent instance reports Present=false.
+func TestProcess_HistoryLookup(t *testing.T) {
+	p, _, col := newTestPartition(t)
+	const svc, key = "Proc", "h1"
+	pk := routing.PartitionKey(svc, key)
+	target := &enginev1.InvocationTarget{ServiceName: "Cap", HandlerName: "do"}
+	apply := func(idx uint64, cmd *enginev1.Command) {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+		col.Drain()
+	}
+	// Drive start → (dispatch + timer) → task completed → terminal-with-retention
+	// so the record + its 5-row timeline are retained for the read.
+	apply(1, procEventCmd(pk, svc, key, []byte("v"), &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"}))
+	apply(2, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: pk, Service: svc, InstanceKey: key, NewState: []byte("s1"),
+		Invoke:   []*enginev1.TaskInvoke{{NodeId: "Task1", Target: target, Input: []byte("ti")}},
+		ArmTimer: []*enginev1.TimerArm{{NodeId: "Timer1", FireAtMs: testEnvelopeNowMs + 5000, Slot: 1}},
+	}}})
+	apply(3, &enginev1.Command{Kind: &enginev1.Command_ProcessEvent{ProcessEvent: &enginev1.ProcessEvent{
+		Pk: pk, Service: svc, InstanceKey: key,
+		Payload: &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_TaskCompleted{
+			TaskCompleted: &enginev1.ProcessTaskCompleted{NodeId: "Task1", Output: []byte("o")},
+		}},
+	}}})
+	apply(4, procAdvancedCmd(pk, svc, key, []byte("final"),
+		&enginev1.ProcessTerminal{Output: []byte("out"), RetentionMs: 60_000}))
+
+	lookup := func(after uint64, limit int) ProcessInstanceHistoryLookupResult {
+		t.Helper()
+		res, err := p.Lookup(LookupProcessInstanceHistory{Service: svc, InstanceKey: key, AfterSeq: after, Limit: limit})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.(ProcessInstanceHistoryLookupResult)
+	}
+
+	// Full timeline, in order.
+	full := lookup(0, 0)
+	if !full.Present || len(full.Events) != 5 {
+		t.Fatalf("full lookup: present=%v len=%d, want true/5", full.Present, len(full.Events))
+	}
+	for i, ev := range full.Events {
+		if ev.GetSeq() != uint64(i+1) {
+			t.Fatalf("event[%d] seq=%d, want %d", i, ev.GetSeq(), i+1)
+		}
+	}
+	// AfterSeq resumes strictly past the cursor.
+	if r := lookup(2, 0); len(r.Events) != 3 || r.Events[0].GetSeq() != 3 {
+		t.Fatalf("after_seq=2: len=%d first=%d, want 3 rows starting at seq 3", len(r.Events), r.Events[0].GetSeq())
+	}
+	// Limit caps the page.
+	if r := lookup(0, 2); len(r.Events) != 2 || r.Events[1].GetSeq() != 2 {
+		t.Fatalf("limit=2: len=%d last=%d, want 2 rows ending at seq 2", len(r.Events), r.Events[1].GetSeq())
+	}
+	// Absent instance ⇒ Present=false, no events.
+	res, err := p.Lookup(LookupProcessInstanceHistory{Service: svc, InstanceKey: "nope"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := res.(ProcessInstanceHistoryLookupResult); r.Present || len(r.Events) != 0 {
+		t.Fatalf("absent lookup: present=%v len=%d, want false/0", r.Present, len(r.Events))
+	}
+}
+
 // TestProcess_HistoryRetentionZeroDeletes: retention_ms==0 drops the whole
 // timeline with the record on terminal (no post-mortem history without a window).
 func TestProcess_HistoryRetentionZeroDeletes(t *testing.T) {

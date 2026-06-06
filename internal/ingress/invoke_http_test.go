@@ -67,12 +67,31 @@ func (f *fakeAuthorizer) AuthorizeIngressAction(_ context.Context, action string
 	return f.err
 }
 
+type fakeReader struct {
+	present      bool
+	events       []*enginev1.ProcessHistoryEvent
+	nextAfterSeq uint64
+	err          error
+
+	gotName, gotKey string
+	gotAfterSeq     uint64
+	gotLimit        int
+	called          bool
+}
+
+func (f *fakeReader) GetProcessInstanceHistoryCore(_ context.Context, name, instanceKey string, afterSeq uint64, limit int) (bool, []*enginev1.ProcessHistoryEvent, uint64, error) {
+	f.called = true
+	f.gotName, f.gotKey, f.gotAfterSeq, f.gotLimit = name, instanceKey, afterSeq, limit
+	return f.present, f.events, f.nextAfterSeq, f.err
+}
+
 // --- helpers -----------------------------------------------------------------
 
 func restMux(ic ingress.InvokeConfig) *http.ServeMux {
 	m := http.NewServeMux()
 	m.Handle("POST /v1/processes/{name}", ingress.StartProcessHTTP(ic, false))
 	m.Handle("POST /v1/cases/{name}", ingress.StartProcessHTTP(ic, true))
+	m.Handle("GET /v1/processes/{name}/{key}/history", ingress.GetProcessHistoryHTTP(ic))
 	m.Handle("POST /v1/{service}/{key}/{handler}", ingress.InvokeHTTP(ic, true))
 	m.Handle("POST /v1/{service}/{handler}", ingress.InvokeHTTP(ic, false))
 	return m
@@ -258,6 +277,76 @@ func TestStartProcessHTTP_AuthzDeny(t *testing.T) {
 	}
 	if st.called {
 		t.Fatalf("StartProcessCore must not run after authz denial")
+	}
+}
+
+// TestGetProcessHistoryHTTP_Success: the GET history route authorizes against
+// GetProcessInstanceHistory, threads name/key/cursor/limit into the reader, and
+// renders the timeline as protojson (uint64→string, enum→name).
+func TestGetProcessHistoryHTTP_Success(t *testing.T) {
+	rd := &fakeReader{present: true, nextAfterSeq: 2, events: []*enginev1.ProcessHistoryEvent{
+		{Seq: 1, Kind: enginev1.ProcessHistoryKind_PROCESS_HISTORY_STARTED},
+		{Seq: 2, Kind: enginev1.ProcessHistoryKind_PROCESS_HISTORY_SUBSCRIBED, NodeId: "wait"},
+	}}
+	authz := &fakeAuthorizer{}
+	rec := doReq(restMux(ingress.InvokeConfig{Reader: rd, Authorizer: authz}),
+		"GET", "/v1/processes/order/o-1/history?after_seq=5&limit=10", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%q)", rec.Code, rec.Body.String())
+	}
+	if authz.gotAction != "GetProcessInstanceHistory" {
+		t.Fatalf("authorized action = %q, want GetProcessInstanceHistory", authz.gotAction)
+	}
+	if rd.gotName != "order" || rd.gotKey != "o-1" || rd.gotAfterSeq != 5 || rd.gotLimit != 10 {
+		t.Fatalf("reader args = name=%q key=%q after=%d limit=%d", rd.gotName, rd.gotKey, rd.gotAfterSeq, rd.gotLimit)
+	}
+	body := decodeJSON(t, rec)
+	if body["present"] != true {
+		t.Fatalf("present = %v, want true (%q)", body["present"], rec.Body.String())
+	}
+	if body["nextAfterSeq"] != "2" { // protojson renders uint64 as a string
+		t.Fatalf("nextAfterSeq = %v, want \"2\"", body["nextAfterSeq"])
+	}
+	evs, ok := body["events"].([]any)
+	if !ok || len(evs) != 2 {
+		t.Fatalf("events = %v", body["events"])
+	}
+	if ev0 := evs[0].(map[string]any); ev0["kind"] != "PROCESS_HISTORY_STARTED" {
+		t.Fatalf("events[0].kind = %v, want PROCESS_HISTORY_STARTED", ev0["kind"])
+	}
+}
+
+func TestGetProcessHistoryHTTP_NotFound(t *testing.T) {
+	rd := &fakeReader{present: false}
+	rec := doReq(restMux(ingress.InvokeConfig{Reader: rd, Authorizer: &fakeAuthorizer{}}),
+		"GET", "/v1/processes/order/o-1/history", nil, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (%q)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetProcessHistoryHTTP_AuthzDeny(t *testing.T) {
+	rd := &fakeReader{present: true}
+	authz := &fakeAuthorizer{err: connect.NewError(connect.CodePermissionDenied, errors.New("no"))}
+	rec := doReq(restMux(ingress.InvokeConfig{Reader: rd, Authorizer: authz}),
+		"GET", "/v1/processes/order/o-1/history", nil, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if rd.called {
+		t.Fatalf("reader must not run after authz denial")
+	}
+}
+
+func TestGetProcessHistoryHTTP_InvalidCursor(t *testing.T) {
+	rd := &fakeReader{present: true}
+	rec := doReq(restMux(ingress.InvokeConfig{Reader: rd, Authorizer: &fakeAuthorizer{}}),
+		"GET", "/v1/processes/order/o-1/history?after_seq=abc", nil, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if rd.called {
+		t.Fatalf("reader must not run on a malformed cursor")
 	}
 }
 

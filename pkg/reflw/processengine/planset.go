@@ -120,6 +120,18 @@ func PlanModelSet(entries []*enginev1.ModelRecord, existing []*enginev1.ModelRec
 			if _, verr := dmn.NewRuntimeFromModel(pm.defs, dmn.WithModelResolver(resolver)); verr != nil {
 				return nil, fmt.Errorf("processengine: compile dmn %s/%s: %w", pm.ref.GetName(), pm.ref.GetVersion(), verr)
 			}
+			// Mangle validation over the import closure — parity with the bpmn /
+			// cmmn cases above. The resolver registers imported elements so a
+			// cross-model requirement resolves instead of false-positiving
+			// REF001-003; only error-severity findings block registration.
+			vr, verr := dmn.ValidateWithResolver(pm.defs, resolver)
+			if verr != nil {
+				return nil, fmt.Errorf("processengine: validate dmn %s/%s: %w", pm.ref.GetName(), pm.ref.GetVersion(), verr)
+			}
+			if vr.HasErrors() {
+				return nil, fmt.Errorf("processengine: dmn %s/%s validation: %s",
+					pm.ref.GetName(), pm.ref.GetVersion(), joinDMNIssues(vr.Errors()))
+			}
 		}
 		out = append(out, &enginev1.ModelRecord{ModelRef: pm.ref, Xml: pm.xml, Bundle: bundle})
 	}
@@ -336,6 +348,15 @@ func pinChild(b *enginev1.ModelBundle, childIndex map[string]*enginev1.ModelRef,
 
 // joinIssues renders a model's static-validation findings as a single string.
 func joinIssues(issues []bpmn.StaticValidationIssue) string {
+	parts := make([]string, len(issues))
+	for i, is := range issues {
+		parts[i] = is.String()
+	}
+	return strings.Join(parts, "; ")
+}
+
+// joinDMNIssues renders a DMN model's validation findings as a single string.
+func joinDMNIssues(issues []dmn.ValidationIssue) string {
 	parts := make([]string, len(issues))
 	for i, is := range issues {
 		parts[i] = is.String()

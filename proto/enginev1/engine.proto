@@ -1359,6 +1359,11 @@ message ProcessInstanceRecord {
   string failure_message = 11;
   uint64 created_at_ms = 12;
   uint64 ended_at_ms = 13;
+  // hist_seq is the per-instance append cursor for ProcessHistoryTable
+  // (proc_hist/<lp:4><service>/<instance_key>/<seq:8>) — the activity-timeline
+  // analog of next_seq for the inbox. Bumped on every history append on the apply
+  // path; distinct from the inbox cursor (next_seq/active_seq).
+  uint64 hist_seq = 14;
 }
 
 // ProcessInboxEntry is one queued event for an instance, stored at
@@ -1368,6 +1373,46 @@ message ProcessInstanceRecord {
 message ProcessInboxEntry {
   ProcessEventPayload payload = 1;
   uint64 logical_time_ms = 2;
+}
+
+// ProcessHistoryKind labels one entry in an instance's activity timeline. The
+// vocabulary is execution-level (dispatch / complete / timer / child / terminal),
+// NOT BPMN-element-type, so it reads correctly for both BPMN nodes and CMMN plan
+// items (the process plane is kind-agnostic). The coarse (Tier-A) events the apply
+// path can derive today; fine-grained BPMN audit (sequence flows, gateway
+// decisions, variables) is Tier-B, emitted later by the reflwos reducer.
+enum ProcessHistoryKind {
+  PROCESS_HISTORY_KIND_UNSPECIFIED = 0;
+  PROCESS_HISTORY_STARTED          = 1;  // start event accepted (instance created)
+  PROCESS_HISTORY_EVENT_RECEIVED   = 2;  // external/injected inbound event
+  PROCESS_HISTORY_TASK_DISPATCHED  = 3;  // outbound TaskInvoke
+  PROCESS_HISTORY_TASK_COMPLETED   = 4;  // inbound task result (carries failed)
+  PROCESS_HISTORY_TIMER_ARMED      = 5;  // outbound TimerArm
+  PROCESS_HISTORY_TIMER_FIRED      = 6;  // inbound timer fire
+  PROCESS_HISTORY_CHILD_STARTED    = 7;  // outbound ChildStart
+  PROCESS_HISTORY_CHILD_COMPLETED  = 8;  // inbound child result (carries failed)
+  PROCESS_HISTORY_SUBSCRIBED       = 9;  // outbound SignalSubscribe
+  PROCESS_HISTORY_UNSUBSCRIBED     = 10; // outbound SignalUnsubscribe
+  PROCESS_HISTORY_MESSAGE_RECEIVED = 11; // inbound correlated message/signal
+  PROCESS_HISTORY_COMPLETED        = 12; // terminal: instance completed
+  PROCESS_HISTORY_FAILED           = 13; // terminal: instance failed
+}
+
+// ProcessHistoryEvent is the stored value of ProcessHistoryTable
+// (proc_hist/<lp:4><service>/<instance_key>/<seq:8>). Lean by design — a timeline,
+// NOT a data store: task/child payloads and instance variables are out of scope
+// here (Tier-B). ts_ms is the turn's logical/applied time (deterministic on
+// replay). Bounded per instance by limits.DefaultMaxProcessHistoryEvents (live)
+// and the instance's retention window (post-terminal), reaped with the record.
+message ProcessHistoryEvent {
+  uint64 seq = 1;
+  ProcessHistoryKind kind = 2;
+  string node_id = 3;          // BPMN node / CMMN plan item, when applicable
+  uint64 ts_ms = 4;
+  bool failed = 5;             // TASK_COMPLETED / CHILD_COMPLETED / FAILED
+  string failure_message = 6;
+  string instance_idx = 7;     // non-empty for multi-instance
+  string detail = 8;           // small extra (e.g. message_name for MESSAGE_RECEIVED)
 }
 
 // ModelRef pins one reflwos model snapshot (reflwos/modelstore.ModelRef).

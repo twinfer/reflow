@@ -27,6 +27,7 @@
 //	msgsub/<lp:4><corr_digest:32><sub_digest:32>                     -> MessageSubscription (PartitionKey(msg,corr)) [entity-keyed]
 //	timer_lp/<lp:4><8-byte BE fire_at_ms>/<24-byte id>               -> uint32 sleep_index  (id.PartitionKey)  [ID-keyed]
 //	dedup/arbitrary/<lp:4><producer_id>/<8-byte BE seq>              -> DedupEntry          (command kind)     [entity-keyed]
+//	proc_hist/<lp:4><24-byte root id><8-byte BE seq>                 -> ProcessHistoryEvent (root.PartitionKey) [ID-keyed]
 //
 // LP-agnostic namespaces (singletons, ordering-sensitive, or shard-scoped):
 //
@@ -119,6 +120,7 @@ const (
 	reapPrefix           = "reap/"
 	procReapPrefix       = "proc_reap/"
 	procSubIdxPrefix     = "proc_sub_idx/"
+	procHistPrefix       = "proc_hist/"
 	lpFreezePrefix       = "lp_freeze/"
 	lpStagingPrefix      = "lp_staging/"
 )
@@ -501,6 +503,46 @@ func ProcessInboxKey(lp uint32, service, instanceKey string, seq uint64) []byte 
 func ProcessInboxLPPrefix(lp uint32) []byte {
 	out := make([]byte, 0, len(procInboxPrefix)+LPLen)
 	out = append(out, procInboxPrefix...)
+	return appendLP(out, lp)
+}
+
+// ProcessHistoryInstancePrefix returns proc_hist/<lp:4><24-byte root id> — the
+// bounded scan / range-delete prefix for one instance's activity timeline. The
+// fixed-width 24-byte root id (like proc_sub_idx) keys by instance so a parent's
+// prefix never aliases its '/'-namespaced child instances (childInstanceKey packs
+// '/' into the key). Pair with PrefixUpperBound.
+func ProcessHistoryInstancePrefix(root *enginev1.InvocationId) ([]byte, error) {
+	raw, err := EncodeInvocationID(root)
+	if err != nil {
+		return nil, err
+	}
+	lp := LPFromPartitionKey(root.GetPartitionKey())
+	out := make([]byte, 0, len(procHistPrefix)+LPLen+invocationIDLen+8)
+	out = append(out, procHistPrefix...)
+	out = appendLP(out, lp)
+	return append(out, raw...), nil
+}
+
+// ProcessHistoryKey returns proc_hist/<lp:4><24-byte root id><8-byte BE seq>. One
+// row per timeline event; the big-endian seq makes a forward scan yield events in
+// append order. The cursor (hist_seq) lives on ProcessInstanceRecord. Rows are
+// point-deleted by the keep-last-N cap and range-deleted on instance reap.
+func ProcessHistoryKey(root *enginev1.InvocationId, seq uint64) ([]byte, error) {
+	prefix, err := ProcessHistoryInstancePrefix(root)
+	if err != nil {
+		return nil, err
+	}
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], seq)
+	return append(prefix, buf[:]...), nil
+}
+
+// ProcessHistoryLPPrefix returns proc_hist/<lp:4> — the LowerBound for a per-LP
+// scan of every timeline event in one logical partition, so history rides the
+// LP-transfer scan + source range-delete alongside the instance + inbox rows.
+func ProcessHistoryLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(procHistPrefix)+LPLen)
+	out = append(out, procHistPrefix...)
 	return appendLP(out, lp)
 }
 

@@ -888,6 +888,11 @@ func (p *Partition) enqueueInstanceEvent(batch storage.Batch, ev *enginev1.Proce
 			})
 		}
 	}
+	if hev := processHistoryForInbound(ev, lt); hev != nil {
+		if err := p.appendProcessHistory(batch, rec, hev); err != nil {
+			return err
+		}
+	}
 	if err := procT.Put(batch, lp, service, instanceKey, rec); err != nil {
 		return fmt.Errorf("enqueueInstanceEvent: write record: %w", err)
 	}
@@ -915,6 +920,73 @@ func satSubU32(a, b uint32) uint32 {
 		return 0
 	}
 	return a - b
+}
+
+// appendProcessHistory writes one activity-timeline row (Tier-A history), bumping
+// the per-instance hist_seq cursor and enforcing the keep-last-N live cap
+// (limits.DefaultMaxProcessHistoryEvents) by point-deleting the row that just fell
+// out of the window. Durable, replicated state — written by every replica, no
+// Action/propose; deterministic because hist_seq rides the record and ts_ms is
+// apply-time/logical. The caller persists rec (every tap site Puts it in the same
+// batch). A record with no root id (none exist in practice — root is set at
+// creation) is skipped defensively.
+func (p *Partition) appendProcessHistory(batch storage.Batch, rec *enginev1.ProcessInstanceRecord, ev *enginev1.ProcessHistoryEvent) error {
+	root := rec.GetRootId()
+	if root == nil {
+		return nil
+	}
+	rec.HistSeq++
+	ev.Seq = rec.HistSeq
+	histT := tables.ProcessHistoryTable{S: batch}
+	if err := histT.Append(batch, root, rec.HistSeq, ev); err != nil {
+		return fmt.Errorf("appendProcessHistory: append: %w", err)
+	}
+	if rec.HistSeq > limits.DefaultMaxProcessHistoryEvents {
+		if err := histT.DeleteAt(batch, root, rec.HistSeq-limits.DefaultMaxProcessHistoryEvents); err != nil {
+			return fmt.Errorf("appendProcessHistory: evict: %w", err)
+		}
+	}
+	return nil
+}
+
+// processHistoryForInbound builds the timeline row for an accepted inbound
+// ProcessEvent (a start, an external/injected event, or dispatched-work
+// feedback), or nil for a payload with no timeline representation.
+func processHistoryForInbound(ev *enginev1.ProcessEvent, tsMs uint64) *enginev1.ProcessHistoryEvent {
+	if ev.GetModelRef() != nil {
+		return &enginev1.ProcessHistoryEvent{Kind: enginev1.ProcessHistoryKind_PROCESS_HISTORY_STARTED, TsMs: tsMs}
+	}
+	switch pl := ev.GetPayload().GetOf().(type) {
+	case *enginev1.ProcessEventPayload_External:
+		return &enginev1.ProcessHistoryEvent{Kind: enginev1.ProcessHistoryKind_PROCESS_HISTORY_EVENT_RECEIVED, TsMs: tsMs}
+	case *enginev1.ProcessEventPayload_TaskCompleted:
+		tc := pl.TaskCompleted
+		return &enginev1.ProcessHistoryEvent{
+			Kind:   enginev1.ProcessHistoryKind_PROCESS_HISTORY_TASK_COMPLETED,
+			NodeId: tc.GetNodeId(), InstanceIdx: tc.GetInstanceIdx(),
+			Failed: tc.GetFailed(), FailureMessage: tc.GetFailureMessage(), TsMs: tsMs,
+		}
+	case *enginev1.ProcessEventPayload_TimerFired:
+		return &enginev1.ProcessHistoryEvent{
+			Kind:   enginev1.ProcessHistoryKind_PROCESS_HISTORY_TIMER_FIRED,
+			NodeId: pl.TimerFired.GetNodeId(), TsMs: tsMs,
+		}
+	case *enginev1.ProcessEventPayload_ChildCompleted:
+		cc := pl.ChildCompleted
+		return &enginev1.ProcessHistoryEvent{
+			Kind:   enginev1.ProcessHistoryKind_PROCESS_HISTORY_CHILD_COMPLETED,
+			NodeId: cc.GetNodeId(), InstanceIdx: cc.GetInstanceIdx(),
+			Failed: cc.GetFailed(), FailureMessage: cc.GetFailureMessage(), TsMs: tsMs,
+		}
+	case *enginev1.ProcessEventPayload_MessageReceived:
+		mr := pl.MessageReceived
+		return &enginev1.ProcessHistoryEvent{
+			Kind:   enginev1.ProcessHistoryKind_PROCESS_HISTORY_MESSAGE_RECEIVED,
+			NodeId: mr.GetNodeId(), Detail: mr.GetMessageName(), TsMs: tsMs,
+		}
+	default:
+		return nil
+	}
 }
 
 // deliverProcessEvent routes a synthesized ProcessEvent to the addressed
@@ -1157,9 +1229,14 @@ func (p *Partition) finishProcessInstance(batch storage.Batch, meta *enginev1.Pa
 	rec.ActiveSeq = 0
 	rec.Outstanding = 0
 
+	histT := tables.ProcessHistoryTable{S: batch}
 	retention := term.GetRetentionMs()
 	if retention == 0 {
-		// No declared window → delete immediately (opt-in retention).
+		// No declared window → delete the record and its whole timeline now
+		// (opt-in retention; no post-mortem history without historyTimeToLive).
+		if err := histT.DeleteInstance(batch, root); err != nil {
+			return fmt.Errorf("finishProcessInstance: history delete: %w", err)
+		}
 		if err := procT.Delete(batch, lp, service, instanceKey); err != nil {
 			return fmt.Errorf("finishProcessInstance: record delete: %w", err)
 		}
@@ -1169,8 +1246,18 @@ func (p *Partition) finishProcessInstance(batch storage.Batch, meta *enginev1.Pa
 		retention = limits.MaxAllowedRetentionMs
 	}
 
-	// Retain the terminal record and schedule its reap. Mirrors
-	// applyTerminalCompletion's reap scheduling for invocations.
+	// Record the terminal timeline row, then retain the record + timeline for the
+	// window; the process reaper clears both. Mirrors applyTerminalCompletion's
+	// reap scheduling for invocations.
+	termKind := enginev1.ProcessHistoryKind_PROCESS_HISTORY_COMPLETED
+	if term.GetFailed() {
+		termKind = enginev1.ProcessHistoryKind_PROCESS_HISTORY_FAILED
+	}
+	if err := p.appendProcessHistory(batch, rec, &enginev1.ProcessHistoryEvent{
+		Kind: termKind, TsMs: nowMs, Failed: term.GetFailed(), FailureMessage: term.GetFailureMessage(),
+	}); err != nil {
+		return err
+	}
 	if err := procT.Put(batch, lp, service, instanceKey, rec); err != nil {
 		return fmt.Errorf("finishProcessInstance: record put: %w", err)
 	}
@@ -1233,6 +1320,9 @@ func (p *Partition) onReapProcessInstance(batch storage.Batch, cmd *enginev1.Rea
 	if err := procT.Delete(batch, lp, service, instanceKey); err != nil {
 		return fmt.Errorf("onReapProcessInstance: record delete: %w", err)
 	}
+	if err := (tables.ProcessHistoryTable{S: batch}).DeleteInstance(batch, root); err != nil {
+		return fmt.Errorf("onReapProcessInstance: history delete: %w", err)
+	}
 	return nil
 }
 
@@ -1250,6 +1340,45 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 	service, instanceKey := adv.GetService(), adv.GetInstanceKey()
 	root := rec.GetRootId()
 	timersT := tables.TimerTable{S: batch}
+
+	// Tier-A history: one timeline row per outbound effect this turn. Durable on
+	// every replica; the caller's post-actuate Put persists the bumped hist_seq.
+	for _, ti := range adv.GetInvoke() {
+		if err := p.appendProcessHistory(batch, rec, &enginev1.ProcessHistoryEvent{
+			Kind:   enginev1.ProcessHistoryKind_PROCESS_HISTORY_TASK_DISPATCHED,
+			NodeId: ti.GetNodeId(), InstanceIdx: ti.GetInstanceIdx(), TsMs: nowMs,
+		}); err != nil {
+			return err
+		}
+	}
+	for _, ta := range adv.GetArmTimer() {
+		if err := p.appendProcessHistory(batch, rec, &enginev1.ProcessHistoryEvent{
+			Kind: enginev1.ProcessHistoryKind_PROCESS_HISTORY_TIMER_ARMED, NodeId: ta.GetNodeId(), TsMs: nowMs,
+		}); err != nil {
+			return err
+		}
+	}
+	for _, cs := range adv.GetStartChild() {
+		if err := p.appendProcessHistory(batch, rec, &enginev1.ProcessHistoryEvent{
+			Kind: enginev1.ProcessHistoryKind_PROCESS_HISTORY_CHILD_STARTED, NodeId: cs.GetNodeId(), TsMs: nowMs,
+		}); err != nil {
+			return err
+		}
+	}
+	for _, sub := range adv.GetSubscribe() {
+		if err := p.appendProcessHistory(batch, rec, &enginev1.ProcessHistoryEvent{
+			Kind: enginev1.ProcessHistoryKind_PROCESS_HISTORY_SUBSCRIBED, NodeId: sub.GetNodeId(), TsMs: nowMs,
+		}); err != nil {
+			return err
+		}
+	}
+	for _, un := range adv.GetUnsubscribe() {
+		if err := p.appendProcessHistory(batch, rec, &enginev1.ProcessHistoryEvent{
+			Kind: enginev1.ProcessHistoryKind_PROCESS_HISTORY_UNSUBSCRIBED, NodeId: un.GetNodeId(), TsMs: nowMs,
+		}); err != nil {
+			return err
+		}
+	}
 
 	for i, ti := range adv.GetInvoke() {
 		target := ti.GetTarget()

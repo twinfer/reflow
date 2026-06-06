@@ -98,3 +98,12 @@ func clampRetention(v, def uint64) uint64 {
 // high enough never to fire in normal operation — it's a flood valve, not
 // a routine sweep. Crossing it emits a WARN so the early reap isn't silent.
 const DefaultMaxPendingReaps int = 1_000_000
+
+// DefaultMaxProcessHistoryEvents bounds the per-instance proc_hist timeline of a
+// RUNNING instance — the keep-last-N cap. Once an instance's hist_seq exceeds it,
+// each append point-deletes the row that fell out of the window, so a pathological
+// loop can't grow its history without bound. This is the pre-terminal bound; the
+// post-terminal bound is the instance's retention window (shared with the record,
+// reaped together). Mirrors DefaultMaxJournalEntries — a flood valve, generous
+// enough that a normal instance keeps its whole timeline.
+const DefaultMaxProcessHistoryEvents uint64 = 10_000

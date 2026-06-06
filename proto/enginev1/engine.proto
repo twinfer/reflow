@@ -215,7 +215,7 @@ message Command {
     ProcessEvent process_event = 40;
     ProcessAdvanced process_advanced = 41;
     // DeliverProcessMessage correlates an inbound message to parked instances:
-    // it lands on the partition owning (tenant, message_name, correlation_key),
+    // it lands on the partition owning (message_name, correlation_key),
     // scans MessageSubscriptionTable, and fans a ProcessMessageReceived event
     // out to each subscribed instance. ProcessSubscribe records one such
     // subscription written by actuateProcessInstructions — applied locally, or
@@ -234,6 +234,11 @@ message Command {
     // analog of ReapInvocation, proposed by the leader's process reaper.
     // Accepted only by shardID >= 1.
     ReapProcessInstance reap_process_instance = 51;
+    // ResolveProcessIncident resolves an incident-parked instance: RETRY
+    // re-drives the failed element (a new turn), TERMINATE fails the instance
+    // (delivering the failure to its parent, if any, then reaping). Routed to the
+    // partition owning the instance. Accepted only by shardID >= 1.
+    ResolveProcessIncident resolve_process_incident = 52;
     // SetRebalanceDrain marks a partition shard as drained (drain=true)
     // or undrained (drain=false) in shard 0's RebalanceDrainTable. The
     // autonomous rebalancer subtracts drained shards from the planner's
@@ -1107,7 +1112,7 @@ message SignalSend {
 // ── Process-execution payloads (reflwos BPMN/CMMN durable backend) ──
 //
 // One reflwos process/case instance maps to a specialized virtual object:
-// (service, instance_key) banded by tenant, state in ProcessInstanceTable.
+// (service, instance_key) banded by state in ProcessInstanceTable.
 // Only the leader-side procSession links reflwos; everything that crosses Raft
 // is reflw-native, so the apply arm (every replica) stays reflwos-agnostic.
 
@@ -1117,7 +1122,7 @@ message SignalSend {
 // so Advance is a pure function of (state, event, time) and re-runs identically
 // on a new leader.
 message ProcessEvent {
-  fixed64 pk = 1; // banded partition_key of (tenant, service, instance_key)
+  fixed64 pk = 1; // banded partition_key of (service, instance_key)
   string service = 2;
   string instance_key = 3;
   uint64 logical_time_ms = 4;
@@ -1220,8 +1225,43 @@ message ProcessAdvanced {
   repeated TimerCancel cancel_timer = 7; // -> ActDeleteTimer
   repeated ChildStart start_child = 8;   // -> ActDispatchOutbox (subprocess / call-activity / case-task)
   repeated SignalSubscribe subscribe = 9;
-  ProcessTerminal terminal = 10;             // set iff ProcessCompleted / ProcessFailed
+  ProcessTerminal terminal = 10;             // set iff ProcessCompleted / ProcessFailed (escalation)
   repeated SignalUnsubscribe unsubscribe = 11; // -> delete MessageSubscription (torn-down catch)
+  // incident is set (mutually exclusive with terminal) when the turn ended in a
+  // genuine uncaught failure (a non-escalation bpmn.ProcessFailed / cmmn.CaseFailed).
+  // The apply path parks the instance non-terminally (PROCESS_STATUS_INCIDENT,
+  // retaining new_state) instead of finishing it, awaiting ResolveProcessIncident.
+  ProcessIncident incident = 12;
+}
+
+// ProcessIncident is a parked uncaught failure on a running instance — the
+// Camunda/Zeebe incident analog. Carried on ProcessAdvanced.incident (turn
+// result) and stored on ProcessInstanceRecord.incident while parked. node_id is
+// the failing BPMN node / CMMN plan item; cause is the human-readable reason;
+// raised_at_ms is the turn's logical time. The failing instance state survives in
+// ProcessInstanceRecord.state_blob so RETRY can re-drive the element.
+message ProcessIncident {
+  string node_id = 1;
+  string cause = 2;
+  uint64 raised_at_ms = 3;
+}
+
+// ResolveProcessIncident resolves an incident-parked instance. RETRY re-drives the
+// failed element as a new turn (optionally patching variables first); TERMINATE
+// fails the instance terminally (delivering the failure to a parent, then reaping
+// per the model's retention window).
+message ResolveProcessIncident {
+  fixed64 pk = 1;
+  string service = 2;
+  string instance_key = 3;
+  ProcessIncidentResolution resolution = 4;
+  bytes var_patch = 5; // RETRY only: variables to merge before re-driving (optional)
+}
+
+enum ProcessIncidentResolution {
+  PROCESS_INCIDENT_RESOLUTION_UNSPECIFIED = 0;
+  PROCESS_INCIDENT_RESOLUTION_RETRY = 1;
+  PROCESS_INCIDENT_RESOLUTION_TERMINATE = 2;
 }
 
 message TaskInvoke {
@@ -1276,7 +1316,7 @@ message ReapProcessInstance {
 }
 
 // MessageSubscription is one parked BPMN message/signal catch, stored in
-// MessageSubscriptionTable on the partition owning (tenant, message_name,
+// MessageSubscriptionTable on the partition owning (message_name,
 // correlation_key) — which generally differs from the instance's own partition,
 // so actuateProcessInstructions writes it cross-shard via
 // OutboxEnvelope.process_subscribe. instance_pk/service/instance_key address the
@@ -1291,7 +1331,7 @@ message MessageSubscription {
 }
 
 // ProcessSubscribe carries one MessageSubscription to the partition that owns the
-// message routing key (pk = banded PartitionKey(tenant, message_name,
+// message routing key (pk = banded PartitionKey(message_name,
 // correlation_key)). Applied via Command_ProcessSubscribe (onProcessSubscribe
 // writes the row); shipped cross-shard via OutboxEnvelope.process_subscribe.
 message ProcessSubscribe {
@@ -1311,7 +1351,7 @@ message ProcessUnsubscribe {
 }
 
 // DeliverProcessMessage is the inbound-correlation command. It lands on the
-// partition owning pk = banded PartitionKey(tenant, message_name,
+// partition owning pk = banded PartitionKey(message_name,
 // correlation_key), scans every matching MessageSubscription, fans a
 // ProcessMessageReceived out to each parked instance, and one-shot-deletes the
 // rows (so redelivery is naturally idempotent). A message with no current
@@ -1364,6 +1404,11 @@ message ProcessInstanceRecord {
   // analog of next_seq for the inbox. Bumped on every history append on the apply
   // path; distinct from the inbox cursor (next_seq/active_seq).
   uint64 hist_seq = 14;
+  // incident is set while status == PROCESS_STATUS_INCIDENT: a parked uncaught
+  // failure awaiting ResolveProcessIncident. The instance is non-terminal (not
+  // reaped, active_seq==0); state_blob retains the failing element so RETRY can
+  // re-drive it. Cleared when the incident is resolved.
+  ProcessIncident incident = 15;
 }
 
 // ProcessInboxEntry is one queued event for an instance, stored at
@@ -1396,6 +1441,8 @@ enum ProcessHistoryKind {
   PROCESS_HISTORY_MESSAGE_RECEIVED = 11; // inbound correlated message/signal
   PROCESS_HISTORY_COMPLETED        = 12; // terminal: instance completed
   PROCESS_HISTORY_FAILED           = 13; // terminal: instance failed
+  PROCESS_HISTORY_INCIDENT_RAISED  = 14; // non-terminal: uncaught failure parked as an incident
+  PROCESS_HISTORY_INCIDENT_RESOLVED = 15; // incident resolved (RETRY re-drive / TERMINATE)
 }
 
 // ProcessHistoryEvent is the stored value of ProcessHistoryTable
@@ -1433,6 +1480,10 @@ enum ProcessStatus {
   PROCESS_STATUS_RUNNING = 1;
   PROCESS_STATUS_COMPLETED = 2;
   PROCESS_STATUS_FAILED = 3;
+  // INCIDENT is a non-terminal parked state: an uncaught failure awaiting human
+  // ResolveProcessIncident. Unlike FAILED it is never reaped on its own and
+  // retains the failing instance state for a RETRY re-drive.
+  PROCESS_STATUS_INCIDENT = 4;
 }
 
 // SnapshotMeta is the operator-visible sidecar accompanying each snapshot

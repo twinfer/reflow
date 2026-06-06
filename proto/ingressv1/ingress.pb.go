@@ -1300,9 +1300,13 @@ type GetProcessInstanceResponse struct {
 	// terminal (status COMPLETED/FAILED) within its retention window. output is the
 	// completed instance's output (empty on failure); created_at_ms / ended_at_ms
 	// bracket the instance lifetime.
-	Output        []byte `protobuf:"bytes,7,opt,name=output,proto3" json:"output,omitempty"`
-	CreatedAtMs   uint64 `protobuf:"varint,8,opt,name=created_at_ms,json=createdAtMs,proto3" json:"created_at_ms,omitempty"`
-	EndedAtMs     uint64 `protobuf:"varint,9,opt,name=ended_at_ms,json=endedAtMs,proto3" json:"ended_at_ms,omitempty"`
+	Output      []byte `protobuf:"bytes,7,opt,name=output,proto3" json:"output,omitempty"`
+	CreatedAtMs uint64 `protobuf:"varint,8,opt,name=created_at_ms,json=createdAtMs,proto3" json:"created_at_ms,omitempty"`
+	EndedAtMs   uint64 `protobuf:"varint,9,opt,name=ended_at_ms,json=endedAtMs,proto3" json:"ended_at_ms,omitempty"`
+	// incident is set when status == PROCESS_STATUS_INCIDENT: an uncaught failure
+	// parked for human intervention (node_id, cause, raised_at). Resolve it with
+	// ResolveProcessIncident.
+	Incident      *enginev1.ProcessIncident `protobuf:"bytes,10,opt,name=incident,proto3" json:"incident,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1400,6 +1404,131 @@ func (x *GetProcessInstanceResponse) GetEndedAtMs() uint64 {
 	return 0
 }
 
+func (x *GetProcessInstanceResponse) GetIncident() *enginev1.ProcessIncident {
+	if x != nil {
+		return x.Incident
+	}
+	return nil
+}
+
+type ResolveProcessIncidentRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// model_ref.name + the caller's tenant + instance_key select the routing
+	// partition (model_ref.kind/version are ignored).
+	ModelRef    *enginev1.ModelRef                 `protobuf:"bytes,1,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`
+	InstanceKey string                             `protobuf:"bytes,2,opt,name=instance_key,json=instanceKey,proto3" json:"instance_key,omitempty"`
+	Resolution  enginev1.ProcessIncidentResolution `protobuf:"varint,3,opt,name=resolution,proto3,enum=reflw.engine.v1.ProcessIncidentResolution" json:"resolution,omitempty"`
+	// RETRY only: variables to merge before re-driving the failed element (optional).
+	VarPatch      []byte `protobuf:"bytes,4,opt,name=var_patch,json=varPatch,proto3" json:"var_patch,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResolveProcessIncidentRequest) Reset() {
+	*x = ResolveProcessIncidentRequest{}
+	mi := &file_ingressv1_ingress_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResolveProcessIncidentRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResolveProcessIncidentRequest) ProtoMessage() {}
+
+func (x *ResolveProcessIncidentRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ingressv1_ingress_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResolveProcessIncidentRequest.ProtoReflect.Descriptor instead.
+func (*ResolveProcessIncidentRequest) Descriptor() ([]byte, []int) {
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *ResolveProcessIncidentRequest) GetModelRef() *enginev1.ModelRef {
+	if x != nil {
+		return x.ModelRef
+	}
+	return nil
+}
+
+func (x *ResolveProcessIncidentRequest) GetInstanceKey() string {
+	if x != nil {
+		return x.InstanceKey
+	}
+	return ""
+}
+
+func (x *ResolveProcessIncidentRequest) GetResolution() enginev1.ProcessIncidentResolution {
+	if x != nil {
+		return x.Resolution
+	}
+	return enginev1.ProcessIncidentResolution(0)
+}
+
+func (x *ResolveProcessIncidentRequest) GetVarPatch() []byte {
+	if x != nil {
+		return x.VarPatch
+	}
+	return nil
+}
+
+type ResolveProcessIncidentResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// accepted is true when the resolve command was routed and proposed; it does
+	// not wait for apply. (It does not distinguish "no such incident" — that is a
+	// benign no-op on the apply path.)
+	Accepted      bool `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResolveProcessIncidentResponse) Reset() {
+	*x = ResolveProcessIncidentResponse{}
+	mi := &file_ingressv1_ingress_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResolveProcessIncidentResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResolveProcessIncidentResponse) ProtoMessage() {}
+
+func (x *ResolveProcessIncidentResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ingressv1_ingress_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResolveProcessIncidentResponse.ProtoReflect.Descriptor instead.
+func (*ResolveProcessIncidentResponse) Descriptor() ([]byte, []int) {
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *ResolveProcessIncidentResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
 type GetProcessInstanceHistoryRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// model_ref.name + the caller's tenant + instance_key select the routing
@@ -1417,7 +1546,7 @@ type GetProcessInstanceHistoryRequest struct {
 
 func (x *GetProcessInstanceHistoryRequest) Reset() {
 	*x = GetProcessInstanceHistoryRequest{}
-	mi := &file_ingressv1_ingress_proto_msgTypes[22]
+	mi := &file_ingressv1_ingress_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1429,7 +1558,7 @@ func (x *GetProcessInstanceHistoryRequest) String() string {
 func (*GetProcessInstanceHistoryRequest) ProtoMessage() {}
 
 func (x *GetProcessInstanceHistoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ingressv1_ingress_proto_msgTypes[22]
+	mi := &file_ingressv1_ingress_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1442,7 +1571,7 @@ func (x *GetProcessInstanceHistoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProcessInstanceHistoryRequest.ProtoReflect.Descriptor instead.
 func (*GetProcessInstanceHistoryRequest) Descriptor() ([]byte, []int) {
-	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{22}
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *GetProcessInstanceHistoryRequest) GetModelRef() *enginev1.ModelRef {
@@ -1490,7 +1619,7 @@ type GetProcessInstanceHistoryResponse struct {
 
 func (x *GetProcessInstanceHistoryResponse) Reset() {
 	*x = GetProcessInstanceHistoryResponse{}
-	mi := &file_ingressv1_ingress_proto_msgTypes[23]
+	mi := &file_ingressv1_ingress_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1502,7 +1631,7 @@ func (x *GetProcessInstanceHistoryResponse) String() string {
 func (*GetProcessInstanceHistoryResponse) ProtoMessage() {}
 
 func (x *GetProcessInstanceHistoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ingressv1_ingress_proto_msgTypes[23]
+	mi := &file_ingressv1_ingress_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1515,7 +1644,7 @@ func (x *GetProcessInstanceHistoryResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use GetProcessInstanceHistoryResponse.ProtoReflect.Descriptor instead.
 func (*GetProcessInstanceHistoryResponse) Descriptor() ([]byte, []int) {
-	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{23}
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *GetProcessInstanceHistoryResponse) GetPresent() bool {
@@ -1563,7 +1692,7 @@ type ListProcessInstancesRequest struct {
 
 func (x *ListProcessInstancesRequest) Reset() {
 	*x = ListProcessInstancesRequest{}
-	mi := &file_ingressv1_ingress_proto_msgTypes[24]
+	mi := &file_ingressv1_ingress_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1575,7 +1704,7 @@ func (x *ListProcessInstancesRequest) String() string {
 func (*ListProcessInstancesRequest) ProtoMessage() {}
 
 func (x *ListProcessInstancesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ingressv1_ingress_proto_msgTypes[24]
+	mi := &file_ingressv1_ingress_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1588,7 +1717,7 @@ func (x *ListProcessInstancesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProcessInstancesRequest.ProtoReflect.Descriptor instead.
 func (*ListProcessInstancesRequest) Descriptor() ([]byte, []int) {
-	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{24}
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ListProcessInstancesRequest) GetModelRef() *enginev1.ModelRef {
@@ -1645,7 +1774,7 @@ type ListProcessInstancesResponse struct {
 
 func (x *ListProcessInstancesResponse) Reset() {
 	*x = ListProcessInstancesResponse{}
-	mi := &file_ingressv1_ingress_proto_msgTypes[25]
+	mi := &file_ingressv1_ingress_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1657,7 +1786,7 @@ func (x *ListProcessInstancesResponse) String() string {
 func (*ListProcessInstancesResponse) ProtoMessage() {}
 
 func (x *ListProcessInstancesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ingressv1_ingress_proto_msgTypes[25]
+	mi := &file_ingressv1_ingress_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1670,7 +1799,7 @@ func (x *ListProcessInstancesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProcessInstancesResponse.ProtoReflect.Descriptor instead.
 func (*ListProcessInstancesResponse) Descriptor() ([]byte, []int) {
-	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{25}
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ListProcessInstancesResponse) GetInstances() []*ProcessInstanceSummary {
@@ -1704,7 +1833,7 @@ type ProcessInstanceSummary struct {
 
 func (x *ProcessInstanceSummary) Reset() {
 	*x = ProcessInstanceSummary{}
-	mi := &file_ingressv1_ingress_proto_msgTypes[26]
+	mi := &file_ingressv1_ingress_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1716,7 +1845,7 @@ func (x *ProcessInstanceSummary) String() string {
 func (*ProcessInstanceSummary) ProtoMessage() {}
 
 func (x *ProcessInstanceSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_ingressv1_ingress_proto_msgTypes[26]
+	mi := &file_ingressv1_ingress_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1729,7 +1858,7 @@ func (x *ProcessInstanceSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProcessInstanceSummary.ProtoReflect.Descriptor instead.
 func (*ProcessInstanceSummary) Descriptor() ([]byte, []int) {
-	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{26}
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ProcessInstanceSummary) GetService() string {
@@ -1820,7 +1949,7 @@ type ListInvocationsRequest struct {
 
 func (x *ListInvocationsRequest) Reset() {
 	*x = ListInvocationsRequest{}
-	mi := &file_ingressv1_ingress_proto_msgTypes[27]
+	mi := &file_ingressv1_ingress_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1832,7 +1961,7 @@ func (x *ListInvocationsRequest) String() string {
 func (*ListInvocationsRequest) ProtoMessage() {}
 
 func (x *ListInvocationsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ingressv1_ingress_proto_msgTypes[27]
+	mi := &file_ingressv1_ingress_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1845,7 +1974,7 @@ func (x *ListInvocationsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListInvocationsRequest.ProtoReflect.Descriptor instead.
 func (*ListInvocationsRequest) Descriptor() ([]byte, []int) {
-	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{27}
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ListInvocationsRequest) GetService() string {
@@ -1902,7 +2031,7 @@ type ListInvocationsResponse struct {
 
 func (x *ListInvocationsResponse) Reset() {
 	*x = ListInvocationsResponse{}
-	mi := &file_ingressv1_ingress_proto_msgTypes[28]
+	mi := &file_ingressv1_ingress_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1914,7 +2043,7 @@ func (x *ListInvocationsResponse) String() string {
 func (*ListInvocationsResponse) ProtoMessage() {}
 
 func (x *ListInvocationsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ingressv1_ingress_proto_msgTypes[28]
+	mi := &file_ingressv1_ingress_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1927,7 +2056,7 @@ func (x *ListInvocationsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListInvocationsResponse.ProtoReflect.Descriptor instead.
 func (*ListInvocationsResponse) Descriptor() ([]byte, []int) {
-	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{28}
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ListInvocationsResponse) GetInvocations() []*InvocationSummary {
@@ -1958,7 +2087,7 @@ type InvocationSummary struct {
 
 func (x *InvocationSummary) Reset() {
 	*x = InvocationSummary{}
-	mi := &file_ingressv1_ingress_proto_msgTypes[29]
+	mi := &file_ingressv1_ingress_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1970,7 +2099,7 @@ func (x *InvocationSummary) String() string {
 func (*InvocationSummary) ProtoMessage() {}
 
 func (x *InvocationSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_ingressv1_ingress_proto_msgTypes[29]
+	mi := &file_ingressv1_ingress_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1983,7 +2112,7 @@ func (x *InvocationSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InvocationSummary.ProtoReflect.Descriptor instead.
 func (*InvocationSummary) Descriptor() ([]byte, []int) {
-	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{29}
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *InvocationSummary) GetId() *enginev1.InvocationId {
@@ -2043,7 +2172,7 @@ type ResolveWorkflowPromiseRequest struct {
 
 func (x *ResolveWorkflowPromiseRequest) Reset() {
 	*x = ResolveWorkflowPromiseRequest{}
-	mi := &file_ingressv1_ingress_proto_msgTypes[30]
+	mi := &file_ingressv1_ingress_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2055,7 +2184,7 @@ func (x *ResolveWorkflowPromiseRequest) String() string {
 func (*ResolveWorkflowPromiseRequest) ProtoMessage() {}
 
 func (x *ResolveWorkflowPromiseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ingressv1_ingress_proto_msgTypes[30]
+	mi := &file_ingressv1_ingress_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2068,7 +2197,7 @@ func (x *ResolveWorkflowPromiseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveWorkflowPromiseRequest.ProtoReflect.Descriptor instead.
 func (*ResolveWorkflowPromiseRequest) Descriptor() ([]byte, []int) {
-	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{30}
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ResolveWorkflowPromiseRequest) GetService() string {
@@ -2120,7 +2249,7 @@ type ResolveWorkflowPromiseResponse struct {
 
 func (x *ResolveWorkflowPromiseResponse) Reset() {
 	*x = ResolveWorkflowPromiseResponse{}
-	mi := &file_ingressv1_ingress_proto_msgTypes[31]
+	mi := &file_ingressv1_ingress_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2132,7 +2261,7 @@ func (x *ResolveWorkflowPromiseResponse) String() string {
 func (*ResolveWorkflowPromiseResponse) ProtoMessage() {}
 
 func (x *ResolveWorkflowPromiseResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ingressv1_ingress_proto_msgTypes[31]
+	mi := &file_ingressv1_ingress_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2145,7 +2274,7 @@ func (x *ResolveWorkflowPromiseResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveWorkflowPromiseResponse.ProtoReflect.Descriptor instead.
 func (*ResolveWorkflowPromiseResponse) Descriptor() ([]byte, []int) {
-	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{31}
+	return file_ingressv1_ingress_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ResolveWorkflowPromiseResponse) GetAccepted() bool {
@@ -2238,7 +2367,7 @@ const file_ingressv1_ingress_proto_rawDesc = "" +
 	"\baccepted\x18\x02 \x01(\bR\baccepted\"v\n" +
 	"\x19GetProcessInstanceRequest\x126\n" +
 	"\tmodel_ref\x18\x01 \x01(\v2\x19.reflw.engine.v1.ModelRefR\bmodelRef\x12!\n" +
-	"\finstance_key\x18\x02 \x01(\tR\vinstanceKey\"\xd8\x02\n" +
+	"\finstance_key\x18\x02 \x01(\tR\vinstanceKey\"\x96\x03\n" +
 	"\x1aGetProcessInstanceResponse\x12\x18\n" +
 	"\apresent\x18\x01 \x01(\bR\apresent\x126\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1e.reflw.engine.v1.ProcessStatusR\x06status\x120\n" +
@@ -2249,7 +2378,18 @@ const file_ingressv1_ingress_proto_rawDesc = "" +
 	"\voutstanding\x18\x06 \x01(\rR\voutstanding\x12\x16\n" +
 	"\x06output\x18\a \x01(\fR\x06output\x12\"\n" +
 	"\rcreated_at_ms\x18\b \x01(\x04R\vcreatedAtMs\x12\x1e\n" +
-	"\vended_at_ms\x18\t \x01(\x04R\tendedAtMs\"\xb0\x01\n" +
+	"\vended_at_ms\x18\t \x01(\x04R\tendedAtMs\x12<\n" +
+	"\bincident\x18\n" +
+	" \x01(\v2 .reflw.engine.v1.ProcessIncidentR\bincident\"\xe3\x01\n" +
+	"\x1dResolveProcessIncidentRequest\x126\n" +
+	"\tmodel_ref\x18\x01 \x01(\v2\x19.reflw.engine.v1.ModelRefR\bmodelRef\x12!\n" +
+	"\finstance_key\x18\x02 \x01(\tR\vinstanceKey\x12J\n" +
+	"\n" +
+	"resolution\x18\x03 \x01(\x0e2*.reflw.engine.v1.ProcessIncidentResolutionR\n" +
+	"resolution\x12\x1b\n" +
+	"\tvar_patch\x18\x04 \x01(\fR\bvarPatch\"<\n" +
+	"\x1eResolveProcessIncidentResponse\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\"\xb0\x01\n" +
 	" GetProcessInstanceHistoryRequest\x126\n" +
 	"\tmodel_ref\x18\x01 \x01(\v2\x19.reflw.engine.v1.ModelRefR\bmodelRef\x12!\n" +
 	"\finstance_key\x18\x02 \x01(\tR\vinstanceKey\x12\x1b\n" +
@@ -2306,7 +2446,7 @@ const file_ingressv1_ingress_proto_rawDesc = "" +
 	"\x05value\x18\x04 \x01(\fR\x05value\x12'\n" +
 	"\x0ffailure_message\x18\x05 \x01(\tR\x0efailureMessage\"<\n" +
 	"\x1eResolveWorkflowPromiseResponse\x12\x1a\n" +
-	"\baccepted\x18\x01 \x01(\bR\baccepted2\xfc\f\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted2\xf9\r\n" +
 	"\aIngress\x12f\n" +
 	"\x0fAwaitInvocation\x12(.reflw.ingress.v1.AwaitInvocationRequest\x1a).reflw.ingress.v1.AwaitInvocationResponse\x12i\n" +
 	"\x10ResolveAwakeable\x12).reflw.ingress.v1.ResolveAwakeableRequest\x1a*.reflw.ingress.v1.ResolveAwakeableResponse\x12o\n" +
@@ -2322,7 +2462,8 @@ const file_ingressv1_ingress_proto_rawDesc = "" +
 	"\x0eDeliverMessage\x12'.reflw.ingress.v1.DeliverMessageRequest\x1a(.reflw.ingress.v1.DeliverMessageResponse\x12o\n" +
 	"\x12GetProcessInstance\x12+.reflw.ingress.v1.GetProcessInstanceRequest\x1a,.reflw.ingress.v1.GetProcessInstanceResponse\x12u\n" +
 	"\x14ListProcessInstances\x12-.reflw.ingress.v1.ListProcessInstancesRequest\x1a..reflw.ingress.v1.ListProcessInstancesResponse\x12\x84\x01\n" +
-	"\x19GetProcessInstanceHistory\x122.reflw.ingress.v1.GetProcessInstanceHistoryRequest\x1a3.reflw.ingress.v1.GetProcessInstanceHistoryResponseB4Z2github.com/twinfer/reflw/proto/ingressv1;ingressv1b\x06proto3"
+	"\x19GetProcessInstanceHistory\x122.reflw.ingress.v1.GetProcessInstanceHistoryRequest\x1a3.reflw.ingress.v1.GetProcessInstanceHistoryResponse\x12{\n" +
+	"\x16ResolveProcessIncident\x12/.reflw.ingress.v1.ResolveProcessIncidentRequest\x1a0.reflw.ingress.v1.ResolveProcessIncidentResponseB4Z2github.com/twinfer/reflw/proto/ingressv1;ingressv1b\x06proto3"
 
 var (
 	file_ingressv1_ingress_proto_rawDescOnce sync.Once
@@ -2337,7 +2478,7 @@ func file_ingressv1_ingress_proto_rawDescGZIP() []byte {
 }
 
 var file_ingressv1_ingress_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_ingressv1_ingress_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
+var file_ingressv1_ingress_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
 var file_ingressv1_ingress_proto_goTypes = []any{
 	(GetInvocationOutputResponse_Status)(0),   // 0: reflw.ingress.v1.GetInvocationOutputResponse.Status
 	(*AwaitInvocationRequest)(nil),            // 1: reflw.ingress.v1.AwaitInvocationRequest
@@ -2362,85 +2503,94 @@ var file_ingressv1_ingress_proto_goTypes = []any{
 	(*DeliverMessageResponse)(nil),            // 20: reflw.ingress.v1.DeliverMessageResponse
 	(*GetProcessInstanceRequest)(nil),         // 21: reflw.ingress.v1.GetProcessInstanceRequest
 	(*GetProcessInstanceResponse)(nil),        // 22: reflw.ingress.v1.GetProcessInstanceResponse
-	(*GetProcessInstanceHistoryRequest)(nil),  // 23: reflw.ingress.v1.GetProcessInstanceHistoryRequest
-	(*GetProcessInstanceHistoryResponse)(nil), // 24: reflw.ingress.v1.GetProcessInstanceHistoryResponse
-	(*ListProcessInstancesRequest)(nil),       // 25: reflw.ingress.v1.ListProcessInstancesRequest
-	(*ListProcessInstancesResponse)(nil),      // 26: reflw.ingress.v1.ListProcessInstancesResponse
-	(*ProcessInstanceSummary)(nil),            // 27: reflw.ingress.v1.ProcessInstanceSummary
-	(*ListInvocationsRequest)(nil),            // 28: reflw.ingress.v1.ListInvocationsRequest
-	(*ListInvocationsResponse)(nil),           // 29: reflw.ingress.v1.ListInvocationsResponse
-	(*InvocationSummary)(nil),                 // 30: reflw.ingress.v1.InvocationSummary
-	(*ResolveWorkflowPromiseRequest)(nil),     // 31: reflw.ingress.v1.ResolveWorkflowPromiseRequest
-	(*ResolveWorkflowPromiseResponse)(nil),    // 32: reflw.ingress.v1.ResolveWorkflowPromiseResponse
-	(*enginev1.InvocationId)(nil),             // 33: reflw.engine.v1.InvocationId
-	(*enginev1.InvocationStatus)(nil),         // 34: reflw.engine.v1.InvocationStatus
-	(*enginev1.ModelRef)(nil),                 // 35: reflw.engine.v1.ModelRef
-	(enginev1.ProcessStatus)(0),               // 36: reflw.engine.v1.ProcessStatus
-	(enginev1.ProcessKind)(0),                 // 37: reflw.engine.v1.ProcessKind
-	(*enginev1.ProcessHistoryEvent)(nil),      // 38: reflw.engine.v1.ProcessHistoryEvent
-	(enginev1.InvocationState)(0),             // 39: reflw.engine.v1.InvocationState
-	(*enginev1.InvocationTarget)(nil),         // 40: reflw.engine.v1.InvocationTarget
+	(*ResolveProcessIncidentRequest)(nil),     // 23: reflw.ingress.v1.ResolveProcessIncidentRequest
+	(*ResolveProcessIncidentResponse)(nil),    // 24: reflw.ingress.v1.ResolveProcessIncidentResponse
+	(*GetProcessInstanceHistoryRequest)(nil),  // 25: reflw.ingress.v1.GetProcessInstanceHistoryRequest
+	(*GetProcessInstanceHistoryResponse)(nil), // 26: reflw.ingress.v1.GetProcessInstanceHistoryResponse
+	(*ListProcessInstancesRequest)(nil),       // 27: reflw.ingress.v1.ListProcessInstancesRequest
+	(*ListProcessInstancesResponse)(nil),      // 28: reflw.ingress.v1.ListProcessInstancesResponse
+	(*ProcessInstanceSummary)(nil),            // 29: reflw.ingress.v1.ProcessInstanceSummary
+	(*ListInvocationsRequest)(nil),            // 30: reflw.ingress.v1.ListInvocationsRequest
+	(*ListInvocationsResponse)(nil),           // 31: reflw.ingress.v1.ListInvocationsResponse
+	(*InvocationSummary)(nil),                 // 32: reflw.ingress.v1.InvocationSummary
+	(*ResolveWorkflowPromiseRequest)(nil),     // 33: reflw.ingress.v1.ResolveWorkflowPromiseRequest
+	(*ResolveWorkflowPromiseResponse)(nil),    // 34: reflw.ingress.v1.ResolveWorkflowPromiseResponse
+	(*enginev1.InvocationId)(nil),             // 35: reflw.engine.v1.InvocationId
+	(*enginev1.InvocationStatus)(nil),         // 36: reflw.engine.v1.InvocationStatus
+	(*enginev1.ModelRef)(nil),                 // 37: reflw.engine.v1.ModelRef
+	(enginev1.ProcessStatus)(0),               // 38: reflw.engine.v1.ProcessStatus
+	(enginev1.ProcessKind)(0),                 // 39: reflw.engine.v1.ProcessKind
+	(*enginev1.ProcessIncident)(nil),          // 40: reflw.engine.v1.ProcessIncident
+	(enginev1.ProcessIncidentResolution)(0),   // 41: reflw.engine.v1.ProcessIncidentResolution
+	(*enginev1.ProcessHistoryEvent)(nil),      // 42: reflw.engine.v1.ProcessHistoryEvent
+	(enginev1.InvocationState)(0),             // 43: reflw.engine.v1.InvocationState
+	(*enginev1.InvocationTarget)(nil),         // 44: reflw.engine.v1.InvocationTarget
 }
 var file_ingressv1_ingress_proto_depIdxs = []int32{
-	33, // 0: reflw.ingress.v1.AwaitInvocationRequest.invocation_id_proto:type_name -> reflw.engine.v1.InvocationId
-	33, // 1: reflw.ingress.v1.DescribeInvocationRequest.invocation_id_proto:type_name -> reflw.engine.v1.InvocationId
-	34, // 2: reflw.ingress.v1.DescribeInvocationResponse.status:type_name -> reflw.engine.v1.InvocationStatus
-	33, // 3: reflw.ingress.v1.AttachInvocationRequest.invocation_id_proto:type_name -> reflw.engine.v1.InvocationId
-	33, // 4: reflw.ingress.v1.GetInvocationOutputRequest.invocation_id_proto:type_name -> reflw.engine.v1.InvocationId
+	35, // 0: reflw.ingress.v1.AwaitInvocationRequest.invocation_id_proto:type_name -> reflw.engine.v1.InvocationId
+	35, // 1: reflw.ingress.v1.DescribeInvocationRequest.invocation_id_proto:type_name -> reflw.engine.v1.InvocationId
+	36, // 2: reflw.ingress.v1.DescribeInvocationResponse.status:type_name -> reflw.engine.v1.InvocationStatus
+	35, // 3: reflw.ingress.v1.AttachInvocationRequest.invocation_id_proto:type_name -> reflw.engine.v1.InvocationId
+	35, // 4: reflw.ingress.v1.GetInvocationOutputRequest.invocation_id_proto:type_name -> reflw.engine.v1.InvocationId
 	0,  // 5: reflw.ingress.v1.GetInvocationOutputResponse.status:type_name -> reflw.ingress.v1.GetInvocationOutputResponse.Status
-	33, // 6: reflw.ingress.v1.CancelInvocationRequest.invocation_id_proto:type_name -> reflw.engine.v1.InvocationId
-	33, // 7: reflw.ingress.v1.PurgeInvocationRequest.invocation_id_proto:type_name -> reflw.engine.v1.InvocationId
-	35, // 8: reflw.ingress.v1.StartProcessRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
-	35, // 9: reflw.ingress.v1.GetProcessInstanceRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
-	36, // 10: reflw.ingress.v1.GetProcessInstanceResponse.status:type_name -> reflw.engine.v1.ProcessStatus
-	37, // 11: reflw.ingress.v1.GetProcessInstanceResponse.kind:type_name -> reflw.engine.v1.ProcessKind
-	35, // 12: reflw.ingress.v1.GetProcessInstanceHistoryRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
-	38, // 13: reflw.ingress.v1.GetProcessInstanceHistoryResponse.events:type_name -> reflw.engine.v1.ProcessHistoryEvent
-	35, // 14: reflw.ingress.v1.ListProcessInstancesRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
-	36, // 15: reflw.ingress.v1.ListProcessInstancesRequest.status_filter:type_name -> reflw.engine.v1.ProcessStatus
-	27, // 16: reflw.ingress.v1.ListProcessInstancesResponse.instances:type_name -> reflw.ingress.v1.ProcessInstanceSummary
-	36, // 17: reflw.ingress.v1.ProcessInstanceSummary.status:type_name -> reflw.engine.v1.ProcessStatus
-	37, // 18: reflw.ingress.v1.ProcessInstanceSummary.kind:type_name -> reflw.engine.v1.ProcessKind
-	39, // 19: reflw.ingress.v1.ListInvocationsRequest.state_filter:type_name -> reflw.engine.v1.InvocationState
-	30, // 20: reflw.ingress.v1.ListInvocationsResponse.invocations:type_name -> reflw.ingress.v1.InvocationSummary
-	33, // 21: reflw.ingress.v1.InvocationSummary.id:type_name -> reflw.engine.v1.InvocationId
-	40, // 22: reflw.ingress.v1.InvocationSummary.target:type_name -> reflw.engine.v1.InvocationTarget
-	39, // 23: reflw.ingress.v1.InvocationSummary.state:type_name -> reflw.engine.v1.InvocationState
-	1,  // 24: reflw.ingress.v1.Ingress.AwaitInvocation:input_type -> reflw.ingress.v1.AwaitInvocationRequest
-	3,  // 25: reflw.ingress.v1.Ingress.ResolveAwakeable:input_type -> reflw.ingress.v1.ResolveAwakeableRequest
-	5,  // 26: reflw.ingress.v1.Ingress.DescribeInvocation:input_type -> reflw.ingress.v1.DescribeInvocationRequest
-	7,  // 27: reflw.ingress.v1.Ingress.AttachInvocation:input_type -> reflw.ingress.v1.AttachInvocationRequest
-	9,  // 28: reflw.ingress.v1.Ingress.GetInvocationOutput:input_type -> reflw.ingress.v1.GetInvocationOutputRequest
-	10, // 29: reflw.ingress.v1.Ingress.GetObjectState:input_type -> reflw.ingress.v1.GetObjectStateRequest
-	13, // 30: reflw.ingress.v1.Ingress.CancelInvocation:input_type -> reflw.ingress.v1.CancelInvocationRequest
-	31, // 31: reflw.ingress.v1.Ingress.ResolveWorkflowPromise:input_type -> reflw.ingress.v1.ResolveWorkflowPromiseRequest
-	15, // 32: reflw.ingress.v1.Ingress.PurgeInvocation:input_type -> reflw.ingress.v1.PurgeInvocationRequest
-	28, // 33: reflw.ingress.v1.Ingress.ListInvocations:input_type -> reflw.ingress.v1.ListInvocationsRequest
-	17, // 34: reflw.ingress.v1.Ingress.StartProcess:input_type -> reflw.ingress.v1.StartProcessRequest
-	19, // 35: reflw.ingress.v1.Ingress.DeliverMessage:input_type -> reflw.ingress.v1.DeliverMessageRequest
-	21, // 36: reflw.ingress.v1.Ingress.GetProcessInstance:input_type -> reflw.ingress.v1.GetProcessInstanceRequest
-	25, // 37: reflw.ingress.v1.Ingress.ListProcessInstances:input_type -> reflw.ingress.v1.ListProcessInstancesRequest
-	23, // 38: reflw.ingress.v1.Ingress.GetProcessInstanceHistory:input_type -> reflw.ingress.v1.GetProcessInstanceHistoryRequest
-	2,  // 39: reflw.ingress.v1.Ingress.AwaitInvocation:output_type -> reflw.ingress.v1.AwaitInvocationResponse
-	4,  // 40: reflw.ingress.v1.Ingress.ResolveAwakeable:output_type -> reflw.ingress.v1.ResolveAwakeableResponse
-	6,  // 41: reflw.ingress.v1.Ingress.DescribeInvocation:output_type -> reflw.ingress.v1.DescribeInvocationResponse
-	8,  // 42: reflw.ingress.v1.Ingress.AttachInvocation:output_type -> reflw.ingress.v1.AttachInvocationResponse
-	12, // 43: reflw.ingress.v1.Ingress.GetInvocationOutput:output_type -> reflw.ingress.v1.GetInvocationOutputResponse
-	11, // 44: reflw.ingress.v1.Ingress.GetObjectState:output_type -> reflw.ingress.v1.GetObjectStateResponse
-	14, // 45: reflw.ingress.v1.Ingress.CancelInvocation:output_type -> reflw.ingress.v1.CancelInvocationResponse
-	32, // 46: reflw.ingress.v1.Ingress.ResolveWorkflowPromise:output_type -> reflw.ingress.v1.ResolveWorkflowPromiseResponse
-	16, // 47: reflw.ingress.v1.Ingress.PurgeInvocation:output_type -> reflw.ingress.v1.PurgeInvocationResponse
-	29, // 48: reflw.ingress.v1.Ingress.ListInvocations:output_type -> reflw.ingress.v1.ListInvocationsResponse
-	18, // 49: reflw.ingress.v1.Ingress.StartProcess:output_type -> reflw.ingress.v1.StartProcessResponse
-	20, // 50: reflw.ingress.v1.Ingress.DeliverMessage:output_type -> reflw.ingress.v1.DeliverMessageResponse
-	22, // 51: reflw.ingress.v1.Ingress.GetProcessInstance:output_type -> reflw.ingress.v1.GetProcessInstanceResponse
-	26, // 52: reflw.ingress.v1.Ingress.ListProcessInstances:output_type -> reflw.ingress.v1.ListProcessInstancesResponse
-	24, // 53: reflw.ingress.v1.Ingress.GetProcessInstanceHistory:output_type -> reflw.ingress.v1.GetProcessInstanceHistoryResponse
-	39, // [39:54] is the sub-list for method output_type
-	24, // [24:39] is the sub-list for method input_type
-	24, // [24:24] is the sub-list for extension type_name
-	24, // [24:24] is the sub-list for extension extendee
-	0,  // [0:24] is the sub-list for field type_name
+	35, // 6: reflw.ingress.v1.CancelInvocationRequest.invocation_id_proto:type_name -> reflw.engine.v1.InvocationId
+	35, // 7: reflw.ingress.v1.PurgeInvocationRequest.invocation_id_proto:type_name -> reflw.engine.v1.InvocationId
+	37, // 8: reflw.ingress.v1.StartProcessRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
+	37, // 9: reflw.ingress.v1.GetProcessInstanceRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
+	38, // 10: reflw.ingress.v1.GetProcessInstanceResponse.status:type_name -> reflw.engine.v1.ProcessStatus
+	39, // 11: reflw.ingress.v1.GetProcessInstanceResponse.kind:type_name -> reflw.engine.v1.ProcessKind
+	40, // 12: reflw.ingress.v1.GetProcessInstanceResponse.incident:type_name -> reflw.engine.v1.ProcessIncident
+	37, // 13: reflw.ingress.v1.ResolveProcessIncidentRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
+	41, // 14: reflw.ingress.v1.ResolveProcessIncidentRequest.resolution:type_name -> reflw.engine.v1.ProcessIncidentResolution
+	37, // 15: reflw.ingress.v1.GetProcessInstanceHistoryRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
+	42, // 16: reflw.ingress.v1.GetProcessInstanceHistoryResponse.events:type_name -> reflw.engine.v1.ProcessHistoryEvent
+	37, // 17: reflw.ingress.v1.ListProcessInstancesRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
+	38, // 18: reflw.ingress.v1.ListProcessInstancesRequest.status_filter:type_name -> reflw.engine.v1.ProcessStatus
+	29, // 19: reflw.ingress.v1.ListProcessInstancesResponse.instances:type_name -> reflw.ingress.v1.ProcessInstanceSummary
+	38, // 20: reflw.ingress.v1.ProcessInstanceSummary.status:type_name -> reflw.engine.v1.ProcessStatus
+	39, // 21: reflw.ingress.v1.ProcessInstanceSummary.kind:type_name -> reflw.engine.v1.ProcessKind
+	43, // 22: reflw.ingress.v1.ListInvocationsRequest.state_filter:type_name -> reflw.engine.v1.InvocationState
+	32, // 23: reflw.ingress.v1.ListInvocationsResponse.invocations:type_name -> reflw.ingress.v1.InvocationSummary
+	35, // 24: reflw.ingress.v1.InvocationSummary.id:type_name -> reflw.engine.v1.InvocationId
+	44, // 25: reflw.ingress.v1.InvocationSummary.target:type_name -> reflw.engine.v1.InvocationTarget
+	43, // 26: reflw.ingress.v1.InvocationSummary.state:type_name -> reflw.engine.v1.InvocationState
+	1,  // 27: reflw.ingress.v1.Ingress.AwaitInvocation:input_type -> reflw.ingress.v1.AwaitInvocationRequest
+	3,  // 28: reflw.ingress.v1.Ingress.ResolveAwakeable:input_type -> reflw.ingress.v1.ResolveAwakeableRequest
+	5,  // 29: reflw.ingress.v1.Ingress.DescribeInvocation:input_type -> reflw.ingress.v1.DescribeInvocationRequest
+	7,  // 30: reflw.ingress.v1.Ingress.AttachInvocation:input_type -> reflw.ingress.v1.AttachInvocationRequest
+	9,  // 31: reflw.ingress.v1.Ingress.GetInvocationOutput:input_type -> reflw.ingress.v1.GetInvocationOutputRequest
+	10, // 32: reflw.ingress.v1.Ingress.GetObjectState:input_type -> reflw.ingress.v1.GetObjectStateRequest
+	13, // 33: reflw.ingress.v1.Ingress.CancelInvocation:input_type -> reflw.ingress.v1.CancelInvocationRequest
+	33, // 34: reflw.ingress.v1.Ingress.ResolveWorkflowPromise:input_type -> reflw.ingress.v1.ResolveWorkflowPromiseRequest
+	15, // 35: reflw.ingress.v1.Ingress.PurgeInvocation:input_type -> reflw.ingress.v1.PurgeInvocationRequest
+	30, // 36: reflw.ingress.v1.Ingress.ListInvocations:input_type -> reflw.ingress.v1.ListInvocationsRequest
+	17, // 37: reflw.ingress.v1.Ingress.StartProcess:input_type -> reflw.ingress.v1.StartProcessRequest
+	19, // 38: reflw.ingress.v1.Ingress.DeliverMessage:input_type -> reflw.ingress.v1.DeliverMessageRequest
+	21, // 39: reflw.ingress.v1.Ingress.GetProcessInstance:input_type -> reflw.ingress.v1.GetProcessInstanceRequest
+	27, // 40: reflw.ingress.v1.Ingress.ListProcessInstances:input_type -> reflw.ingress.v1.ListProcessInstancesRequest
+	25, // 41: reflw.ingress.v1.Ingress.GetProcessInstanceHistory:input_type -> reflw.ingress.v1.GetProcessInstanceHistoryRequest
+	23, // 42: reflw.ingress.v1.Ingress.ResolveProcessIncident:input_type -> reflw.ingress.v1.ResolveProcessIncidentRequest
+	2,  // 43: reflw.ingress.v1.Ingress.AwaitInvocation:output_type -> reflw.ingress.v1.AwaitInvocationResponse
+	4,  // 44: reflw.ingress.v1.Ingress.ResolveAwakeable:output_type -> reflw.ingress.v1.ResolveAwakeableResponse
+	6,  // 45: reflw.ingress.v1.Ingress.DescribeInvocation:output_type -> reflw.ingress.v1.DescribeInvocationResponse
+	8,  // 46: reflw.ingress.v1.Ingress.AttachInvocation:output_type -> reflw.ingress.v1.AttachInvocationResponse
+	12, // 47: reflw.ingress.v1.Ingress.GetInvocationOutput:output_type -> reflw.ingress.v1.GetInvocationOutputResponse
+	11, // 48: reflw.ingress.v1.Ingress.GetObjectState:output_type -> reflw.ingress.v1.GetObjectStateResponse
+	14, // 49: reflw.ingress.v1.Ingress.CancelInvocation:output_type -> reflw.ingress.v1.CancelInvocationResponse
+	34, // 50: reflw.ingress.v1.Ingress.ResolveWorkflowPromise:output_type -> reflw.ingress.v1.ResolveWorkflowPromiseResponse
+	16, // 51: reflw.ingress.v1.Ingress.PurgeInvocation:output_type -> reflw.ingress.v1.PurgeInvocationResponse
+	31, // 52: reflw.ingress.v1.Ingress.ListInvocations:output_type -> reflw.ingress.v1.ListInvocationsResponse
+	18, // 53: reflw.ingress.v1.Ingress.StartProcess:output_type -> reflw.ingress.v1.StartProcessResponse
+	20, // 54: reflw.ingress.v1.Ingress.DeliverMessage:output_type -> reflw.ingress.v1.DeliverMessageResponse
+	22, // 55: reflw.ingress.v1.Ingress.GetProcessInstance:output_type -> reflw.ingress.v1.GetProcessInstanceResponse
+	28, // 56: reflw.ingress.v1.Ingress.ListProcessInstances:output_type -> reflw.ingress.v1.ListProcessInstancesResponse
+	26, // 57: reflw.ingress.v1.Ingress.GetProcessInstanceHistory:output_type -> reflw.ingress.v1.GetProcessInstanceHistoryResponse
+	24, // 58: reflw.ingress.v1.Ingress.ResolveProcessIncident:output_type -> reflw.ingress.v1.ResolveProcessIncidentResponse
+	43, // [43:59] is the sub-list for method output_type
+	27, // [27:43] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_ingressv1_ingress_proto_init() }
@@ -2454,7 +2604,7 @@ func file_ingressv1_ingress_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ingressv1_ingress_proto_rawDesc), len(file_ingressv1_ingress_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   32,
+			NumMessages:   34,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -3,6 +3,7 @@ package processengine
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/twinfer/reflw/internal/engine/invoker"
@@ -191,6 +192,17 @@ func (a *Adapter) translateBPMN(in invoker.ProcessAdvanceInput, graph *bpmn.Proc
 			}
 			return adv, nil
 		case bpmn.ProcessFailed:
+			// A child's failure (and any escalation, which is cross-process by
+			// definition) terminates so it delivers to its parent — the parent's
+			// CallActivity boundary may catch it (encodeProcessFailure promotes an
+			// escalation into a bridgeFault code) or the parent fails in turn. Only a
+			// top-level, non-escalation uncaught failure — one with nowhere left to
+			// propagate — parks as an incident (non-terminal), retaining new_state so
+			// a ResolveProcessIncident RETRY can re-drive the failed element.
+			if incidentEligible(in.Record) && !strings.HasPrefix(t.Cause, escalationPrefix) {
+				adv.Incident = &enginev1.ProcessIncident{NodeId: t.NodeID, Cause: t.Cause}
+				return adv, nil
+			}
 			adv.Terminal = &enginev1.ProcessTerminal{
 				Failed:         true,
 				FailureMessage: encodeProcessFailure(t.NodeID, t.Cause),

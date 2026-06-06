@@ -62,6 +62,7 @@ var procMap = map[string]procEntry{
 	ingressv1connect.IngressGetProcessInstanceProcedure:        {"GetProcessInstance", []string{groupIngress}},
 	ingressv1connect.IngressListProcessInstancesProcedure:      {"ListProcessInstances", []string{groupIngress}},
 	ingressv1connect.IngressGetProcessInstanceHistoryProcedure: {"GetProcessInstanceHistory", []string{groupIngress}},
+	ingressv1connect.IngressResolveProcessIncidentProcedure:    {"ResolveProcessIncident", []string{groupIngress}},
 
 	// ----- Ingress: operator-only maintenance (no open plane) -----
 	// PurgeInvocation permanently deletes a Completed invocation's durable

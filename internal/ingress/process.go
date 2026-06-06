@@ -143,6 +143,57 @@ func (s *Server) DeliverMessage(ctx context.Context, req *connect.Request[ingres
 	return connect.NewResponse(&ingressv1.DeliverMessageResponse{Pk: pk, Accepted: true}), nil
 }
 
+// ResolveProcessIncident resolves an incident-parked instance, routed by
+// (model name, instance_key) like StartProcess. TERMINATE fails the instance
+// terminally; RETRY re-drives the failed element (Phase 2b — rejected as
+// unimplemented until the reflwos resume entry lands). Delivered at-least-once
+// (unique producerID); the apply path no-ops a resolve for a non-incident
+// instance, so re-delivery is safe.
+func (s *Server) ResolveProcessIncident(ctx context.Context, req *connect.Request[ingressv1.ResolveProcessIncidentRequest]) (*connect.Response[ingressv1.ResolveProcessIncidentResponse], error) {
+	msg := req.Msg
+	name := msg.GetModelRef().GetName()
+	if name == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("model_ref.name is required"))
+	}
+	if msg.GetInstanceKey() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("instance_key is required"))
+	}
+	switch msg.GetResolution() {
+	case enginev1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_TERMINATE:
+		// supported
+	case enginev1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_RETRY:
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("RETRY resolution is not yet supported"))
+	default:
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("resolution must be RETRY or TERMINATE"))
+	}
+
+	pk := routing.PartitionKey(name, msg.GetInstanceKey())
+	shardID := s.host.Partitioner().ShardForKey(pk)
+	runner := s.host.Partition(shardID)
+	if runner == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no partition for shard %d", shardID))
+	}
+	cmd := &enginev1.Command{Kind: &enginev1.Command_ResolveProcessIncident{ResolveProcessIncident: &enginev1.ResolveProcessIncident{
+		Pk:          pk,
+		Service:     name,
+		InstanceKey: msg.GetInstanceKey(),
+		Resolution:  msg.GetResolution(),
+		VarPatch:    msg.GetVarPatch(),
+	}}}
+	nonce, err := mintNonce()
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("mint nonce: %w", err))
+	}
+	producerID := "incident/" + nonce
+	if err := runner.Proposer().ProposeIngress(ctx, producerID, 1, cmd); err != nil {
+		if errors.Is(err, engine.ErrShardClosed) {
+			return nil, connect.NewError(connect.CodeUnavailable, errors.New("shard closed"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("propose resolve process incident: %w", err))
+	}
+	return connect.NewResponse(&ingressv1.ResolveProcessIncidentResponse{Accepted: true}), nil
+}
+
 // GetProcessInstance performs a linearizable read of one instance's record from
 // the partition owning (model name, instance_key) — the same routing
 // StartProcess uses. It proposes nothing; it exists so a caller without an await
@@ -180,6 +231,7 @@ func (s *Server) GetProcessInstance(ctx context.Context, req *connect.Request[in
 		resp.Output = r.Record.GetOutput()
 		resp.CreatedAtMs = r.Record.GetCreatedAtMs()
 		resp.EndedAtMs = r.Record.GetEndedAtMs()
+		resp.Incident = r.Record.GetIncident() // set iff status == INCIDENT
 	}
 	return connect.NewResponse(resp), nil
 }

@@ -364,6 +364,8 @@ func commandKindLabel(cmd *enginev1.Command) string {
 		return "ProcessUnsubscribe"
 	case *enginev1.Command_ReapProcessInstance:
 		return "ReapProcessInstance"
+	case *enginev1.Command_ResolveProcessIncident:
+		return "ResolveProcessIncident"
 	case nil:
 		return "empty"
 	default:
@@ -488,6 +490,8 @@ func lpFromCommand(cmd *enginev1.Command) uint32 {
 		return keys.LPFromPartitionKey(k.ProcessAdvanced.GetPk())
 	case *enginev1.Command_ReapProcessInstance:
 		return keys.LPFromPartitionKey(k.ReapProcessInstance.GetPk())
+	case *enginev1.Command_ResolveProcessIncident:
+		return keys.LPFromPartitionKey(k.ResolveProcessIncident.GetPk())
 	default:
 		// OutboxAck (LP-agnostic shard-internal pop), AnnounceLeader
 		// (SelfProposal dedup; lp ignored), unknown future kinds.
@@ -594,6 +598,8 @@ func (p *Partition) applyCommand(
 		return p.onDeliverProcessMessage(batch, meta, k.DeliverProcessMessage, now, isLeader)
 	case *enginev1.Command_ReapProcessInstance:
 		return p.onReapProcessInstance(batch, k.ReapProcessInstance)
+	case *enginev1.Command_ResolveProcessIncident:
+		return p.onResolveProcessIncident(batch, meta, k.ResolveProcessIncident, now, isLeader)
 	case nil:
 		p.cfg.Log.Warn("partition: envelope has no command kind", "raft_index", raftIndex)
 		return nil
@@ -1122,6 +1128,9 @@ func (p *Partition) onProcessAdvanced(batch storage.Batch, meta *enginev1.Partit
 	if term := adv.GetTerminal(); term != nil {
 		return p.finishProcessInstance(batch, meta, rec, adv, term, active, nowMs, isLeader)
 	}
+	if inc := adv.GetIncident(); inc != nil {
+		return p.parkProcessIncident(batch, rec, adv, inc, active, nowMs)
+	}
 
 	// Non-terminal: actuate the turn's instructions, then advance the cursor.
 	if err := p.actuateProcessInstructions(batch, meta, rec, adv, nowMs, isLeader); err != nil {
@@ -1146,6 +1155,48 @@ func (p *Partition) onProcessAdvanced(batch storage.Batch, meta *enginev1.Partit
 
 	if err := procT.Put(batch, lp, service, instanceKey, rec); err != nil {
 		return fmt.Errorf("onProcessAdvanced: write record: %w", err)
+	}
+	return nil
+}
+
+// parkProcessIncident applies an incident turn (adv.Incident set): a genuine
+// uncaught failure on a top-level instance. The caller has already persisted
+// adv.NewState onto rec and dequeued the failing turn's inbox row. This parks the
+// instance non-terminally — status INCIDENT, the incident stamped (with its
+// raised-at time), active_seq cleared, outstanding zeroed, any still-queued inbox
+// rows dropped — and schedules NO reap and NO parent delivery: an incident waits
+// indefinitely for ResolveProcessIncident, and only top-level instances reach here
+// (the adapter terminates a child's failure so it propagates to its parent). The
+// failing state survives in rec.StateBlob so a RETRY can re-drive the element.
+func (p *Partition) parkProcessIncident(batch storage.Batch, rec *enginev1.ProcessInstanceRecord, adv *enginev1.ProcessAdvanced, inc *enginev1.ProcessIncident, active, nowMs uint64) error {
+	pk := adv.GetPk()
+	lp := keys.LPFromPartitionKey(pk)
+	service, instanceKey := adv.GetService(), adv.GetInstanceKey()
+	inboxT := tables.ProcessInboxTable{S: batch}
+	procT := tables.ProcessInstanceTable{S: batch}
+
+	// Drop still-queued inbox rows: the process failed, so queued events are moot
+	// (RETRY re-drives the failed element, not the queue).
+	for seq := active + 1; seq < rec.GetNextSeq(); seq++ {
+		if err := inboxT.Delete(batch, lp, service, instanceKey, seq); err != nil {
+			return fmt.Errorf("parkProcessIncident: inbox delete: %w", err)
+		}
+	}
+	rec.Status = enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT
+	rec.Incident = &enginev1.ProcessIncident{NodeId: inc.GetNodeId(), Cause: inc.GetCause(), RaisedAtMs: nowMs}
+	rec.ActiveSeq = 0
+	rec.Outstanding = 0
+	if err := p.appendProcessHistory(batch, rec, &enginev1.ProcessHistoryEvent{
+		Kind:           enginev1.ProcessHistoryKind_PROCESS_HISTORY_INCIDENT_RAISED,
+		NodeId:         inc.GetNodeId(),
+		TsMs:           nowMs,
+		Failed:         true,
+		FailureMessage: inc.GetCause(),
+	}); err != nil {
+		return err
+	}
+	if err := procT.Put(batch, lp, service, instanceKey, rec); err != nil {
+		return fmt.Errorf("parkProcessIncident: record put: %w", err)
 	}
 	return nil
 }
@@ -1317,6 +1368,14 @@ func (p *Partition) onReapProcessInstance(batch storage.Batch, cmd *enginev1.Rea
 			"service", service, "key", instanceKey)
 		return nil
 	}
+	if rec.GetStatus() == enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT {
+		// Defensive: an incident is non-terminal and schedules no reap; never delete
+		// one out from under a pending ResolveProcessIncident. (A re-created instance
+		// reusing the key could also be parked here.)
+		p.cfg.Log.Warn("partition: process reap on incident instance; skipping record delete",
+			"service", service, "key", instanceKey)
+		return nil
+	}
 	if err := procT.Delete(batch, lp, service, instanceKey); err != nil {
 		return fmt.Errorf("onReapProcessInstance: record delete: %w", err)
 	}
@@ -1324,6 +1383,63 @@ func (p *Partition) onReapProcessInstance(batch storage.Batch, cmd *enginev1.Rea
 		return fmt.Errorf("onReapProcessInstance: history delete: %w", err)
 	}
 	return nil
+}
+
+// onResolveProcessIncident resolves an incident-parked instance. TERMINATE fails
+// it terminally — delivering the failure to a parent (none, for a top-level
+// incident) and reaping it now. RETRY re-drives the failed element via the reflwos
+// ResolveIncident reducer entry (Phase 2b — not yet wired; the ingress RPC rejects
+// RETRY before proposing, so the arm here is a defensive drop). A command for an
+// instance that is absent or not in INCIDENT is a benign no-op (already resolved /
+// reaped / never existed) — never an error, which would halt the shard.
+func (p *Partition) onResolveProcessIncident(batch storage.Batch, meta *enginev1.PartitionMeta, cmd *enginev1.ResolveProcessIncident, nowMs uint64, isLeader bool) error {
+	pk := cmd.GetPk()
+	if err := p.checkLPFreeze(batch, pk); err != nil {
+		return err
+	}
+	lp := keys.LPFromPartitionKey(pk)
+	service, instanceKey := cmd.GetService(), cmd.GetInstanceKey()
+	procT := tables.ProcessInstanceTable{S: batch}
+	rec, ok, err := procT.Get(lp, service, instanceKey)
+	if err != nil {
+		return fmt.Errorf("onResolveProcessIncident: load record: %w", err)
+	}
+	if !ok || rec.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT {
+		p.cfg.Log.Debug("partition: ResolveProcessIncident for non-incident instance; dropping",
+			"service", service, "key", instanceKey, "status", rec.GetStatus().String())
+		return nil
+	}
+
+	switch cmd.GetResolution() {
+	case enginev1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_TERMINATE:
+		node := rec.GetIncident().GetNodeId()
+		cause := rec.GetIncident().GetCause()
+		if err := p.appendProcessHistory(batch, rec, &enginev1.ProcessHistoryEvent{
+			Kind:   enginev1.ProcessHistoryKind_PROCESS_HISTORY_INCIDENT_RESOLVED,
+			NodeId: node, TsMs: nowMs, Detail: "terminate",
+		}); err != nil {
+			return err
+		}
+		rec.Incident = nil
+		// Fail the instance terminally. retention 0 deletes the record + timeline
+		// now (the operator chose to terminate; nothing to retain). active 0: the
+		// incident already dequeued its turn, so finishProcessInstance's inbox-drop
+		// loop runs over already-deleted rows (a no-op).
+		adv := &enginev1.ProcessAdvanced{Pk: pk, Service: service, InstanceKey: instanceKey, NewState: rec.GetStateBlob()}
+		term := &enginev1.ProcessTerminal{
+			Failed:         true,
+			FailureMessage: fmt.Sprintf("incident terminated at %q: %s", node, cause),
+		}
+		return p.finishProcessInstance(batch, meta, rec, adv, term, 0, nowMs, isLeader)
+	case enginev1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_RETRY:
+		p.cfg.Log.Warn("partition: ResolveProcessIncident RETRY not yet supported; dropping",
+			"service", service, "key", instanceKey)
+		return nil
+	default:
+		p.cfg.Log.Warn("partition: ResolveProcessIncident with unspecified resolution; dropping",
+			"service", service, "key", instanceKey)
+		return nil
+	}
 }
 
 // actuateProcessInstructions turns a non-terminal turn's instruction lists into

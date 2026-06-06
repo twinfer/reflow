@@ -84,14 +84,14 @@ service Ingress {
   rpc ListInvocations(ListInvocationsRequest) returns (ListInvocationsResponse);
 
   // StartProcess launches a new reflwos BPMN/CMMN instance. Routes to the
-  // partition owning (tenant, model name, instance_key) and proposes a start
+  // partition owning (model name, instance_key) and proposes a start
   // ProcessEvent (model_ref + kind set). Idempotent per (model, instance_key):
   // a start for an already-existing instance is dropped by the apply path. When
   // instance_key is empty the server mints a random one (then not idempotent).
   rpc StartProcess(StartProcessRequest) returns (StartProcessResponse);
 
   // DeliverMessage correlates an inbound message/signal to parked process
-  // instances. Routes to the partition owning (tenant, message_name,
+  // instances. Routes to the partition owning (message_name,
   // correlation_key) and proposes DeliverProcessMessage, which fans the message
   // out to every instance subscribed on that (message_name, correlation_key).
   // An empty correlation_key addresses every instance waiting on the name (BPMN
@@ -99,7 +99,7 @@ service Ingress {
   rpc DeliverMessage(DeliverMessageRequest) returns (DeliverMessageResponse);
 
   // GetProcessInstance is a linearizable read of one instance's current state,
-  // routed by (tenant, model name, instance_key) like StartProcess. It exists
+  // routed by (model name, instance_key) like StartProcess. It exists
   // so a caller without an await RPC can observe lifecycle: present=false means
   // the instance never started OR already reached a terminal and was reaped
   // (completion is immediate-reap, so a COMPLETED record never lingers);
@@ -115,11 +115,19 @@ service Ingress {
   // GetProcessInstanceHistory reads one instance's append-only activity timeline
   // (start, inbound events, task dispatch/complete, timer arm/fire, child
   // start/complete, subscribe/unsubscribe, message received, terminal), routed by
-  // (tenant, model name, instance_key) like GetProcessInstance. Read-only — no
+  // (model name, instance_key) like GetProcessInstance. Read-only — no
   // proposal. The timeline is bounded live (keep-last-N) and survives a terminal
   // only within the instance's retention window (historyTimeToLive); present=false
   // means the instance never started or was reaped. Page forward with after_seq.
   rpc GetProcessInstanceHistory(GetProcessInstanceHistoryRequest) returns (GetProcessInstanceHistoryResponse);
+
+  // ResolveProcessIncident resolves an incident-parked instance (one whose
+  // status is PROCESS_STATUS_INCIDENT — an uncaught failure parked for human
+  // intervention). RETRY re-drives the failed element as a new turn (optionally
+  // patching variables first); TERMINATE fails the instance terminally. Routed by
+  // (model name, instance_key) like StartProcess. Idempotent: resolving a
+  // non-incident instance is accepted but changes nothing (accepted=false).
+  rpc ResolveProcessIncident(ResolveProcessIncidentRequest) returns (ResolveProcessIncidentResponse);
 }
 
 message AwaitInvocationRequest {
@@ -304,6 +312,27 @@ message GetProcessInstanceResponse {
   bytes output = 7;
   uint64 created_at_ms = 8;
   uint64 ended_at_ms = 9;
+  // incident is set when status == PROCESS_STATUS_INCIDENT: an uncaught failure
+  // parked for human intervention (node_id, cause, raised_at). Resolve it with
+  // ResolveProcessIncident.
+  reflw.engine.v1.ProcessIncident incident = 10;
+}
+
+message ResolveProcessIncidentRequest {
+  // model_ref.name + the caller's tenant + instance_key select the routing
+  // partition (model_ref.kind/version are ignored).
+  reflw.engine.v1.ModelRef model_ref = 1;
+  string instance_key = 2;
+  reflw.engine.v1.ProcessIncidentResolution resolution = 3;
+  // RETRY only: variables to merge before re-driving the failed element (optional).
+  bytes var_patch = 4;
+}
+
+message ResolveProcessIncidentResponse {
+  // accepted is true when the resolve command was routed and proposed; it does
+  // not wait for apply. (It does not distinguish "no such incident" — that is a
+  // benign no-op on the apply path.)
+  bool accepted = 1;
 }
 
 message GetProcessInstanceHistoryRequest {

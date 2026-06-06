@@ -128,6 +128,14 @@ func (a *Adapter) translateCMMN(in invoker.ProcessAdvanceInput, cmds []cmmn.Comm
 			}
 			return adv, nil
 		case cmmn.CaseFailed:
+			// As in translateBPMN: a child case terminates so its failure delivers
+			// to the parent; only a top-level uncaught case failure parks as an
+			// incident. CMMN has no escalation/error-code channel, so there is no
+			// escalation carve-out here.
+			if incidentEligible(in.Record) {
+				adv.Incident = &enginev1.ProcessIncident{NodeId: t.PlanItemID, Cause: t.Cause}
+				return adv, nil
+			}
 			adv.Terminal = &enginev1.ProcessTerminal{
 				Failed:         true,
 				FailureMessage: fmt.Sprintf("case failed at %q: %s", t.PlanItemID, t.Cause),

@@ -81,6 +81,9 @@ const (
 	// IngressGetProcessInstanceHistoryProcedure is the fully-qualified name of the Ingress's
 	// GetProcessInstanceHistory RPC.
 	IngressGetProcessInstanceHistoryProcedure = "/reflw.ingress.v1.Ingress/GetProcessInstanceHistory"
+	// IngressResolveProcessIncidentProcedure is the fully-qualified name of the Ingress's
+	// ResolveProcessIncident RPC.
+	IngressResolveProcessIncidentProcedure = "/reflw.ingress.v1.Ingress/ResolveProcessIncident"
 )
 
 // IngressClient is a client for the reflw.ingress.v1.Ingress service.
@@ -139,20 +142,20 @@ type IngressClient interface {
 	// limit. Read-only — no proposal.
 	ListInvocations(context.Context, *connect.Request[ingressv1.ListInvocationsRequest]) (*connect.Response[ingressv1.ListInvocationsResponse], error)
 	// StartProcess launches a new reflwos BPMN/CMMN instance. Routes to the
-	// partition owning (tenant, model name, instance_key) and proposes a start
+	// partition owning (model name, instance_key) and proposes a start
 	// ProcessEvent (model_ref + kind set). Idempotent per (model, instance_key):
 	// a start for an already-existing instance is dropped by the apply path. When
 	// instance_key is empty the server mints a random one (then not idempotent).
 	StartProcess(context.Context, *connect.Request[ingressv1.StartProcessRequest]) (*connect.Response[ingressv1.StartProcessResponse], error)
 	// DeliverMessage correlates an inbound message/signal to parked process
-	// instances. Routes to the partition owning (tenant, message_name,
+	// instances. Routes to the partition owning (message_name,
 	// correlation_key) and proposes DeliverProcessMessage, which fans the message
 	// out to every instance subscribed on that (message_name, correlation_key).
 	// An empty correlation_key addresses every instance waiting on the name (BPMN
 	// signal broadcast). Messages with no current subscriber are dropped.
 	DeliverMessage(context.Context, *connect.Request[ingressv1.DeliverMessageRequest]) (*connect.Response[ingressv1.DeliverMessageResponse], error)
 	// GetProcessInstance is a linearizable read of one instance's current state,
-	// routed by (tenant, model name, instance_key) like StartProcess. It exists
+	// routed by (model name, instance_key) like StartProcess. It exists
 	// so a caller without an await RPC can observe lifecycle: present=false means
 	// the instance never started OR already reached a terminal and was reaped
 	// (completion is immediate-reap, so a COMPLETED record never lingers);
@@ -167,11 +170,18 @@ type IngressClient interface {
 	// GetProcessInstanceHistory reads one instance's append-only activity timeline
 	// (start, inbound events, task dispatch/complete, timer arm/fire, child
 	// start/complete, subscribe/unsubscribe, message received, terminal), routed by
-	// (tenant, model name, instance_key) like GetProcessInstance. Read-only — no
+	// (model name, instance_key) like GetProcessInstance. Read-only — no
 	// proposal. The timeline is bounded live (keep-last-N) and survives a terminal
 	// only within the instance's retention window (historyTimeToLive); present=false
 	// means the instance never started or was reaped. Page forward with after_seq.
 	GetProcessInstanceHistory(context.Context, *connect.Request[ingressv1.GetProcessInstanceHistoryRequest]) (*connect.Response[ingressv1.GetProcessInstanceHistoryResponse], error)
+	// ResolveProcessIncident resolves an incident-parked instance (one whose
+	// status is PROCESS_STATUS_INCIDENT — an uncaught failure parked for human
+	// intervention). RETRY re-drives the failed element as a new turn (optionally
+	// patching variables first); TERMINATE fails the instance terminally. Routed by
+	// (model name, instance_key) like StartProcess. Idempotent: resolving a
+	// non-incident instance is accepted but changes nothing (accepted=false).
+	ResolveProcessIncident(context.Context, *connect.Request[ingressv1.ResolveProcessIncidentRequest]) (*connect.Response[ingressv1.ResolveProcessIncidentResponse], error)
 }
 
 // NewIngressClient constructs a client for the reflw.ingress.v1.Ingress service. By default, it
@@ -275,6 +285,12 @@ func NewIngressClient(httpClient connect.HTTPClient, baseURL string, opts ...con
 			connect.WithSchema(ingressMethods.ByName("GetProcessInstanceHistory")),
 			connect.WithClientOptions(opts...),
 		),
+		resolveProcessIncident: connect.NewClient[ingressv1.ResolveProcessIncidentRequest, ingressv1.ResolveProcessIncidentResponse](
+			httpClient,
+			baseURL+IngressResolveProcessIncidentProcedure,
+			connect.WithSchema(ingressMethods.ByName("ResolveProcessIncident")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -295,6 +311,7 @@ type ingressClient struct {
 	getProcessInstance        *connect.Client[ingressv1.GetProcessInstanceRequest, ingressv1.GetProcessInstanceResponse]
 	listProcessInstances      *connect.Client[ingressv1.ListProcessInstancesRequest, ingressv1.ListProcessInstancesResponse]
 	getProcessInstanceHistory *connect.Client[ingressv1.GetProcessInstanceHistoryRequest, ingressv1.GetProcessInstanceHistoryResponse]
+	resolveProcessIncident    *connect.Client[ingressv1.ResolveProcessIncidentRequest, ingressv1.ResolveProcessIncidentResponse]
 }
 
 // AwaitInvocation calls reflw.ingress.v1.Ingress.AwaitInvocation.
@@ -372,6 +389,11 @@ func (c *ingressClient) GetProcessInstanceHistory(ctx context.Context, req *conn
 	return c.getProcessInstanceHistory.CallUnary(ctx, req)
 }
 
+// ResolveProcessIncident calls reflw.ingress.v1.Ingress.ResolveProcessIncident.
+func (c *ingressClient) ResolveProcessIncident(ctx context.Context, req *connect.Request[ingressv1.ResolveProcessIncidentRequest]) (*connect.Response[ingressv1.ResolveProcessIncidentResponse], error) {
+	return c.resolveProcessIncident.CallUnary(ctx, req)
+}
+
 // IngressHandler is an implementation of the reflw.ingress.v1.Ingress service.
 type IngressHandler interface {
 	// AwaitInvocation blocks (up to deadline) until the named invocation
@@ -428,20 +450,20 @@ type IngressHandler interface {
 	// limit. Read-only — no proposal.
 	ListInvocations(context.Context, *connect.Request[ingressv1.ListInvocationsRequest]) (*connect.Response[ingressv1.ListInvocationsResponse], error)
 	// StartProcess launches a new reflwos BPMN/CMMN instance. Routes to the
-	// partition owning (tenant, model name, instance_key) and proposes a start
+	// partition owning (model name, instance_key) and proposes a start
 	// ProcessEvent (model_ref + kind set). Idempotent per (model, instance_key):
 	// a start for an already-existing instance is dropped by the apply path. When
 	// instance_key is empty the server mints a random one (then not idempotent).
 	StartProcess(context.Context, *connect.Request[ingressv1.StartProcessRequest]) (*connect.Response[ingressv1.StartProcessResponse], error)
 	// DeliverMessage correlates an inbound message/signal to parked process
-	// instances. Routes to the partition owning (tenant, message_name,
+	// instances. Routes to the partition owning (message_name,
 	// correlation_key) and proposes DeliverProcessMessage, which fans the message
 	// out to every instance subscribed on that (message_name, correlation_key).
 	// An empty correlation_key addresses every instance waiting on the name (BPMN
 	// signal broadcast). Messages with no current subscriber are dropped.
 	DeliverMessage(context.Context, *connect.Request[ingressv1.DeliverMessageRequest]) (*connect.Response[ingressv1.DeliverMessageResponse], error)
 	// GetProcessInstance is a linearizable read of one instance's current state,
-	// routed by (tenant, model name, instance_key) like StartProcess. It exists
+	// routed by (model name, instance_key) like StartProcess. It exists
 	// so a caller without an await RPC can observe lifecycle: present=false means
 	// the instance never started OR already reached a terminal and was reaped
 	// (completion is immediate-reap, so a COMPLETED record never lingers);
@@ -456,11 +478,18 @@ type IngressHandler interface {
 	// GetProcessInstanceHistory reads one instance's append-only activity timeline
 	// (start, inbound events, task dispatch/complete, timer arm/fire, child
 	// start/complete, subscribe/unsubscribe, message received, terminal), routed by
-	// (tenant, model name, instance_key) like GetProcessInstance. Read-only — no
+	// (model name, instance_key) like GetProcessInstance. Read-only — no
 	// proposal. The timeline is bounded live (keep-last-N) and survives a terminal
 	// only within the instance's retention window (historyTimeToLive); present=false
 	// means the instance never started or was reaped. Page forward with after_seq.
 	GetProcessInstanceHistory(context.Context, *connect.Request[ingressv1.GetProcessInstanceHistoryRequest]) (*connect.Response[ingressv1.GetProcessInstanceHistoryResponse], error)
+	// ResolveProcessIncident resolves an incident-parked instance (one whose
+	// status is PROCESS_STATUS_INCIDENT — an uncaught failure parked for human
+	// intervention). RETRY re-drives the failed element as a new turn (optionally
+	// patching variables first); TERMINATE fails the instance terminally. Routed by
+	// (model name, instance_key) like StartProcess. Idempotent: resolving a
+	// non-incident instance is accepted but changes nothing (accepted=false).
+	ResolveProcessIncident(context.Context, *connect.Request[ingressv1.ResolveProcessIncidentRequest]) (*connect.Response[ingressv1.ResolveProcessIncidentResponse], error)
 }
 
 // NewIngressHandler builds an HTTP handler from the service implementation. It returns the path on
@@ -560,6 +589,12 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 		connect.WithSchema(ingressMethods.ByName("GetProcessInstanceHistory")),
 		connect.WithHandlerOptions(opts...),
 	)
+	ingressResolveProcessIncidentHandler := connect.NewUnaryHandler(
+		IngressResolveProcessIncidentProcedure,
+		svc.ResolveProcessIncident,
+		connect.WithSchema(ingressMethods.ByName("ResolveProcessIncident")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/reflw.ingress.v1.Ingress/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case IngressAwaitInvocationProcedure:
@@ -592,6 +627,8 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 			ingressListProcessInstancesHandler.ServeHTTP(w, r)
 		case IngressGetProcessInstanceHistoryProcedure:
 			ingressGetProcessInstanceHistoryHandler.ServeHTTP(w, r)
+		case IngressResolveProcessIncidentProcedure:
+			ingressResolveProcessIncidentHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -659,4 +696,8 @@ func (UnimplementedIngressHandler) ListProcessInstances(context.Context, *connec
 
 func (UnimplementedIngressHandler) GetProcessInstanceHistory(context.Context, *connect.Request[ingressv1.GetProcessInstanceHistoryRequest]) (*connect.Response[ingressv1.GetProcessInstanceHistoryResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.GetProcessInstanceHistory is not implemented"))
+}
+
+func (UnimplementedIngressHandler) ResolveProcessIncident(context.Context, *connect.Request[ingressv1.ResolveProcessIncidentRequest]) (*connect.Response[ingressv1.ResolveProcessIncidentResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.ResolveProcessIncident is not implemented"))
 }

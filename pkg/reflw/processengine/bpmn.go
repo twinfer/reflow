@@ -154,6 +154,16 @@ func eventForBPMN(p *enginev1.ProcessEventPayload) (bpmn.EngineEvent, error) {
 			return nil, fmt.Errorf("processengine: decode message payload: %w", err)
 		}
 		return bpmn.SignalReceived{NodeID: mr.GetNodeId(), Payload: payload}, nil
+	case *enginev1.ProcessEventPayload_Retry:
+		// An operator incident RETRY: re-drive the parked node, merging the
+		// optional variable patch first (so a corrected gateway condition / task
+		// input takes effect). The apply path only enqueues this for BPMN.
+		r := of.Retry
+		vars, err := decodeVars(r.GetVarPatch())
+		if err != nil {
+			return nil, fmt.Errorf("processengine: decode retry var patch: %w", err)
+		}
+		return bpmn.RetryIncident{NodeID: r.GetNodeId(), Vars: vars}, nil
 	default:
 		return nil, fmt.Errorf("processengine: unset process event payload (no event in inbox entry)")
 	}

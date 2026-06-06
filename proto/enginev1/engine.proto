@@ -1145,6 +1145,7 @@ message ProcessEventPayload {
     ProcessTimerFired timer_fired = 3;
     ProcessChildCompleted child_completed = 4;
     ProcessMessageReceived message_received = 5;
+    ProcessRetry retry = 6;
   }
 }
 
@@ -1188,6 +1189,18 @@ message ProcessMessageReceived {
   string message_name = 2;
   string correlation_key = 3;
   bytes payload = 4;
+}
+
+// ProcessRetry re-drives a node that an incident parked. The apply path
+// synthesizes it from a ResolveProcessIncident{RETRY}: node_id is the parked
+// incident's element (carried on rec.incident before un-parking); var_patch is
+// the operator's optional variable correction (an opaque reflwos vars JSON).
+// procSession turns it into the reflwos resume event (bpmn.RetryIncident),
+// which merges the patch and re-dispatches the node. BPMN-only — the apply path
+// never enqueues a retry for a CMMN incident.
+message ProcessRetry {
+  string node_id = 1;
+  bytes var_patch = 2;
 }
 
 // TimerValue is the stored value of a TimerTable row. A plain sleep / run-retry

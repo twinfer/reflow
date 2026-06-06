@@ -145,10 +145,12 @@ func (s *Server) DeliverMessage(ctx context.Context, req *connect.Request[ingres
 
 // ResolveProcessIncident resolves an incident-parked instance, routed by
 // (model name, instance_key) like StartProcess. TERMINATE fails the instance
-// terminally; RETRY re-drives the failed element (Phase 2b — rejected as
-// unimplemented until the reflwos resume entry lands). Delivered at-least-once
-// (unique producerID); the apply path no-ops a resolve for a non-incident
-// instance, so re-delivery is safe.
+// terminally; RETRY re-drives the failed element (BPMN only — a linearizable
+// lookup gates it so a CMMN or non-incident instance gets a precise error
+// instead of a silent no-op). Delivered at-least-once (unique producerID); the
+// apply path no-ops a resolve for a non-incident instance, so re-delivery is
+// safe (a duplicate RETRY whose first delivery already un-parked finds the
+// instance RUNNING and is dropped).
 func (s *Server) ResolveProcessIncident(ctx context.Context, req *connect.Request[ingressv1.ResolveProcessIncidentRequest]) (*connect.Response[ingressv1.ResolveProcessIncidentResponse], error) {
 	msg := req.Msg
 	name := msg.GetModelRef().GetName()
@@ -158,17 +160,42 @@ func (s *Server) ResolveProcessIncident(ctx context.Context, req *connect.Reques
 	if msg.GetInstanceKey() == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("instance_key is required"))
 	}
+	retry := false
 	switch msg.GetResolution() {
 	case enginev1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_TERMINATE:
 		// supported
 	case enginev1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_RETRY:
-		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("RETRY resolution is not yet supported"))
+		retry = true
 	default:
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("resolution must be RETRY or TERMINATE"))
 	}
 
 	pk := routing.PartitionKey(name, msg.GetInstanceKey())
 	shardID := s.host.Partitioner().ShardForKey(pk)
+
+	if retry {
+		// RETRY is BPMN-only and needs an incident-parked instance. Look it up so
+		// the operator gets a precise error instead of a silently no-op'd resolve
+		// (the apply path drops a retry for a non-incident or non-BPMN instance).
+		res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupProcessInstance{
+			Service:     name,
+			InstanceKey: msg.GetInstanceKey(),
+		})
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup process instance: %w", err))
+		}
+		r, ok := res.(engine.ProcessInstanceLookupResult)
+		if !ok {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup process instance: unexpected type %T", res))
+		}
+		if !r.Present || r.Record.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("instance is not incident-parked"))
+		}
+		if r.Record.GetKind() != enginev1.ProcessKind_PROCESS_KIND_BPMN {
+			return nil, connect.NewError(connect.CodeUnimplemented, errors.New("RETRY is only supported for BPMN incidents; use TERMINATE"))
+		}
+	}
+
 	runner := s.host.Partition(shardID)
 	if runner == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no partition for shard %d", shardID))

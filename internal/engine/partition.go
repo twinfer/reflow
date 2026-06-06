@@ -1432,9 +1432,39 @@ func (p *Partition) onResolveProcessIncident(batch storage.Batch, meta *enginev1
 		}
 		return p.finishProcessInstance(batch, meta, rec, adv, term, 0, nowMs, isLeader)
 	case enginev1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_RETRY:
-		p.cfg.Log.Warn("partition: ResolveProcessIncident RETRY not yet supported; dropping",
-			"service", service, "key", instanceKey)
-		return nil
+		if rec.GetKind() != enginev1.ProcessKind_PROCESS_KIND_BPMN {
+			// CMMN retry would require unwinding the case-failure cascade (the
+			// failing item is a dead-end PIFailed and its siblings were driven to
+			// PITerminated); unsupported — CMMN incidents resolve via TERMINATE only.
+			p.cfg.Log.Warn("partition: ResolveProcessIncident RETRY only supported for BPMN; dropping",
+				"service", service, "key", instanceKey, "kind", rec.GetKind().String())
+			return nil
+		}
+		node := rec.GetIncident().GetNodeId()
+		if err := p.appendProcessHistory(batch, rec, &enginev1.ProcessHistoryEvent{
+			Kind:   enginev1.ProcessHistoryKind_PROCESS_HISTORY_INCIDENT_RESOLVED,
+			NodeId: node, TsMs: nowMs, Detail: "retry",
+		}); err != nil {
+			return err
+		}
+		// Un-park: clear the incident and return to RUNNING, then enqueue a retry
+		// turn that re-drives the failed node. The failing ExecutionState survived
+		// in rec.StateBlob, so the reflwos RetryIncident event re-dispatches from
+		// there (merging the operator var patch). enqueueInstanceEvent re-reads the
+		// record from the batch, so persist the un-park first; it appends the inbox
+		// row and activates the turn (ActAdvanceProcess) on the leader.
+		rec.Status = enginev1.ProcessStatus_PROCESS_STATUS_RUNNING
+		rec.Incident = nil
+		if err := procT.Put(batch, lp, service, instanceKey, rec); err != nil {
+			return fmt.Errorf("onResolveProcessIncident: un-park put: %w", err)
+		}
+		ev := &enginev1.ProcessEvent{
+			Pk: pk, Service: service, InstanceKey: instanceKey, LogicalTimeMs: nowMs,
+			Payload: &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_Retry{
+				Retry: &enginev1.ProcessRetry{NodeId: node, VarPatch: cmd.GetVarPatch()},
+			}},
+		}
+		return p.enqueueInstanceEvent(batch, ev, nowMs, isLeader)
 	default:
 		p.cfg.Log.Warn("partition: ResolveProcessIncident with unspecified resolution; dropping",
 			"service", service, "key", instanceKey)

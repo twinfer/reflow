@@ -68,6 +68,27 @@ func TestTranslateBPMN_IncidentTaxonomy(t *testing.T) {
 // TestTranslateCMMN_IncidentTaxonomy: a top-level CaseFailed parks as an incident;
 // a child case failure stays terminal so it delivers to its parent. (CMMN has no
 // escalation channel, so there is no escalation carve-out.)
+// TestEventForBPMN_Retry maps a ProcessRetry inbox payload to the reflwos
+// RetryIncident resume event, decoding the operator variable patch.
+func TestEventForBPMN_Retry(t *testing.T) {
+	ev, err := eventForBPMN(&enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_Retry{
+		Retry: &enginev1.ProcessRetry{NodeId: "gw", VarPatch: []byte(`{"status":"approved"}`)},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ri, ok := ev.(bpmn.RetryIncident)
+	if !ok {
+		t.Fatalf("event = %T, want bpmn.RetryIncident", ev)
+	}
+	if ri.NodeID != "gw" {
+		t.Fatalf("NodeID = %q, want gw", ri.NodeID)
+	}
+	if ri.Vars["status"] != "approved" {
+		t.Fatalf("Vars = %+v, want status=approved", ri.Vars)
+	}
+}
+
 func TestTranslateCMMN_IncidentTaxonomy(t *testing.T) {
 	a := New(NewMapResolver())
 

@@ -389,10 +389,11 @@ const e2eGatewayFailBPMN = `<?xml version="1.0" encoding="UTF-8"?>
 </definitions>`
 
 // TestIngress_ProcessIncidentLifecycle drives a top-level BPMN instance into an
-// uncaught failure (exclusive gateway, no matching flow), then exercises the full
+// uncaught failure (exclusive gateway, no matching flow), then exercises the
 // incident operational surface: observe it via GetProcessInstance (status INCIDENT
-// + incident details) and the history stream (INCIDENT_RAISED), confirm RETRY is
-// not yet supported, and resolve with TERMINATE (the instance is reaped).
+// + incident details) and the history stream (INCIDENT_RAISED), and resolve with
+// TERMINATE (the instance is reaped). The RETRY happy path lives in
+// TestIngress_ProcessIncidentRetry.
 func TestIngress_ProcessIncidentLifecycle(t *testing.T) {
 	res := processengine.NewMapResolver()
 	if err := res.ParseBPMN("failproc", "v1", []byte(e2eGatewayFailBPMN)); err != nil {
@@ -461,17 +462,6 @@ func TestIngress_ProcessIncidentLifecycle(t *testing.T) {
 		t.Fatalf("history missing INCIDENT_RAISED: %+v", hresp.Msg.GetEvents())
 	}
 
-	// RETRY is not yet supported (Phase 2b).
-	rctx, rcancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer rcancel()
-	_, rerr := cli.ResolveProcessIncident(rctx, connect.NewRequest(&ingressv1.ResolveProcessIncidentRequest{
-		ModelRef: &enginev1.ModelRef{Name: svc}, InstanceKey: instKey,
-		Resolution: enginev1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_RETRY,
-	}))
-	if connect.CodeOf(rerr) != connect.CodeUnimplemented {
-		t.Fatalf("RETRY should be Unimplemented, got %v", rerr)
-	}
-
 	// TERMINATE resolves the incident; the instance is reaped.
 	tctx, tcancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer tcancel()
@@ -492,5 +482,128 @@ func TestIngress_ProcessIncidentLifecycle(t *testing.T) {
 	}
 	if !gone {
 		t.Fatal("TERMINATE did not reap the incident instance")
+	}
+}
+
+// e2eGatewayRetryBPMN is e2eGatewayFailBPMN plus a historyTimeToLive so the
+// terminal record is retained (not reaped on completion) — letting the retry
+// test observe the COMPLETED status directly rather than racing the reaper.
+const e2eGatewayRetryBPMN = `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="http://test">
+  <process id="p" isExecutable="true" historyTimeToLive="P7D">
+    <startEvent id="start"><outgoing>f1</outgoing></startEvent>
+    <exclusiveGateway id="gw">
+      <incoming>f1</incoming>
+      <outgoing>fYes</outgoing>
+    </exclusiveGateway>
+    <endEvent id="end"><incoming>fYes</incoming></endEvent>
+    <sequenceFlow id="f1" sourceRef="start" targetRef="gw"/>
+    <sequenceFlow id="fYes" sourceRef="gw" targetRef="end">
+      <conditionExpression>status = "approved"</conditionExpression>
+    </sequenceFlow>
+  </process>
+</definitions>`
+
+// TestIngress_ProcessIncidentRetry is the end-to-end proof of incident RETRY: a
+// top-level BPMN instance parks on an unroutable gateway, the operator resolves
+// the incident with RETRY and a variable patch that fixes the routing condition,
+// and the instance re-drives the failed node and runs to completion. This is the
+// data-fix path — the canonical Camunda/Zeebe incident-management flow.
+func TestIngress_ProcessIncidentRetry(t *testing.T) {
+	res := processengine.NewMapResolver()
+	if err := res.ParseBPMN("retryproc", "v1", []byte(e2eGatewayRetryBPMN)); err != nil {
+		t.Fatalf("parse model: %v", err)
+	}
+	_, cli := bringUpHostWithProcessEngine(t, processengine.New(res))
+
+	const svc, instKey = "retryproc", "r-1"
+	startCtx, startCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer startCancel()
+	if _, err := cli.StartProcess(startCtx, connect.NewRequest(&ingressv1.StartProcessRequest{
+		ModelRef:    &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"},
+		InstanceKey: instKey,
+		Vars:        []byte(`{"status":"rejected"}`),
+	})); err != nil {
+		t.Fatalf("StartProcess: %v", err)
+	}
+
+	getInst := func() *ingressv1.GetProcessInstanceResponse {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		resp, err := cli.GetProcessInstance(ctx, connect.NewRequest(&ingressv1.GetProcessInstanceRequest{
+			ModelRef: &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"}, InstanceKey: instKey,
+		}))
+		if err != nil {
+			t.Fatalf("GetProcessInstance: %v", err)
+		}
+		return resp.Msg
+	}
+
+	// Wait for the instance to park as an incident at the gateway.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if g := getInst(); g.GetPresent() && g.GetStatus() == enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if g := getInst(); g.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT {
+		t.Fatalf("instance not parked as incident: status=%v", g.GetStatus())
+	}
+
+	// Resolve with RETRY, patching the variable that fixes the gateway condition.
+	rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer rcancel()
+	rresp, rerr := cli.ResolveProcessIncident(rctx, connect.NewRequest(&ingressv1.ResolveProcessIncidentRequest{
+		ModelRef: &enginev1.ModelRef{Name: svc}, InstanceKey: instKey,
+		Resolution: enginev1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_RETRY,
+		VarPatch:   []byte(`{"status":"approved"}`),
+	}))
+	if rerr != nil {
+		t.Fatalf("ResolveProcessIncident RETRY: %v", rerr)
+	}
+	if !rresp.Msg.GetAccepted() {
+		t.Fatal("RETRY not accepted")
+	}
+
+	// The retried instance re-drives the gateway and completes (retained, not
+	// reaped, thanks to historyTimeToLive).
+	deadline = time.Now().Add(10 * time.Second)
+	var g *ingressv1.GetProcessInstanceResponse
+	for time.Now().Before(deadline) {
+		g = getInst()
+		if g.GetPresent() && g.GetStatus() == enginev1.ProcessStatus_PROCESS_STATUS_COMPLETED {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if g.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_COMPLETED {
+		t.Fatalf("after RETRY, status = %v, want COMPLETED (incident=%+v)", g.GetStatus(), g.GetIncident())
+	}
+	if g.GetIncident() != nil {
+		t.Fatalf("completed instance still carries an incident: %+v", g.GetIncident())
+	}
+
+	// The timeline records the resolution and the eventual completion.
+	hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer hcancel()
+	hresp, err := cli.GetProcessInstanceHistory(hctx, connect.NewRequest(&ingressv1.GetProcessInstanceHistoryRequest{
+		ModelRef: &enginev1.ModelRef{Name: svc}, InstanceKey: instKey,
+	}))
+	if err != nil {
+		t.Fatalf("GetProcessInstanceHistory: %v", err)
+	}
+	var sawResolved, sawCompleted bool
+	for _, ev := range hresp.Msg.GetEvents() {
+		switch ev.GetKind() {
+		case enginev1.ProcessHistoryKind_PROCESS_HISTORY_INCIDENT_RESOLVED:
+			sawResolved = true
+		case enginev1.ProcessHistoryKind_PROCESS_HISTORY_COMPLETED:
+			sawCompleted = true
+		}
+	}
+	if !sawResolved || !sawCompleted {
+		t.Fatalf("history missing INCIDENT_RESOLVED(%v) / COMPLETED(%v): %+v", sawResolved, sawCompleted, hresp.Msg.GetEvents())
 	}
 }

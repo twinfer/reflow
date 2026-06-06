@@ -15,7 +15,7 @@
 // exposure). The server is mTLS-protected; today's starter policy
 // gates /reflw.config.v1.Config/* to operator/* principals — same as
 // ClusterCtl. The separation of services is the seam for later
-// delegating Config to a narrower credential (tenant admin, CI
+// delegating Config to a narrower credential (admin, CI
 // service account) without loosening cluster-control authority.
 //
 // All mutating RPCs propose Command_* commands to shard 0 with a

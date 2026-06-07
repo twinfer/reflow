@@ -120,6 +120,8 @@ const (
 	reapPrefix           = "reap/"
 	procReapPrefix       = "proc_reap/"
 	procSubIdxPrefix     = "proc_sub_idx/"
+	procChildIdxPrefix   = "proc_child_idx/"
+	procTimerIdxPrefix   = "proc_timer_idx/"
 	procHistPrefix       = "proc_hist/"
 	lpFreezePrefix       = "lp_freeze/"
 	lpStagingPrefix      = "lp_staging/"
@@ -995,6 +997,102 @@ func ProcessSubIndexInstancePrefix(root *enginev1.InvocationId) ([]byte, error) 
 	binary.BigEndian.PutUint32(lpb[:], lp)
 	out = append(out, lpb[:]...)
 	return append(out, raw...), nil
+}
+
+// ProcessSubIndexLPPrefix returns proc_sub_idx/<lp:4> — the per-LP scan bound so
+// the subscription reverse index rides the LP-transfer scan + source range-delete
+// alongside the instance record it belongs to. Registered in AllLPNamespaces.
+func ProcessSubIndexLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(procSubIdxPrefix)+LPLen)
+	out = append(out, procSubIdxPrefix...)
+	return appendLP(out, lp)
+}
+
+// ProcessChildIndexKey returns proc_child_idx/<lp:4><24-byte parent root><24-byte
+// child root>. The per-parent reverse index of live child instances: it lives on
+// the parent's own shard (lp = the parent's LP) so finishProcessInstance can
+// sweep a terminating parent's still-live children with one bounded prefix scan
+// and ship a ProcessCancel to each. The child root discriminator is fixed-width
+// so it never aliases across children. The value is the originating ProcessCancel
+// (the child's cancel address). Delete-on-complete drops the row when the child
+// terminates (its ChildCompleted carries child_root).
+func ProcessChildIndexKey(parentRoot, childRoot *enginev1.InvocationId) ([]byte, error) {
+	prefix, err := ProcessChildIndexInstancePrefix(parentRoot)
+	if err != nil {
+		return nil, err
+	}
+	rawChild, err := EncodeInvocationID(childRoot)
+	if err != nil {
+		return nil, err
+	}
+	return append(prefix, rawChild...), nil
+}
+
+// ProcessChildIndexInstancePrefix returns proc_child_idx/<lp:4><24-byte parent
+// root> — the bounded scan / range-delete prefix for every child started by one
+// parent instance.
+func ProcessChildIndexInstancePrefix(parentRoot *enginev1.InvocationId) ([]byte, error) {
+	raw, err := EncodeInvocationID(parentRoot)
+	if err != nil {
+		return nil, err
+	}
+	lp := LPFromPartitionKey(parentRoot.GetPartitionKey())
+	out := make([]byte, 0, len(procChildIdxPrefix)+LPLen+invocationIDLen)
+	out = append(out, procChildIdxPrefix...)
+	out = appendLP(out, lp)
+	return append(out, raw...), nil
+}
+
+// ProcessChildIndexLPPrefix returns proc_child_idx/<lp:4> — the per-LP scan bound
+// so the child reverse index rides the LP-transfer scan + source range-delete
+// alongside the parent record it belongs to. Registered in AllLPNamespaces.
+func ProcessChildIndexLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(procChildIdxPrefix)+LPLen)
+	out = append(out, procChildIdxPrefix...)
+	return appendLP(out, lp)
+}
+
+// ProcessTimerIndexKey returns proc_timer_idx/<lp:4><24B instance root><24B timer
+// id>. The per-instance reverse index of armed process timers: the timer id
+// (processTimerID) encodes node+slot, so each armed timer is a distinct row, and
+// the index lives on the instance's own shard so a terminating / cancelled
+// instance can find and delete every timer it armed with one bounded prefix scan
+// instead of leaving each to self-reclaim on fire. Empty value — the timer id is
+// in the key (decode the trailing 24 bytes). The proc_sub_idx / proc_child_idx
+// analog for the timer plane.
+func ProcessTimerIndexKey(root, timerID *enginev1.InvocationId) ([]byte, error) {
+	prefix, err := ProcessTimerIndexInstancePrefix(root)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := EncodeInvocationID(timerID)
+	if err != nil {
+		return nil, err
+	}
+	return append(prefix, raw...), nil
+}
+
+// ProcessTimerIndexInstancePrefix returns proc_timer_idx/<lp:4><24B instance root>
+// — the bounded scan / range-delete prefix for every timer armed by one instance.
+func ProcessTimerIndexInstancePrefix(root *enginev1.InvocationId) ([]byte, error) {
+	raw, err := EncodeInvocationID(root)
+	if err != nil {
+		return nil, err
+	}
+	lp := LPFromPartitionKey(root.GetPartitionKey())
+	out := make([]byte, 0, len(procTimerIdxPrefix)+LPLen+invocationIDLen)
+	out = append(out, procTimerIdxPrefix...)
+	out = appendLP(out, lp)
+	return append(out, raw...), nil
+}
+
+// ProcessTimerIndexLPPrefix returns proc_timer_idx/<lp:4> — the per-LP scan bound
+// so the timer reverse index rides the LP-transfer scan + source range-delete
+// alongside the instance it belongs to. Registered in AllLPNamespaces.
+func ProcessTimerIndexLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(procTimerIdxPrefix)+LPLen)
+	out = append(out, procTimerIdxPrefix...)
+	return appendLP(out, lp)
 }
 
 // PrefixUpperBound returns the smallest key strictly greater than every key

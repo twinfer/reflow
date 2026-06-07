@@ -362,6 +362,8 @@ func commandKindLabel(cmd *enginev1.Command) string {
 		return "ProcessAdvanced"
 	case *enginev1.Command_ProcessUnsubscribe:
 		return "ProcessUnsubscribe"
+	case *enginev1.Command_ProcessCancel:
+		return "ProcessCancel"
 	case *enginev1.Command_ReapProcessInstance:
 		return "ReapProcessInstance"
 	case *enginev1.Command_ResolveProcessIncident:
@@ -488,6 +490,8 @@ func lpFromCommand(cmd *enginev1.Command) uint32 {
 		return keys.LPFromPartitionKey(k.ProcessEvent.GetPk())
 	case *enginev1.Command_ProcessAdvanced:
 		return keys.LPFromPartitionKey(k.ProcessAdvanced.GetPk())
+	case *enginev1.Command_ProcessCancel:
+		return keys.LPFromPartitionKey(k.ProcessCancel.GetPk())
 	case *enginev1.Command_ReapProcessInstance:
 		return keys.LPFromPartitionKey(k.ReapProcessInstance.GetPk())
 	case *enginev1.Command_ResolveProcessIncident:
@@ -594,6 +598,8 @@ func (p *Partition) applyCommand(
 		return p.onProcessSubscribe(batch, k.ProcessSubscribe)
 	case *enginev1.Command_ProcessUnsubscribe:
 		return p.onProcessUnsubscribe(batch, k.ProcessUnsubscribe)
+	case *enginev1.Command_ProcessCancel:
+		return p.onProcessCancel(batch, meta, k.ProcessCancel, isLeader)
 	case *enginev1.Command_DeliverProcessMessage:
 		return p.onDeliverProcessMessage(batch, meta, k.DeliverProcessMessage, now, isLeader)
 	case *enginev1.Command_ReapProcessInstance:
@@ -808,6 +814,13 @@ func (p *Partition) reclaimFiredProcessTimer(batch storage.Batch, ev *enginev1.P
 			return fmt.Errorf("reclaimFiredProcessTimer: delete: %w", err)
 		}
 	}
+	// Balance the per-instance timer index (paired with the arm-side Put). The
+	// root derives from the event's address — no record load needed, and a fire
+	// into an already-torn-down instance finds the row already gone (no-op).
+	root := processRootID(ev.GetPk(), ev.GetService(), ev.GetInstanceKey())
+	if err := (tables.ProcessTimerIndexTable{S: batch}).Delete(batch, root, tid); err != nil {
+		return fmt.Errorf("reclaimFiredProcessTimer: timer index delete: %w", err)
+	}
 	return nil
 }
 
@@ -859,6 +872,18 @@ func (p *Partition) enqueueInstanceEvent(batch storage.Batch, ev *enginev1.Proce
 			CreatedAtMs: nowMs,
 		}
 	}
+	// A completing child clears its parent→child reverse-index row
+	// (delete-on-complete) so the parent's terminal cascade only ever cancels
+	// children still live; the child stamps its own root on the ChildCompleted.
+	// Done before the status gate below so a child completing while its parent is
+	// incident-parked still clears the row — the index tracks live children
+	// regardless of the parent's status.
+	if cc := ev.GetPayload().GetChildCompleted(); cc != nil && cc.GetChildRoot() != nil {
+		if err := (tables.ProcessChildIndexTable{S: batch}).Delete(batch, rec.GetRootId(), cc.GetChildRoot()); err != nil {
+			return fmt.Errorf("enqueueInstanceEvent: child index delete: %w", err)
+		}
+	}
+
 	if rec.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_RUNNING {
 		p.cfg.Log.Debug("partition: ProcessEvent for terminal instance; dropping",
 			"service", service, "key", instanceKey, "status", rec.GetStatus().String())
@@ -1260,6 +1285,7 @@ func (p *Partition) finishProcessInstance(batch storage.Batch, meta *enginev1.Pa
 					Output:         term.GetOutput(),
 					Failed:         term.GetFailed(),
 					FailureMessage: term.GetFailureMessage(),
+					ChildRoot:      rec.GetRootId(),
 				},
 			}},
 		}
@@ -1277,26 +1303,26 @@ func (p *Partition) finishProcessInstance(batch storage.Batch, meta *enginev1.Pa
 		}
 	}
 
-	// Tear down any still-parked message subscriptions (terminate-while-parked):
-	// scan the per-instance reverse index, unsubscribe each on its message
-	// partition, and drop the index rows. Collect-then-mutate so we never write
-	// the batch while iterating it.
+	// Tear down any still-parked message subscriptions (terminate-while-parked).
 	root := rec.GetRootId()
-	subIdxT := tables.ProcessSubIndexTable{S: batch}
-	var parkedSubs []*enginev1.ProcessSubscribe
-	if err := subIdxT.ScanByInstance(root, func(ps *enginev1.ProcessSubscribe) error {
-		parkedSubs = append(parkedSubs, ps)
-		return nil
-	}); err != nil {
-		return fmt.Errorf("finishProcessInstance: subscription index scan: %w", err)
+	if err := p.teardownInstanceSubscriptions(batch, meta, root, isLeader); err != nil {
+		return err
 	}
-	for _, ps := range parkedSubs {
-		if err := p.deliverProcessUnsubscribe(batch, meta, ps, isLeader); err != nil {
-			return err
-		}
-		if err := subIdxT.Delete(batch, root, ps.GetSub().GetNodeId()); err != nil {
-			return fmt.Errorf("finishProcessInstance: subscription index delete: %w", err)
-		}
+
+	// Cancel any still-live child instances: a terminating parent abandons its
+	// subtree. A normally-completing parent finds the index already empty (every
+	// child cleared its own row on completion), so this fires only on abnormal
+	// termination (terminate-end / escalation / CaseFailed / operator TERMINATE)
+	// with children still alive — exactly the orphan window children parking as
+	// incidents widened.
+	if err := p.cascadeCancelChildren(batch, meta, root, isLeader); err != nil {
+		return err
+	}
+
+	// Drop any process timers still armed at terminal (e.g. a non-interrupting
+	// boundary timer the model never cancelled), so none fires into the gone record.
+	if err := p.teardownInstanceTimers(batch, root, isLeader); err != nil {
+		return err
 	}
 
 	// Stamp terminal state on the record (the caller already set state_blob).
@@ -1352,6 +1378,190 @@ func (p *Partition) finishProcessInstance(batch storage.Batch, meta *enginev1.Pa
 		p.cfg.Collector.Push(ActScheduleProcessReap{
 			FireAtMs: fireAt, Pk: pk, Service: service, InstanceKey: instanceKey,
 		})
+	}
+	return nil
+}
+
+// teardownInstanceSubscriptions sweeps an instance's still-parked message
+// subscriptions: scan the per-instance reverse index, unsubscribe each on its
+// (generally remote) message partition, and drop the index rows. Collect-then-
+// mutate so we never write the batch while iterating it. Shared by the terminal
+// path (finishProcessInstance) and the cancel path (cancelInstanceTree).
+func (p *Partition) teardownInstanceSubscriptions(batch storage.Batch, meta *enginev1.PartitionMeta, root *enginev1.InvocationId, isLeader bool) error {
+	subIdxT := tables.ProcessSubIndexTable{S: batch}
+	var parkedSubs []*enginev1.ProcessSubscribe
+	if err := subIdxT.ScanByInstance(root, func(ps *enginev1.ProcessSubscribe) error {
+		parkedSubs = append(parkedSubs, ps)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("teardownInstanceSubscriptions: scan: %w", err)
+	}
+	for _, ps := range parkedSubs {
+		if err := p.deliverProcessUnsubscribe(batch, meta, ps, isLeader); err != nil {
+			return err
+		}
+		if err := subIdxT.Delete(batch, root, ps.GetSub().GetNodeId()); err != nil {
+			return fmt.Errorf("teardownInstanceSubscriptions: index delete: %w", err)
+		}
+	}
+	return nil
+}
+
+// teardownInstanceTimers deletes every process timer an instance still has armed:
+// scan the per-instance timer index for its timer ids, drop each timer's rows via
+// the TimerTable per-id scan (+ ActDeleteTimer so the leader's heap drops it too),
+// then range-delete the index. Collect-then-mutate. Shared by the terminal path
+// (finishProcessInstance) and the cancel path (cancelInstanceTree), so a
+// terminated/cancelled instance leaves no armed timer waiting to fire into a gone
+// record. (reflwos cancels its own timers via CancelTimer turns during normal
+// flow; this is the engine backstop for whatever is still armed at teardown.)
+func (p *Partition) teardownInstanceTimers(batch storage.Batch, root *enginev1.InvocationId, isLeader bool) error {
+	ptIdxT := tables.ProcessTimerIndexTable{S: batch}
+	var tids []*enginev1.InvocationId
+	if err := ptIdxT.ScanByInstance(root, func(tid *enginev1.InvocationId) error {
+		tids = append(tids, tid)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("teardownInstanceTimers: index scan: %w", err)
+	}
+	timersT := tables.TimerTable{S: batch}
+	for _, tid := range tids {
+		var fires []uint64
+		if err := timersT.ScanByInvocation(tid, func(fireAt uint64) error {
+			fires = append(fires, fireAt)
+			return nil
+		}); err != nil {
+			return fmt.Errorf("teardownInstanceTimers: timer scan: %w", err)
+		}
+		for _, fireAt := range fires {
+			if err := timersT.Delete(batch, fireAt, tid); err != nil {
+				return fmt.Errorf("teardownInstanceTimers: timer delete: %w", err)
+			}
+			if isLeader {
+				p.cfg.Collector.Push(ActDeleteTimer{FireAtMs: fireAt, ID: tid})
+			}
+		}
+	}
+	if err := ptIdxT.DeleteByInstance(batch, root); err != nil {
+		return fmt.Errorf("teardownInstanceTimers: index delete: %w", err)
+	}
+	return nil
+}
+
+// cascadeCancelChildren ships a ProcessCancel to every still-live child of the
+// parent rooted at parentRoot, then range-deletes the parent's child-index rows.
+// Each child is addressed by its stored ProcessCancel (same-shard inline /
+// cross-shard via the outbox); the child's apply recursively cancels its own
+// descendants. Collect-then-mutate (the deliveries mutate the batch). Shared by
+// the terminal path (finishProcessInstance) and the recursive cancel path
+// (cancelInstanceTree).
+func (p *Partition) cascadeCancelChildren(batch storage.Batch, meta *enginev1.PartitionMeta, parentRoot *enginev1.InvocationId, isLeader bool) error {
+	childIdxT := tables.ProcessChildIndexTable{S: batch}
+	var children []*enginev1.ProcessCancel
+	if err := childIdxT.ScanByParent(parentRoot, func(c *enginev1.ProcessCancel) error {
+		children = append(children, c)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("cascadeCancelChildren: scan: %w", err)
+	}
+	for _, c := range children {
+		if err := p.deliverProcessCancel(batch, meta, c, isLeader); err != nil {
+			return err
+		}
+	}
+	if err := childIdxT.DeleteByParent(batch, parentRoot); err != nil {
+		return fmt.Errorf("cascadeCancelChildren: index delete: %w", err)
+	}
+	return nil
+}
+
+// deliverProcessCancel routes a ProcessCancel to the addressed child instance:
+// inline (cancelInstanceTree) when this shard owns the child's LP, else via the
+// outbox to the owning shard (where onProcessCancel applies it). Mirrors
+// deliverProcessEvent's same-shard / cross-shard split; the inline arm does not
+// re-gate the LP freeze (the apply entry already gated its primary LP, matching
+// the inline feedback-delivery contract), the cross-shard landing re-gates.
+func (p *Partition) deliverProcessCancel(batch storage.Batch, meta *enginev1.PartitionMeta, cmd *enginev1.ProcessCancel, isLeader bool) error {
+	shard := p.cfg.Partitioner.ShardForKey(cmd.GetPk())
+	if shard == 0 || shard == p.shardID {
+		return p.cancelInstanceTree(batch, meta, cmd, isLeader)
+	}
+	env := &enginev1.OutboxEnvelope{
+		DestinationShardId: shard,
+		Kind:               &enginev1.OutboxEnvelope_ProcessCancel{ProcessCancel: cmd},
+	}
+	if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {
+		return fmt.Errorf("deliverProcessCancel: outbox append: %w", err)
+	}
+	return nil
+}
+
+// onProcessCancel is the apply landing for a Command_ProcessCancel that rode the
+// outbox cross-shard. It freeze-gates the child's LP (a fresh apply entry) then
+// runs the teardown.
+func (p *Partition) onProcessCancel(batch storage.Batch, meta *enginev1.PartitionMeta, cmd *enginev1.ProcessCancel, isLeader bool) error {
+	if err := p.checkLPFreeze(batch, cmd.GetPk()); err != nil {
+		return err
+	}
+	return p.cancelInstanceTree(batch, meta, cmd, isLeader)
+}
+
+// cancelInstanceTree force-terminates one non-terminal child during a parent-
+// subtree teardown: recurse into its own children, tear down its subscriptions,
+// drop its inbox, and delete its record + timeline — with NO upward
+// ChildCompleted (the parent that owned it is itself ending). A cancel for an
+// absent or already-terminal instance is a benign no-op (it completed / was
+// reaped / never existed); only RUNNING and INCIDENT instances are live orphans.
+// Armed timers and dispatched service-task invocations are left to self-clean on
+// fire / completion (they drop into the now-absent instance), matching
+// finishProcessInstance — the cancel reclaims the instance's own rows, not the
+// work it already handed off.
+func (p *Partition) cancelInstanceTree(batch storage.Batch, meta *enginev1.PartitionMeta, cmd *enginev1.ProcessCancel, isLeader bool) error {
+	pk := cmd.GetPk()
+	lp := keys.LPFromPartitionKey(pk)
+	service, instanceKey := cmd.GetService(), cmd.GetInstanceKey()
+	procT := tables.ProcessInstanceTable{S: batch}
+	rec, ok, err := procT.Get(lp, service, instanceKey)
+	if err != nil {
+		return fmt.Errorf("cancelInstanceTree: load record: %w", err)
+	}
+	if !ok {
+		p.cfg.Log.Debug("partition: ProcessCancel for absent instance; dropping",
+			"service", service, "key", instanceKey)
+		return nil
+	}
+	if rec.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_RUNNING &&
+		rec.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT {
+		p.cfg.Log.Debug("partition: ProcessCancel for terminal instance; dropping",
+			"service", service, "key", instanceKey, "status", rec.GetStatus().String())
+		return nil
+	}
+
+	root := rec.GetRootId()
+	// Recurse first: cancel this instance's own live children before tearing it
+	// down (their index rows live on this instance's shard).
+	if err := p.cascadeCancelChildren(batch, meta, root, isLeader); err != nil {
+		return err
+	}
+	if err := p.teardownInstanceSubscriptions(batch, meta, root, isLeader); err != nil {
+		return err
+	}
+	if err := p.teardownInstanceTimers(batch, root, isLeader); err != nil {
+		return err
+	}
+	// Drop the whole inbox (the active turn too — no ProcessAdvanced will land for
+	// a deleted record; if one does, onProcessAdvanced drops it as absent).
+	inboxT := tables.ProcessInboxTable{S: batch}
+	for seq := uint64(1); seq < rec.GetNextSeq(); seq++ {
+		if err := inboxT.Delete(batch, lp, service, instanceKey, seq); err != nil {
+			return fmt.Errorf("cancelInstanceTree: inbox delete: %w", err)
+		}
+	}
+	if err := (tables.ProcessHistoryTable{S: batch}).DeleteInstance(batch, root); err != nil {
+		return fmt.Errorf("cancelInstanceTree: history delete: %w", err)
+	}
+	if err := procT.Delete(batch, lp, service, instanceKey); err != nil {
+		return fmt.Errorf("cancelInstanceTree: record delete: %w", err)
 	}
 	return nil
 }
@@ -1582,6 +1792,11 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 		if err := timersT.InsertProcess(batch, ta.GetFireAtMs(), tid, pt); err != nil {
 			return fmt.Errorf("actuateProcessInstructions: timer insert: %w", err)
 		}
+		// Per-instance reverse index so a terminating/cancelled instance can find
+		// and delete this timer instead of leaving it to self-reclaim on fire.
+		if err := (tables.ProcessTimerIndexTable{S: batch}).Put(batch, root, tid); err != nil {
+			return fmt.Errorf("actuateProcessInstructions: timer index put: %w", err)
+		}
 		if isLeader {
 			p.cfg.Collector.Push(ActRegisterTimer{FireAtMs: ta.GetFireAtMs(), ID: tid, Process: pt})
 		}
@@ -1609,6 +1824,9 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 			}
 			canceledTimers++
 		}
+		if err := (tables.ProcessTimerIndexTable{S: batch}).Delete(batch, root, tid); err != nil {
+			return fmt.Errorf("actuateProcessInstructions: timer index delete: %w", err)
+		}
 	}
 	// Every timer row actually removed balances its earlier arm increment.
 	rec.Outstanding = satSubU32(rec.Outstanding, canceledTimers)
@@ -1630,6 +1848,15 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 		}
 		if err := p.deliverProcessEvent(batch, meta, ev, nowMs, isLeader); err != nil {
 			return fmt.Errorf("actuateProcessInstructions: child start: %w", err)
+		}
+		// Reverse index (parent root → child) so a terminating parent can find and
+		// cancel this child while it's still live. Dropped on the child's terminal
+		// (delete-on-complete, keyed by the child_root the ChildCompleted carries)
+		// or range-deleted when the parent itself ends.
+		childRoot := processRootID(ev.GetPk(), childSvc, childKey)
+		if err := (tables.ProcessChildIndexTable{S: batch}).Put(batch, root, childRoot,
+			&enginev1.ProcessCancel{Pk: ev.GetPk(), Service: childSvc, InstanceKey: childKey}); err != nil {
+			return fmt.Errorf("actuateProcessInstructions: child index put: %w", err)
 		}
 	}
 	// Each child instance feeds back exactly once (ChildCompleted) on its terminal.

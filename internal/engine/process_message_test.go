@@ -280,3 +280,89 @@ func TestProcess_SubscribeCrossShardUsesOutbox(t *testing.T) {
 		t.Fatal("cross-shard: no ProcessSubscribe outbox envelope found")
 	}
 }
+
+// TestProcess_CancelChildCrossShardUsesOutbox proves the cascade crosses shards:
+// when a parent's child lives on a different shard, finishProcessInstance ships a
+// ProcessCancel via the outbox to the child's shard (where onProcessCancel applies
+// it) instead of cancelling inline.
+func TestProcess_CancelChildCrossShardUsesOutbox(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "p", "state")
+	snap, err := NewSnapshotter(dir, func(path string) (storage.Store, error) {
+		return storage.OpenPebble(path, nil)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lead := &stubLeadership{}
+	lead.leader.Store(true)
+	col := &ActionCollector{}
+
+	const psvc, pkey = "Parent", "p1"
+	const csvc, ckey = "Child", "c1"
+	ppk := routing.PartitionKey(psvc, pkey)
+	cpk := routing.PartitionKey(csvc, ckey)
+
+	// Route the child's LP to shard 2; this partition is shard 1. (Leave the
+	// parent's LP at its default so its own ops stay local.)
+	part := routing.NewPartitioner(4)
+	part.SetLPOwnersSnapshot(map[uint32]uint64{keys.LPFromPartitionKey(cpk): 2})
+
+	p := NewPartition(1, 1, PartitionConfig{
+		Snapshotter: snap,
+		Leadership:  lead,
+		Collector:   col,
+		Partitioner: *part,
+	})
+	t.Cleanup(func() { _ = p.Close() })
+
+	must := func(idx uint64, cmd *enginev1.Command) {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	must(1, procEventCmd(ppk, psvc, pkey, []byte("pv"), &enginev1.ModelRef{Name: psvc}))
+	col.Drain()
+	// Parent starts the child (shipped cross-shard); the child-index row is written
+	// locally on the parent's shard regardless.
+	must(2, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: ppk, Service: psvc, InstanceKey: pkey, NewState: []byte("ps1"),
+		StartChild: []*enginev1.ChildStart{{
+			NodeId: "CA1", ModelRef: &enginev1.ModelRef{Name: csvc},
+			Kind: enginev1.ProcessKind_PROCESS_KIND_BPMN, InstanceKey: ckey,
+		}},
+	}}})
+	col.Drain()
+
+	// Terminate the parent.
+	must(3, procExtCmd(ppk, psvc, pkey, []byte("kill")))
+	col.Drain()
+	must(4, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: ppk, Service: psvc, InstanceKey: pkey, NewState: []byte("ps2"),
+		Terminal: &enginev1.ProcessTerminal{Failed: false},
+	}}})
+
+	// A ProcessCancel envelope addressed to shard 2 carries the child's address.
+	ot := tables.OutboxTable{S: p.cfg.Snapshotter.Store()}
+	found := false
+	if err := ot.ScanFrom(0, func(row tables.OutboxRow) error {
+		pc := row.Envelope.GetProcessCancel()
+		if pc == nil {
+			return nil
+		}
+		found = true
+		if row.Envelope.GetDestinationShardId() != 2 {
+			t.Errorf("dest shard = %d, want 2", row.Envelope.GetDestinationShardId())
+		}
+		if pc.GetService() != csvc || pc.GetInstanceKey() != ckey || pc.GetPk() != cpk {
+			t.Errorf("cancel address mismatch: %+v", pc)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("scan outbox: %v", err)
+	}
+	if !found {
+		t.Fatal("cross-shard: no ProcessCancel outbox envelope found")
+	}
+}

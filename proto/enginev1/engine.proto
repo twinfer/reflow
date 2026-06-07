@@ -239,6 +239,16 @@ message Command {
     // (delivering the failure to its parent, if any, then reaping). Routed to the
     // partition owning the instance. Accepted only by shardID >= 1.
     ResolveProcessIncident resolve_process_incident = 52;
+    // ProcessCancel force-terminates a non-terminal child instance whose parent
+    // is being torn down (the parent reached a terminal turn, or was operator-
+    // TERMINATEd, while this child was still RUNNING / incident-parked). The
+    // parent's finishProcessInstance scans its proc_child_idx reverse index and
+    // ships one ProcessCancel per live child (same-shard inline / cross-shard via
+    // OutboxEnvelope.process_cancel); the child's apply recursively cancels its
+    // own children, tears down its subscriptions + inbox, and deletes its record
+    // — no upward ChildCompleted delivery (the parent is gone). Accepted only by
+    // shardID >= 1.
+    ProcessCancel process_cancel = 55;
     // SetRebalanceDrain marks a partition shard as drained (drain=true)
     // or undrained (drain=false) in shard 0's RebalanceDrainTable. The
     // autonomous rebalancer subtracts drained shards from the planner's
@@ -1071,6 +1081,7 @@ message OutboxEnvelope {
     ProcessEvent process_event = 8;
     ProcessSubscribe process_subscribe = 9;
     ProcessUnsubscribe process_unsubscribe = 10;
+    ProcessCancel process_cancel = 11;
   }
 }
 
@@ -1176,6 +1187,22 @@ message ProcessChildCompleted {
   bytes output = 3;
   bool failed = 4;
   string failure_message = 5;
+  // child_root is the completing child's stable root id, carried so the parent's
+  // apply can drop the matching proc_child_idx reverse-index row (delete-on-
+  // complete), bounding the index to a parent's still-live children.
+  InvocationId child_root = 6;
+}
+
+// ProcessCancel force-terminates one non-terminal child instance during a
+// parent-subtree teardown. It addresses the child by (pk, service, instance_key)
+// — the same routing ProcessEvent uses — and is the value stored in each
+// proc_child_idx reverse-index row (so a parent's terminal sweep ships the row
+// verbatim). Apply (onProcessCancel) is a no-op when the addressed instance is
+// absent or already terminal.
+message ProcessCancel {
+  fixed64 pk = 1;
+  string service = 2;
+  string instance_key = 3;
 }
 
 // ProcessMessageReceived feeds a correlated inbound message back to a parked

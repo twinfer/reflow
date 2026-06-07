@@ -29,6 +29,50 @@ func procAdvancedCmd(pk uint64, service, key string, newState []byte, terminal *
 	}}}
 }
 
+// procExtCmd is a continuation (non-start) external event for an existing
+// instance: no model_ref, so the apply path queues it as a turn rather than
+// treating it as a start.
+func procExtCmd(pk uint64, service, key string, event []byte) *enginev1.Command {
+	return &enginev1.Command{Kind: &enginev1.Command_ProcessEvent{ProcessEvent: &enginev1.ProcessEvent{
+		Pk: pk, Service: service, InstanceKey: key, Payload: extPayload(event),
+	}}}
+}
+
+// childIndexCount returns how many live-child reverse-index rows parent owns.
+func childIndexCount(p *Partition, parentRoot *enginev1.InvocationId) (int, error) {
+	t := tables.ProcessChildIndexTable{S: p.cfg.Snapshotter.Store()}
+	n := 0
+	err := t.ScanByParent(parentRoot, func(*enginev1.ProcessCancel) error { n++; return nil })
+	return n, err
+}
+
+// timerIndexCount returns how many armed-timer reverse-index rows root owns.
+func timerIndexCount(p *Partition, root *enginev1.InvocationId) (int, error) {
+	t := tables.ProcessTimerIndexTable{S: p.cfg.Snapshotter.Store()}
+	n := 0
+	err := t.ScanByInstance(root, func(*enginev1.InvocationId) error { n++; return nil })
+	return n, err
+}
+
+// timerExists reports whether the TimerTable still holds a row for tid.
+func timerExists(p *Partition, tid *enginev1.InvocationId) (bool, error) {
+	t := tables.TimerTable{S: p.cfg.Snapshotter.Store()}
+	found := false
+	err := t.ScanByInvocation(tid, func(uint64) error { found = true; return nil })
+	return found, err
+}
+
+// hasDeleteTimer reports whether acts contains an ActDeleteTimer for tid.
+func hasDeleteTimer(acts []Action, tid *enginev1.InvocationId) bool {
+	for i := range acts {
+		if a, ok := acts[i].(ActDeleteTimer); ok && a.ID.GetPartitionKey() == tid.GetPartitionKey() &&
+			bytes.Equal(a.ID.GetUuid(), tid.GetUuid()) {
+			return true
+		}
+	}
+	return false
+}
+
 func procStore(p *Partition) (tables.ProcessInstanceTable, tables.ProcessInboxTable) {
 	s := p.cfg.Snapshotter.Store()
 	return tables.ProcessInstanceTable{S: s}, tables.ProcessInboxTable{S: s}
@@ -613,6 +657,373 @@ func TestProcess_ChildIncidentParksAndBlocksParent(t *testing.T) {
 	}
 	if pa := firstAdvance(col.Drain(), psvc); pa != nil {
 		t.Fatalf("parent must not be re-activated by a parked child: %+v", pa)
+	}
+}
+
+// TestProcess_ParentTerminateCascadesToParkedChild is the headline of point (b):
+// a parent that terminates while a child is incident-parked tears the child down
+// instead of orphaning it. Parent starts a BPMN child, the child parks as an
+// incident, then a concurrent branch drives the parent to a terminal turn — the
+// finishProcessInstance cascade must cancel the parked child and clear the index.
+func TestProcess_ParentTerminateCascadesToParkedChild(t *testing.T) {
+	p, _, col := newTestPartition(t)
+	const psvc, pkey = "Parent", "p1"
+	const csvc, ckey = "Child", "c1"
+	ppk := routing.PartitionKey(psvc, pkey)
+	plp := keys.LPFromPartitionKey(ppk)
+	cpk := routing.PartitionKey(csvc, ckey)
+	clp := keys.LPFromPartitionKey(cpk)
+	procs, _ := procStore(p)
+	must := func(idx uint64, cmd *enginev1.Command) {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	must(1, procEventCmd(ppk, psvc, pkey, []byte("pv"), &enginev1.ModelRef{Name: psvc}))
+	col.Drain()
+	must(2, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: ppk, Service: psvc, InstanceKey: pkey, NewState: []byte("ps1"),
+		StartChild: []*enginev1.ChildStart{{
+			NodeId: "CA1", ModelRef: &enginev1.ModelRef{Name: csvc},
+			Kind: enginev1.ProcessKind_PROCESS_KIND_BPMN, InstanceKey: ckey, Vars: []byte("cv"),
+		}},
+	}}})
+	col.Drain()
+	// The index now records the live child.
+	parentRoot := processRootID(ppk, psvc, pkey)
+	if n, err := childIndexCount(p, parentRoot); err != nil || n != 1 {
+		t.Fatalf("child index count = %d (err %v), want 1 after StartChild", n, err)
+	}
+
+	// Child parks as an incident.
+	must(3, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: cpk, Service: csvc, InstanceKey: ckey, NewState: []byte("cs1"),
+		Incident: &enginev1.ProcessIncident{NodeId: "deep", Cause: "boom"},
+	}}})
+	if crec, ok, _ := procs.Get(clp, csvc, ckey); !ok || crec.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT {
+		t.Fatalf("precondition: child must be incident-parked, ok=%v rec=%+v", ok, crec)
+	}
+	col.Drain()
+
+	// A concurrent branch wakes the parent and drives it to a terminal turn.
+	must(4, procExtCmd(ppk, psvc, pkey, []byte("boom-elsewhere")))
+	col.Drain()
+	must(5, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: ppk, Service: psvc, InstanceKey: pkey, NewState: []byte("ps2"),
+		Terminal: &enginev1.ProcessTerminal{Failed: true, FailureMessage: "parent died"},
+	}}})
+
+	// Parent gone (retention 0), and the parked child was cancelled — not orphaned.
+	if _, ok, _ := procs.Get(plp, psvc, pkey); ok {
+		t.Fatal("parent record must be deleted on terminal (retention 0)")
+	}
+	if _, ok, _ := procs.Get(clp, csvc, ckey); ok {
+		t.Fatal("parked child must be cancelled (record deleted) when its parent terminates")
+	}
+	if n, err := childIndexCount(p, parentRoot); err != nil || n != 0 {
+		t.Fatalf("child index count = %d (err %v), want 0 after cascade", n, err)
+	}
+}
+
+// TestProcess_ParentTerminateCascadesRecursively proves the cascade recurses:
+// parent → child → grandchild, all live; terminating the parent tears the whole
+// subtree down (child cancels its own grandchild before deleting itself).
+func TestProcess_ParentTerminateCascadesRecursively(t *testing.T) {
+	p, _, col := newTestPartition(t)
+	const psvc, pkey = "Parent", "p1"
+	const csvc, ckey = "Child", "c1"
+	const gsvc, gkey = "Grand", "g1"
+	ppk := routing.PartitionKey(psvc, pkey)
+	cpk := routing.PartitionKey(csvc, ckey)
+	gpk := routing.PartitionKey(gsvc, gkey)
+	procs, _ := procStore(p)
+	must := func(idx uint64, cmd *enginev1.Command) {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// parent → child
+	must(1, procEventCmd(ppk, psvc, pkey, []byte("pv"), &enginev1.ModelRef{Name: psvc}))
+	col.Drain()
+	must(2, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: ppk, Service: psvc, InstanceKey: pkey, NewState: []byte("ps1"),
+		StartChild: []*enginev1.ChildStart{{
+			NodeId: "CA1", ModelRef: &enginev1.ModelRef{Name: csvc},
+			Kind: enginev1.ProcessKind_PROCESS_KIND_BPMN, InstanceKey: ckey,
+		}},
+	}}})
+	col.Drain()
+	// child → grandchild (the child's start turn is active; advance it to start gc)
+	must(3, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: cpk, Service: csvc, InstanceKey: ckey, NewState: []byte("cs1"),
+		StartChild: []*enginev1.ChildStart{{
+			NodeId: "CA2", ModelRef: &enginev1.ModelRef{Name: gsvc},
+			Kind: enginev1.ProcessKind_PROCESS_KIND_BPMN, InstanceKey: gkey,
+		}},
+	}}})
+	col.Drain()
+	if _, ok, _ := procs.Get(keys.LPFromPartitionKey(gpk), gsvc, gkey); !ok {
+		t.Fatal("precondition: grandchild must exist")
+	}
+
+	// Terminate the parent.
+	must(4, procExtCmd(ppk, psvc, pkey, []byte("kill")))
+	col.Drain()
+	must(5, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: ppk, Service: psvc, InstanceKey: pkey, NewState: []byte("ps2"),
+		Terminal: &enginev1.ProcessTerminal{Failed: false},
+	}}})
+
+	// The entire subtree is gone.
+	if _, ok, _ := procs.Get(keys.LPFromPartitionKey(cpk), csvc, ckey); ok {
+		t.Fatal("child must be cancelled by the cascade")
+	}
+	if _, ok, _ := procs.Get(keys.LPFromPartitionKey(gpk), gsvc, gkey); ok {
+		t.Fatal("grandchild must be cancelled recursively")
+	}
+	if n, err := childIndexCount(p, processRootID(cpk, csvc, ckey)); err != nil || n != 0 {
+		t.Fatalf("child's child-index = %d (err %v), want 0", n, err)
+	}
+}
+
+// TestProcess_ChildCompletionClearsIndex pins delete-on-complete: a normally
+// completing child drops its parent→child index row (via the child_root it
+// stamps on ChildCompleted), so a later parent terminate finds nothing to cancel.
+func TestProcess_ChildCompletionClearsIndex(t *testing.T) {
+	p, _, col := newTestPartition(t)
+	const psvc, pkey = "Parent", "p1"
+	const csvc, ckey = "Child", "c1"
+	ppk := routing.PartitionKey(psvc, pkey)
+	plp := keys.LPFromPartitionKey(ppk)
+	cpk := routing.PartitionKey(csvc, ckey)
+	procs, inbox := procStore(p)
+	must := func(idx uint64, cmd *enginev1.Command) {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	must(1, procEventCmd(ppk, psvc, pkey, []byte("pv"), &enginev1.ModelRef{Name: psvc}))
+	col.Drain()
+	must(2, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: ppk, Service: psvc, InstanceKey: pkey, NewState: []byte("ps1"),
+		StartChild: []*enginev1.ChildStart{{
+			NodeId: "CA1", ModelRef: &enginev1.ModelRef{Name: csvc},
+			Kind: enginev1.ProcessKind_PROCESS_KIND_BPMN, InstanceKey: ckey,
+		}},
+	}}})
+	col.Drain()
+	parentRoot := processRootID(ppk, psvc, pkey)
+	if n, _ := childIndexCount(p, parentRoot); n != 1 {
+		t.Fatalf("index count = %d, want 1", n)
+	}
+
+	// Child completes normally → ChildCompleted delivered to the parent, which
+	// decrements outstanding and drops the index row (delete-on-complete).
+	must(3, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: cpk, Service: csvc, InstanceKey: ckey, NewState: []byte("cs1"),
+		Terminal: &enginev1.ProcessTerminal{Failed: false, Output: []byte("done")},
+	}}})
+
+	if n, err := childIndexCount(p, parentRoot); err != nil || n != 0 {
+		t.Fatalf("index count = %d (err %v), want 0 after child completion", n, err)
+	}
+	// The parent observed the completion: outstanding back to 0, a child_completed
+	// inbox row enqueued (seq 2).
+	prec, ok, _ := procs.Get(plp, psvc, pkey)
+	if !ok || prec.GetOutstanding() != 0 {
+		t.Fatalf("parent outstanding = %d (ok %v), want 0", prec.GetOutstanding(), ok)
+	}
+	if _, ok, _ := inbox.Get(plp, psvc, pkey, 2); !ok {
+		t.Fatal("parent must have a child_completed inbox row at seq 2")
+	}
+}
+
+// TestProcess_CancelTearsDownArmedTimer proves the per-instance timer index does
+// its job: a child that armed a timer, when cancelled by its parent's terminate,
+// has that timer deleted (TimerTable + index + ActDeleteTimer) instead of left to
+// self-reclaim on fire.
+func TestProcess_CancelTearsDownArmedTimer(t *testing.T) {
+	p, _, col := newTestPartition(t)
+	const psvc, pkey = "Parent", "p1"
+	const csvc, ckey = "Child", "c1"
+	ppk := routing.PartitionKey(psvc, pkey)
+	cpk := routing.PartitionKey(csvc, ckey)
+	clp := keys.LPFromPartitionKey(cpk)
+	procs, _ := procStore(p)
+	must := func(idx uint64, cmd *enginev1.Command) {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	must(1, procEventCmd(ppk, psvc, pkey, []byte("pv"), &enginev1.ModelRef{Name: psvc}))
+	col.Drain()
+	must(2, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: ppk, Service: psvc, InstanceKey: pkey, NewState: []byte("ps1"),
+		StartChild: []*enginev1.ChildStart{{
+			NodeId: "CA1", ModelRef: &enginev1.ModelRef{Name: csvc},
+			Kind: enginev1.ProcessKind_PROCESS_KIND_BPMN, InstanceKey: ckey,
+		}},
+	}}})
+	col.Drain()
+	// Child's turn 1 arms a timer on node T1.
+	must(3, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: cpk, Service: csvc, InstanceKey: ckey, NewState: []byte("cs1"),
+		ArmTimer: []*enginev1.TimerArm{{NodeId: "T1", FireAtMs: 5_000_000, Slot: 0}},
+	}}})
+	col.Drain()
+
+	childRoot := processRootID(cpk, csvc, ckey)
+	tid := processTimerID(cpk, csvc, ckey, "T1", 0)
+	if ex, _ := timerExists(p, tid); !ex {
+		t.Fatal("precondition: child's timer must be armed")
+	}
+	if n, _ := timerIndexCount(p, childRoot); n != 1 {
+		t.Fatalf("precondition: timer index = %d, want 1", n)
+	}
+
+	// Terminate the parent → child cancelled → its timer torn down.
+	must(4, procExtCmd(ppk, psvc, pkey, []byte("kill")))
+	col.Drain()
+	must(5, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: ppk, Service: psvc, InstanceKey: pkey, NewState: []byte("ps2"),
+		Terminal: &enginev1.ProcessTerminal{Failed: false},
+	}}})
+
+	if _, ok, _ := procs.Get(clp, csvc, ckey); ok {
+		t.Fatal("child must be cancelled")
+	}
+	if ex, _ := timerExists(p, tid); ex {
+		t.Fatal("child's armed timer must be deleted on cancel, not left to self-reclaim")
+	}
+	if n, _ := timerIndexCount(p, childRoot); n != 0 {
+		t.Fatalf("timer index = %d, want 0 after cancel", n)
+	}
+	if !hasDeleteTimer(col.Drain(), tid) {
+		t.Fatal("cancel must emit ActDeleteTimer so the leader heap drops the timer too")
+	}
+}
+
+// TestProcess_TimerIndexSyncedOnCancelAndFire pins the index↔TimerTable invariant
+// at the three maintenance sites: arm (Put), CancelTimer (Delete), and fire
+// (reclaimFiredProcessTimer Delete). A stale index would make teardown emit
+// spurious ActDeleteTimers; a missed Put would leave a timer un-torn-down.
+func TestProcess_TimerIndexSyncedOnCancelAndFire(t *testing.T) {
+	p, _, col := newTestPartition(t)
+	const svc, key = "Proc", "i1"
+	pk := routing.PartitionKey(svc, key)
+	root := processRootID(pk, svc, key)
+	must := func(idx uint64, cmd *enginev1.Command) {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	advance := func(idx uint64, adv *enginev1.ProcessAdvanced) {
+		adv.Pk, adv.Service, adv.InstanceKey = pk, svc, key
+		must(idx, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: adv}})
+		col.Drain()
+	}
+
+	must(1, procEventCmd(pk, svc, key, []byte("v"), &enginev1.ModelRef{Name: svc}))
+	col.Drain()
+	// Arm.
+	advance(2, &enginev1.ProcessAdvanced{NewState: []byte("s1"), ArmTimer: []*enginev1.TimerArm{{NodeId: "T1", FireAtMs: 5_000_000, Slot: 0}}})
+	tid := processTimerID(pk, svc, key, "T1", 0)
+	if n, _ := timerIndexCount(p, root); n != 1 {
+		t.Fatalf("after arm: index = %d, want 1", n)
+	}
+
+	// Cancel → index row + timer gone.
+	must(3, procExtCmd(pk, svc, key, []byte("e1")))
+	col.Drain()
+	advance(4, &enginev1.ProcessAdvanced{NewState: []byte("s2"), CancelTimer: []*enginev1.TimerCancel{{NodeId: "T1", Slot: 0}}})
+	if n, _ := timerIndexCount(p, root); n != 0 {
+		t.Fatalf("after cancel: index = %d, want 0", n)
+	}
+	if ex, _ := timerExists(p, tid); ex {
+		t.Fatal("after cancel: timer must be gone")
+	}
+
+	// Re-arm, then fire → reclaimFiredProcessTimer drops the index row + timer.
+	must(5, procExtCmd(pk, svc, key, []byte("e2")))
+	col.Drain()
+	advance(6, &enginev1.ProcessAdvanced{NewState: []byte("s3"), ArmTimer: []*enginev1.TimerArm{{NodeId: "T1", FireAtMs: 6_000_000, Slot: 0}}})
+	if n, _ := timerIndexCount(p, root); n != 1 {
+		t.Fatalf("after re-arm: index = %d, want 1", n)
+	}
+	must(7, &enginev1.Command{Kind: &enginev1.Command_ProcessEvent{ProcessEvent: &enginev1.ProcessEvent{
+		Pk: pk, Service: svc, InstanceKey: key,
+		Payload: &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_TimerFired{
+			TimerFired: &enginev1.ProcessTimerFired{NodeId: "T1", Slot: 0},
+		}},
+	}}})
+	if n, _ := timerIndexCount(p, root); n != 0 {
+		t.Fatalf("after fire: index = %d, want 0", n)
+	}
+	if ex, _ := timerExists(p, tid); ex {
+		t.Fatal("after fire: timer must be reclaimed")
+	}
+}
+
+// TestProcess_OnProcessCancelLanding drives a Command_ProcessCancel directly
+// through Update — the path a cross-shard ProcessCancel takes when it lands on the
+// child's owning shard — and asserts the instance is torn down.
+func TestProcess_OnProcessCancelLanding(t *testing.T) {
+	p, _, col := newTestPartition(t)
+	const svc, key = "Lonely", "x1"
+	pk := routing.PartitionKey(svc, key)
+	lp := keys.LPFromPartitionKey(pk)
+	procs, _ := procStore(p)
+	must := func(idx uint64, cmd *enginev1.Command) {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	must(1, procEventCmd(pk, svc, key, []byte("v"), &enginev1.ModelRef{Name: svc}))
+	col.Drain()
+	if _, ok, _ := procs.Get(lp, svc, key); !ok {
+		t.Fatal("precondition: instance must exist")
+	}
+
+	// The cross-shard landing: a ProcessCancel command applied locally.
+	must(2, &enginev1.Command{Kind: &enginev1.Command_ProcessCancel{ProcessCancel: &enginev1.ProcessCancel{
+		Pk: pk, Service: svc, InstanceKey: key,
+	}}})
+	if _, ok, _ := procs.Get(lp, svc, key); ok {
+		t.Fatal("onProcessCancel landing must tear the instance down")
+	}
+
+	// Idempotent: a second cancel for the now-absent instance is a no-op.
+	must(3, &enginev1.Command{Kind: &enginev1.Command_ProcessCancel{ProcessCancel: &enginev1.ProcessCancel{
+		Pk: pk, Service: svc, InstanceKey: key,
+	}}})
+}
+
+// TestOutboxEnvelopeToCommand_ProcessCancel pins the cross-shard reshape: the
+// outbox shuffler must turn a ProcessCancel envelope into a ProcessCancel command
+// for the dest shard's apply path.
+func TestOutboxEnvelopeToCommand_ProcessCancel(t *testing.T) {
+	pc := &enginev1.ProcessCancel{Pk: 42, Service: "Child", InstanceKey: "c9"}
+	cmd := outboxEnvelopeToCommand(&enginev1.OutboxEnvelope{
+		DestinationShardId: 7,
+		Kind:               &enginev1.OutboxEnvelope_ProcessCancel{ProcessCancel: pc},
+	})
+	got, ok := cmd.GetKind().(*enginev1.Command_ProcessCancel)
+	if !ok {
+		t.Fatalf("want Command_ProcessCancel, got %T", cmd.GetKind())
+	}
+	if got.ProcessCancel.GetPk() != 42 || got.ProcessCancel.GetService() != "Child" || got.ProcessCancel.GetInstanceKey() != "c9" {
+		t.Fatalf("fields not carried through: %+v", got.ProcessCancel)
 	}
 }
 

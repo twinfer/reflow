@@ -300,6 +300,13 @@ func outboxEnvelopeToCommand(env *enginev1.OutboxEnvelope) *enginev1.Command {
 		return &enginev1.Command{
 			Kind: &enginev1.Command_ProcessUnsubscribe{ProcessUnsubscribe: k.ProcessUnsubscribe},
 		}
+	case *enginev1.OutboxEnvelope_ProcessCancel:
+		// Cross-partition parent-subtree teardown: a child instance whose LP is
+		// owned by another shard. The dest shard's onProcessCancel recursively
+		// cancels it (and its own descendants).
+		return &enginev1.Command{
+			Kind: &enginev1.Command_ProcessCancel{ProcessCancel: k.ProcessCancel},
+		}
 	case *enginev1.OutboxEnvelope_OutboxAck:
 		return &enginev1.Command{
 			Kind: &enginev1.Command_OutboxAck{OutboxAck: k.OutboxAck},

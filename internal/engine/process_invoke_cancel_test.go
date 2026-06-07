@@ -38,7 +38,7 @@ func newProcPartition(t *testing.T, part *routing.Partitioner) (*Partition, *Act
 func invokeIndexCount(p *Partition, root *enginev1.InvocationId) (int, error) {
 	tbl := tables.ProcessInvokeIndexTable{S: p.cfg.Snapshotter.Store()}
 	n := 0
-	err := tbl.ScanByInstance(root, func(*enginev1.InvocationId) error { n++; return nil })
+	err := tbl.ScanByInstance(root, func(*enginev1.InvocationId, string) error { n++; return nil })
 	return n, err
 }
 
@@ -46,7 +46,7 @@ func firstInvokeID(t *testing.T, p *Partition, root *enginev1.InvocationId) *eng
 	t.Helper()
 	tbl := tables.ProcessInvokeIndexTable{S: p.cfg.Snapshotter.Store()}
 	var got *enginev1.InvocationId
-	if err := tbl.ScanByInstance(root, func(id *enginev1.InvocationId) error {
+	if err := tbl.ScanByInstance(root, func(id *enginev1.InvocationId, _ string) error {
 		if got == nil {
 			got = id
 		}
@@ -202,8 +202,8 @@ func TestProcess_TerminateCancelsInFlightTaskCrossShardUsesOutbox(t *testing.T) 
 		if row.Envelope.GetDestinationShardId() != 2 {
 			t.Errorf("dest shard = %d, want 2", row.Envelope.GetDestinationShardId())
 		}
-		if ci.GetPartitionKey() != callee.GetPartitionKey() {
-			t.Errorf("cancel id pk mismatch: %d vs %d", ci.GetPartitionKey(), callee.GetPartitionKey())
+		if ci.GetId().GetPartitionKey() != callee.GetPartitionKey() {
+			t.Errorf("cancel id pk mismatch: %d vs %d", ci.GetId().GetPartitionKey(), callee.GetPartitionKey())
 		}
 		return nil
 	}); err != nil {
@@ -218,13 +218,13 @@ func TestProcess_TerminateCancelsInFlightTaskCrossShardUsesOutbox(t *testing.T) 
 // an InvokerEffect_CancelById command on the dest shard.
 func TestOutboxEnvelopeToCommand_CancelInvocation(t *testing.T) {
 	id := &enginev1.InvocationId{PartitionKey: 7, Uuid: []byte("cancel-env-id--16")[:16]}
-	env := &enginev1.OutboxEnvelope{Kind: &enginev1.OutboxEnvelope_CancelInvocation{CancelInvocation: id}}
+	env := &enginev1.OutboxEnvelope{Kind: &enginev1.OutboxEnvelope_CancelInvocation{CancelInvocation: &enginev1.CancelById{Id: id}}}
 	cmd := outboxEnvelopeToCommand(env)
 	cb := cmd.GetInvokerEffect().GetCancelById()
-	if cb == nil {
+	if cb.GetId() == nil {
 		t.Fatalf("want InvokerEffect_CancelById, got %T", cmd.GetKind())
 	}
-	if cb.GetPartitionKey() != 7 {
-		t.Fatalf("cancel id pk = %d, want 7", cb.GetPartitionKey())
+	if cb.GetId().GetPartitionKey() != 7 {
+		t.Fatalf("cancel id pk = %d, want 7", cb.GetId().GetPartitionKey())
 	}
 }

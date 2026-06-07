@@ -13,7 +13,7 @@ import (
 
 func cancelByIDCmd(id *enginev1.InvocationId) *enginev1.Command {
 	return &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
-		Kind: &enginev1.InvokerEffect_CancelById{CancelById: id},
+		Kind: &enginev1.InvokerEffect_CancelById{CancelById: &enginev1.CancelById{Id: id}},
 	}}}
 }
 

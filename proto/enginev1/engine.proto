@@ -357,6 +357,18 @@ message ProcessParent {
   string instance_idx = 5;
 }
 
+// CancelById force-terminates one invocation by id. suppress_parent_feedback
+// is set only by the CMMN CancelTask path (exit criterion / stage termination):
+// the engine already moved the plan item to a terminal state this turn, so the
+// callee's ProcessParent feedback would arrive as a stale TaskCompleted and
+// crash the next turn — suppressing it makes the kill silent. The operator
+// ingress cancel and the instance-termination teardown leave it false (feedback
+// is wanted, or harmlessly dropped on the dying instance).
+message CancelById {
+  InvocationId id = 1;
+  bool suppress_parent_feedback = 2;
+}
+
 message InvokerEffect {
   InvocationId invocation_id = 1;
   oneof kind {
@@ -373,14 +385,15 @@ message InvokerEffect {
     // and wakes any awaiter in the same batch; InvokerEffect.invocation_id
     // is unset for this variant.
     PromiseCompleted promise_completed = 8;
-    // CancelById force-terminates the carried invocation with CancelledCode,
+    // cancel_by_id force-terminates the carried invocation with CancelledCode,
     // addressed directly by id (no KeyLeaseTable indirection — unlike the
     // Target-routed __cancel__ SignalDelivered path, this works for unkeyed
     // services). Synthesizes a terminal Completed via applyTerminalCompletion;
     // already-terminal is an idempotent no-op. Reached from ingress
     // CancelInvocation (unkeyed targets) and the process→task cancel-cascade
-    // (cross-shard via OutboxEnvelope.cancel_invocation).
-    InvocationId cancel_by_id = 9;
+    // (cross-shard via OutboxEnvelope.cancel_invocation). suppress_parent_feedback
+    // makes the kill silent (CMMN CancelTask — see CancelById).
+    CancelById cancel_by_id = 9;
   }
 }
 
@@ -1093,8 +1106,10 @@ message OutboxEnvelope {
     // cancel_invocation ferries a by-id force-cancel to the shard owning the
     // callee invocation (the process→task cascade: the task invocation lives
     // on ShardForInvocation(id), generally not the instance's shard). Lands as
-    // Command.invoker_effect{cancel_by_id}.
-    InvocationId cancel_invocation = 12;
+    // Command.invoker_effect{cancel_by_id}, carrying suppress_parent_feedback
+    // through so the cross-shard kill stays silent when the CMMN CancelTask path
+    // requested it.
+    CancelById cancel_invocation = 12;
   }
 }
 
@@ -1222,6 +1237,10 @@ message ProcessCancel {
   fixed64 pk = 1;
   string service = 2;
   string instance_key = 3;
+  // node_id is the parent plan item / node that started this child. Stamped onto
+  // the proc_child_idx row so a mid-case CancelTask can match and cancel only the
+  // child(ren) under the exited node; the cross-shard teardown ignores it.
+  string node_id = 4;
 }
 
 // ProcessMessageReceived feeds a correlated inbound message back to a parked
@@ -1291,6 +1310,7 @@ message ProcessAdvanced {
   // The apply path parks the instance non-terminally (PROCESS_STATUS_INCIDENT,
   // retaining new_state) instead of finishing it, awaiting ResolveProcessIncident.
   ProcessIncident incident = 12;
+  repeated InvokeCancel cancel_invoke = 13; // -> silent by-id cancel of a node's in-flight task / child (CancelTask)
 }
 
 // ProcessIncident is a parked uncaught failure on a running instance — the
@@ -1331,6 +1351,11 @@ message TaskInvoke {
 }
 message TimerArm { string node_id = 1; uint64 fire_at_ms = 2; uint32 slot = 3; }
 message TimerCancel { string node_id = 1; uint32 slot = 2; }
+// InvokeCancel tears down the in-flight work a node started — service-task
+// invocations (proc_invoke_idx) and child process/case instances (proc_child_idx)
+// — when the engine exits that node mid-case (CMMN CancelTask). Silent: no
+// completion/feedback flows back to the (still-running) instance.
+message InvokeCancel { string node_id = 1; }
 message ChildStart {
   string node_id = 1;
   ModelRef model_ref = 2;

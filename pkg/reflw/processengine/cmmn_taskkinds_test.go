@@ -47,6 +47,33 @@ const humanCaseCMMN = `<?xml version="1.0" encoding="UTF-8"?>
   </case>
 </definitions>`
 
+// An exit criterion on mainItem fires when trigItem completes, terminating
+// mainItem mid-case (CancelTask). keepItem stays active so the case does NOT
+// auto-complete in the same turn — proving the adapter emits CancelInvoke rather
+// than being short-circuited by the "terminal wins" early return.
+const exitCriterionCaseCMMN = `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/CMMN/20151109/MODEL">
+  <case id="caseExit" name="Exit">
+    <casePlanModel id="stageRoot" name="Root" autoComplete="true">
+      <planItem id="mainItem" definitionRef="main">
+        <exitCriterion id="ex1" sentryRef="sExit"/>
+      </planItem>
+      <planItem id="trigItem" definitionRef="trig"/>
+      <planItem id="keepItem" definitionRef="keep"/>
+      <sentry id="sExit"><planItemOnPart sourceRef="trigItem"/></sentry>
+      <task id="main" name="Main" isBlocking="true">
+        <extensionElements><capability ref="echo:noop"/></extensionElements>
+      </task>
+      <task id="trig" name="Trigger" isBlocking="true">
+        <extensionElements><capability ref="echo:noop"/></extensionElements>
+      </task>
+      <task id="keep" name="Keep" isBlocking="true">
+        <extensionElements><capability ref="echo:noop"/></extensionElements>
+      </task>
+    </casePlanModel>
+  </case>
+</definitions>`
+
 // cmmnExtPayload wraps a typed CMMN engine event in the external-event envelope
 // (kind + JSON payload) the adapter decodes via eventForCMMN → UnmarshalEvent.
 func cmmnExtPayload(t *testing.T, kind string, ev any) *enginev1.ProcessEventPayload {
@@ -127,6 +154,47 @@ func TestAdvanceCMMN_HumanTaskParksThenCompletes(t *testing.T) {
 	}
 	if done.GetTerminal() == nil || done.GetTerminal().GetFailed() {
 		t.Fatalf("want successful terminal after human completes, got %+v", done.GetTerminal())
+	}
+}
+
+// TestAdvanceCMMN_ExitCriterionEmitsCancelInvoke: an exit criterion firing on an
+// active task mid-case used to hit the outer switch default (CancelTask) →
+// CaseFailed. Now the adapter emits a cancel_invoke for the exited node and the
+// case keeps running its other items.
+func TestAdvanceCMMN_ExitCriterionEmitsCancelInvoke(t *testing.T) {
+	a := New(mustCMMNResolver(t, "caseExit", exitCriterionCaseCMMN))
+
+	start, err := a.Advance(context.Background(), cmmnStartInput("caseExit", nil, 1000))
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if len(start.GetInvoke()) != 3 {
+		t.Fatalf("want 3 dispatched tasks, got %d", len(start.GetInvoke()))
+	}
+	if len(start.GetCancelInvoke()) != 0 {
+		t.Fatalf("no cancel expected at start, got %d", len(start.GetCancelInvoke()))
+	}
+
+	cont := invoker.ProcessAdvanceInput{
+		Pk: 0, Service: "caseExit", InstanceKey: "i1",
+		Record: cmmnRecord("caseExit", start.GetNewState()),
+		Entry:  &enginev1.ProcessInboxEntry{Payload: taskCompletedPayload("trigItem", []byte(`{}`)), LogicalTimeMs: 2000},
+	}
+	adv, err := a.Advance(context.Background(), cont)
+	if err != nil {
+		t.Fatalf("exit-criterion turn must not error (was CaseFailed): %v", err)
+	}
+	found := false
+	for _, ci := range adv.GetCancelInvoke() {
+		if ci.GetNodeId() == "mainItem" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want CancelInvoke for exited mainItem, got %+v", adv.GetCancelInvoke())
+	}
+	if adv.GetTerminal() != nil {
+		t.Fatalf("case must stay alive (keepItem still active), got terminal %+v", adv.GetTerminal())
 	}
 }
 

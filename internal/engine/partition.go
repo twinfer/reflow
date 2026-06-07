@@ -1474,14 +1474,18 @@ func (p *Partition) teardownInstanceTimers(batch storage.Batch, root *enginev1.I
 func (p *Partition) teardownInstanceInvocations(batch storage.Batch, meta *enginev1.PartitionMeta, root *enginev1.InvocationId, nowMs uint64, isLeader bool) error {
 	idxT := tables.ProcessInvokeIndexTable{S: batch}
 	var ids []*enginev1.InvocationId
-	if err := idxT.ScanByInstance(root, func(id *enginev1.InvocationId) error {
+	if err := idxT.ScanByInstance(root, func(id *enginev1.InvocationId, _ string) error {
 		ids = append(ids, id)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("teardownInstanceInvocations: index scan: %w", err)
 	}
 	for _, id := range ids {
-		if err := p.deliverCancelInvocation(batch, meta, id, nowMs, isLeader); err != nil {
+		// Instance is terminating: keep feedback on (false) — the synthesized
+		// ProcessTaskCompleted lands on the dying/terminal instance and is dropped
+		// by the status gate, so no stale event escapes. Only the mid-case
+		// CancelTask path (where the instance survives) suppresses.
+		if err := p.deliverCancelInvocation(batch, meta, id, nowMs, isLeader, false); err != nil {
 			return err
 		}
 	}
@@ -1497,16 +1501,18 @@ func (p *Partition) teardownInstanceInvocations(batch storage.Batch, meta *engin
 // it). Mirrors deliverProcessCancel's same-shard / cross-shard split; the inline
 // arm does not re-gate the LP freeze (the apply entry already gated its primary
 // LP), the cross-shard landing re-gates.
-func (p *Partition) deliverCancelInvocation(batch storage.Batch, meta *enginev1.PartitionMeta, invID *enginev1.InvocationId, nowMs uint64, isLeader bool) error {
+func (p *Partition) deliverCancelInvocation(batch storage.Batch, meta *enginev1.PartitionMeta, invID *enginev1.InvocationId, nowMs uint64, isLeader, suppressParentFeedback bool) error {
 	shard := p.cfg.Partitioner.ShardForInvocation(invID)
 	if shard == 0 || shard == p.shardID {
 		return p.applyCancelById(batch, invID,
 			tables.InvocationTable{S: batch}, tables.JournalTable{S: batch}, tables.TimerTable{S: batch},
-			meta, isLeader, nowMs)
+			meta, isLeader, nowMs, suppressParentFeedback)
 	}
 	env := &enginev1.OutboxEnvelope{
 		DestinationShardId: shard,
-		Kind:               &enginev1.OutboxEnvelope_CancelInvocation{CancelInvocation: invID},
+		Kind: &enginev1.OutboxEnvelope_CancelInvocation{CancelInvocation: &enginev1.CancelById{
+			Id: invID, SuppressParentFeedback: suppressParentFeedback,
+		}},
 	}
 	if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {
 		return fmt.Errorf("deliverCancelInvocation: outbox append: %w", err)
@@ -1850,7 +1856,7 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 		// flight. Dropped on the task's terminal (delete-on-complete, keyed by
 		// the task_invocation_id the TaskCompleted carries) or range-deleted
 		// when the instance itself ends.
-		if err := (tables.ProcessInvokeIndexTable{S: batch}).Put(batch, root, calleeID); err != nil {
+		if err := (tables.ProcessInvokeIndexTable{S: batch}).Put(batch, root, calleeID, ti.GetNodeId()); err != nil {
 			return fmt.Errorf("actuateProcessInstructions: invoke index put: %w", err)
 		}
 	}
@@ -1905,6 +1911,59 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 	// Every timer row actually removed balances its earlier arm increment.
 	rec.Outstanding = satSubU32(rec.Outstanding, canceledTimers)
 
+	// Silently cancel the in-flight work a node started when the engine exits it
+	// mid-case (CMMN CancelTask). Matched by node id across both planes: service-
+	// task invocations (proc_invoke_idx, by-id cancel routed to the callee's shard
+	// with parent feedback suppressed) and child process/case instances
+	// (proc_child_idx, the already-silent cancelInstanceTree path). The instance
+	// survives, so nothing feeds back — we balance rec.outstanding here, exactly as
+	// cancel_timer does, because the dispatch (1858/1939) counted this work.
+	if len(adv.GetCancelInvoke()) > 0 {
+		idxT := tables.ProcessInvokeIndexTable{S: batch}
+		childIdxT := tables.ProcessChildIndexTable{S: batch}
+		var canceled uint32
+		for _, ci := range adv.GetCancelInvoke() {
+			node := ci.GetNodeId()
+			var tasks []*enginev1.InvocationId
+			if err := idxT.ScanByInstance(root, func(id *enginev1.InvocationId, n string) error {
+				if n == node {
+					tasks = append(tasks, id)
+				}
+				return nil
+			}); err != nil {
+				return fmt.Errorf("actuateProcessInstructions: cancel-invoke scan: %w", err)
+			}
+			for _, tid := range tasks {
+				if err := p.deliverCancelInvocation(batch, meta, tid, nowMs, isLeader, true); err != nil {
+					return err
+				}
+				if err := idxT.Delete(batch, root, tid); err != nil {
+					return fmt.Errorf("actuateProcessInstructions: cancel-invoke index delete: %w", err)
+				}
+				canceled++
+			}
+			var kids []*enginev1.ProcessCancel
+			if err := childIdxT.ScanByParent(root, func(c *enginev1.ProcessCancel) error {
+				if c.GetNodeId() == node {
+					kids = append(kids, c)
+				}
+				return nil
+			}); err != nil {
+				return fmt.Errorf("actuateProcessInstructions: cancel-invoke child scan: %w", err)
+			}
+			for _, c := range kids {
+				if err := p.deliverProcessCancel(batch, meta, c, nowMs, isLeader); err != nil {
+					return err
+				}
+				if err := childIdxT.Delete(batch, root, processRootID(c.GetPk(), c.GetService(), c.GetInstanceKey())); err != nil {
+					return fmt.Errorf("actuateProcessInstructions: cancel-invoke child index delete: %w", err)
+				}
+				canceled++
+			}
+		}
+		rec.Outstanding = satSubU32(rec.Outstanding, canceled)
+	}
+
 	for _, cs := range adv.GetStartChild() {
 		childSvc := cs.GetModelRef().GetName()
 		childKey := cs.GetInstanceKey()
@@ -1929,7 +1988,7 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 		// or range-deleted when the parent itself ends.
 		childRoot := processRootID(ev.GetPk(), childSvc, childKey)
 		if err := (tables.ProcessChildIndexTable{S: batch}).Put(batch, root, childRoot,
-			&enginev1.ProcessCancel{Pk: ev.GetPk(), Service: childSvc, InstanceKey: childKey}); err != nil {
+			&enginev1.ProcessCancel{Pk: ev.GetPk(), Service: childSvc, InstanceKey: childKey, NodeId: cs.GetNodeId()}); err != nil {
 			return fmt.Errorf("actuateProcessInstructions: child index put: %w", err)
 		}
 	}
@@ -2735,7 +2794,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 				FailureMessage: "invocation cancelled",
 				FailureCode:    wire.CancelledCode,
 			}
-			cnext, cacts, cerr := p.applyTerminalCompletion(batch, activeID, activeCur, completed, inv, journal, timersT, meta, isLeader, nowMs)
+			cnext, cacts, cerr := p.applyTerminalCompletion(batch, activeID, activeCur, completed, inv, journal, timersT, meta, isLeader, nowMs, false)
 			if cerr != nil {
 				return cerr
 			}
@@ -2809,15 +2868,15 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 		// top-level id gate above didn't fire — gate here, then delegate to
 		// the shared helper (also used by the same-shard cancel-cascade path).
 		cancelID := k.CancelById
-		if cancelID == nil {
+		if cancelID.GetId() == nil {
 			return nil
 		}
-		if ferr := p.checkLPFreeze(batch, cancelID.GetPartitionKey()); ferr != nil {
+		if ferr := p.checkLPFreeze(batch, cancelID.GetId().GetPartitionKey()); ferr != nil {
 			return ferr
 		}
-		return p.applyCancelById(batch, cancelID, inv, journal, timersT, meta, isLeader, nowMs)
+		return p.applyCancelById(batch, cancelID.GetId(), inv, journal, timersT, meta, isLeader, nowMs, cancelID.GetSuppressParentFeedback())
 	case *enginev1.InvokerEffect_Completed:
-		cnext, cacts, cerr := p.applyTerminalCompletion(batch, id, cur, k.Completed, inv, journal, timersT, meta, isLeader, nowMs)
+		cnext, cacts, cerr := p.applyTerminalCompletion(batch, id, cur, k.Completed, inv, journal, timersT, meta, isLeader, nowMs, false)
 		next, actions, err = cnext, cacts, cerr
 	case *enginev1.InvokerEffect_PromiseCompleted:
 		// Two entry points land here:
@@ -2925,7 +2984,7 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 // InvokerEffect_CancelById apply arm (ingress propose + cross-shard
 // outbox landing) and the same-shard cancel-cascade path
 // (deliverCancelInvocation).
-func (p *Partition) applyCancelById(batch storage.Batch, id *enginev1.InvocationId, inv tables.InvocationTable, journal tables.JournalTable, timersT tables.TimerTable, meta *enginev1.PartitionMeta, isLeader bool, nowMs uint64) error {
+func (p *Partition) applyCancelById(batch storage.Batch, id *enginev1.InvocationId, inv tables.InvocationTable, journal tables.JournalTable, timersT tables.TimerTable, meta *enginev1.PartitionMeta, isLeader bool, nowMs uint64, suppressParentFeedback bool) error {
 	cur, err := inv.Get(id)
 	if err != nil {
 		return fmt.Errorf("applyCancelById: load status: %w", err)
@@ -2942,7 +3001,7 @@ func (p *Partition) applyCancelById(batch storage.Batch, id *enginev1.Invocation
 		FailureMessage: "invocation cancelled",
 		FailureCode:    wire.CancelledCode,
 	}
-	next, acts, terr := p.applyTerminalCompletion(batch, id, cur, completed, inv, journal, timersT, meta, isLeader, nowMs)
+	next, acts, terr := p.applyTerminalCompletion(batch, id, cur, completed, inv, journal, timersT, meta, isLeader, nowMs, suppressParentFeedback)
 	if terr != nil {
 		// A malformed pre-state yields ErrInvalidTransition; log-and-continue
 		// per the apply-path contract rather than halting the shard. Real
@@ -2989,6 +3048,7 @@ func (p *Partition) applyTerminalCompletion(
 	meta *enginev1.PartitionMeta,
 	isLeader bool,
 	nowMs uint64,
+	suppressParentFeedback bool,
 ) (*enginev1.InvocationStatus, []Action, error) {
 	next, actions, err := transitionOnComplete(id, cur, completed, nowMs)
 	if err != nil {
@@ -3026,11 +3086,17 @@ func (p *Partition) applyTerminalCompletion(
 			return next, actions, perr
 		}
 		actions = append(actions, parentActs...)
-	} else if pp := pl.GetProcessParent(); pp != nil {
+	} else if pp := pl.GetProcessParent(); pp != nil && !suppressParentFeedback {
 		// This invocation was an reflwos service task. Feed its result back to the
 		// awaiting node as a ProcessEvent{task_completed} instead of a
 		// JECallResult. Delivery pushes its own actions (same-shard activation /
 		// outbox dispatch) onto the collector, so nothing is appended here.
+		//
+		// suppressParentFeedback skips this: a CMMN CancelTask already exited the
+		// node this turn, so a stale ProcessTaskCompleted would crash the next
+		// turn. The actuate path balances rec.outstanding directly instead (the
+		// killed task never feeds back). Every other teardown (lease, timer reap,
+		// retention) below still runs — only the upward feedback is dropped.
 		ev := &enginev1.ProcessEvent{
 			Pk:            pp.GetPk(),
 			Service:       pp.GetService(),

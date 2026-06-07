@@ -227,6 +227,13 @@ func (a *Adapter) translateCMMN(in invoker.ProcessAdvanceInput, cmds []cmmn.Comm
 			// Best-effort: the durable engine has no pause primitive, so a suspend /
 			// resume of a previously-issued Run*Task is a no-op here (mirrors
 			// cmmnhost runner.go). The engine still tracks lifecycle state.
+		case cmmn.CancelTask:
+			// An exit criterion / stage termination exited an active plan item this
+			// turn. Tear down whatever it had in flight — a service-task invocation
+			// or a child process/case instance — by node id; the engine cancels it
+			// silently (the item is already terminal, so no feedback is wanted). A
+			// CancelTask on a passive human task naturally no-ops (nothing in flight).
+			adv.CancelInvoke = append(adv.CancelInvoke, &enginev1.InvokeCancel{NodeId: t.PlanItemID})
 		case cmmn.CaseFileItemEventRejected:
 			// Observational: a receiving instance rejected a broadcast CFI event
 			// for an out-of-§A.5-state CFI. Nothing to actuate.

@@ -74,8 +74,10 @@ func (s *Server) CancelInvocation(ctx context.Context, req *connect.Request[ingr
 	} else {
 		// Unkeyed target: no key lease to route through. Force-cancel the
 		// invocation directly by id (applyCancelById on the owning shard).
+		// suppress_parent_feedback stays false: an operator killing a stuck
+		// process task wants the parent case to learn of it (as a failed task).
 		effect = &enginev1.InvokerEffect{
-			Kind: &enginev1.InvokerEffect_CancelById{CancelById: id},
+			Kind: &enginev1.InvokerEffect_CancelById{CancelById: &enginev1.CancelById{Id: id}},
 		}
 	}
 	cmd := &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: effect}}

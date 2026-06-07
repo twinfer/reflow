@@ -418,6 +418,22 @@ func (i *Invoker) AbortInvocation(id *enginev1.InvocationId) {
 	}
 }
 
+// TriggerAbort signals the named session to abort if one exists, WITHOUT
+// waiting for its goroutine to exit. Safe to call from the apply-goroutine
+// dispatch path (ActAbortInvocation), where blocking is banned. Slot
+// reclamation is left to watchSession (its cur==s guard tolerates the
+// abort racing a fresh StartInvocation). No-op if no session is live for id
+// (Scheduled/Suspended/already-terminal invocations have none).
+func (i *Invoker) TriggerAbort(id *enginev1.InvocationId) {
+	key := sessionKey(id)
+	i.mu.Lock()
+	s, ok := i.sessions[key]
+	i.mu.Unlock()
+	if ok {
+		s.abort()
+	}
+}
+
 // StartProcessTurn spawns a one-shot processSession for the instance: run the
 // reflwos engine on event and propose ProcessAdvanced. The apply path serializes
 // turns per instance via the process inbox, so a session never overlaps another

@@ -2728,6 +2728,20 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 			payload,
 			nowMs,
 		)
+	case *enginev1.InvokerEffect_CancelById:
+		// By-id force-cancel: addressed directly (no KeyLeaseTable), so it
+		// works for unkeyed services the Target-routed __cancel__ path can't
+		// reach. Carries its id in the oneof (like SignalDelivered), so the
+		// top-level id gate above didn't fire — gate here, then delegate to
+		// the shared helper (also used by the same-shard cancel-cascade path).
+		cancelID := k.CancelById
+		if cancelID == nil {
+			return nil
+		}
+		if ferr := p.checkLPFreeze(batch, cancelID.GetPartitionKey()); ferr != nil {
+			return ferr
+		}
+		return p.applyCancelById(batch, cancelID, inv, journal, timersT, meta, isLeader, nowMs)
 	case *enginev1.InvokerEffect_Completed:
 		cnext, cacts, cerr := p.applyTerminalCompletion(batch, id, cur, k.Completed, inv, journal, timersT, meta, isLeader, nowMs)
 		next, actions, err = cnext, cacts, cerr
@@ -2821,6 +2835,63 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 	if isLeader {
 		for _, a := range actions {
 			p.cfg.Collector.Push(a)
+		}
+	}
+	return nil
+}
+
+// applyCancelById force-terminates id with CancelledCode, addressed
+// directly (no KeyLeaseTable indirection — so it works for unkeyed
+// services). No-op if id is unknown or already terminal
+// (applyTerminalCompletion treats Completed→Completed as an idempotent
+// replay). On the leader, if a session was running (Invoked) it also
+// pushes ActAbortInvocation to cancel the in-flight handler request — a
+// forced kill, not a cooperative unwind. Self-contained (does its own
+// inv.Put + action push) because it is shared by the
+// InvokerEffect_CancelById apply arm (ingress propose + cross-shard
+// outbox landing) and the same-shard cancel-cascade path
+// (deliverCancelInvocation).
+func (p *Partition) applyCancelById(batch storage.Batch, id *enginev1.InvocationId, inv tables.InvocationTable, journal tables.JournalTable, timersT tables.TimerTable, meta *enginev1.PartitionMeta, isLeader bool, nowMs uint64) error {
+	cur, err := inv.Get(id)
+	if err != nil {
+		return fmt.Errorf("applyCancelById: load status: %w", err)
+	}
+	// inv.Get synthesizes a Free status for an absent row — treat unknown /
+	// purged ids as a clean no-op (not an invalid-transition warning).
+	if cur == nil {
+		return nil
+	}
+	if _, free := cur.GetStatus().(*enginev1.InvocationStatus_Free); free {
+		return nil
+	}
+	completed := &enginev1.InvocationCompleted{
+		FailureMessage: "invocation cancelled",
+		FailureCode:    wire.CancelledCode,
+	}
+	next, acts, terr := p.applyTerminalCompletion(batch, id, cur, completed, inv, journal, timersT, meta, isLeader, nowMs)
+	if terr != nil {
+		// A malformed pre-state yields ErrInvalidTransition; log-and-continue
+		// per the apply-path contract rather than halting the shard. Real
+		// storage errors (delivery / lease release) still propagate.
+		if errors.Is(terr, ErrInvalidTransition) {
+			p.cfg.Log.Warn("partition: cancel-by-id invalid transition", "err", terr)
+			return nil
+		}
+		return fmt.Errorf("applyCancelById: terminal completion: %w", terr)
+	}
+	if next != nil {
+		if err := inv.Put(batch, id, next); err != nil {
+			return fmt.Errorf("applyCancelById: write status: %w", err)
+		}
+	}
+	if isLeader {
+		for _, a := range acts {
+			p.cfg.Collector.Push(a)
+		}
+		// Interrupt the in-flight handler request iff a session was running.
+		// Other states (Scheduled/Suspended) have no live session.
+		if cur.GetInvoked() != nil {
+			p.cfg.Collector.Push(ActAbortInvocation{ID: id})
 		}
 	}
 	return nil

@@ -127,6 +127,13 @@ func (r *PartitionRunner) dispatchActions(actions []Action) {
 				continue
 			}
 			r.invoker.StartInvocation(act.ID, act.Target)
+		case ActAbortInvocation:
+			if r.invoker == nil {
+				continue
+			}
+			// Non-blocking: signals the session to abort without waiting on
+			// its goroutine exit (this runs on the apply goroutine).
+			r.invoker.TriggerAbort(act.ID)
 		case ActAdvanceProcess:
 			if r.invoker == nil {
 				r.log.Warn("runner: ActAdvanceProcess with no invoker", "shard", r.ShardID)

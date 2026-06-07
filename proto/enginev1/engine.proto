@@ -373,6 +373,14 @@ message InvokerEffect {
     // and wakes any awaiter in the same batch; InvokerEffect.invocation_id
     // is unset for this variant.
     PromiseCompleted promise_completed = 8;
+    // CancelById force-terminates the carried invocation with CancelledCode,
+    // addressed directly by id (no KeyLeaseTable indirection — unlike the
+    // Target-routed __cancel__ SignalDelivered path, this works for unkeyed
+    // services). Synthesizes a terminal Completed via applyTerminalCompletion;
+    // already-terminal is an idempotent no-op. Reached from ingress
+    // CancelInvocation (unkeyed targets) and the process→task cancel-cascade
+    // (cross-shard via OutboxEnvelope.cancel_invocation).
+    InvocationId cancel_by_id = 9;
   }
 }
 
@@ -1082,6 +1090,11 @@ message OutboxEnvelope {
     ProcessSubscribe process_subscribe = 9;
     ProcessUnsubscribe process_unsubscribe = 10;
     ProcessCancel process_cancel = 11;
+    // cancel_invocation ferries a by-id force-cancel to the shard owning the
+    // callee invocation (the process→task cascade: the task invocation lives
+    // on ShardForInvocation(id), generally not the instance's shard). Lands as
+    // Command.invoker_effect{cancel_by_id}.
+    InvocationId cancel_invocation = 12;
   }
 }
 

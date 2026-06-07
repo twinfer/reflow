@@ -19,15 +19,19 @@ import (
 //  1. Look up the InvocationStatus on the owning partition (routed by
 //     the partition_key encoded in the invocation id).
 //  2. Extract the invocation's Target (service + key).
-//  3. Propose an InvokerEffect.SignalDelivered{target, __cancel__} on
-//     the same partition. The apply arm resolves Target → active
-//     InvocationId via KeyLeaseTable and synthesizes a terminal
-//     Completed.
+//  3. Propose an InvokerEffect on the same partition:
+//     - Keyed target → SignalDelivered{target, __cancel__}; the apply
+//     arm resolves Target → active InvocationId via KeyLeaseTable and
+//     synthesizes a terminal Completed (cancels the current lease
+//     holder of the key).
+//     - Unkeyed target → CancelById{id}; the apply arm force-terminates
+//     that exact invocation directly (no lease indirection).
 //
-// Best-effort: between the lookup and the apply, the lease could move
-// to a different invocation (e.g. the original completed, queue
-// promoted the next one). The cancel then hits the new lease holder.
-// Callers concerned about that race should AwaitInvocation /
+// Best-effort (keyed only): between the lookup and the apply, the lease
+// could move to a different invocation (e.g. the original completed,
+// queue promoted the next one), so the cancel hits the new lease holder.
+// The by-id path has no such race — an already-completed id is a clean
+// no-op. Callers concerned about the keyed race should AwaitInvocation /
 // GetInvocationOutput after to verify.
 //
 // Returns accepted=true once the propose succeeds; the actual
@@ -56,18 +60,23 @@ func (s *Server) CancelInvocation(ctx context.Context, req *connect.Request[ingr
 		// no-op cancellation.
 		return connect.NewResponse(&ingressv1.CancelInvocationResponse{Accepted: false}), nil
 	}
-	if target.GetObjectKey() == "" {
-		// MVP: cancellation routes by Target via KeyLeaseTable, which
-		// requires a keyed target. Cancelling an unkeyed Service
-		// invocation isn't supported in this release.
-		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("CancelInvocation: unkeyed services not supported in v1"))
-	}
-
-	effect := &enginev1.InvokerEffect{
-		Kind: &enginev1.InvokerEffect_SignalDelivered{SignalDelivered: &enginev1.SignalDelivered{
-			Target:     target,
-			SignalName: wire.WellKnownCancelSignal,
-		}},
+	var effect *enginev1.InvokerEffect
+	if target.GetObjectKey() != "" {
+		// Keyed target: route by Target via KeyLeaseTable so the cancel hits
+		// whoever currently holds the key (the documented VO semantic — see
+		// the best-effort note above).
+		effect = &enginev1.InvokerEffect{
+			Kind: &enginev1.InvokerEffect_SignalDelivered{SignalDelivered: &enginev1.SignalDelivered{
+				Target:     target,
+				SignalName: wire.WellKnownCancelSignal,
+			}},
+		}
+	} else {
+		// Unkeyed target: no key lease to route through. Force-cancel the
+		// invocation directly by id (applyCancelById on the owning shard).
+		effect = &enginev1.InvokerEffect{
+			Kind: &enginev1.InvokerEffect_CancelById{CancelById: id},
+		}
 	}
 	cmd := &enginev1.Command{Kind: &enginev1.Command_InvokerEffect{InvokerEffect: effect}}
 	producerID := "cancel/" + FormatInvocationID(id)

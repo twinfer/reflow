@@ -46,6 +46,16 @@ type ActDeleteTimer struct {
 
 func (ActDeleteTimer) isAction() {}
 
+// ActAbortInvocation interrupts a running invoker session (cancels its
+// in-flight handler request context). Emitted by applyCancelById when a
+// by-id force-cancel terminates an Invoked invocation. Dispatched
+// non-blocking via Invoker.TriggerAbort; a no-op if no session is live.
+type ActAbortInvocation struct {
+	ID *enginev1.InvocationId
+}
+
+func (ActAbortInvocation) isAction() {}
+
 // ActDispatchOutbox hands a freshly-appended OutboxEnvelope to the leader's
 // outbox shuffler. The shuffler proposes the envelope's command via
 // ProposeIngress and pops the row once the proposal commits. On crash

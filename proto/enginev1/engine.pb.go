@@ -2406,6 +2406,7 @@ type InvokerEffect struct {
 	//	*InvokerEffect_AwakeableResolved
 	//	*InvokerEffect_SignalDelivered
 	//	*InvokerEffect_PromiseCompleted
+	//	*InvokerEffect_CancelById
 	Kind          isInvokerEffect_Kind `protobuf_oneof:"kind"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2518,6 +2519,15 @@ func (x *InvokerEffect) GetPromiseCompleted() *PromiseCompleted {
 	return nil
 }
 
+func (x *InvokerEffect) GetCancelById() *InvocationId {
+	if x != nil {
+		if x, ok := x.Kind.(*InvokerEffect_CancelById); ok {
+			return x.CancelById
+		}
+	}
+	return nil
+}
+
 type isInvokerEffect_Kind interface {
 	isInvokerEffect_Kind()
 }
@@ -2556,6 +2566,17 @@ type InvokerEffect_PromiseCompleted struct {
 	PromiseCompleted *PromiseCompleted `protobuf:"bytes,8,opt,name=promise_completed,json=promiseCompleted,proto3,oneof"`
 }
 
+type InvokerEffect_CancelById struct {
+	// CancelById force-terminates the carried invocation with CancelledCode,
+	// addressed directly by id (no KeyLeaseTable indirection — unlike the
+	// Target-routed __cancel__ SignalDelivered path, this works for unkeyed
+	// services). Synthesizes a terminal Completed via applyTerminalCompletion;
+	// already-terminal is an idempotent no-op. Reached from ingress
+	// CancelInvocation (unkeyed targets) and the process→task cancel-cascade
+	// (cross-shard via OutboxEnvelope.cancel_invocation).
+	CancelById *InvocationId `protobuf:"bytes,9,opt,name=cancel_by_id,json=cancelById,proto3,oneof"`
+}
+
 func (*InvokerEffect_JournalAppended) isInvokerEffect_Kind() {}
 
 func (*InvokerEffect_Completed) isInvokerEffect_Kind() {}
@@ -2569,6 +2590,8 @@ func (*InvokerEffect_AwakeableResolved) isInvokerEffect_Kind() {}
 func (*InvokerEffect_SignalDelivered) isInvokerEffect_Kind() {}
 
 func (*InvokerEffect_PromiseCompleted) isInvokerEffect_Kind() {}
+
+func (*InvokerEffect_CancelById) isInvokerEffect_Kind() {}
 
 // JERunProposal carries the outcome of a deterministic side-effect block
 // (ctx.Run) from the SDK back to the engine. The FSM applies it by writing
@@ -6689,6 +6712,7 @@ type OutboxEnvelope struct {
 	//	*OutboxEnvelope_ProcessSubscribe
 	//	*OutboxEnvelope_ProcessUnsubscribe
 	//	*OutboxEnvelope_ProcessCancel
+	//	*OutboxEnvelope_CancelInvocation
 	Kind          isOutboxEnvelope_Kind `protobuf_oneof:"kind"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -6828,6 +6852,15 @@ func (x *OutboxEnvelope) GetProcessCancel() *ProcessCancel {
 	return nil
 }
 
+func (x *OutboxEnvelope) GetCancelInvocation() *InvocationId {
+	if x != nil {
+		if x, ok := x.Kind.(*OutboxEnvelope_CancelInvocation); ok {
+			return x.CancelInvocation
+		}
+	}
+	return nil
+}
+
 type isOutboxEnvelope_Kind interface {
 	isOutboxEnvelope_Kind()
 }
@@ -6872,6 +6905,14 @@ type OutboxEnvelope_ProcessCancel struct {
 	ProcessCancel *ProcessCancel `protobuf:"bytes,11,opt,name=process_cancel,json=processCancel,proto3,oneof"`
 }
 
+type OutboxEnvelope_CancelInvocation struct {
+	// cancel_invocation ferries a by-id force-cancel to the shard owning the
+	// callee invocation (the process→task cascade: the task invocation lives
+	// on ShardForInvocation(id), generally not the instance's shard). Lands as
+	// Command.invoker_effect{cancel_by_id}.
+	CancelInvocation *InvocationId `protobuf:"bytes,12,opt,name=cancel_invocation,json=cancelInvocation,proto3,oneof"`
+}
+
 func (*OutboxEnvelope_Invoke) isOutboxEnvelope_Kind() {}
 
 func (*OutboxEnvelope_Signal) isOutboxEnvelope_Kind() {}
@@ -6891,6 +6932,8 @@ func (*OutboxEnvelope_ProcessSubscribe) isOutboxEnvelope_Kind() {}
 func (*OutboxEnvelope_ProcessUnsubscribe) isOutboxEnvelope_Kind() {}
 
 func (*OutboxEnvelope_ProcessCancel) isOutboxEnvelope_Kind() {}
+
+func (*OutboxEnvelope_CancelInvocation) isOutboxEnvelope_Kind() {}
 
 // DeliverCallResult is the outbox payload used to ship a callee's result
 // back to the parent invocation when caller and callee live on different
@@ -12712,7 +12755,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\aservice\x18\x02 \x01(\tR\aservice\x12!\n" +
 	"\finstance_key\x18\x03 \x01(\tR\vinstanceKey\x12\x17\n" +
 	"\anode_id\x18\x04 \x01(\tR\x06nodeId\x12!\n" +
-	"\finstance_idx\x18\x05 \x01(\tR\vinstanceIdx\"\xf6\x04\n" +
+	"\finstance_idx\x18\x05 \x01(\tR\vinstanceIdx\"\xb9\x05\n" +
 	"\rInvokerEffect\x12B\n" +
 	"\rinvocation_id\x18\x01 \x01(\v2\x1d.reflw.engine.v1.InvocationIdR\finvocationId\x12R\n" +
 	"\x10journal_appended\x18\x02 \x01(\v2%.reflw.engine.v1.JournalEntryAppendedH\x00R\x0fjournalAppended\x12D\n" +
@@ -12721,7 +12764,9 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\frun_proposal\x18\x05 \x01(\v2\x1e.reflw.engine.v1.JERunProposalH\x00R\vrunProposal\x12S\n" +
 	"\x12awakeable_resolved\x18\x06 \x01(\v2\".reflw.engine.v1.AwakeableResolvedH\x00R\x11awakeableResolved\x12M\n" +
 	"\x10signal_delivered\x18\a \x01(\v2 .reflw.engine.v1.SignalDeliveredH\x00R\x0fsignalDelivered\x12P\n" +
-	"\x11promise_completed\x18\b \x01(\v2!.reflw.engine.v1.PromiseCompletedH\x00R\x10promiseCompletedB\x06\n" +
+	"\x11promise_completed\x18\b \x01(\v2!.reflw.engine.v1.PromiseCompletedH\x00R\x10promiseCompleted\x12A\n" +
+	"\fcancel_by_id\x18\t \x01(\v2\x1d.reflw.engine.v1.InvocationIdH\x00R\n" +
+	"cancelByIdB\x06\n" +
 	"\x04kind\"\xeb\x01\n" +
 	"\rJERunProposal\x12\x1f\n" +
 	"\ventry_index\x18\x01 \x01(\rR\n" +
@@ -13000,7 +13045,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x0eAwakeableEntry\x123\n" +
 	"\x05owner\x18\x01 \x01(\v2\x1d.reflw.engine.v1.InvocationIdR\x05owner\x12\x1f\n" +
 	"\ventry_index\x18\x02 \x01(\rR\n" +
-	"entryIndex\"\xba\x06\n" +
+	"entryIndex\"\x88\a\n" +
 	"\x0eOutboxEnvelope\x120\n" +
 	"\x14destination_shard_id\x18\x03 \x01(\x04R\x12destinationShardId\x128\n" +
 	"\x06invoke\x18\x01 \x01(\v2\x1e.reflw.engine.v1.InvokeCommandH\x00R\x06invoke\x125\n" +
@@ -13014,7 +13059,8 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\x11process_subscribe\x18\t \x01(\v2!.reflw.engine.v1.ProcessSubscribeH\x00R\x10processSubscribe\x12V\n" +
 	"\x13process_unsubscribe\x18\n" +
 	" \x01(\v2#.reflw.engine.v1.ProcessUnsubscribeH\x00R\x12processUnsubscribe\x12G\n" +
-	"\x0eprocess_cancel\x18\v \x01(\v2\x1e.reflw.engine.v1.ProcessCancelH\x00R\rprocessCancelB\x06\n" +
+	"\x0eprocess_cancel\x18\v \x01(\v2\x1e.reflw.engine.v1.ProcessCancelH\x00R\rprocessCancel\x12L\n" +
+	"\x11cancel_invocation\x18\f \x01(\v2\x1d.reflw.engine.v1.InvocationIdH\x00R\x10cancelInvocationB\x06\n" +
 	"\x04kind\"\xaf\x01\n" +
 	"\x11DeliverCallResult\x12:\n" +
 	"\tparent_id\x18\x01 \x01(\v2\x1d.reflw.engine.v1.InvocationIdR\bparentId\x12\x1d\n" +
@@ -13739,147 +13785,149 @@ var file_enginev1_engine_proto_depIdxs = []int32{
 	25,  // 63: reflw.engine.v1.InvokerEffect.awakeable_resolved:type_name -> reflw.engine.v1.AwakeableResolved
 	26,  // 64: reflw.engine.v1.InvokerEffect.signal_delivered:type_name -> reflw.engine.v1.SignalDelivered
 	27,  // 65: reflw.engine.v1.InvokerEffect.promise_completed:type_name -> reflw.engine.v1.PromiseCompleted
-	47,  // 66: reflw.engine.v1.JERunProposal.retry_policy:type_name -> reflw.engine.v1.RunRetryPolicy
-	10,  // 67: reflw.engine.v1.SignalDelivered.target:type_name -> reflw.engine.v1.InvocationTarget
-	9,   // 68: reflw.engine.v1.PromiseCompleted.caller_id:type_name -> reflw.engine.v1.InvocationId
-	9,   // 69: reflw.engine.v1.PromiseCompletionAck.caller_id:type_name -> reflw.engine.v1.InvocationId
-	9,   // 70: reflw.engine.v1.ReapInvocation.invocation_id:type_name -> reflw.engine.v1.InvocationId
-	33,  // 71: reflw.engine.v1.JournalEntryAppended.entry:type_name -> reflw.engine.v1.JournalEntry
-	34,  // 72: reflw.engine.v1.JournalEntry.input:type_name -> reflw.engine.v1.JEInput
-	35,  // 73: reflw.engine.v1.JournalEntry.sleep:type_name -> reflw.engine.v1.JESleep
-	36,  // 74: reflw.engine.v1.JournalEntry.sleep_result:type_name -> reflw.engine.v1.JESleepResult
-	37,  // 75: reflw.engine.v1.JournalEntry.call:type_name -> reflw.engine.v1.JECall
-	39,  // 76: reflw.engine.v1.JournalEntry.call_result:type_name -> reflw.engine.v1.JECallResult
-	40,  // 77: reflw.engine.v1.JournalEntry.get_state:type_name -> reflw.engine.v1.JEGetState
-	44,  // 78: reflw.engine.v1.JournalEntry.set_state:type_name -> reflw.engine.v1.JESetState
-	45,  // 79: reflw.engine.v1.JournalEntry.output:type_name -> reflw.engine.v1.JEOutput
-	46,  // 80: reflw.engine.v1.JournalEntry.run:type_name -> reflw.engine.v1.JERun
-	49,  // 81: reflw.engine.v1.JournalEntry.awakeable:type_name -> reflw.engine.v1.JEAwakeable
-	50,  // 82: reflw.engine.v1.JournalEntry.awakeable_result:type_name -> reflw.engine.v1.JEAwakeableResult
-	51,  // 83: reflw.engine.v1.JournalEntry.signal:type_name -> reflw.engine.v1.JESignal
-	66,  // 84: reflw.engine.v1.JournalEntry.clear_state:type_name -> reflw.engine.v1.JEClearState
-	48,  // 85: reflw.engine.v1.JournalEntry.clear_all_state:type_name -> reflw.engine.v1.JEClearAllState
-	38,  // 86: reflw.engine.v1.JournalEntry.one_way_call:type_name -> reflw.engine.v1.JEOneWayCall
-	52,  // 87: reflw.engine.v1.JournalEntry.await_signal:type_name -> reflw.engine.v1.JEAwaitSignal
-	53,  // 88: reflw.engine.v1.JournalEntry.signal_result:type_name -> reflw.engine.v1.JESignalResult
-	56,  // 89: reflw.engine.v1.JournalEntry.get_promise:type_name -> reflw.engine.v1.JEGetPromise
-	57,  // 90: reflw.engine.v1.JournalEntry.promise_result:type_name -> reflw.engine.v1.JEPromiseResult
-	58,  // 91: reflw.engine.v1.JournalEntry.peek_promise:type_name -> reflw.engine.v1.JEPeekPromise
-	59,  // 92: reflw.engine.v1.JournalEntry.complete_promise:type_name -> reflw.engine.v1.JECompletePromise
-	60,  // 93: reflw.engine.v1.JournalEntry.promise_complete_result:type_name -> reflw.engine.v1.JEPromiseCompleteResult
-	41,  // 94: reflw.engine.v1.JournalEntry.get_state_result:type_name -> reflw.engine.v1.JEGetStateResult
-	42,  // 95: reflw.engine.v1.JournalEntry.get_state_keys:type_name -> reflw.engine.v1.JEGetStateKeys
-	43,  // 96: reflw.engine.v1.JournalEntry.get_state_keys_result:type_name -> reflw.engine.v1.JEGetStateKeysResult
-	67,  // 97: reflw.engine.v1.JournalEntry.get_eager_state_keys:type_name -> reflw.engine.v1.JEGetEagerStateKeys
-	164, // 98: reflw.engine.v1.JEInput.metadata:type_name -> reflw.engine.v1.JEInput.MetadataEntry
-	10,  // 99: reflw.engine.v1.JECall.target:type_name -> reflw.engine.v1.InvocationTarget
-	10,  // 100: reflw.engine.v1.JEOneWayCall.target:type_name -> reflw.engine.v1.InvocationTarget
-	10,  // 101: reflw.engine.v1.JESignal.target:type_name -> reflw.engine.v1.InvocationTarget
-	9,   // 102: reflw.engine.v1.SignalAwaiter.owner:type_name -> reflw.engine.v1.InvocationId
-	62,  // 103: reflw.engine.v1.PromiseValue.pending:type_name -> reflw.engine.v1.Pending
-	63,  // 104: reflw.engine.v1.PromiseValue.resolved:type_name -> reflw.engine.v1.Resolved
-	64,  // 105: reflw.engine.v1.PromiseValue.rejected:type_name -> reflw.engine.v1.Rejected
-	9,   // 106: reflw.engine.v1.PromiseAwaiter.owner:type_name -> reflw.engine.v1.InvocationId
-	9,   // 107: reflw.engine.v1.TimerFired.invocation_id:type_name -> reflw.engine.v1.InvocationId
-	9,   // 108: reflw.engine.v1.PurgeInvocation.invocation_id:type_name -> reflw.engine.v1.InvocationId
-	71,  // 109: reflw.engine.v1.InvocationStatus.free:type_name -> reflw.engine.v1.Free
-	72,  // 110: reflw.engine.v1.InvocationStatus.scheduled:type_name -> reflw.engine.v1.Scheduled
-	73,  // 111: reflw.engine.v1.InvocationStatus.invoked:type_name -> reflw.engine.v1.Invoked
-	74,  // 112: reflw.engine.v1.InvocationStatus.suspended:type_name -> reflw.engine.v1.Suspended
-	75,  // 113: reflw.engine.v1.InvocationStatus.completed:type_name -> reflw.engine.v1.Completed
-	10,  // 114: reflw.engine.v1.Scheduled.target:type_name -> reflw.engine.v1.InvocationTarget
-	21,  // 115: reflw.engine.v1.Scheduled.parent_link:type_name -> reflw.engine.v1.ParentLink
-	165, // 116: reflw.engine.v1.Scheduled.metadata:type_name -> reflw.engine.v1.Scheduled.MetadataEntry
-	10,  // 117: reflw.engine.v1.Invoked.target:type_name -> reflw.engine.v1.InvocationTarget
-	21,  // 118: reflw.engine.v1.Invoked.parent_link:type_name -> reflw.engine.v1.ParentLink
-	10,  // 119: reflw.engine.v1.Suspended.target:type_name -> reflw.engine.v1.InvocationTarget
-	21,  // 120: reflw.engine.v1.Suspended.parent_link:type_name -> reflw.engine.v1.ParentLink
-	10,  // 121: reflw.engine.v1.Completed.target:type_name -> reflw.engine.v1.InvocationTarget
-	7,   // 122: reflw.engine.v1.KeyLeaseStatus.state:type_name -> reflw.engine.v1.KeyLeaseStatus.State
-	9,   // 123: reflw.engine.v1.KeyLeaseStatus.current_invocation:type_name -> reflw.engine.v1.InvocationId
-	9,   // 124: reflw.engine.v1.KeyLeaseStatus.queue:type_name -> reflw.engine.v1.InvocationId
-	9,   // 125: reflw.engine.v1.AwakeableEntry.owner:type_name -> reflw.engine.v1.InvocationId
-	20,  // 126: reflw.engine.v1.OutboxEnvelope.invoke:type_name -> reflw.engine.v1.InvokeCommand
-	83,  // 127: reflw.engine.v1.OutboxEnvelope.signal:type_name -> reflw.engine.v1.SignalSend
-	81,  // 128: reflw.engine.v1.OutboxEnvelope.deliver_call_result:type_name -> reflw.engine.v1.DeliverCallResult
-	82,  // 129: reflw.engine.v1.OutboxEnvelope.outbox_ack:type_name -> reflw.engine.v1.OutboxAck
-	27,  // 130: reflw.engine.v1.OutboxEnvelope.promise_completion:type_name -> reflw.engine.v1.PromiseCompleted
-	28,  // 131: reflw.engine.v1.OutboxEnvelope.promise_completion_ack:type_name -> reflw.engine.v1.PromiseCompletionAck
-	84,  // 132: reflw.engine.v1.OutboxEnvelope.process_event:type_name -> reflw.engine.v1.ProcessEvent
-	106, // 133: reflw.engine.v1.OutboxEnvelope.process_subscribe:type_name -> reflw.engine.v1.ProcessSubscribe
-	107, // 134: reflw.engine.v1.OutboxEnvelope.process_unsubscribe:type_name -> reflw.engine.v1.ProcessUnsubscribe
-	89,  // 135: reflw.engine.v1.OutboxEnvelope.process_cancel:type_name -> reflw.engine.v1.ProcessCancel
-	9,   // 136: reflw.engine.v1.DeliverCallResult.parent_id:type_name -> reflw.engine.v1.InvocationId
-	10,  // 137: reflw.engine.v1.SignalSend.target:type_name -> reflw.engine.v1.InvocationTarget
-	85,  // 138: reflw.engine.v1.ProcessEvent.payload:type_name -> reflw.engine.v1.ProcessEventPayload
-	112, // 139: reflw.engine.v1.ProcessEvent.model_ref:type_name -> reflw.engine.v1.ModelRef
-	3,   // 140: reflw.engine.v1.ProcessEvent.kind:type_name -> reflw.engine.v1.ProcessKind
-	21,  // 141: reflw.engine.v1.ProcessEvent.parent_link:type_name -> reflw.engine.v1.ParentLink
-	86,  // 142: reflw.engine.v1.ProcessEventPayload.task_completed:type_name -> reflw.engine.v1.ProcessTaskCompleted
-	87,  // 143: reflw.engine.v1.ProcessEventPayload.timer_fired:type_name -> reflw.engine.v1.ProcessTimerFired
-	88,  // 144: reflw.engine.v1.ProcessEventPayload.child_completed:type_name -> reflw.engine.v1.ProcessChildCompleted
-	90,  // 145: reflw.engine.v1.ProcessEventPayload.message_received:type_name -> reflw.engine.v1.ProcessMessageReceived
-	91,  // 146: reflw.engine.v1.ProcessEventPayload.retry:type_name -> reflw.engine.v1.ProcessRetry
-	9,   // 147: reflw.engine.v1.ProcessChildCompleted.child_root:type_name -> reflw.engine.v1.InvocationId
-	93,  // 148: reflw.engine.v1.TimerValue.process:type_name -> reflw.engine.v1.ProcessTimer
-	97,  // 149: reflw.engine.v1.ProcessAdvanced.invoke:type_name -> reflw.engine.v1.TaskInvoke
-	98,  // 150: reflw.engine.v1.ProcessAdvanced.arm_timer:type_name -> reflw.engine.v1.TimerArm
-	99,  // 151: reflw.engine.v1.ProcessAdvanced.cancel_timer:type_name -> reflw.engine.v1.TimerCancel
-	100, // 152: reflw.engine.v1.ProcessAdvanced.start_child:type_name -> reflw.engine.v1.ChildStart
-	101, // 153: reflw.engine.v1.ProcessAdvanced.subscribe:type_name -> reflw.engine.v1.SignalSubscribe
-	103, // 154: reflw.engine.v1.ProcessAdvanced.terminal:type_name -> reflw.engine.v1.ProcessTerminal
-	102, // 155: reflw.engine.v1.ProcessAdvanced.unsubscribe:type_name -> reflw.engine.v1.SignalUnsubscribe
-	95,  // 156: reflw.engine.v1.ProcessAdvanced.incident:type_name -> reflw.engine.v1.ProcessIncident
-	1,   // 157: reflw.engine.v1.ResolveProcessIncident.resolution:type_name -> reflw.engine.v1.ProcessIncidentResolution
-	10,  // 158: reflw.engine.v1.TaskInvoke.target:type_name -> reflw.engine.v1.InvocationTarget
-	112, // 159: reflw.engine.v1.ChildStart.model_ref:type_name -> reflw.engine.v1.ModelRef
-	3,   // 160: reflw.engine.v1.ChildStart.kind:type_name -> reflw.engine.v1.ProcessKind
-	105, // 161: reflw.engine.v1.ProcessSubscribe.sub:type_name -> reflw.engine.v1.MessageSubscription
-	105, // 162: reflw.engine.v1.ProcessUnsubscribe.sub:type_name -> reflw.engine.v1.MessageSubscription
-	9,   // 163: reflw.engine.v1.ProcessInstanceRecord.root_id:type_name -> reflw.engine.v1.InvocationId
-	112, // 164: reflw.engine.v1.ProcessInstanceRecord.model_ref:type_name -> reflw.engine.v1.ModelRef
-	3,   // 165: reflw.engine.v1.ProcessInstanceRecord.kind:type_name -> reflw.engine.v1.ProcessKind
-	4,   // 166: reflw.engine.v1.ProcessInstanceRecord.status:type_name -> reflw.engine.v1.ProcessStatus
-	21,  // 167: reflw.engine.v1.ProcessInstanceRecord.parent_link:type_name -> reflw.engine.v1.ParentLink
-	95,  // 168: reflw.engine.v1.ProcessInstanceRecord.incident:type_name -> reflw.engine.v1.ProcessIncident
-	85,  // 169: reflw.engine.v1.ProcessInboxEntry.payload:type_name -> reflw.engine.v1.ProcessEventPayload
-	2,   // 170: reflw.engine.v1.ProcessHistoryEvent.kind:type_name -> reflw.engine.v1.ProcessHistoryKind
-	116, // 171: reflw.engine.v1.DeploymentRecord.handlers:type_name -> reflw.engine.v1.DeploymentHandler
-	115, // 172: reflw.engine.v1.RegisterDeployment.record:type_name -> reflw.engine.v1.DeploymentRecord
-	119, // 173: reflw.engine.v1.UpsertPlatformConfig.record:type_name -> reflw.engine.v1.PlatformConfigRecord
-	122, // 174: reflw.engine.v1.SecretRecord.remote_encrypted:type_name -> reflw.engine.v1.RemoteEncryptedSecret
-	121, // 175: reflw.engine.v1.UpsertSecret.record:type_name -> reflw.engine.v1.SecretRecord
-	112, // 176: reflw.engine.v1.ModelRecord.model_ref:type_name -> reflw.engine.v1.ModelRef
-	126, // 177: reflw.engine.v1.ModelRecord.bundle:type_name -> reflw.engine.v1.ModelBundle
-	166, // 178: reflw.engine.v1.ModelBundle.decisions:type_name -> reflw.engine.v1.ModelBundle.DecisionsEntry
-	167, // 179: reflw.engine.v1.ModelBundle.children:type_name -> reflw.engine.v1.ModelBundle.ChildrenEntry
-	168, // 180: reflw.engine.v1.ModelBundle.imports:type_name -> reflw.engine.v1.ModelBundle.ImportsEntry
-	125, // 181: reflw.engine.v1.UpsertModelSet.records:type_name -> reflw.engine.v1.ModelRecord
-	112, // 182: reflw.engine.v1.DeleteModel.model_ref:type_name -> reflw.engine.v1.ModelRef
-	129, // 183: reflw.engine.v1.UpsertCARoot.record:type_name -> reflw.engine.v1.CARootRecord
-	5,   // 184: reflw.engine.v1.JoinTokenRecord.kind:type_name -> reflw.engine.v1.JoinTokenKind
-	132, // 185: reflw.engine.v1.UpsertJoinToken.record:type_name -> reflw.engine.v1.JoinTokenRecord
-	136, // 186: reflw.engine.v1.UpsertLPOwner.record:type_name -> reflw.engine.v1.LPOwnerRecord
-	136, // 187: reflw.engine.v1.BulkUpsertLPOwners.records:type_name -> reflw.engine.v1.LPOwnerRecord
-	142, // 188: reflw.engine.v1.RegisterNode.member:type_name -> reflw.engine.v1.NodeMembership
-	143, // 189: reflw.engine.v1.UpdatePartitionTable.table:type_name -> reflw.engine.v1.PartitionTable
-	169, // 190: reflw.engine.v1.PartitionTable.shards:type_name -> reflw.engine.v1.PartitionTable.ShardsEntry
-	146, // 191: reflw.engine.v1.PartitionTable.pending:type_name -> reflw.engine.v1.RebalanceStep
-	144, // 192: reflw.engine.v1.PartitionTable.meta_replicas:type_name -> reflw.engine.v1.ReplicaSet
-	8,   // 193: reflw.engine.v1.RebalanceStep.kind:type_name -> reflw.engine.v1.RebalanceStep.Kind
-	146, // 194: reflw.engine.v1.BeginRebalanceStep.step:type_name -> reflw.engine.v1.RebalanceStep
-	6,   // 195: reflw.engine.v1.LPTransferRecord.phase:type_name -> reflw.engine.v1.LPTransferPhase
-	6,   // 196: reflw.engine.v1.UpdateLPTransferPhase.phase:type_name -> reflw.engine.v1.LPTransferPhase
-	157, // 197: reflw.engine.v1.ApplyLPTransferSST.ssts:type_name -> reflw.engine.v1.TransferSSTRef
-	112, // 198: reflw.engine.v1.ModelBundle.DecisionsEntry.value:type_name -> reflw.engine.v1.ModelRef
-	112, // 199: reflw.engine.v1.ModelBundle.ChildrenEntry.value:type_name -> reflw.engine.v1.ModelRef
-	112, // 200: reflw.engine.v1.ModelBundle.ImportsEntry.value:type_name -> reflw.engine.v1.ModelRef
-	144, // 201: reflw.engine.v1.PartitionTable.ShardsEntry.value:type_name -> reflw.engine.v1.ReplicaSet
-	202, // [202:202] is the sub-list for method output_type
-	202, // [202:202] is the sub-list for method input_type
-	202, // [202:202] is the sub-list for extension type_name
-	202, // [202:202] is the sub-list for extension extendee
-	0,   // [0:202] is the sub-list for field type_name
+	9,   // 66: reflw.engine.v1.InvokerEffect.cancel_by_id:type_name -> reflw.engine.v1.InvocationId
+	47,  // 67: reflw.engine.v1.JERunProposal.retry_policy:type_name -> reflw.engine.v1.RunRetryPolicy
+	10,  // 68: reflw.engine.v1.SignalDelivered.target:type_name -> reflw.engine.v1.InvocationTarget
+	9,   // 69: reflw.engine.v1.PromiseCompleted.caller_id:type_name -> reflw.engine.v1.InvocationId
+	9,   // 70: reflw.engine.v1.PromiseCompletionAck.caller_id:type_name -> reflw.engine.v1.InvocationId
+	9,   // 71: reflw.engine.v1.ReapInvocation.invocation_id:type_name -> reflw.engine.v1.InvocationId
+	33,  // 72: reflw.engine.v1.JournalEntryAppended.entry:type_name -> reflw.engine.v1.JournalEntry
+	34,  // 73: reflw.engine.v1.JournalEntry.input:type_name -> reflw.engine.v1.JEInput
+	35,  // 74: reflw.engine.v1.JournalEntry.sleep:type_name -> reflw.engine.v1.JESleep
+	36,  // 75: reflw.engine.v1.JournalEntry.sleep_result:type_name -> reflw.engine.v1.JESleepResult
+	37,  // 76: reflw.engine.v1.JournalEntry.call:type_name -> reflw.engine.v1.JECall
+	39,  // 77: reflw.engine.v1.JournalEntry.call_result:type_name -> reflw.engine.v1.JECallResult
+	40,  // 78: reflw.engine.v1.JournalEntry.get_state:type_name -> reflw.engine.v1.JEGetState
+	44,  // 79: reflw.engine.v1.JournalEntry.set_state:type_name -> reflw.engine.v1.JESetState
+	45,  // 80: reflw.engine.v1.JournalEntry.output:type_name -> reflw.engine.v1.JEOutput
+	46,  // 81: reflw.engine.v1.JournalEntry.run:type_name -> reflw.engine.v1.JERun
+	49,  // 82: reflw.engine.v1.JournalEntry.awakeable:type_name -> reflw.engine.v1.JEAwakeable
+	50,  // 83: reflw.engine.v1.JournalEntry.awakeable_result:type_name -> reflw.engine.v1.JEAwakeableResult
+	51,  // 84: reflw.engine.v1.JournalEntry.signal:type_name -> reflw.engine.v1.JESignal
+	66,  // 85: reflw.engine.v1.JournalEntry.clear_state:type_name -> reflw.engine.v1.JEClearState
+	48,  // 86: reflw.engine.v1.JournalEntry.clear_all_state:type_name -> reflw.engine.v1.JEClearAllState
+	38,  // 87: reflw.engine.v1.JournalEntry.one_way_call:type_name -> reflw.engine.v1.JEOneWayCall
+	52,  // 88: reflw.engine.v1.JournalEntry.await_signal:type_name -> reflw.engine.v1.JEAwaitSignal
+	53,  // 89: reflw.engine.v1.JournalEntry.signal_result:type_name -> reflw.engine.v1.JESignalResult
+	56,  // 90: reflw.engine.v1.JournalEntry.get_promise:type_name -> reflw.engine.v1.JEGetPromise
+	57,  // 91: reflw.engine.v1.JournalEntry.promise_result:type_name -> reflw.engine.v1.JEPromiseResult
+	58,  // 92: reflw.engine.v1.JournalEntry.peek_promise:type_name -> reflw.engine.v1.JEPeekPromise
+	59,  // 93: reflw.engine.v1.JournalEntry.complete_promise:type_name -> reflw.engine.v1.JECompletePromise
+	60,  // 94: reflw.engine.v1.JournalEntry.promise_complete_result:type_name -> reflw.engine.v1.JEPromiseCompleteResult
+	41,  // 95: reflw.engine.v1.JournalEntry.get_state_result:type_name -> reflw.engine.v1.JEGetStateResult
+	42,  // 96: reflw.engine.v1.JournalEntry.get_state_keys:type_name -> reflw.engine.v1.JEGetStateKeys
+	43,  // 97: reflw.engine.v1.JournalEntry.get_state_keys_result:type_name -> reflw.engine.v1.JEGetStateKeysResult
+	67,  // 98: reflw.engine.v1.JournalEntry.get_eager_state_keys:type_name -> reflw.engine.v1.JEGetEagerStateKeys
+	164, // 99: reflw.engine.v1.JEInput.metadata:type_name -> reflw.engine.v1.JEInput.MetadataEntry
+	10,  // 100: reflw.engine.v1.JECall.target:type_name -> reflw.engine.v1.InvocationTarget
+	10,  // 101: reflw.engine.v1.JEOneWayCall.target:type_name -> reflw.engine.v1.InvocationTarget
+	10,  // 102: reflw.engine.v1.JESignal.target:type_name -> reflw.engine.v1.InvocationTarget
+	9,   // 103: reflw.engine.v1.SignalAwaiter.owner:type_name -> reflw.engine.v1.InvocationId
+	62,  // 104: reflw.engine.v1.PromiseValue.pending:type_name -> reflw.engine.v1.Pending
+	63,  // 105: reflw.engine.v1.PromiseValue.resolved:type_name -> reflw.engine.v1.Resolved
+	64,  // 106: reflw.engine.v1.PromiseValue.rejected:type_name -> reflw.engine.v1.Rejected
+	9,   // 107: reflw.engine.v1.PromiseAwaiter.owner:type_name -> reflw.engine.v1.InvocationId
+	9,   // 108: reflw.engine.v1.TimerFired.invocation_id:type_name -> reflw.engine.v1.InvocationId
+	9,   // 109: reflw.engine.v1.PurgeInvocation.invocation_id:type_name -> reflw.engine.v1.InvocationId
+	71,  // 110: reflw.engine.v1.InvocationStatus.free:type_name -> reflw.engine.v1.Free
+	72,  // 111: reflw.engine.v1.InvocationStatus.scheduled:type_name -> reflw.engine.v1.Scheduled
+	73,  // 112: reflw.engine.v1.InvocationStatus.invoked:type_name -> reflw.engine.v1.Invoked
+	74,  // 113: reflw.engine.v1.InvocationStatus.suspended:type_name -> reflw.engine.v1.Suspended
+	75,  // 114: reflw.engine.v1.InvocationStatus.completed:type_name -> reflw.engine.v1.Completed
+	10,  // 115: reflw.engine.v1.Scheduled.target:type_name -> reflw.engine.v1.InvocationTarget
+	21,  // 116: reflw.engine.v1.Scheduled.parent_link:type_name -> reflw.engine.v1.ParentLink
+	165, // 117: reflw.engine.v1.Scheduled.metadata:type_name -> reflw.engine.v1.Scheduled.MetadataEntry
+	10,  // 118: reflw.engine.v1.Invoked.target:type_name -> reflw.engine.v1.InvocationTarget
+	21,  // 119: reflw.engine.v1.Invoked.parent_link:type_name -> reflw.engine.v1.ParentLink
+	10,  // 120: reflw.engine.v1.Suspended.target:type_name -> reflw.engine.v1.InvocationTarget
+	21,  // 121: reflw.engine.v1.Suspended.parent_link:type_name -> reflw.engine.v1.ParentLink
+	10,  // 122: reflw.engine.v1.Completed.target:type_name -> reflw.engine.v1.InvocationTarget
+	7,   // 123: reflw.engine.v1.KeyLeaseStatus.state:type_name -> reflw.engine.v1.KeyLeaseStatus.State
+	9,   // 124: reflw.engine.v1.KeyLeaseStatus.current_invocation:type_name -> reflw.engine.v1.InvocationId
+	9,   // 125: reflw.engine.v1.KeyLeaseStatus.queue:type_name -> reflw.engine.v1.InvocationId
+	9,   // 126: reflw.engine.v1.AwakeableEntry.owner:type_name -> reflw.engine.v1.InvocationId
+	20,  // 127: reflw.engine.v1.OutboxEnvelope.invoke:type_name -> reflw.engine.v1.InvokeCommand
+	83,  // 128: reflw.engine.v1.OutboxEnvelope.signal:type_name -> reflw.engine.v1.SignalSend
+	81,  // 129: reflw.engine.v1.OutboxEnvelope.deliver_call_result:type_name -> reflw.engine.v1.DeliverCallResult
+	82,  // 130: reflw.engine.v1.OutboxEnvelope.outbox_ack:type_name -> reflw.engine.v1.OutboxAck
+	27,  // 131: reflw.engine.v1.OutboxEnvelope.promise_completion:type_name -> reflw.engine.v1.PromiseCompleted
+	28,  // 132: reflw.engine.v1.OutboxEnvelope.promise_completion_ack:type_name -> reflw.engine.v1.PromiseCompletionAck
+	84,  // 133: reflw.engine.v1.OutboxEnvelope.process_event:type_name -> reflw.engine.v1.ProcessEvent
+	106, // 134: reflw.engine.v1.OutboxEnvelope.process_subscribe:type_name -> reflw.engine.v1.ProcessSubscribe
+	107, // 135: reflw.engine.v1.OutboxEnvelope.process_unsubscribe:type_name -> reflw.engine.v1.ProcessUnsubscribe
+	89,  // 136: reflw.engine.v1.OutboxEnvelope.process_cancel:type_name -> reflw.engine.v1.ProcessCancel
+	9,   // 137: reflw.engine.v1.OutboxEnvelope.cancel_invocation:type_name -> reflw.engine.v1.InvocationId
+	9,   // 138: reflw.engine.v1.DeliverCallResult.parent_id:type_name -> reflw.engine.v1.InvocationId
+	10,  // 139: reflw.engine.v1.SignalSend.target:type_name -> reflw.engine.v1.InvocationTarget
+	85,  // 140: reflw.engine.v1.ProcessEvent.payload:type_name -> reflw.engine.v1.ProcessEventPayload
+	112, // 141: reflw.engine.v1.ProcessEvent.model_ref:type_name -> reflw.engine.v1.ModelRef
+	3,   // 142: reflw.engine.v1.ProcessEvent.kind:type_name -> reflw.engine.v1.ProcessKind
+	21,  // 143: reflw.engine.v1.ProcessEvent.parent_link:type_name -> reflw.engine.v1.ParentLink
+	86,  // 144: reflw.engine.v1.ProcessEventPayload.task_completed:type_name -> reflw.engine.v1.ProcessTaskCompleted
+	87,  // 145: reflw.engine.v1.ProcessEventPayload.timer_fired:type_name -> reflw.engine.v1.ProcessTimerFired
+	88,  // 146: reflw.engine.v1.ProcessEventPayload.child_completed:type_name -> reflw.engine.v1.ProcessChildCompleted
+	90,  // 147: reflw.engine.v1.ProcessEventPayload.message_received:type_name -> reflw.engine.v1.ProcessMessageReceived
+	91,  // 148: reflw.engine.v1.ProcessEventPayload.retry:type_name -> reflw.engine.v1.ProcessRetry
+	9,   // 149: reflw.engine.v1.ProcessChildCompleted.child_root:type_name -> reflw.engine.v1.InvocationId
+	93,  // 150: reflw.engine.v1.TimerValue.process:type_name -> reflw.engine.v1.ProcessTimer
+	97,  // 151: reflw.engine.v1.ProcessAdvanced.invoke:type_name -> reflw.engine.v1.TaskInvoke
+	98,  // 152: reflw.engine.v1.ProcessAdvanced.arm_timer:type_name -> reflw.engine.v1.TimerArm
+	99,  // 153: reflw.engine.v1.ProcessAdvanced.cancel_timer:type_name -> reflw.engine.v1.TimerCancel
+	100, // 154: reflw.engine.v1.ProcessAdvanced.start_child:type_name -> reflw.engine.v1.ChildStart
+	101, // 155: reflw.engine.v1.ProcessAdvanced.subscribe:type_name -> reflw.engine.v1.SignalSubscribe
+	103, // 156: reflw.engine.v1.ProcessAdvanced.terminal:type_name -> reflw.engine.v1.ProcessTerminal
+	102, // 157: reflw.engine.v1.ProcessAdvanced.unsubscribe:type_name -> reflw.engine.v1.SignalUnsubscribe
+	95,  // 158: reflw.engine.v1.ProcessAdvanced.incident:type_name -> reflw.engine.v1.ProcessIncident
+	1,   // 159: reflw.engine.v1.ResolveProcessIncident.resolution:type_name -> reflw.engine.v1.ProcessIncidentResolution
+	10,  // 160: reflw.engine.v1.TaskInvoke.target:type_name -> reflw.engine.v1.InvocationTarget
+	112, // 161: reflw.engine.v1.ChildStart.model_ref:type_name -> reflw.engine.v1.ModelRef
+	3,   // 162: reflw.engine.v1.ChildStart.kind:type_name -> reflw.engine.v1.ProcessKind
+	105, // 163: reflw.engine.v1.ProcessSubscribe.sub:type_name -> reflw.engine.v1.MessageSubscription
+	105, // 164: reflw.engine.v1.ProcessUnsubscribe.sub:type_name -> reflw.engine.v1.MessageSubscription
+	9,   // 165: reflw.engine.v1.ProcessInstanceRecord.root_id:type_name -> reflw.engine.v1.InvocationId
+	112, // 166: reflw.engine.v1.ProcessInstanceRecord.model_ref:type_name -> reflw.engine.v1.ModelRef
+	3,   // 167: reflw.engine.v1.ProcessInstanceRecord.kind:type_name -> reflw.engine.v1.ProcessKind
+	4,   // 168: reflw.engine.v1.ProcessInstanceRecord.status:type_name -> reflw.engine.v1.ProcessStatus
+	21,  // 169: reflw.engine.v1.ProcessInstanceRecord.parent_link:type_name -> reflw.engine.v1.ParentLink
+	95,  // 170: reflw.engine.v1.ProcessInstanceRecord.incident:type_name -> reflw.engine.v1.ProcessIncident
+	85,  // 171: reflw.engine.v1.ProcessInboxEntry.payload:type_name -> reflw.engine.v1.ProcessEventPayload
+	2,   // 172: reflw.engine.v1.ProcessHistoryEvent.kind:type_name -> reflw.engine.v1.ProcessHistoryKind
+	116, // 173: reflw.engine.v1.DeploymentRecord.handlers:type_name -> reflw.engine.v1.DeploymentHandler
+	115, // 174: reflw.engine.v1.RegisterDeployment.record:type_name -> reflw.engine.v1.DeploymentRecord
+	119, // 175: reflw.engine.v1.UpsertPlatformConfig.record:type_name -> reflw.engine.v1.PlatformConfigRecord
+	122, // 176: reflw.engine.v1.SecretRecord.remote_encrypted:type_name -> reflw.engine.v1.RemoteEncryptedSecret
+	121, // 177: reflw.engine.v1.UpsertSecret.record:type_name -> reflw.engine.v1.SecretRecord
+	112, // 178: reflw.engine.v1.ModelRecord.model_ref:type_name -> reflw.engine.v1.ModelRef
+	126, // 179: reflw.engine.v1.ModelRecord.bundle:type_name -> reflw.engine.v1.ModelBundle
+	166, // 180: reflw.engine.v1.ModelBundle.decisions:type_name -> reflw.engine.v1.ModelBundle.DecisionsEntry
+	167, // 181: reflw.engine.v1.ModelBundle.children:type_name -> reflw.engine.v1.ModelBundle.ChildrenEntry
+	168, // 182: reflw.engine.v1.ModelBundle.imports:type_name -> reflw.engine.v1.ModelBundle.ImportsEntry
+	125, // 183: reflw.engine.v1.UpsertModelSet.records:type_name -> reflw.engine.v1.ModelRecord
+	112, // 184: reflw.engine.v1.DeleteModel.model_ref:type_name -> reflw.engine.v1.ModelRef
+	129, // 185: reflw.engine.v1.UpsertCARoot.record:type_name -> reflw.engine.v1.CARootRecord
+	5,   // 186: reflw.engine.v1.JoinTokenRecord.kind:type_name -> reflw.engine.v1.JoinTokenKind
+	132, // 187: reflw.engine.v1.UpsertJoinToken.record:type_name -> reflw.engine.v1.JoinTokenRecord
+	136, // 188: reflw.engine.v1.UpsertLPOwner.record:type_name -> reflw.engine.v1.LPOwnerRecord
+	136, // 189: reflw.engine.v1.BulkUpsertLPOwners.records:type_name -> reflw.engine.v1.LPOwnerRecord
+	142, // 190: reflw.engine.v1.RegisterNode.member:type_name -> reflw.engine.v1.NodeMembership
+	143, // 191: reflw.engine.v1.UpdatePartitionTable.table:type_name -> reflw.engine.v1.PartitionTable
+	169, // 192: reflw.engine.v1.PartitionTable.shards:type_name -> reflw.engine.v1.PartitionTable.ShardsEntry
+	146, // 193: reflw.engine.v1.PartitionTable.pending:type_name -> reflw.engine.v1.RebalanceStep
+	144, // 194: reflw.engine.v1.PartitionTable.meta_replicas:type_name -> reflw.engine.v1.ReplicaSet
+	8,   // 195: reflw.engine.v1.RebalanceStep.kind:type_name -> reflw.engine.v1.RebalanceStep.Kind
+	146, // 196: reflw.engine.v1.BeginRebalanceStep.step:type_name -> reflw.engine.v1.RebalanceStep
+	6,   // 197: reflw.engine.v1.LPTransferRecord.phase:type_name -> reflw.engine.v1.LPTransferPhase
+	6,   // 198: reflw.engine.v1.UpdateLPTransferPhase.phase:type_name -> reflw.engine.v1.LPTransferPhase
+	157, // 199: reflw.engine.v1.ApplyLPTransferSST.ssts:type_name -> reflw.engine.v1.TransferSSTRef
+	112, // 200: reflw.engine.v1.ModelBundle.DecisionsEntry.value:type_name -> reflw.engine.v1.ModelRef
+	112, // 201: reflw.engine.v1.ModelBundle.ChildrenEntry.value:type_name -> reflw.engine.v1.ModelRef
+	112, // 202: reflw.engine.v1.ModelBundle.ImportsEntry.value:type_name -> reflw.engine.v1.ModelRef
+	144, // 203: reflw.engine.v1.PartitionTable.ShardsEntry.value:type_name -> reflw.engine.v1.ReplicaSet
+	204, // [204:204] is the sub-list for method output_type
+	204, // [204:204] is the sub-list for method input_type
+	204, // [204:204] is the sub-list for extension type_name
+	204, // [204:204] is the sub-list for extension extendee
+	0,   // [0:204] is the sub-list for field type_name
 }
 
 func init() { file_enginev1_engine_proto_init() }
@@ -13947,6 +13995,7 @@ func file_enginev1_engine_proto_init() {
 		(*InvokerEffect_AwakeableResolved)(nil),
 		(*InvokerEffect_SignalDelivered)(nil),
 		(*InvokerEffect_PromiseCompleted)(nil),
+		(*InvokerEffect_CancelById)(nil),
 	}
 	file_enginev1_engine_proto_msgTypes[24].OneofWrappers = []any{
 		(*JournalEntry_Input)(nil),
@@ -13999,6 +14048,7 @@ func file_enginev1_engine_proto_init() {
 		(*OutboxEnvelope_ProcessSubscribe)(nil),
 		(*OutboxEnvelope_ProcessUnsubscribe)(nil),
 		(*OutboxEnvelope_ProcessCancel)(nil),
+		(*OutboxEnvelope_CancelInvocation)(nil),
 	}
 	file_enginev1_engine_proto_msgTypes[76].OneofWrappers = []any{
 		(*ProcessEventPayload_External)(nil),

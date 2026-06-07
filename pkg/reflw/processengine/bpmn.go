@@ -202,14 +202,19 @@ func (a *Adapter) translateBPMN(in invoker.ProcessAdvanceInput, graph *bpmn.Proc
 			}
 			return adv, nil
 		case bpmn.ProcessFailed:
-			// A child's failure (and any escalation, which is cross-process by
-			// definition) terminates so it delivers to its parent — the parent's
-			// CallActivity boundary may catch it (encodeProcessFailure promotes an
-			// escalation into a bridgeFault code) or the parent fails in turn. Only a
-			// top-level, non-escalation uncaught failure — one with nowhere left to
-			// propagate — parks as an incident (non-terminal), retaining new_state so
-			// a ResolveProcessIncident RETRY can re-drive the failed element.
-			if incidentEligible(in.Record) && !strings.HasPrefix(t.Cause, escalationPrefix) {
+			// A genuine (non-escalation) uncaught failure parks the instance as an
+			// incident — child or top-level alike — retaining new_state so a
+			// ResolveProcessIncident RETRY can re-drive the failed node. A child
+			// parks on its own failing element (siblings preserved) rather than
+			// terminating; the parent stays blocked awaiting the child's completion,
+			// and a TERMINATE on the child's incident is the operator's
+			// deliver-to-parent escape hatch.
+			//
+			// An escalation is cross-process by definition: it terminates so it
+			// delivers to the parent's CallActivity boundary (encodeProcessFailure
+			// promotes it to a bridgeFault code), or — at the top level, with
+			// nowhere left to propagate — fails the instance terminally.
+			if !strings.HasPrefix(t.Cause, escalationPrefix) {
 				adv.Incident = &enginev1.ProcessIncident{NodeId: t.NodeID, Cause: t.Cause}
 				return adv, nil
 			}

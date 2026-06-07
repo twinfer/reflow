@@ -25,9 +25,10 @@ func childInput() invoker.ProcessAdvanceInput {
 }
 
 // TestTranslateBPMN_IncidentTaxonomy pins the adapter's incident-vs-terminal split:
-// a top-level genuine uncaught failure parks as an incident; an escalation cause
-// stays terminal (it must deliver to a parent CallActivity boundary); a child's
-// genuine failure stays terminal (it delivers to its parent).
+// a genuine uncaught failure parks as an incident whether top-level or a child
+// (the child parks on its own failing node, retry-able in place); an escalation
+// cause stays terminal whether top-level or a child (it must deliver to a parent
+// CallActivity boundary, or end a top-level instance with nowhere to propagate).
 func TestTranslateBPMN_IncidentTaxonomy(t *testing.T) {
 	a := New(NewMapResolver())
 
@@ -55,13 +56,28 @@ func TestTranslateBPMN_IncidentTaxonomy(t *testing.T) {
 		t.Fatalf("escalation must stay terminal: terminal=%v incident=%v", adv.GetTerminal(), adv.GetIncident())
 	}
 
-	// Child genuine failure → terminal (delivers to parent).
+	// Child genuine failure → incident (the child parks on its own node; siblings
+	// preserved; parent stays blocked). The deep-pinning win: the incident is on
+	// the child's failing node and is retry-able in place.
 	adv, err = a.translateBPMN(childInput(), nil, []bpmn.Command{bpmn.ProcessFailed{NodeID: "Task1", Cause: "boom"}}, []byte("s"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if adv.GetTerminal() == nil || adv.GetIncident() != nil {
-		t.Fatalf("child failure must stay terminal (deliver to parent): terminal=%v incident=%v", adv.GetTerminal(), adv.GetIncident())
+	if adv.GetIncident() == nil || adv.GetTerminal() != nil {
+		t.Fatalf("child genuine failure must park as an incident: terminal=%v incident=%v", adv.GetTerminal(), adv.GetIncident())
+	}
+	if adv.GetIncident().GetNodeId() != "Task1" {
+		t.Fatalf("child incident must pin the deep node Task1, got %+v", adv.GetIncident())
+	}
+
+	// Child escalation → terminal (escalation is cross-process; it still delivers
+	// to the parent's boundary regardless of nesting).
+	adv, err = a.translateBPMN(childInput(), nil, []bpmn.Command{bpmn.ProcessFailed{NodeID: "Esc1", Cause: "escalation:CODE"}}, []byte("s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adv.GetTerminal() == nil || !adv.GetTerminal().GetFailed() || adv.GetIncident() != nil {
+		t.Fatalf("child escalation must stay terminal (deliver to parent): terminal=%v incident=%v", adv.GetTerminal(), adv.GetIncident())
 	}
 }
 
@@ -116,19 +132,22 @@ func TestCMMNOpenIncident(t *testing.T) {
 		t.Fatalf("no Failed item must report no incident")
 	}
 	open := &cmmn.CaseState{
-		Items:        map[string]cmmn.PlanItemState{"z": cmmn.PIActive, "m": cmmn.PIFailed, "x": cmmn.PIFailed},
-		FailureCause: "boom",
+		Items:         map[string]cmmn.PlanItemState{"z": cmmn.PIActive, "m": cmmn.PIFailed, "x": cmmn.PIFailed},
+		FailureCauses: map[string]string{"m": "boom", "x": "other"},
 	}
 	node, cause, ok := cmmnOpenIncident(open)
 	if !ok || node != "m" || cause != "boom" {
+		// Two items failed concurrently; the pinned node (sorted-first "m")
+		// must carry its own cause "boom", never sibling "x"'s "other".
 		t.Fatalf("open incident = (%q,%q,%v), want (m,boom,true)", node, cause, ok)
 	}
 }
 
 // TestTranslateCMMN_IncidentTaxonomy pins the spec-aligned split: a CaseFailed is a
 // case-level hard error → terminal (not an incident); a runtime plan-item fault (a
-// PIFailed item in the case state) → a non-terminal incident on a top-level case,
-// or a terminal delivery on a child case (the parent's case-task faults in turn).
+// PIFailed item in the case state) → a non-terminal incident pinned to the faulted
+// item, whether the case is top-level or a child (CMMN has no escalation channel,
+// so a child parks in place rather than auto-delivering to its parent).
 func TestTranslateCMMN_IncidentTaxonomy(t *testing.T) {
 	a := New(NewMapResolver())
 
@@ -143,8 +162,8 @@ func TestTranslateCMMN_IncidentTaxonomy(t *testing.T) {
 
 	// A Failed plan item on a top-level case → non-terminal incident.
 	failedState := &cmmn.CaseState{
-		Items:        map[string]cmmn.PlanItemState{"Item1": cmmn.PIFailed},
-		FailureCause: "boom",
+		Items:         map[string]cmmn.PlanItemState{"Item1": cmmn.PIFailed},
+		FailureCauses: map[string]string{"Item1": "boom"},
 	}
 	adv, err = a.translateCMMN(topLevelInput(), nil, failedState, []byte("s"))
 	if err != nil {
@@ -157,13 +176,19 @@ func TestTranslateCMMN_IncidentTaxonomy(t *testing.T) {
 		t.Fatalf("incident = %+v", adv.GetIncident())
 	}
 
-	// The same fault on a child case → terminal (delivers to the parent).
+	// The same fault on a child case → incident too (CMMN has no escalation
+	// channel, so a child case parks on its own deep element rather than
+	// auto-delivering; the parent's case-task stays blocked). TERMINATE on the
+	// child's incident is the deliver-to-parent escape hatch.
 	adv, err = a.translateCMMN(childInput(), nil, failedState, []byte("s"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if adv.GetTerminal() == nil || !adv.GetTerminal().GetFailed() || adv.GetIncident() != nil {
-		t.Fatalf("child fault must stay terminal (deliver to parent): terminal=%v incident=%v", adv.GetTerminal(), adv.GetIncident())
+	if adv.GetIncident() == nil || adv.GetTerminal() != nil {
+		t.Fatalf("child fault must park as an incident: terminal=%v incident=%v", adv.GetTerminal(), adv.GetIncident())
+	}
+	if adv.GetIncident().GetNodeId() != "Item1" {
+		t.Fatalf("child incident must pin the deep item Item1, got %+v", adv.GetIncident())
 	}
 
 	// PlanItemFaulted as a command must not trip the unsupported-command default.

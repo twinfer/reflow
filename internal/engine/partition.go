@@ -1183,8 +1183,9 @@ func (p *Partition) onProcessAdvanced(batch storage.Batch, meta *enginev1.Partit
 // parks the instance non-terminally — status INCIDENT, the incident stamped (with
 // its raised-at time), active_seq cleared, outstanding zeroed, any still-queued
 // inbox rows dropped — and schedules NO reap and NO parent delivery: an incident
-// waits indefinitely for ResolveProcessIncident, and only top-level instances reach
-// here (the adapter terminates a child's failure so it propagates to its parent).
+// waits indefinitely for ResolveProcessIncident. A child instance parks here too
+// (the adapter no longer terminates a child's uncaught failure); its parent stays
+// blocked awaiting completion. Only an escalation still terminates-and-delivers.
 // The failing state survives in rec.StateBlob so a RETRY can re-drive the element.
 // CMMN faults are non-propagating and park at quiescence in onProcessAdvanced
 // (siblings keep running), so they do not use this hard path.

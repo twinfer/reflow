@@ -533,6 +533,89 @@ func TestProcess_ChildStartAndTerminalDelivery(t *testing.T) {
 	}
 }
 
+// TestProcess_ChildIncidentParksAndBlocksParent is the core of "let children
+// park": a child instance whose turn ends in a (BPMN) incident parks in place —
+// PROCESS_STATUS_INCIDENT, record + state_blob retained, the deep node pinned —
+// and delivers NO child_completed to its parent. The parent stays RUNNING and
+// idle, still counting the outstanding child, blocked until the child eventually
+// completes (after a ResolveProcessIncident on the child's own instance_key).
+// Contrast TestProcess_ChildStartAndTerminalDelivery, where a terminal child does
+// deliver; before this change the adapter forced a child's fault terminal so it
+// propagated, now only an escalation does.
+func TestProcess_ChildIncidentParksAndBlocksParent(t *testing.T) {
+	p, _, col := newTestPartition(t)
+	const psvc, pkey = "Parent", "p1"
+	ppk := routing.PartitionKey(psvc, pkey)
+	plp := keys.LPFromPartitionKey(ppk)
+	procs, inbox := procStore(p)
+	must := func(idx uint64, cmd *enginev1.Command) {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Parent starts, then turn 1 starts a BPMN child (call activity CA1).
+	must(1, procEventCmd(ppk, psvc, pkey, []byte("pv"), &enginev1.ModelRef{Name: psvc}))
+	col.Drain()
+	must(2, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: ppk, Service: psvc, InstanceKey: pkey, NewState: []byte("ps1"),
+		StartChild: []*enginev1.ChildStart{{
+			NodeId: "CA1", ModelRef: &enginev1.ModelRef{Name: "Child"},
+			Kind: enginev1.ProcessKind_PROCESS_KIND_BPMN, InstanceKey: "c1", Vars: []byte("cv"),
+		}},
+	}}})
+	col.Drain() // clear the child's start activation
+
+	const csvc, ckey = "Child", "c1"
+	cpk := routing.PartitionKey(csvc, ckey)
+	clp := keys.LPFromPartitionKey(cpk)
+
+	// The child's turn ends in an incident (genuine uncaught fault on node "deep").
+	must(3, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: cpk, Service: csvc, InstanceKey: ckey, NewState: []byte("cs1"),
+		Incident: &enginev1.ProcessIncident{NodeId: "deep", Cause: "boom"},
+	}}})
+
+	// Child parks: retained (not reaped), INCIDENT, deep node + cause pinned, the
+	// failing state_blob kept so a RETRY can re-drive it.
+	crec, ok, err := procs.Get(clp, csvc, ckey)
+	if err != nil || !ok {
+		t.Fatalf("child record must be retained on incident: ok=%v err=%v", ok, err)
+	}
+	if crec.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT {
+		t.Fatalf("child status = %v, want INCIDENT", crec.GetStatus())
+	}
+	if crec.GetIncident().GetNodeId() != "deep" || crec.GetIncident().GetCause() != "boom" {
+		t.Fatalf("child incident = %+v, want node=deep cause=boom", crec.GetIncident())
+	}
+	if string(crec.GetStateBlob()) != "cs1" {
+		t.Fatalf("child state_blob = %q, want retained cs1 for RETRY", crec.GetStateBlob())
+	}
+
+	// Parent is NOT activated: no child_completed delivered, parent stays RUNNING
+	// and idle, still counting the outstanding child (blocked, not abandoned).
+	prec, ok, _ := procs.Get(plp, psvc, pkey)
+	if !ok {
+		t.Fatal("parent record missing")
+	}
+	if prec.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_RUNNING {
+		t.Fatalf("parent status = %v, want RUNNING (blocked on child)", prec.GetStatus())
+	}
+	if prec.GetActiveSeq() != 0 {
+		t.Fatalf("parent must stay idle (ActiveSeq 0), got %d", prec.GetActiveSeq())
+	}
+	if prec.GetOutstanding() != 1 {
+		t.Fatalf("parent Outstanding = %d, want 1 (still awaiting the parked child)", prec.GetOutstanding())
+	}
+	if _, ok, _ := inbox.Get(plp, psvc, pkey, 2); ok {
+		t.Fatal("parent must have no child_completed inbox row (child parked, did not deliver)")
+	}
+	if pa := firstAdvance(col.Drain(), psvc); pa != nil {
+		t.Fatalf("parent must not be re-activated by a parked child: %+v", pa)
+	}
+}
+
 // TestProcess_ServiceTaskResultFeedsBackToParent covers the task→process
 // feedback: an invocation carrying a process_parent link, on terminal
 // completion, delivers a task_completed ProcessEvent to its parent instance

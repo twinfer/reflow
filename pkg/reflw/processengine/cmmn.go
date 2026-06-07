@@ -160,29 +160,22 @@ func (a *Adapter) translateCMMN(in invoker.ProcessAdvanceInput, cmds []cmmn.Comm
 	}
 
 	// A non-propagating plan-item fault (CMMN §8.4) leaves the case running its
-	// other items. Derived from the case state (any PIFailed item), not this
-	// turn's PlanItemFaulted command, so the quiescence turn that finally parks
-	// the instance still carries the open incident even when the fault happened
-	// on an earlier turn (a parallel sibling finishing later) or a prior item is
-	// still failed after a retry.
+	// other items and parks the instance as a non-terminal incident pinned to the
+	// faulted item — child or top-level alike. Derived from the case state (any
+	// PIFailed item), not this turn's PlanItemFaulted command, so the quiescence
+	// turn that finally parks the instance still carries the open incident even
+	// when the fault happened on an earlier turn (a parallel sibling finishing
+	// later) or a prior item is still failed after a retry. Fall through to
+	// actuate any sibling instructions; the engine parks only once the case is
+	// quiescent, so siblings are not abandoned.
+	//
+	// CMMN has no escalation channel, so a child case never auto-delivers its
+	// fault to the parent: it parks on its own deep element (siblings preserved)
+	// and the parent's case-task stays blocked awaiting completion. A TERMINATE on
+	// the child's incident is the operator's deliver-to-parent escape hatch (the
+	// parent's case-task then faults in turn).
 	if node, cause, ok := cmmnOpenIncident(state); ok {
-		if incidentEligible(in.Record) {
-			// Top-level: surface a non-terminal incident pinned to the faulted
-			// item. Fall through to actuate any sibling instructions; the engine
-			// parks only once the case is quiescent, so siblings are not abandoned.
-			adv.Incident = &enginev1.ProcessIncident{NodeId: node, Cause: cause}
-		} else {
-			// Child case: deliver the failure to the parent (terminal), matching
-			// the BPMN child taxonomy — a child does not park, it propagates so the
-			// parent's case-task faults in turn (and parks if it is top-level).
-			// CMMN has no escalation channel, so there is no coded-error carve-out.
-			adv.Terminal = &enginev1.ProcessTerminal{
-				Failed:         true,
-				FailureMessage: fmt.Sprintf("case failed at %q: %s", node, cause),
-				RetentionMs:    a.retentionMs(in.Record.GetModelRef()),
-			}
-			return adv, nil
-		}
+		adv.Incident = &enginev1.ProcessIncident{NodeId: node, Cause: cause}
 	}
 
 	for _, c := range cmds {
@@ -238,11 +231,11 @@ func (a *Adapter) translateCMMN(in invoker.ProcessAdvanceInput, cmds []cmmn.Comm
 }
 
 // cmmnOpenIncident reports the case's open incident, if any: the first
-// (sorted) plan item in the Failed state plus its cause. A Failed item is a
-// non-terminal, retry-able fault (CMMN §8.4) the instance parks on once
-// quiescent. The cause is best-effort — CaseState records a single
-// first-failure cause, so with multiple concurrent faults the reported cause
-// may be the first fault's; the pinned node id is always accurate.
+// (sorted) plan item in the Failed state plus its own cause. A Failed item is
+// a non-terminal, retry-able fault (CMMN §8.4) the instance parks on once
+// quiescent. Both the pinned node and its cause are accurate even under
+// multiple concurrent faults — CaseState.FailureCauses keys the cause per
+// failed item, so the reported cause always belongs to the pinned node.
 func cmmnOpenIncident(state *cmmn.CaseState) (node, cause string, ok bool) {
 	if state == nil {
 		return "", "", false
@@ -259,7 +252,7 @@ func cmmnOpenIncident(state *cmmn.CaseState) (node, cause string, ok bool) {
 	if first == "" {
 		return "", "", false
 	}
-	return first, state.FailureCause, true
+	return first, state.FailureCauses[first], true
 }
 
 // translateCMMNRunTask handles the polymorphic RunTask: a leaf task → Invoke, a

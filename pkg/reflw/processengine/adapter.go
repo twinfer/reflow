@@ -23,16 +23,6 @@ func New(models ModelResolver) *Adapter {
 	return &Adapter{models: models}
 }
 
-// incidentEligible reports whether an uncaught failure on this instance should
-// park as a (non-terminal) incident rather than terminate. Only top-level
-// instances qualify: a child's failure must terminate so it delivers to its
-// parent — preserving BPMN error / escalation propagation and catch-all
-// CallActivity boundaries. A genuine top-level uncaught failure has nowhere left
-// to propagate, so it parks for human ResolveProcessIncident.
-func incidentEligible(rec *enginev1.ProcessInstanceRecord) bool {
-	return rec.GetParentLink().GetProcessParent() == nil
-}
-
 var _ invoker.ProcessEngine = (*Adapter)(nil)
 
 // retentionResolver is the optional capability a ModelResolver implements to

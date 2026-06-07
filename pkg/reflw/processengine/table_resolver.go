@@ -104,6 +104,17 @@ func (r *TableResolver) BPMNDecisions(ref *enginev1.ModelRef) bpmn.DecisionResol
 	return decisionResolver(m.decisions)
 }
 
+// CMMNDecisions implements ModelResolver: the same per-model bundle.decisions
+// resolver as BPMNDecisions (bundle.decisions binds for either engine kind),
+// reusing decisionResolver via the named-func conversion.
+func (r *TableResolver) CMMNDecisions(ref *enginev1.ModelRef) cmmn.DecisionResolver {
+	m := r.lookup(ref)
+	if m == nil {
+		return cmmn.DecisionResolver(decisionResolver(nil))
+	}
+	return cmmn.DecisionResolver(decisionResolver(m.decisions))
+}
+
 // ChildRef implements ModelResolver: a bundle.children override if the model
 // declared one for ref, else the name=ref convention under the parent's version
 // (identical to MapResolver's fallback).

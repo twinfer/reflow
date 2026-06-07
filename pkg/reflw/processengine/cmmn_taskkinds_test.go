@@ -1,0 +1,169 @@
+package processengine
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"github.com/twinfer/reflw/internal/engine/invoker"
+	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	"github.com/twinfer/reflwos/dmn"
+)
+
+// A case whose single plan item is a decisionTask; the engine evaluates the DMN
+// inline (via the wired CMMNDecisions resolver) and the autoComplete stage
+// completes the case in the same turn. <decisionRefExpression> evaluates against
+// case vars to the registered decision ref.
+const decisionCaseCMMN = `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/CMMN/20151109/MODEL">
+  <case id="deccase">
+    <casePlanModel id="stage0" name="Root" autoComplete="true">
+      <planItem id="pi1" definitionRef="dt1"/>
+      <decisionTask id="dt1" name="Evaluate">
+        <decisionRefExpression>targetDecision</decisionRefExpression>
+      </decisionTask>
+    </casePlanModel>
+  </case>
+</definitions>`
+
+const approvalDMN = `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20230324/MODEL/" name="m" id="_m">
+  <decision name="approval" id="_d">
+    <variable name="approval"/>
+    <literalExpression><text>amount &gt; 1000</text></literalExpression>
+  </decision>
+</definitions>`
+
+// A case whose single plan item is a (blocking) humanTask. Start parks the task
+// — no command to actuate; a person completes it later as an external
+// TaskCompleted, after which the autoComplete stage finishes the case.
+const humanCaseCMMN = `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/CMMN/20151109/MODEL">
+  <case id="humancase">
+    <casePlanModel id="stage0" name="Root" autoComplete="true">
+      <planItem id="pi1" definitionRef="h1"/>
+      <humanTask id="h1" name="Approve"/>
+    </casePlanModel>
+  </case>
+</definitions>`
+
+// cmmnExtPayload wraps a typed CMMN engine event in the external-event envelope
+// (kind + JSON payload) the adapter decodes via eventForCMMN → UnmarshalEvent.
+func cmmnExtPayload(t *testing.T, kind string, ev any) *enginev1.ProcessEventPayload {
+	t.Helper()
+	raw, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := json.Marshal(externalEvent{Kind: kind, Payload: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return extPayload(env)
+}
+
+// TestAdvanceCMMN_DecisionTaskInline: a DecisionTask used to CaseFail (no
+// resolver wired); with CMMNDecisions threaded into advanceCMMN it evaluates
+// inline and the case completes.
+func TestAdvanceCMMN_DecisionTaskInline(t *testing.T) {
+	r := mustCMMNResolver(t, "deccase", decisionCaseCMMN)
+	rt, err := dmn.NewRuntime([]byte(approvalDMN))
+	if err != nil {
+		t.Fatalf("dmn runtime: %v", err)
+	}
+	r.AddCMMNDecision("deccase", "v1", "approval", rt)
+	a := New(r)
+
+	adv, err := a.Advance(context.Background(), cmmnStartInput("deccase", []byte(`{"targetDecision":"approval","amount":5000}`), 1000))
+	if err != nil {
+		t.Fatalf("Advance: %v", err)
+	}
+	if adv.GetTerminal() == nil || adv.GetTerminal().GetFailed() {
+		t.Fatalf("want successful terminal (decision evaluated inline), got %+v", adv.GetTerminal())
+	}
+}
+
+// TestAdvanceCMMN_DecisionTaskNoResolverStillFails guards the wiring is the only
+// reason it works: a resolver that knows no decisions surfaces CaseFailed (the
+// engine's own "no decision" path), not a panic or a silent success.
+func TestAdvanceCMMN_DecisionTaskUnknownRefFails(t *testing.T) {
+	r := mustCMMNResolver(t, "deccase", decisionCaseCMMN)
+	a := New(r) // no AddCMMNDecision → resolver errors on "approval"
+
+	adv, err := a.Advance(context.Background(), cmmnStartInput("deccase", []byte(`{"targetDecision":"approval","amount":5000}`), 1000))
+	if err != nil {
+		t.Fatalf("Advance: %v", err)
+	}
+	if adv.GetTerminal() == nil || !adv.GetTerminal().GetFailed() {
+		t.Fatalf("want failed terminal for unresolvable decision, got %+v", adv.GetTerminal())
+	}
+}
+
+// TestAdvanceCMMN_HumanTaskParksThenCompletes: RunHumanTask used to hit the
+// outer switch default → CaseFailed. Now it parks (no invoke, no terminal, no
+// error) and a later external TaskCompleted finishes the case.
+func TestAdvanceCMMN_HumanTaskParksThenCompletes(t *testing.T) {
+	a := New(mustCMMNResolver(t, "humancase", humanCaseCMMN))
+
+	start, err := a.Advance(context.Background(), cmmnStartInput("humancase", nil, 1000))
+	if err != nil {
+		t.Fatalf("start (human task should park, not error): %v", err)
+	}
+	if len(start.GetInvoke()) != 0 {
+		t.Errorf("human task must not dispatch an invoke; got %d", len(start.GetInvoke()))
+	}
+	if start.GetTerminal() != nil {
+		t.Errorf("human task should park, not terminate; got %+v", start.GetTerminal())
+	}
+
+	cont := invoker.ProcessAdvanceInput{
+		Pk: 0, Service: "humancase", InstanceKey: "i1",
+		Record: cmmnRecord("humancase", start.GetNewState()),
+		Entry:  &enginev1.ProcessInboxEntry{Payload: taskCompletedPayload("pi1", []byte(`{"ok":true}`)), LogicalTimeMs: 2000},
+	}
+	done, err := a.Advance(context.Background(), cont)
+	if err != nil {
+		t.Fatalf("human task completion: %v", err)
+	}
+	if done.GetTerminal() == nil || done.GetTerminal().GetFailed() {
+		t.Fatalf("want successful terminal after human completes, got %+v", done.GetTerminal())
+	}
+}
+
+// TestAdvanceCMMN_SuspendResumeNoOp: ManualSuspend/ManualResume on an active task
+// emit SuspendTask/ResumeTask, which used to hit the outer default → CaseFailed.
+// They are now tolerated no-ops; the case stays alive.
+func TestAdvanceCMMN_SuspendResumeNoOp(t *testing.T) {
+	a := New(mustCMMNResolver(t, "echocase", echoCaseCMMN))
+
+	start, err := a.Advance(context.Background(), cmmnStartInput("echocase", nil, 1000))
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	suspend := invoker.ProcessAdvanceInput{
+		Pk: 0, Service: "echocase", InstanceKey: "i1",
+		Record: cmmnRecord("echocase", start.GetNewState()),
+		Entry:  &enginev1.ProcessInboxEntry{Payload: cmmnExtPayload(t, "ManualSuspend", map[string]any{"PlanItemID": "pi1"}), LogicalTimeMs: 2000},
+	}
+	sAdv, err := a.Advance(context.Background(), suspend)
+	if err != nil {
+		t.Fatalf("ManualSuspend must not error (SuspendTask is a no-op): %v", err)
+	}
+	if sAdv.GetTerminal().GetFailed() {
+		t.Fatalf("ManualSuspend must not fail the case; got %+v", sAdv.GetTerminal())
+	}
+
+	resume := invoker.ProcessAdvanceInput{
+		Pk: 0, Service: "echocase", InstanceKey: "i1",
+		Record: cmmnRecord("echocase", sAdv.GetNewState()),
+		Entry:  &enginev1.ProcessInboxEntry{Payload: cmmnExtPayload(t, "ManualResume", map[string]any{"PlanItemID": "pi1"}), LogicalTimeMs: 3000},
+	}
+	rAdv, err := a.Advance(context.Background(), resume)
+	if err != nil {
+		t.Fatalf("ManualResume must not error (ResumeTask is a no-op): %v", err)
+	}
+	if rAdv.GetTerminal().GetFailed() {
+		t.Fatalf("ManualResume must not fail the case; got %+v", rAdv.GetTerminal())
+	}
+}

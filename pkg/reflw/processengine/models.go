@@ -49,6 +49,11 @@ type ModelResolver interface {
 
 	// CMMN returns the parsed case definition for a CMMN ModelRef.
 	CMMN(ref *enginev1.ModelRef) (*cmmn.CaseDefinition, error)
+
+	// CMMNDecisions returns the DMN decision resolver for a CMMN model's
+	// DecisionTasks (evaluated inline by the engine via WithDecisionResolver).
+	// Mirror of BPMNDecisions; errors on any ref for a decision-free model.
+	CMMNDecisions(ref *enginev1.ModelRef) cmmn.DecisionResolver
 }
 
 // modelKey is the comparable value form of a ModelRef, used as a cache map key.
@@ -85,7 +90,8 @@ type MapResolver struct {
 	mu        sync.RWMutex
 	bpmn      map[modelKey]*bpmnBundle
 	cmmnDefs  map[modelKey]*cmmn.CaseDefinition
-	retention map[modelKey]uint64 // parsed historyTimeToLive (ms) per model
+	cmmnDec   map[modelKey]map[string]*dmn.Runtime // decisionRef → runtime, per CMMN model
+	retention map[modelKey]uint64                  // parsed historyTimeToLive (ms) per model
 }
 
 var _ retentionResolver = (*MapResolver)(nil)
@@ -96,6 +102,7 @@ func NewMapResolver() *MapResolver {
 	return &MapResolver{
 		bpmn:      make(map[modelKey]*bpmnBundle),
 		cmmnDefs:  make(map[modelKey]*cmmn.CaseDefinition),
+		cmmnDec:   make(map[modelKey]map[string]*dmn.Runtime),
 		retention: make(map[modelKey]uint64),
 	}
 }
@@ -206,6 +213,20 @@ func (r *MapResolver) ParseCMMN(name, version string, xml []byte) error {
 	return nil
 }
 
+// AddCMMNDecision registers a DMN runtime under decisionRef for the DecisionTasks
+// of the (name, version) CMMN model.
+func (r *MapResolver) AddCMMNDecision(name, version, decisionRef string, rt *dmn.Runtime) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	k := modelKey{kind: "cmmn", name: name, version: version}
+	m, ok := r.cmmnDec[k]
+	if !ok {
+		m = make(map[string]*dmn.Runtime)
+		r.cmmnDec[k] = m
+	}
+	m[decisionRef] = rt
+}
+
 // CMMN implements ModelResolver.
 func (r *MapResolver) CMMN(ref *enginev1.ModelRef) (*cmmn.CaseDefinition, error) {
 	r.mu.RLock()
@@ -215,6 +236,19 @@ func (r *MapResolver) CMMN(ref *enginev1.ModelRef) (*cmmn.CaseDefinition, error)
 		return nil, fmt.Errorf("%w: cmmn %q/%q", ErrModelNotFound, ref.GetName(), ref.GetVersion())
 	}
 	return def, nil
+}
+
+// CMMNDecisions implements ModelResolver. Snapshots under the lock (the engine
+// invokes the closure mid-turn) and reuses decisionResolver via the named-func
+// conversion — bpmn.DecisionResolver and cmmn.DecisionResolver share an
+// underlying type.
+func (r *MapResolver) CMMNDecisions(ref *enginev1.ModelRef) cmmn.DecisionResolver {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	live := r.cmmnDec[keyOf(ref)]
+	snap := make(map[string]*dmn.Runtime, len(live))
+	maps.Copy(snap, live)
+	return cmmn.DecisionResolver(decisionResolver(snap))
 }
 
 // RetentionMs implements the optional retentionResolver capability (see

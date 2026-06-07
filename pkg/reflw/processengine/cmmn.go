@@ -22,9 +22,11 @@ func (a *Adapter) advanceCMMN(in invoker.ProcessAdvanceInput) (*enginev1.Process
 	}
 
 	logical := in.Entry.GetLogicalTimeMs()
-	eng, err := cmmn.NewSentryEngine(def, cmmn.WithClock(func() time.Time {
-		return time.UnixMilli(int64(logical))
-	}))
+	eng, err := cmmn.NewSentryEngine(def,
+		cmmn.WithDecisionResolver(a.models.CMMNDecisions(rec.GetModelRef())),
+		cmmn.WithClock(func() time.Time {
+			return time.UnixMilli(int64(logical))
+		}))
 	if err != nil {
 		return nil, fmt.Errorf("processengine: new sentry engine: %w", err)
 	}
@@ -216,6 +218,15 @@ func (a *Adapter) translateCMMN(in invoker.ProcessAdvanceInput, cmds []cmmn.Comm
 				InstanceKey: childInstanceKey(in.InstanceKey, t.PlanItemID, ""),
 				Vars:        vars,
 			})
+		case cmmn.RunHumanTask:
+			// Passive: the case parks the human task; a person completes it later,
+			// arriving as an external ProcessEvent{task_completed} that eventForCMMN
+			// turns back into cmmn.TaskCompleted. Nothing to actuate now (same shape
+			// as the user/event-listener kinds in translateCMMNRunTask).
+		case cmmn.SuspendTask, cmmn.ResumeTask:
+			// Best-effort: the durable engine has no pause primitive, so a suspend /
+			// resume of a previously-issued Run*Task is a no-op here (mirrors
+			// cmmnhost runner.go). The engine still tracks lifecycle state.
 		case cmmn.CaseFileItemEventRejected:
 			// Observational: a receiving instance rejected a broadcast CFI event
 			// for an out-of-§A.5-state CFI. Nothing to actuate.
@@ -256,8 +267,11 @@ func cmmnOpenIncident(state *cmmn.CaseState) (node, cause string, ok bool) {
 }
 
 // translateCMMNRunTask handles the polymorphic RunTask: a leaf task → Invoke, a
-// timer listener → ArmTimer, user/plain event listeners → park (no-op). Other
-// kinds (human task, decision, milestone, stage) are unsupported this iteration.
+// timer listener → ArmTimer, user/plain event listeners → park (no-op). These are
+// the only kinds the engine emits as a RunTask (see emitRunCommand): a human task
+// is its own RunHumanTask command; a decision task / milestone / stage are
+// engine-internal (inline DMN eval / auto-complete / child cascade) and emit no
+// command at all. The default below is a defensive guard, not a known gap.
 func (a *Adapter) translateCMMNRunTask(in invoker.ProcessAdvanceInput, adv *enginev1.ProcessAdvanced, t cmmn.RunTask) error {
 	switch t.Kind {
 	case cmmn.KindTask:

@@ -61,7 +61,7 @@ func (a *Adapter) advanceCMMN(in invoker.ProcessAdvanceInput) (*enginev1.Process
 	if err != nil {
 		return nil, fmt.Errorf("processengine: marshal case state: %w", err)
 	}
-	return a.translateCMMN(in, cmds, newState)
+	return a.translateCMMN(in, cmds, state, newState)
 }
 
 // eventForCMMN decodes a ProcessEventPayload into the reflwos CMMN EngineEvent that
@@ -100,13 +100,23 @@ func eventForCMMN(p *enginev1.ProcessEventPayload) (cmmn.EngineEvent, error) {
 		// so the read path never routes a ProcessMessageReceived to a case. Kept
 		// explicit so the failure is legible if that ever changes.
 		return nil, fmt.Errorf("processengine: CMMN message correlation not supported (plan item %q)", of.MessageReceived.GetNodeId())
+	case *enginev1.ProcessEventPayload_Retry:
+		// An operator incident RETRY: reactivate the faulted plan item
+		// (CMMN reactivate: Failed → Active), merging the optional variable
+		// patch first so the re-run reads the corrected inputs.
+		r := of.Retry
+		vars, err := decodeVars(r.GetVarPatch())
+		if err != nil {
+			return nil, fmt.Errorf("processengine: decode retry var patch: %w", err)
+		}
+		return cmmn.ManualReactivate{PlanItemID: r.GetNodeId(), Vars: vars}, nil
 	default:
 		return nil, fmt.Errorf("processengine: unset process event payload (no event in inbox entry)")
 	}
 }
 
 // translateCMMN maps the engine's emitted commands onto a ProcessAdvanced.
-func (a *Adapter) translateCMMN(in invoker.ProcessAdvanceInput, cmds []cmmn.Command, newState []byte) (*enginev1.ProcessAdvanced, error) {
+func (a *Adapter) translateCMMN(in invoker.ProcessAdvanceInput, cmds []cmmn.Command, state *cmmn.CaseState, newState []byte) (*enginev1.ProcessAdvanced, error) {
 	adv := &enginev1.ProcessAdvanced{
 		Pk:          in.Pk,
 		Service:     in.Service,
@@ -128,14 +138,12 @@ func (a *Adapter) translateCMMN(in invoker.ProcessAdvanceInput, cmds []cmmn.Comm
 			}
 			return adv, nil
 		case cmmn.CaseFailed:
-			// As in translateBPMN: a child case terminates so its failure delivers
-			// to the parent; only a top-level uncaught case failure parks as an
-			// incident. CMMN has no escalation/error-code channel, so there is no
-			// escalation carve-out here.
-			if incidentEligible(in.Record) {
-				adv.Incident = &enginev1.ProcessIncident{NodeId: t.PlanItemID, Cause: t.Cause}
-				return adv, nil
-			}
+			// CaseFailed is a case-level hard error — a bad CaseInputs binding, a
+			// missing decision resolver, a decode failure — terminal, not a
+			// retry-able incident (re-running re-hits the broken model). A child
+			// case's failure also terminates so it delivers to its parent. A
+			// runtime plan-item fault is non-terminal and surfaces via
+			// PlanItemFaulted / cmmnOpenIncident below, never here.
 			adv.Terminal = &enginev1.ProcessTerminal{
 				Failed:         true,
 				FailureMessage: fmt.Sprintf("case failed at %q: %s", t.PlanItemID, t.Cause),
@@ -146,6 +154,32 @@ func (a *Adapter) translateCMMN(in invoker.ProcessAdvanceInput, cmds []cmmn.Comm
 			// Exit-criterion termination is a clean end (matches dboshost).
 			adv.Terminal = &enginev1.ProcessTerminal{
 				RetentionMs: a.retentionMs(in.Record.GetModelRef()),
+			}
+			return adv, nil
+		}
+	}
+
+	// A non-propagating plan-item fault (CMMN §8.4) leaves the case running its
+	// other items. Derived from the case state (any PIFailed item), not this
+	// turn's PlanItemFaulted command, so the quiescence turn that finally parks
+	// the instance still carries the open incident even when the fault happened
+	// on an earlier turn (a parallel sibling finishing later) or a prior item is
+	// still failed after a retry.
+	if node, cause, ok := cmmnOpenIncident(state); ok {
+		if incidentEligible(in.Record) {
+			// Top-level: surface a non-terminal incident pinned to the faulted
+			// item. Fall through to actuate any sibling instructions; the engine
+			// parks only once the case is quiescent, so siblings are not abandoned.
+			adv.Incident = &enginev1.ProcessIncident{NodeId: node, Cause: cause}
+		} else {
+			// Child case: deliver the failure to the parent (terminal), matching
+			// the BPMN child taxonomy — a child does not park, it propagates so the
+			// parent's case-task faults in turn (and parks if it is top-level).
+			// CMMN has no escalation channel, so there is no coded-error carve-out.
+			adv.Terminal = &enginev1.ProcessTerminal{
+				Failed:         true,
+				FailureMessage: fmt.Sprintf("case failed at %q: %s", node, cause),
+				RetentionMs:    a.retentionMs(in.Record.GetModelRef()),
 			}
 			return adv, nil
 		}
@@ -192,11 +226,40 @@ func (a *Adapter) translateCMMN(in invoker.ProcessAdvanceInput, cmds []cmmn.Comm
 		case cmmn.CaseFileItemEventRejected:
 			// Observational: a receiving instance rejected a broadcast CFI event
 			// for an out-of-§A.5-state CFI. Nothing to actuate.
+		case cmmn.PlanItemFaulted:
+			// A plan item faulted. The incident is derived from the case state
+			// (cmmnOpenIncident above), not from this command — nothing to
+			// actuate here; the case keeps running its other items.
 		default:
 			return nil, fmt.Errorf("processengine: unsupported CMMN command %T", c)
 		}
 	}
 	return adv, nil
+}
+
+// cmmnOpenIncident reports the case's open incident, if any: the first
+// (sorted) plan item in the Failed state plus its cause. A Failed item is a
+// non-terminal, retry-able fault (CMMN §8.4) the instance parks on once
+// quiescent. The cause is best-effort — CaseState records a single
+// first-failure cause, so with multiple concurrent faults the reported cause
+// may be the first fault's; the pinned node id is always accurate.
+func cmmnOpenIncident(state *cmmn.CaseState) (node, cause string, ok bool) {
+	if state == nil {
+		return "", "", false
+	}
+	first := ""
+	for id, st := range state.Items {
+		if st != cmmn.PIFailed {
+			continue
+		}
+		if first == "" || id < first {
+			first = id
+		}
+	}
+	if first == "" {
+		return "", "", false
+	}
+	return first, state.FailureCause, true
 }
 
 // translateCMMNRunTask handles the polymorphic RunTask: a leaf task → Invoke, a

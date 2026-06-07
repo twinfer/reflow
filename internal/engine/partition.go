@@ -1128,7 +1128,10 @@ func (p *Partition) onProcessAdvanced(batch storage.Batch, meta *enginev1.Partit
 	if term := adv.GetTerminal(); term != nil {
 		return p.finishProcessInstance(batch, meta, rec, adv, term, active, nowMs, isLeader)
 	}
-	if inc := adv.GetIncident(); inc != nil {
+	if inc := adv.GetIncident(); inc != nil && rec.GetKind() == enginev1.ProcessKind_PROCESS_KIND_BPMN {
+		// BPMN: a ProcessFailed is whole-process — park immediately (hard),
+		// dropping queued events. A CMMN fault is non-propagating (§8.4), so it
+		// falls through and parks at quiescence below, preserving siblings.
 		return p.parkProcessIncident(batch, rec, adv, inc, active, nowMs)
 	}
 
@@ -1153,21 +1156,38 @@ func (p *Partition) onProcessAdvanced(batch storage.Batch, meta *enginev1.Partit
 		rec.ActiveSeq = 0
 	}
 
+	// CMMN incident (fault MUST NOT propagate, CMMN §8.4): a faulted item leaves
+	// the case running its other items, so we park only once the case is
+	// quiescent — no in-flight work (Outstanding==0) and no queued turn
+	// (ActiveSeq==0) — and parallel siblings are never abandoned. adv.Incident
+	// rides every turn (the adapter derives it from the case state), so the
+	// quiescence turn carries it even when the fault landed on an earlier turn
+	// or a prior item is still failed after a retry. No inbox-drop needed:
+	// ActiveSeq==0 means nothing is queued. (BPMN already returned above.)
+	if inc := adv.GetIncident(); inc != nil && rec.GetActiveSeq() == 0 && rec.GetOutstanding() == 0 {
+		if err := p.stampProcessIncident(batch, rec, inc, nowMs); err != nil {
+			return err
+		}
+	}
+
 	if err := procT.Put(batch, lp, service, instanceKey, rec); err != nil {
 		return fmt.Errorf("onProcessAdvanced: write record: %w", err)
 	}
 	return nil
 }
 
-// parkProcessIncident applies an incident turn (adv.Incident set): a genuine
-// uncaught failure on a top-level instance. The caller has already persisted
-// adv.NewState onto rec and dequeued the failing turn's inbox row. This parks the
-// instance non-terminally — status INCIDENT, the incident stamped (with its
-// raised-at time), active_seq cleared, outstanding zeroed, any still-queued inbox
-// rows dropped — and schedules NO reap and NO parent delivery: an incident waits
-// indefinitely for ResolveProcessIncident, and only top-level instances reach here
-// (the adapter terminates a child's failure so it propagates to its parent). The
-// failing state survives in rec.StateBlob so a RETRY can re-drive the element.
+// parkProcessIncident applies a BPMN incident turn (adv.Incident set on a
+// PROCESS_KIND_BPMN instance): a genuine uncaught failure where the ProcessFailed
+// is whole-process, so the park is immediate and hard. The caller has already
+// persisted adv.NewState onto rec and dequeued the failing turn's inbox row. This
+// parks the instance non-terminally — status INCIDENT, the incident stamped (with
+// its raised-at time), active_seq cleared, outstanding zeroed, any still-queued
+// inbox rows dropped — and schedules NO reap and NO parent delivery: an incident
+// waits indefinitely for ResolveProcessIncident, and only top-level instances reach
+// here (the adapter terminates a child's failure so it propagates to its parent).
+// The failing state survives in rec.StateBlob so a RETRY can re-drive the element.
+// CMMN faults are non-propagating and park at quiescence in onProcessAdvanced
+// (siblings keep running), so they do not use this hard path.
 func (p *Partition) parkProcessIncident(batch storage.Batch, rec *enginev1.ProcessInstanceRecord, adv *enginev1.ProcessAdvanced, inc *enginev1.ProcessIncident, active, nowMs uint64) error {
 	pk := adv.GetPk()
 	lp := keys.LPFromPartitionKey(pk)
@@ -1182,23 +1202,33 @@ func (p *Partition) parkProcessIncident(batch storage.Batch, rec *enginev1.Proce
 			return fmt.Errorf("parkProcessIncident: inbox delete: %w", err)
 		}
 	}
-	rec.Status = enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT
-	rec.Incident = &enginev1.ProcessIncident{NodeId: inc.GetNodeId(), Cause: inc.GetCause(), RaisedAtMs: nowMs}
 	rec.ActiveSeq = 0
 	rec.Outstanding = 0
-	if err := p.appendProcessHistory(batch, rec, &enginev1.ProcessHistoryEvent{
-		Kind:           enginev1.ProcessHistoryKind_PROCESS_HISTORY_INCIDENT_RAISED,
-		NodeId:         inc.GetNodeId(),
-		TsMs:           nowMs,
-		Failed:         true,
-		FailureMessage: inc.GetCause(),
-	}); err != nil {
+	if err := p.stampProcessIncident(batch, rec, inc, nowMs); err != nil {
 		return err
 	}
 	if err := procT.Put(batch, lp, service, instanceKey, rec); err != nil {
 		return fmt.Errorf("parkProcessIncident: record put: %w", err)
 	}
 	return nil
+}
+
+// stampProcessIncident marks rec as incident-parked: status INCIDENT, the
+// incident stamped with its raised-at time, and an INCIDENT_RAISED history
+// event appended. Shared by the BPMN hard park (parkProcessIncident, which
+// also drops the queue + zeroes the cursor/outstanding) and the CMMN
+// quiescence park in onProcessAdvanced (which reaches here only once the case
+// is already idle, so there is nothing to drop). The caller persists rec.
+func (p *Partition) stampProcessIncident(batch storage.Batch, rec *enginev1.ProcessInstanceRecord, inc *enginev1.ProcessIncident, nowMs uint64) error {
+	rec.Status = enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT
+	rec.Incident = &enginev1.ProcessIncident{NodeId: inc.GetNodeId(), Cause: inc.GetCause(), RaisedAtMs: nowMs}
+	return p.appendProcessHistory(batch, rec, &enginev1.ProcessHistoryEvent{
+		Kind:           enginev1.ProcessHistoryKind_PROCESS_HISTORY_INCIDENT_RAISED,
+		NodeId:         inc.GetNodeId(),
+		TsMs:           nowMs,
+		Failed:         true,
+		FailureMessage: inc.GetCause(),
+	})
 }
 
 // finishProcessInstance applies a terminal turn: deliver the result back to a
@@ -1432,14 +1462,6 @@ func (p *Partition) onResolveProcessIncident(batch storage.Batch, meta *enginev1
 		}
 		return p.finishProcessInstance(batch, meta, rec, adv, term, 0, nowMs, isLeader)
 	case enginev1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_RETRY:
-		if rec.GetKind() != enginev1.ProcessKind_PROCESS_KIND_BPMN {
-			// CMMN retry would require unwinding the case-failure cascade (the
-			// failing item is a dead-end PIFailed and its siblings were driven to
-			// PITerminated); unsupported — CMMN incidents resolve via TERMINATE only.
-			p.cfg.Log.Warn("partition: ResolveProcessIncident RETRY only supported for BPMN; dropping",
-				"service", service, "key", instanceKey, "kind", rec.GetKind().String())
-			return nil
-		}
 		node := rec.GetIncident().GetNodeId()
 		if err := p.appendProcessHistory(batch, rec, &enginev1.ProcessHistoryEvent{
 			Kind:   enginev1.ProcessHistoryKind_PROCESS_HISTORY_INCIDENT_RESOLVED,
@@ -1448,11 +1470,13 @@ func (p *Partition) onResolveProcessIncident(batch storage.Batch, meta *enginev1
 			return err
 		}
 		// Un-park: clear the incident and return to RUNNING, then enqueue a retry
-		// turn that re-drives the failed node. The failing ExecutionState survived
-		// in rec.StateBlob, so the reflwos RetryIncident event re-dispatches from
-		// there (merging the operator var patch). enqueueInstanceEvent re-reads the
-		// record from the batch, so persist the un-park first; it appends the inbox
-		// row and activates the turn (ActAdvanceProcess) on the leader.
+		// turn that re-drives the failed element. The failing state survived in
+		// rec.StateBlob, so the adapter's continuation resumes from there, merging
+		// the operator var patch — BPMN re-dispatches the node (RetryIncident),
+		// CMMN reactivates the plan item (ManualReactivate, Failed → Active).
+		// enqueueInstanceEvent re-reads the record from the batch, so persist the
+		// un-park first; it appends the inbox row and activates the turn
+		// (ActAdvanceProcess) on the leader.
 		rec.Status = enginev1.ProcessStatus_PROCESS_STATUS_RUNNING
 		rec.Incident = nil
 		if err := procT.Put(batch, lp, service, instanceKey, rec); err != nil {

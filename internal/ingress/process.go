@@ -145,9 +145,9 @@ func (s *Server) DeliverMessage(ctx context.Context, req *connect.Request[ingres
 
 // ResolveProcessIncident resolves an incident-parked instance, routed by
 // (model name, instance_key) like StartProcess. TERMINATE fails the instance
-// terminally; RETRY re-drives the failed element (BPMN only — a linearizable
-// lookup gates it so a CMMN or non-incident instance gets a precise error
-// instead of a silent no-op). Delivered at-least-once (unique producerID); the
+// terminally; RETRY re-drives the failed element (a linearizable lookup gates it
+// so a non-incident instance gets a precise error instead of a silent no-op).
+// Delivered at-least-once (unique producerID); the
 // apply path no-ops a resolve for a non-incident instance, so re-delivery is
 // safe (a duplicate RETRY whose first delivery already un-parked finds the
 // instance RUNNING and is dropped).
@@ -174,9 +174,9 @@ func (s *Server) ResolveProcessIncident(ctx context.Context, req *connect.Reques
 	shardID := s.host.Partitioner().ShardForKey(pk)
 
 	if retry {
-		// RETRY is BPMN-only and needs an incident-parked instance. Look it up so
-		// the operator gets a precise error instead of a silently no-op'd resolve
-		// (the apply path drops a retry for a non-incident or non-BPMN instance).
+		// RETRY needs an incident-parked instance (BPMN or CMMN). Look it up so the
+		// operator gets a precise error instead of a silently no-op'd resolve (the
+		// apply path drops a retry for a non-incident instance).
 		res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupProcessInstance{
 			Service:     name,
 			InstanceKey: msg.GetInstanceKey(),
@@ -190,9 +190,6 @@ func (s *Server) ResolveProcessIncident(ctx context.Context, req *connect.Reques
 		}
 		if !r.Present || r.Record.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("instance is not incident-parked"))
-		}
-		if r.Record.GetKind() != enginev1.ProcessKind_PROCESS_KIND_BPMN {
-			return nil, connect.NewError(connect.CodeUnimplemented, errors.New("RETRY is only supported for BPMN incidents; use TERMINATE"))
 		}
 	}
 

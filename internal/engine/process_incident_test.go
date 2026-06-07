@@ -184,12 +184,89 @@ func TestProcess_ResolveIncidentRetryUnparks(t *testing.T) {
 	}
 }
 
-// TestProcess_ResolveIncidentRetryCMMNRejected: RETRY on a CMMN incident is an
-// unsupported no-op (its PIFailed is a dead-end FSM state) — the instance must
-// stay parked, incident retained, for a later TERMINATE.
-func TestProcess_ResolveIncidentRetryCMMNRejected(t *testing.T) {
+// TestProcess_ResolveIncidentRetryCMMN: a CMMN incident parks at quiescence
+// (outstanding==0), and RETRY now un-parks it (CMMN reactivate: Failed → Active),
+// enqueuing a retry turn carrying the failed item + operator var patch and
+// recording INCIDENT_RESOLVED. (The reflwos ManualReactivate re-dispatch is
+// covered by cmmn/termination_test.go and the adapter mapping test.)
+func TestProcess_ResolveIncidentRetryCMMN(t *testing.T) {
 	p, _, col := newTestPartition(t)
 	const svc, key = "Case", "cinc1"
+	pk := routing.PartitionKey(svc, key)
+	lp := keys.LPFromPartitionKey(pk)
+	apply := func(idx uint64, cmd *enginev1.Command) []Action {
+		t.Helper()
+		if _, err := p.Update([]statemachine.Entry{{Index: idx, Cmd: envelope(t, cmd)}}); err != nil {
+			t.Fatal(err)
+		}
+		return col.Drain()
+	}
+	procT, inboxT := procStore(p)
+
+	// A CMMN-kind instance; the fault turn has no in-flight sibling, so it parks
+	// immediately (quiescence: outstanding==0).
+	apply(1, &enginev1.Command{Kind: &enginev1.Command_ProcessEvent{ProcessEvent: &enginev1.ProcessEvent{
+		Pk: pk, Service: svc, InstanceKey: key, Payload: extPayload([]byte("v")),
+		ModelRef: &enginev1.ModelRef{Kind: "cmmn", Name: svc, Version: "v1"},
+		Kind:     enginev1.ProcessKind_PROCESS_KIND_CMMN,
+	}}})
+	apply(2, procIncidentAdvancedCmd(pk, svc, key, []byte("failed"), "Item1", "boom"))
+
+	rec, _, err := procT.Get(lp, svc, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT {
+		t.Fatalf("CMMN fault must park at quiescence: status=%v", rec.GetStatus())
+	}
+	if inc := rec.GetIncident(); inc.GetNodeId() != "Item1" || inc.GetRaisedAtMs() == 0 {
+		t.Fatalf("incident = %+v", rec.GetIncident())
+	}
+
+	acts := apply(3, &enginev1.Command{Kind: &enginev1.Command_ResolveProcessIncident{ResolveProcessIncident: &enginev1.ResolveProcessIncident{
+		Pk: pk, Service: svc, InstanceKey: key,
+		Resolution: enginev1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_RETRY,
+		VarPatch:   []byte(`{"fixed":true}`),
+	}}})
+
+	rec, ok, err := procT.Get(lp, svc, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || rec.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_RUNNING {
+		t.Fatalf("RETRY must un-park to RUNNING: ok=%v status=%v", ok, rec.GetStatus())
+	}
+	if rec.GetIncident() != nil {
+		t.Fatalf("incident must be cleared, got %+v", rec.GetIncident())
+	}
+	if rec.GetActiveSeq() == 0 {
+		t.Fatal("retry turn must be active")
+	}
+	entry, eok, err := inboxT.Get(lp, svc, key, rec.GetActiveSeq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eok {
+		t.Fatal("retry inbox entry missing")
+	}
+	if r := entry.GetPayload().GetRetry(); r == nil || r.GetNodeId() != "Item1" || string(r.GetVarPatch()) != `{"fixed":true}` {
+		t.Fatalf("inbox payload = %+v, want Retry{node:Item1, patch}", entry.GetPayload())
+	}
+	if firstAdvance(acts, svc) == nil {
+		t.Fatal("RETRY must push ActAdvanceProcess to drive the retry turn")
+	}
+	if k := lastHistKind(procHistEvents(t, p, pk, svc, key)); k != enginev1.ProcessHistoryKind_PROCESS_HISTORY_INCIDENT_RESOLVED {
+		t.Fatalf("last history kind = %v, want INCIDENT_RESOLVED", k)
+	}
+}
+
+// TestProcess_CMMNIncidentDefersParkUntilQuiescent: a CMMN fault must NOT park
+// the instance while sibling work is in flight (Outstanding>0) — fault does not
+// propagate (CMMN §8.4), so the case keeps running. It parks only once the case
+// is quiescent (the last in-flight action completes with the incident still open).
+func TestProcess_CMMNIncidentDefersParkUntilQuiescent(t *testing.T) {
+	p, _, col := newTestPartition(t)
+	const svc, key = "Case", "qpark"
 	pk := routing.PartitionKey(svc, key)
 	lp := keys.LPFromPartitionKey(pk)
 	apply := func(idx uint64, cmd *enginev1.Command) {
@@ -201,27 +278,56 @@ func TestProcess_ResolveIncidentRetryCMMNRejected(t *testing.T) {
 	}
 	procT, _ := procStore(p)
 
-	// A CMMN-kind instance parked as an incident.
+	// Start a CMMN case; its first turn arms a timer → Outstanding=1 (a sibling
+	// in flight).
 	apply(1, &enginev1.Command{Kind: &enginev1.Command_ProcessEvent{ProcessEvent: &enginev1.ProcessEvent{
 		Pk: pk, Service: svc, InstanceKey: key, Payload: extPayload([]byte("v")),
 		ModelRef: &enginev1.ModelRef{Kind: "cmmn", Name: svc, Version: "v1"},
 		Kind:     enginev1.ProcessKind_PROCESS_KIND_CMMN,
 	}}})
-	apply(2, procIncidentAdvancedCmd(pk, svc, key, []byte("failed"), "Item1", "boom"))
-
-	apply(3, &enginev1.Command{Kind: &enginev1.Command_ResolveProcessIncident{ResolveProcessIncident: &enginev1.ResolveProcessIncident{
-		Pk: pk, Service: svc, InstanceKey: key,
-		Resolution: enginev1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_RETRY,
+	apply(2, &enginev1.Command{Kind: &enginev1.Command_ProcessAdvanced{ProcessAdvanced: &enginev1.ProcessAdvanced{
+		Pk: pk, Service: svc, InstanceKey: key, NewState: []byte("s1"),
+		ArmTimer: []*enginev1.TimerArm{{NodeId: "Timer1", FireAtMs: testEnvelopeNowMs + 5000, Slot: 1}},
 	}}})
+	if rec, _, _ := procT.Get(lp, svc, key); rec.GetOutstanding() != 1 {
+		t.Fatalf("setup: outstanding = %d, want 1", rec.GetOutstanding())
+	}
+
+	// A later turn faults a plan item while the timer is still outstanding.
+	apply(3, &enginev1.Command{Kind: &enginev1.Command_ProcessEvent{ProcessEvent: &enginev1.ProcessEvent{
+		Pk: pk, Service: svc, InstanceKey: key, Payload: extPayload([]byte("e2")),
+	}}})
+	apply(4, procIncidentAdvancedCmd(pk, svc, key, []byte("s2"), "Item1", "boom"))
 
 	rec, ok, err := procT.Get(lp, svc, key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || rec.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT {
-		t.Fatalf("CMMN incident must stay parked after unsupported RETRY: ok=%v status=%v", ok, rec.GetStatus())
+	if !ok || rec.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_RUNNING {
+		t.Fatalf("must stay RUNNING while a sibling is outstanding: ok=%v status=%v", ok, rec.GetStatus())
+	}
+	if rec.GetIncident() != nil {
+		t.Fatalf("must not park (stamp incident) before quiescence: %+v", rec.GetIncident())
+	}
+
+	// The timer fires (Outstanding→0); the quiescence turn still carries the open
+	// incident (the adapter re-derives it from state) → now it parks.
+	apply(5, &enginev1.Command{Kind: &enginev1.Command_ProcessEvent{ProcessEvent: &enginev1.ProcessEvent{
+		Pk: pk, Service: svc, InstanceKey: key,
+		Payload: &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_TimerFired{
+			TimerFired: &enginev1.ProcessTimerFired{NodeId: "Timer1", Slot: 1},
+		}},
+	}}})
+	apply(6, procIncidentAdvancedCmd(pk, svc, key, []byte("s3"), "Item1", "boom"))
+
+	rec, _, err = procT.Get(lp, svc, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT {
+		t.Fatalf("must park once quiescent: status=%v", rec.GetStatus())
 	}
 	if rec.GetIncident().GetNodeId() != "Item1" {
-		t.Fatalf("incident must be retained: %+v", rec.GetIncident())
+		t.Fatalf("parked incident = %+v, want Item1", rec.GetIncident())
 	}
 }

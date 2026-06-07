@@ -65,9 +65,6 @@ func TestTranslateBPMN_IncidentTaxonomy(t *testing.T) {
 	}
 }
 
-// TestTranslateCMMN_IncidentTaxonomy: a top-level CaseFailed parks as an incident;
-// a child case failure stays terminal so it delivers to its parent. (CMMN has no
-// escalation channel, so there is no escalation carve-out.)
 // TestEventForBPMN_Retry maps a ProcessRetry inbox payload to the reflwos
 // RetryIncident resume event, decoding the operator variable patch.
 func TestEventForBPMN_Retry(t *testing.T) {
@@ -89,25 +86,88 @@ func TestEventForBPMN_Retry(t *testing.T) {
 	}
 }
 
+// TestEventForCMMN_Retry maps a ProcessRetry inbox payload to the reflwos
+// ManualReactivate resume event (CMMN reactivate: Failed → Active), decoding the
+// operator variable patch.
+func TestEventForCMMN_Retry(t *testing.T) {
+	ev, err := eventForCMMN(&enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_Retry{
+		Retry: &enginev1.ProcessRetry{NodeId: "pi1", VarPatch: []byte(`{"fixed":true}`)},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mr, ok := ev.(cmmn.ManualReactivate)
+	if !ok {
+		t.Fatalf("event = %T, want cmmn.ManualReactivate", ev)
+	}
+	if mr.PlanItemID != "pi1" {
+		t.Fatalf("PlanItemID = %q, want pi1", mr.PlanItemID)
+	}
+	if mr.Vars["fixed"] != true {
+		t.Fatalf("Vars = %+v, want fixed=true", mr.Vars)
+	}
+}
+
+// TestCMMNOpenIncident: the helper picks the lowest-sorted PIFailed item and its
+// cause, and reports none when no item is Failed.
+func TestCMMNOpenIncident(t *testing.T) {
+	none := &cmmn.CaseState{Items: map[string]cmmn.PlanItemState{"a": cmmn.PIActive, "b": cmmn.PICompleted}}
+	if _, _, ok := cmmnOpenIncident(none); ok {
+		t.Fatalf("no Failed item must report no incident")
+	}
+	open := &cmmn.CaseState{
+		Items:        map[string]cmmn.PlanItemState{"z": cmmn.PIActive, "m": cmmn.PIFailed, "x": cmmn.PIFailed},
+		FailureCause: "boom",
+	}
+	node, cause, ok := cmmnOpenIncident(open)
+	if !ok || node != "m" || cause != "boom" {
+		t.Fatalf("open incident = (%q,%q,%v), want (m,boom,true)", node, cause, ok)
+	}
+}
+
+// TestTranslateCMMN_IncidentTaxonomy pins the spec-aligned split: a CaseFailed is a
+// case-level hard error → terminal (not an incident); a runtime plan-item fault (a
+// PIFailed item in the case state) → a non-terminal incident on a top-level case,
+// or a terminal delivery on a child case (the parent's case-task faults in turn).
 func TestTranslateCMMN_IncidentTaxonomy(t *testing.T) {
 	a := New(NewMapResolver())
 
-	adv, err := a.translateCMMN(topLevelInput(), []cmmn.Command{cmmn.CaseFailed{PlanItemID: "Item1", Cause: "boom"}}, []byte("s"))
+	// CaseFailed (hard case-level error) → terminal, even top-level.
+	adv, err := a.translateCMMN(topLevelInput(), []cmmn.Command{cmmn.CaseFailed{PlanItemID: "Item1", Cause: "bad binding"}}, &cmmn.CaseState{}, []byte("s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adv.GetTerminal() == nil || !adv.GetTerminal().GetFailed() || adv.GetIncident() != nil {
+		t.Fatalf("CaseFailed must be terminal: terminal=%v incident=%v", adv.GetTerminal(), adv.GetIncident())
+	}
+
+	// A Failed plan item on a top-level case → non-terminal incident.
+	failedState := &cmmn.CaseState{
+		Items:        map[string]cmmn.PlanItemState{"Item1": cmmn.PIFailed},
+		FailureCause: "boom",
+	}
+	adv, err = a.translateCMMN(topLevelInput(), nil, failedState, []byte("s"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if adv.GetIncident() == nil || adv.GetTerminal() != nil {
-		t.Fatalf("top-level case failure must be an incident: terminal=%v incident=%v", adv.GetTerminal(), adv.GetIncident())
+		t.Fatalf("top-level fault must be an incident: terminal=%v incident=%v", adv.GetTerminal(), adv.GetIncident())
 	}
 	if adv.GetIncident().GetNodeId() != "Item1" || adv.GetIncident().GetCause() != "boom" {
 		t.Fatalf("incident = %+v", adv.GetIncident())
 	}
 
-	adv, err = a.translateCMMN(childInput(), []cmmn.Command{cmmn.CaseFailed{PlanItemID: "Item1", Cause: "boom"}}, []byte("s"))
+	// The same fault on a child case → terminal (delivers to the parent).
+	adv, err = a.translateCMMN(childInput(), nil, failedState, []byte("s"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if adv.GetTerminal() == nil || adv.GetIncident() != nil {
-		t.Fatalf("child case failure must stay terminal (deliver to parent): terminal=%v incident=%v", adv.GetTerminal(), adv.GetIncident())
+	if adv.GetTerminal() == nil || !adv.GetTerminal().GetFailed() || adv.GetIncident() != nil {
+		t.Fatalf("child fault must stay terminal (deliver to parent): terminal=%v incident=%v", adv.GetTerminal(), adv.GetIncident())
+	}
+
+	// PlanItemFaulted as a command must not trip the unsupported-command default.
+	if _, err := a.translateCMMN(topLevelInput(), []cmmn.Command{cmmn.PlanItemFaulted{PlanItemID: "Item1", Cause: "boom"}}, failedState, []byte("s")); err != nil {
+		t.Fatalf("PlanItemFaulted command must be tolerated: %v", err)
 	}
 }

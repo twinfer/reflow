@@ -122,6 +122,7 @@ const (
 	procSubIdxPrefix     = "proc_sub_idx/"
 	procChildIdxPrefix   = "proc_child_idx/"
 	procTimerIdxPrefix   = "proc_timer_idx/"
+	procInvokeIdxPrefix  = "proc_invoke_idx/"
 	procHistPrefix       = "proc_hist/"
 	lpFreezePrefix       = "lp_freeze/"
 	lpStagingPrefix      = "lp_staging/"
@@ -1092,6 +1093,51 @@ func ProcessTimerIndexInstancePrefix(root *enginev1.InvocationId) ([]byte, error
 func ProcessTimerIndexLPPrefix(lp uint32) []byte {
 	out := make([]byte, 0, len(procTimerIdxPrefix)+LPLen)
 	out = append(out, procTimerIdxPrefix...)
+	return appendLP(out, lp)
+}
+
+// ProcessInvokeIndexKey returns proc_invoke_idx/<lp:4><24B instance root><24B
+// invocation id>. The per-instance reverse index of in-flight service-task
+// invocations (adv.Invoke → mintProcessTaskID), so a terminating / cancelled
+// instance can find and cancel every task it dispatched with one bounded prefix
+// scan instead of leaving each to complete and self-drop. Empty value — the
+// invocation id is in the key (decode the trailing 24 bytes); its partition_key
+// routes the by-id cancel to the callee's shard. The proc_child_idx analog for
+// the service-task plane.
+func ProcessInvokeIndexKey(root, invID *enginev1.InvocationId) ([]byte, error) {
+	prefix, err := ProcessInvokeIndexInstancePrefix(root)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := EncodeInvocationID(invID)
+	if err != nil {
+		return nil, err
+	}
+	return append(prefix, raw...), nil
+}
+
+// ProcessInvokeIndexInstancePrefix returns proc_invoke_idx/<lp:4><24B instance
+// root> — the bounded scan / range-delete prefix for every task one instance
+// dispatched.
+func ProcessInvokeIndexInstancePrefix(root *enginev1.InvocationId) ([]byte, error) {
+	raw, err := EncodeInvocationID(root)
+	if err != nil {
+		return nil, err
+	}
+	lp := LPFromPartitionKey(root.GetPartitionKey())
+	out := make([]byte, 0, len(procInvokeIdxPrefix)+LPLen+invocationIDLen)
+	out = append(out, procInvokeIdxPrefix...)
+	out = appendLP(out, lp)
+	return append(out, raw...), nil
+}
+
+// ProcessInvokeIndexLPPrefix returns proc_invoke_idx/<lp:4> — the per-LP scan
+// bound so the task reverse index rides the LP-transfer scan + source
+// range-delete alongside the instance it belongs to. Registered in
+// AllLPNamespaces.
+func ProcessInvokeIndexLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(procInvokeIdxPrefix)+LPLen)
+	out = append(out, procInvokeIdxPrefix...)
 	return appendLP(out, lp)
 }
 

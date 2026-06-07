@@ -307,6 +307,15 @@ func outboxEnvelopeToCommand(env *enginev1.OutboxEnvelope) *enginev1.Command {
 		return &enginev1.Command{
 			Kind: &enginev1.Command_ProcessCancel{ProcessCancel: k.ProcessCancel},
 		}
+	case *enginev1.OutboxEnvelope_CancelInvocation:
+		// Cross-partition process→task teardown: a service-task invocation whose
+		// shard differs from the instance's. The dest shard's
+		// InvokerEffect_CancelById apply arm force-terminates it by id.
+		return &enginev1.Command{
+			Kind: &enginev1.Command_InvokerEffect{InvokerEffect: &enginev1.InvokerEffect{
+				Kind: &enginev1.InvokerEffect_CancelById{CancelById: k.CancelInvocation},
+			}},
+		}
 	case *enginev1.OutboxEnvelope_OutboxAck:
 		return &enginev1.Command{
 			Kind: &enginev1.Command_OutboxAck{OutboxAck: k.OutboxAck},

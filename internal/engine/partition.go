@@ -599,7 +599,7 @@ func (p *Partition) applyCommand(
 	case *enginev1.Command_ProcessUnsubscribe:
 		return p.onProcessUnsubscribe(batch, k.ProcessUnsubscribe)
 	case *enginev1.Command_ProcessCancel:
-		return p.onProcessCancel(batch, meta, k.ProcessCancel, isLeader)
+		return p.onProcessCancel(batch, meta, k.ProcessCancel, now, isLeader)
 	case *enginev1.Command_DeliverProcessMessage:
 		return p.onDeliverProcessMessage(batch, meta, k.DeliverProcessMessage, now, isLeader)
 	case *enginev1.Command_ReapProcessInstance:
@@ -881,6 +881,14 @@ func (p *Partition) enqueueInstanceEvent(batch storage.Batch, ev *enginev1.Proce
 	if cc := ev.GetPayload().GetChildCompleted(); cc != nil && cc.GetChildRoot() != nil {
 		if err := (tables.ProcessChildIndexTable{S: batch}).Delete(batch, rec.GetRootId(), cc.GetChildRoot()); err != nil {
 			return fmt.Errorf("enqueueInstanceEvent: child index delete: %w", err)
+		}
+	}
+	// Likewise a completing service task clears its instance→task reverse-index
+	// row, so the instance's terminal cascade only ever cancels tasks still in
+	// flight. Same pre-status-gate placement and rationale as the child case.
+	if tc := ev.GetPayload().GetTaskCompleted(); tc != nil && tc.GetTaskInvocationId() != nil {
+		if err := (tables.ProcessInvokeIndexTable{S: batch}).Delete(batch, rec.GetRootId(), tc.GetTaskInvocationId()); err != nil {
+			return fmt.Errorf("enqueueInstanceEvent: invoke index delete: %w", err)
 		}
 	}
 
@@ -1315,13 +1323,21 @@ func (p *Partition) finishProcessInstance(batch storage.Batch, meta *enginev1.Pa
 	// termination (terminate-end / escalation / CaseFailed / operator TERMINATE)
 	// with children still alive — exactly the orphan window children parking as
 	// incidents widened.
-	if err := p.cascadeCancelChildren(batch, meta, root, isLeader); err != nil {
+	if err := p.cascadeCancelChildren(batch, meta, root, nowMs, isLeader); err != nil {
 		return err
 	}
 
 	// Drop any process timers still armed at terminal (e.g. a non-interrupting
 	// boundary timer the model never cancelled), so none fires into the gone record.
 	if err := p.teardownInstanceTimers(batch, root, isLeader); err != nil {
+		return err
+	}
+
+	// Force-cancel any service-task invocations still in flight at terminal. Like
+	// the child cascade, a normal completion finds the index empty (Outstanding==0
+	// ⇒ every task already fed back); this fires only on abnormal termination with
+	// tasks mid-flight (terminate-end / escalation / CaseFailed / operator TERMINATE).
+	if err := p.teardownInstanceInvocations(batch, meta, root, nowMs, isLeader); err != nil {
 		return err
 	}
 
@@ -1448,6 +1464,56 @@ func (p *Partition) teardownInstanceTimers(batch storage.Batch, root *enginev1.I
 	return nil
 }
 
+// teardownInstanceInvocations force-cancels every service-task invocation an
+// instance still has in flight, then range-deletes its task-index rows. Each
+// task is addressed by-id (decoded from the index key); deliverCancelInvocation
+// routes the cancel inline (same shard) or via the outbox to the callee's shard.
+// Collect-then-mutate. Shared by the terminal path (finishProcessInstance) and
+// the recursive cancel path (cancelInstanceTree). The proc_invoke_idx analog of
+// teardownInstanceTimers.
+func (p *Partition) teardownInstanceInvocations(batch storage.Batch, meta *enginev1.PartitionMeta, root *enginev1.InvocationId, nowMs uint64, isLeader bool) error {
+	idxT := tables.ProcessInvokeIndexTable{S: batch}
+	var ids []*enginev1.InvocationId
+	if err := idxT.ScanByInstance(root, func(id *enginev1.InvocationId) error {
+		ids = append(ids, id)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("teardownInstanceInvocations: index scan: %w", err)
+	}
+	for _, id := range ids {
+		if err := p.deliverCancelInvocation(batch, meta, id, nowMs, isLeader); err != nil {
+			return err
+		}
+	}
+	if err := idxT.DeleteByInstance(batch, root); err != nil {
+		return fmt.Errorf("teardownInstanceInvocations: index delete: %w", err)
+	}
+	return nil
+}
+
+// deliverCancelInvocation routes a by-id force-cancel to the shard owning the
+// task invocation: inline (applyCancelById) when this shard owns it, else via
+// the outbox to that shard (where the InvokerEffect_CancelById apply arm applies
+// it). Mirrors deliverProcessCancel's same-shard / cross-shard split; the inline
+// arm does not re-gate the LP freeze (the apply entry already gated its primary
+// LP), the cross-shard landing re-gates.
+func (p *Partition) deliverCancelInvocation(batch storage.Batch, meta *enginev1.PartitionMeta, invID *enginev1.InvocationId, nowMs uint64, isLeader bool) error {
+	shard := p.cfg.Partitioner.ShardForInvocation(invID)
+	if shard == 0 || shard == p.shardID {
+		return p.applyCancelById(batch, invID,
+			tables.InvocationTable{S: batch}, tables.JournalTable{S: batch}, tables.TimerTable{S: batch},
+			meta, isLeader, nowMs)
+	}
+	env := &enginev1.OutboxEnvelope{
+		DestinationShardId: shard,
+		Kind:               &enginev1.OutboxEnvelope_CancelInvocation{CancelInvocation: invID},
+	}
+	if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {
+		return fmt.Errorf("deliverCancelInvocation: outbox append: %w", err)
+	}
+	return nil
+}
+
 // cascadeCancelChildren ships a ProcessCancel to every still-live child of the
 // parent rooted at parentRoot, then range-deletes the parent's child-index rows.
 // Each child is addressed by its stored ProcessCancel (same-shard inline /
@@ -1455,7 +1521,7 @@ func (p *Partition) teardownInstanceTimers(batch storage.Batch, root *enginev1.I
 // descendants. Collect-then-mutate (the deliveries mutate the batch). Shared by
 // the terminal path (finishProcessInstance) and the recursive cancel path
 // (cancelInstanceTree).
-func (p *Partition) cascadeCancelChildren(batch storage.Batch, meta *enginev1.PartitionMeta, parentRoot *enginev1.InvocationId, isLeader bool) error {
+func (p *Partition) cascadeCancelChildren(batch storage.Batch, meta *enginev1.PartitionMeta, parentRoot *enginev1.InvocationId, nowMs uint64, isLeader bool) error {
 	childIdxT := tables.ProcessChildIndexTable{S: batch}
 	var children []*enginev1.ProcessCancel
 	if err := childIdxT.ScanByParent(parentRoot, func(c *enginev1.ProcessCancel) error {
@@ -1465,7 +1531,7 @@ func (p *Partition) cascadeCancelChildren(batch storage.Batch, meta *enginev1.Pa
 		return fmt.Errorf("cascadeCancelChildren: scan: %w", err)
 	}
 	for _, c := range children {
-		if err := p.deliverProcessCancel(batch, meta, c, isLeader); err != nil {
+		if err := p.deliverProcessCancel(batch, meta, c, nowMs, isLeader); err != nil {
 			return err
 		}
 	}
@@ -1481,10 +1547,10 @@ func (p *Partition) cascadeCancelChildren(batch storage.Batch, meta *enginev1.Pa
 // deliverProcessEvent's same-shard / cross-shard split; the inline arm does not
 // re-gate the LP freeze (the apply entry already gated its primary LP, matching
 // the inline feedback-delivery contract), the cross-shard landing re-gates.
-func (p *Partition) deliverProcessCancel(batch storage.Batch, meta *enginev1.PartitionMeta, cmd *enginev1.ProcessCancel, isLeader bool) error {
+func (p *Partition) deliverProcessCancel(batch storage.Batch, meta *enginev1.PartitionMeta, cmd *enginev1.ProcessCancel, nowMs uint64, isLeader bool) error {
 	shard := p.cfg.Partitioner.ShardForKey(cmd.GetPk())
 	if shard == 0 || shard == p.shardID {
-		return p.cancelInstanceTree(batch, meta, cmd, isLeader)
+		return p.cancelInstanceTree(batch, meta, cmd, nowMs, isLeader)
 	}
 	env := &enginev1.OutboxEnvelope{
 		DestinationShardId: shard,
@@ -1499,24 +1565,21 @@ func (p *Partition) deliverProcessCancel(batch storage.Batch, meta *enginev1.Par
 // onProcessCancel is the apply landing for a Command_ProcessCancel that rode the
 // outbox cross-shard. It freeze-gates the child's LP (a fresh apply entry) then
 // runs the teardown.
-func (p *Partition) onProcessCancel(batch storage.Batch, meta *enginev1.PartitionMeta, cmd *enginev1.ProcessCancel, isLeader bool) error {
+func (p *Partition) onProcessCancel(batch storage.Batch, meta *enginev1.PartitionMeta, cmd *enginev1.ProcessCancel, nowMs uint64, isLeader bool) error {
 	if err := p.checkLPFreeze(batch, cmd.GetPk()); err != nil {
 		return err
 	}
-	return p.cancelInstanceTree(batch, meta, cmd, isLeader)
+	return p.cancelInstanceTree(batch, meta, cmd, nowMs, isLeader)
 }
 
 // cancelInstanceTree force-terminates one non-terminal child during a parent-
 // subtree teardown: recurse into its own children, tear down its subscriptions,
-// drop its inbox, and delete its record + timeline — with NO upward
-// ChildCompleted (the parent that owned it is itself ending). A cancel for an
-// absent or already-terminal instance is a benign no-op (it completed / was
-// reaped / never existed); only RUNNING and INCIDENT instances are live orphans.
-// Armed timers and dispatched service-task invocations are left to self-clean on
-// fire / completion (they drop into the now-absent instance), matching
-// finishProcessInstance — the cancel reclaims the instance's own rows, not the
-// work it already handed off.
-func (p *Partition) cancelInstanceTree(batch storage.Batch, meta *enginev1.PartitionMeta, cmd *enginev1.ProcessCancel, isLeader bool) error {
+// armed timers, and in-flight service-task invocations, drop its inbox, and
+// delete its record + timeline — with NO upward ChildCompleted (the parent that
+// owned it is itself ending). A cancel for an absent or already-terminal
+// instance is a benign no-op (it completed / was reaped / never existed); only
+// RUNNING and INCIDENT instances are live orphans.
+func (p *Partition) cancelInstanceTree(batch storage.Batch, meta *enginev1.PartitionMeta, cmd *enginev1.ProcessCancel, nowMs uint64, isLeader bool) error {
 	pk := cmd.GetPk()
 	lp := keys.LPFromPartitionKey(pk)
 	service, instanceKey := cmd.GetService(), cmd.GetInstanceKey()
@@ -1540,13 +1603,16 @@ func (p *Partition) cancelInstanceTree(batch storage.Batch, meta *enginev1.Parti
 	root := rec.GetRootId()
 	// Recurse first: cancel this instance's own live children before tearing it
 	// down (their index rows live on this instance's shard).
-	if err := p.cascadeCancelChildren(batch, meta, root, isLeader); err != nil {
+	if err := p.cascadeCancelChildren(batch, meta, root, nowMs, isLeader); err != nil {
 		return err
 	}
 	if err := p.teardownInstanceSubscriptions(batch, meta, root, isLeader); err != nil {
 		return err
 	}
 	if err := p.teardownInstanceTimers(batch, root, isLeader); err != nil {
+		return err
+	}
+	if err := p.teardownInstanceInvocations(batch, meta, root, nowMs, isLeader); err != nil {
 		return err
 	}
 	// Drop the whole inbox (the active turn too — no ProcessAdvanced will land for
@@ -1778,6 +1844,14 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 		}
 		if _, err := p.enqueueOutbox(batch, meta, env, isLeader); err != nil {
 			return fmt.Errorf("actuateProcessInstructions: outbox append (task): %w", err)
+		}
+		// Reverse index (instance root → task invocation) so a terminating /
+		// cancelled instance can find and cancel this task while it's still in
+		// flight. Dropped on the task's terminal (delete-on-complete, keyed by
+		// the task_invocation_id the TaskCompleted carries) or range-deleted
+		// when the instance itself ends.
+		if err := (tables.ProcessInvokeIndexTable{S: batch}).Put(batch, root, calleeID); err != nil {
+			return fmt.Errorf("actuateProcessInstructions: invoke index put: %w", err)
 		}
 	}
 	// Each dispatched service task feeds back exactly once (TaskCompleted).
@@ -2964,11 +3038,12 @@ func (p *Partition) applyTerminalCompletion(
 			LogicalTimeMs: nowMs,
 			Payload: &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_TaskCompleted{
 				TaskCompleted: &enginev1.ProcessTaskCompleted{
-					NodeId:         pp.GetNodeId(),
-					InstanceIdx:    pp.GetInstanceIdx(),
-					Output:         completed.GetOutput(),
-					Failed:         completed.GetFailureMessage() != "",
-					FailureMessage: completed.GetFailureMessage(),
+					NodeId:           pp.GetNodeId(),
+					InstanceIdx:      pp.GetInstanceIdx(),
+					Output:           completed.GetOutput(),
+					Failed:           completed.GetFailureMessage() != "",
+					FailureMessage:   completed.GetFailureMessage(),
+					TaskInvocationId: id, // drop the instance's proc_invoke_idx row on landing
 				},
 			}},
 		}

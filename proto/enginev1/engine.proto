@@ -1182,6 +1182,12 @@ message ProcessTaskCompleted {
   bytes output = 3;
   bool failed = 4;
   string failure_message = 5;
+  // task_invocation_id is the completing task's own invocation id (the
+  // mintProcessTaskID callee). Carried back so the instance's apply path can
+  // drop its proc_invoke_idx row (delete-on-complete) — the id can't be
+  // recomputed downstream (it folds in active_seq + fan-out index + target).
+  // Mirrors ProcessChildCompleted.child_root.
+  InvocationId task_invocation_id = 6;
 }
 
 // ProcessTimerFired feeds an armed process timer back (TimerArm → TimerService

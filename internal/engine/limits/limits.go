@@ -7,7 +7,7 @@ package limits
 import enginev1 "github.com/twinfer/reflw/proto/enginev1"
 
 // Step budget defaults. Each journal entry counts as one step: JEInput,
-// every command, each result notification, and JEOutput. A pathological
+// every command, and each result notification. A pathological
 // handler that loops on ctx.Run / ctx.Sleep would otherwise grow the
 // journal without bound — for keyed virtual objects this poisons the
 // queue indefinitely.

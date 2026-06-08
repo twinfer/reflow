@@ -19,8 +19,7 @@ import (
 //
 // Lifetime is the owning workflow run's retention window — rows survive
 // the run's Completed transition and are reaped together with state +
-// workflow_run rows when the workflow retention reaper sweeps the key
-// (see Step 3.3).
+// workflow_run rows when the workflow retention reaper sweeps the key.
 type PromiseTable struct{ S storage.Reader }
 
 // Get returns the PromiseValue at (service, workflow_key, name) or

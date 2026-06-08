@@ -13,7 +13,7 @@ import (
 // inbound ctx by the Connect authn middleware) into the engine
 // proposer's WithProposalPrincipal ctx key. With it installed on the
 // admin + config Connect listeners, every Raft proposal originating
-// from an operator (or tenant) Connect call carries
+// from an operator Connect call carries
 // Envelope.Header.principal automatically — no per-handler change
 // required.
 //

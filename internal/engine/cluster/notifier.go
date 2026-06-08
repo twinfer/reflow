@@ -19,9 +19,9 @@ package cluster
 //     subscriber per notifier; this matches the per-table model
 //     (one Reconciler owns each subsystem). Re-subscribing returns the
 //     same channel. When multiple consumers need to wake on the same
-//     table (e.g. TenantTable drives both the OIDC reconciler and the
-//     quota reconciler), the second consumer subscribes to a fan-out
-//     relay built in pkg/reflw — TableNotifier itself stays
+//     table (e.g. one table drives two subsystems), the second consumer
+//     subscribes to a fan-out relay built in pkg/reflw — TableNotifier
+//     itself stays
 //     single-subscriber so the existing propose-then-Subscribe test
 //     pattern continues to work (subscribe-after-bump still drains
 //     the pending signal from the buffered-1 channel).

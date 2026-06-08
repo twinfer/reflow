@@ -1,18 +1,16 @@
-// Reflow Config service — the app-config surface.
+// Reflw Config service — the app-config surface.
 //
 // Config owns the *logical* config that shapes what runs on the
-// cluster: handler deployments, event-source bindings, inbound
-// webhook bindings, and the named-secret table consumers reference.
-// It is the developer-facing counterpart to
-// reflw.clusterctl.v1.ClusterCtl (which owns cluster topology, DR,
+// cluster: handler deployments, named secrets, CA roots, join tokens,
+// and the cluster authz policy. It is the developer-facing counterpart
+// to reflw.clusterctl.v1.ClusterCtl (which owns cluster topology, DR,
 // and routing). Naming mirrors Restate's split between
 // `cluster-ctrl` (cluster admin) and `admin` (app config), with the
 // terminology flipped to avoid the overloaded word "admin".
 //
 // Every reflwd process hosts a Config Connect RPC server on the
-// admin listener (same port as ClusterCtl in step 1; a follow-on may
-// move Config onto its own port if/when we want different network
-// exposure). The server is mTLS-protected; today's starter policy
+// admin listener (same port as ClusterCtl). The server is
+// mTLS-protected; the Cedar foundational policy (internal/authz)
 // gates /reflw.config.v1.Config/* to operator/* principals — same as
 // ClusterCtl. The separation of services is the seam for later
 // delegating Config to a narrower credential (admin, CI

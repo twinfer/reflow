@@ -611,11 +611,6 @@ func (t LPOwnersTable) Put(b storage.Batch, rec *enginev1.LPOwnerRecord) error {
 	return b.Set(LPOwnerKey(rec.GetLp()), buf)
 }
 
-// Delete removes the row for lp. Delete-of-absent is a no-op.
-func (t LPOwnersTable) Delete(b storage.Batch, lp uint32) error {
-	return b.Delete(LPOwnerKey(lp))
-}
-
 // List returns every LPOwnerRecord in ascending lp order.
 func (t LPOwnersTable) List() ([]*enginev1.LPOwnerRecord, error) {
 	prefix := LPOwnerPrefix()

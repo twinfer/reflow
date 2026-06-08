@@ -51,26 +51,6 @@ func upsertLPOwnerEnvelope(t *testing.T, lp uint32, shard uint64, ifRev uint64) 
 	return buf
 }
 
-func deleteLPOwnerEnvelope(t *testing.T, lp uint32, ifRev uint64) []byte {
-	t.Helper()
-	env := &enginev1.Envelope{
-		Header: &enginev1.Header{CreatedAtMs: 1_700_000_000_002},
-		Command: &enginev1.Command{
-			Kind: &enginev1.Command_DeleteLpOwner{
-				DeleteLpOwner: &enginev1.DeleteLPOwner{Lp: lp},
-			},
-		},
-	}
-	if ifRev != 0 {
-		env.Precondition = &enginev1.Precondition{IfTableRevisionEq: ifRev}
-	}
-	buf, err := proto.Marshal(env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return buf
-}
-
 func newFSMWithLPOwnersNotifier(t *testing.T) (*FSM, *TableNotifier) {
 	t.Helper()
 	f, _, _ := newTestFSM(t)
@@ -183,35 +163,6 @@ func TestCluster_UpsertLPOwner_FlipsOneRow(t *testing.T) {
 	other, _ := (LPOwnersTable{S: store}).Get(20)
 	if other.GetShardId() != 2 {
 		t.Fatalf("lp=20 = %d; want untouched 2", other.GetShardId())
-	}
-}
-
-func TestCluster_DeleteLPOwner_RemovesRowAndBumps(t *testing.T) {
-	f, notifier := newFSMWithLPOwnersNotifier(t)
-	seed := []*enginev1.LPOwnerRecord{{Lp: 7, ShardId: 1}}
-	if _, err := f.Update([]statemachine.Entry{
-		{Index: 1, Cmd: bulkUpsertLPOwnersEnvelope(t, seed, 0)},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	<-notifier.Subscribe()
-	if _, err := f.Update([]statemachine.Entry{
-		{Index: 2, Cmd: deleteLPOwnerEnvelope(t, 7, 0)},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-notifier.Subscribe():
-	default:
-		t.Fatal("Delete should fire the notifier")
-	}
-	got, _ := (LPOwnersTable{S: f.cfg.Snapshotter.Store()}).Get(7)
-	if got != nil {
-		t.Fatalf("lp=7 should be deleted; got %+v", got)
-	}
-	rev, _ := (RevisionTable{S: f.cfg.Snapshotter.Store()}).Get(RevisionTableLPOwners)
-	if rev != 2 {
-		t.Fatalf("rev=%d; want 2 (seed + delete)", rev)
 	}
 }
 

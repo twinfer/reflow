@@ -73,6 +73,35 @@ type Metrics struct {
 	// UploadTimeout (default 10m) elapsed.
 	LPTransferSSTUploadErrors prometheus.Counter
 
+	// HandlerInvokeSeconds times each engine→handler Invoke RPC — the
+	// hottest external dependency. Labels: service, outcome
+	// (ok / error / cancelled). The _count series is the request rate;
+	// outcome="error" is the transport-failure rate to alert on.
+	HandlerInvokeSeconds *prometheus.HistogramVec
+	// InvokerSessionsStarted counts wire-session spawns per service. The
+	// wake path is respawn-based, so a climbing rate against a flat
+	// completion rate signals a crash-looping handler (wake→fail→wake).
+	InvokerSessionsStarted *prometheus.CounterVec
+
+	// SnapshotCreateTotal counts DR-snapshot production cycles by result
+	// (ok / error). The error series is the cycle-failed rate to alert on.
+	SnapshotCreateTotal *prometheus.CounterVec
+	// SnapshotCreateSeconds times each DR-snapshot production cycle
+	// (export + archive), in seconds.
+	SnapshotCreateSeconds prometheus.Histogram
+	// SnapshotReapFailures counts DR-snapshot reaper cycle failures.
+	SnapshotReapFailures prometheus.Counter
+	// SnapshotRecoverTotal counts dragonboat per-shard RecoverFromSnapshot
+	// calls by result (ok / error).
+	SnapshotRecoverTotal *prometheus.CounterVec
+	// OutboxDispatchFailures counts cross-shard outbox dispatch failures
+	// that re-queue the row for the next leader's Rebuild.
+	OutboxDispatchFailures prometheus.Counter
+	// DeliverySendTotal counts cross-shard Delivery sends by result
+	// (ok / error). The error series covers NotLeader, dial, and receiver
+	// failures — all of which the OutboxService retries.
+	DeliverySendTotal *prometheus.CounterVec
+
 	// PebbleCompactions counts completed Pebble compactions across every
 	// shard DB on this node. Populated by NewPebbleEventListener.
 	PebbleCompactions prometheus.Counter
@@ -178,6 +207,40 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name: "reflw_lp_transfer_sst_upload_errors_total",
 			Help: "Fan-out upload failures from the source. A non-zero rate signals an unreachable replica, an integrity mismatch, or UploadTimeout elapse.",
 		}),
+		HandlerInvokeSeconds: f.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "reflw_handler_invoke_seconds",
+			Help:    "Duration of each engine→handler Invoke RPC, in seconds, by service and outcome (ok/error/cancelled).",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 16),
+		}, []string{"service", "outcome"}),
+		InvokerSessionsStarted: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "reflw_invoker_sessions_started_total",
+			Help: "Wire-session spawns per service. The wake path is respawn-based, so churn here against flat completions signals a crash-looping handler.",
+		}, []string{"service"}),
+		SnapshotCreateTotal: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "reflw_snapshot_create_total",
+			Help: "DR-snapshot production cycles, by result (ok/error).",
+		}, []string{"result"}),
+		SnapshotCreateSeconds: f.NewHistogram(prometheus.HistogramOpts{
+			Name:    "reflw_snapshot_create_seconds",
+			Help:    "Duration of each DR-snapshot production cycle (export + archive), in seconds.",
+			Buckets: prometheus.ExponentialBuckets(0.05, 2, 12),
+		}),
+		SnapshotReapFailures: f.NewCounter(prometheus.CounterOpts{
+			Name: "reflw_snapshot_reap_failures_total",
+			Help: "DR-snapshot reaper cycle failures.",
+		}),
+		SnapshotRecoverTotal: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "reflw_snapshot_recover_total",
+			Help: "Dragonboat per-shard RecoverFromSnapshot calls, by result (ok/error).",
+		}, []string{"result"}),
+		OutboxDispatchFailures: f.NewCounter(prometheus.CounterOpts{
+			Name: "reflw_outbox_dispatch_failures_total",
+			Help: "Cross-shard outbox dispatch failures that re-queue the row for the next leader's Rebuild.",
+		}),
+		DeliverySendTotal: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "reflw_delivery_send_total",
+			Help: "Cross-shard Delivery sends, by result (ok/error).",
+		}, []string{"result"}),
 		PebbleCompactions: f.NewCounter(prometheus.CounterOpts{
 			Name: "reflw_pebble_compactions_total",
 			Help: "Completed Pebble compactions across every shard DB on this node.",

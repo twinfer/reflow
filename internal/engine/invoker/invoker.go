@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/twinfer/reflw/internal/observability"
 	"github.com/twinfer/reflw/internal/storage/keys"
 	"github.com/twinfer/reflw/internal/storage/tables"
 	"github.com/twinfer/reflw/pkg/handler/wire"
@@ -22,6 +23,7 @@ type Config struct {
 	StateTable      tables.StateTable
 	Proposer        Proposer
 	Log             *slog.Logger
+	Metrics         *observability.Metrics
 
 	// Deployments resolves a stamped deployment_id to a DeploymentRecord
 	// so installSessionLocked can open a wire session against the
@@ -89,6 +91,7 @@ type Invoker struct {
 	codec              wire.Codec
 	eagerStateMaxBytes uint32
 	log                *slog.Logger
+	metrics            *observability.Metrics
 
 	mu       sync.Mutex
 	sessions map[string]sessionHandle
@@ -146,6 +149,7 @@ func New(cfg Config) *Invoker {
 		codec:              codec,
 		eagerStateMaxBytes: cfg.EagerStateMaxBytes,
 		log:                log,
+		metrics:            cfg.Metrics,
 		sessions:           make(map[string]sessionHandle),
 		pendingRespawn:     make(map[string]*enginev1.InvocationTarget),
 		procSessions:       make(map[string]sessionHandle),
@@ -309,6 +313,7 @@ func (i *Invoker) installSessionLocked(id *enginev1.InvocationId, target *engine
 		i.journal,
 		i.eagerStateMaxBytes,
 		i.log,
+		i.metrics,
 	)
 	i.sessions[key] = s
 	return s, true

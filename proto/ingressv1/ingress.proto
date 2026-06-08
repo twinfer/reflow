@@ -1,4 +1,4 @@
-// Reflow ingress service.
+// Reflw ingress service.
 //
 // Exposes the user-facing entrypoints for submitting invocations, awaiting
 // their results, and resolving awakeables. Served over Connect (HTTP/2)
@@ -77,10 +77,9 @@ service Ingress {
   // virtual-object state or workflow promise rows.
   rpc PurgeInvocation(PurgeInvocationRequest) returns (PurgeInvocationResponse);
 
-  // ListInvocations lists the caller tenant band's invocations, fanning out
-  // across the shards owning the band's LPs (same substrate as
-  // ListProcessInstances). Optional service-name and state filters; capped by
-  // limit. Read-only — no proposal.
+  // ListInvocations lists invocations across the namespace, fanning out across
+  // all partition shards (same substrate as ListProcessInstances). Optional
+  // service-name and state filters; capped by limit. Read-only — no proposal.
   rpc ListInvocations(ListInvocationsRequest) returns (ListInvocationsResponse);
 
   // StartProcess launches a new reflwos BPMN/CMMN instance. Routes to the
@@ -107,9 +106,9 @@ service Ingress {
   // active_seq==0 means idle/parked on an external wait (a timer that will fire,
   // or a message/signal subscription). Read-only — no proposal.
   rpc GetProcessInstance(GetProcessInstanceRequest) returns (GetProcessInstanceResponse);
-  // ListProcessInstances lists the caller tenant band's process instances,
-  // fanning out across the shards owning the band's LPs. Optional model-name and
-  // status filters; capped by limit.
+  // ListProcessInstances lists process instances across the namespace, fanning
+  // out across all partition shards. Optional model-name and status filters;
+  // capped by limit.
   rpc ListProcessInstances(ListProcessInstancesRequest) returns (ListProcessInstancesResponse);
 
   // GetProcessInstanceHistory reads one instance's append-only activity timeline
@@ -255,7 +254,7 @@ message StartProcessRequest {
 }
 
 message StartProcessResponse {
-  // Banded partition_key the instance was routed to.
+  // partition_key the instance was routed to.
   fixed64 pk = 1;
   // The instance key — echoed, or the server-minted one when the request left
   // it empty.
@@ -270,7 +269,7 @@ message DeliverMessageRequest {
 }
 
 message DeliverMessageResponse {
-  // Banded partition_key the message was routed to (debug/observability).
+  // partition_key the message was routed to (debug/observability).
   fixed64 pk = 1;
   // accepted is true when the command was routed and proposed; it does not wait
   // for apply, nor report how many subscribers matched.
@@ -278,8 +277,8 @@ message DeliverMessageResponse {
 }
 
 message GetProcessInstanceRequest {
-  // model_ref.name + the caller's tenant + instance_key select the routing
-  // partition (model_ref.kind/version are ignored for the read).
+  // model_ref.name + instance_key select the routing partition
+  // (model_ref.kind/version are ignored for the read).
   reflw.engine.v1.ModelRef model_ref = 1;
   string instance_key = 2;
 }
@@ -319,8 +318,8 @@ message GetProcessInstanceResponse {
 }
 
 message ResolveProcessIncidentRequest {
-  // model_ref.name + the caller's tenant + instance_key select the routing
-  // partition (model_ref.kind/version are ignored).
+  // model_ref.name + instance_key select the routing partition
+  // (model_ref.kind/version are ignored).
   reflw.engine.v1.ModelRef model_ref = 1;
   string instance_key = 2;
   reflw.engine.v1.ProcessIncidentResolution resolution = 3;
@@ -336,8 +335,8 @@ message ResolveProcessIncidentResponse {
 }
 
 message GetProcessInstanceHistoryRequest {
-  // model_ref.name + the caller's tenant + instance_key select the routing
-  // partition (model_ref.kind/version are ignored for the read).
+  // model_ref.name + instance_key select the routing partition
+  // (model_ref.kind/version are ignored for the read).
   reflw.engine.v1.ModelRef model_ref = 1;
   string instance_key = 2;
   // Resume strictly past this event seq (0 = from the first event). Pair with the
@@ -361,7 +360,7 @@ message GetProcessInstanceHistoryResponse {
 
 message ListProcessInstancesRequest {
   // model_ref.name (when set) filters to one model; empty lists every model in
-  // the caller's tenant band. model_ref.kind/version are ignored.
+  // the namespace. model_ref.kind/version are ignored.
   reflw.engine.v1.ModelRef model_ref = 1;
   // Optional status filter; empty = any status.
   repeated reflw.engine.v1.ProcessStatus status_filter = 2;
@@ -399,7 +398,7 @@ message ProcessInstanceSummary {
 
 message ListInvocationsRequest {
   // service (when set) filters to one target service; empty lists every service
-  // in the caller's tenant band.
+  // in the namespace.
   string service = 1;
   // Optional state filter; empty = any state.
   repeated reflw.engine.v1.InvocationState state_filter = 2;

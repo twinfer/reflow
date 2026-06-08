@@ -1,4 +1,4 @@
-// Reflow Bootstrap service — kubeadm-style joiner credential exchange.
+// Reflw Bootstrap service — kubeadm-style joiner credential exchange.
 //
 // The bootstrap surface is a single RPC: SignCSR. A joiner that has been
 // issued a one-time `reflwd config create-join-token` plaintext sends a

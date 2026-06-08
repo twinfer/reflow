@@ -156,7 +156,7 @@ type HostConfig struct {
 	// ProcessEngine, when non-nil, runs reflwos process/case instances in-process
 	// on the partition leader (the procSession path). Like InProcDialer it is
 	// assembled outside internal/engine (the reflwos binding lives in pkg/reflw
-	// or an reflwos-side adapter) and injected here so the engine never imports
+	// or a reflwos-side adapter) and injected here so the engine never imports
 	// reflwos. nil disables process execution.
 	ProcessEngine invoker.ProcessEngine
 
@@ -919,6 +919,7 @@ func (h *Host) StartPartition(shardID uint64) (*PartitionRunner, error) {
 		ProcessInstanceTable: tables.ProcessInstanceTable{S: snap.Store()},
 		ProcessInboxTable:    tables.ProcessInboxTable{S: snap.Store()},
 		Log:                  h.log,
+		Metrics:              h.cfg.Metrics,
 	})
 
 	leadership.SetCallbacks(runner.onBecomeLeader, runner.onStepDown)

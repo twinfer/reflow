@@ -1,11 +1,13 @@
-// Reflow service protocol v1 — engine ↔ handler wire format.
+// Reflw service protocol v1 — engine ↔ handler wire format.
 //
 // The transport is Connect RPC over HTTP/2 (h2c plaintext or HTTPS).
-// The engine opens HandlerService.InvokeStream — a bidi stream of
-// protocolv1.Frame envelopes — for each invocation. Routing
-// (service_name, handler_name) flows inside StartMessage. Capability
-// discovery is a separate one-shot probe defined in
-// proto/discoveryv1/discovery.proto (GET /discover).
+// The engine calls the unary HandlerService.Invoke for each invocation:
+// one request batches the StartMessage + replay frames, and the response
+// batches the handler's command frames + the terminal frame. The session
+// is half-duplex — no streaming. Routing (service_name, handler_name)
+// flows inside StartMessage. Capability discovery is a separate one-shot
+// DiscoveryService.Discover Connect RPC defined in
+// proto/discoveryv1/discovery.proto.
 //
 // Wire framing: each message is prefixed by a 64-bit big-endian header
 // (16-bit type code | 16-bit flags | 32-bit payload length), followed
@@ -112,7 +114,7 @@ message StartMessage {
   // Handler classification — echoes the deployment registration.
   Kind kind = 13;
 
-  // Owner invocation's partition_key. Reflow-specific routing hint —
+  // Owner invocation's partition_key. Reflw-specific routing hint —
   // wireContext.Awakeable mints awakeable ids whose body encodes this
   // value so ingress.ResolveAwakeable can route to the owning shard with
   // a single read.
@@ -163,20 +165,13 @@ message ErrorMessage {
 // (whether successfully or with a handler-returned Failure).
 message EndMessage {}
 
-// Type: 0x0004
-// Sent by the engine to acknowledge that a command from the SDK has
-// been durably journaled.
-message CommandAckMessage {
-  uint32 command_index = 1;
-}
-
 // Type: 0x0005
 // Special control frame for ctx.run completions. The SDK proposes the
 // run result; the engine durably stores it and later delivers a
 // RunCompletionNotificationMessage.
 message ProposeRunCompletionMessage {
   uint32 result_completion_id = 1;
-  // Reflow extension to Restate's service-protocol: when the SDK
+  // Reflw extension to Restate's service-protocol: when the SDK
   // classified fn's error as transient (any non-*Failure error), the
   // engine should journal JERun with retryable=true and schedule a
   // backoff timer rather than recording a terminal failure. The next
@@ -282,7 +277,7 @@ message GetLazyStateKeysCompletionNotificationMessage {
 // SDK ships the sorted key list inline and the engine stamps it as-is.
 //
 // Note: the per-key counterpart (was 0x0407 GetEagerStateCommandMessage)
-// is intentionally absent. Reflow does not journal cache-hit GetState
+// is intentionally absent. Reflw does not journal cache-hit GetState
 // reads — see durable-execution-go-sad.md §6.10.3.
 message GetEagerStateKeysCommandMessage {
   StateKeys value = 14;
@@ -383,8 +378,7 @@ message SleepCompletionNotificationMessage {
 }
 
 // Type: 0x040D
-// Synchronous call. Yields two completion notifications: first the
-// invocation_id of the callee, then the result.
+// Synchronous call. Yields a single completion notification: the result.
 message CallCommandMessage {
   string service_name = 1;
   string handler_name = 2;
@@ -399,18 +393,11 @@ message CallCommandMessage {
   // dedup/arbitrary/<producer_id>/<seq> machinery.
   optional string idempotency_token = 6;
 
-  uint32 invocation_id_notification_idx = 10;
   uint32 result_completion_id = 11;
   string name = 12;
 }
 
-// Type: 0x800E — first notification for CallCommandMessage.
-message CallInvocationIdCompletionNotificationMessage {
-  uint32 completion_id = 1;
-  string invocation_id = 16;
-}
-
-// Type: 0x800D — final notification for CallCommandMessage.
+// Type: 0x800D — completion notification for CallCommandMessage.
 message CallCompletionNotificationMessage {
   uint32 completion_id = 1;
   oneof result {
@@ -420,8 +407,7 @@ message CallCompletionNotificationMessage {
 }
 
 // Type: 0x040E
-// Fire-and-forget. Yields only the invocation_id notification; result
-// must be retrieved later via AttachInvocation or GetInvocationOutput.
+// Fire-and-forget. Yields no completion notification.
 message OneWayCallCommandMessage {
   string service_name = 1;
   string handler_name = 2;
@@ -432,7 +418,6 @@ message OneWayCallCommandMessage {
   repeated Header headers = 5;
   string key = 6;
   optional string idempotency_token = 7;
-  uint32 invocation_id_notification_idx = 10;
   string name = 12;
 }
 
@@ -460,47 +445,6 @@ message RunCommandMessage {
 message RunCompletionNotificationMessage {
   uint32 completion_id = 1;
   oneof result {
-    Value value = 5;
-    Failure failure = 6;
-  }
-}
-
-// Type: 0x0412
-// Subscribe to the result of an existing invocation.
-message AttachInvocationCommandMessage {
-  oneof target {
-    string invocation_id = 1;
-    WorkflowTarget workflow_target = 4;
-  }
-  uint32 result_completion_id = 11;
-  string name = 12;
-}
-
-// Type: 0x8012 — notification for AttachInvocationCommandMessage.
-message AttachInvocationCompletionNotificationMessage {
-  uint32 completion_id = 1;
-  oneof result {
-    Value value = 5;
-    Failure failure = 6;
-  }
-}
-
-// Type: 0x0413
-// Read the final result of a completed invocation, non-blocking.
-message GetInvocationOutputCommandMessage {
-  oneof target {
-    string invocation_id = 1;
-    WorkflowTarget workflow_target = 4;
-  }
-  uint32 result_completion_id = 11;
-  string name = 12;
-}
-
-// Type: 0x8013 — notification for GetInvocationOutputCommandMessage.
-message GetInvocationOutputCompletionNotificationMessage {
-  uint32 completion_id = 1;
-  oneof result {
-    Void void = 4;
     Value value = 5;
     Failure failure = 6;
   }

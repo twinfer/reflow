@@ -1,4 +1,4 @@
-// Reflow handler discovery v1 — engine-to-handler capability probe.
+// Reflw handler discovery v1 — engine-to-handler capability probe.
 //
 // At RegisterDeployment time the engine calls DiscoveryService.Discover
 // and persists the response into the DeploymentRecord on shard 0 so

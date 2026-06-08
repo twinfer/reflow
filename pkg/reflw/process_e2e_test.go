@@ -94,13 +94,25 @@ func TestProcess_RegisterReconcileRun(t *testing.T) {
 	ccli, closeC := newLoopbackConfigClient(t, ctx, csrv)
 	defer closeC()
 	modelRef := &enginev1.ModelRef{Kind: "bpmn", Name: "E2E", Version: "v1"}
-	if _, err := ccli.RegisterModelSet(ctx, connect.NewRequest(&configv1.RegisterModelSetRequest{
-		Entries: []*configv1.ModelSetEntry{{
-			ModelRef: modelRef,
-			Xml:      []byte(e2eStartEndBPMN),
-		}},
-	})); err != nil {
-		t.Fatalf("RegisterModelSet: %v", err)
+	// RegisterModelSet targets shard 0 (metadata). On a freshly-started host it
+	// can race metadata election and return "not the metadata leader"; retry
+	// until shard 0 has a leader (sub-second on a single node). Mirrors the
+	// StartProcess retry-until-deadline loop below.
+	regDeadline := time.Now().Add(15 * time.Second)
+	for {
+		_, err := ccli.RegisterModelSet(ctx, connect.NewRequest(&configv1.RegisterModelSetRequest{
+			Entries: []*configv1.ModelSetEntry{{
+				ModelRef: modelRef,
+				Xml:      []byte(e2eStartEndBPMN),
+			}},
+		}))
+		if err == nil {
+			break
+		}
+		if time.Now().After(regDeadline) {
+			t.Fatalf("RegisterModelSet: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 
 	icli, err := ingressclient.Dial(ingressclient.Options{BaseURL: "http://" + ingressAddr})

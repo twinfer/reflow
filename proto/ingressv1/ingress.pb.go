@@ -1,4 +1,4 @@
-// Reflow ingress service.
+// Reflw ingress service.
 //
 // Exposes the user-facing entrypoints for submitting invocations, awaiting
 // their results, and resolving awakeables. Served over Connect (HTTP/2)
@@ -1051,7 +1051,7 @@ func (x *StartProcessRequest) GetVars() []byte {
 
 type StartProcessResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Banded partition_key the instance was routed to.
+	// partition_key the instance was routed to.
 	Pk uint64 `protobuf:"fixed64,1,opt,name=pk,proto3" json:"pk,omitempty"`
 	// The instance key — echoed, or the server-minted one when the request left
 	// it empty.
@@ -1167,7 +1167,7 @@ func (x *DeliverMessageRequest) GetPayload() []byte {
 
 type DeliverMessageResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Banded partition_key the message was routed to (debug/observability).
+	// partition_key the message was routed to (debug/observability).
 	Pk uint64 `protobuf:"fixed64,1,opt,name=pk,proto3" json:"pk,omitempty"`
 	// accepted is true when the command was routed and proposed; it does not wait
 	// for apply, nor report how many subscribers matched.
@@ -1222,8 +1222,8 @@ func (x *DeliverMessageResponse) GetAccepted() bool {
 
 type GetProcessInstanceRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// model_ref.name + the caller's tenant + instance_key select the routing
-	// partition (model_ref.kind/version are ignored for the read).
+	// model_ref.name + instance_key select the routing partition
+	// (model_ref.kind/version are ignored for the read).
 	ModelRef      *enginev1.ModelRef `protobuf:"bytes,1,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`
 	InstanceKey   string             `protobuf:"bytes,2,opt,name=instance_key,json=instanceKey,proto3" json:"instance_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -1413,8 +1413,8 @@ func (x *GetProcessInstanceResponse) GetIncident() *enginev1.ProcessIncident {
 
 type ResolveProcessIncidentRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// model_ref.name + the caller's tenant + instance_key select the routing
-	// partition (model_ref.kind/version are ignored).
+	// model_ref.name + instance_key select the routing partition
+	// (model_ref.kind/version are ignored).
 	ModelRef    *enginev1.ModelRef                 `protobuf:"bytes,1,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`
 	InstanceKey string                             `protobuf:"bytes,2,opt,name=instance_key,json=instanceKey,proto3" json:"instance_key,omitempty"`
 	Resolution  enginev1.ProcessIncidentResolution `protobuf:"varint,3,opt,name=resolution,proto3,enum=reflw.engine.v1.ProcessIncidentResolution" json:"resolution,omitempty"`
@@ -1531,8 +1531,8 @@ func (x *ResolveProcessIncidentResponse) GetAccepted() bool {
 
 type GetProcessInstanceHistoryRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// model_ref.name + the caller's tenant + instance_key select the routing
-	// partition (model_ref.kind/version are ignored for the read).
+	// model_ref.name + instance_key select the routing partition
+	// (model_ref.kind/version are ignored for the read).
 	ModelRef    *enginev1.ModelRef `protobuf:"bytes,1,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`
 	InstanceKey string             `protobuf:"bytes,2,opt,name=instance_key,json=instanceKey,proto3" json:"instance_key,omitempty"`
 	// Resume strictly past this event seq (0 = from the first event). Pair with the
@@ -1671,7 +1671,7 @@ func (x *GetProcessInstanceHistoryResponse) GetNextAfterSeq() uint64 {
 type ListProcessInstancesRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// model_ref.name (when set) filters to one model; empty lists every model in
-	// the caller's tenant band. model_ref.kind/version are ignored.
+	// the namespace. model_ref.kind/version are ignored.
 	ModelRef *enginev1.ModelRef `protobuf:"bytes,1,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`
 	// Optional status filter; empty = any status.
 	StatusFilter []enginev1.ProcessStatus `protobuf:"varint,2,rep,packed,name=status_filter,json=statusFilter,proto3,enum=reflw.engine.v1.ProcessStatus" json:"status_filter,omitempty"`
@@ -1927,7 +1927,7 @@ func (x *ProcessInstanceSummary) GetEndedAtMs() uint64 {
 type ListInvocationsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// service (when set) filters to one target service; empty lists every service
-	// in the caller's tenant band.
+	// in the namespace.
 	Service string `protobuf:"bytes,1,opt,name=service,proto3" json:"service,omitempty"`
 	// Optional state filter; empty = any state.
 	StateFilter []enginev1.InvocationState `protobuf:"varint,2,rep,packed,name=state_filter,json=stateFilter,proto3,enum=reflw.engine.v1.InvocationState" json:"state_filter,omitempty"`

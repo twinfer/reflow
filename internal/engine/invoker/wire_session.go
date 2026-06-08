@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/twinfer/reflw/internal/engine/limits"
+	"github.com/twinfer/reflw/internal/observability"
 	"github.com/twinfer/reflw/internal/storage/tables"
 	"github.com/twinfer/reflw/pkg/handler/wire"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
@@ -51,6 +53,7 @@ type wireSession struct {
 	stateTable tables.StateTable
 	journal    *JournalReader
 	log        *slog.Logger
+	metrics    *observability.Metrics
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -97,6 +100,7 @@ func newWireSession(
 	journal *JournalReader,
 	eagerStateMaxBytes uint32,
 	log *slog.Logger,
+	metrics *observability.Metrics,
 ) *wireSession {
 	ctx, cancel := context.WithCancel(parent)
 	if codec == nil {
@@ -115,6 +119,7 @@ func newWireSession(
 		stateTable:         stateTable,
 		journal:            journal,
 		log:                log,
+		metrics:            metrics,
 		ctx:                ctx,
 		cancel:             cancel,
 		done:               make(chan struct{}),
@@ -129,6 +134,10 @@ func (s *wireSession) Done() <-chan struct{} { return s.done }
 
 func (s *wireSession) run() {
 	defer close(s.done)
+
+	if s.metrics != nil {
+		s.metrics.InvokerSessionsStarted.WithLabelValues(s.target.GetServiceName()).Inc()
+	}
 
 	entries, ok := s.loadJournal()
 	if !ok {
@@ -163,7 +172,9 @@ func (s *wireSession) run() {
 	// command frame the handler emits gets the next sequential index.
 	s.nextIdx = highestIndex(entries) + 1
 
+	invokeStart := time.Now()
 	frames, err := s.dispatcher.Invoke(s.ctx, s.rec, s.target, req)
+	s.observeInvoke(invokeStart, err)
 	if err != nil {
 		if s.ctx.Err() != nil {
 			return
@@ -178,6 +189,24 @@ func (s *wireSession) run() {
 	}
 
 	s.driveFrames(frames)
+}
+
+// observeInvoke records the engine→handler Invoke RPC latency and outcome.
+// A ctx-cancelled failure (leader loss / abort) is classified "cancelled"
+// so it doesn't inflate the transport-error rate.
+func (s *wireSession) observeInvoke(start time.Time, err error) {
+	if s.metrics == nil {
+		return
+	}
+	outcome := "ok"
+	if err != nil {
+		if s.ctx.Err() != nil {
+			outcome = "cancelled"
+		} else {
+			outcome = "error"
+		}
+	}
+	s.metrics.HandlerInvokeSeconds.WithLabelValues(s.target.GetServiceName(), outcome).Observe(time.Since(start).Seconds())
 }
 
 // loadJournal reads the invocation status, advances Scheduled to

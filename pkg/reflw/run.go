@@ -386,7 +386,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		deliveryClient *delivery.Client
 	)
 	if crossShard {
-		ds, dc, derr := startDeliveryListener(ctx, eh, cfg, deliveryCreds, httpAuthMW, authzInterceptor, logger)
+		ds, dc, derr := startDeliveryListener(ctx, eh, cfg, deliveryCreds, httpAuthMW, authzInterceptor, metrics, logger)
 		if derr != nil {
 			return bail(derr)
 		}
@@ -453,12 +453,14 @@ func startDeliveryListener(
 	lc *creds.ListenerCreds,
 	mw func(http.Handler) http.Handler,
 	authzIc connect.Interceptor,
+	metrics *observability.Metrics,
 	logger *slog.Logger,
 ) (*connectserver.Server, *delivery.Client, error) {
 	dc, err := delivery.NewClient(delivery.ClientConfig{
 		Resolver:        eh,
 		Log:             logger,
 		ClientTLSConfig: lc.ClientTLSConfig,
+		Metrics:         metrics,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("reflw: delivery client: %w", err)
@@ -671,6 +673,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 					ScratchDir: cfg.Snapshot.ScratchDir,
 					Trigger:    snapshotTriggers[sh],
 					Log:        logger,
+					Metrics:    metrics,
 				})
 			}
 			logger.Info("reflw: snapshot producer started",
@@ -689,6 +692,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 					TieredWeekly:  cfg.Snapshot.TieredWeekly,
 					TieredMonthly: cfg.Snapshot.TieredMonthly,
 					Log:           logger,
+					Metrics:       metrics,
 				})
 			}
 			logger.Info("reflw: snapshot reaper started",

@@ -47,6 +47,7 @@ const lpTransferAckProducer = "lptransfer-ack/"
 // On Stop or ctx cancellation the loop returns; pending work is
 // re-enqueued on the next leader's Rebuild via the durable
 // LPFreezeTable / LPStagingTable rows.
+
 // LPSSTUploader is the side-channel SST shipping seam used by
 // LPTransferService.runScan. Uploads bypass Raft (the per-replica
 // dest's apply path Ingests the file locally). In production the

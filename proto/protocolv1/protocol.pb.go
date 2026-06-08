@@ -1,11 +1,13 @@
-// Reflow service protocol v1 — engine ↔ handler wire format.
+// Reflw service protocol v1 — engine ↔ handler wire format.
 //
 // The transport is Connect RPC over HTTP/2 (h2c plaintext or HTTPS).
-// The engine opens HandlerService.InvokeStream — a bidi stream of
-// protocolv1.Frame envelopes — for each invocation. Routing
-// (service_name, handler_name) flows inside StartMessage. Capability
-// discovery is a separate one-shot probe defined in
-// proto/discoveryv1/discovery.proto (GET /discover).
+// The engine calls the unary HandlerService.Invoke for each invocation:
+// one request batches the StartMessage + replay frames, and the response
+// batches the handler's command frames + the terminal frame. The session
+// is half-duplex — no streaming. Routing (service_name, handler_name)
+// flows inside StartMessage. Capability discovery is a separate one-shot
+// DiscoveryService.Discover Connect RPC defined in
+// proto/discoveryv1/discovery.proto.
 //
 // Wire framing: each message is prefixed by a 64-bit big-endian header
 // (16-bit type code | 16-bit flags | 32-bit payload length), followed
@@ -213,7 +215,7 @@ type StartMessage struct {
 	HandlerName string `protobuf:"bytes,11,opt,name=handler_name,json=handlerName,proto3" json:"handler_name,omitempty"`
 	// Handler classification — echoes the deployment registration.
 	Kind Kind `protobuf:"varint,13,opt,name=kind,proto3,enum=reflw.protocol.v1.Kind" json:"kind,omitempty"`
-	// Owner invocation's partition_key. Reflow-specific routing hint —
+	// Owner invocation's partition_key. Reflw-specific routing hint —
 	// wireContext.Awakeable mints awakeable ids whose body encodes this
 	// value so ingress.ResolveAwakeable can route to the owning shard with
 	// a single read.
@@ -562,53 +564,6 @@ func (*EndMessage) Descriptor() ([]byte, []int) {
 	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{4}
 }
 
-// Type: 0x0004
-// Sent by the engine to acknowledge that a command from the SDK has
-// been durably journaled.
-type CommandAckMessage struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CommandIndex  uint32                 `protobuf:"varint,1,opt,name=command_index,json=commandIndex,proto3" json:"command_index,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CommandAckMessage) Reset() {
-	*x = CommandAckMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[5]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CommandAckMessage) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CommandAckMessage) ProtoMessage() {}
-
-func (x *CommandAckMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[5]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CommandAckMessage.ProtoReflect.Descriptor instead.
-func (*CommandAckMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{5}
-}
-
-func (x *CommandAckMessage) GetCommandIndex() uint32 {
-	if x != nil {
-		return x.CommandIndex
-	}
-	return 0
-}
-
 // Type: 0x0005
 // Special control frame for ctx.run completions. The SDK proposes the
 // run result; the engine durably stores it and later delivers a
@@ -616,7 +571,7 @@ func (x *CommandAckMessage) GetCommandIndex() uint32 {
 type ProposeRunCompletionMessage struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	ResultCompletionId uint32                 `protobuf:"varint,1,opt,name=result_completion_id,json=resultCompletionId,proto3" json:"result_completion_id,omitempty"`
-	// Reflow extension to Restate's service-protocol: when the SDK
+	// Reflw extension to Restate's service-protocol: when the SDK
 	// classified fn's error as transient (any non-*Failure error), the
 	// engine should journal JERun with retryable=true and schedule a
 	// backoff timer rather than recording a terminal failure. The next
@@ -639,7 +594,7 @@ type ProposeRunCompletionMessage struct {
 
 func (x *ProposeRunCompletionMessage) Reset() {
 	*x = ProposeRunCompletionMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[6]
+	mi := &file_protocolv1_protocol_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -651,7 +606,7 @@ func (x *ProposeRunCompletionMessage) String() string {
 func (*ProposeRunCompletionMessage) ProtoMessage() {}
 
 func (x *ProposeRunCompletionMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[6]
+	mi := &file_protocolv1_protocol_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -664,7 +619,7 @@ func (x *ProposeRunCompletionMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProposeRunCompletionMessage.ProtoReflect.Descriptor instead.
 func (*ProposeRunCompletionMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{6}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ProposeRunCompletionMessage) GetResultCompletionId() uint32 {
@@ -747,7 +702,7 @@ type RunRetryPolicy struct {
 
 func (x *RunRetryPolicy) Reset() {
 	*x = RunRetryPolicy{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[7]
+	mi := &file_protocolv1_protocol_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -759,7 +714,7 @@ func (x *RunRetryPolicy) String() string {
 func (*RunRetryPolicy) ProtoMessage() {}
 
 func (x *RunRetryPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[7]
+	mi := &file_protocolv1_protocol_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -772,7 +727,7 @@ func (x *RunRetryPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunRetryPolicy.ProtoReflect.Descriptor instead.
 func (*RunRetryPolicy) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{7}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *RunRetryPolicy) GetInitialIntervalMs() uint64 {
@@ -816,7 +771,7 @@ type InputCommandMessage struct {
 
 func (x *InputCommandMessage) Reset() {
 	*x = InputCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[8]
+	mi := &file_protocolv1_protocol_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -828,7 +783,7 @@ func (x *InputCommandMessage) String() string {
 func (*InputCommandMessage) ProtoMessage() {}
 
 func (x *InputCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[8]
+	mi := &file_protocolv1_protocol_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -841,7 +796,7 @@ func (x *InputCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InputCommandMessage.ProtoReflect.Descriptor instead.
 func (*InputCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{8}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *InputCommandMessage) GetHeaders() []*Header {
@@ -881,7 +836,7 @@ type OutputCommandMessage struct {
 
 func (x *OutputCommandMessage) Reset() {
 	*x = OutputCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[9]
+	mi := &file_protocolv1_protocol_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -893,7 +848,7 @@ func (x *OutputCommandMessage) String() string {
 func (*OutputCommandMessage) ProtoMessage() {}
 
 func (x *OutputCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[9]
+	mi := &file_protocolv1_protocol_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -906,7 +861,7 @@ func (x *OutputCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutputCommandMessage.ProtoReflect.Descriptor instead.
 func (*OutputCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{9}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *OutputCommandMessage) GetResult() isOutputCommandMessage_Result {
@@ -969,7 +924,7 @@ type GetLazyStateCommandMessage struct {
 
 func (x *GetLazyStateCommandMessage) Reset() {
 	*x = GetLazyStateCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[10]
+	mi := &file_protocolv1_protocol_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -981,7 +936,7 @@ func (x *GetLazyStateCommandMessage) String() string {
 func (*GetLazyStateCommandMessage) ProtoMessage() {}
 
 func (x *GetLazyStateCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[10]
+	mi := &file_protocolv1_protocol_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -994,7 +949,7 @@ func (x *GetLazyStateCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetLazyStateCommandMessage.ProtoReflect.Descriptor instead.
 func (*GetLazyStateCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{10}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *GetLazyStateCommandMessage) GetKey() []byte {
@@ -1033,7 +988,7 @@ type GetLazyStateCompletionNotificationMessage struct {
 
 func (x *GetLazyStateCompletionNotificationMessage) Reset() {
 	*x = GetLazyStateCompletionNotificationMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[11]
+	mi := &file_protocolv1_protocol_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1045,7 +1000,7 @@ func (x *GetLazyStateCompletionNotificationMessage) String() string {
 func (*GetLazyStateCompletionNotificationMessage) ProtoMessage() {}
 
 func (x *GetLazyStateCompletionNotificationMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[11]
+	mi := &file_protocolv1_protocol_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1058,7 +1013,7 @@ func (x *GetLazyStateCompletionNotificationMessage) ProtoReflect() protoreflect.
 
 // Deprecated: Use GetLazyStateCompletionNotificationMessage.ProtoReflect.Descriptor instead.
 func (*GetLazyStateCompletionNotificationMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{11}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *GetLazyStateCompletionNotificationMessage) GetCompletionId() uint32 {
@@ -1123,7 +1078,7 @@ type SetStateCommandMessage struct {
 
 func (x *SetStateCommandMessage) Reset() {
 	*x = SetStateCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[12]
+	mi := &file_protocolv1_protocol_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1135,7 +1090,7 @@ func (x *SetStateCommandMessage) String() string {
 func (*SetStateCommandMessage) ProtoMessage() {}
 
 func (x *SetStateCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[12]
+	mi := &file_protocolv1_protocol_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1148,7 +1103,7 @@ func (x *SetStateCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetStateCommandMessage.ProtoReflect.Descriptor instead.
 func (*SetStateCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{12}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *SetStateCommandMessage) GetKey() []byte {
@@ -1183,7 +1138,7 @@ type ClearStateCommandMessage struct {
 
 func (x *ClearStateCommandMessage) Reset() {
 	*x = ClearStateCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[13]
+	mi := &file_protocolv1_protocol_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1195,7 +1150,7 @@ func (x *ClearStateCommandMessage) String() string {
 func (*ClearStateCommandMessage) ProtoMessage() {}
 
 func (x *ClearStateCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[13]
+	mi := &file_protocolv1_protocol_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1208,7 +1163,7 @@ func (x *ClearStateCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClearStateCommandMessage.ProtoReflect.Descriptor instead.
 func (*ClearStateCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{13}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ClearStateCommandMessage) GetKey() []byte {
@@ -1235,7 +1190,7 @@ type ClearAllStateCommandMessage struct {
 
 func (x *ClearAllStateCommandMessage) Reset() {
 	*x = ClearAllStateCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[14]
+	mi := &file_protocolv1_protocol_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1247,7 +1202,7 @@ func (x *ClearAllStateCommandMessage) String() string {
 func (*ClearAllStateCommandMessage) ProtoMessage() {}
 
 func (x *ClearAllStateCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[14]
+	mi := &file_protocolv1_protocol_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1260,7 +1215,7 @@ func (x *ClearAllStateCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClearAllStateCommandMessage.ProtoReflect.Descriptor instead.
 func (*ClearAllStateCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{14}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ClearAllStateCommandMessage) GetName() string {
@@ -1281,7 +1236,7 @@ type GetLazyStateKeysCommandMessage struct {
 
 func (x *GetLazyStateKeysCommandMessage) Reset() {
 	*x = GetLazyStateKeysCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[15]
+	mi := &file_protocolv1_protocol_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1293,7 +1248,7 @@ func (x *GetLazyStateKeysCommandMessage) String() string {
 func (*GetLazyStateKeysCommandMessage) ProtoMessage() {}
 
 func (x *GetLazyStateKeysCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[15]
+	mi := &file_protocolv1_protocol_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1306,7 +1261,7 @@ func (x *GetLazyStateKeysCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetLazyStateKeysCommandMessage.ProtoReflect.Descriptor instead.
 func (*GetLazyStateKeysCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{15}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *GetLazyStateKeysCommandMessage) GetResultCompletionId() uint32 {
@@ -1334,7 +1289,7 @@ type GetLazyStateKeysCompletionNotificationMessage struct {
 
 func (x *GetLazyStateKeysCompletionNotificationMessage) Reset() {
 	*x = GetLazyStateKeysCompletionNotificationMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[16]
+	mi := &file_protocolv1_protocol_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1346,7 +1301,7 @@ func (x *GetLazyStateKeysCompletionNotificationMessage) String() string {
 func (*GetLazyStateKeysCompletionNotificationMessage) ProtoMessage() {}
 
 func (x *GetLazyStateKeysCompletionNotificationMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[16]
+	mi := &file_protocolv1_protocol_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1359,7 +1314,7 @@ func (x *GetLazyStateKeysCompletionNotificationMessage) ProtoReflect() protorefl
 
 // Deprecated: Use GetLazyStateKeysCompletionNotificationMessage.ProtoReflect.Descriptor instead.
 func (*GetLazyStateKeysCompletionNotificationMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{16}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *GetLazyStateKeysCompletionNotificationMessage) GetCompletionId() uint32 {
@@ -1382,7 +1337,7 @@ func (x *GetLazyStateKeysCompletionNotificationMessage) GetStateKeys() *StateKey
 // SDK ships the sorted key list inline and the engine stamps it as-is.
 //
 // Note: the per-key counterpart (was 0x0407 GetEagerStateCommandMessage)
-// is intentionally absent. Reflow does not journal cache-hit GetState
+// is intentionally absent. Reflw does not journal cache-hit GetState
 // reads — see durable-execution-go-sad.md §6.10.3.
 type GetEagerStateKeysCommandMessage struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1394,7 +1349,7 @@ type GetEagerStateKeysCommandMessage struct {
 
 func (x *GetEagerStateKeysCommandMessage) Reset() {
 	*x = GetEagerStateKeysCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[17]
+	mi := &file_protocolv1_protocol_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1406,7 +1361,7 @@ func (x *GetEagerStateKeysCommandMessage) String() string {
 func (*GetEagerStateKeysCommandMessage) ProtoMessage() {}
 
 func (x *GetEagerStateKeysCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[17]
+	mi := &file_protocolv1_protocol_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1419,7 +1374,7 @@ func (x *GetEagerStateKeysCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEagerStateKeysCommandMessage.ProtoReflect.Descriptor instead.
 func (*GetEagerStateKeysCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{17}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *GetEagerStateKeysCommandMessage) GetValue() *StateKeys {
@@ -1453,7 +1408,7 @@ type GetPromiseCommandMessage struct {
 
 func (x *GetPromiseCommandMessage) Reset() {
 	*x = GetPromiseCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[18]
+	mi := &file_protocolv1_protocol_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1465,7 +1420,7 @@ func (x *GetPromiseCommandMessage) String() string {
 func (*GetPromiseCommandMessage) ProtoMessage() {}
 
 func (x *GetPromiseCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[18]
+	mi := &file_protocolv1_protocol_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1478,7 +1433,7 @@ func (x *GetPromiseCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPromiseCommandMessage.ProtoReflect.Descriptor instead.
 func (*GetPromiseCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{18}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *GetPromiseCommandMessage) GetKey() string {
@@ -1524,7 +1479,7 @@ type GetPromiseCompletionNotificationMessage struct {
 
 func (x *GetPromiseCompletionNotificationMessage) Reset() {
 	*x = GetPromiseCompletionNotificationMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[19]
+	mi := &file_protocolv1_protocol_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1536,7 +1491,7 @@ func (x *GetPromiseCompletionNotificationMessage) String() string {
 func (*GetPromiseCompletionNotificationMessage) ProtoMessage() {}
 
 func (x *GetPromiseCompletionNotificationMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[19]
+	mi := &file_protocolv1_protocol_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1549,7 +1504,7 @@ func (x *GetPromiseCompletionNotificationMessage) ProtoReflect() protoreflect.Me
 
 // Deprecated: Use GetPromiseCompletionNotificationMessage.ProtoReflect.Descriptor instead.
 func (*GetPromiseCompletionNotificationMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{19}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *GetPromiseCompletionNotificationMessage) GetCompletionId() uint32 {
@@ -1626,7 +1581,7 @@ type PeekPromiseCommandMessage struct {
 
 func (x *PeekPromiseCommandMessage) Reset() {
 	*x = PeekPromiseCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[20]
+	mi := &file_protocolv1_protocol_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1638,7 +1593,7 @@ func (x *PeekPromiseCommandMessage) String() string {
 func (*PeekPromiseCommandMessage) ProtoMessage() {}
 
 func (x *PeekPromiseCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[20]
+	mi := &file_protocolv1_protocol_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1651,7 +1606,7 @@ func (x *PeekPromiseCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeekPromiseCommandMessage.ProtoReflect.Descriptor instead.
 func (*PeekPromiseCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{20}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *PeekPromiseCommandMessage) GetKey() string {
@@ -1742,7 +1697,7 @@ type PeekPromiseCompletionNotificationMessage struct {
 
 func (x *PeekPromiseCompletionNotificationMessage) Reset() {
 	*x = PeekPromiseCompletionNotificationMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[21]
+	mi := &file_protocolv1_protocol_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1754,7 +1709,7 @@ func (x *PeekPromiseCompletionNotificationMessage) String() string {
 func (*PeekPromiseCompletionNotificationMessage) ProtoMessage() {}
 
 func (x *PeekPromiseCompletionNotificationMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[21]
+	mi := &file_protocolv1_protocol_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1767,7 +1722,7 @@ func (x *PeekPromiseCompletionNotificationMessage) ProtoReflect() protoreflect.M
 
 // Deprecated: Use PeekPromiseCompletionNotificationMessage.ProtoReflect.Descriptor instead.
 func (*PeekPromiseCompletionNotificationMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{21}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *PeekPromiseCompletionNotificationMessage) GetCompletionId() uint32 {
@@ -1851,7 +1806,7 @@ type CompletePromiseCommandMessage struct {
 
 func (x *CompletePromiseCommandMessage) Reset() {
 	*x = CompletePromiseCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[22]
+	mi := &file_protocolv1_protocol_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1863,7 +1818,7 @@ func (x *CompletePromiseCommandMessage) String() string {
 func (*CompletePromiseCommandMessage) ProtoMessage() {}
 
 func (x *CompletePromiseCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[22]
+	mi := &file_protocolv1_protocol_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1876,7 +1831,7 @@ func (x *CompletePromiseCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompletePromiseCommandMessage.ProtoReflect.Descriptor instead.
 func (*CompletePromiseCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{22}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *CompletePromiseCommandMessage) GetKey() string {
@@ -1964,7 +1919,7 @@ type CompletePromiseCompletionNotificationMessage struct {
 
 func (x *CompletePromiseCompletionNotificationMessage) Reset() {
 	*x = CompletePromiseCompletionNotificationMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[23]
+	mi := &file_protocolv1_protocol_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1976,7 +1931,7 @@ func (x *CompletePromiseCompletionNotificationMessage) String() string {
 func (*CompletePromiseCompletionNotificationMessage) ProtoMessage() {}
 
 func (x *CompletePromiseCompletionNotificationMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[23]
+	mi := &file_protocolv1_protocol_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1989,7 +1944,7 @@ func (x *CompletePromiseCompletionNotificationMessage) ProtoReflect() protorefle
 
 // Deprecated: Use CompletePromiseCompletionNotificationMessage.ProtoReflect.Descriptor instead.
 func (*CompletePromiseCompletionNotificationMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{23}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *CompletePromiseCompletionNotificationMessage) GetCompletionId() uint32 {
@@ -2055,7 +2010,7 @@ type SleepCommandMessage struct {
 
 func (x *SleepCommandMessage) Reset() {
 	*x = SleepCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[24]
+	mi := &file_protocolv1_protocol_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2067,7 +2022,7 @@ func (x *SleepCommandMessage) String() string {
 func (*SleepCommandMessage) ProtoMessage() {}
 
 func (x *SleepCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[24]
+	mi := &file_protocolv1_protocol_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2080,7 +2035,7 @@ func (x *SleepCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SleepCommandMessage.ProtoReflect.Descriptor instead.
 func (*SleepCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{24}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *SleepCommandMessage) GetWakeUpTime() uint64 {
@@ -2115,7 +2070,7 @@ type SleepCompletionNotificationMessage struct {
 
 func (x *SleepCompletionNotificationMessage) Reset() {
 	*x = SleepCompletionNotificationMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[25]
+	mi := &file_protocolv1_protocol_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2127,7 +2082,7 @@ func (x *SleepCompletionNotificationMessage) String() string {
 func (*SleepCompletionNotificationMessage) ProtoMessage() {}
 
 func (x *SleepCompletionNotificationMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[25]
+	mi := &file_protocolv1_protocol_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2140,7 +2095,7 @@ func (x *SleepCompletionNotificationMessage) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use SleepCompletionNotificationMessage.ProtoReflect.Descriptor instead.
 func (*SleepCompletionNotificationMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{25}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *SleepCompletionNotificationMessage) GetCompletionId() uint32 {
@@ -2158,8 +2113,7 @@ func (x *SleepCompletionNotificationMessage) GetVoid() *Void {
 }
 
 // Type: 0x040D
-// Synchronous call. Yields two completion notifications: first the
-// invocation_id of the callee, then the result.
+// Synchronous call. Yields a single completion notification: the result.
 type CallCommandMessage struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	ServiceName string                 `protobuf:"bytes,1,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
@@ -2172,17 +2126,16 @@ type CallCommandMessage struct {
 	// configured retention window deduplicates against an earlier call
 	// and returns its result. Wired to the journal-level
 	// dedup/arbitrary/<producer_id>/<seq> machinery.
-	IdempotencyToken            *string `protobuf:"bytes,6,opt,name=idempotency_token,json=idempotencyToken,proto3,oneof" json:"idempotency_token,omitempty"`
-	InvocationIdNotificationIdx uint32  `protobuf:"varint,10,opt,name=invocation_id_notification_idx,json=invocationIdNotificationIdx,proto3" json:"invocation_id_notification_idx,omitempty"`
-	ResultCompletionId          uint32  `protobuf:"varint,11,opt,name=result_completion_id,json=resultCompletionId,proto3" json:"result_completion_id,omitempty"`
-	Name                        string  `protobuf:"bytes,12,opt,name=name,proto3" json:"name,omitempty"`
-	unknownFields               protoimpl.UnknownFields
-	sizeCache                   protoimpl.SizeCache
+	IdempotencyToken   *string `protobuf:"bytes,6,opt,name=idempotency_token,json=idempotencyToken,proto3,oneof" json:"idempotency_token,omitempty"`
+	ResultCompletionId uint32  `protobuf:"varint,11,opt,name=result_completion_id,json=resultCompletionId,proto3" json:"result_completion_id,omitempty"`
+	Name               string  `protobuf:"bytes,12,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *CallCommandMessage) Reset() {
 	*x = CallCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[26]
+	mi := &file_protocolv1_protocol_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2194,7 +2147,7 @@ func (x *CallCommandMessage) String() string {
 func (*CallCommandMessage) ProtoMessage() {}
 
 func (x *CallCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[26]
+	mi := &file_protocolv1_protocol_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2207,7 +2160,7 @@ func (x *CallCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CallCommandMessage.ProtoReflect.Descriptor instead.
 func (*CallCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{26}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CallCommandMessage) GetServiceName() string {
@@ -2252,13 +2205,6 @@ func (x *CallCommandMessage) GetIdempotencyToken() string {
 	return ""
 }
 
-func (x *CallCommandMessage) GetInvocationIdNotificationIdx() uint32 {
-	if x != nil {
-		return x.InvocationIdNotificationIdx
-	}
-	return 0
-}
-
 func (x *CallCommandMessage) GetResultCompletionId() uint32 {
 	if x != nil {
 		return x.ResultCompletionId
@@ -2273,60 +2219,7 @@ func (x *CallCommandMessage) GetName() string {
 	return ""
 }
 
-// Type: 0x800E — first notification for CallCommandMessage.
-type CallInvocationIdCompletionNotificationMessage struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CompletionId  uint32                 `protobuf:"varint,1,opt,name=completion_id,json=completionId,proto3" json:"completion_id,omitempty"`
-	InvocationId  string                 `protobuf:"bytes,16,opt,name=invocation_id,json=invocationId,proto3" json:"invocation_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CallInvocationIdCompletionNotificationMessage) Reset() {
-	*x = CallInvocationIdCompletionNotificationMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[27]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CallInvocationIdCompletionNotificationMessage) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CallInvocationIdCompletionNotificationMessage) ProtoMessage() {}
-
-func (x *CallInvocationIdCompletionNotificationMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[27]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CallInvocationIdCompletionNotificationMessage.ProtoReflect.Descriptor instead.
-func (*CallInvocationIdCompletionNotificationMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{27}
-}
-
-func (x *CallInvocationIdCompletionNotificationMessage) GetCompletionId() uint32 {
-	if x != nil {
-		return x.CompletionId
-	}
-	return 0
-}
-
-func (x *CallInvocationIdCompletionNotificationMessage) GetInvocationId() string {
-	if x != nil {
-		return x.InvocationId
-	}
-	return ""
-}
-
-// Type: 0x800D — final notification for CallCommandMessage.
+// Type: 0x800D — completion notification for CallCommandMessage.
 type CallCompletionNotificationMessage struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
 	CompletionId uint32                 `protobuf:"varint,1,opt,name=completion_id,json=completionId,proto3" json:"completion_id,omitempty"`
@@ -2341,7 +2234,7 @@ type CallCompletionNotificationMessage struct {
 
 func (x *CallCompletionNotificationMessage) Reset() {
 	*x = CallCompletionNotificationMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[28]
+	mi := &file_protocolv1_protocol_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2353,7 +2246,7 @@ func (x *CallCompletionNotificationMessage) String() string {
 func (*CallCompletionNotificationMessage) ProtoMessage() {}
 
 func (x *CallCompletionNotificationMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[28]
+	mi := &file_protocolv1_protocol_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2366,7 +2259,7 @@ func (x *CallCompletionNotificationMessage) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use CallCompletionNotificationMessage.ProtoReflect.Descriptor instead.
 func (*CallCompletionNotificationMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{28}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *CallCompletionNotificationMessage) GetCompletionId() uint32 {
@@ -2418,8 +2311,7 @@ func (*CallCompletionNotificationMessage_Value) isCallCompletionNotificationMess
 func (*CallCompletionNotificationMessage_Failure) isCallCompletionNotificationMessage_Result() {}
 
 // Type: 0x040E
-// Fire-and-forget. Yields only the invocation_id notification; result
-// must be retrieved later via AttachInvocation or GetInvocationOutput.
+// Fire-and-forget. Yields no completion notification.
 type OneWayCallCommandMessage struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	ServiceName string                 `protobuf:"bytes,1,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
@@ -2427,19 +2319,18 @@ type OneWayCallCommandMessage struct {
 	Parameter   []byte                 `protobuf:"bytes,3,opt,name=parameter,proto3" json:"parameter,omitempty"`
 	// Earliest dispatch time, milliseconds since UNIX epoch. Zero/past =
 	// dispatch immediately.
-	InvokeTime                  uint64    `protobuf:"varint,4,opt,name=invoke_time,json=invokeTime,proto3" json:"invoke_time,omitempty"`
-	Headers                     []*Header `protobuf:"bytes,5,rep,name=headers,proto3" json:"headers,omitempty"`
-	Key                         string    `protobuf:"bytes,6,opt,name=key,proto3" json:"key,omitempty"`
-	IdempotencyToken            *string   `protobuf:"bytes,7,opt,name=idempotency_token,json=idempotencyToken,proto3,oneof" json:"idempotency_token,omitempty"`
-	InvocationIdNotificationIdx uint32    `protobuf:"varint,10,opt,name=invocation_id_notification_idx,json=invocationIdNotificationIdx,proto3" json:"invocation_id_notification_idx,omitempty"`
-	Name                        string    `protobuf:"bytes,12,opt,name=name,proto3" json:"name,omitempty"`
-	unknownFields               protoimpl.UnknownFields
-	sizeCache                   protoimpl.SizeCache
+	InvokeTime       uint64    `protobuf:"varint,4,opt,name=invoke_time,json=invokeTime,proto3" json:"invoke_time,omitempty"`
+	Headers          []*Header `protobuf:"bytes,5,rep,name=headers,proto3" json:"headers,omitempty"`
+	Key              string    `protobuf:"bytes,6,opt,name=key,proto3" json:"key,omitempty"`
+	IdempotencyToken *string   `protobuf:"bytes,7,opt,name=idempotency_token,json=idempotencyToken,proto3,oneof" json:"idempotency_token,omitempty"`
+	Name             string    `protobuf:"bytes,12,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *OneWayCallCommandMessage) Reset() {
 	*x = OneWayCallCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[29]
+	mi := &file_protocolv1_protocol_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2451,7 +2342,7 @@ func (x *OneWayCallCommandMessage) String() string {
 func (*OneWayCallCommandMessage) ProtoMessage() {}
 
 func (x *OneWayCallCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[29]
+	mi := &file_protocolv1_protocol_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2464,7 +2355,7 @@ func (x *OneWayCallCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OneWayCallCommandMessage.ProtoReflect.Descriptor instead.
 func (*OneWayCallCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{29}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *OneWayCallCommandMessage) GetServiceName() string {
@@ -2516,13 +2407,6 @@ func (x *OneWayCallCommandMessage) GetIdempotencyToken() string {
 	return ""
 }
 
-func (x *OneWayCallCommandMessage) GetInvocationIdNotificationIdx() uint32 {
-	if x != nil {
-		return x.InvocationIdNotificationIdx
-	}
-	return 0
-}
-
 func (x *OneWayCallCommandMessage) GetName() string {
 	if x != nil {
 		return x.Name
@@ -2555,7 +2439,7 @@ type RunCommandMessage struct {
 
 func (x *RunCommandMessage) Reset() {
 	*x = RunCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[30]
+	mi := &file_protocolv1_protocol_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2567,7 +2451,7 @@ func (x *RunCommandMessage) String() string {
 func (*RunCommandMessage) ProtoMessage() {}
 
 func (x *RunCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[30]
+	mi := &file_protocolv1_protocol_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2580,7 +2464,7 @@ func (x *RunCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunCommandMessage.ProtoReflect.Descriptor instead.
 func (*RunCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{30}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *RunCommandMessage) GetResultCompletionId() uint32 {
@@ -2626,7 +2510,7 @@ type RunCompletionNotificationMessage struct {
 
 func (x *RunCompletionNotificationMessage) Reset() {
 	*x = RunCompletionNotificationMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[31]
+	mi := &file_protocolv1_protocol_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2638,7 +2522,7 @@ func (x *RunCompletionNotificationMessage) String() string {
 func (*RunCompletionNotificationMessage) ProtoMessage() {}
 
 func (x *RunCompletionNotificationMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[31]
+	mi := &file_protocolv1_protocol_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2651,7 +2535,7 @@ func (x *RunCompletionNotificationMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunCompletionNotificationMessage.ProtoReflect.Descriptor instead.
 func (*RunCompletionNotificationMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{31}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *RunCompletionNotificationMessage) GetCompletionId() uint32 {
@@ -2702,410 +2586,6 @@ func (*RunCompletionNotificationMessage_Value) isRunCompletionNotificationMessag
 
 func (*RunCompletionNotificationMessage_Failure) isRunCompletionNotificationMessage_Result() {}
 
-// Type: 0x0412
-// Subscribe to the result of an existing invocation.
-type AttachInvocationCommandMessage struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Types that are valid to be assigned to Target:
-	//
-	//	*AttachInvocationCommandMessage_InvocationId
-	//	*AttachInvocationCommandMessage_WorkflowTarget
-	Target             isAttachInvocationCommandMessage_Target `protobuf_oneof:"target"`
-	ResultCompletionId uint32                                  `protobuf:"varint,11,opt,name=result_completion_id,json=resultCompletionId,proto3" json:"result_completion_id,omitempty"`
-	Name               string                                  `protobuf:"bytes,12,opt,name=name,proto3" json:"name,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
-}
-
-func (x *AttachInvocationCommandMessage) Reset() {
-	*x = AttachInvocationCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[32]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AttachInvocationCommandMessage) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AttachInvocationCommandMessage) ProtoMessage() {}
-
-func (x *AttachInvocationCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[32]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AttachInvocationCommandMessage.ProtoReflect.Descriptor instead.
-func (*AttachInvocationCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{32}
-}
-
-func (x *AttachInvocationCommandMessage) GetTarget() isAttachInvocationCommandMessage_Target {
-	if x != nil {
-		return x.Target
-	}
-	return nil
-}
-
-func (x *AttachInvocationCommandMessage) GetInvocationId() string {
-	if x != nil {
-		if x, ok := x.Target.(*AttachInvocationCommandMessage_InvocationId); ok {
-			return x.InvocationId
-		}
-	}
-	return ""
-}
-
-func (x *AttachInvocationCommandMessage) GetWorkflowTarget() *WorkflowTarget {
-	if x != nil {
-		if x, ok := x.Target.(*AttachInvocationCommandMessage_WorkflowTarget); ok {
-			return x.WorkflowTarget
-		}
-	}
-	return nil
-}
-
-func (x *AttachInvocationCommandMessage) GetResultCompletionId() uint32 {
-	if x != nil {
-		return x.ResultCompletionId
-	}
-	return 0
-}
-
-func (x *AttachInvocationCommandMessage) GetName() string {
-	if x != nil {
-		return x.Name
-	}
-	return ""
-}
-
-type isAttachInvocationCommandMessage_Target interface {
-	isAttachInvocationCommandMessage_Target()
-}
-
-type AttachInvocationCommandMessage_InvocationId struct {
-	InvocationId string `protobuf:"bytes,1,opt,name=invocation_id,json=invocationId,proto3,oneof"`
-}
-
-type AttachInvocationCommandMessage_WorkflowTarget struct {
-	WorkflowTarget *WorkflowTarget `protobuf:"bytes,4,opt,name=workflow_target,json=workflowTarget,proto3,oneof"`
-}
-
-func (*AttachInvocationCommandMessage_InvocationId) isAttachInvocationCommandMessage_Target() {}
-
-func (*AttachInvocationCommandMessage_WorkflowTarget) isAttachInvocationCommandMessage_Target() {}
-
-// Type: 0x8012 — notification for AttachInvocationCommandMessage.
-type AttachInvocationCompletionNotificationMessage struct {
-	state        protoimpl.MessageState `protogen:"open.v1"`
-	CompletionId uint32                 `protobuf:"varint,1,opt,name=completion_id,json=completionId,proto3" json:"completion_id,omitempty"`
-	// Types that are valid to be assigned to Result:
-	//
-	//	*AttachInvocationCompletionNotificationMessage_Value
-	//	*AttachInvocationCompletionNotificationMessage_Failure
-	Result        isAttachInvocationCompletionNotificationMessage_Result `protobuf_oneof:"result"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AttachInvocationCompletionNotificationMessage) Reset() {
-	*x = AttachInvocationCompletionNotificationMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[33]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AttachInvocationCompletionNotificationMessage) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AttachInvocationCompletionNotificationMessage) ProtoMessage() {}
-
-func (x *AttachInvocationCompletionNotificationMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[33]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AttachInvocationCompletionNotificationMessage.ProtoReflect.Descriptor instead.
-func (*AttachInvocationCompletionNotificationMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{33}
-}
-
-func (x *AttachInvocationCompletionNotificationMessage) GetCompletionId() uint32 {
-	if x != nil {
-		return x.CompletionId
-	}
-	return 0
-}
-
-func (x *AttachInvocationCompletionNotificationMessage) GetResult() isAttachInvocationCompletionNotificationMessage_Result {
-	if x != nil {
-		return x.Result
-	}
-	return nil
-}
-
-func (x *AttachInvocationCompletionNotificationMessage) GetValue() *Value {
-	if x != nil {
-		if x, ok := x.Result.(*AttachInvocationCompletionNotificationMessage_Value); ok {
-			return x.Value
-		}
-	}
-	return nil
-}
-
-func (x *AttachInvocationCompletionNotificationMessage) GetFailure() *Failure {
-	if x != nil {
-		if x, ok := x.Result.(*AttachInvocationCompletionNotificationMessage_Failure); ok {
-			return x.Failure
-		}
-	}
-	return nil
-}
-
-type isAttachInvocationCompletionNotificationMessage_Result interface {
-	isAttachInvocationCompletionNotificationMessage_Result()
-}
-
-type AttachInvocationCompletionNotificationMessage_Value struct {
-	Value *Value `protobuf:"bytes,5,opt,name=value,proto3,oneof"`
-}
-
-type AttachInvocationCompletionNotificationMessage_Failure struct {
-	Failure *Failure `protobuf:"bytes,6,opt,name=failure,proto3,oneof"`
-}
-
-func (*AttachInvocationCompletionNotificationMessage_Value) isAttachInvocationCompletionNotificationMessage_Result() {
-}
-
-func (*AttachInvocationCompletionNotificationMessage_Failure) isAttachInvocationCompletionNotificationMessage_Result() {
-}
-
-// Type: 0x0413
-// Read the final result of a completed invocation, non-blocking.
-type GetInvocationOutputCommandMessage struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Types that are valid to be assigned to Target:
-	//
-	//	*GetInvocationOutputCommandMessage_InvocationId
-	//	*GetInvocationOutputCommandMessage_WorkflowTarget
-	Target             isGetInvocationOutputCommandMessage_Target `protobuf_oneof:"target"`
-	ResultCompletionId uint32                                     `protobuf:"varint,11,opt,name=result_completion_id,json=resultCompletionId,proto3" json:"result_completion_id,omitempty"`
-	Name               string                                     `protobuf:"bytes,12,opt,name=name,proto3" json:"name,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
-}
-
-func (x *GetInvocationOutputCommandMessage) Reset() {
-	*x = GetInvocationOutputCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[34]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *GetInvocationOutputCommandMessage) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GetInvocationOutputCommandMessage) ProtoMessage() {}
-
-func (x *GetInvocationOutputCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[34]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GetInvocationOutputCommandMessage.ProtoReflect.Descriptor instead.
-func (*GetInvocationOutputCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{34}
-}
-
-func (x *GetInvocationOutputCommandMessage) GetTarget() isGetInvocationOutputCommandMessage_Target {
-	if x != nil {
-		return x.Target
-	}
-	return nil
-}
-
-func (x *GetInvocationOutputCommandMessage) GetInvocationId() string {
-	if x != nil {
-		if x, ok := x.Target.(*GetInvocationOutputCommandMessage_InvocationId); ok {
-			return x.InvocationId
-		}
-	}
-	return ""
-}
-
-func (x *GetInvocationOutputCommandMessage) GetWorkflowTarget() *WorkflowTarget {
-	if x != nil {
-		if x, ok := x.Target.(*GetInvocationOutputCommandMessage_WorkflowTarget); ok {
-			return x.WorkflowTarget
-		}
-	}
-	return nil
-}
-
-func (x *GetInvocationOutputCommandMessage) GetResultCompletionId() uint32 {
-	if x != nil {
-		return x.ResultCompletionId
-	}
-	return 0
-}
-
-func (x *GetInvocationOutputCommandMessage) GetName() string {
-	if x != nil {
-		return x.Name
-	}
-	return ""
-}
-
-type isGetInvocationOutputCommandMessage_Target interface {
-	isGetInvocationOutputCommandMessage_Target()
-}
-
-type GetInvocationOutputCommandMessage_InvocationId struct {
-	InvocationId string `protobuf:"bytes,1,opt,name=invocation_id,json=invocationId,proto3,oneof"`
-}
-
-type GetInvocationOutputCommandMessage_WorkflowTarget struct {
-	WorkflowTarget *WorkflowTarget `protobuf:"bytes,4,opt,name=workflow_target,json=workflowTarget,proto3,oneof"`
-}
-
-func (*GetInvocationOutputCommandMessage_InvocationId) isGetInvocationOutputCommandMessage_Target() {}
-
-func (*GetInvocationOutputCommandMessage_WorkflowTarget) isGetInvocationOutputCommandMessage_Target() {
-}
-
-// Type: 0x8013 — notification for GetInvocationOutputCommandMessage.
-type GetInvocationOutputCompletionNotificationMessage struct {
-	state        protoimpl.MessageState `protogen:"open.v1"`
-	CompletionId uint32                 `protobuf:"varint,1,opt,name=completion_id,json=completionId,proto3" json:"completion_id,omitempty"`
-	// Types that are valid to be assigned to Result:
-	//
-	//	*GetInvocationOutputCompletionNotificationMessage_Void
-	//	*GetInvocationOutputCompletionNotificationMessage_Value
-	//	*GetInvocationOutputCompletionNotificationMessage_Failure
-	Result        isGetInvocationOutputCompletionNotificationMessage_Result `protobuf_oneof:"result"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *GetInvocationOutputCompletionNotificationMessage) Reset() {
-	*x = GetInvocationOutputCompletionNotificationMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[35]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *GetInvocationOutputCompletionNotificationMessage) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GetInvocationOutputCompletionNotificationMessage) ProtoMessage() {}
-
-func (x *GetInvocationOutputCompletionNotificationMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[35]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GetInvocationOutputCompletionNotificationMessage.ProtoReflect.Descriptor instead.
-func (*GetInvocationOutputCompletionNotificationMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{35}
-}
-
-func (x *GetInvocationOutputCompletionNotificationMessage) GetCompletionId() uint32 {
-	if x != nil {
-		return x.CompletionId
-	}
-	return 0
-}
-
-func (x *GetInvocationOutputCompletionNotificationMessage) GetResult() isGetInvocationOutputCompletionNotificationMessage_Result {
-	if x != nil {
-		return x.Result
-	}
-	return nil
-}
-
-func (x *GetInvocationOutputCompletionNotificationMessage) GetVoid() *Void {
-	if x != nil {
-		if x, ok := x.Result.(*GetInvocationOutputCompletionNotificationMessage_Void); ok {
-			return x.Void
-		}
-	}
-	return nil
-}
-
-func (x *GetInvocationOutputCompletionNotificationMessage) GetValue() *Value {
-	if x != nil {
-		if x, ok := x.Result.(*GetInvocationOutputCompletionNotificationMessage_Value); ok {
-			return x.Value
-		}
-	}
-	return nil
-}
-
-func (x *GetInvocationOutputCompletionNotificationMessage) GetFailure() *Failure {
-	if x != nil {
-		if x, ok := x.Result.(*GetInvocationOutputCompletionNotificationMessage_Failure); ok {
-			return x.Failure
-		}
-	}
-	return nil
-}
-
-type isGetInvocationOutputCompletionNotificationMessage_Result interface {
-	isGetInvocationOutputCompletionNotificationMessage_Result()
-}
-
-type GetInvocationOutputCompletionNotificationMessage_Void struct {
-	Void *Void `protobuf:"bytes,4,opt,name=void,proto3,oneof"`
-}
-
-type GetInvocationOutputCompletionNotificationMessage_Value struct {
-	Value *Value `protobuf:"bytes,5,opt,name=value,proto3,oneof"`
-}
-
-type GetInvocationOutputCompletionNotificationMessage_Failure struct {
-	Failure *Failure `protobuf:"bytes,6,opt,name=failure,proto3,oneof"`
-}
-
-func (*GetInvocationOutputCompletionNotificationMessage_Void) isGetInvocationOutputCompletionNotificationMessage_Result() {
-}
-
-func (*GetInvocationOutputCompletionNotificationMessage_Value) isGetInvocationOutputCompletionNotificationMessage_Result() {
-}
-
-func (*GetInvocationOutputCompletionNotificationMessage_Failure) isGetInvocationOutputCompletionNotificationMessage_Result() {
-}
-
 // Type: 0x0414
 // SDK→engine: mint an awakeable bound to the current invocation. The
 // SDK generates the id deterministically (binding the owner's
@@ -3123,7 +2603,7 @@ type AwakeableCommandMessage struct {
 
 func (x *AwakeableCommandMessage) Reset() {
 	*x = AwakeableCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[36]
+	mi := &file_protocolv1_protocol_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3135,7 +2615,7 @@ func (x *AwakeableCommandMessage) String() string {
 func (*AwakeableCommandMessage) ProtoMessage() {}
 
 func (x *AwakeableCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[36]
+	mi := &file_protocolv1_protocol_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3148,7 +2628,7 @@ func (x *AwakeableCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AwakeableCommandMessage.ProtoReflect.Descriptor instead.
 func (*AwakeableCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{36}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *AwakeableCommandMessage) GetResultCompletionId() uint32 {
@@ -3185,7 +2665,7 @@ type SendSignalCommandMessage struct {
 
 func (x *SendSignalCommandMessage) Reset() {
 	*x = SendSignalCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[37]
+	mi := &file_protocolv1_protocol_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3197,7 +2677,7 @@ func (x *SendSignalCommandMessage) String() string {
 func (*SendSignalCommandMessage) ProtoMessage() {}
 
 func (x *SendSignalCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[37]
+	mi := &file_protocolv1_protocol_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3210,7 +2690,7 @@ func (x *SendSignalCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendSignalCommandMessage.ProtoReflect.Descriptor instead.
 func (*SendSignalCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{37}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *SendSignalCommandMessage) GetServiceName() string {
@@ -3266,7 +2746,7 @@ type AwaitSignalCommandMessage struct {
 
 func (x *AwaitSignalCommandMessage) Reset() {
 	*x = AwaitSignalCommandMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[38]
+	mi := &file_protocolv1_protocol_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3278,7 +2758,7 @@ func (x *AwaitSignalCommandMessage) String() string {
 func (*AwaitSignalCommandMessage) ProtoMessage() {}
 
 func (x *AwaitSignalCommandMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[38]
+	mi := &file_protocolv1_protocol_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3291,7 +2771,7 @@ func (x *AwaitSignalCommandMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AwaitSignalCommandMessage.ProtoReflect.Descriptor instead.
 func (*AwaitSignalCommandMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{38}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *AwaitSignalCommandMessage) GetSignalName() string {
@@ -3330,7 +2810,7 @@ type SignalNotificationMessage struct {
 
 func (x *SignalNotificationMessage) Reset() {
 	*x = SignalNotificationMessage{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[39]
+	mi := &file_protocolv1_protocol_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3342,7 +2822,7 @@ func (x *SignalNotificationMessage) String() string {
 func (*SignalNotificationMessage) ProtoMessage() {}
 
 func (x *SignalNotificationMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[39]
+	mi := &file_protocolv1_protocol_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3355,7 +2835,7 @@ func (x *SignalNotificationMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalNotificationMessage.ProtoReflect.Descriptor instead.
 func (*SignalNotificationMessage) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{39}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *SignalNotificationMessage) GetSignalId() isSignalNotificationMessage_SignalId {
@@ -3464,7 +2944,7 @@ type StateKeys struct {
 
 func (x *StateKeys) Reset() {
 	*x = StateKeys{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[40]
+	mi := &file_protocolv1_protocol_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3476,7 +2956,7 @@ func (x *StateKeys) String() string {
 func (*StateKeys) ProtoMessage() {}
 
 func (x *StateKeys) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[40]
+	mi := &file_protocolv1_protocol_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3489,7 +2969,7 @@ func (x *StateKeys) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StateKeys.ProtoReflect.Descriptor instead.
 func (*StateKeys) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{40}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *StateKeys) GetKeys() [][]byte {
@@ -3508,7 +2988,7 @@ type Value struct {
 
 func (x *Value) Reset() {
 	*x = Value{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[41]
+	mi := &file_protocolv1_protocol_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3520,7 +3000,7 @@ func (x *Value) String() string {
 func (*Value) ProtoMessage() {}
 
 func (x *Value) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[41]
+	mi := &file_protocolv1_protocol_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3533,7 +3013,7 @@ func (x *Value) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Value.ProtoReflect.Descriptor instead.
 func (*Value) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{41}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *Value) GetContent() []byte {
@@ -3556,7 +3036,7 @@ type Failure struct {
 
 func (x *Failure) Reset() {
 	*x = Failure{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[42]
+	mi := &file_protocolv1_protocol_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3568,7 +3048,7 @@ func (x *Failure) String() string {
 func (*Failure) ProtoMessage() {}
 
 func (x *Failure) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[42]
+	mi := &file_protocolv1_protocol_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3581,7 +3061,7 @@ func (x *Failure) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Failure.ProtoReflect.Descriptor instead.
 func (*Failure) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{42}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *Failure) GetCode() uint32 {
@@ -3608,7 +3088,7 @@ type Header struct {
 
 func (x *Header) Reset() {
 	*x = Header{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[43]
+	mi := &file_protocolv1_protocol_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3620,7 +3100,7 @@ func (x *Header) String() string {
 func (*Header) ProtoMessage() {}
 
 func (x *Header) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[43]
+	mi := &file_protocolv1_protocol_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3633,7 +3113,7 @@ func (x *Header) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Header.ProtoReflect.Descriptor instead.
 func (*Header) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{43}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *Header) GetKey() string {
@@ -3661,7 +3141,7 @@ type WorkflowTarget struct {
 
 func (x *WorkflowTarget) Reset() {
 	*x = WorkflowTarget{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[44]
+	mi := &file_protocolv1_protocol_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3673,7 +3153,7 @@ func (x *WorkflowTarget) String() string {
 func (*WorkflowTarget) ProtoMessage() {}
 
 func (x *WorkflowTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[44]
+	mi := &file_protocolv1_protocol_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3686,7 +3166,7 @@ func (x *WorkflowTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowTarget.ProtoReflect.Descriptor instead.
 func (*WorkflowTarget) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{44}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *WorkflowTarget) GetWorkflowName() string {
@@ -3712,7 +3192,7 @@ type Void struct {
 
 func (x *Void) Reset() {
 	*x = Void{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[45]
+	mi := &file_protocolv1_protocol_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3724,7 +3204,7 @@ func (x *Void) String() string {
 func (*Void) ProtoMessage() {}
 
 func (x *Void) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[45]
+	mi := &file_protocolv1_protocol_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3737,7 +3217,7 @@ func (x *Void) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Void.ProtoReflect.Descriptor instead.
 func (*Void) Descriptor() ([]byte, []int) {
-	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{45}
+	return file_protocolv1_protocol_proto_rawDescGZIP(), []int{39}
 }
 
 type StartMessage_StateEntry struct {
@@ -3751,7 +3231,7 @@ type StartMessage_StateEntry struct {
 
 func (x *StartMessage_StateEntry) Reset() {
 	*x = StartMessage_StateEntry{}
-	mi := &file_protocolv1_protocol_proto_msgTypes[46]
+	mi := &file_protocolv1_protocol_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3763,7 +3243,7 @@ func (x *StartMessage_StateEntry) String() string {
 func (*StartMessage_StateEntry) ProtoMessage() {}
 
 func (x *StartMessage_StateEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_protocolv1_protocol_proto_msgTypes[46]
+	mi := &file_protocolv1_protocol_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3842,9 +3322,7 @@ const file_protocolv1_protocol_proto_rawDesc = "" +
 	"\x15_related_command_typeB\x13\n" +
 	"\x11_next_retry_delay\"\f\n" +
 	"\n" +
-	"EndMessage\"8\n" +
-	"\x11CommandAckMessage\x12#\n" +
-	"\rcommand_index\x18\x01 \x01(\rR\fcommandIndex\"\x8d\x02\n" +
+	"EndMessage\"\x8d\x02\n" +
 	"\x1bProposeRunCompletionMessage\x120\n" +
 	"\x14result_completion_id\x18\x01 \x01(\rR\x12resultCompletionId\x12\x1c\n" +
 	"\tretryable\x18\x02 \x01(\bR\tretryable\x12D\n" +
@@ -3939,27 +3417,22 @@ const file_protocolv1_protocol_proto_rawDesc = "" +
 	"\x04name\x18\f \x01(\tR\x04name\"v\n" +
 	"\"SleepCompletionNotificationMessage\x12#\n" +
 	"\rcompletion_id\x18\x01 \x01(\rR\fcompletionId\x12+\n" +
-	"\x04void\x18\x04 \x01(\v2\x17.reflw.protocol.v1.VoidR\x04void\"\x92\x03\n" +
+	"\x04void\x18\x04 \x01(\v2\x17.reflw.protocol.v1.VoidR\x04void\"\xcd\x02\n" +
 	"\x12CallCommandMessage\x12!\n" +
 	"\fservice_name\x18\x01 \x01(\tR\vserviceName\x12!\n" +
 	"\fhandler_name\x18\x02 \x01(\tR\vhandlerName\x12\x1c\n" +
 	"\tparameter\x18\x03 \x01(\fR\tparameter\x123\n" +
 	"\aheaders\x18\x04 \x03(\v2\x19.reflw.protocol.v1.HeaderR\aheaders\x12\x10\n" +
 	"\x03key\x18\x05 \x01(\tR\x03key\x120\n" +
-	"\x11idempotency_token\x18\x06 \x01(\tH\x00R\x10idempotencyToken\x88\x01\x01\x12C\n" +
-	"\x1einvocation_id_notification_idx\x18\n" +
-	" \x01(\rR\x1binvocationIdNotificationIdx\x120\n" +
+	"\x11idempotency_token\x18\x06 \x01(\tH\x00R\x10idempotencyToken\x88\x01\x01\x120\n" +
 	"\x14result_completion_id\x18\v \x01(\rR\x12resultCompletionId\x12\x12\n" +
 	"\x04name\x18\f \x01(\tR\x04nameB\x14\n" +
-	"\x12_idempotency_token\"y\n" +
-	"-CallInvocationIdCompletionNotificationMessage\x12#\n" +
-	"\rcompletion_id\x18\x01 \x01(\rR\fcompletionId\x12#\n" +
-	"\rinvocation_id\x18\x10 \x01(\tR\finvocationId\"\xbc\x01\n" +
+	"\x12_idempotency_token\"\xbc\x01\n" +
 	"!CallCompletionNotificationMessage\x12#\n" +
 	"\rcompletion_id\x18\x01 \x01(\rR\fcompletionId\x120\n" +
 	"\x05value\x18\x05 \x01(\v2\x18.reflw.protocol.v1.ValueH\x00R\x05value\x126\n" +
 	"\afailure\x18\x06 \x01(\v2\x1a.reflw.protocol.v1.FailureH\x00R\afailureB\b\n" +
-	"\x06result\"\x87\x03\n" +
+	"\x06result\"\xc2\x02\n" +
 	"\x18OneWayCallCommandMessage\x12!\n" +
 	"\fservice_name\x18\x01 \x01(\tR\vserviceName\x12!\n" +
 	"\fhandler_name\x18\x02 \x01(\tR\vhandlerName\x12\x1c\n" +
@@ -3968,9 +3441,7 @@ const file_protocolv1_protocol_proto_rawDesc = "" +
 	"invokeTime\x123\n" +
 	"\aheaders\x18\x05 \x03(\v2\x19.reflw.protocol.v1.HeaderR\aheaders\x12\x10\n" +
 	"\x03key\x18\x06 \x01(\tR\x03key\x120\n" +
-	"\x11idempotency_token\x18\a \x01(\tH\x00R\x10idempotencyToken\x88\x01\x01\x12C\n" +
-	"\x1einvocation_id_notification_idx\x18\n" +
-	" \x01(\rR\x1binvocationIdNotificationIdx\x12\x12\n" +
+	"\x11idempotency_token\x18\a \x01(\tH\x00R\x10idempotencyToken\x88\x01\x01\x12\x12\n" +
 	"\x04name\x18\f \x01(\tR\x04nameB\x14\n" +
 	"\x12_idempotency_token\"\x9c\x01\n" +
 	"\x11RunCommandMessage\x120\n" +
@@ -3980,29 +3451,6 @@ const file_protocolv1_protocol_proto_rawDesc = "" +
 	"\x0fidempotency_key\x18\x0e \x01(\tR\x0eidempotencyKey\"\xbb\x01\n" +
 	" RunCompletionNotificationMessage\x12#\n" +
 	"\rcompletion_id\x18\x01 \x01(\rR\fcompletionId\x120\n" +
-	"\x05value\x18\x05 \x01(\v2\x18.reflw.protocol.v1.ValueH\x00R\x05value\x126\n" +
-	"\afailure\x18\x06 \x01(\v2\x1a.reflw.protocol.v1.FailureH\x00R\afailureB\b\n" +
-	"\x06result\"\xe5\x01\n" +
-	"\x1eAttachInvocationCommandMessage\x12%\n" +
-	"\rinvocation_id\x18\x01 \x01(\tH\x00R\finvocationId\x12L\n" +
-	"\x0fworkflow_target\x18\x04 \x01(\v2!.reflw.protocol.v1.WorkflowTargetH\x00R\x0eworkflowTarget\x120\n" +
-	"\x14result_completion_id\x18\v \x01(\rR\x12resultCompletionId\x12\x12\n" +
-	"\x04name\x18\f \x01(\tR\x04nameB\b\n" +
-	"\x06target\"\xc8\x01\n" +
-	"-AttachInvocationCompletionNotificationMessage\x12#\n" +
-	"\rcompletion_id\x18\x01 \x01(\rR\fcompletionId\x120\n" +
-	"\x05value\x18\x05 \x01(\v2\x18.reflw.protocol.v1.ValueH\x00R\x05value\x126\n" +
-	"\afailure\x18\x06 \x01(\v2\x1a.reflw.protocol.v1.FailureH\x00R\afailureB\b\n" +
-	"\x06result\"\xe8\x01\n" +
-	"!GetInvocationOutputCommandMessage\x12%\n" +
-	"\rinvocation_id\x18\x01 \x01(\tH\x00R\finvocationId\x12L\n" +
-	"\x0fworkflow_target\x18\x04 \x01(\v2!.reflw.protocol.v1.WorkflowTargetH\x00R\x0eworkflowTarget\x120\n" +
-	"\x14result_completion_id\x18\v \x01(\rR\x12resultCompletionId\x12\x12\n" +
-	"\x04name\x18\f \x01(\tR\x04nameB\b\n" +
-	"\x06target\"\xfa\x01\n" +
-	"0GetInvocationOutputCompletionNotificationMessage\x12#\n" +
-	"\rcompletion_id\x18\x01 \x01(\rR\fcompletionId\x12-\n" +
-	"\x04void\x18\x04 \x01(\v2\x17.reflw.protocol.v1.VoidH\x00R\x04void\x120\n" +
 	"\x05value\x18\x05 \x01(\v2\x18.reflw.protocol.v1.ValueH\x00R\x05value\x126\n" +
 	"\afailure\x18\x06 \x01(\v2\x1a.reflw.protocol.v1.FailureH\x00R\afailureB\b\n" +
 	"\x06result\"n\n" +
@@ -4062,103 +3510,90 @@ func file_protocolv1_protocol_proto_rawDescGZIP() []byte {
 }
 
 var file_protocolv1_protocol_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_protocolv1_protocol_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
+var file_protocolv1_protocol_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
 var file_protocolv1_protocol_proto_goTypes = []any{
-	(Kind)(0),                                                // 0: reflw.protocol.v1.Kind
-	(*Frame)(nil),                                            // 1: reflw.protocol.v1.Frame
-	(*StartMessage)(nil),                                     // 2: reflw.protocol.v1.StartMessage
-	(*SuspensionMessage)(nil),                                // 3: reflw.protocol.v1.SuspensionMessage
-	(*ErrorMessage)(nil),                                     // 4: reflw.protocol.v1.ErrorMessage
-	(*EndMessage)(nil),                                       // 5: reflw.protocol.v1.EndMessage
-	(*CommandAckMessage)(nil),                                // 6: reflw.protocol.v1.CommandAckMessage
-	(*ProposeRunCompletionMessage)(nil),                      // 7: reflw.protocol.v1.ProposeRunCompletionMessage
-	(*RunRetryPolicy)(nil),                                   // 8: reflw.protocol.v1.RunRetryPolicy
-	(*InputCommandMessage)(nil),                              // 9: reflw.protocol.v1.InputCommandMessage
-	(*OutputCommandMessage)(nil),                             // 10: reflw.protocol.v1.OutputCommandMessage
-	(*GetLazyStateCommandMessage)(nil),                       // 11: reflw.protocol.v1.GetLazyStateCommandMessage
-	(*GetLazyStateCompletionNotificationMessage)(nil),        // 12: reflw.protocol.v1.GetLazyStateCompletionNotificationMessage
-	(*SetStateCommandMessage)(nil),                           // 13: reflw.protocol.v1.SetStateCommandMessage
-	(*ClearStateCommandMessage)(nil),                         // 14: reflw.protocol.v1.ClearStateCommandMessage
-	(*ClearAllStateCommandMessage)(nil),                      // 15: reflw.protocol.v1.ClearAllStateCommandMessage
-	(*GetLazyStateKeysCommandMessage)(nil),                   // 16: reflw.protocol.v1.GetLazyStateKeysCommandMessage
-	(*GetLazyStateKeysCompletionNotificationMessage)(nil),    // 17: reflw.protocol.v1.GetLazyStateKeysCompletionNotificationMessage
-	(*GetEagerStateKeysCommandMessage)(nil),                  // 18: reflw.protocol.v1.GetEagerStateKeysCommandMessage
-	(*GetPromiseCommandMessage)(nil),                         // 19: reflw.protocol.v1.GetPromiseCommandMessage
-	(*GetPromiseCompletionNotificationMessage)(nil),          // 20: reflw.protocol.v1.GetPromiseCompletionNotificationMessage
-	(*PeekPromiseCommandMessage)(nil),                        // 21: reflw.protocol.v1.PeekPromiseCommandMessage
-	(*PeekPromiseCompletionNotificationMessage)(nil),         // 22: reflw.protocol.v1.PeekPromiseCompletionNotificationMessage
-	(*CompletePromiseCommandMessage)(nil),                    // 23: reflw.protocol.v1.CompletePromiseCommandMessage
-	(*CompletePromiseCompletionNotificationMessage)(nil),     // 24: reflw.protocol.v1.CompletePromiseCompletionNotificationMessage
-	(*SleepCommandMessage)(nil),                              // 25: reflw.protocol.v1.SleepCommandMessage
-	(*SleepCompletionNotificationMessage)(nil),               // 26: reflw.protocol.v1.SleepCompletionNotificationMessage
-	(*CallCommandMessage)(nil),                               // 27: reflw.protocol.v1.CallCommandMessage
-	(*CallInvocationIdCompletionNotificationMessage)(nil),    // 28: reflw.protocol.v1.CallInvocationIdCompletionNotificationMessage
-	(*CallCompletionNotificationMessage)(nil),                // 29: reflw.protocol.v1.CallCompletionNotificationMessage
-	(*OneWayCallCommandMessage)(nil),                         // 30: reflw.protocol.v1.OneWayCallCommandMessage
-	(*RunCommandMessage)(nil),                                // 31: reflw.protocol.v1.RunCommandMessage
-	(*RunCompletionNotificationMessage)(nil),                 // 32: reflw.protocol.v1.RunCompletionNotificationMessage
-	(*AttachInvocationCommandMessage)(nil),                   // 33: reflw.protocol.v1.AttachInvocationCommandMessage
-	(*AttachInvocationCompletionNotificationMessage)(nil),    // 34: reflw.protocol.v1.AttachInvocationCompletionNotificationMessage
-	(*GetInvocationOutputCommandMessage)(nil),                // 35: reflw.protocol.v1.GetInvocationOutputCommandMessage
-	(*GetInvocationOutputCompletionNotificationMessage)(nil), // 36: reflw.protocol.v1.GetInvocationOutputCompletionNotificationMessage
-	(*AwakeableCommandMessage)(nil),                          // 37: reflw.protocol.v1.AwakeableCommandMessage
-	(*SendSignalCommandMessage)(nil),                         // 38: reflw.protocol.v1.SendSignalCommandMessage
-	(*AwaitSignalCommandMessage)(nil),                        // 39: reflw.protocol.v1.AwaitSignalCommandMessage
-	(*SignalNotificationMessage)(nil),                        // 40: reflw.protocol.v1.SignalNotificationMessage
-	(*StateKeys)(nil),                                        // 41: reflw.protocol.v1.StateKeys
-	(*Value)(nil),                                            // 42: reflw.protocol.v1.Value
-	(*Failure)(nil),                                          // 43: reflw.protocol.v1.Failure
-	(*Header)(nil),                                           // 44: reflw.protocol.v1.Header
-	(*WorkflowTarget)(nil),                                   // 45: reflw.protocol.v1.WorkflowTarget
-	(*Void)(nil),                                             // 46: reflw.protocol.v1.Void
-	(*StartMessage_StateEntry)(nil),                          // 47: reflw.protocol.v1.StartMessage.StateEntry
+	(Kind)(0),                                             // 0: reflw.protocol.v1.Kind
+	(*Frame)(nil),                                         // 1: reflw.protocol.v1.Frame
+	(*StartMessage)(nil),                                  // 2: reflw.protocol.v1.StartMessage
+	(*SuspensionMessage)(nil),                             // 3: reflw.protocol.v1.SuspensionMessage
+	(*ErrorMessage)(nil),                                  // 4: reflw.protocol.v1.ErrorMessage
+	(*EndMessage)(nil),                                    // 5: reflw.protocol.v1.EndMessage
+	(*ProposeRunCompletionMessage)(nil),                   // 6: reflw.protocol.v1.ProposeRunCompletionMessage
+	(*RunRetryPolicy)(nil),                                // 7: reflw.protocol.v1.RunRetryPolicy
+	(*InputCommandMessage)(nil),                           // 8: reflw.protocol.v1.InputCommandMessage
+	(*OutputCommandMessage)(nil),                          // 9: reflw.protocol.v1.OutputCommandMessage
+	(*GetLazyStateCommandMessage)(nil),                    // 10: reflw.protocol.v1.GetLazyStateCommandMessage
+	(*GetLazyStateCompletionNotificationMessage)(nil),     // 11: reflw.protocol.v1.GetLazyStateCompletionNotificationMessage
+	(*SetStateCommandMessage)(nil),                        // 12: reflw.protocol.v1.SetStateCommandMessage
+	(*ClearStateCommandMessage)(nil),                      // 13: reflw.protocol.v1.ClearStateCommandMessage
+	(*ClearAllStateCommandMessage)(nil),                   // 14: reflw.protocol.v1.ClearAllStateCommandMessage
+	(*GetLazyStateKeysCommandMessage)(nil),                // 15: reflw.protocol.v1.GetLazyStateKeysCommandMessage
+	(*GetLazyStateKeysCompletionNotificationMessage)(nil), // 16: reflw.protocol.v1.GetLazyStateKeysCompletionNotificationMessage
+	(*GetEagerStateKeysCommandMessage)(nil),               // 17: reflw.protocol.v1.GetEagerStateKeysCommandMessage
+	(*GetPromiseCommandMessage)(nil),                      // 18: reflw.protocol.v1.GetPromiseCommandMessage
+	(*GetPromiseCompletionNotificationMessage)(nil),       // 19: reflw.protocol.v1.GetPromiseCompletionNotificationMessage
+	(*PeekPromiseCommandMessage)(nil),                     // 20: reflw.protocol.v1.PeekPromiseCommandMessage
+	(*PeekPromiseCompletionNotificationMessage)(nil),      // 21: reflw.protocol.v1.PeekPromiseCompletionNotificationMessage
+	(*CompletePromiseCommandMessage)(nil),                 // 22: reflw.protocol.v1.CompletePromiseCommandMessage
+	(*CompletePromiseCompletionNotificationMessage)(nil),  // 23: reflw.protocol.v1.CompletePromiseCompletionNotificationMessage
+	(*SleepCommandMessage)(nil),                           // 24: reflw.protocol.v1.SleepCommandMessage
+	(*SleepCompletionNotificationMessage)(nil),            // 25: reflw.protocol.v1.SleepCompletionNotificationMessage
+	(*CallCommandMessage)(nil),                            // 26: reflw.protocol.v1.CallCommandMessage
+	(*CallCompletionNotificationMessage)(nil),             // 27: reflw.protocol.v1.CallCompletionNotificationMessage
+	(*OneWayCallCommandMessage)(nil),                      // 28: reflw.protocol.v1.OneWayCallCommandMessage
+	(*RunCommandMessage)(nil),                             // 29: reflw.protocol.v1.RunCommandMessage
+	(*RunCompletionNotificationMessage)(nil),              // 30: reflw.protocol.v1.RunCompletionNotificationMessage
+	(*AwakeableCommandMessage)(nil),                       // 31: reflw.protocol.v1.AwakeableCommandMessage
+	(*SendSignalCommandMessage)(nil),                      // 32: reflw.protocol.v1.SendSignalCommandMessage
+	(*AwaitSignalCommandMessage)(nil),                     // 33: reflw.protocol.v1.AwaitSignalCommandMessage
+	(*SignalNotificationMessage)(nil),                     // 34: reflw.protocol.v1.SignalNotificationMessage
+	(*StateKeys)(nil),                                     // 35: reflw.protocol.v1.StateKeys
+	(*Value)(nil),                                         // 36: reflw.protocol.v1.Value
+	(*Failure)(nil),                                       // 37: reflw.protocol.v1.Failure
+	(*Header)(nil),                                        // 38: reflw.protocol.v1.Header
+	(*WorkflowTarget)(nil),                                // 39: reflw.protocol.v1.WorkflowTarget
+	(*Void)(nil),                                          // 40: reflw.protocol.v1.Void
+	(*StartMessage_StateEntry)(nil),                       // 41: reflw.protocol.v1.StartMessage.StateEntry
 }
 var file_protocolv1_protocol_proto_depIdxs = []int32{
-	47, // 0: reflw.protocol.v1.StartMessage.state_map:type_name -> reflw.protocol.v1.StartMessage.StateEntry
+	41, // 0: reflw.protocol.v1.StartMessage.state_map:type_name -> reflw.protocol.v1.StartMessage.StateEntry
 	0,  // 1: reflw.protocol.v1.StartMessage.kind:type_name -> reflw.protocol.v1.Kind
-	8,  // 2: reflw.protocol.v1.ProposeRunCompletionMessage.retry_policy:type_name -> reflw.protocol.v1.RunRetryPolicy
-	43, // 3: reflw.protocol.v1.ProposeRunCompletionMessage.failure:type_name -> reflw.protocol.v1.Failure
-	44, // 4: reflw.protocol.v1.InputCommandMessage.headers:type_name -> reflw.protocol.v1.Header
-	42, // 5: reflw.protocol.v1.InputCommandMessage.value:type_name -> reflw.protocol.v1.Value
-	42, // 6: reflw.protocol.v1.OutputCommandMessage.value:type_name -> reflw.protocol.v1.Value
-	43, // 7: reflw.protocol.v1.OutputCommandMessage.failure:type_name -> reflw.protocol.v1.Failure
-	46, // 8: reflw.protocol.v1.GetLazyStateCompletionNotificationMessage.void:type_name -> reflw.protocol.v1.Void
-	42, // 9: reflw.protocol.v1.GetLazyStateCompletionNotificationMessage.value:type_name -> reflw.protocol.v1.Value
-	42, // 10: reflw.protocol.v1.SetStateCommandMessage.value:type_name -> reflw.protocol.v1.Value
-	41, // 11: reflw.protocol.v1.GetLazyStateKeysCompletionNotificationMessage.state_keys:type_name -> reflw.protocol.v1.StateKeys
-	41, // 12: reflw.protocol.v1.GetEagerStateKeysCommandMessage.value:type_name -> reflw.protocol.v1.StateKeys
-	42, // 13: reflw.protocol.v1.GetPromiseCompletionNotificationMessage.value:type_name -> reflw.protocol.v1.Value
-	43, // 14: reflw.protocol.v1.GetPromiseCompletionNotificationMessage.failure:type_name -> reflw.protocol.v1.Failure
-	42, // 15: reflw.protocol.v1.PeekPromiseCommandMessage.value:type_name -> reflw.protocol.v1.Value
-	43, // 16: reflw.protocol.v1.PeekPromiseCommandMessage.failure:type_name -> reflw.protocol.v1.Failure
-	42, // 17: reflw.protocol.v1.PeekPromiseCompletionNotificationMessage.value:type_name -> reflw.protocol.v1.Value
-	43, // 18: reflw.protocol.v1.PeekPromiseCompletionNotificationMessage.failure:type_name -> reflw.protocol.v1.Failure
-	42, // 19: reflw.protocol.v1.CompletePromiseCommandMessage.completion_value:type_name -> reflw.protocol.v1.Value
-	43, // 20: reflw.protocol.v1.CompletePromiseCommandMessage.completion_failure:type_name -> reflw.protocol.v1.Failure
-	46, // 21: reflw.protocol.v1.CompletePromiseCompletionNotificationMessage.void:type_name -> reflw.protocol.v1.Void
-	43, // 22: reflw.protocol.v1.CompletePromiseCompletionNotificationMessage.failure:type_name -> reflw.protocol.v1.Failure
-	46, // 23: reflw.protocol.v1.SleepCompletionNotificationMessage.void:type_name -> reflw.protocol.v1.Void
-	44, // 24: reflw.protocol.v1.CallCommandMessage.headers:type_name -> reflw.protocol.v1.Header
-	42, // 25: reflw.protocol.v1.CallCompletionNotificationMessage.value:type_name -> reflw.protocol.v1.Value
-	43, // 26: reflw.protocol.v1.CallCompletionNotificationMessage.failure:type_name -> reflw.protocol.v1.Failure
-	44, // 27: reflw.protocol.v1.OneWayCallCommandMessage.headers:type_name -> reflw.protocol.v1.Header
-	42, // 28: reflw.protocol.v1.RunCompletionNotificationMessage.value:type_name -> reflw.protocol.v1.Value
-	43, // 29: reflw.protocol.v1.RunCompletionNotificationMessage.failure:type_name -> reflw.protocol.v1.Failure
-	45, // 30: reflw.protocol.v1.AttachInvocationCommandMessage.workflow_target:type_name -> reflw.protocol.v1.WorkflowTarget
-	42, // 31: reflw.protocol.v1.AttachInvocationCompletionNotificationMessage.value:type_name -> reflw.protocol.v1.Value
-	43, // 32: reflw.protocol.v1.AttachInvocationCompletionNotificationMessage.failure:type_name -> reflw.protocol.v1.Failure
-	45, // 33: reflw.protocol.v1.GetInvocationOutputCommandMessage.workflow_target:type_name -> reflw.protocol.v1.WorkflowTarget
-	46, // 34: reflw.protocol.v1.GetInvocationOutputCompletionNotificationMessage.void:type_name -> reflw.protocol.v1.Void
-	42, // 35: reflw.protocol.v1.GetInvocationOutputCompletionNotificationMessage.value:type_name -> reflw.protocol.v1.Value
-	43, // 36: reflw.protocol.v1.GetInvocationOutputCompletionNotificationMessage.failure:type_name -> reflw.protocol.v1.Failure
-	46, // 37: reflw.protocol.v1.SignalNotificationMessage.void:type_name -> reflw.protocol.v1.Void
-	42, // 38: reflw.protocol.v1.SignalNotificationMessage.value:type_name -> reflw.protocol.v1.Value
-	43, // 39: reflw.protocol.v1.SignalNotificationMessage.failure:type_name -> reflw.protocol.v1.Failure
-	40, // [40:40] is the sub-list for method output_type
-	40, // [40:40] is the sub-list for method input_type
-	40, // [40:40] is the sub-list for extension type_name
-	40, // [40:40] is the sub-list for extension extendee
-	0,  // [0:40] is the sub-list for field type_name
+	7,  // 2: reflw.protocol.v1.ProposeRunCompletionMessage.retry_policy:type_name -> reflw.protocol.v1.RunRetryPolicy
+	37, // 3: reflw.protocol.v1.ProposeRunCompletionMessage.failure:type_name -> reflw.protocol.v1.Failure
+	38, // 4: reflw.protocol.v1.InputCommandMessage.headers:type_name -> reflw.protocol.v1.Header
+	36, // 5: reflw.protocol.v1.InputCommandMessage.value:type_name -> reflw.protocol.v1.Value
+	36, // 6: reflw.protocol.v1.OutputCommandMessage.value:type_name -> reflw.protocol.v1.Value
+	37, // 7: reflw.protocol.v1.OutputCommandMessage.failure:type_name -> reflw.protocol.v1.Failure
+	40, // 8: reflw.protocol.v1.GetLazyStateCompletionNotificationMessage.void:type_name -> reflw.protocol.v1.Void
+	36, // 9: reflw.protocol.v1.GetLazyStateCompletionNotificationMessage.value:type_name -> reflw.protocol.v1.Value
+	36, // 10: reflw.protocol.v1.SetStateCommandMessage.value:type_name -> reflw.protocol.v1.Value
+	35, // 11: reflw.protocol.v1.GetLazyStateKeysCompletionNotificationMessage.state_keys:type_name -> reflw.protocol.v1.StateKeys
+	35, // 12: reflw.protocol.v1.GetEagerStateKeysCommandMessage.value:type_name -> reflw.protocol.v1.StateKeys
+	36, // 13: reflw.protocol.v1.GetPromiseCompletionNotificationMessage.value:type_name -> reflw.protocol.v1.Value
+	37, // 14: reflw.protocol.v1.GetPromiseCompletionNotificationMessage.failure:type_name -> reflw.protocol.v1.Failure
+	36, // 15: reflw.protocol.v1.PeekPromiseCommandMessage.value:type_name -> reflw.protocol.v1.Value
+	37, // 16: reflw.protocol.v1.PeekPromiseCommandMessage.failure:type_name -> reflw.protocol.v1.Failure
+	36, // 17: reflw.protocol.v1.PeekPromiseCompletionNotificationMessage.value:type_name -> reflw.protocol.v1.Value
+	37, // 18: reflw.protocol.v1.PeekPromiseCompletionNotificationMessage.failure:type_name -> reflw.protocol.v1.Failure
+	36, // 19: reflw.protocol.v1.CompletePromiseCommandMessage.completion_value:type_name -> reflw.protocol.v1.Value
+	37, // 20: reflw.protocol.v1.CompletePromiseCommandMessage.completion_failure:type_name -> reflw.protocol.v1.Failure
+	40, // 21: reflw.protocol.v1.CompletePromiseCompletionNotificationMessage.void:type_name -> reflw.protocol.v1.Void
+	37, // 22: reflw.protocol.v1.CompletePromiseCompletionNotificationMessage.failure:type_name -> reflw.protocol.v1.Failure
+	40, // 23: reflw.protocol.v1.SleepCompletionNotificationMessage.void:type_name -> reflw.protocol.v1.Void
+	38, // 24: reflw.protocol.v1.CallCommandMessage.headers:type_name -> reflw.protocol.v1.Header
+	36, // 25: reflw.protocol.v1.CallCompletionNotificationMessage.value:type_name -> reflw.protocol.v1.Value
+	37, // 26: reflw.protocol.v1.CallCompletionNotificationMessage.failure:type_name -> reflw.protocol.v1.Failure
+	38, // 27: reflw.protocol.v1.OneWayCallCommandMessage.headers:type_name -> reflw.protocol.v1.Header
+	36, // 28: reflw.protocol.v1.RunCompletionNotificationMessage.value:type_name -> reflw.protocol.v1.Value
+	37, // 29: reflw.protocol.v1.RunCompletionNotificationMessage.failure:type_name -> reflw.protocol.v1.Failure
+	40, // 30: reflw.protocol.v1.SignalNotificationMessage.void:type_name -> reflw.protocol.v1.Void
+	36, // 31: reflw.protocol.v1.SignalNotificationMessage.value:type_name -> reflw.protocol.v1.Value
+	37, // 32: reflw.protocol.v1.SignalNotificationMessage.failure:type_name -> reflw.protocol.v1.Failure
+	33, // [33:33] is the sub-list for method output_type
+	33, // [33:33] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_protocolv1_protocol_proto_init() }
@@ -4167,66 +3602,49 @@ func file_protocolv1_protocol_proto_init() {
 		return
 	}
 	file_protocolv1_protocol_proto_msgTypes[3].OneofWrappers = []any{}
-	file_protocolv1_protocol_proto_msgTypes[6].OneofWrappers = []any{
+	file_protocolv1_protocol_proto_msgTypes[5].OneofWrappers = []any{
 		(*ProposeRunCompletionMessage_Value)(nil),
 		(*ProposeRunCompletionMessage_Failure)(nil),
 	}
-	file_protocolv1_protocol_proto_msgTypes[9].OneofWrappers = []any{
+	file_protocolv1_protocol_proto_msgTypes[8].OneofWrappers = []any{
 		(*OutputCommandMessage_Value)(nil),
 		(*OutputCommandMessage_Failure)(nil),
 	}
-	file_protocolv1_protocol_proto_msgTypes[11].OneofWrappers = []any{
+	file_protocolv1_protocol_proto_msgTypes[10].OneofWrappers = []any{
 		(*GetLazyStateCompletionNotificationMessage_Void)(nil),
 		(*GetLazyStateCompletionNotificationMessage_Value)(nil),
 	}
-	file_protocolv1_protocol_proto_msgTypes[19].OneofWrappers = []any{
+	file_protocolv1_protocol_proto_msgTypes[18].OneofWrappers = []any{
 		(*GetPromiseCompletionNotificationMessage_Value)(nil),
 		(*GetPromiseCompletionNotificationMessage_Failure)(nil),
 	}
-	file_protocolv1_protocol_proto_msgTypes[20].OneofWrappers = []any{
+	file_protocolv1_protocol_proto_msgTypes[19].OneofWrappers = []any{
 		(*PeekPromiseCommandMessage_Value)(nil),
 		(*PeekPromiseCommandMessage_Failure)(nil),
 	}
-	file_protocolv1_protocol_proto_msgTypes[21].OneofWrappers = []any{
+	file_protocolv1_protocol_proto_msgTypes[20].OneofWrappers = []any{
 		(*PeekPromiseCompletionNotificationMessage_Value)(nil),
 		(*PeekPromiseCompletionNotificationMessage_Failure)(nil),
 	}
-	file_protocolv1_protocol_proto_msgTypes[22].OneofWrappers = []any{
+	file_protocolv1_protocol_proto_msgTypes[21].OneofWrappers = []any{
 		(*CompletePromiseCommandMessage_CompletionValue)(nil),
 		(*CompletePromiseCommandMessage_CompletionFailure)(nil),
 	}
-	file_protocolv1_protocol_proto_msgTypes[23].OneofWrappers = []any{
+	file_protocolv1_protocol_proto_msgTypes[22].OneofWrappers = []any{
 		(*CompletePromiseCompletionNotificationMessage_Void)(nil),
 		(*CompletePromiseCompletionNotificationMessage_Failure)(nil),
 	}
-	file_protocolv1_protocol_proto_msgTypes[26].OneofWrappers = []any{}
-	file_protocolv1_protocol_proto_msgTypes[28].OneofWrappers = []any{
+	file_protocolv1_protocol_proto_msgTypes[25].OneofWrappers = []any{}
+	file_protocolv1_protocol_proto_msgTypes[26].OneofWrappers = []any{
 		(*CallCompletionNotificationMessage_Value)(nil),
 		(*CallCompletionNotificationMessage_Failure)(nil),
 	}
-	file_protocolv1_protocol_proto_msgTypes[29].OneofWrappers = []any{}
-	file_protocolv1_protocol_proto_msgTypes[31].OneofWrappers = []any{
+	file_protocolv1_protocol_proto_msgTypes[27].OneofWrappers = []any{}
+	file_protocolv1_protocol_proto_msgTypes[29].OneofWrappers = []any{
 		(*RunCompletionNotificationMessage_Value)(nil),
 		(*RunCompletionNotificationMessage_Failure)(nil),
 	}
-	file_protocolv1_protocol_proto_msgTypes[32].OneofWrappers = []any{
-		(*AttachInvocationCommandMessage_InvocationId)(nil),
-		(*AttachInvocationCommandMessage_WorkflowTarget)(nil),
-	}
 	file_protocolv1_protocol_proto_msgTypes[33].OneofWrappers = []any{
-		(*AttachInvocationCompletionNotificationMessage_Value)(nil),
-		(*AttachInvocationCompletionNotificationMessage_Failure)(nil),
-	}
-	file_protocolv1_protocol_proto_msgTypes[34].OneofWrappers = []any{
-		(*GetInvocationOutputCommandMessage_InvocationId)(nil),
-		(*GetInvocationOutputCommandMessage_WorkflowTarget)(nil),
-	}
-	file_protocolv1_protocol_proto_msgTypes[35].OneofWrappers = []any{
-		(*GetInvocationOutputCompletionNotificationMessage_Void)(nil),
-		(*GetInvocationOutputCompletionNotificationMessage_Value)(nil),
-		(*GetInvocationOutputCompletionNotificationMessage_Failure)(nil),
-	}
-	file_protocolv1_protocol_proto_msgTypes[39].OneofWrappers = []any{
 		(*SignalNotificationMessage_Idx)(nil),
 		(*SignalNotificationMessage_Name)(nil),
 		(*SignalNotificationMessage_Void)(nil),
@@ -4239,7 +3657,7 @@ func file_protocolv1_protocol_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_protocolv1_protocol_proto_rawDesc), len(file_protocolv1_protocol_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   47,
+			NumMessages:   41,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

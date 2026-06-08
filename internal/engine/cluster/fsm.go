@@ -288,8 +288,6 @@ func (f *FSM) applyCommand(
 		return f.applyDeleteModel(batch, env, k.DeleteModel, raftIndex)
 	case *enginev1.Command_UpsertLpOwner:
 		return f.applyUpsertLPOwner(batch, env, k.UpsertLpOwner, raftIndex)
-	case *enginev1.Command_DeleteLpOwner:
-		return f.applyDeleteLPOwner(batch, env, k.DeleteLpOwner, raftIndex)
 	case *enginev1.Command_BulkUpsertLpOwners:
 		return f.applyBulkUpsertLPOwners(batch, env, k.BulkUpsertLpOwners, raftIndex)
 	case *enginev1.Command_InitiateLpTransfer:
@@ -849,33 +847,6 @@ func (f *FSM) applyUpsertLPOwner(
 	if err := (LPOwnersTable{S: batch}).Put(batch, rec); err != nil {
 		return nil, fmt.Errorf("cluster: write lpowner: %w", err)
 	}
-	nowMs := env.GetHeader().GetCreatedAtMs()
-	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableLPOwners, nowMs); err != nil {
-		return nil, fmt.Errorf("cluster: bump lpowners revision: %w", err)
-	}
-	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.LPOwnersTable}}, nil
-}
-
-// applyDeleteLPOwner removes the row for lp (no-op if absent) and bumps
-// the table revision. Same CAS semantics as Upsert. Defensive; not used
-// by PR 1 or PR 2.
-func (f *FSM) applyDeleteLPOwner(
-	batch storage.Batch,
-	env *enginev1.Envelope,
-	cmd *enginev1.DeleteLPOwner,
-	raftIndex uint64,
-) (*applyResult, error) {
-	ok, err := f.checkPrecondition(batch, env, RevisionTableLPOwners)
-	if err != nil {
-		return nil, fmt.Errorf("cluster: load lpowners revision: %w", err)
-	}
-	if !ok {
-		return nil, nil
-	}
-	if err := (LPOwnersTable{S: batch}).Delete(batch, cmd.GetLp()); err != nil {
-		return nil, fmt.Errorf("cluster: delete lpowner: %w", err)
-	}
-	_ = raftIndex
 	nowMs := env.GetHeader().GetCreatedAtMs()
 	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableLPOwners, nowMs); err != nil {
 		return nil, fmt.Errorf("cluster: bump lpowners revision: %w", err)

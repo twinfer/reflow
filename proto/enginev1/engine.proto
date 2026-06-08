@@ -1,4 +1,4 @@
-// Reflow engine wire types — the Raft + on-disk Command/Envelope/Row
+// Reflw engine wire types — the Raft + on-disk Command/Envelope/Row
 // shapes that every shard applies.
 //
 // All commands flow through the same dragonboat IOnDiskStateMachine
@@ -62,9 +62,9 @@ message Envelope {
 // helper translates that sentinel into connect.CodeFailedPrecondition.
 //
 // One Precondition shape is shared across every CAS-aware command
-// (UpsertEventSource, DeleteEventSource, ...) because every such
-// command targets exactly one shard-0 table, and the apply arm knows
-// which table-prefix to read.
+// (UpsertSecret, DeleteSecret, RegisterDeployment, ...) because every
+// such command targets exactly one shard-0 table, and the apply arm
+// knows which table-prefix to read.
 message Precondition {
   uint64 if_table_revision_eq = 1;
 }
@@ -84,25 +84,22 @@ message Header {
   fixed64 created_at_ms = 2;
   // principal is the auth principal that originated this command,
   // captured at the admin/config Connect propose sites from
-  // auth.PrincipalFromContext (e.g. "operator/alice", "tenant/42",
-  // "node/3"). Used exclusively by the cluster-FSM audit log
-  // (AuditLogTable); the FSM apply path does not gate behavior on it
-  // (real authz is enforced at the Connect layer before propose).
-  // FSM-self-proposed commands (rebalancer, lp-mover, audit GC,
-  // partition timer/outbox) leave it empty — audit records carry
-  // principal="engine" in that case. Partition-shard commands
-  // (Invoke, TimerFired, ...) do not populate this field; invocation
-  // submits are metrics, not audit signal.
+  // auth.PrincipalFromContext (e.g. "operator/alice", "node/3") for
+  // provenance. The FSM apply path does not gate behavior on it — real
+  // authz is enforced at the Connect layer before propose.
+  // FSM-self-proposed commands (rebalancer, lp-mover, partition
+  // timer/outbox) leave it empty. Partition-shard commands (Invoke,
+  // TimerFired, ...) do not populate this field.
   string principal = 4;
 }
 
 // Command oneof. Mirrors restate CommandKind in
 // crates/wal-protocol/src/v2.rs:222-283.
 //
-// Tags are grouped by which shards accept the variant: 1 is universal
-// (AnnounceLeader), 2-5 / 16-17 / 19-20 are partition-shard commands,
-// 6-10 / 18 / 21-26 are metadata-shard commands. Group new variants
-// under the matching block when adding.
+// Tags are grouped by which shards accept the variant: AnnounceLeader
+// (1) is universal; every other variant is partition-shard (shardID>=1)
+// or metadata-shard (shardID=0) per its inline "Accepted only by" note.
+// Group new variants under the matching block when adding.
 message Command {
   oneof kind {
     AnnounceLeader announce_leader = 1;
@@ -156,12 +153,12 @@ message Command {
     // shardID >= 1.
     ReapInvocation reap_invocation = 20;
     // UpsertSecret / DeleteSecret carry shard-0 SecretStore records —
-    // named ciphertext + KEK pointers shared across webhook (and
-    // future) consumers. Same CAS + notifier semantics as the
-    // event-source and webhook pairs. The plaintext never appears in
-    // these commands; per-node SecretStore Reconcilers fetch the
-    // blob and decrypt via the Tink registry at reconcile time.
-    // Accepted only by shardID=0.
+    // named ciphertext + KEK pointers shared across consumers (today
+    // the cluster CA signing key). Same CAS + notifier semantics as the
+    // other shard-0 table pairs. The plaintext never appears in these
+    // commands; per-node SecretStore Reconcilers fetch the blob and
+    // decrypt via the Tink registry at reconcile time. Accepted only by
+    // shardID=0.
     UpsertSecret upsert_secret = 25;
     DeleteSecret delete_secret = 26;
     // UpsertModelSet / DeleteModel carry shard-0 ModelTable rows — BPMN/CMMN/DMN
@@ -173,18 +170,16 @@ message Command {
     // its dependency closure in one atomic apply. Accepted only by shardID=0.
     UpsertModelSet upsert_model_set = 54;
     DeleteModel delete_model = 53;
-    // UpsertLPOwner / DeleteLPOwner / BulkUpsertLPOwners carry shard-0
-    // LPOwnersTable mutations — the (lp → shard_id) routing table that
-    // Partitioner reads via per-node reconciler snapshot. Same CAS +
-    // notifier semantics as the event-source / webhook / secret pairs.
-    // BulkUpsertLPOwners is used by the metadata-leader bootstrap to
-    // seed the consistent-hash assignment (buraksezer/consistent +
-    // xxhash, deterministic across leaders) for all 4096 LPs in one
-    // apply batch; UpsertLPOwner is the per-row arm the lpMover uses
-    // to atomically flip ownership after a transfer (PR 3); DeleteLPOwner
-    // is defensive (no current caller). Accepted only by shardID=0.
+    // UpsertLPOwner / BulkUpsertLPOwners carry shard-0 LPOwnersTable
+    // mutations — the (lp → shard_id) routing table that Partitioner
+    // reads via per-node reconciler snapshot. Same CAS + notifier
+    // semantics as the secret pair. BulkUpsertLPOwners is used by the
+    // metadata-leader bootstrap to seed the consistent-hash assignment
+    // (buraksezer/consistent + xxhash, deterministic across leaders) for
+    // all 4096 LPs in one apply batch; UpsertLPOwner is the per-row arm
+    // the lpMover uses to atomically flip ownership after a transfer.
+    // Accepted only by shardID=0.
     UpsertLPOwner upsert_lp_owner = 27;
-    DeleteLPOwner delete_lp_owner = 28;
     BulkUpsertLPOwners bulk_upsert_lp_owners = 29;
     // LP transfer coordination commands. The lpMover goroutine on the
     // shard-0 leader writes LPTransferTable rows (one per in-progress
@@ -532,7 +527,7 @@ message InvocationSuspended {
 // at types/src/journal_v2/mod.rs:60-150.
 //
 // Tags grouped by feature area:
-//   2-9   : baseline (Input, Sleep+Result, Call+Result, Get/SetState, Output).
+//   2-8   : baseline (Input, Sleep+Result, Call+Result, Get/SetState).
 //   10-14 : Run, Awakeable+Result, Signal, ClearState.
 //   16-17 : ClearAllState, OneWayCall.
 //   18-19 : AwaitSignal + SignalResult.
@@ -549,7 +544,6 @@ message JournalEntry {
     JECallResult call_result = 6;
     JEGetState get_state = 7;
     JESetState set_state = 8;
-    JEOutput output = 9;
     JERun run = 10;
     JEAwakeable awakeable = 11;
     JEAwakeableResult awakeable_result = 12;
@@ -693,10 +687,6 @@ message JEGetStateKeysResult {
 message JESetState {
   string key = 1;
   bytes value = 2;
-}
-
-message JEOutput {
-  bytes value = 1;
 }
 
 // JERun records the outcome of a deterministic side-effect block. The SDK
@@ -1151,7 +1141,7 @@ message SignalSend {
 // ── Process-execution payloads (reflwos BPMN/CMMN durable backend) ──
 //
 // One reflwos process/case instance maps to a specialized virtual object:
-// (service, instance_key) banded by state in ProcessInstanceTable.
+// (service, instance_key) in ProcessInstanceTable.
 // Only the leader-side procSession links reflwos; everything that crosses Raft
 // is reflw-native, so the apply arm (every replica) stays reflwos-agnostic.
 
@@ -1161,7 +1151,7 @@ message SignalSend {
 // so Advance is a pure function of (state, event, time) and re-runs identically
 // on a new leader.
 message ProcessEvent {
-  fixed64 pk = 1; // banded partition_key of (service, instance_key)
+  fixed64 pk = 1; // partition_key of (service, instance_key)
   string service = 2;
   string instance_key = 3;
   uint64 logical_time_ms = 4;
@@ -1424,7 +1414,7 @@ message MessageSubscription {
 }
 
 // ProcessSubscribe carries one MessageSubscription to the partition that owns the
-// message routing key (pk = banded PartitionKey(message_name,
+// message routing key (pk = PartitionKey(message_name,
 // correlation_key)). Applied via Command_ProcessSubscribe (onProcessSubscribe
 // writes the row); shipped cross-shard via OutboxEnvelope.process_subscribe.
 message ProcessSubscribe {
@@ -1444,7 +1434,7 @@ message ProcessUnsubscribe {
 }
 
 // DeliverProcessMessage is the inbound-correlation command. It lands on the
-// partition owning pk = banded PartitionKey(message_name,
+// partition owning pk = PartitionKey(message_name,
 // correlation_key), scans every matching MessageSubscription, fans a
 // ProcessMessageReceived out to each parked instance, and one-shot-deletes the
 // rows (so redelivery is naturally idempotent). A message with no current
@@ -1681,8 +1671,8 @@ message DeleteDeployment {
 // PlatformConfigRecord is shard 0's cluster-wide platform-config singleton
 // (one row). It carries fleet policy every node reconciles locally. v1 holds
 // only the Cedar cluster authz policy text; the other platform knobs from SAD
-// §6.15.2 (listener behavior, PKI mode, KMS enablement, audit retention,
-// default tenant quotas) slot in as added fields here, no new table needed.
+// §6.15.2 (listener behavior, PKI mode, KMS enablement) slot in as added
+// fields here, no new table needed.
 message PlatformConfigRecord {
   string cluster_authz_policy_text = 1;
 }
@@ -1698,16 +1688,15 @@ message UpsertPlatformConfig {
 // and commit logs would leak it. Each SecretRecord carries a pointer
 // to where the ciphertext lives (gocloud.dev/blob URI) and which KEK
 // can decrypt it (Tink KMS URI). The same record is referenced by
-// `secret_name` from WebhookSourceRecord (and future consumers:
-// event-source vendor credentials, outbound HMAC signing keys,
-// OIDC client secrets, …) so define-once, reference-many.
+// `secret_name` from its consumers (today the cluster CA signing key,
+// CARootRecord) so define-once, reference-many.
 //
 // Per-node internal/secretstore Reconcilers fetch the blob, dispatch
 // the KEK URI to registry.GetKMSClient, and call
 // tink.AEAD.Decrypt(ciphertext, aad=secret.name). AAD = secret.name
 // binds the ciphertext to the row identity, not to the consumer —
 // renaming a secret is a re-encrypt operation (by design); renaming
-// a webhook that references it is not.
+// a consumer that references it is not.
 //
 // `remote_encrypted` is the only source shape today; the oneof leaves
 // room for future shapes (e.g. inline-hybrid, vault-kv-path) without
@@ -1720,7 +1709,7 @@ message SecretRecord {
 }
 
 // RemoteEncryptedSecret stores ciphertext in any gocloud.dev/blob backend
-// with the KEK held by a Tink-registered KMS. Reflow ships four KMS
+// with the KEK held by a Tink-registered KMS. Reflw ships four KMS
 // providers in-binary: BlobKMS (blobkms+<gocloud-uri> — the no-managed-
 // KMS fallback), AWS KMS (aws-kms://...), GCP Cloud KMS (gcp-kms://...),
 // and HashiCorp Vault Transit (hcvault://...). The first three self-
@@ -1746,9 +1735,9 @@ message UpsertSecret {
 
 // DeleteSecret is the Command_DeleteSecret payload. Same CAS + notifier
 // semantics as Upsert. Delete-of-absent is a no-op (the revision still
-// bumps). Reflow does NOT cascade-validate consumer references: deleting
-// a secret that webhook (or future) records still reference will surface
-// as a resolve failure on the next reconcile, which the consumer's
+// bumps). Reflw does NOT cascade-validate consumer references: deleting
+// a secret that other records still reference will surface as a resolve
+// failure on the next reconcile, which the consumer's
 // preserve-prev-on-error semantics handle gracefully — operators see a
 // metric and clean up by deleting the consumer rows next.
 message DeleteSecret {
@@ -1912,7 +1901,7 @@ message DeleteJoinToken {
 // 4096 rows is seeded at metadata-leader bootstrap by the consistent-
 // hash planner (routing.NewPlanner; buraksezer/consistent + xxhash) —
 // deterministic across leaders, bounded-load distribution across
-// shards. PR 3 (transfer protocol) flips individual rows after data
+// shards. The transfer protocol flips individual rows after data
 // migration via UpsertLPOwner.
 message LPOwnerRecord {
   uint32 lp = 1;
@@ -1922,16 +1911,11 @@ message LPOwnerRecord {
 // UpsertLPOwner is the Command_UpsertLPOwner payload. Apply arm
 // CAS-checks Envelope.precondition, writes
 // LPOwnersTable[record.lp] = record, and bumps the table revision.
-// Reserved for the future per-LP transfer protocol (PR 3) — PR 1/2
-// callers use BulkUpsertLPOwners for the consistent-hash seed.
+// The lpMover uses it to atomically flip a single LP's ownership after
+// a transfer ships its data; bootstrap uses BulkUpsertLPOwners for the
+// consistent-hash seed.
 message UpsertLPOwner {
   LPOwnerRecord record = 1;
-}
-
-// DeleteLPOwner is the Command_DeleteLPOwner payload. Defensive; not
-// used by PR 1 or PR 2. Same CAS + notifier semantics as Upsert.
-message DeleteLPOwner {
-  uint32 lp = 1;
 }
 
 // BulkUpsertLPOwners is the Command_BulkUpsertLPOwners payload. Apply arm

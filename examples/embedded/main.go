@@ -126,10 +126,10 @@ func main() {
 		// Mount a Stripe webhook at POST /webhooks/stripe. The route
 		// verifies the Stripe-Signature HMAC using the secret named
 		// "stripe-signing", then submits to WebhookRouter/OnStripeEvent
-		// on the untenanted band. The signature is the auth gate — the
+		// directly. The signature is the auth gate — the
 		// route sits outside the mesh auth/authz chain.
 		//
-		// NOTE: "stripe-signing" must exist in the secret store (configure
+		// "stripe-signing" must exist in the secret store (configure
 		// cfg.KMS + a secret of that name); until it resolves the route
 		// answers 503. The greet/echo handlers above work without it.
 		Webhooks: []reflw.WebhookConfig{{

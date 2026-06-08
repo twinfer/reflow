@@ -76,9 +76,9 @@ type Route struct {
 
 // Type codes per proto/protocolv1/protocol.proto. The codes are part
 // of the wire contract; keep this list in sync with the proto file.
-// Codes for messages not yet emitted by either side (CommandAck,
-// CallInvocationId) are intentionally omitted — add them here when
-// their handler lands rather than carrying dead constants.
+// Only the codes actually exchanged over a session are listed — add a
+// constant when a new message starts being emitted rather than carrying
+// dead ones.
 const (
 	// Core lifecycle (0x0000-0x00FF).
 	TypeStart          uint16 = 0x0000

@@ -33,27 +33,27 @@ func envInt(t *testing.T, key string, def int) int {
 }
 
 // buildTransferLPs returns n populated high-LPs to chain-transfer, spread across
-// the transfer region [FirstTenantedLP, LPCount) — the LPs the live workload
+// the transfer region [transferRegionLP, LPCount) — the LPs the live workload
 // never routes to. Region-relative so it stays valid for any LPCount. n == 5 is
 // the canonical set (spread with increasing gaps); for any other n the LPs are
 // spread evenly. Spreading raises the chance that, as LPs chain around shards
 // and accumulate, their key ranges interleave on a shared dest — the condition
 // under which a plain Ingest SST lands in L0 instead of sinking to L6.
 func buildTransferLPs(n int) []uint32 {
-	region := keys.LPCount - loadgen.FirstTenantedLP
+	region := keys.LPCount - loadgen.TransferRegionLP
 	if n == 5 {
 		// Fractions of the region, clustered low with increasing gaps.
 		return []uint32{
-			loadgen.FirstTenantedLP + 0,
-			loadgen.FirstTenantedLP + region/32,
-			loadgen.FirstTenantedLP + region/11,
-			loadgen.FirstTenantedLP + region/4,
-			loadgen.FirstTenantedLP + region/2,
+			loadgen.TransferRegionLP + 0,
+			loadgen.TransferRegionLP + region/32,
+			loadgen.TransferRegionLP + region/11,
+			loadgen.TransferRegionLP + region/4,
+			loadgen.TransferRegionLP + region/2,
 		}
 	}
 	out := make([]uint32, n)
 	for i := range out {
-		out[i] = loadgen.FirstTenantedLP + uint32(i)*region/uint32(n)
+		out[i] = loadgen.TransferRegionLP + uint32(i)*region/uint32(n)
 	}
 	return out
 }
@@ -75,7 +75,7 @@ func buildTransferLPs(n int) []uint32 {
 //     transfers manually).
 //   - A steady 50qps workload runs against the reserved low LPs (0..63) the
 //     workload confines itself to — as background write-load on every shard.
-//   - Concurrently, several populated high-LPs (>= FirstTenantedLP) are
+//   - Concurrently, several populated high-LPs (>= transferRegionLP) are
 //     chain-transferred shard-to-shard. Live traffic never routes to those
 //     LPs, so the transfers cannot misroute the workload (the in-process
 //     host routes statically — it does not run the routing reconciler).
@@ -113,8 +113,8 @@ func TestLoad_TransferUnderLoad(t *testing.T) {
 	duration := time.Duration(envInt(t, "REFLW_LOADTEST_DURATION_SEC", 30)) * time.Second
 	hopTimeout := time.Duration(envInt(t, "REFLW_LOADTEST_HOP_TIMEOUT_SEC", 60)) * time.Second
 
-	// Populated LPs to chain-transfer. All >= FirstTenantedLP (64) so the
-	// band-0 workload never routes to them.
+	// Populated LPs to chain-transfer. All >= transferRegionLP (64) so the
+	// workload never routes to them.
 	transferLPs := buildTransferLPs(envInt(t, "REFLW_LOADTEST_LP_COUNT", 5))
 	t.Logf("scale: seed_rows=%d seed_value_bytes=%d (~%d KiB/hop SST) duration=%s lp_count=%d hop_timeout=%s",
 		seedRows, seedValueBytes, seedRows*seedValueBytes/1024, duration, len(transferLPs), hopTimeout)

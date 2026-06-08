@@ -101,8 +101,8 @@ func (b *BuiltinIssuer) Issue(_ context.Context, csr *x509.CertificateRequest) (
 func (b *BuiltinIssuer) IssuerKey() string { return "reflw-builtin" }
 
 // splitPrincipal parses "<role>/<name>" into a CALeafKind + name. Returns
-// ok=false on anything that doesn't match the expected shape; node, operator,
-// and tenant are the roles known here.
+// ok=false on anything that doesn't match the expected shape; node and operator
+// are the roles known here.
 func splitPrincipal(raw string) (CALeafKind, string, bool) {
 	idx := strings.IndexByte(raw, '/')
 	if idx <= 0 || idx == len(raw)-1 {

@@ -435,8 +435,6 @@ func journalEntryKindLabel(e *enginev1.JournalEntry) string {
 		return "GetEagerStateKeys"
 	case *enginev1.JournalEntry_Signal:
 		return "Signal"
-	case *enginev1.JournalEntry_Output:
-		return "Output"
 	default:
 		return "unknown"
 	}
@@ -1728,9 +1726,9 @@ func (p *Partition) onReapProcessInstance(batch storage.Batch, cmd *enginev1.Rea
 
 // onResolveProcessIncident resolves an incident-parked instance. TERMINATE fails
 // it terminally — delivering the failure to a parent (none, for a top-level
-// incident) and reaping it now. RETRY re-drives the failed element via the reflwos
-// ResolveIncident reducer entry (Phase 2b — not yet wired; the ingress RPC rejects
-// RETRY before proposing, so the arm here is a defensive drop). A command for an
+// incident) and reaping it now. RETRY un-parks it (clear incident, status back to
+// RUNNING) and enqueues a retry turn that re-drives the failed element via the
+// reflwos ResolveIncident reducer entry. A command for an
 // instance that is absent or not in INCIDENT is a benign no-op (already resolved /
 // reaped / never existed) — never an error, which would halt the shard.
 func (p *Partition) onResolveProcessIncident(batch storage.Batch, meta *enginev1.PartitionMeta, cmd *enginev1.ResolveProcessIncident, nowMs uint64, isLeader bool) error {
@@ -2817,9 +2815,8 @@ func (p *Partition) onInvokerEffect(batch storage.Batch, eff *enginev1.InvokerEf
 		// Receiver-side: resolve Target → active InvocationId via
 		// KeyLeaseTable.current_invocation, then route. The well-known
 		// __cancel__ name short-circuits to a terminal Completed; other
-		// signal names will land in the per-(inv, name) inbox once
-		// Step 2 lands the inbox + awaiter tables. For Step 1 we drop
-		// non-cancel signals with a warning — there's no reader yet.
+		// signal names are stitched into a pending JEAwaitSignal or buffered
+		// in the inbox for a future WaitSignal(name) call.
 		sigTarget := k.SignalDelivered.GetTarget()
 		sigName := k.SignalDelivered.GetSignalName()
 		if sigTarget.GetObjectKey() == "" {
@@ -4363,7 +4360,13 @@ func (p *Partition) SaveSnapshot(_ any, w io.Writer, _ <-chan struct{}) error {
 // clears any buffered actions (which were derived from the discarded state).
 func (p *Partition) RecoverFromSnapshot(r io.Reader, _ <-chan struct{}) error {
 	if err := p.cfg.Snapshotter.RecoverFromSnapshot(r); err != nil {
+		if p.cfg.Metrics != nil {
+			p.cfg.Metrics.SnapshotRecoverTotal.WithLabelValues("error").Inc()
+		}
 		return err
+	}
+	if p.cfg.Metrics != nil {
+		p.cfg.Metrics.SnapshotRecoverTotal.WithLabelValues("ok").Inc()
 	}
 	p.cfg.Collector.Clear()
 	return nil

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/twinfer/reflw/internal/observability"
 )
 
 // Source abstracts the dragonboat-backed "make me an exported snapshot
@@ -40,6 +42,9 @@ type ProducerConfig struct {
 	// busy SaveSnapshot stream bounded.
 	Trigger <-chan struct{}
 	Log     *slog.Logger
+	// Metrics, when non-nil, records per-cycle timing + outcome. Nil in
+	// tests and when the metrics subsystem is disabled.
+	Metrics *observability.Metrics
 }
 
 // RunProducer blocks until ctx is cancelled. On every Interval tick (or
@@ -65,12 +70,24 @@ func RunProducer(ctx context.Context, cfg ProducerConfig) {
 		case <-t.C:
 		case <-trigger:
 		}
-		if err := SnapshotOnce(ctx, cfg); err != nil {
+		start := time.Now()
+		err := SnapshotOnce(ctx, cfg)
+		if cfg.Metrics != nil {
+			cfg.Metrics.SnapshotCreateSeconds.Observe(time.Since(start).Seconds())
+		}
+		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return
 			}
+			if cfg.Metrics != nil {
+				cfg.Metrics.SnapshotCreateTotal.WithLabelValues("error").Inc()
+			}
 			cfg.Log.Warn("snapshot: producer cycle failed",
 				"shard", cfg.ShardID, "err", err)
+			continue
+		}
+		if cfg.Metrics != nil {
+			cfg.Metrics.SnapshotCreateTotal.WithLabelValues("ok").Inc()
 		}
 	}
 }

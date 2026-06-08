@@ -1,4 +1,4 @@
-// Reflow ingress service.
+// Reflw ingress service.
 //
 // Exposes the user-facing entrypoints for submitting invocations, awaiting
 // their results, and resolving awakeables. Served over Connect (HTTP/2)
@@ -136,10 +136,9 @@ type IngressClient interface {
 	// apply arm requires a Completed/Free → Free transition). Does not touch
 	// virtual-object state or workflow promise rows.
 	PurgeInvocation(context.Context, *connect.Request[ingressv1.PurgeInvocationRequest]) (*connect.Response[ingressv1.PurgeInvocationResponse], error)
-	// ListInvocations lists the caller tenant band's invocations, fanning out
-	// across the shards owning the band's LPs (same substrate as
-	// ListProcessInstances). Optional service-name and state filters; capped by
-	// limit. Read-only — no proposal.
+	// ListInvocations lists invocations across the namespace, fanning out across
+	// all partition shards (same substrate as ListProcessInstances). Optional
+	// service-name and state filters; capped by limit. Read-only — no proposal.
 	ListInvocations(context.Context, *connect.Request[ingressv1.ListInvocationsRequest]) (*connect.Response[ingressv1.ListInvocationsResponse], error)
 	// StartProcess launches a new reflwos BPMN/CMMN instance. Routes to the
 	// partition owning (model name, instance_key) and proposes a start
@@ -163,9 +162,9 @@ type IngressClient interface {
 	// active_seq==0 means idle/parked on an external wait (a timer that will fire,
 	// or a message/signal subscription). Read-only — no proposal.
 	GetProcessInstance(context.Context, *connect.Request[ingressv1.GetProcessInstanceRequest]) (*connect.Response[ingressv1.GetProcessInstanceResponse], error)
-	// ListProcessInstances lists the caller tenant band's process instances,
-	// fanning out across the shards owning the band's LPs. Optional model-name and
-	// status filters; capped by limit.
+	// ListProcessInstances lists process instances across the namespace, fanning
+	// out across all partition shards. Optional model-name and status filters;
+	// capped by limit.
 	ListProcessInstances(context.Context, *connect.Request[ingressv1.ListProcessInstancesRequest]) (*connect.Response[ingressv1.ListProcessInstancesResponse], error)
 	// GetProcessInstanceHistory reads one instance's append-only activity timeline
 	// (start, inbound events, task dispatch/complete, timer arm/fire, child
@@ -444,10 +443,9 @@ type IngressHandler interface {
 	// apply arm requires a Completed/Free → Free transition). Does not touch
 	// virtual-object state or workflow promise rows.
 	PurgeInvocation(context.Context, *connect.Request[ingressv1.PurgeInvocationRequest]) (*connect.Response[ingressv1.PurgeInvocationResponse], error)
-	// ListInvocations lists the caller tenant band's invocations, fanning out
-	// across the shards owning the band's LPs (same substrate as
-	// ListProcessInstances). Optional service-name and state filters; capped by
-	// limit. Read-only — no proposal.
+	// ListInvocations lists invocations across the namespace, fanning out across
+	// all partition shards (same substrate as ListProcessInstances). Optional
+	// service-name and state filters; capped by limit. Read-only — no proposal.
 	ListInvocations(context.Context, *connect.Request[ingressv1.ListInvocationsRequest]) (*connect.Response[ingressv1.ListInvocationsResponse], error)
 	// StartProcess launches a new reflwos BPMN/CMMN instance. Routes to the
 	// partition owning (model name, instance_key) and proposes a start
@@ -471,9 +469,9 @@ type IngressHandler interface {
 	// active_seq==0 means idle/parked on an external wait (a timer that will fire,
 	// or a message/signal subscription). Read-only — no proposal.
 	GetProcessInstance(context.Context, *connect.Request[ingressv1.GetProcessInstanceRequest]) (*connect.Response[ingressv1.GetProcessInstanceResponse], error)
-	// ListProcessInstances lists the caller tenant band's process instances,
-	// fanning out across the shards owning the band's LPs. Optional model-name and
-	// status filters; capped by limit.
+	// ListProcessInstances lists process instances across the namespace, fanning
+	// out across all partition shards. Optional model-name and status filters;
+	// capped by limit.
 	ListProcessInstances(context.Context, *connect.Request[ingressv1.ListProcessInstancesRequest]) (*connect.Response[ingressv1.ListProcessInstancesResponse], error)
 	// GetProcessInstanceHistory reads one instance's append-only activity timeline
 	// (start, inbound events, task dispatch/complete, timer arm/fire, child

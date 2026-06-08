@@ -1,4 +1,4 @@
-// Reflow handler service v1 — engine ↔ handler RPC surface.
+// Reflw handler service v1 — engine ↔ handler RPC surface.
 //
 // The transport is Connect RPC. Engine and handler both support the
 // Connect / gRPC / gRPC-Web protocols on the same endpoint; the engine

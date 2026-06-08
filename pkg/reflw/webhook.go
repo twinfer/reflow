@@ -53,8 +53,8 @@ type secretLookuper interface {
 // signature (via the registered pkg/webhook verifier), then submits the
 // verified body to the configured durable handler. The routes are
 // mounted OUTSIDE the auth middleware and Cedar interceptor — the HMAC
-// signature is the authentication gate, and submissions land on the
-// untenanted band (band 0). validateWebhooks must have already run.
+// signature is the authentication gate, and submissions land on
+// the invoker directly. validateWebhooks must have already run.
 //
 // secrets resolves a secret name to its bytes; reflw.Run passes the
 // per-node *secretstore.Resolver.

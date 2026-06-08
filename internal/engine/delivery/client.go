@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/twinfer/reflw/internal/observability"
 	deliveryv1 "github.com/twinfer/reflw/proto/deliveryv1"
 	"github.com/twinfer/reflw/proto/deliveryv1/deliveryv1connect"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
@@ -68,6 +69,9 @@ type ClientConfig struct {
 	// would otherwise construct. Used by tests that need to dial a
 	// non-network listener (httptest server, bufconn-like fakes).
 	Transport http.RoundTripper
+	// Metrics, when non-nil, counts send outcomes (ok/error). Nil in
+	// tests and when the metrics subsystem is disabled.
+	Metrics *observability.Metrics
 }
 
 // Client is a pooled bidi-stream client for the Delivery service. Each
@@ -118,6 +122,14 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 // NotLeader the call returns ErrNotLeader and the caller is expected to
 // back off + retry (the OutboxService loop handles this).
 func (c *Client) Send(ctx context.Context, destShardID uint64, producerID string, seq uint64, cmd *enginev1.Command) error {
+	// result defaults to "error" and is flipped to "ok" only on a clean
+	// Ack; every error return (resolver, dial, send/recv, NotLeader,
+	// receiver err) is then counted as a failure at one point.
+	result := "error"
+	if c.cfg.Metrics != nil {
+		defer func() { c.cfg.Metrics.DeliverySendTotal.WithLabelValues(result).Inc() }()
+	}
+
 	leaderID, ok := c.cfg.Resolver.PartitionLeaderHint(destShardID)
 	if !ok {
 		return fmt.Errorf("delivery: no leader known for shard %d", destShardID)
@@ -172,6 +184,7 @@ func (c *Client) Send(ctx context.Context, destShardID uint64, producerID string
 	}
 	switch kind := resp.GetKind().(type) {
 	case *deliveryv1.DeliverResponse_Ack:
+		result = "ok"
 		return nil
 	case *deliveryv1.DeliverResponse_NotLeader:
 		return fmt.Errorf("%w (hint=%d)", ErrNotLeader, kind.NotLeader.GetLeaderNodeId())

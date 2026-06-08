@@ -22,19 +22,19 @@ import (
 // transfers of populated logical partitions while a workload runs.
 //
 // The driver is deliberately scoped to LPs the live workload never routes to.
-// The loadgen workload confines its keys to LPs below FirstTenantedLP (see
-// randomObjectKey); any LP >= FirstTenantedLP is therefore never the target of a
+// The loadgen workload confines its keys to LPs below TransferRegionLP (see
+// randomObjectKey); any LP >= TransferRegionLP is therefore never the target of a
 // live invocation, so transferring it cannot misroute traffic. That matters
 // because the in-process loadgen host does NOT run the routing reconciler (only
 // pkg/reflw.Run does), so Host.Partitioner() routes statically and would not
 // follow an LP that flipped owners mid-run.
 
-// FirstTenantedLP is the lowest LP in the region reserved for the transfer
-// driver. The loadgen workload confines itself to [0, FirstTenantedLP), so LPs
-// in [FirstTenantedLP, keys.LPCount) are safe to chain-transfer under load. 64
-// low LPs give the workload ample partition spread while leaving the bulk of the
-// LP space free for transfer targets.
-const FirstTenantedLP uint32 = 64
+// TransferRegionLP is the boundary separating the workload region [0, TransferRegionLP)
+// from the transfer-test region [TransferRegionLP, keys.LPCount). The loadgen
+// workload confines itself to the lower region, so LPs at or above this boundary
+// are safe to chain-transfer under load. 64 low LPs give the workload ample
+// partition spread while leaving the bulk of the LP space free for transfer targets.
+const TransferRegionLP uint32 = 64
 
 // MetadataLeaderHost returns the engine.Host currently leading shard 0,
 // or nil when no in-process node leads it. Re-resolve per use: leadership
@@ -239,7 +239,7 @@ type LPTransferEvent struct {
 // LPTransferLoadConfig parameterizes RunLPTransferChains.
 type LPTransferLoadConfig struct {
 	// LPs are the logical partitions to chain-transfer. Use LPs >=
-	// FirstTenantedLP so live (band-0) traffic never routes to them.
+	// TransferRegionLP so live workload traffic never routes to them.
 	LPs []uint32
 	// Service labels the seeded state rows.
 	Service string

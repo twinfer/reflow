@@ -234,6 +234,7 @@ func (r *PartitionRunner) onBecomeLeader() {
 		r.sender,
 		r.ShardID,
 		r.log,
+		r.metrics,
 	)
 	reap := NewReapService(
 		func(emit func(reapEntry) error) error {

@@ -1,9 +1,9 @@
-// Reflow ClusterCtl service — the cluster-operator surface.
+// Reflw ClusterCtl service — the cluster-operator surface.
 //
 // ClusterCtl owns the *physical* cluster operations: node membership,
 // partition topology, DR snapshots, and LP routing transfers. It is
 // the cluster-admin counterpart to reflw.config.v1.Config (which owns
-// app config — handler deployments, event sources, webhooks, secrets).
+// app config — handler deployments, CA roots, join tokens, secrets).
 // The naming mirrors Restate, where `cluster-ctrl` is the
 // cluster-administrator surface and `admin` is the app-config surface.
 //
@@ -13,12 +13,10 @@
 // `operator/<name>` for operators). The `reflwd cluster ...` CLI is
 // the canonical client. SelfJoin has a narrower carve-out: it accepts
 // a `node/*` principal, but only when the principal's NodeID equals
-// req.node_id (defense in depth behind the path-based authz rule).
+// req.node_id (defense in depth behind the Cedar authz policy).
 //
-// Authorization lives in internal/auth (the shared starter authz policy
-// consumed by both the gRPC delivery interceptor and the Connect HTTP
-// middleware). The starter policy restricts
-// /reflw.clusterctl.v1.ClusterCtl/* to principals matching
+// Authorization is Cedar (internal/authz). The foundational policy
+// restricts /reflw.clusterctl.v1.ClusterCtl/* to principals matching
 // "operator/*", with the SelfJoin carve-out described above.
 //
 // Mutating RPCs (AddNode, RemoveNode, TransferLP, CreateSnapshot,

@@ -11,7 +11,7 @@ import (
 // MessageSubscriptionTable stores parked BPMN message/signal catches, one row per
 // (message routing key, subscriber) at msgsub/<lp:4><corr_digest:32><sub_digest:32>.
 // The <lp:4> is derived from the message routing key
-// PartitionKey(tenant, message_name, correlation_key) — NOT the instance's own
+// PartitionKey(message_name, correlation_key) — NOT the instance's own
 // partition key — so the row is co-located with where DeliverProcessMessage
 // routes and a correlation match is a single prefix range. Rides the LP-transfer
 // scan via keys.MessageSubscriptionLPPrefix.

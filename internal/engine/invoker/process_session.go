@@ -11,9 +11,9 @@ import (
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
-// ProcessEngine runs one deterministic step of an reflwos process/case instance.
+// ProcessEngine runs one deterministic step of a reflwos process/case instance.
 // It is injected (the reflwos binding lives outside internal/engine — in
-// pkg/reflw or an reflwos-side adapter) so the engine never imports reflwos. This
+// pkg/reflw or a reflwos-side adapter) so the engine never imports reflwos. This
 // is the same dependency inversion WireDispatcher/InProcDialer use to keep
 // handler code out of the engine.
 //

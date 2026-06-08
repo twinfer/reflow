@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"sort"
 	"time"
+
+	"github.com/twinfer/reflw/internal/observability"
 )
 
 // ReaperConfig drives the per-shard retention reaper goroutine.
@@ -50,6 +52,9 @@ type ReaperConfig struct {
 	Log           *slog.Logger
 	// Now is an injection seam for tests; defaults to time.Now.
 	Now func() time.Time
+	// Metrics, when non-nil, counts reaper cycle failures. Nil in tests
+	// and when the metrics subsystem is disabled.
+	Metrics *observability.Metrics
 }
 
 // hasTieredPolicy reports whether any tiered slot is configured.
@@ -90,6 +95,9 @@ func RunReaper(ctx context.Context, cfg ReaperConfig) {
 			if err := ReapOnce(ctx, cfg); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return
+				}
+				if cfg.Metrics != nil {
+					cfg.Metrics.SnapshotReapFailures.Inc()
 				}
 				cfg.Log.Warn("snapshot: reaper cycle failed",
 					"shard", cfg.ShardID, "err", err)

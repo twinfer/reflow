@@ -1,4 +1,4 @@
-// Reflow inter-node Delivery service.
+// Reflw inter-node Delivery service.
 //
 // Every reflwd process hosts a Delivery gRPC server. When a shard's
 // leader-side OutboxService sees an OutboxEnvelope whose
@@ -15,9 +15,8 @@
 // sender can re-resolve via the dragonboat gossip ShardView and retry.
 //
 // Authorization: every RPC on this service requires a "node" principal.
-// The starter grpc-go authz policy in internal/auth/starter_policy.json
-// restricts /reflw.delivery.v1.Delivery/* to principals matching
-// "node/*"; operators may override via Config.Auth.PolicyFile.
+// The Cedar foundational policy (internal/authz) restricts
+// /reflw.delivery.v1.Delivery/* to node/* principals.
 syntax = "proto3";
 
 package reflw.delivery.v1;

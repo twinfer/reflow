@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/twinfer/reflw/internal/observability"
 	"github.com/twinfer/reflw/internal/storage/tables"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
@@ -61,6 +62,7 @@ type OutboxService struct {
 	shardID    uint64
 	producerID string
 	log        *slog.Logger
+	metrics    *observability.Metrics
 
 	mu      sync.Mutex
 	pending []tables.OutboxRow
@@ -75,7 +77,7 @@ type OutboxService struct {
 // sender may be nil for single-node deployments — every envelope's
 // destination_shard_id resolves to the local shard so no cross-shard
 // dispatch ever runs.
-func NewOutboxService(table tables.OutboxTable, proposer IngressProposer, sender CrossShardSender, shardID uint64, log *slog.Logger) *OutboxService {
+func NewOutboxService(table tables.OutboxTable, proposer IngressProposer, sender CrossShardSender, shardID uint64, log *slog.Logger, metrics *observability.Metrics) *OutboxService {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -86,6 +88,7 @@ func NewOutboxService(table tables.OutboxTable, proposer IngressProposer, sender
 		shardID:    shardID,
 		producerID: fmt.Sprintf("%sp%d", OutboxProducerPrefix, shardID),
 		log:        log,
+		metrics:    metrics,
 		wake:       make(chan struct{}, 1),
 		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
@@ -194,6 +197,9 @@ func (o *OutboxService) Run(ctx context.Context) error {
 			}
 			if errors.Is(err, context.Canceled) {
 				return ctx.Err()
+			}
+			if o.metrics != nil {
+				o.metrics.OutboxDispatchFailures.Inc()
 			}
 			o.log.Warn("outbox: dispatch failed; re-queueing",
 				"seq", row.Seq, "dest_shard", destShard, "same_shard", sameShard, "err", err)

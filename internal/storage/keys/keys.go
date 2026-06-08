@@ -589,7 +589,7 @@ func msgSubDigest(instancePk uint64, service, instanceKey, nodeID string) []byte
 func MessageSubscriptionPrefix() []byte { return []byte(msgSubPrefix) }
 
 // MessageSubscriptionKey returns msgsub/<lp:4><corr_digest:32><sub_digest:32>.
-// lp MUST be LPFromPartitionKey(PartitionKey(tenant, messageName,
+// lp MUST be LPFromPartitionKey(PartitionKey(messageName,
 // correlationKey)) — the message routing key, not the instance's own pk — so the
 // writer (actuate / cross-shard re-inject) and the reader (DeliverProcessMessage
 // scan) land on the same row. The two fixed-width sha256 segments keep the

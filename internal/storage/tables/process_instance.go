@@ -47,7 +47,7 @@ func (t ProcessInstanceTable) Delete(b storage.Batch, lp uint32, service, instan
 }
 
 // ScanAll iterates every persisted process instance in key order, decoding the
-// (service, instance_key) from each key. The instance's banded partition_key is
+// (service, instance_key) from each key. The instance's partition_key is
 // available on rec.root_id. Used by the leader-gain resume to re-drive
 // in-flight turns. Aborts early (returning ctx.Err()) on cancellation.
 func (t ProcessInstanceTable) ScanAll(ctx context.Context, fn func(service, instanceKey string, rec *enginev1.ProcessInstanceRecord) error) error {

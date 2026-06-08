@@ -265,7 +265,7 @@ type IssuedInvocation struct {
 }
 
 // randomObjectKey spreads invocations across partitions while keeping them in
-// LPs below FirstTenantedLP — the region the chain-transfer driver's high-LP
+// LPs below TransferRegionLP — the region the chain-transfer driver's high-LP
 // targets stay clear of, so live traffic never routes to an LP mid-transfer (the
 // in-process loadgen host routes statically; see transfer.go). Rejection-samples
 // free-form keys until the (service, key) hash lands in the low region, so the
@@ -275,7 +275,7 @@ func randomObjectKey(service string) string {
 	for {
 		_, _ = rand.Read(b[:])
 		key := fmt.Sprintf("k%x", b[:])
-		if keys.LPFromPartitionKey(routing.PartitionKey(service, key)) < FirstTenantedLP {
+		if keys.LPFromPartitionKey(routing.PartitionKey(service, key)) < TransferRegionLP {
 			return key
 		}
 	}

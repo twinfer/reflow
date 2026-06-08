@@ -463,8 +463,8 @@ type IngressConfig struct {
 // the vendor signature (via the pkg/webhook verifier named Provider),
 // then submits an invocation of Service/Handler with the verified body
 // as input. The route authenticates by signature — it is mounted
-// outside the mesh auth/authz chain and submits on the untenanted band
-// (band 0). The verifier metadata + a best-effort idempotency key ride
+// outside the mesh auth/authz chain and submits directly to the invoker.
+// The verifier metadata + a best-effort idempotency key ride
 // through to the handler. See pkg/reflw/webhook.go.
 type WebhookConfig struct {
 	// Provider selects the registered verifier ("stripe", "github",

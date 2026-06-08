@@ -52,6 +52,20 @@ func (a *Adapter) advanceCMMN(in invoker.ProcessAdvanceInput) (*enginev1.Process
 		if eerr != nil {
 			return nil, eerr
 		}
+		if node, ok := heldNodeForSuspended(state, ev); ok {
+			// The targeted item is Suspended; CMMN §7.6.1 requires the host to defer
+			// its completion until ManualResume. Decline to advance (state unchanged)
+			// and emit a hold so the apply path buffers this event in proc_held and
+			// replays it on resume — feeding it now fires triggerComplete/triggerFault,
+			// which PISuspended rejects, failing the whole case.
+			return &enginev1.ProcessAdvanced{
+				Pk:            in.Pk,
+				Service:       in.Service,
+				InstanceKey:   in.InstanceKey,
+				NewState:      rec.GetStateBlob(),
+				HoldEventNode: node,
+			}, nil
+		}
 		var aerr error
 		cmds, state, aerr = eng.Advance(state, ev)
 		if aerr != nil {
@@ -223,10 +237,17 @@ func (a *Adapter) translateCMMN(in invoker.ProcessAdvanceInput, cmds []cmmn.Comm
 			// arriving as an external ProcessEvent{task_completed} that eventForCMMN
 			// turns back into cmmn.TaskCompleted. Nothing to actuate now (same shape
 			// as the user/event-listener kinds in translateCMMNRunTask).
-		case cmmn.SuspendTask, cmmn.ResumeTask:
-			// Best-effort: the durable engine has no pause primitive, so a suspend /
-			// resume of a previously-issued Run*Task is a no-op here (mirrors
-			// cmmnhost runner.go). The engine still tracks lifecycle state.
+		case cmmn.SuspendTask:
+			// The engine moved an active item to PISuspended. Nothing to dispatch:
+			// the host's CMMN §7.6.1 obligation is to DEFER this node's completion
+			// until resume, which advanceCMMN does by buffering the inbox event —
+			// keyed off the engine's own PISuspended state, not a separate flag, so
+			// SuspendTask itself needs no instruction here.
+		case cmmn.ResumeTask:
+			// The item is Active again; release any completion buffered while it was
+			// suspended so the apply path replays it as a fresh turn. A no-op in the
+			// apply path when nothing was buffered (resumed before the task returned).
+			adv.ReleaseHeldNode = append(adv.ReleaseHeldNode, t.PlanItemID)
 		case cmmn.CancelTask:
 			// An exit criterion / stage termination exited an active plan item this
 			// turn. Tear down whatever it had in flight — a service-task invocation
@@ -338,6 +359,33 @@ func cmmnTaskRef(t cmmn.RunTask) (string, error) {
 		return "", fmt.Errorf("processengine: task %q names no capability (set <capability ref=\"ns:op\"/>)", t.PlanItemID)
 	}
 	return cfg.Capability.Ref, nil
+}
+
+// heldNodeForSuspended reports the plan item a completion-class event targets
+// when that item is currently Suspended — the events CMMN §7.6.1 requires the
+// host to defer until ManualResume. Feeding them to the engine fires
+// triggerComplete / triggerFault, which PISuspended rejects (cmmn/fsm.go
+// OnUnhandledTrigger), failing the case. Control events (resume / suspend /
+// terminate / reactivate) are never held — they are how suspension is lifted or
+// changed. Returns ("", false) when the event is not a completion or its target
+// is not suspended.
+func heldNodeForSuspended(state *cmmn.CaseState, ev cmmn.EngineEvent) (string, bool) {
+	if state == nil {
+		return "", false
+	}
+	var node string
+	switch e := ev.(type) {
+	case cmmn.TaskCompleted:
+		node = e.PlanItemID
+	case cmmn.TaskFailed:
+		node = e.PlanItemID
+	default:
+		return "", false
+	}
+	if node != "" && state.Items[node] == cmmn.PISuspended {
+		return node, true
+	}
+	return "", false
 }
 
 // decodeCMMNExternalEvent reconstructs a typed cmmn.EngineEvent from an external

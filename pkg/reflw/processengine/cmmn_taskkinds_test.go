@@ -198,40 +198,76 @@ func TestAdvanceCMMN_ExitCriterionEmitsCancelInvoke(t *testing.T) {
 	}
 }
 
-// TestAdvanceCMMN_SuspendResumeNoOp: ManualSuspend/ManualResume on an active task
-// emit SuspendTask/ResumeTask, which used to hit the outer default → CaseFailed.
-// They are now tolerated no-ops; the case stays alive.
-func TestAdvanceCMMN_SuspendResumeNoOp(t *testing.T) {
+// TestAdvanceCMMN_SuspendBuffersCompletionUntilResume: a blocking task suspended
+// mid-flight then completing used to crash the case (PISuspended rejects
+// triggerComplete → CaseFailed). The adapter now honors the CMMN §7.6.1 host
+// contract: a completion for a Suspended item is held (HoldEventNode, no advance,
+// state unchanged), resume emits ReleaseHeldNode, and replaying the completion
+// then finishes the case.
+func TestAdvanceCMMN_SuspendBuffersCompletionUntilResume(t *testing.T) {
 	a := New(mustCMMNResolver(t, "echocase", echoCaseCMMN))
 
 	start, err := a.Advance(context.Background(), cmmnStartInput("echocase", nil, 1000))
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-
-	suspend := invoker.ProcessAdvanceInput{
-		Pk: 0, Service: "echocase", InstanceKey: "i1",
-		Record: cmmnRecord("echocase", start.GetNewState()),
-		Entry:  &enginev1.ProcessInboxEntry{Payload: cmmnExtPayload(t, "ManualSuspend", map[string]any{"PlanItemID": "pi1"}), LogicalTimeMs: 2000},
-	}
-	sAdv, err := a.Advance(context.Background(), suspend)
-	if err != nil {
-		t.Fatalf("ManualSuspend must not error (SuspendTask is a no-op): %v", err)
-	}
-	if sAdv.GetTerminal().GetFailed() {
-		t.Fatalf("ManualSuspend must not fail the case; got %+v", sAdv.GetTerminal())
+	if len(start.GetInvoke()) != 1 {
+		t.Fatalf("want 1 dispatched task, got %d", len(start.GetInvoke()))
 	}
 
-	resume := invoker.ProcessAdvanceInput{
-		Pk: 0, Service: "echocase", InstanceKey: "i1",
-		Record: cmmnRecord("echocase", sAdv.GetNewState()),
-		Entry:  &enginev1.ProcessInboxEntry{Payload: cmmnExtPayload(t, "ManualResume", map[string]any{"PlanItemID": "pi1"}), LogicalTimeMs: 3000},
-	}
-	rAdv, err := a.Advance(context.Background(), resume)
+	// Suspend the in-flight task: pi1 → PISuspended. SuspendTask itself emits no
+	// hold/release — the buffering keys off the engine's PISuspended state.
+	sAdv, err := a.Advance(context.Background(), cmmnContinue("echocase", start.GetNewState(),
+		cmmnExtPayload(t, "ManualSuspend", map[string]any{"PlanItemID": "pi1"}), 2000))
 	if err != nil {
-		t.Fatalf("ManualResume must not error (ResumeTask is a no-op): %v", err)
+		t.Fatalf("ManualSuspend must not error: %v", err)
 	}
-	if rAdv.GetTerminal().GetFailed() {
-		t.Fatalf("ManualResume must not fail the case; got %+v", rAdv.GetTerminal())
+	if sAdv.GetHoldEventNode() != "" || len(sAdv.GetReleaseHeldNode()) != 0 {
+		t.Fatalf("suspend emits no hold/release; got hold=%q release=%v", sAdv.GetHoldEventNode(), sAdv.GetReleaseHeldNode())
+	}
+
+	// The task completes WHILE suspended: buffer it, don't advance.
+	hAdv, err := a.Advance(context.Background(), cmmnContinue("echocase", sAdv.GetNewState(),
+		taskCompletedPayload("pi1", []byte(`{"ok":true}`)), 3000))
+	if err != nil {
+		t.Fatalf("completion-while-suspended must not error (was CaseFailed): %v", err)
+	}
+	if hAdv.GetHoldEventNode() != "pi1" {
+		t.Fatalf("want HoldEventNode=pi1, got %q", hAdv.GetHoldEventNode())
+	}
+	if hAdv.GetTerminal() != nil {
+		t.Fatalf("held completion must not terminate the case, got %+v", hAdv.GetTerminal())
+	}
+	if len(hAdv.GetInvoke()) != 0 {
+		t.Fatalf("held completion must not dispatch, got %d invokes", len(hAdv.GetInvoke()))
+	}
+	if string(hAdv.GetNewState()) != string(sAdv.GetNewState()) {
+		t.Fatal("hold must leave case state unchanged (engine not advanced)")
+	}
+
+	// Resume: pi1 → PIActive, ResumeTask → ReleaseHeldNode.
+	rAdv, err := a.Advance(context.Background(), cmmnContinue("echocase", sAdv.GetNewState(),
+		cmmnExtPayload(t, "ManualResume", map[string]any{"PlanItemID": "pi1"}), 4000))
+	if err != nil {
+		t.Fatalf("ManualResume must not error: %v", err)
+	}
+	released := false
+	for _, n := range rAdv.GetReleaseHeldNode() {
+		if n == "pi1" {
+			released = true
+		}
+	}
+	if !released {
+		t.Fatalf("resume must release the buffered node; got %v", rAdv.GetReleaseHeldNode())
+	}
+
+	// Replay the buffered completion now that pi1 is Active again → case completes.
+	done, err := a.Advance(context.Background(), cmmnContinue("echocase", rAdv.GetNewState(),
+		taskCompletedPayload("pi1", []byte(`{"ok":true}`)), 5000))
+	if err != nil {
+		t.Fatalf("replayed completion: %v", err)
+	}
+	if done.GetTerminal() == nil || done.GetTerminal().GetFailed() {
+		t.Fatalf("want successful terminal after resume+replay, got %+v", done.GetTerminal())
 	}
 }

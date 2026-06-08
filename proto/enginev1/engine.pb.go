@@ -8047,10 +8047,19 @@ type ProcessAdvanced struct {
 	// genuine uncaught failure (a non-escalation bpmn.ProcessFailed / cmmn.CaseFailed).
 	// The apply path parks the instance non-terminally (PROCESS_STATUS_INCIDENT,
 	// retaining new_state) instead of finishing it, awaiting ResolveProcessIncident.
-	Incident      *ProcessIncident `protobuf:"bytes,12,opt,name=incident,proto3" json:"incident,omitempty"`
-	CancelInvoke  []*InvokeCancel  `protobuf:"bytes,13,rep,name=cancel_invoke,json=cancelInvoke,proto3" json:"cancel_invoke,omitempty"` // -> silent by-id cancel of a node's in-flight task / child (CancelTask)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Incident     *ProcessIncident `protobuf:"bytes,12,opt,name=incident,proto3" json:"incident,omitempty"`
+	CancelInvoke []*InvokeCancel  `protobuf:"bytes,13,rep,name=cancel_invoke,json=cancelInvoke,proto3" json:"cancel_invoke,omitempty"` // -> silent by-id cancel of a node's in-flight task / child (CancelTask)
+	// CMMN suspend completion-buffering (§7.6.1). The host must defer a suspended
+	// item's completion until ManualResume, so the adapter declines to advance the
+	// engine and instead sets hold_event_node: the apply path stashes the active
+	// inbox entry under (instance, node) (proc_held) and dequeues it normally. On
+	// resume the engine emits ResumeTask, translated to release_held_node, and the
+	// apply path replays the stashed entry as a fresh turn. hold_event_node rides a
+	// no-advance turn (new_state unchanged); release_held_node rides the resume turn.
+	HoldEventNode   string   `protobuf:"bytes,14,opt,name=hold_event_node,json=holdEventNode,proto3" json:"hold_event_node,omitempty"`
+	ReleaseHeldNode []string `protobuf:"bytes,15,rep,name=release_held_node,json=releaseHeldNode,proto3" json:"release_held_node,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ProcessAdvanced) Reset() {
@@ -8170,6 +8179,20 @@ func (x *ProcessAdvanced) GetIncident() *ProcessIncident {
 func (x *ProcessAdvanced) GetCancelInvoke() []*InvokeCancel {
 	if x != nil {
 		return x.CancelInvoke
+	}
+	return nil
+}
+
+func (x *ProcessAdvanced) GetHoldEventNode() string {
+	if x != nil {
+		return x.HoldEventNode
+	}
+	return ""
+}
+
+func (x *ProcessAdvanced) GetReleaseHeldNode() []string {
+	if x != nil {
+		return x.ReleaseHeldNode
 	}
 	return nil
 }
@@ -13281,7 +13304,7 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12!\n" +
 	"\finstance_key\x18\x02 \x01(\tR\vinstanceKey\x12\x17\n" +
 	"\anode_id\x18\x03 \x01(\tR\x06nodeId\x12\x12\n" +
-	"\x04slot\x18\x04 \x01(\rR\x04slot\"\xad\x05\n" +
+	"\x04slot\x18\x04 \x01(\rR\x04slot\"\x81\x06\n" +
 	"\x0fProcessAdvanced\x12\x0e\n" +
 	"\x02pk\x18\x01 \x01(\x06R\x02pk\x12\x18\n" +
 	"\aservice\x18\x02 \x01(\tR\aservice\x12!\n" +
@@ -13297,7 +13320,9 @@ const file_enginev1_engine_proto_rawDesc = "" +
 	" \x01(\v2 .reflw.engine.v1.ProcessTerminalR\bterminal\x12D\n" +
 	"\vunsubscribe\x18\v \x03(\v2\".reflw.engine.v1.SignalUnsubscribeR\vunsubscribe\x12<\n" +
 	"\bincident\x18\f \x01(\v2 .reflw.engine.v1.ProcessIncidentR\bincident\x12B\n" +
-	"\rcancel_invoke\x18\r \x03(\v2\x1d.reflw.engine.v1.InvokeCancelR\fcancelInvoke\"b\n" +
+	"\rcancel_invoke\x18\r \x03(\v2\x1d.reflw.engine.v1.InvokeCancelR\fcancelInvoke\x12&\n" +
+	"\x0fhold_event_node\x18\x0e \x01(\tR\rholdEventNode\x12*\n" +
+	"\x11release_held_node\x18\x0f \x03(\tR\x0freleaseHeldNode\"b\n" +
 	"\x0fProcessIncident\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x14\n" +
 	"\x05cause\x18\x02 \x01(\tR\x05cause\x12 \n" +

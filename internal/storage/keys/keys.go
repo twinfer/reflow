@@ -123,6 +123,7 @@ const (
 	procChildIdxPrefix   = "proc_child_idx/"
 	procTimerIdxPrefix   = "proc_timer_idx/"
 	procInvokeIdxPrefix  = "proc_invoke_idx/"
+	procHeldPrefix       = "proc_held/"
 	procHistPrefix       = "proc_hist/"
 	lpFreezePrefix       = "lp_freeze/"
 	lpStagingPrefix      = "lp_staging/"
@@ -1138,6 +1139,44 @@ func ProcessInvokeIndexInstancePrefix(root *enginev1.InvocationId) ([]byte, erro
 func ProcessInvokeIndexLPPrefix(lp uint32) []byte {
 	out := make([]byte, 0, len(procInvokeIdxPrefix)+LPLen)
 	out = append(out, procInvokeIdxPrefix...)
+	return appendLP(out, lp)
+}
+
+// ProcessHeldKey returns proc_held/<lp:4><24B instance root><node> — the buffer
+// for a completion deferred while its plan item is Suspended (CMMN §7.6.1). One
+// row per (instance, node); the node id is the trailing variable-width component
+// (last, so no '/' aliasing) and the value is the verbatim ProcessInboxEntry,
+// replayed into the inbox on ResumeTask. The fixed-width 24B root keys by
+// instance so a parent prefix never aliases its '/'-namespaced children.
+func ProcessHeldKey(root *enginev1.InvocationId, node string) ([]byte, error) {
+	prefix, err := ProcessHeldInstancePrefix(root)
+	if err != nil {
+		return nil, err
+	}
+	return append(prefix, node...), nil
+}
+
+// ProcessHeldInstancePrefix returns proc_held/<lp:4><24B instance root> — the
+// bounded scan / range-delete prefix for every completion an instance has
+// buffered while suspended. Pair with PrefixUpperBound.
+func ProcessHeldInstancePrefix(root *enginev1.InvocationId) ([]byte, error) {
+	raw, err := EncodeInvocationID(root)
+	if err != nil {
+		return nil, err
+	}
+	lp := LPFromPartitionKey(root.GetPartitionKey())
+	out := make([]byte, 0, len(procHeldPrefix)+LPLen+invocationIDLen+8)
+	out = append(out, procHeldPrefix...)
+	out = appendLP(out, lp)
+	return append(out, raw...), nil
+}
+
+// ProcessHeldLPPrefix returns proc_held/<lp:4> — the per-LP scan bound so a
+// suspended instance's buffered completions ride the LP-transfer scan + source
+// range-delete alongside the instance. Registered in AllLPNamespaces.
+func ProcessHeldLPPrefix(lp uint32) []byte {
+	out := make([]byte, 0, len(procHeldPrefix)+LPLen)
+	out = append(out, procHeldPrefix...)
 	return appendLP(out, lp)
 }
 

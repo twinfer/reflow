@@ -1311,6 +1311,15 @@ message ProcessAdvanced {
   // retaining new_state) instead of finishing it, awaiting ResolveProcessIncident.
   ProcessIncident incident = 12;
   repeated InvokeCancel cancel_invoke = 13; // -> silent by-id cancel of a node's in-flight task / child (CancelTask)
+  // CMMN suspend completion-buffering (§7.6.1). The host must defer a suspended
+  // item's completion until ManualResume, so the adapter declines to advance the
+  // engine and instead sets hold_event_node: the apply path stashes the active
+  // inbox entry under (instance, node) (proc_held) and dequeues it normally. On
+  // resume the engine emits ResumeTask, translated to release_held_node, and the
+  // apply path replays the stashed entry as a fresh turn. hold_event_node rides a
+  // no-advance turn (new_state unchanged); release_held_node rides the resume turn.
+  string hold_event_node = 14;
+  repeated string release_held_node = 15;
 }
 
 // ProcessIncident is a parked uncaught failure on a running instance — the

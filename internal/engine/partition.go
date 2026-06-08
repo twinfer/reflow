@@ -1153,6 +1153,24 @@ func (p *Partition) onProcessAdvanced(batch storage.Batch, meta *enginev1.Partit
 
 	rec.StateBlob = adv.GetNewState()
 
+	// CMMN suspend completion-buffering (§7.6.1): the adapter found this turn's
+	// event targets a Suspended node and declined to advance the engine (new_state
+	// unchanged). Stash the active inbox entry under (instance, node) so the
+	// ResumeTask turn can replay it; the dequeue below then removes it from the
+	// live queue. outstanding is untouched — the feedback already balanced it at
+	// enqueue (enqueueInstanceEvent), independent of the buffering.
+	if node := adv.GetHoldEventNode(); node != "" {
+		entry, eok, eerr := inboxT.Get(lp, service, instanceKey, active)
+		if eerr != nil {
+			return fmt.Errorf("onProcessAdvanced: load held inbox: %w", eerr)
+		}
+		if eok {
+			if err := (tables.ProcessHeldTable{S: batch}).Put(batch, rec.GetRootId(), node, entry); err != nil {
+				return fmt.Errorf("onProcessAdvanced: held put: %w", err)
+			}
+		}
+	}
+
 	// Dequeue the completed turn.
 	if err := inboxT.Delete(batch, lp, service, instanceKey, active); err != nil {
 		return fmt.Errorf("onProcessAdvanced: inbox delete: %w", err)
@@ -1339,6 +1357,13 @@ func (p *Partition) finishProcessInstance(batch storage.Batch, meta *enginev1.Pa
 	// tasks mid-flight (terminate-end / escalation / CaseFailed / operator TERMINATE).
 	if err := p.teardownInstanceInvocations(batch, meta, root, nowMs, isLeader); err != nil {
 		return err
+	}
+
+	// Drop any completions buffered while a node was suspended (terminate /
+	// exit-criterion fired on a still-suspended item). A normal completion leaves
+	// the buffer empty.
+	if err := (tables.ProcessHeldTable{S: batch}).DeleteByInstance(batch, root); err != nil {
+		return fmt.Errorf("finishProcessInstance: held delete: %w", err)
 	}
 
 	// Stamp terminal state on the record (the caller already set state_blob).
@@ -1628,6 +1653,9 @@ func (p *Partition) cancelInstanceTree(batch storage.Batch, meta *enginev1.Parti
 		if err := inboxT.Delete(batch, lp, service, instanceKey, seq); err != nil {
 			return fmt.Errorf("cancelInstanceTree: inbox delete: %w", err)
 		}
+	}
+	if err := (tables.ProcessHeldTable{S: batch}).DeleteByInstance(batch, root); err != nil {
+		return fmt.Errorf("cancelInstanceTree: held delete: %w", err)
 	}
 	if err := (tables.ProcessHistoryTable{S: batch}).DeleteInstance(batch, root); err != nil {
 		return fmt.Errorf("cancelInstanceTree: history delete: %w", err)
@@ -1962,6 +1990,38 @@ func (p *Partition) actuateProcessInstructions(batch storage.Batch, meta *engine
 			}
 		}
 		rec.Outstanding = satSubU32(rec.Outstanding, canceled)
+	}
+
+	// Replay completions buffered while a node was suspended (CMMN ResumeTask):
+	// the item is Active again, so its held event re-enters the inbox as a fresh
+	// turn. Appended at next_seq directly (NOT via enqueueInstanceEvent) so the
+	// feedback-decrement and inbound-history append are not re-applied — the event
+	// already balanced outstanding and recorded its timeline row when it first
+	// landed. onProcessAdvanced's cursor-advance activates the newly appended seq.
+	if len(adv.GetReleaseHeldNode()) > 0 {
+		heldT := tables.ProcessHeldTable{S: batch}
+		inboxT := tables.ProcessInboxTable{S: batch}
+		lp := keys.LPFromPartitionKey(pk)
+		for _, node := range adv.GetReleaseHeldNode() {
+			entry, ok, err := heldT.Get(root, node)
+			if err != nil {
+				return fmt.Errorf("actuateProcessInstructions: held get: %w", err)
+			}
+			if !ok {
+				continue // resumed before the task completed — nothing buffered
+			}
+			seq := rec.GetNextSeq()
+			if seq == 0 {
+				seq = 1
+			}
+			rec.NextSeq = seq + 1
+			if err := inboxT.Append(batch, lp, service, instanceKey, seq, entry); err != nil {
+				return fmt.Errorf("actuateProcessInstructions: held replay append: %w", err)
+			}
+			if err := heldT.Delete(batch, root, node); err != nil {
+				return fmt.Errorf("actuateProcessInstructions: held delete: %w", err)
+			}
+		}
 	}
 
 	for _, cs := range adv.GetStartChild() {

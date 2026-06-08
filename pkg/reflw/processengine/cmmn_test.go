@@ -41,6 +41,16 @@ func cmmnStartInput(name string, vars []byte, logical uint64) invoker.ProcessAdv
 	}
 }
 
+// cmmnContinue builds a continuation turn (non-start) for instance i1 of name,
+// carrying payload against the prior turn's state blob.
+func cmmnContinue(name string, stateBlob []byte, payload *enginev1.ProcessEventPayload, logical uint64) invoker.ProcessAdvanceInput {
+	return invoker.ProcessAdvanceInput{
+		Pk: 0, Service: name, InstanceKey: "i1",
+		Record: cmmnRecord(name, stateBlob),
+		Entry:  &enginev1.ProcessInboxEntry{Payload: payload, LogicalTimeMs: logical},
+	}
+}
+
 func mustCMMNResolver(t *testing.T, name, xml string) *MapResolver {
 	t.Helper()
 	r := NewMapResolver()

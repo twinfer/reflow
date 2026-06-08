@@ -49,5 +49,6 @@ var AllLPNamespaces = []LPNamespace{
 	{"proc_child_idx", ProcessChildIndexLPPrefix},
 	{"proc_timer_idx", ProcessTimerIndexLPPrefix},
 	{"proc_invoke_idx", ProcessInvokeIndexLPPrefix},
+	{"proc_held", ProcessHeldLPPrefix},
 	{"msgsub", MessageSubscriptionLPPrefix},
 }

@@ -29,12 +29,14 @@ type Host struct {
 	deliveryCreds  *creds.ListenerCreds
 	adminSrv       *connectserver.Server
 	adminCreds     *creds.ListenerCreds
-	bootstrapSrv   *connectserver.Server
-	bootstrapCreds *creds.ListenerCreds
-	authCloser     func() error
-	snapshotCxl    context.CancelFunc
-	snapshotRepo   *snapshot.BlobRepository
-	handlerSigner  *creds.Signer
+	// nodeIdentity is the self-issued mesh identity shared by the admin +
+	// delivery listeners (built in Run when a cluster CA is configured).
+	// nil for single-node / non-mesh deployments. Closed in Close.
+	nodeIdentity  *creds.NodeIdentity
+	authCloser    func() error
+	snapshotCxl   context.CancelFunc
+	snapshotRepo  *snapshot.BlobRepository
+	handlerSigner *creds.Signer
 	// pebbleCache / pebbleFileCache are the node-global Pebble caches
 	// shared across every shard DB (built in Run). Close Unrefs them
 	// after the engine closes its DBs — see Close.
@@ -64,12 +66,6 @@ func (h *Host) Close() error {
 			firstErr = err
 		}
 		h.snapshotRepo = nil
-	}
-	if h.bootstrapSrv != nil {
-		if err := h.bootstrapSrv.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		h.bootstrapSrv = nil
 	}
 	if h.adminSrv != nil {
 		if err := h.adminSrv.Close(); err != nil && firstErr == nil {
@@ -113,13 +109,21 @@ func (h *Host) Close() error {
 		}
 		h.authCloser = nil
 	}
-	if err := creds.CloseAll(h.deliveryCreds, h.adminCreds, h.bootstrapCreds, h.ingressCreds); err != nil && firstErr == nil {
+	if err := creds.CloseAll(h.deliveryCreds, h.adminCreds, h.ingressCreds); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	h.deliveryCreds = nil
 	h.adminCreds = nil
-	h.bootstrapCreds = nil
 	h.ingressCreds = nil
+	// nodeIdentity owns the CertMagic Manager shared by the mesh
+	// listeners (their ListenerCreds.Close is nil), so close it here after
+	// those listeners are down.
+	if h.nodeIdentity != nil {
+		if err := h.nodeIdentity.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		h.nodeIdentity = nil
+	}
 	if h.handlerSigner != nil {
 		h.handlerSigner.Close()
 		h.handlerSigner = nil

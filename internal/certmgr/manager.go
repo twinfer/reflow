@@ -1,12 +1,13 @@
 // Package certmgr is the cert-lifecycle layer for reflw's mesh leaves.
 // One Manager per node-process owns a certmagic.Cache + Config backed by
 // a per-node FileStorage tree (locked against concurrent processes), a
-// pluggable Issuer (the BuiltinIssuer wraps internal/pki today; PR 3+
-// will add a cluster-CA-backed issuer), and a deterministic
-// ECDSA-P256 KeyGenerator. After New, callers call ManageLeaf once to
-// obtain (or load) the leaf for this node's principal; TLSConfig
-// returns a *tls.Config whose GetCertificate delegates to the cache, so
-// rotations are picked up transparently on the next handshake.
+// pluggable Issuer (BuiltinIssuer signs leaves against a CA — loaded
+// from disk via LoadCA, or built from the config cluster CA + a
+// KMS-unwrapped CA signing key via ParseCA), and a deterministic ECDSA-P256
+// KeyGenerator. After New, callers call ManageLeaf once to obtain (or
+// load) the leaf for this node's principal; TLSConfig returns a
+// *tls.Config whose GetCertificate delegates to the cache, so rotations
+// are picked up transparently on the next handshake.
 //
 // CertMagic identifies certs by a "domain name" string that must pass
 // idna.ToASCII; reflw principals contain '/' which fails that check,

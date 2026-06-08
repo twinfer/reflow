@@ -89,37 +89,11 @@ service Config {
   rpc DeleteSecret(DeleteSecretRequest) returns (DeleteSecretResponse);
   rpc ListSecrets(ListSecretsRequest) returns (ListSecretsResponse);
 
-  // UpsertCARoot / DeleteCARoot / ListCARoots mirror the secret trio
-  // against shard 0's CARootTable. Each CARootRecord carries a CA
-  // cert (PEM) plus a pointer to the SecretTable row holding the
-  // AEAD-wrapped signing key. The signing key never traverses Raft.
-  // Per-node certmgr.ClusterIssuer fetches + decrypts via
-  // secretstore.LookupForCASigning at reconcile time. Leader-only for
-  // mutating calls; List is SyncRead.
-  rpc UpsertCARoot(UpsertCARootRequest) returns (UpsertCARootResponse);
-  rpc DeleteCARoot(DeleteCARootRequest) returns (DeleteCARootResponse);
-  rpc ListCARoots(ListCARootsRequest) returns (ListCARootsResponse);
-
-  // CreateJoinToken mints a one-time kubeadm-style joiner credential.
-  // The server generates a random plaintext, persists only its sha256
-  // hash + a JoinTokenRecord into shard 0's JoinTokenTable, and
-  // returns the plaintext to the operator exactly once. Subsequent
-  // List calls show only the hash. Operators redeem the plaintext via
-  // `reflwd run --join`. Leader-only.
-  rpc CreateJoinToken(CreateJoinTokenRequest) returns (CreateJoinTokenResponse);
-  // DeleteJoinToken removes a row by hex(token_hash) — surfaces in
-  // ListJoinTokens. Idempotent.
-  rpc DeleteJoinToken(DeleteJoinTokenRequest) returns (DeleteJoinTokenResponse);
-  // ListJoinTokens returns every JoinTokenRecord. SyncRead.
-  rpc ListJoinTokens(ListJoinTokensRequest) returns (ListJoinTokensResponse);
-
-  // IssueOperator mints an operator client cert against the active
-  // cluster CA. The operator generates the keypair locally, sends the
-  // CSR, and receives the signed leaf + CA chain. Authorization is via
-  // the existing operator/* policy gate; the in-server signer is the
-  // same ClusterIssuer the bootstrap listener uses. Leader-only.
-  // Replaces the deleted `reflwd pki issue-operator` flow.
-  rpc IssueOperator(IssueOperatorRequest) returns (IssueOperatorResponse);
+  // Cluster CA roots, join tokens, and operator-cert issuance were
+  // removed: the cluster CA is now config + KMS (public cert in config,
+  // KMS-wrapped key at a config blob URI), each node self-issues its
+  // mesh leaf, and `reflwd config {ca init,issue-operator}` are local
+  // CLI commands. No shard-0 CA/join-token RPCs remain.
 
   // UpsertClusterAuthzPolicy replaces shard 0's cluster-wide Cedar authz
   // policy text (PlatformConfigRecord). The server runs layer-1 schema
@@ -255,30 +229,6 @@ message ListSecretsResponse {
   uint64 table_revision = 2;
 }
 
-// UpsertCARootRequest carries one CARootRecord plus an optional CAS
-// guard. if_table_revision_eq=0 disables CAS.
-message UpsertCARootRequest {
-  reflw.engine.v1.CARootRecord record = 1;
-  uint64 if_table_revision_eq = 2;
-}
-message UpsertCARootResponse {
-  uint64 table_revision = 1;
-}
-
-message DeleteCARootRequest {
-  string name = 1;
-  uint64 if_table_revision_eq = 2;
-}
-message DeleteCARootResponse {
-  uint64 table_revision = 1;
-}
-
-message ListCARootsRequest {}
-message ListCARootsResponse {
-  repeated reflw.engine.v1.CARootRecord records = 1;
-  uint64 table_revision = 2;
-}
-
 // LeaderHint is attached as a connect.Error detail on
 // connect.CodeUnavailable returned by mutating Config RPCs when the
 // receiving node is not the metadata leader. Clients extract it, dial
@@ -287,70 +237,4 @@ message ListCARootsResponse {
 message LeaderHint {
   uint64 node_id = 1;
   string admin_endpoint = 2;
-}
-
-
-// CreateJoinTokenRequest configures a one-time bootstrap credential.
-//   - kind: NODE for a `reflwd run --join` flow, OPERATOR for
-//     `reflwd config issue-operator` (the operator generates the
-//     keypair locally and submits a CSR — same RPC, different path
-//     into the cluster).
-//   - requested_name: the CN-name segment the joiner will use. For
-//     node tokens, "auto" lets the bootstrap server allocate the
-//     next free node_id at redemption time. For operator tokens, the
-//     name is mandatory (operator-chosen, never "auto").
-//   - ttl_seconds: how long the token remains redeemable. The
-//     bootstrap server rejects with PermissionDenied once exceeded.
-//     Zero means no TTL (single_use is still enforced — once spent,
-//     the row stays in the table but cannot be redeemed again).
-//   - single_use: true (the default) marks the row as spent on the
-//     first successful MeshSign redemption. false produces a token
-//     that can be redeemed repeatedly until expiry — used sparingly
-//     for ephemeral CI scenarios.
-message CreateJoinTokenRequest {
-  reflw.engine.v1.JoinTokenKind kind = 1;
-  string requested_name = 2;
-  uint64 ttl_seconds = 3;
-  bool single_use = 4;
-}
-
-message CreateJoinTokenResponse {
-  // token is the plaintext credential the operator forwards to the
-  // joiner. Shown exactly once; the server persists only sha256(token).
-  string token = 1;
-  bytes token_hash = 2;
-  uint64 table_revision = 3;
-}
-
-message DeleteJoinTokenRequest {
-  // token_hash is the sha256(token) returned by ListJoinTokens.
-  bytes token_hash = 1;
-  uint64 if_table_revision_eq = 2;
-}
-message DeleteJoinTokenResponse {
-  uint64 table_revision = 1;
-}
-
-message ListJoinTokensRequest {}
-message ListJoinTokensResponse {
-  repeated reflw.engine.v1.JoinTokenRecord records = 1;
-  uint64 table_revision = 2;
-}
-
-// IssueOperatorRequest carries an operator-generated CSR. Replaces the
-// deleted `reflwd pki issue-operator` flow. The operator keypair never
-// leaves the operator's machine; the server signs only the public key.
-message IssueOperatorRequest {
-  // DER-encoded x509.CertificateRequest. Subject.CommonName must be
-  // "operator/<name>". validity is honored up to the server's
-  // configured ceiling (default 30 days; longer requests are clamped
-  // silently).
-  bytes csr_der = 1;
-  uint64 validity_seconds = 2;
-}
-
-message IssueOperatorResponse {
-  bytes cert_pem = 1;
-  bytes ca_chain_pem = 2;
-  string ca_fingerprint = 3;
 }

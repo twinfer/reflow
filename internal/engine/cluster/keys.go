@@ -29,15 +29,6 @@
 //	                                   autonomous rebalancer subtracts
 //	                                   drained shards from the planner's
 //	                                   input set)
-//	caroot/<name>                   -> CARootRecord (one row per
-//	                                   cluster CA root; "active" is
-//	                                   the conventional row name).
-//	jointoken/<hex token_hash>      -> JoinTokenRecord (kubeadm-style
-//	                                   one-time bootstrap credential;
-//	                                   plaintext only at create time,
-//	                                   persisted as sha256 hash; the
-//	                                   MeshSign apply path consumes
-//	                                   single_use=true rows atomically).
 //	tablerev/<table_name>           -> TableRevision singleton (CAS guard
 //	                                   for cluster-managed config tables;
 //	                                   separate top-level namespace so it
@@ -64,8 +55,6 @@ const (
 	lpOwnerPrefix         = "lpowner/"
 	lpTransferPrefix      = "lptransfer/"
 	rebalanceDrainPrefix  = "rebalance_drain/"
-	caRootPrefix          = "caroot/"
-	joinTokenPrefix       = "jointoken/"
 	tableRevisionPrefix   = "tablerev/"
 )
 
@@ -78,8 +67,6 @@ const (
 	RevisionTableLPOwners       = "lpowners"
 	RevisionTableLPTransfers    = "lptransfers"
 	RevisionTableRebalanceDrain = "rebalance_drain"
-	RevisionTableCARoot         = "caroot"
-	RevisionTableJoinToken      = "jointoken"
 	RevisionTablePlatformConfig = "platformconfig"
 	RevisionTableModel          = "model"
 )
@@ -154,36 +141,6 @@ func ModelKey(kind, name, version string) []byte {
 	out = append(out, name...)
 	out = append(out, 0x00)
 	return append(out, version...)
-}
-
-// CARootPrefix returns the caroot/ namespace prefix. Used for iteration.
-func CARootPrefix() []byte { return []byte(caRootPrefix) }
-
-// CARootKey returns caroot/<name>. The conventional row name is
-// "active"; rotation appends rows whose name encodes the rotation
-// epoch so the historical chain remains queryable.
-func CARootKey(name string) []byte {
-	out := make([]byte, 0, len(caRootPrefix)+len(name))
-	out = append(out, caRootPrefix...)
-	return append(out, name...)
-}
-
-// JoinTokenPrefix returns the jointoken/ namespace prefix. Used for
-// iteration; the bootstrap server scans this on each MeshSign call to
-// locate the redeemed token by its sha256 hash.
-func JoinTokenPrefix() []byte { return []byte(joinTokenPrefix) }
-
-// JoinTokenKey returns jointoken/<hex-token-hash>. The hex encoding
-// keeps the key printable for audit logs and avoids embedding raw
-// binary bytes in the Pebble key namespace.
-func JoinTokenKey(tokenHash []byte) []byte {
-	const hextab = "0123456789abcdef"
-	out := make([]byte, 0, len(joinTokenPrefix)+2*len(tokenHash))
-	out = append(out, joinTokenPrefix...)
-	for _, b := range tokenHash {
-		out = append(out, hextab[b>>4], hextab[b&0x0F])
-	}
-	return out
 }
 
 // LPOwnerPrefix returns the lpowner/ namespace prefix. Used for forward

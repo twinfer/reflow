@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -98,19 +99,19 @@ func LoadCA(certPath, keyPath string) (*CA, error) {
 	if err != nil {
 		return nil, fmt.Errorf("certmgr: read CA key: %w", err)
 	}
-	certBlock, _ := pem.Decode(certPEM)
-	if certBlock == nil {
-		return nil, errors.New("certmgr: CA cert is not PEM")
-	}
-	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	return ParseCA(certPEM, keyPEM)
+}
+
+// ParseCA builds a CA from PEM-encoded cert + EC private key bytes. The
+// cluster-CA startup path uses this: the cert is public config and the
+// key is freshly KMS-unwrapped from a config blob URI, so both arrive as
+// bytes rather than file paths.
+func ParseCA(certPEM, keyPEM []byte) (*CA, error) {
+	cert, err := parsePEMCertificate(certPEM)
 	if err != nil {
 		return nil, fmt.Errorf("certmgr: parse CA cert: %w", err)
 	}
-	keyBlock, _ := pem.Decode(keyPEM)
-	if keyBlock == nil {
-		return nil, errors.New("certmgr: CA key is not PEM")
-	}
-	priv, err := x509.ParseECPrivateKey(keyBlock.Bytes)
+	priv, err := parsePEMECPrivateKey(keyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("certmgr: parse CA key: %w", err)
 	}
@@ -232,4 +233,40 @@ func rolePrefix(k CALeafKind) (string, error) {
 	default:
 		return "", fmt.Errorf("certmgr: unknown leaf kind %d", k)
 	}
+}
+
+func parsePEMCertificate(pemBytes []byte) (*x509.Certificate, error) {
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, errors.New("not PEM")
+	}
+	return x509.ParseCertificate(block.Bytes)
+}
+
+func parsePEMECPrivateKey(pemBytes []byte) (*ecdsa.PrivateKey, error) {
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, errors.New("not PEM")
+	}
+	switch block.Type {
+	case "EC PRIVATE KEY":
+		return x509.ParseECPrivateKey(block.Bytes)
+	case "PRIVATE KEY":
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		ec, ok := key.(*ecdsa.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("not an ECDSA key: %T", key)
+		}
+		return ec, nil
+	default:
+		return nil, fmt.Errorf("unsupported PEM block %q", block.Type)
+	}
+}
+
+func randomSerial() (*big.Int, error) {
+	upper := new(big.Int).Lsh(big.NewInt(1), 128)
+	return rand.Int(rand.Reader, upper)
 }

@@ -173,18 +173,13 @@ Config (Config RPCs; app config; --admin can be ANY node):
   config list-secrets           List SecretRecords (no plaintext).
   config decrypt-secret         Decrypt a secret blob to stdout
                                 (operator self-verification only).
-  config ca init                Generate a cluster CA, KEK-wrap the key
-                                to a blob, and register both in shard 0
-                                (UpsertSecret then UpsertCARoot).
-  config ca list                List CARootTable rows (no signing keys).
-  config ca delete              Remove one CARootTable row by name.
-  config create-join-token      Mint a one-time bootstrap credential
-                                (--kind=node|operator). Prints the
-                                plaintext exactly once.
-  config list-join-tokens       List JoinTokenRecord rows (no plaintext).
-  config delete-join-token      Revoke a pending join token by --hash.
-  config issue-operator         Mint an operator client cert against the
-                                active cluster CA (--name=<operator>).
+  config ca init                Mint a cluster CA locally: KEK-wrap the
+                                signing key to a blob, write the public
+                                cert, and print the cluster_ca config
+                                block for every node. No cluster needed.
+  config issue-operator         Mint an operator client cert locally from
+                                the cluster CA (--name, --ca-cert-file,
+                                --key-blob-uri, --key-kek-uri).
 
 Maintenance (Ingress RPC; operator-only; --ingress targets a node hosting
 the invocation's shard):

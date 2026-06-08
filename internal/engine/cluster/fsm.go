@@ -58,8 +58,6 @@ type Notifiers struct {
 	LPOwnersTable       *TableNotifier
 	LPTransfersTable    *TableNotifier
 	RebalanceDrainTable *TableNotifier
-	CARootTable         *TableNotifier
-	JoinTokenTable      *TableNotifier
 	PlatformConfigTable *TableNotifier
 }
 
@@ -304,16 +302,6 @@ func (f *FSM) applyCommand(
 		return f.applyCompleteRebalanceStep(batch, k.CompleteRebalanceStep, raftIndex)
 	case *enginev1.Command_SetRebalanceDrain:
 		return f.applySetRebalanceDrain(batch, env, k.SetRebalanceDrain, raftIndex)
-	case *enginev1.Command_UpsertCaRoot:
-		return f.applyUpsertCARoot(batch, env, k.UpsertCaRoot, raftIndex)
-	case *enginev1.Command_DeleteCaRoot:
-		return f.applyDeleteCARoot(batch, env, k.DeleteCaRoot, raftIndex)
-	case *enginev1.Command_UpsertJoinToken:
-		return f.applyUpsertJoinToken(batch, env, k.UpsertJoinToken, raftIndex)
-	case *enginev1.Command_ConsumeJoinToken:
-		return f.applyConsumeJoinToken(batch, env, k.ConsumeJoinToken, raftIndex)
-	case *enginev1.Command_DeleteJoinToken:
-		return f.applyDeleteJoinToken(batch, env, k.DeleteJoinToken, raftIndex)
 	case nil:
 		f.cfg.Log.Warn("cluster: envelope has no command kind", "raft_index", raftIndex)
 		return &applyResult{}, nil
@@ -630,195 +618,6 @@ func (f *FSM) applyDeleteModel(
 		return nil, fmt.Errorf("cluster: bump model revision: %w", err)
 	}
 	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.ModelTable}}, nil
-}
-
-// applyUpsertCARoot writes the CARootRecord and bumps the table
-// revision. CAS + notifier semantics mirror the secret arm. The signing
-// key referenced by record.key_secret_name is not validated on the
-// apply path; per-node ClusterIssuer Reconcilers surface missing-key
-// failures via secretstore metrics and preserve their in-memory active
-// CA snapshot.
-func (f *FSM) applyUpsertCARoot(
-	batch storage.Batch,
-	env *enginev1.Envelope,
-	cmd *enginev1.UpsertCARoot,
-	raftIndex uint64,
-) (*applyResult, error) {
-	rec := cmd.GetRecord()
-	if rec == nil || rec.GetName() == "" {
-		f.cfg.Log.Warn("cluster: UpsertCARoot missing record or name; ignoring",
-			"raft_index", raftIndex)
-		return &applyResult{}, nil
-	}
-	ok, err := f.checkPrecondition(batch, env, RevisionTableCARoot)
-	if err != nil {
-		return nil, fmt.Errorf("cluster: load caroot revision: %w", err)
-	}
-	if !ok {
-		return nil, nil
-	}
-	if err := (CARootTable{S: batch}).Put(batch, rec); err != nil {
-		return nil, fmt.Errorf("cluster: write caroot: %w", err)
-	}
-	nowMs := env.GetHeader().GetCreatedAtMs()
-	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableCARoot, nowMs); err != nil {
-		return nil, fmt.Errorf("cluster: bump caroot revision: %w", err)
-	}
-	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.CARootTable}}, nil
-}
-
-// applyDeleteCARoot removes the named row (no-op if absent) and bumps
-// the table revision. Same CAS semantics as Upsert. Deleting the active
-// CA breaks renewal on the next pass; the operator-facing CLI gates on
-// --force in its higher layer.
-func (f *FSM) applyDeleteCARoot(
-	batch storage.Batch,
-	env *enginev1.Envelope,
-	cmd *enginev1.DeleteCARoot,
-	raftIndex uint64,
-) (*applyResult, error) {
-	name := cmd.GetName()
-	if name == "" {
-		f.cfg.Log.Warn("cluster: DeleteCARoot missing name; ignoring",
-			"raft_index", raftIndex)
-		return &applyResult{}, nil
-	}
-	ok, err := f.checkPrecondition(batch, env, RevisionTableCARoot)
-	if err != nil {
-		return nil, fmt.Errorf("cluster: load caroot revision: %w", err)
-	}
-	if !ok {
-		return nil, nil
-	}
-	if err := (CARootTable{S: batch}).Delete(batch, name); err != nil {
-		return nil, fmt.Errorf("cluster: delete caroot: %w", err)
-	}
-	nowMs := env.GetHeader().GetCreatedAtMs()
-	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableCARoot, nowMs); err != nil {
-		return nil, fmt.Errorf("cluster: bump caroot revision: %w", err)
-	}
-	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.CARootTable}}, nil
-}
-
-// applyUpsertJoinToken writes the JoinTokenRecord and bumps the table
-// revision. CAS + notifier semantics mirror the CARoot arm. The token
-// plaintext never traverses the FSM; the proposer ships sha256 already.
-func (f *FSM) applyUpsertJoinToken(
-	batch storage.Batch,
-	env *enginev1.Envelope,
-	cmd *enginev1.UpsertJoinToken,
-	raftIndex uint64,
-) (*applyResult, error) {
-	rec := cmd.GetRecord()
-	if rec == nil || len(rec.GetTokenHash()) == 0 {
-		f.cfg.Log.Warn("cluster: UpsertJoinToken missing record or token_hash; ignoring",
-			"raft_index", raftIndex)
-		return &applyResult{}, nil
-	}
-	ok, err := f.checkPrecondition(batch, env, RevisionTableJoinToken)
-	if err != nil {
-		return nil, fmt.Errorf("cluster: load jointoken revision: %w", err)
-	}
-	if !ok {
-		return nil, nil
-	}
-	if err := (JoinTokenTable{S: batch}).Put(batch, rec); err != nil {
-		return nil, fmt.Errorf("cluster: write jointoken: %w", err)
-	}
-	nowMs := env.GetHeader().GetCreatedAtMs()
-	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableJoinToken, nowMs); err != nil {
-		return nil, fmt.Errorf("cluster: bump jointoken revision: %w", err)
-	}
-	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.JoinTokenTable}}, nil
-}
-
-// applyConsumeJoinToken atomically marks a single_use token as consumed.
-// Beyond the standard CAS guard on Envelope.precondition, the apply arm
-// also rejects (via the same ResultValueFailedPrecondition sentinel) when
-// the row is absent, already used, or expired — so the bootstrap server's
-// SignCSR call can treat the proposer's success as proof that the token
-// was both valid and is now spent.
-func (f *FSM) applyConsumeJoinToken(
-	batch storage.Batch,
-	env *enginev1.Envelope,
-	cmd *enginev1.ConsumeJoinToken,
-	raftIndex uint64,
-) (*applyResult, error) {
-	hash := cmd.GetTokenHash()
-	if len(hash) == 0 {
-		f.cfg.Log.Warn("cluster: ConsumeJoinToken missing token_hash; ignoring",
-			"raft_index", raftIndex)
-		return &applyResult{}, nil
-	}
-	ok, err := f.checkPrecondition(batch, env, RevisionTableJoinToken)
-	if err != nil {
-		return nil, fmt.Errorf("cluster: load jointoken revision: %w", err)
-	}
-	if !ok {
-		return nil, nil
-	}
-	tbl := JoinTokenTable{S: batch}
-	rec, err := tbl.Get(hash)
-	if err != nil {
-		return nil, fmt.Errorf("cluster: read jointoken: %w", err)
-	}
-	nowMs := env.GetHeader().GetCreatedAtMs()
-	if rec == nil {
-		f.cfg.Log.Info("cluster: ConsumeJoinToken target absent",
-			"raft_index", raftIndex)
-		return nil, nil
-	}
-	if rec.GetSingleUse() && rec.GetUsed() {
-		f.cfg.Log.Info("cluster: ConsumeJoinToken already-used token",
-			"raft_index", raftIndex)
-		return nil, nil
-	}
-	if exp := rec.GetExpiryMs(); exp != 0 && uint64(nowMs) >= exp {
-		f.cfg.Log.Info("cluster: ConsumeJoinToken expired",
-			"raft_index", raftIndex, "expiry_ms", exp, "now_ms", nowMs)
-		return nil, nil
-	}
-	if rec.GetSingleUse() {
-		rec.Used = true
-		if err := tbl.Put(batch, rec); err != nil {
-			return nil, fmt.Errorf("cluster: mark jointoken used: %w", err)
-		}
-	}
-	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableJoinToken, nowMs); err != nil {
-		return nil, fmt.Errorf("cluster: bump jointoken revision: %w", err)
-	}
-	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.JoinTokenTable}}, nil
-}
-
-// applyDeleteJoinToken removes the named row (no-op if absent) and bumps
-// the table revision. Same CAS semantics as Upsert.
-func (f *FSM) applyDeleteJoinToken(
-	batch storage.Batch,
-	env *enginev1.Envelope,
-	cmd *enginev1.DeleteJoinToken,
-	raftIndex uint64,
-) (*applyResult, error) {
-	hash := cmd.GetTokenHash()
-	if len(hash) == 0 {
-		f.cfg.Log.Warn("cluster: DeleteJoinToken missing token_hash; ignoring",
-			"raft_index", raftIndex)
-		return &applyResult{}, nil
-	}
-	ok, err := f.checkPrecondition(batch, env, RevisionTableJoinToken)
-	if err != nil {
-		return nil, fmt.Errorf("cluster: load jointoken revision: %w", err)
-	}
-	if !ok {
-		return nil, nil
-	}
-	if err := (JoinTokenTable{S: batch}).Delete(batch, hash); err != nil {
-		return nil, fmt.Errorf("cluster: delete jointoken: %w", err)
-	}
-	nowMs := env.GetHeader().GetCreatedAtMs()
-	if _, err := (RevisionTable{S: batch}).Bump(batch, RevisionTableJoinToken, nowMs); err != nil {
-		return nil, fmt.Errorf("cluster: bump jointoken revision: %w", err)
-	}
-	return &applyResult{notify: []*TableNotifier{f.cfg.Notifiers.JoinTokenTable}}, nil
 }
 
 // applyUpsertLPOwner writes one LPOwnerRecord and bumps the table
@@ -1488,17 +1287,6 @@ type (
 	// autonomous rebalancer's advisor calls this on each tick to
 	// subtract drained shards from the planner's input.
 	LookupRebalanceDrains struct{}
-
-	// LookupCARoots returns *CARootList — every CARootRecord on shard 0
-	// plus the table's CAS revision in one SyncRead. The per-node
-	// certmgr.ClusterIssuer calls this on each TableNotifier wake.
-	LookupCARoots struct{}
-
-	// LookupJoinTokens returns *JoinTokenList — every JoinTokenRecord on
-	// shard 0 plus the table's CAS revision in one SyncRead. The
-	// bootstrap server calls this to locate a redeemed token by hash on
-	// each MeshSign call; admin RPC List paths read the same shape.
-	LookupJoinTokens struct{}
 )
 
 // DeploymentList bundles every row in DeploymentTable with the table's
@@ -1526,20 +1314,6 @@ type SecretList struct {
 // atomic w.r.t. the read snapshot.
 type ModelList struct {
 	Records       []*enginev1.ModelRecord
-	TableRevision uint64
-}
-
-// CARootList bundles every row in CARootTable with the table's CAS
-// revision, atomic w.r.t. the read snapshot.
-type CARootList struct {
-	Records       []*enginev1.CARootRecord
-	TableRevision uint64
-}
-
-// JoinTokenList bundles every row in JoinTokenTable with the table's
-// CAS revision, atomic w.r.t. the read snapshot.
-type JoinTokenList struct {
-	Records       []*enginev1.JoinTokenRecord
 	TableRevision uint64
 }
 
@@ -1661,26 +1435,6 @@ func (f *FSM) Lookup(query any) (any, error) {
 			return nil, err
 		}
 		return &ModelList{Records: records, TableRevision: rev}, nil
-	case LookupCARoots:
-		records, err := (CARootTable{S: store}).List()
-		if err != nil {
-			return nil, err
-		}
-		rev, err := (RevisionTable{S: store}).Get(RevisionTableCARoot)
-		if err != nil {
-			return nil, err
-		}
-		return &CARootList{Records: records, TableRevision: rev}, nil
-	case LookupJoinTokens:
-		records, err := (JoinTokenTable{S: store}).List()
-		if err != nil {
-			return nil, err
-		}
-		rev, err := (RevisionTable{S: store}).Get(RevisionTableJoinToken)
-		if err != nil {
-			return nil, err
-		}
-		return &JoinTokenList{Records: records, TableRevision: rev}, nil
 	case LookupLPOwners:
 		records, err := (LPOwnersTable{S: store}).List()
 		if err != nil {

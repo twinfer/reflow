@@ -32,6 +32,11 @@ import (
 type DialOptions struct {
 	Addr  string
 	Creds creds.Spec
+	// ClientTLSConfig, when non-nil, is used verbatim for the HTTPS/HTTP2
+	// transport and Creds is ignored. The node mesh identity passes its
+	// live self-issued *tls.Config here for the SelfJoin dial, which has
+	// no on-disk creds spec to rebuild from.
+	ClientTLSConfig *tls.Config
 }
 
 // Client wraps the typed sub-clients over a single HTTP/2 transport plus
@@ -60,6 +65,25 @@ var _ io.Closer = (*Client)(nil)
 func Dial(_ context.Context, opts DialOptions) (*Client, error) {
 	if opts.Addr == "" {
 		return nil, errors.New("reflwclient: Addr required")
+	}
+	// Live-config override: the mesh SelfJoin dial passes its self-issued
+	// *tls.Config directly (no creds.Spec to rebuild from).
+	if opts.ClientTLSConfig != nil {
+		tr := &http.Transport{Protocols: new(http.Protocols)}
+		tr.Protocols.SetHTTP2(true)
+		tr.Protocols.SetHTTP1(false)
+		tr.TLSClientConfig = opts.ClientTLSConfig
+		baseURL := "https://" + opts.Addr
+		hc := &http.Client{Transport: tr}
+		trimmed := strings.TrimRight(baseURL, "/")
+		return &Client{
+			Cluster: clusterctlv1connect.NewClusterCtlClient(hc, trimmed),
+			Config:  configv1connect.NewConfigClient(hc, trimmed),
+			Ingress: ingressv1connect.NewIngressClient(hc, trimmed),
+			addr:    opts.Addr,
+			baseURL: baseURL,
+			tr:      tr,
+		}, nil
 	}
 	lc, err := creds.Build(opts.Creds, nil)
 	if err != nil {

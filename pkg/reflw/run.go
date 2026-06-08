@@ -2,12 +2,13 @@ package reflw
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -22,8 +23,6 @@ import (
 
 	"github.com/twinfer/reflw/internal/auth"
 	"github.com/twinfer/reflw/internal/authz"
-	"github.com/twinfer/reflw/internal/bootstrap"
-	"github.com/twinfer/reflw/internal/certmgr"
 	"github.com/twinfer/reflw/internal/clusterctl"
 	"github.com/twinfer/reflw/internal/config"
 	"github.com/twinfer/reflw/internal/connectserver"
@@ -150,8 +149,6 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	partitionTableNotifier := cluster.NewTableNotifier()
 	secretNotifier := cluster.NewTableNotifier()
 	modelNotifier := cluster.NewTableNotifier()
-	caRootNotifier := cluster.NewTableNotifier()
-	joinTokenNotifier := cluster.NewTableNotifier()
 	lpOwnersNotifier := cluster.NewTableNotifier()
 	rebalanceDrainNotifier := cluster.NewTableNotifier()
 	platformConfigNotifier := cluster.NewTableNotifier()
@@ -203,7 +200,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		GossipBindAddr:     cfg.Node.GossipBindAddr,
 		GossipAdvAddr:      cfg.Node.GossipAdvAddr,
 		GrpcEndpoint:       cfg.Node.DeliveryAddr,
-		AdminEndpoint:      cfg.Admin.Addr,
+		AdminEndpoint:      adminAdvertised(cfg),
 		Peers:              toEnginePeers(cfg.Cluster.Peers),
 		JoinExisting:       cfg.Cluster.JoinExisting,
 		NumPartitionShards: numShards,
@@ -214,8 +211,6 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			PartitionTable:      partitionTableNotifier,
 			SecretTable:         secretNotifier,
 			ModelTable:          modelNotifier,
-			CARootTable:         caRootNotifier,
-			JoinTokenTable:      joinTokenNotifier,
 			LPOwnersTable:       lpOwnersNotifier,
 			RebalanceDrainTable: rebalanceDrainNotifier,
 			PlatformConfigTable: platformConfigNotifier,
@@ -326,6 +321,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	var (
 		deliveryCreds  *creds.ListenerCreds
 		adminCreds     *creds.ListenerCreds
+		nodeIdentity   *creds.NodeIdentity
 		httpAuthCloser func() error
 		httpAuthMW     func(http.Handler) http.Handler
 	)
@@ -334,6 +330,9 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 			_ = httpAuthCloser()
 		}
 		_ = creds.CloseAll(deliveryCreds, adminCreds)
+		if nodeIdentity != nil {
+			_ = nodeIdentity.Close()
+		}
 		if handlerSigner != nil {
 			handlerSigner.Close()
 		}
@@ -360,25 +359,47 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	}
 	authzInterceptor := authz.NewInterceptor(authzEngine, logger, false)
 
-	if crossShard {
-		dc, derr := creds.Build(cfg.Delivery.Creds, logger)
-		if derr != nil {
-			return bail(fmt.Errorf("reflw: delivery creds: %w", derr))
+	// Node mesh identity: when a cluster CA is configured, this node
+	// self-issues its own node/<id> leaf from the config CA + KMS-wrapped
+	// key, and the mesh listeners (admin, delivery) + the SelfJoin client
+	// all present it. No central issuer, no join token, no bootstrap port.
+	// When unset (single-node / dev) the listeners fall back to their own
+	// X.Creds specs below.
+	if cfg.ClusterCA.Enabled() {
+		id, idErr := buildNodeIdentity(ctx, cfg, logger)
+		if idErr != nil {
+			return bail(fmt.Errorf("reflw: cluster CA identity: %w", idErr))
 		}
-		deliveryCreds = dc
-		recordListenerSecurity(metrics, "delivery", dc)
-		if dc.SecurityLevel == credentials.NoSecurity {
+		nodeIdentity = id
+	}
+
+	if crossShard {
+		if nodeIdentity != nil {
+			deliveryCreds = creds.MeshListenerCreds(nodeIdentity, true)
+		} else {
+			dc, derr := creds.Build(cfg.Delivery.Creds, logger)
+			if derr != nil {
+				return bail(fmt.Errorf("reflw: delivery creds: %w", derr))
+			}
+			deliveryCreds = dc
+		}
+		recordListenerSecurity(metrics, "delivery", deliveryCreds)
+		if deliveryCreds.SecurityLevel == credentials.NoSecurity {
 			logger.Warn("reflw: multi-node delivery using insecure transport — " +
 				"node-to-node traffic is unauthenticated and unencrypted")
 		}
 	}
 	if adminEnabled {
-		ac, aerr := creds.Build(cfg.Admin.Creds, logger)
-		if aerr != nil {
-			return bail(fmt.Errorf("reflw: admin creds: %w", aerr))
+		if nodeIdentity != nil {
+			adminCreds = creds.MeshListenerCreds(nodeIdentity, true)
+		} else {
+			ac, aerr := creds.Build(cfg.Admin.Creds, logger)
+			if aerr != nil {
+				return bail(fmt.Errorf("reflw: admin creds: %w", aerr))
+			}
+			adminCreds = ac
 		}
-		adminCreds = ac
-		recordListenerSecurity(metrics, "admin", ac)
+		recordListenerSecurity(metrics, "admin", adminCreds)
 	}
 
 	var (
@@ -405,6 +426,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		deliveryClient:         deliveryClient,
 		deliveryCreds:          deliveryCreds,
 		adminCreds:             adminCreds,
+		nodeIdentity:           nodeIdentity,
 		handlerSigner:          handlerSigner,
 		httpAuthMW:             httpAuthMW,
 		authzInterceptor:       authzInterceptor,
@@ -418,8 +440,6 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		modelNotifier:          modelNotifier,
 		modelTableResolver:     modelTableResolver,
 		modelPlanner:           modelPlanner,
-		caRootNotifier:         caRootNotifier,
-		joinTokenNotifier:      joinTokenNotifier,
 		lpOwnersNotifier:       lpOwnersNotifier,
 		platformConfigNotifier: platformConfigNotifier,
 		logger:                 logger,
@@ -567,6 +587,7 @@ type startupDeps struct {
 	deliveryClient         *delivery.Client
 	deliveryCreds          *creds.ListenerCreds
 	adminCreds             *creds.ListenerCreds
+	nodeIdentity           *creds.NodeIdentity
 	handlerSigner          *creds.Signer
 	httpAuthMW             func(http.Handler) http.Handler
 	authzInterceptor       connect.Interceptor
@@ -580,8 +601,6 @@ type startupDeps struct {
 	modelNotifier          *cluster.TableNotifier
 	modelTableResolver     *processengine.TableResolver
 	modelPlanner           config.PlanModelSetFunc
-	caRootNotifier         *cluster.TableNotifier
-	joinTokenNotifier      *cluster.TableNotifier
 	lpOwnersNotifier       *cluster.TableNotifier
 	platformConfigNotifier *cluster.TableNotifier
 	logger                 *slog.Logger
@@ -600,6 +619,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	deliveryClient := d.deliveryClient
 	deliveryCreds := d.deliveryCreds
 	adminCreds := d.adminCreds
+	nodeIdentity := d.nodeIdentity
 	handlerSigner := d.handlerSigner
 	httpAuthMW := d.httpAuthMW
 	authzInterceptor := d.authzInterceptor
@@ -621,7 +641,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	// BeginRebalanceStep; the rebalancer drives SyncRequestAddReplica
 	// from the leader side. See plans/humble-chasing-quokka.md.
 	if cfg.Cluster.JoinExisting {
-		if err := callSelfJoin(ctx, cfg, eh, logger); err != nil {
+		if err := callSelfJoin(ctx, cfg, eh, nodeIdentity, logger); err != nil {
 			return nil, fmt.Errorf("reflw: SelfJoin: %w", err)
 		}
 	}
@@ -642,11 +662,9 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	}
 
 	var (
-		adminSrv      *connectserver.Server
-		bootstrapSrv  *connectserver.Server
-		bootstrapCred *creds.ListenerCreds
-		snapshotCxl   context.CancelFunc
-		snapshotRepo  *snapshot.BlobRepository
+		adminSrv     *connectserver.Server
+		snapshotCxl  context.CancelFunc
+		snapshotRepo *snapshot.BlobRepository
 	)
 
 	var snapshotRepoIface snapshot.Repository
@@ -847,74 +865,6 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		}()
 	}
 
-	// Bootstrap listener: opt-in, TLS-without-client-cert. Hosts the
-	// MeshSign service. The ClusterIssuer requires shard 0 to carry an
-	// "active" CARoot row; without one we log + skip so an operator can
-	// `reflwd config ca init` and restart to bring the listener up.
-	if !cfg.Bootstrap.Disabled && cfg.Bootstrap.Addr != "" {
-		bsCreds, perr := creds.Build(cfg.Bootstrap.Creds, logger)
-		if perr != nil {
-			return nil, fmt.Errorf("reflw: bootstrap creds: %w", perr)
-		}
-		bootstrapCred = bsCreds
-		// The bootstrap port intentionally never requires a client
-		// cert — joiners haven't been issued one yet. Force-clear
-		// ClientAuth on the server side so an operator-shipped creds
-		// spec with client_auth=true doesn't silently render the
-		// bootstrap port unreachable from a virgin joiner.
-		if bsCreds.ServerTLSConfig != nil {
-			bsCreds.ServerTLSConfig.ClientAuth = tls.NoClientCert
-			bsCreds.ServerTLSConfig.ClientCAs = nil
-		}
-		mode, merr := certmgrSigningMode(cfg.PKI.Builtin.SigningMode)
-		if merr != nil {
-			return nil, fmt.Errorf("reflw: pki.builtin.signing_mode: %w", merr)
-		}
-		issueCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		issuer, ierr := certmgr.NewClusterIssuer(issueCtx, certmgr.ClusterOptions{
-			Reader:      caRootReader{host: eh},
-			Keys:        secrets,
-			SigningMode: mode,
-			KMSKeyURI:   cfg.PKI.Builtin.KMSKeyURI,
-			Principal:   "node/" + strconv.FormatUint(cfg.Node.ID, 10),
-			Validity:    cfg.Bootstrap.LeafValidity,
-		})
-		cancel()
-		if ierr != nil {
-			logger.Warn("reflw: bootstrap listener skipped — no CA active yet",
-				"err", ierr,
-				"hint", "run `reflwd config ca init` to mint the cluster CA")
-		} else {
-			// Once the cluster CA is active, the same ClusterIssuer
-			// powers IssueOperator on the Config admin RPC. Late-bind so
-			// the operator-facing `reflwd config issue-operator` flow
-			// works without a restart.
-			configSrv.SetOperatorIssuer(issuer)
-			bsServer, berr := bootstrap.NewServer(bootstrap.Config{
-				Host:         eh,
-				Runner:       runner,
-				Issuer:       issuer,
-				Log:          logger,
-				LeafValidity: cfg.Bootstrap.LeafValidity,
-			})
-			if berr != nil {
-				return nil, fmt.Errorf("reflw: bootstrap server: %w", berr)
-			}
-			bsPath, bsH := bsServer.NewHandler()
-			bs, lErr := connectserver.New(ctx, connectserver.Config{
-				Addr: cfg.Bootstrap.Addr,
-				TLS:  bsCreds.ServerTLSConfig,
-				Log:  logger,
-			}, connectserver.Route{Path: bsPath, Handler: bsH})
-			if lErr != nil {
-				return nil, fmt.Errorf("reflw: bootstrap listener: %w", lErr)
-			}
-			bootstrapSrv = bs
-			logger.Info("reflw: bootstrap listening", "addr", bs.Addr(),
-				"driver", string(bsCreds.Driver))
-		}
-	}
-
 	multiNode := len(cfg.Cluster.Peers) > 1
 	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, authzInterceptor, secrets, metrics, logger)
 	if err != nil {
@@ -952,8 +902,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		deliveryCreds:  deliveryCreds,
 		adminSrv:       adminSrv,
 		adminCreds:     adminCreds,
-		bootstrapSrv:   bootstrapSrv,
-		bootstrapCreds: bootstrapCred,
+		nodeIdentity:   nodeIdentity,
 		authCloser:     authCloser,
 		snapshotCxl:    snapshotCxl,
 		snapshotRepo:   snapshotRepo,
@@ -1011,36 +960,108 @@ func (r modelReader) ListModels(ctx context.Context) ([]*enginev1.ModelRecord, u
 	return list.Records, list.TableRevision, nil
 }
 
-// certmgrSigningMode maps the koanf-facing string ("local" or
-// "kms_remote", empty defaults to "local") to the certmgr enum. Any
-// other value returns an error so an operator typo doesn't silently
-// fall back to local mode and contradict the configured KMS URI.
-func certmgrSigningMode(s string) (certmgr.SigningMode, error) {
-	switch s {
-	case "", "local":
-		return certmgr.SigningModeLocal, nil
-	case "kms_remote":
-		return certmgr.SigningModeRemote, nil
-	default:
-		return 0, fmt.Errorf("unknown signing mode %q (want \"local\" or \"kms_remote\")", s)
-	}
-}
+// ClusterCAKeyAAD binds the KMS-wrapped CA key ciphertext to the
+// cluster-CA slot. `reflwd config ca init` seals with this AAD and
+// buildNodeIdentity unwraps with it, so a ciphertext sealed for some
+// other secret (which uses its name as AAD) can't be replayed here.
+// Exported so the CLI seal path and this unwrap path share one value.
+const ClusterCAKeyAAD = "reflw-cluster-ca/v1"
 
-// caRootReader is the certmgr.CARootReader adapter the bootstrap
-// listener's ClusterIssuer uses to pull the active CA snapshot from
-// shard 0.
-type caRootReader struct {
-	host *engine.Host
-}
-
-func (r caRootReader) CARoots(ctx context.Context) ([]*enginev1.CARootRecord, uint64, error) {
-	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	list, err := r.host.CARoots(readCtx)
+// buildNodeIdentity resolves the cluster CA (public cert from config,
+// KMS-wrapped key unwrapped from the config blob URI) and builds this
+// node's self-issued mesh identity. Called once at startup; every mesh
+// listener + the SelfJoin client share the returned identity.
+func buildNodeIdentity(ctx context.Context, cfg Config, log *slog.Logger) (*creds.NodeIdentity, error) {
+	certPEM, err := loadClusterCACert(cfg.ClusterCA)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	return list.Records, list.TableRevision, nil
+	resolveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	keyPEM, err := secretstore.ResolveRemoteEncrypted(resolveCtx, &enginev1.RemoteEncryptedSecret{
+		BlobUri: cfg.ClusterCA.KeyBlobURI,
+		KekUri:  cfg.ClusterCA.KeyKEKURI,
+	}, []byte(ClusterCAKeyAAD), nil)
+	if err != nil {
+		return nil, fmt.Errorf("unwrap CA key: %w", err)
+	}
+	dir := cfg.ClusterCA.CertCacheDir
+	if dir == "" {
+		dir = filepath.Join(cfg.Storage.DataDir, "mesh")
+	}
+	idStr := strconv.FormatUint(cfg.Node.ID, 10)
+	return creds.BuildNodeIdentity(ctx, creds.NodeIdentityOptions{
+		CACertPEM:    certPEM,
+		CAKeyPEM:     keyPEM,
+		NodeID:       idStr,
+		Principal:    "node/" + idStr,
+		Hosts:        meshLeafHosts(cfg),
+		Validity:     cfg.ClusterCA.LeafValidity,
+		CertCacheDir: dir,
+		Logger:       log,
+	})
+}
+
+// meshLeafHosts returns the SANs to embed in the self-issued node leaf:
+// the host parts of the node's advertised raft / delivery / admin
+// addresses plus any operator-declared cfg.ClusterCA.LeafHosts. The mesh
+// verifies peers by CN, but external admin-CLI clients verify hostname,
+// so the leaf must cover the addresses they dial. Wildcard binds
+// (0.0.0.0 / ::) and empties are dropped.
+func meshLeafHosts(cfg Config) []string {
+	raw := []string{
+		hostOnly(cfg.Node.RaftAdvertisedAddr),
+		hostOnly(cfg.Node.RaftAddr),
+		hostOnly(cfg.Node.DeliveryAddr),
+		hostOnly(cfg.Admin.Addr),
+	}
+	raw = append(raw, cfg.ClusterCA.LeafHosts...)
+	seen := make(map[string]bool, len(raw))
+	out := make([]string, 0, len(raw))
+	for _, h := range raw {
+		if h == "" || h == "0.0.0.0" || h == "::" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		out = append(out, h)
+	}
+	return out
+}
+
+// adminAdvertised returns the admin endpoint to publish via gossip: the
+// explicit AdvertisedAddr, or the bind Addr when unset. A joiner's
+// SelfJoin resolves the leader through this value, so it must be
+// routable — a 0.0.0.0 bind with no AdvertisedAddr is undiallable.
+func adminAdvertised(cfg Config) string {
+	if cfg.Admin.AdvertisedAddr != "" {
+		return cfg.Admin.AdvertisedAddr
+	}
+	return cfg.Admin.Addr
+}
+
+// hostOnly strips a :port suffix, returning the host part (or the input
+// unchanged when it has no port).
+func hostOnly(addr string) string {
+	if addr == "" {
+		return ""
+	}
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		return h
+	}
+	return addr
+}
+
+// loadClusterCACert returns the CA cert PEM from the inline value or the
+// configured file. The cert is public — no KMS involved.
+func loadClusterCACert(c ClusterCAConfig) ([]byte, error) {
+	if c.CACertPEM != "" {
+		return []byte(c.CACertPEM), nil
+	}
+	pem, err := os.ReadFile(c.CACertFile)
+	if err != nil {
+		return nil, fmt.Errorf("read CA cert %s: %w", c.CACertFile, err)
+	}
+	return pem, nil
 }
 
 // partitionTableReader is the Reader adapter the PartitionTable
@@ -1280,7 +1301,7 @@ func startMetricsServer(cfg MetricsConfig, log *slog.Logger) func() error {
 // CallWithLeaderRedirect handles per-attempt LeaderHint chasing (the
 // gossip view was stale by one heartbeat); the outer retry here handles
 // transient cluster-wide Unavailable conditions during cold start.
-func callSelfJoin(ctx context.Context, cfg Config, host *engine.Host, log *slog.Logger) error {
+func callSelfJoin(ctx context.Context, cfg Config, host *engine.Host, id *creds.NodeIdentity, log *slog.Logger) error {
 	req := &clusterctlv1.AddNodeRequest{
 		NodeId:       cfg.Node.ID,
 		RaftAddr:     cfg.Node.RaftAddr,
@@ -1289,6 +1310,15 @@ func callSelfJoin(ctx context.Context, cfg Config, host *engine.Host, log *slog.
 	}
 	if req.GossipAddr == "" {
 		req.GossipAddr = cfg.Node.GossipBindAddr
+	}
+	// The joiner authenticates with its self-issued mesh leaf. When no
+	// cluster CA is configured (single-node-style dev cluster being
+	// extended) fall back to the admin creds spec.
+	dialOpts := func(addr string) reflwclient.DialOptions {
+		if id != nil {
+			return reflwclient.DialOptions{Addr: addr, ClientTLSConfig: id.ClientTLSConfig()}
+		}
+		return reflwclient.DialOptions{Addr: addr, Creds: cfg.Admin.Creds}
 	}
 	backoff := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
 	var lastErr error
@@ -1309,13 +1339,11 @@ func callSelfJoin(ctx context.Context, cfg Config, host *engine.Host, log *slog.
 		}
 		log.Info("SelfJoin: dialing metadata leader", "addr", leaderAddr,
 			"node_id", req.NodeId, "attempt", attempt+1)
-		err = reflwclient.CallWithLeaderRedirect(ctx, reflwclient.DialOptions{
-			Addr:  leaderAddr,
-			Creds: cfg.Admin.Creds,
-		}, 3, func(rctx context.Context, cli *reflwclient.Client) error {
-			_, e := cli.Cluster.SelfJoin(rctx, connect.NewRequest(req))
-			return e
-		})
+		err = reflwclient.CallWithLeaderRedirect(ctx, dialOpts(leaderAddr),
+			3, func(rctx context.Context, cli *reflwclient.Client) error {
+				_, e := cli.Cluster.SelfJoin(rctx, connect.NewRequest(req))
+				return e
+			})
 		if err == nil {
 			log.Info("SelfJoin: registered with shard 0", "node_id", req.NodeId)
 			return nil

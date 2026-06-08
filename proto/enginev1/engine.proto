@@ -253,26 +253,6 @@ message Command {
     // Envelope.precondition.if_table_revision_eq when set; bumps
     // RevisionTableRebalanceDrain on apply. Accepted only by shardID=0.
     SetRebalanceDrain set_rebalance_drain = 39;
-    // UpsertCARoot / DeleteCARoot carry shard-0 CARootTable mutations
-    // — the cluster CA cert (PEM) plus a pointer to the SecretTable row
-    // holding the AEAD-wrapped private key. Same CAS + notifier
-    // semantics as the secret pair. The signing key never appears in
-    // these commands; per-node certmgr.ClusterIssuer fetches the blob
-    // and decrypts via secretstore.LookupForCASigning at reconcile
-    // time. Accepted only by shardID=0.
-    UpsertCARoot upsert_ca_root = 45;
-    DeleteCARoot delete_ca_root = 46;
-    // UpsertJoinToken / ConsumeJoinToken / DeleteJoinToken carry shard-0
-    // JoinTokenTable mutations — the kubeadm-style one-time bootstrap
-    // credentials a joiner exchanges via MeshSign for a signed leaf.
-    // Tokens are stored as HMAC-hashed records (plaintext shown once at
-    // creation); ConsumeJoinToken uses if_table_revision_eq CAS to
-    // atomically mark single_use tokens as consumed in the same apply
-    // batch as the bootstrap server's signing decision. Accepted only
-    // by shardID=0.
-    UpsertJoinToken upsert_join_token = 47;
-    ConsumeJoinToken consume_join_token = 48;
-    DeleteJoinToken delete_join_token = 49;
     // UpsertPlatformConfig replaces shard 0's PlatformConfigRecord singleton
     // (cluster-wide platform policy; v1 = Cedar cluster authz policy text).
     // Honors Envelope.precondition.if_table_revision_eq; bumps
@@ -281,6 +261,7 @@ message Command {
     // Accepted only by shardID=0.
     UpsertPlatformConfig upsert_platform_config = 50;
   }
+  reserved 45 to 49; // retired cert-bootstrap commands (CARoot/JoinToken)
 }
 
 // AnnounceLeader is proposed on every shard when its leader changes. It is
@@ -1688,8 +1669,7 @@ message UpsertPlatformConfig {
 // and commit logs would leak it. Each SecretRecord carries a pointer
 // to where the ciphertext lives (gocloud.dev/blob URI) and which KEK
 // can decrypt it (Tink KMS URI). The same record is referenced by
-// `secret_name` from its consumers (today the cluster CA signing key,
-// CARootRecord) so define-once, reference-many.
+// `secret_name` from its consumers, so define-once, reference-many.
 //
 // Per-node internal/secretstore Reconcilers fetch the blob, dispatch
 // the KEK URI to registry.GetKMSClient, and call
@@ -1799,101 +1779,6 @@ message DeleteModel {
   ModelRef model_ref = 1;
 }
 
-// CARootRecord is the persisted shape of one cluster CA root in shard
-// 0's CARootTable. The row carries the CA cert (PEM) plus a pointer
-// into SecretTable holding the AEAD-wrapped signing key — the key
-// never traverses Raft. `name` is the row's identity (e.g. "active");
-// `rotation_epoch` is monotonic across rotations so a future rotation
-// PR can keep older rows around for trust-bundle inclusion without
-// breaking the active-CA lookup. `fingerprint` is sha256:<hex> over
-// the cert's RawSubjectPublicKeyInfo and is the trust-anchor pin
-// joiners verify against (matches creds.SPKIFingerprint).
-message CARootRecord {
-  string name = 1;
-  bytes cert_pem = 2;
-  string key_secret_name = 3;
-  string fingerprint = 4;
-  uint32 rotation_epoch = 5;
-  fixed64 created_at_ms = 6;
-}
-
-// UpsertCARoot is the Command_UpsertCARoot payload. Apply arm CAS-
-// checks Envelope.precondition, writes CARootTable[record.name] =
-// record, bumps the table revision, and fires the CARootTable notifier
-// so each node's local certmgr.ClusterIssuer wakes and re-resolves.
-message UpsertCARoot {
-  CARootRecord record = 1;
-}
-
-// DeleteCARoot is the Command_DeleteCARoot payload. Same CAS + notifier
-// semantics as Upsert. Delete-of-absent is a no-op. Deleting the
-// active CA row will break leaf issuance on the next renewal until a
-// new row is written; consumers (the ClusterIssuer) preserve their
-// in-memory active CA on resolve error.
-message DeleteCARoot {
-  string name = 1;
-}
-
-// JoinTokenKind tags how the token can be redeemed at MeshSign time.
-// Node tokens authorize a `node/<N>` CN; operator tokens authorize an
-// `operator/<name>` CN. The bootstrap server refuses to sign a CSR
-// whose CN prefix doesn't match the redeeming token's kind.
-enum JoinTokenKind {
-  JOIN_TOKEN_KIND_UNSPECIFIED = 0;
-  JOIN_TOKEN_KIND_NODE = 1;
-  JOIN_TOKEN_KIND_OPERATOR = 2;
-}
-
-// JoinTokenRecord is the persisted shape of one bootstrap token in shard
-// 0's JoinTokenTable. token_hash is sha256(token_plaintext); the
-// plaintext is shown exactly once at create-time and never persisted.
-// single_use=true (the default for `reflwd config create-join-token`)
-// means the row carries `used=true` after the first MeshSign redemption,
-// and any subsequent redemption attempt fails CAS at the FSM apply path
-// and returns PermissionDenied. expiry_ms is wall-clock; the apply path
-// reads it from Envelope.header.created_at_ms so partition-clock skew
-// can't extend a token. requested_name is the CN-name segment the
-// operator intends; on redemption the bootstrap server stamps CN =
-// "<kind>/<requested_name>". For node tokens with requested_name="auto",
-// the bootstrap server assigns the next free node_id from the cluster
-// state at redemption time.
-message JoinTokenRecord {
-  bytes token_hash = 1;
-  JoinTokenKind kind = 2;
-  string requested_name = 3;
-  fixed64 expiry_ms = 4;
-  bool single_use = 5;
-  bool used = 6;
-  string created_by = 7;
-  fixed64 created_at_ms = 8;
-}
-
-// UpsertJoinToken is the Command_UpsertJoinToken payload. Apply arm
-// CAS-checks Envelope.precondition, writes JoinTokenTable[record.token_hash]
-// = record, bumps the table revision. No notifier — the bootstrap server
-// reads through the table on each MeshSign call (low volume). Operators
-// create tokens via the admin RPC.
-message UpsertJoinToken {
-  JoinTokenRecord record = 1;
-}
-
-// ConsumeJoinToken atomically marks a single_use token as consumed.
-// Apply arm CAS-checks if_table_revision_eq, then re-reads the row and
-// rejects (via ResultValueFailedPrecondition) when used=true or expired.
-// Otherwise writes record.used=true and bumps the revision. The
-// bootstrap server proposes this command after validating the CSR's
-// CN/kind alignment; only the apply arm decides whether the token can
-// actually be spent.
-message ConsumeJoinToken {
-  bytes token_hash = 1;
-}
-
-// DeleteJoinToken removes the named row. Operator-initiated cleanup
-// (the periodic expiry sweep landing in a later PR also routes through
-// here). Delete-of-absent is a no-op. CAS semantics mirror Upsert.
-message DeleteJoinToken {
-  bytes token_hash = 1;
-}
 
 // LPOwnerRecord is the persisted shape of one (lp → shard_id) entry in
 // shard 0's LPOwnersTable. lp is in [0, LPCount); shard_id is the

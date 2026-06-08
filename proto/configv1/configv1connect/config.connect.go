@@ -82,20 +82,6 @@ const (
 	ConfigDeleteSecretProcedure = "/reflw.config.v1.Config/DeleteSecret"
 	// ConfigListSecretsProcedure is the fully-qualified name of the Config's ListSecrets RPC.
 	ConfigListSecretsProcedure = "/reflw.config.v1.Config/ListSecrets"
-	// ConfigUpsertCARootProcedure is the fully-qualified name of the Config's UpsertCARoot RPC.
-	ConfigUpsertCARootProcedure = "/reflw.config.v1.Config/UpsertCARoot"
-	// ConfigDeleteCARootProcedure is the fully-qualified name of the Config's DeleteCARoot RPC.
-	ConfigDeleteCARootProcedure = "/reflw.config.v1.Config/DeleteCARoot"
-	// ConfigListCARootsProcedure is the fully-qualified name of the Config's ListCARoots RPC.
-	ConfigListCARootsProcedure = "/reflw.config.v1.Config/ListCARoots"
-	// ConfigCreateJoinTokenProcedure is the fully-qualified name of the Config's CreateJoinToken RPC.
-	ConfigCreateJoinTokenProcedure = "/reflw.config.v1.Config/CreateJoinToken"
-	// ConfigDeleteJoinTokenProcedure is the fully-qualified name of the Config's DeleteJoinToken RPC.
-	ConfigDeleteJoinTokenProcedure = "/reflw.config.v1.Config/DeleteJoinToken"
-	// ConfigListJoinTokensProcedure is the fully-qualified name of the Config's ListJoinTokens RPC.
-	ConfigListJoinTokensProcedure = "/reflw.config.v1.Config/ListJoinTokens"
-	// ConfigIssueOperatorProcedure is the fully-qualified name of the Config's IssueOperator RPC.
-	ConfigIssueOperatorProcedure = "/reflw.config.v1.Config/IssueOperator"
 	// ConfigUpsertClusterAuthzPolicyProcedure is the fully-qualified name of the Config's
 	// UpsertClusterAuthzPolicy RPC.
 	ConfigUpsertClusterAuthzPolicyProcedure = "/reflw.config.v1.Config/UpsertClusterAuthzPolicy"
@@ -157,35 +143,6 @@ type ConfigClient interface {
 	UpsertSecret(context.Context, *connect.Request[configv1.UpsertSecretRequest]) (*connect.Response[configv1.UpsertSecretResponse], error)
 	DeleteSecret(context.Context, *connect.Request[configv1.DeleteSecretRequest]) (*connect.Response[configv1.DeleteSecretResponse], error)
 	ListSecrets(context.Context, *connect.Request[configv1.ListSecretsRequest]) (*connect.Response[configv1.ListSecretsResponse], error)
-	// UpsertCARoot / DeleteCARoot / ListCARoots mirror the secret trio
-	// against shard 0's CARootTable. Each CARootRecord carries a CA
-	// cert (PEM) plus a pointer to the SecretTable row holding the
-	// AEAD-wrapped signing key. The signing key never traverses Raft.
-	// Per-node certmgr.ClusterIssuer fetches + decrypts via
-	// secretstore.LookupForCASigning at reconcile time. Leader-only for
-	// mutating calls; List is SyncRead.
-	UpsertCARoot(context.Context, *connect.Request[configv1.UpsertCARootRequest]) (*connect.Response[configv1.UpsertCARootResponse], error)
-	DeleteCARoot(context.Context, *connect.Request[configv1.DeleteCARootRequest]) (*connect.Response[configv1.DeleteCARootResponse], error)
-	ListCARoots(context.Context, *connect.Request[configv1.ListCARootsRequest]) (*connect.Response[configv1.ListCARootsResponse], error)
-	// CreateJoinToken mints a one-time kubeadm-style joiner credential.
-	// The server generates a random plaintext, persists only its sha256
-	// hash + a JoinTokenRecord into shard 0's JoinTokenTable, and
-	// returns the plaintext to the operator exactly once. Subsequent
-	// List calls show only the hash. Operators redeem the plaintext via
-	// `reflwd run --join`. Leader-only.
-	CreateJoinToken(context.Context, *connect.Request[configv1.CreateJoinTokenRequest]) (*connect.Response[configv1.CreateJoinTokenResponse], error)
-	// DeleteJoinToken removes a row by hex(token_hash) — surfaces in
-	// ListJoinTokens. Idempotent.
-	DeleteJoinToken(context.Context, *connect.Request[configv1.DeleteJoinTokenRequest]) (*connect.Response[configv1.DeleteJoinTokenResponse], error)
-	// ListJoinTokens returns every JoinTokenRecord. SyncRead.
-	ListJoinTokens(context.Context, *connect.Request[configv1.ListJoinTokensRequest]) (*connect.Response[configv1.ListJoinTokensResponse], error)
-	// IssueOperator mints an operator client cert against the active
-	// cluster CA. The operator generates the keypair locally, sends the
-	// CSR, and receives the signed leaf + CA chain. Authorization is via
-	// the existing operator/* policy gate; the in-server signer is the
-	// same ClusterIssuer the bootstrap listener uses. Leader-only.
-	// Replaces the deleted `reflwd pki issue-operator` flow.
-	IssueOperator(context.Context, *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error)
 	// UpsertClusterAuthzPolicy replaces shard 0's cluster-wide Cedar authz
 	// policy text (PlatformConfigRecord). The server runs layer-1 schema
 	// validation before proposing, so an invalid policy is rejected at upload,
@@ -273,48 +230,6 @@ func NewConfigClient(httpClient connect.HTTPClient, baseURL string, opts ...conn
 			connect.WithSchema(configMethods.ByName("ListSecrets")),
 			connect.WithClientOptions(opts...),
 		),
-		upsertCARoot: connect.NewClient[configv1.UpsertCARootRequest, configv1.UpsertCARootResponse](
-			httpClient,
-			baseURL+ConfigUpsertCARootProcedure,
-			connect.WithSchema(configMethods.ByName("UpsertCARoot")),
-			connect.WithClientOptions(opts...),
-		),
-		deleteCARoot: connect.NewClient[configv1.DeleteCARootRequest, configv1.DeleteCARootResponse](
-			httpClient,
-			baseURL+ConfigDeleteCARootProcedure,
-			connect.WithSchema(configMethods.ByName("DeleteCARoot")),
-			connect.WithClientOptions(opts...),
-		),
-		listCARoots: connect.NewClient[configv1.ListCARootsRequest, configv1.ListCARootsResponse](
-			httpClient,
-			baseURL+ConfigListCARootsProcedure,
-			connect.WithSchema(configMethods.ByName("ListCARoots")),
-			connect.WithClientOptions(opts...),
-		),
-		createJoinToken: connect.NewClient[configv1.CreateJoinTokenRequest, configv1.CreateJoinTokenResponse](
-			httpClient,
-			baseURL+ConfigCreateJoinTokenProcedure,
-			connect.WithSchema(configMethods.ByName("CreateJoinToken")),
-			connect.WithClientOptions(opts...),
-		),
-		deleteJoinToken: connect.NewClient[configv1.DeleteJoinTokenRequest, configv1.DeleteJoinTokenResponse](
-			httpClient,
-			baseURL+ConfigDeleteJoinTokenProcedure,
-			connect.WithSchema(configMethods.ByName("DeleteJoinToken")),
-			connect.WithClientOptions(opts...),
-		),
-		listJoinTokens: connect.NewClient[configv1.ListJoinTokensRequest, configv1.ListJoinTokensResponse](
-			httpClient,
-			baseURL+ConfigListJoinTokensProcedure,
-			connect.WithSchema(configMethods.ByName("ListJoinTokens")),
-			connect.WithClientOptions(opts...),
-		),
-		issueOperator: connect.NewClient[configv1.IssueOperatorRequest, configv1.IssueOperatorResponse](
-			httpClient,
-			baseURL+ConfigIssueOperatorProcedure,
-			connect.WithSchema(configMethods.ByName("IssueOperator")),
-			connect.WithClientOptions(opts...),
-		),
 		upsertClusterAuthzPolicy: connect.NewClient[configv1.UpsertClusterAuthzPolicyRequest, configv1.UpsertClusterAuthzPolicyResponse](
 			httpClient,
 			baseURL+ConfigUpsertClusterAuthzPolicyProcedure,
@@ -343,13 +258,6 @@ type configClient struct {
 	upsertSecret             *connect.Client[configv1.UpsertSecretRequest, configv1.UpsertSecretResponse]
 	deleteSecret             *connect.Client[configv1.DeleteSecretRequest, configv1.DeleteSecretResponse]
 	listSecrets              *connect.Client[configv1.ListSecretsRequest, configv1.ListSecretsResponse]
-	upsertCARoot             *connect.Client[configv1.UpsertCARootRequest, configv1.UpsertCARootResponse]
-	deleteCARoot             *connect.Client[configv1.DeleteCARootRequest, configv1.DeleteCARootResponse]
-	listCARoots              *connect.Client[configv1.ListCARootsRequest, configv1.ListCARootsResponse]
-	createJoinToken          *connect.Client[configv1.CreateJoinTokenRequest, configv1.CreateJoinTokenResponse]
-	deleteJoinToken          *connect.Client[configv1.DeleteJoinTokenRequest, configv1.DeleteJoinTokenResponse]
-	listJoinTokens           *connect.Client[configv1.ListJoinTokensRequest, configv1.ListJoinTokensResponse]
-	issueOperator            *connect.Client[configv1.IssueOperatorRequest, configv1.IssueOperatorResponse]
 	upsertClusterAuthzPolicy *connect.Client[configv1.UpsertClusterAuthzPolicyRequest, configv1.UpsertClusterAuthzPolicyResponse]
 	getClusterAuthzPolicy    *connect.Client[configv1.GetClusterAuthzPolicyRequest, configv1.GetClusterAuthzPolicyResponse]
 }
@@ -407,41 +315,6 @@ func (c *configClient) DeleteSecret(ctx context.Context, req *connect.Request[co
 // ListSecrets calls reflw.config.v1.Config.ListSecrets.
 func (c *configClient) ListSecrets(ctx context.Context, req *connect.Request[configv1.ListSecretsRequest]) (*connect.Response[configv1.ListSecretsResponse], error) {
 	return c.listSecrets.CallUnary(ctx, req)
-}
-
-// UpsertCARoot calls reflw.config.v1.Config.UpsertCARoot.
-func (c *configClient) UpsertCARoot(ctx context.Context, req *connect.Request[configv1.UpsertCARootRequest]) (*connect.Response[configv1.UpsertCARootResponse], error) {
-	return c.upsertCARoot.CallUnary(ctx, req)
-}
-
-// DeleteCARoot calls reflw.config.v1.Config.DeleteCARoot.
-func (c *configClient) DeleteCARoot(ctx context.Context, req *connect.Request[configv1.DeleteCARootRequest]) (*connect.Response[configv1.DeleteCARootResponse], error) {
-	return c.deleteCARoot.CallUnary(ctx, req)
-}
-
-// ListCARoots calls reflw.config.v1.Config.ListCARoots.
-func (c *configClient) ListCARoots(ctx context.Context, req *connect.Request[configv1.ListCARootsRequest]) (*connect.Response[configv1.ListCARootsResponse], error) {
-	return c.listCARoots.CallUnary(ctx, req)
-}
-
-// CreateJoinToken calls reflw.config.v1.Config.CreateJoinToken.
-func (c *configClient) CreateJoinToken(ctx context.Context, req *connect.Request[configv1.CreateJoinTokenRequest]) (*connect.Response[configv1.CreateJoinTokenResponse], error) {
-	return c.createJoinToken.CallUnary(ctx, req)
-}
-
-// DeleteJoinToken calls reflw.config.v1.Config.DeleteJoinToken.
-func (c *configClient) DeleteJoinToken(ctx context.Context, req *connect.Request[configv1.DeleteJoinTokenRequest]) (*connect.Response[configv1.DeleteJoinTokenResponse], error) {
-	return c.deleteJoinToken.CallUnary(ctx, req)
-}
-
-// ListJoinTokens calls reflw.config.v1.Config.ListJoinTokens.
-func (c *configClient) ListJoinTokens(ctx context.Context, req *connect.Request[configv1.ListJoinTokensRequest]) (*connect.Response[configv1.ListJoinTokensResponse], error) {
-	return c.listJoinTokens.CallUnary(ctx, req)
-}
-
-// IssueOperator calls reflw.config.v1.Config.IssueOperator.
-func (c *configClient) IssueOperator(ctx context.Context, req *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error) {
-	return c.issueOperator.CallUnary(ctx, req)
 }
 
 // UpsertClusterAuthzPolicy calls reflw.config.v1.Config.UpsertClusterAuthzPolicy.
@@ -507,35 +380,6 @@ type ConfigHandler interface {
 	UpsertSecret(context.Context, *connect.Request[configv1.UpsertSecretRequest]) (*connect.Response[configv1.UpsertSecretResponse], error)
 	DeleteSecret(context.Context, *connect.Request[configv1.DeleteSecretRequest]) (*connect.Response[configv1.DeleteSecretResponse], error)
 	ListSecrets(context.Context, *connect.Request[configv1.ListSecretsRequest]) (*connect.Response[configv1.ListSecretsResponse], error)
-	// UpsertCARoot / DeleteCARoot / ListCARoots mirror the secret trio
-	// against shard 0's CARootTable. Each CARootRecord carries a CA
-	// cert (PEM) plus a pointer to the SecretTable row holding the
-	// AEAD-wrapped signing key. The signing key never traverses Raft.
-	// Per-node certmgr.ClusterIssuer fetches + decrypts via
-	// secretstore.LookupForCASigning at reconcile time. Leader-only for
-	// mutating calls; List is SyncRead.
-	UpsertCARoot(context.Context, *connect.Request[configv1.UpsertCARootRequest]) (*connect.Response[configv1.UpsertCARootResponse], error)
-	DeleteCARoot(context.Context, *connect.Request[configv1.DeleteCARootRequest]) (*connect.Response[configv1.DeleteCARootResponse], error)
-	ListCARoots(context.Context, *connect.Request[configv1.ListCARootsRequest]) (*connect.Response[configv1.ListCARootsResponse], error)
-	// CreateJoinToken mints a one-time kubeadm-style joiner credential.
-	// The server generates a random plaintext, persists only its sha256
-	// hash + a JoinTokenRecord into shard 0's JoinTokenTable, and
-	// returns the plaintext to the operator exactly once. Subsequent
-	// List calls show only the hash. Operators redeem the plaintext via
-	// `reflwd run --join`. Leader-only.
-	CreateJoinToken(context.Context, *connect.Request[configv1.CreateJoinTokenRequest]) (*connect.Response[configv1.CreateJoinTokenResponse], error)
-	// DeleteJoinToken removes a row by hex(token_hash) — surfaces in
-	// ListJoinTokens. Idempotent.
-	DeleteJoinToken(context.Context, *connect.Request[configv1.DeleteJoinTokenRequest]) (*connect.Response[configv1.DeleteJoinTokenResponse], error)
-	// ListJoinTokens returns every JoinTokenRecord. SyncRead.
-	ListJoinTokens(context.Context, *connect.Request[configv1.ListJoinTokensRequest]) (*connect.Response[configv1.ListJoinTokensResponse], error)
-	// IssueOperator mints an operator client cert against the active
-	// cluster CA. The operator generates the keypair locally, sends the
-	// CSR, and receives the signed leaf + CA chain. Authorization is via
-	// the existing operator/* policy gate; the in-server signer is the
-	// same ClusterIssuer the bootstrap listener uses. Leader-only.
-	// Replaces the deleted `reflwd pki issue-operator` flow.
-	IssueOperator(context.Context, *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error)
 	// UpsertClusterAuthzPolicy replaces shard 0's cluster-wide Cedar authz
 	// policy text (PlatformConfigRecord). The server runs layer-1 schema
 	// validation before proposing, so an invalid policy is rejected at upload,
@@ -619,48 +463,6 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 		connect.WithSchema(configMethods.ByName("ListSecrets")),
 		connect.WithHandlerOptions(opts...),
 	)
-	configUpsertCARootHandler := connect.NewUnaryHandler(
-		ConfigUpsertCARootProcedure,
-		svc.UpsertCARoot,
-		connect.WithSchema(configMethods.ByName("UpsertCARoot")),
-		connect.WithHandlerOptions(opts...),
-	)
-	configDeleteCARootHandler := connect.NewUnaryHandler(
-		ConfigDeleteCARootProcedure,
-		svc.DeleteCARoot,
-		connect.WithSchema(configMethods.ByName("DeleteCARoot")),
-		connect.WithHandlerOptions(opts...),
-	)
-	configListCARootsHandler := connect.NewUnaryHandler(
-		ConfigListCARootsProcedure,
-		svc.ListCARoots,
-		connect.WithSchema(configMethods.ByName("ListCARoots")),
-		connect.WithHandlerOptions(opts...),
-	)
-	configCreateJoinTokenHandler := connect.NewUnaryHandler(
-		ConfigCreateJoinTokenProcedure,
-		svc.CreateJoinToken,
-		connect.WithSchema(configMethods.ByName("CreateJoinToken")),
-		connect.WithHandlerOptions(opts...),
-	)
-	configDeleteJoinTokenHandler := connect.NewUnaryHandler(
-		ConfigDeleteJoinTokenProcedure,
-		svc.DeleteJoinToken,
-		connect.WithSchema(configMethods.ByName("DeleteJoinToken")),
-		connect.WithHandlerOptions(opts...),
-	)
-	configListJoinTokensHandler := connect.NewUnaryHandler(
-		ConfigListJoinTokensProcedure,
-		svc.ListJoinTokens,
-		connect.WithSchema(configMethods.ByName("ListJoinTokens")),
-		connect.WithHandlerOptions(opts...),
-	)
-	configIssueOperatorHandler := connect.NewUnaryHandler(
-		ConfigIssueOperatorProcedure,
-		svc.IssueOperator,
-		connect.WithSchema(configMethods.ByName("IssueOperator")),
-		connect.WithHandlerOptions(opts...),
-	)
 	configUpsertClusterAuthzPolicyHandler := connect.NewUnaryHandler(
 		ConfigUpsertClusterAuthzPolicyProcedure,
 		svc.UpsertClusterAuthzPolicy,
@@ -697,20 +499,6 @@ func NewConfigHandler(svc ConfigHandler, opts ...connect.HandlerOption) (string,
 			configDeleteSecretHandler.ServeHTTP(w, r)
 		case ConfigListSecretsProcedure:
 			configListSecretsHandler.ServeHTTP(w, r)
-		case ConfigUpsertCARootProcedure:
-			configUpsertCARootHandler.ServeHTTP(w, r)
-		case ConfigDeleteCARootProcedure:
-			configDeleteCARootHandler.ServeHTTP(w, r)
-		case ConfigListCARootsProcedure:
-			configListCARootsHandler.ServeHTTP(w, r)
-		case ConfigCreateJoinTokenProcedure:
-			configCreateJoinTokenHandler.ServeHTTP(w, r)
-		case ConfigDeleteJoinTokenProcedure:
-			configDeleteJoinTokenHandler.ServeHTTP(w, r)
-		case ConfigListJoinTokensProcedure:
-			configListJoinTokensHandler.ServeHTTP(w, r)
-		case ConfigIssueOperatorProcedure:
-			configIssueOperatorHandler.ServeHTTP(w, r)
 		case ConfigUpsertClusterAuthzPolicyProcedure:
 			configUpsertClusterAuthzPolicyHandler.ServeHTTP(w, r)
 		case ConfigGetClusterAuthzPolicyProcedure:
@@ -766,34 +554,6 @@ func (UnimplementedConfigHandler) DeleteSecret(context.Context, *connect.Request
 
 func (UnimplementedConfigHandler) ListSecrets(context.Context, *connect.Request[configv1.ListSecretsRequest]) (*connect.Response[configv1.ListSecretsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.ListSecrets is not implemented"))
-}
-
-func (UnimplementedConfigHandler) UpsertCARoot(context.Context, *connect.Request[configv1.UpsertCARootRequest]) (*connect.Response[configv1.UpsertCARootResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.UpsertCARoot is not implemented"))
-}
-
-func (UnimplementedConfigHandler) DeleteCARoot(context.Context, *connect.Request[configv1.DeleteCARootRequest]) (*connect.Response[configv1.DeleteCARootResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.DeleteCARoot is not implemented"))
-}
-
-func (UnimplementedConfigHandler) ListCARoots(context.Context, *connect.Request[configv1.ListCARootsRequest]) (*connect.Response[configv1.ListCARootsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.ListCARoots is not implemented"))
-}
-
-func (UnimplementedConfigHandler) CreateJoinToken(context.Context, *connect.Request[configv1.CreateJoinTokenRequest]) (*connect.Response[configv1.CreateJoinTokenResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.CreateJoinToken is not implemented"))
-}
-
-func (UnimplementedConfigHandler) DeleteJoinToken(context.Context, *connect.Request[configv1.DeleteJoinTokenRequest]) (*connect.Response[configv1.DeleteJoinTokenResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.DeleteJoinToken is not implemented"))
-}
-
-func (UnimplementedConfigHandler) ListJoinTokens(context.Context, *connect.Request[configv1.ListJoinTokensRequest]) (*connect.Response[configv1.ListJoinTokensResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.ListJoinTokens is not implemented"))
-}
-
-func (UnimplementedConfigHandler) IssueOperator(context.Context, *connect.Request[configv1.IssueOperatorRequest]) (*connect.Response[configv1.IssueOperatorResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.config.v1.Config.IssueOperator is not implemented"))
 }
 
 func (UnimplementedConfigHandler) UpsertClusterAuthzPolicy(context.Context, *connect.Request[configv1.UpsertClusterAuthzPolicyRequest]) (*connect.Response[configv1.UpsertClusterAuthzPolicyResponse], error) {

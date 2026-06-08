@@ -33,7 +33,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/twinfer/reflw/internal/authz"
-	"github.com/twinfer/reflw/internal/certmgr"
 	"github.com/twinfer/reflw/internal/engine"
 	"github.com/twinfer/reflw/internal/engine/cluster"
 	"github.com/twinfer/reflw/internal/engine/handlerclient"
@@ -56,10 +55,6 @@ type Server struct {
 	runner *engine.MetadataRunner
 	log    *slog.Logger
 	signer handlerclient.Signer
-	// operatorIssuer signs IssueOperator CSRs against the active cluster
-	// CA. Optional: when nil (e.g. before a CA root exists), the
-	// IssueOperator RPC returns FailedPrecondition.
-	operatorIssuer *certmgr.ClusterIssuer
 	// planModelSet validates a RegisterModelSet against the existing ModelTable
 	// and returns the ModelRecords (with derived bundles) to write. pkg/reflw
 	// injects processengine.PlanModelSet when the process plane is enabled; nil
@@ -90,9 +85,6 @@ type Config struct {
 	// Signer, when non-nil, mints a JWT on outgoing
 	// DiscoveryService.Discover requests during RegisterDeployment.
 	Signer handlerclient.Signer
-	// OperatorIssuer, when non-nil, enables the IssueOperator RPC. Used
-	// to sign operator-supplied CSRs against the active cluster CA.
-	OperatorIssuer *certmgr.ClusterIssuer
 	// PlanModelSet, when non-nil, validates a RegisterModelSet and derives each
 	// model's bundle. pkg/reflw injects processengine.PlanModelSet when the
 	// process plane is enabled; nil falls back to a shallow well-formed-XML check
@@ -117,7 +109,6 @@ func NewServer(cfg Config) (*Server, error) {
 		runner:           cfg.Runner,
 		log:              cfg.Log,
 		signer:           cfg.Signer,
-		operatorIssuer:   cfg.OperatorIssuer,
 		planModelSet:     planModelSet,
 		adminCallTimeout: 30 * time.Second,
 	}, nil
@@ -127,14 +118,6 @@ func NewServer(cfg Config) (*Server, error) {
 // connectserver. opts is forwarded to the generated handler.
 func (s *Server) NewHandler(opts ...connect.HandlerOption) (string, http.Handler) {
 	return configv1connect.NewConfigHandler(s, opts...)
-}
-
-// SetOperatorIssuer attaches a ClusterIssuer for the IssueOperator RPC.
-// Late-bound because the issuer requires shard 0 to have an active CA
-// row, which the operator may populate after the listener comes up.
-// Calling with nil disables IssueOperator (returns FailedPrecondition).
-func (s *Server) SetOperatorIssuer(issuer *certmgr.ClusterIssuer) {
-	s.operatorIssuer = issuer
 }
 
 // requireLeader returns CodeUnavailable when this node is not the
@@ -613,117 +596,6 @@ func (s *Server) readSecretRevision(ctx context.Context) (uint64, error) {
 		return 0, err
 	}
 	return list.TableRevision, nil
-}
-
-// UpsertCARoot validates the record then proposes Command_UpsertCARoot
-// with the operator-supplied CAS guard. Returns the post-apply revision.
-func (s *Server) UpsertCARoot(ctx context.Context, req *connect.Request[configv1.UpsertCARootRequest]) (*connect.Response[configv1.UpsertCARootResponse], error) {
-	if err := s.requireLeader(); err != nil {
-		return nil, err
-	}
-	rec := req.Msg.GetRecord()
-	if rec == nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("config: record required"))
-	}
-	if err := validateCARootRecord(rec); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	cmd := &enginev1.Command{
-		Kind: &enginev1.Command_UpsertCaRoot{
-			UpsertCaRoot: &enginev1.UpsertCARoot{Record: rec},
-		},
-	}
-	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
-	defer cancel()
-	if err := s.proposeCAS(callCtx, cmd, req.Msg.GetIfTableRevisionEq()); err != nil {
-		return nil, err
-	}
-	newRev, err := s.readCARootRevision(callCtx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal,
-			fmt.Errorf("config: read post-apply revision: %w", err))
-	}
-	return connect.NewResponse(&configv1.UpsertCARootResponse{TableRevision: newRev}), nil
-}
-
-// DeleteCARoot removes the named row. CAS via if_table_revision_eq.
-// Deletes the active row are accepted: consumers (the per-node
-// ClusterIssuer) preserve their in-memory snapshot on resolve error so
-// in-flight handshakes keep working; renewals fail until a new row
-// lands.
-func (s *Server) DeleteCARoot(ctx context.Context, req *connect.Request[configv1.DeleteCARootRequest]) (*connect.Response[configv1.DeleteCARootResponse], error) {
-	if err := s.requireLeader(); err != nil {
-		return nil, err
-	}
-	name := req.Msg.GetName()
-	if name == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("config: name required"))
-	}
-	cmd := &enginev1.Command{
-		Kind: &enginev1.Command_DeleteCaRoot{
-			DeleteCaRoot: &enginev1.DeleteCARoot{Name: name},
-		},
-	}
-	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
-	defer cancel()
-	if err := s.proposeCAS(callCtx, cmd, req.Msg.GetIfTableRevisionEq()); err != nil {
-		return nil, err
-	}
-	newRev, err := s.readCARootRevision(callCtx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal,
-			fmt.Errorf("config: read post-apply revision: %w", err))
-	}
-	return connect.NewResponse(&configv1.DeleteCARootResponse{TableRevision: newRev}), nil
-}
-
-// ListCARoots returns every CARootRecord plus the table's current CAS
-// revision. No leader gate.
-func (s *Server) ListCARoots(ctx context.Context, _ *connect.Request[configv1.ListCARootsRequest]) (*connect.Response[configv1.ListCARootsResponse], error) {
-	callCtx, cancel := context.WithTimeout(ctx, s.adminCallTimeout)
-	defer cancel()
-	list, err := s.host.CARoots(callCtx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable,
-			fmt.Errorf("config: read caroots: %w", err))
-	}
-	return connect.NewResponse(&configv1.ListCARootsResponse{
-		Records:       list.Records,
-		TableRevision: list.TableRevision,
-	}), nil
-}
-
-// readCARootRevision is a SyncRead helper used by Upsert/Delete.
-func (s *Server) readCARootRevision(ctx context.Context) (uint64, error) {
-	list, err := s.host.CARoots(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return list.TableRevision, nil
-}
-
-// auditLogHardLimit caps the per-request scan even when the caller
-// asks for no limit (request.limit == 0). Keeps one operator query
-// from monopolizing the shard-0 SyncRead — operators with deeper
-// queries narrow the time window and paginate.
-// validateCARootRecord enforces shape rules on a CARootRecord. The
-// signing key is NOT loaded here: the per-node ClusterIssuer surfaces
-// resolve errors via reflw_pki_ca_sign_errors_total, and coupling
-// admin RPC availability to KMS+blob reachability would be wrong.
-func validateCARootRecord(rec *enginev1.CARootRecord) error {
-	if rec.GetName() == "" {
-		return errors.New("name is required")
-	}
-	if len(rec.GetCertPem()) == 0 {
-		return errors.New("cert_pem is required")
-	}
-	if rec.GetKeySecretName() == "" {
-		return errors.New("key_secret_name is required")
-	}
-	if rec.GetFingerprint() == "" {
-		return errors.New("fingerprint is required")
-	}
-	return nil
 }
 
 // validateSecretRecord enforces shape rules on a SecretRecord. No

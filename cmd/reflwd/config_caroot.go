@@ -2,40 +2,33 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
-	connect "connectrpc.com/connect"
-
 	"github.com/twinfer/reflw/internal/certmgr"
-	"github.com/twinfer/reflw/pkg/reflwclient"
-	configv1 "github.com/twinfer/reflw/proto/configv1"
+	"github.com/twinfer/reflw/internal/secretstore"
+	"github.com/twinfer/reflw/pkg/reflw"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
-// cmdCAInit generates a fresh cluster CA, encrypts the signing key
-// under --kek-uri (AAD = --secret-name), writes the ciphertext to
-// --key-blob-uri, then proposes Config.UpsertSecret followed by
-// Config.UpsertCARoot. After this returns, every node's
-// certmgr.ClusterIssuer picks up the new active CA on its next
-// reconcile.
+// cmdCAInit mints a fresh cluster CA locally, seals the signing key under
+// --kek-uri (AAD = reflw.ClusterCAKeyAAD) to --key-blob-uri, and writes
+// the public CA cert to --ca-cert-out. It then prints the cluster_ca
+// config block for operators to copy into every node's config.
 //
-// Idempotent on --row-name: re-running overwrites the existing row's
-// cert + key_secret_name. The signing key blob is independent — point
-// at a fresh --key-blob-uri or pass --force to overwrite.
+// This is a fully local command — it talks to the KMS + blob store but
+// never to the cluster. The cluster CA is config + KMS (public cert in
+// config, KMS-wrapped key at a blob URI); each node self-issues its own
+// mesh leaf from it at startup, so there is no shard-0 CA row, no join
+// token, and no central issuer.
 func cmdCAInit(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("ca init", flag.ContinueOnError)
-	tls := registerTLSFlags(fs)
-	rowName := fs.String("row-name", "active", "CARootTable row name (default: active)")
-	secretName := fs.String("secret-name", "ca/root/active", "SecretTable row name for the signing key")
 	kekURI := fs.String("kek-uri", "", "Tink KMS URI for wrapping the signing key (required)")
 	keyBlobURI := fs.String("key-blob-uri", "", "ciphertext destination for the wrapped signing key (gocloud.dev/blob; required)")
+	caCertOut := fs.String("ca-cert-out", "ca.crt", "path to write the public CA certificate PEM")
 	cn := fs.String("ca-cn", "reflw-cluster-ca", "CA subject CommonName")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -51,134 +44,94 @@ func cmdCAInit(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("generate CA: %w", err)
 	}
-	if err := encryptToBlob(ctx, *secretName, *kekURI, *keyBlobURI, ca.KeyPEM); err != nil {
+	// Seal with the fixed cluster-CA AAD so this ciphertext can't be
+	// resolved as some other (name-AAD) secret and vice versa.
+	if err := encryptToBlob(ctx, reflw.ClusterCAKeyAAD, *kekURI, *keyBlobURI, ca.KeyPEM); err != nil {
 		return err
 	}
-	fingerprint := spkiFingerprint(ca.Cert.RawSubjectPublicKeyInfo)
-
-	secretRec := &enginev1.SecretRecord{
-		Name: *secretName,
-		Source: &enginev1.SecretRecord_RemoteEncrypted{
-			RemoteEncrypted: &enginev1.RemoteEncryptedSecret{
-				BlobUri: *keyBlobURI,
-				KekUri:  *kekURI,
-			},
-		},
+	if err := os.WriteFile(*caCertOut, ca.CertPEM, 0o644); err != nil {
+		return fmt.Errorf("write CA cert %s: %w", *caCertOut, err)
 	}
-	rootRec := &enginev1.CARootRecord{
-		Name:          *rowName,
-		CertPem:       ca.CertPEM,
-		KeySecretName: *secretName,
-		Fingerprint:   fingerprint,
-		RotationEpoch: uint32(time.Now().Unix()),
-		CreatedAtMs:   uint64(time.Now().UnixMilli()),
-	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
-		sec, err := cli.Config.ListSecrets(rctx, connect.NewRequest(&configv1.ListSecretsRequest{}))
-		if err != nil {
-			return fmt.Errorf("read secret revision: %w", err)
-		}
-		if _, err := cli.Config.UpsertSecret(rctx, connect.NewRequest(&configv1.UpsertSecretRequest{
-			Record:            secretRec,
-			IfTableRevisionEq: sec.Msg.GetTableRevision(),
-		})); err != nil {
-			return fmt.Errorf("UpsertSecret: %w", err)
-		}
-		fmt.Fprintf(os.Stderr, "signing key registered (secret_name=%s)\n", *secretName)
-
-		roots, err := cli.Config.ListCARoots(rctx, connect.NewRequest(&configv1.ListCARootsRequest{}))
-		if err != nil {
-			return fmt.Errorf("read caroot revision: %w", err)
-		}
-		resp, err := cli.Config.UpsertCARoot(rctx, connect.NewRequest(&configv1.UpsertCARootRequest{
-			Record:            rootRec,
-			IfTableRevisionEq: roots.Msg.GetTableRevision(),
-		}))
-		if err != nil {
-			return fmt.Errorf("UpsertCARoot: %w", err)
-		}
-		fmt.Fprintf(os.Stderr, "CA root registered (row=%s, fingerprint=%s, table_revision=%d)\n",
-			*rowName, fingerprint, resp.Msg.GetTableRevision())
-		return nil
-	})
+	fmt.Fprintf(os.Stderr, "cluster CA minted: cert=%s, signing key sealed to %s\n", *caCertOut, *keyBlobURI)
+	fmt.Fprintf(os.Stderr, "\nAdd to every node's config so each node self-issues its mesh leaf:\n\n")
+	fmt.Printf("cluster_ca:\n")
+	fmt.Printf("  ca_cert_file: %s\n", *caCertOut)
+	fmt.Printf("  key_blob_uri: %s\n", *keyBlobURI)
+	fmt.Printf("  key_kek_uri:  %s\n", *kekURI)
+	return nil
 }
 
-// cmdCAList prints every CARootRecord in shard 0 as JSON. The cert
-// PEM is included; the signing key never is.
-func cmdCAList(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("ca list", flag.ContinueOnError)
-	tls := registerTLSFlags(fs)
+// cmdIssueOperator mints an operator client cert locally from the cluster
+// CA (public cert from --ca-cert-file, key KMS-unwrapped from
+// --key-blob-uri). Whoever can unwrap the CA key can mint a cert — the
+// same authority every node already has — so issuance needs no cluster
+// round-trip. Writes operator.crt / operator.key / ca.crt to --out.
+func cmdIssueOperator(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("issue-operator", flag.ContinueOnError)
+	name := fs.String("name", "", "operator name → CN operator/<name> (required)")
+	caCertFile := fs.String("ca-cert-file", "", "cluster CA certificate PEM (required)")
+	keyBlobURI := fs.String("key-blob-uri", "", "wrapped CA key blob URI (required)")
+	kekURI := fs.String("key-kek-uri", "", "KEK URI to unwrap the CA key (required)")
+	outDir := fs.String("out", ".", "directory to write operator.crt / operator.key / ca.crt")
+	validity := fs.Duration("validity", 30*24*time.Hour, "leaf validity")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
-		resp, err := cli.Config.ListCARoots(ctx, connect.NewRequest(&configv1.ListCARootsRequest{}))
-		if err != nil {
-			return err
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(map[string]any{
-			"table_revision": resp.Msg.GetTableRevision(),
-			"records":        resp.Msg.GetRecords(),
-		})
-	})
-}
-
-// cmdCADelete removes a CARootRecord by name. Does NOT cascade to the
-// referenced SecretTable row; operators delete the secret separately if
-// rotation is complete.
-func cmdCADelete(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("ca delete", flag.ContinueOnError)
-	tls := registerTLSFlags(fs)
-	name := fs.String("name", "", "CARootTable row name (required)")
-	if err := fs.Parse(args); err != nil {
+	if err := checkRequired(map[string]string{
+		"--name":         *name,
+		"--ca-cert-file": *caCertFile,
+		"--key-blob-uri": *keyBlobURI,
+		"--key-kek-uri":  *kekURI,
+	}); err != nil {
 		return err
 	}
-	if *name == "" {
-		return errors.New("--name is required")
+
+	certPEM, err := os.ReadFile(*caCertFile)
+	if err != nil {
+		return fmt.Errorf("read CA cert: %w", err)
 	}
-	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
-		list, err := cli.Config.ListCARoots(rctx, connect.NewRequest(&configv1.ListCARootsRequest{}))
-		if err != nil {
-			return fmt.Errorf("read revision: %w", err)
-		}
-		resp, err := cli.Config.DeleteCARoot(rctx, connect.NewRequest(&configv1.DeleteCARootRequest{
-			Name:              *name,
-			IfTableRevisionEq: list.Msg.GetTableRevision(),
-		}))
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "CA root deleted (name=%s, table_revision=%d)\n",
-			*name, resp.Msg.GetTableRevision())
-		return nil
+	resolveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	keyPEM, err := secretstore.ResolveRemoteEncrypted(resolveCtx, &enginev1.RemoteEncryptedSecret{
+		BlobUri: *keyBlobURI,
+		KekUri:  *kekURI,
+	}, []byte(reflw.ClusterCAKeyAAD), nil)
+	if err != nil {
+		return fmt.Errorf("unwrap CA key: %w", err)
+	}
+	ca, err := certmgr.ParseCA(certPEM, keyPEM)
+	if err != nil {
+		return fmt.Errorf("load CA: %w", err)
+	}
+	leafCert, leafKey, err := ca.IssueLeaf(certmgr.IssueLeafOptions{
+		Kind:     certmgr.CALeafOperator,
+		Name:     *name,
+		Validity: *validity,
 	})
+	if err != nil {
+		return fmt.Errorf("issue operator leaf: %w", err)
+	}
+	if _, _, err := certmgr.WriteLeaf(*outDir, "operator", leafCert, leafKey); err != nil {
+		return fmt.Errorf("write operator leaf: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(*outDir, "ca.crt"), ca.CertPEM, 0o644); err != nil {
+		return fmt.Errorf("write ca.crt: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "operator cert issued: CN=operator/%s → %s/{operator.crt,operator.key,ca.crt}\n", *name, *outDir)
+	return nil
 }
 
-// dispatchCA routes "reflwd config ca <subcmd>" to the right handler.
+// dispatchCA routes "reflwd config ca <subcmd>".
 func dispatchCA(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: reflwd config ca {init|list|delete} [flags]")
+		return fmt.Errorf("usage: reflwd config ca init [flags]")
 	}
 	sub := args[0]
 	rest := args[1:]
 	switch sub {
 	case "init":
 		return cmdCAInit(ctx, rest)
-	case "list":
-		return cmdCAList(ctx, rest)
-	case "delete":
-		return cmdCADelete(ctx, rest)
 	default:
 		return fmt.Errorf("reflwd config ca: unknown subcommand %q", sub)
 	}
-}
-
-// spkiFingerprint is the operator-facing trust-anchor pin format used
-// across creds + the bootstrap CLI: sha256:<lowercase-hex>(SPKI).
-// Matches pkg/reflw/creds.SPKIFingerprint exactly.
-func spkiFingerprint(spki []byte) string {
-	sum := sha256.Sum256(spki)
-	return "sha256:" + hex.EncodeToString(sum[:])
 }

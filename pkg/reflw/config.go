@@ -38,12 +38,11 @@ type Config struct {
 	Logging   LoggingConfig   `koanf:"logging"`
 	Delivery  DeliveryConfig  `koanf:"delivery"`
 	Admin     AdminConfig     `koanf:"admin"`
-	Bootstrap BootstrapConfig `koanf:"bootstrap"`
 	Auth      AuthConfig      `koanf:"auth"`
 	Snapshot  SnapshotConfig  `koanf:"snapshot"`
 	Handlers  HandlersConfig  `koanf:"handlers"`
 	KMS       KMSConfig       `koanf:"kms"`
-	PKI       PKIConfig       `koanf:"pki"`
+	ClusterCA ClusterCAConfig `koanf:"cluster_ca"`
 	Rebalance RebalanceConfig `koanf:"rebalance"`
 	Webhooks  []WebhookConfig `koanf:"webhooks"`
 	Process   ProcessConfig   `koanf:"process"`
@@ -93,44 +92,47 @@ type KMSConfig struct {
 	Vault VaultKMSConfig `koanf:"vault"`
 }
 
-// PKIConfig configures how the cluster CA signs leaves. Today the
-// only Issuer implementation is "builtin" (the CARootTable-backed
-// ClusterIssuer); the sub-scope leaves room for future Issuer plugins
-// (ACME, smallstep, k8s cert-manager) without renaming fields.
-type PKIConfig struct {
-	Builtin BuiltinPKIConfig `koanf:"builtin"`
+// ClusterCAConfig configures the cluster CA every node self-issues its
+// mesh leaf from. The CA cert is public (a trust anchor distributed via
+// config); the CA private key is KMS-wrapped at rest and fetched +
+// unwrapped into memory once at startup. When unset (single-node / dev)
+// no mesh identity is built and the listeners fall back to their own
+// X.Creds specs. Operators mint the CA + seal its key with
+// `reflwd config ca init`, which prints this block.
+type ClusterCAConfig struct {
+	// CACertFile is a path to the PEM-encoded CA certificate (the mesh
+	// trust anchor). Mutually exclusive with CACertPEM.
+	CACertFile string `koanf:"ca_cert_file"`
+	// CACertPEM is the inline PEM-encoded CA certificate. Alternative to
+	// CACertFile for config systems that prefer inline material.
+	CACertPEM string `koanf:"ca_cert_pem"`
+	// KeyBlobURI is the gocloud.dev/blob URI of the KMS-wrapped CA
+	// private-key ciphertext (same shape as a SecretRecord's blob_uri).
+	KeyBlobURI string `koanf:"key_blob_uri"`
+	// KeyKEKURI is the Tink KMS URI that decrypts the CA key blob,
+	// dispatched through the process-global KMSClient registry.
+	KeyKEKURI string `koanf:"key_kek_uri"`
+	// LeafValidity is the lifetime of each self-issued node leaf. Zero
+	// defaults to 24h; CertMagic renews in the background before expiry.
+	LeafValidity time.Duration `koanf:"leaf_validity"`
+	// CertCacheDir is the CertMagic storage root for the self-managed
+	// leaf. Empty defaults to <data_dir>/mesh.
+	CertCacheDir string `koanf:"cert_cache_dir"`
+	// LeafHosts are extra DNS/IP SANs embedded in the self-issued node
+	// leaf, beyond those auto-derived from the node's advertised raft /
+	// delivery / admin addresses. The mesh itself verifies peers by leaf
+	// CN (not hostname), but external clients that dial the admin port —
+	// the `reflwd cluster`/`config` CLIs — do standard hostname
+	// verification, so add any load-balancer name or localhost here that
+	// such clients connect through.
+	LeafHosts []string `koanf:"leaf_hosts"`
 }
 
-// BuiltinPKIConfig tunes the shard-0-backed ClusterIssuer. SigningMode
-// picks the CA signing-key source:
-//
-//   - "local" (default): the CA private key is fetched from shard 0's
-//     SecretTable as PEM bytes on every Refresh. KEK-wrapped at rest;
-//     plaintext key bytes appear in process memory for as long as the
-//     active CA snapshot is held.
-//   - "kms_remote": KMSKeyURI is dispatched through certmgr's
-//     RemoteSigner registry to obtain a crypto.Signer that proxies
-//     every Sign() call to the KMS. The CA private key NEVER enters
-//     process memory. Operators wire concrete provider factories
-//     (AWS KMS, GCP Cloud KMS, Vault Transit, Azure Key Vault, …) at
-//     startup via certmgr.RegisterRemoteSigner before reflw.Run.
-//
-// kms_remote is cluster-wide: the cert PEM in CARootTable is bound to
-// the KMS-held key, so every node MUST be configured with the same
-// signing mode + URI. Mixing modes within one cluster will trip the
-// cert-vs-signer public-key check at Refresh time and the node will
-// refuse to issue leaves.
-type BuiltinPKIConfig struct {
-	// SigningMode selects "local" or "kms_remote". Empty defaults to
-	// "local" for backwards-compatibility with pre-PR-5 deployments.
-	SigningMode string `koanf:"signing_mode"`
-
-	// KMSKeyURI is the URI of the KMS-managed signing key handle, e.g.
-	// "aws-kms://arn:aws:kms:us-east-1:123:key/abc",
-	// "gcp-kms://projects/p/locations/l/keyRings/r/cryptoKeys/k",
-	// "hcvault://addr/transit/keys/name". Required when
-	// SigningMode="kms_remote"; ignored otherwise.
-	KMSKeyURI string `koanf:"kms_key_uri"`
+// Enabled reports whether a cluster CA is configured (a CA cert plus a
+// KMS-wrapped key blob). When false, Run skips building the node mesh
+// identity and listeners use their own creds specs.
+func (c ClusterCAConfig) Enabled() bool {
+	return (c.CACertFile != "" || c.CACertPEM != "") && c.KeyBlobURI != "" && c.KeyKEKURI != ""
 }
 
 // VaultKMSConfig configures the HashiCorp Vault Transit KMS provider.
@@ -200,36 +202,18 @@ type AdminConfig struct {
 	// Addr is the listen address for the admin gRPC server. Empty
 	// disables the server (single-node deployments rarely need it).
 	Addr string `koanf:"addr"`
+	// AdvertisedAddr, when non-empty, is the admin endpoint published via
+	// gossip (NodeHostMeta.admin_endpoint) and used by a joiner's SelfJoin
+	// to dial the metadata leader. Set this to a routable host:port when
+	// Addr is a wildcard bind (0.0.0.0:…), exactly as RaftAdvertisedAddr
+	// relates to RaftAddr. Empty falls back to Addr.
+	AdvertisedAddr string `koanf:"advertised_addr"`
 	// Disabled forces the admin server off even when Addr is set. Used
 	// by tests + multi-process embedders that ship their own surface.
 	Disabled bool `koanf:"disabled"`
 	// Creds selects the transport-security driver for the admin
 	// listener.
 	Creds creds.Spec `koanf:"creds"`
-}
-
-// BootstrapConfig configures the kubeadm-style joiner credential
-// exchange (MeshSign). The bootstrap listener is opt-in and segregated
-// from Admin so a freshly-installed joiner with no mesh leaf can reach
-// it without bypassing the Admin RequireAndVerifyClientCert gate. The
-// join token in the request is the authorization fact, not a TLS peer
-// cert. Operators typically enable the bootstrap port on a couple of
-// nodes behind a firewall rule that only allows freshly-imaged hosts
-// to reach it.
-type BootstrapConfig struct {
-	// Addr is the listen address. Empty disables the bootstrap server.
-	Addr string `koanf:"addr"`
-	// Disabled forces the bootstrap server off even when Addr is set.
-	Disabled bool `koanf:"disabled"`
-	// Creds selects the transport-security driver. TLS without client
-	// auth is the supported mode; the bootstrap server rejects start
-	// when ClientAuth would be required.
-	Creds creds.Spec `koanf:"creds"`
-	// LeafValidity is the validity stamped onto signed bootstrap
-	// leaves. Zero defaults to 24h, matching certmgr's per-renewal
-	// default — joiners renew via their per-node ClusterIssuer once
-	// running.
-	LeafValidity time.Duration `koanf:"leaf_validity"`
 }
 
 // AuthConfig drives the authentication + authorization interceptor

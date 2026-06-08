@@ -1348,288 +1348,6 @@ func (x *ListSecretsResponse) GetTableRevision() uint64 {
 	return 0
 }
 
-// UpsertCARootRequest carries one CARootRecord plus an optional CAS
-// guard. if_table_revision_eq=0 disables CAS.
-type UpsertCARootRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Record            *enginev1.CARootRecord `protobuf:"bytes,1,opt,name=record,proto3" json:"record,omitempty"`
-	IfTableRevisionEq uint64                 `protobuf:"varint,2,opt,name=if_table_revision_eq,json=ifTableRevisionEq,proto3" json:"if_table_revision_eq,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
-}
-
-func (x *UpsertCARootRequest) Reset() {
-	*x = UpsertCARootRequest{}
-	mi := &file_configv1_config_proto_msgTypes[27]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *UpsertCARootRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*UpsertCARootRequest) ProtoMessage() {}
-
-func (x *UpsertCARootRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[27]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use UpsertCARootRequest.ProtoReflect.Descriptor instead.
-func (*UpsertCARootRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{27}
-}
-
-func (x *UpsertCARootRequest) GetRecord() *enginev1.CARootRecord {
-	if x != nil {
-		return x.Record
-	}
-	return nil
-}
-
-func (x *UpsertCARootRequest) GetIfTableRevisionEq() uint64 {
-	if x != nil {
-		return x.IfTableRevisionEq
-	}
-	return 0
-}
-
-type UpsertCARootResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TableRevision uint64                 `protobuf:"varint,1,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *UpsertCARootResponse) Reset() {
-	*x = UpsertCARootResponse{}
-	mi := &file_configv1_config_proto_msgTypes[28]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *UpsertCARootResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*UpsertCARootResponse) ProtoMessage() {}
-
-func (x *UpsertCARootResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[28]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use UpsertCARootResponse.ProtoReflect.Descriptor instead.
-func (*UpsertCARootResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{28}
-}
-
-func (x *UpsertCARootResponse) GetTableRevision() uint64 {
-	if x != nil {
-		return x.TableRevision
-	}
-	return 0
-}
-
-type DeleteCARootRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Name              string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	IfTableRevisionEq uint64                 `protobuf:"varint,2,opt,name=if_table_revision_eq,json=ifTableRevisionEq,proto3" json:"if_table_revision_eq,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
-}
-
-func (x *DeleteCARootRequest) Reset() {
-	*x = DeleteCARootRequest{}
-	mi := &file_configv1_config_proto_msgTypes[29]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DeleteCARootRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DeleteCARootRequest) ProtoMessage() {}
-
-func (x *DeleteCARootRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[29]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DeleteCARootRequest.ProtoReflect.Descriptor instead.
-func (*DeleteCARootRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{29}
-}
-
-func (x *DeleteCARootRequest) GetName() string {
-	if x != nil {
-		return x.Name
-	}
-	return ""
-}
-
-func (x *DeleteCARootRequest) GetIfTableRevisionEq() uint64 {
-	if x != nil {
-		return x.IfTableRevisionEq
-	}
-	return 0
-}
-
-type DeleteCARootResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TableRevision uint64                 `protobuf:"varint,1,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *DeleteCARootResponse) Reset() {
-	*x = DeleteCARootResponse{}
-	mi := &file_configv1_config_proto_msgTypes[30]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DeleteCARootResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DeleteCARootResponse) ProtoMessage() {}
-
-func (x *DeleteCARootResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[30]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DeleteCARootResponse.ProtoReflect.Descriptor instead.
-func (*DeleteCARootResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{30}
-}
-
-func (x *DeleteCARootResponse) GetTableRevision() uint64 {
-	if x != nil {
-		return x.TableRevision
-	}
-	return 0
-}
-
-type ListCARootsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ListCARootsRequest) Reset() {
-	*x = ListCARootsRequest{}
-	mi := &file_configv1_config_proto_msgTypes[31]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ListCARootsRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListCARootsRequest) ProtoMessage() {}
-
-func (x *ListCARootsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[31]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ListCARootsRequest.ProtoReflect.Descriptor instead.
-func (*ListCARootsRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{31}
-}
-
-type ListCARootsResponse struct {
-	state         protoimpl.MessageState   `protogen:"open.v1"`
-	Records       []*enginev1.CARootRecord `protobuf:"bytes,1,rep,name=records,proto3" json:"records,omitempty"`
-	TableRevision uint64                   `protobuf:"varint,2,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ListCARootsResponse) Reset() {
-	*x = ListCARootsResponse{}
-	mi := &file_configv1_config_proto_msgTypes[32]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ListCARootsResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListCARootsResponse) ProtoMessage() {}
-
-func (x *ListCARootsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[32]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ListCARootsResponse.ProtoReflect.Descriptor instead.
-func (*ListCARootsResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{32}
-}
-
-func (x *ListCARootsResponse) GetRecords() []*enginev1.CARootRecord {
-	if x != nil {
-		return x.Records
-	}
-	return nil
-}
-
-func (x *ListCARootsResponse) GetTableRevision() uint64 {
-	if x != nil {
-		return x.TableRevision
-	}
-	return 0
-}
-
 // LeaderHint is attached as a connect.Error detail on
 // connect.CodeUnavailable returned by mutating Config RPCs when the
 // receiving node is not the metadata leader. Clients extract it, dial
@@ -1645,7 +1363,7 @@ type LeaderHint struct {
 
 func (x *LeaderHint) Reset() {
 	*x = LeaderHint{}
-	mi := &file_configv1_config_proto_msgTypes[33]
+	mi := &file_configv1_config_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1657,7 +1375,7 @@ func (x *LeaderHint) String() string {
 func (*LeaderHint) ProtoMessage() {}
 
 func (x *LeaderHint) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[33]
+	mi := &file_configv1_config_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1670,7 +1388,7 @@ func (x *LeaderHint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaderHint.ProtoReflect.Descriptor instead.
 func (*LeaderHint) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{33}
+	return file_configv1_config_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *LeaderHint) GetNodeId() uint64 {
@@ -1683,457 +1401,6 @@ func (x *LeaderHint) GetNodeId() uint64 {
 func (x *LeaderHint) GetAdminEndpoint() string {
 	if x != nil {
 		return x.AdminEndpoint
-	}
-	return ""
-}
-
-// CreateJoinTokenRequest configures a one-time bootstrap credential.
-//   - kind: NODE for a `reflwd run --join` flow, OPERATOR for
-//     `reflwd config issue-operator` (the operator generates the
-//     keypair locally and submits a CSR — same RPC, different path
-//     into the cluster).
-//   - requested_name: the CN-name segment the joiner will use. For
-//     node tokens, "auto" lets the bootstrap server allocate the
-//     next free node_id at redemption time. For operator tokens, the
-//     name is mandatory (operator-chosen, never "auto").
-//   - ttl_seconds: how long the token remains redeemable. The
-//     bootstrap server rejects with PermissionDenied once exceeded.
-//     Zero means no TTL (single_use is still enforced — once spent,
-//     the row stays in the table but cannot be redeemed again).
-//   - single_use: true (the default) marks the row as spent on the
-//     first successful MeshSign redemption. false produces a token
-//     that can be redeemed repeatedly until expiry — used sparingly
-//     for ephemeral CI scenarios.
-type CreateJoinTokenRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Kind          enginev1.JoinTokenKind `protobuf:"varint,1,opt,name=kind,proto3,enum=reflw.engine.v1.JoinTokenKind" json:"kind,omitempty"`
-	RequestedName string                 `protobuf:"bytes,2,opt,name=requested_name,json=requestedName,proto3" json:"requested_name,omitempty"`
-	TtlSeconds    uint64                 `protobuf:"varint,3,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`
-	SingleUse     bool                   `protobuf:"varint,4,opt,name=single_use,json=singleUse,proto3" json:"single_use,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CreateJoinTokenRequest) Reset() {
-	*x = CreateJoinTokenRequest{}
-	mi := &file_configv1_config_proto_msgTypes[34]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CreateJoinTokenRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CreateJoinTokenRequest) ProtoMessage() {}
-
-func (x *CreateJoinTokenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[34]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CreateJoinTokenRequest.ProtoReflect.Descriptor instead.
-func (*CreateJoinTokenRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{34}
-}
-
-func (x *CreateJoinTokenRequest) GetKind() enginev1.JoinTokenKind {
-	if x != nil {
-		return x.Kind
-	}
-	return enginev1.JoinTokenKind(0)
-}
-
-func (x *CreateJoinTokenRequest) GetRequestedName() string {
-	if x != nil {
-		return x.RequestedName
-	}
-	return ""
-}
-
-func (x *CreateJoinTokenRequest) GetTtlSeconds() uint64 {
-	if x != nil {
-		return x.TtlSeconds
-	}
-	return 0
-}
-
-func (x *CreateJoinTokenRequest) GetSingleUse() bool {
-	if x != nil {
-		return x.SingleUse
-	}
-	return false
-}
-
-type CreateJoinTokenResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// token is the plaintext credential the operator forwards to the
-	// joiner. Shown exactly once; the server persists only sha256(token).
-	Token         string `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
-	TokenHash     []byte `protobuf:"bytes,2,opt,name=token_hash,json=tokenHash,proto3" json:"token_hash,omitempty"`
-	TableRevision uint64 `protobuf:"varint,3,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CreateJoinTokenResponse) Reset() {
-	*x = CreateJoinTokenResponse{}
-	mi := &file_configv1_config_proto_msgTypes[35]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CreateJoinTokenResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CreateJoinTokenResponse) ProtoMessage() {}
-
-func (x *CreateJoinTokenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[35]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CreateJoinTokenResponse.ProtoReflect.Descriptor instead.
-func (*CreateJoinTokenResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{35}
-}
-
-func (x *CreateJoinTokenResponse) GetToken() string {
-	if x != nil {
-		return x.Token
-	}
-	return ""
-}
-
-func (x *CreateJoinTokenResponse) GetTokenHash() []byte {
-	if x != nil {
-		return x.TokenHash
-	}
-	return nil
-}
-
-func (x *CreateJoinTokenResponse) GetTableRevision() uint64 {
-	if x != nil {
-		return x.TableRevision
-	}
-	return 0
-}
-
-type DeleteJoinTokenRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// token_hash is the sha256(token) returned by ListJoinTokens.
-	TokenHash         []byte `protobuf:"bytes,1,opt,name=token_hash,json=tokenHash,proto3" json:"token_hash,omitempty"`
-	IfTableRevisionEq uint64 `protobuf:"varint,2,opt,name=if_table_revision_eq,json=ifTableRevisionEq,proto3" json:"if_table_revision_eq,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
-}
-
-func (x *DeleteJoinTokenRequest) Reset() {
-	*x = DeleteJoinTokenRequest{}
-	mi := &file_configv1_config_proto_msgTypes[36]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DeleteJoinTokenRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DeleteJoinTokenRequest) ProtoMessage() {}
-
-func (x *DeleteJoinTokenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[36]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DeleteJoinTokenRequest.ProtoReflect.Descriptor instead.
-func (*DeleteJoinTokenRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{36}
-}
-
-func (x *DeleteJoinTokenRequest) GetTokenHash() []byte {
-	if x != nil {
-		return x.TokenHash
-	}
-	return nil
-}
-
-func (x *DeleteJoinTokenRequest) GetIfTableRevisionEq() uint64 {
-	if x != nil {
-		return x.IfTableRevisionEq
-	}
-	return 0
-}
-
-type DeleteJoinTokenResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TableRevision uint64                 `protobuf:"varint,1,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *DeleteJoinTokenResponse) Reset() {
-	*x = DeleteJoinTokenResponse{}
-	mi := &file_configv1_config_proto_msgTypes[37]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DeleteJoinTokenResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DeleteJoinTokenResponse) ProtoMessage() {}
-
-func (x *DeleteJoinTokenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[37]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DeleteJoinTokenResponse.ProtoReflect.Descriptor instead.
-func (*DeleteJoinTokenResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{37}
-}
-
-func (x *DeleteJoinTokenResponse) GetTableRevision() uint64 {
-	if x != nil {
-		return x.TableRevision
-	}
-	return 0
-}
-
-type ListJoinTokensRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ListJoinTokensRequest) Reset() {
-	*x = ListJoinTokensRequest{}
-	mi := &file_configv1_config_proto_msgTypes[38]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ListJoinTokensRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListJoinTokensRequest) ProtoMessage() {}
-
-func (x *ListJoinTokensRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[38]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ListJoinTokensRequest.ProtoReflect.Descriptor instead.
-func (*ListJoinTokensRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{38}
-}
-
-type ListJoinTokensResponse struct {
-	state         protoimpl.MessageState      `protogen:"open.v1"`
-	Records       []*enginev1.JoinTokenRecord `protobuf:"bytes,1,rep,name=records,proto3" json:"records,omitempty"`
-	TableRevision uint64                      `protobuf:"varint,2,opt,name=table_revision,json=tableRevision,proto3" json:"table_revision,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ListJoinTokensResponse) Reset() {
-	*x = ListJoinTokensResponse{}
-	mi := &file_configv1_config_proto_msgTypes[39]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ListJoinTokensResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListJoinTokensResponse) ProtoMessage() {}
-
-func (x *ListJoinTokensResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[39]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ListJoinTokensResponse.ProtoReflect.Descriptor instead.
-func (*ListJoinTokensResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{39}
-}
-
-func (x *ListJoinTokensResponse) GetRecords() []*enginev1.JoinTokenRecord {
-	if x != nil {
-		return x.Records
-	}
-	return nil
-}
-
-func (x *ListJoinTokensResponse) GetTableRevision() uint64 {
-	if x != nil {
-		return x.TableRevision
-	}
-	return 0
-}
-
-// IssueOperatorRequest carries an operator-generated CSR. Replaces the
-// deleted `reflwd pki issue-operator` flow. The operator keypair never
-// leaves the operator's machine; the server signs only the public key.
-type IssueOperatorRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// DER-encoded x509.CertificateRequest. Subject.CommonName must be
-	// "operator/<name>". validity is honored up to the server's
-	// configured ceiling (default 30 days; longer requests are clamped
-	// silently).
-	CsrDer          []byte `protobuf:"bytes,1,opt,name=csr_der,json=csrDer,proto3" json:"csr_der,omitempty"`
-	ValiditySeconds uint64 `protobuf:"varint,2,opt,name=validity_seconds,json=validitySeconds,proto3" json:"validity_seconds,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
-}
-
-func (x *IssueOperatorRequest) Reset() {
-	*x = IssueOperatorRequest{}
-	mi := &file_configv1_config_proto_msgTypes[40]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *IssueOperatorRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*IssueOperatorRequest) ProtoMessage() {}
-
-func (x *IssueOperatorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[40]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use IssueOperatorRequest.ProtoReflect.Descriptor instead.
-func (*IssueOperatorRequest) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{40}
-}
-
-func (x *IssueOperatorRequest) GetCsrDer() []byte {
-	if x != nil {
-		return x.CsrDer
-	}
-	return nil
-}
-
-func (x *IssueOperatorRequest) GetValiditySeconds() uint64 {
-	if x != nil {
-		return x.ValiditySeconds
-	}
-	return 0
-}
-
-type IssueOperatorResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CertPem       []byte                 `protobuf:"bytes,1,opt,name=cert_pem,json=certPem,proto3" json:"cert_pem,omitempty"`
-	CaChainPem    []byte                 `protobuf:"bytes,2,opt,name=ca_chain_pem,json=caChainPem,proto3" json:"ca_chain_pem,omitempty"`
-	CaFingerprint string                 `protobuf:"bytes,3,opt,name=ca_fingerprint,json=caFingerprint,proto3" json:"ca_fingerprint,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *IssueOperatorResponse) Reset() {
-	*x = IssueOperatorResponse{}
-	mi := &file_configv1_config_proto_msgTypes[41]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *IssueOperatorResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*IssueOperatorResponse) ProtoMessage() {}
-
-func (x *IssueOperatorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_configv1_config_proto_msgTypes[41]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use IssueOperatorResponse.ProtoReflect.Descriptor instead.
-func (*IssueOperatorResponse) Descriptor() ([]byte, []int) {
-	return file_configv1_config_proto_rawDescGZIP(), []int{41}
-}
-
-func (x *IssueOperatorResponse) GetCertPem() []byte {
-	if x != nil {
-		return x.CertPem
-	}
-	return nil
-}
-
-func (x *IssueOperatorResponse) GetCaChainPem() []byte {
-	if x != nil {
-		return x.CaChainPem
-	}
-	return nil
-}
-
-func (x *IssueOperatorResponse) GetCaFingerprint() string {
-	if x != nil {
-		return x.CaFingerprint
 	}
 	return ""
 }
@@ -2211,55 +1478,12 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\x12ListSecretsRequest\"u\n" +
 	"\x13ListSecretsResponse\x127\n" +
 	"\arecords\x18\x01 \x03(\v2\x1d.reflw.engine.v1.SecretRecordR\arecords\x12%\n" +
-	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"}\n" +
-	"\x13UpsertCARootRequest\x125\n" +
-	"\x06record\x18\x01 \x01(\v2\x1d.reflw.engine.v1.CARootRecordR\x06record\x12/\n" +
-	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"=\n" +
-	"\x14UpsertCARootResponse\x12%\n" +
-	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"Z\n" +
-	"\x13DeleteCARootRequest\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12/\n" +
-	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"=\n" +
-	"\x14DeleteCARootResponse\x12%\n" +
-	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"\x14\n" +
-	"\x12ListCARootsRequest\"u\n" +
-	"\x13ListCARootsResponse\x127\n" +
-	"\arecords\x18\x01 \x03(\v2\x1d.reflw.engine.v1.CARootRecordR\arecords\x12%\n" +
 	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"L\n" +
 	"\n" +
 	"LeaderHint\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12%\n" +
-	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint\"\xb3\x01\n" +
-	"\x16CreateJoinTokenRequest\x122\n" +
-	"\x04kind\x18\x01 \x01(\x0e2\x1e.reflw.engine.v1.JoinTokenKindR\x04kind\x12%\n" +
-	"\x0erequested_name\x18\x02 \x01(\tR\rrequestedName\x12\x1f\n" +
-	"\vttl_seconds\x18\x03 \x01(\x04R\n" +
-	"ttlSeconds\x12\x1d\n" +
+	"\x0eadmin_endpoint\x18\x02 \x01(\tR\radminEndpoint2\xbc\n" +
 	"\n" +
-	"single_use\x18\x04 \x01(\bR\tsingleUse\"u\n" +
-	"\x17CreateJoinTokenResponse\x12\x14\n" +
-	"\x05token\x18\x01 \x01(\tR\x05token\x12\x1d\n" +
-	"\n" +
-	"token_hash\x18\x02 \x01(\fR\ttokenHash\x12%\n" +
-	"\x0etable_revision\x18\x03 \x01(\x04R\rtableRevision\"h\n" +
-	"\x16DeleteJoinTokenRequest\x12\x1d\n" +
-	"\n" +
-	"token_hash\x18\x01 \x01(\fR\ttokenHash\x12/\n" +
-	"\x14if_table_revision_eq\x18\x02 \x01(\x04R\x11ifTableRevisionEq\"@\n" +
-	"\x17DeleteJoinTokenResponse\x12%\n" +
-	"\x0etable_revision\x18\x01 \x01(\x04R\rtableRevision\"\x17\n" +
-	"\x15ListJoinTokensRequest\"{\n" +
-	"\x16ListJoinTokensResponse\x12:\n" +
-	"\arecords\x18\x01 \x03(\v2 .reflw.engine.v1.JoinTokenRecordR\arecords\x12%\n" +
-	"\x0etable_revision\x18\x02 \x01(\x04R\rtableRevision\"Z\n" +
-	"\x14IssueOperatorRequest\x12\x17\n" +
-	"\acsr_der\x18\x01 \x01(\fR\x06csrDer\x12)\n" +
-	"\x10validity_seconds\x18\x02 \x01(\x04R\x0fvaliditySeconds\"{\n" +
-	"\x15IssueOperatorResponse\x12\x19\n" +
-	"\bcert_pem\x18\x01 \x01(\fR\acertPem\x12 \n" +
-	"\fca_chain_pem\x18\x02 \x01(\fR\n" +
-	"caChainPem\x12%\n" +
-	"\x0eca_fingerprint\x18\x03 \x01(\tR\rcaFingerprint2\xdf\x0f\n" +
 	"\x06Config\x12m\n" +
 	"\x12RegisterDeployment\x12*.reflw.config.v1.RegisterDeploymentRequest\x1a+.reflw.config.v1.RegisterDeploymentResponse\x12d\n" +
 	"\x0fListDeployments\x12'.reflw.config.v1.ListDeploymentsRequest\x1a(.reflw.config.v1.ListDeploymentsResponse\x12m\n" +
@@ -2272,14 +1496,7 @@ const file_configv1_config_proto_rawDesc = "" +
 	"\vDeleteModel\x12#.reflw.config.v1.DeleteModelRequest\x1a$.reflw.config.v1.DeleteModelResponse\x12[\n" +
 	"\fUpsertSecret\x12$.reflw.config.v1.UpsertSecretRequest\x1a%.reflw.config.v1.UpsertSecretResponse\x12[\n" +
 	"\fDeleteSecret\x12$.reflw.config.v1.DeleteSecretRequest\x1a%.reflw.config.v1.DeleteSecretResponse\x12X\n" +
-	"\vListSecrets\x12#.reflw.config.v1.ListSecretsRequest\x1a$.reflw.config.v1.ListSecretsResponse\x12[\n" +
-	"\fUpsertCARoot\x12$.reflw.config.v1.UpsertCARootRequest\x1a%.reflw.config.v1.UpsertCARootResponse\x12[\n" +
-	"\fDeleteCARoot\x12$.reflw.config.v1.DeleteCARootRequest\x1a%.reflw.config.v1.DeleteCARootResponse\x12X\n" +
-	"\vListCARoots\x12#.reflw.config.v1.ListCARootsRequest\x1a$.reflw.config.v1.ListCARootsResponse\x12d\n" +
-	"\x0fCreateJoinToken\x12'.reflw.config.v1.CreateJoinTokenRequest\x1a(.reflw.config.v1.CreateJoinTokenResponse\x12d\n" +
-	"\x0fDeleteJoinToken\x12'.reflw.config.v1.DeleteJoinTokenRequest\x1a(.reflw.config.v1.DeleteJoinTokenResponse\x12a\n" +
-	"\x0eListJoinTokens\x12&.reflw.config.v1.ListJoinTokensRequest\x1a'.reflw.config.v1.ListJoinTokensResponse\x12^\n" +
-	"\rIssueOperator\x12%.reflw.config.v1.IssueOperatorRequest\x1a&.reflw.config.v1.IssueOperatorResponse\x12\x7f\n" +
+	"\vListSecrets\x12#.reflw.config.v1.ListSecretsRequest\x1a$.reflw.config.v1.ListSecretsResponse\x12\x7f\n" +
 	"\x18UpsertClusterAuthzPolicy\x120.reflw.config.v1.UpsertClusterAuthzPolicyRequest\x1a1.reflw.config.v1.UpsertClusterAuthzPolicyResponse\x12v\n" +
 	"\x15GetClusterAuthzPolicy\x12-.reflw.config.v1.GetClusterAuthzPolicyRequest\x1a..reflw.config.v1.GetClusterAuthzPolicyResponseB2Z0github.com/twinfer/reflw/proto/configv1;configv1b\x06proto3"
 
@@ -2295,7 +1512,7 @@ func file_configv1_config_proto_rawDescGZIP() []byte {
 	return file_configv1_config_proto_rawDescData
 }
 
-var file_configv1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
+var file_configv1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
 var file_configv1_config_proto_goTypes = []any{
 	(*RegisterDeploymentRequest)(nil),        // 0: reflw.config.v1.RegisterDeploymentRequest
 	(*RegisterDeploymentResponse)(nil),       // 1: reflw.config.v1.RegisterDeploymentResponse
@@ -2324,89 +1541,54 @@ var file_configv1_config_proto_goTypes = []any{
 	(*DeleteSecretResponse)(nil),             // 24: reflw.config.v1.DeleteSecretResponse
 	(*ListSecretsRequest)(nil),               // 25: reflw.config.v1.ListSecretsRequest
 	(*ListSecretsResponse)(nil),              // 26: reflw.config.v1.ListSecretsResponse
-	(*UpsertCARootRequest)(nil),              // 27: reflw.config.v1.UpsertCARootRequest
-	(*UpsertCARootResponse)(nil),             // 28: reflw.config.v1.UpsertCARootResponse
-	(*DeleteCARootRequest)(nil),              // 29: reflw.config.v1.DeleteCARootRequest
-	(*DeleteCARootResponse)(nil),             // 30: reflw.config.v1.DeleteCARootResponse
-	(*ListCARootsRequest)(nil),               // 31: reflw.config.v1.ListCARootsRequest
-	(*ListCARootsResponse)(nil),              // 32: reflw.config.v1.ListCARootsResponse
-	(*LeaderHint)(nil),                       // 33: reflw.config.v1.LeaderHint
-	(*CreateJoinTokenRequest)(nil),           // 34: reflw.config.v1.CreateJoinTokenRequest
-	(*CreateJoinTokenResponse)(nil),          // 35: reflw.config.v1.CreateJoinTokenResponse
-	(*DeleteJoinTokenRequest)(nil),           // 36: reflw.config.v1.DeleteJoinTokenRequest
-	(*DeleteJoinTokenResponse)(nil),          // 37: reflw.config.v1.DeleteJoinTokenResponse
-	(*ListJoinTokensRequest)(nil),            // 38: reflw.config.v1.ListJoinTokensRequest
-	(*ListJoinTokensResponse)(nil),           // 39: reflw.config.v1.ListJoinTokensResponse
-	(*IssueOperatorRequest)(nil),             // 40: reflw.config.v1.IssueOperatorRequest
-	(*IssueOperatorResponse)(nil),            // 41: reflw.config.v1.IssueOperatorResponse
-	(*enginev1.DeploymentRecord)(nil),        // 42: reflw.engine.v1.DeploymentRecord
-	(*enginev1.ModelRef)(nil),                // 43: reflw.engine.v1.ModelRef
-	(*enginev1.ModelRecord)(nil),             // 44: reflw.engine.v1.ModelRecord
-	(*enginev1.SecretRecord)(nil),            // 45: reflw.engine.v1.SecretRecord
-	(*enginev1.CARootRecord)(nil),            // 46: reflw.engine.v1.CARootRecord
-	(enginev1.JoinTokenKind)(0),              // 47: reflw.engine.v1.JoinTokenKind
-	(*enginev1.JoinTokenRecord)(nil),         // 48: reflw.engine.v1.JoinTokenRecord
+	(*LeaderHint)(nil),                       // 27: reflw.config.v1.LeaderHint
+	(*enginev1.DeploymentRecord)(nil),        // 28: reflw.engine.v1.DeploymentRecord
+	(*enginev1.ModelRef)(nil),                // 29: reflw.engine.v1.ModelRef
+	(*enginev1.ModelRecord)(nil),             // 30: reflw.engine.v1.ModelRecord
+	(*enginev1.SecretRecord)(nil),            // 31: reflw.engine.v1.SecretRecord
 }
 var file_configv1_config_proto_depIdxs = []int32{
-	42, // 0: reflw.config.v1.ListDeploymentsResponse.deployments:type_name -> reflw.engine.v1.DeploymentRecord
-	42, // 1: reflw.config.v1.DescribeDeploymentResponse.deployment:type_name -> reflw.engine.v1.DeploymentRecord
-	43, // 2: reflw.config.v1.ModelSetEntry.model_ref:type_name -> reflw.engine.v1.ModelRef
+	28, // 0: reflw.config.v1.ListDeploymentsResponse.deployments:type_name -> reflw.engine.v1.DeploymentRecord
+	28, // 1: reflw.config.v1.DescribeDeploymentResponse.deployment:type_name -> reflw.engine.v1.DeploymentRecord
+	29, // 2: reflw.config.v1.ModelSetEntry.model_ref:type_name -> reflw.engine.v1.ModelRef
 	8,  // 3: reflw.config.v1.RegisterModelSetRequest.entries:type_name -> reflw.config.v1.ModelSetEntry
-	44, // 4: reflw.config.v1.ListModelsResponse.records:type_name -> reflw.engine.v1.ModelRecord
-	43, // 5: reflw.config.v1.DescribeModelRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
-	44, // 6: reflw.config.v1.DescribeModelResponse.record:type_name -> reflw.engine.v1.ModelRecord
-	43, // 7: reflw.config.v1.DeleteModelRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
-	45, // 8: reflw.config.v1.UpsertSecretRequest.record:type_name -> reflw.engine.v1.SecretRecord
-	45, // 9: reflw.config.v1.ListSecretsResponse.records:type_name -> reflw.engine.v1.SecretRecord
-	46, // 10: reflw.config.v1.UpsertCARootRequest.record:type_name -> reflw.engine.v1.CARootRecord
-	46, // 11: reflw.config.v1.ListCARootsResponse.records:type_name -> reflw.engine.v1.CARootRecord
-	47, // 12: reflw.config.v1.CreateJoinTokenRequest.kind:type_name -> reflw.engine.v1.JoinTokenKind
-	48, // 13: reflw.config.v1.ListJoinTokensResponse.records:type_name -> reflw.engine.v1.JoinTokenRecord
-	0,  // 14: reflw.config.v1.Config.RegisterDeployment:input_type -> reflw.config.v1.RegisterDeploymentRequest
-	2,  // 15: reflw.config.v1.Config.ListDeployments:input_type -> reflw.config.v1.ListDeploymentsRequest
-	4,  // 16: reflw.config.v1.Config.DescribeDeployment:input_type -> reflw.config.v1.DescribeDeploymentRequest
-	6,  // 17: reflw.config.v1.Config.DeleteDeployment:input_type -> reflw.config.v1.DeleteDeploymentRequest
-	9,  // 18: reflw.config.v1.Config.RegisterModelSet:input_type -> reflw.config.v1.RegisterModelSetRequest
-	11, // 19: reflw.config.v1.Config.ListModels:input_type -> reflw.config.v1.ListModelsRequest
-	13, // 20: reflw.config.v1.Config.DescribeModel:input_type -> reflw.config.v1.DescribeModelRequest
-	15, // 21: reflw.config.v1.Config.DeleteModel:input_type -> reflw.config.v1.DeleteModelRequest
-	21, // 22: reflw.config.v1.Config.UpsertSecret:input_type -> reflw.config.v1.UpsertSecretRequest
-	23, // 23: reflw.config.v1.Config.DeleteSecret:input_type -> reflw.config.v1.DeleteSecretRequest
-	25, // 24: reflw.config.v1.Config.ListSecrets:input_type -> reflw.config.v1.ListSecretsRequest
-	27, // 25: reflw.config.v1.Config.UpsertCARoot:input_type -> reflw.config.v1.UpsertCARootRequest
-	29, // 26: reflw.config.v1.Config.DeleteCARoot:input_type -> reflw.config.v1.DeleteCARootRequest
-	31, // 27: reflw.config.v1.Config.ListCARoots:input_type -> reflw.config.v1.ListCARootsRequest
-	34, // 28: reflw.config.v1.Config.CreateJoinToken:input_type -> reflw.config.v1.CreateJoinTokenRequest
-	36, // 29: reflw.config.v1.Config.DeleteJoinToken:input_type -> reflw.config.v1.DeleteJoinTokenRequest
-	38, // 30: reflw.config.v1.Config.ListJoinTokens:input_type -> reflw.config.v1.ListJoinTokensRequest
-	40, // 31: reflw.config.v1.Config.IssueOperator:input_type -> reflw.config.v1.IssueOperatorRequest
-	17, // 32: reflw.config.v1.Config.UpsertClusterAuthzPolicy:input_type -> reflw.config.v1.UpsertClusterAuthzPolicyRequest
-	19, // 33: reflw.config.v1.Config.GetClusterAuthzPolicy:input_type -> reflw.config.v1.GetClusterAuthzPolicyRequest
-	1,  // 34: reflw.config.v1.Config.RegisterDeployment:output_type -> reflw.config.v1.RegisterDeploymentResponse
-	3,  // 35: reflw.config.v1.Config.ListDeployments:output_type -> reflw.config.v1.ListDeploymentsResponse
-	5,  // 36: reflw.config.v1.Config.DescribeDeployment:output_type -> reflw.config.v1.DescribeDeploymentResponse
-	7,  // 37: reflw.config.v1.Config.DeleteDeployment:output_type -> reflw.config.v1.DeleteDeploymentResponse
-	10, // 38: reflw.config.v1.Config.RegisterModelSet:output_type -> reflw.config.v1.RegisterModelSetResponse
-	12, // 39: reflw.config.v1.Config.ListModels:output_type -> reflw.config.v1.ListModelsResponse
-	14, // 40: reflw.config.v1.Config.DescribeModel:output_type -> reflw.config.v1.DescribeModelResponse
-	16, // 41: reflw.config.v1.Config.DeleteModel:output_type -> reflw.config.v1.DeleteModelResponse
-	22, // 42: reflw.config.v1.Config.UpsertSecret:output_type -> reflw.config.v1.UpsertSecretResponse
-	24, // 43: reflw.config.v1.Config.DeleteSecret:output_type -> reflw.config.v1.DeleteSecretResponse
-	26, // 44: reflw.config.v1.Config.ListSecrets:output_type -> reflw.config.v1.ListSecretsResponse
-	28, // 45: reflw.config.v1.Config.UpsertCARoot:output_type -> reflw.config.v1.UpsertCARootResponse
-	30, // 46: reflw.config.v1.Config.DeleteCARoot:output_type -> reflw.config.v1.DeleteCARootResponse
-	32, // 47: reflw.config.v1.Config.ListCARoots:output_type -> reflw.config.v1.ListCARootsResponse
-	35, // 48: reflw.config.v1.Config.CreateJoinToken:output_type -> reflw.config.v1.CreateJoinTokenResponse
-	37, // 49: reflw.config.v1.Config.DeleteJoinToken:output_type -> reflw.config.v1.DeleteJoinTokenResponse
-	39, // 50: reflw.config.v1.Config.ListJoinTokens:output_type -> reflw.config.v1.ListJoinTokensResponse
-	41, // 51: reflw.config.v1.Config.IssueOperator:output_type -> reflw.config.v1.IssueOperatorResponse
-	18, // 52: reflw.config.v1.Config.UpsertClusterAuthzPolicy:output_type -> reflw.config.v1.UpsertClusterAuthzPolicyResponse
-	20, // 53: reflw.config.v1.Config.GetClusterAuthzPolicy:output_type -> reflw.config.v1.GetClusterAuthzPolicyResponse
-	34, // [34:54] is the sub-list for method output_type
-	14, // [14:34] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	30, // 4: reflw.config.v1.ListModelsResponse.records:type_name -> reflw.engine.v1.ModelRecord
+	29, // 5: reflw.config.v1.DescribeModelRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
+	30, // 6: reflw.config.v1.DescribeModelResponse.record:type_name -> reflw.engine.v1.ModelRecord
+	29, // 7: reflw.config.v1.DeleteModelRequest.model_ref:type_name -> reflw.engine.v1.ModelRef
+	31, // 8: reflw.config.v1.UpsertSecretRequest.record:type_name -> reflw.engine.v1.SecretRecord
+	31, // 9: reflw.config.v1.ListSecretsResponse.records:type_name -> reflw.engine.v1.SecretRecord
+	0,  // 10: reflw.config.v1.Config.RegisterDeployment:input_type -> reflw.config.v1.RegisterDeploymentRequest
+	2,  // 11: reflw.config.v1.Config.ListDeployments:input_type -> reflw.config.v1.ListDeploymentsRequest
+	4,  // 12: reflw.config.v1.Config.DescribeDeployment:input_type -> reflw.config.v1.DescribeDeploymentRequest
+	6,  // 13: reflw.config.v1.Config.DeleteDeployment:input_type -> reflw.config.v1.DeleteDeploymentRequest
+	9,  // 14: reflw.config.v1.Config.RegisterModelSet:input_type -> reflw.config.v1.RegisterModelSetRequest
+	11, // 15: reflw.config.v1.Config.ListModels:input_type -> reflw.config.v1.ListModelsRequest
+	13, // 16: reflw.config.v1.Config.DescribeModel:input_type -> reflw.config.v1.DescribeModelRequest
+	15, // 17: reflw.config.v1.Config.DeleteModel:input_type -> reflw.config.v1.DeleteModelRequest
+	21, // 18: reflw.config.v1.Config.UpsertSecret:input_type -> reflw.config.v1.UpsertSecretRequest
+	23, // 19: reflw.config.v1.Config.DeleteSecret:input_type -> reflw.config.v1.DeleteSecretRequest
+	25, // 20: reflw.config.v1.Config.ListSecrets:input_type -> reflw.config.v1.ListSecretsRequest
+	17, // 21: reflw.config.v1.Config.UpsertClusterAuthzPolicy:input_type -> reflw.config.v1.UpsertClusterAuthzPolicyRequest
+	19, // 22: reflw.config.v1.Config.GetClusterAuthzPolicy:input_type -> reflw.config.v1.GetClusterAuthzPolicyRequest
+	1,  // 23: reflw.config.v1.Config.RegisterDeployment:output_type -> reflw.config.v1.RegisterDeploymentResponse
+	3,  // 24: reflw.config.v1.Config.ListDeployments:output_type -> reflw.config.v1.ListDeploymentsResponse
+	5,  // 25: reflw.config.v1.Config.DescribeDeployment:output_type -> reflw.config.v1.DescribeDeploymentResponse
+	7,  // 26: reflw.config.v1.Config.DeleteDeployment:output_type -> reflw.config.v1.DeleteDeploymentResponse
+	10, // 27: reflw.config.v1.Config.RegisterModelSet:output_type -> reflw.config.v1.RegisterModelSetResponse
+	12, // 28: reflw.config.v1.Config.ListModels:output_type -> reflw.config.v1.ListModelsResponse
+	14, // 29: reflw.config.v1.Config.DescribeModel:output_type -> reflw.config.v1.DescribeModelResponse
+	16, // 30: reflw.config.v1.Config.DeleteModel:output_type -> reflw.config.v1.DeleteModelResponse
+	22, // 31: reflw.config.v1.Config.UpsertSecret:output_type -> reflw.config.v1.UpsertSecretResponse
+	24, // 32: reflw.config.v1.Config.DeleteSecret:output_type -> reflw.config.v1.DeleteSecretResponse
+	26, // 33: reflw.config.v1.Config.ListSecrets:output_type -> reflw.config.v1.ListSecretsResponse
+	18, // 34: reflw.config.v1.Config.UpsertClusterAuthzPolicy:output_type -> reflw.config.v1.UpsertClusterAuthzPolicyResponse
+	20, // 35: reflw.config.v1.Config.GetClusterAuthzPolicy:output_type -> reflw.config.v1.GetClusterAuthzPolicyResponse
+	23, // [23:36] is the sub-list for method output_type
+	10, // [10:23] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_configv1_config_proto_init() }
@@ -2420,7 +1602,7 @@ func file_configv1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_configv1_config_proto_rawDesc), len(file_configv1_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   42,
+			NumMessages:   28,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

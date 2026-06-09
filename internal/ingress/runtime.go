@@ -97,6 +97,7 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 			Starter:    srv,
 			Reader:     srv,
 			Deliverer:  srv,
+			Completer:  srv,
 			Authorizer: cfg.RESTAuthorizer,
 			Metrics:    cfg.Metrics,
 			Log:        cfg.Log,
@@ -107,6 +108,10 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 			connectserver.Route{Path: "POST /v1/processes/{name}/{key}/events", Handler: cfg.Middleware(DeliverProcessEventHTTP(ic))},
 			connectserver.Route{Path: "GET /v1/processes/{name}/{key}", Handler: cfg.Middleware(GetProcessInstanceHTTP(ic))},
 			connectserver.Route{Path: "GET /v1/processes/{name}/{key}/history", Handler: cfg.Middleware(GetProcessHistoryHTTP(ic))},
+			// More specific than POST /v1/{service}/{handler} (literal "tasks" in
+			// segment 2), so it takes precedence — /v1/tasks/ is reserved for the
+			// resume-token surface, like /v1/processes/ and /v1/cases/.
+			connectserver.Route{Path: "POST /v1/tasks/{token}", Handler: cfg.Middleware(CompleteTaskHTTP(ic))},
 			connectserver.Route{Path: "POST /v1/{service}/{key}/{handler}", Handler: cfg.Middleware(InvokeHTTP(ic, true))},
 			connectserver.Route{Path: "POST /v1/{service}/{handler}", Handler: cfg.Middleware(InvokeHTTP(ic, false))},
 		)

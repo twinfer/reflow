@@ -941,9 +941,16 @@ func (p *Partition) enqueueInstanceEvent(batch storage.Batch, ev *enginev1.Proce
 // External input (start vars, an injected message, a satisfied subscription) never
 // incremented the counter and so must not decrement it.
 func isProcessFeedback(pl *enginev1.ProcessEventPayload) bool {
-	switch pl.GetOf().(type) {
-	case *enginev1.ProcessEventPayload_TaskCompleted,
-		*enginev1.ProcessEventPayload_TimerFired,
+	switch of := pl.GetOf().(type) {
+	case *enginev1.ProcessEventPayload_TaskCompleted:
+		// A synthesized service-task result always carries task_invocation_id (the
+		// proc_invoke_idx drop key stamped at :3177) and decrements outstanding. An
+		// externally-injected human/user-task completion (the resume-token consume
+		// path) carries none — the task was a passive park that never incremented
+		// outstanding, so it must not decrement it. Same discriminator as the
+		// proc_invoke_idx delete guard in enqueueInstanceEvent.
+		return of.TaskCompleted.GetTaskInvocationId() != nil
+	case *enginev1.ProcessEventPayload_TimerFired,
 		*enginev1.ProcessEventPayload_ChildCompleted:
 		return true
 	default:

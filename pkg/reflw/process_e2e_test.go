@@ -292,17 +292,18 @@ func TestProcess_CMMNHumanTaskParkThenComplete(t *testing.T) {
 		switch pollProcessParkedOrTerminal(t, ctx, icli, ref, key, 5*time.Second) {
 		case enginev1.ProcessStatus_PROCESS_STATUS_RUNNING:
 			// Parked at the human task — the resume-token surface lists it keyed by
-			// the planItem id (pi1), not the humanTask definition id (h1).
-			assertAwaitingResumeToken(t, ctx, icli, ref, key, "pi1")
+			// the planItem id (pi1), not the humanTask definition id (h1). Complete it
+			// by token alone: the caller names no planItem id and sends only outputs;
+			// the token carries (name, key, pi1) and the consume path maps it to the
+			// typed cmmn.TaskCompleted. The headline CMMN UX win — and the full
+			// resume-token round-trip (mint on GetProcessInstance → decode + validate
+			// + typed propose on consume).
+			tok := assertAwaitingResumeToken(t, ctx, icli, ref, key, "pi1")
 			if _, err := icli.DeliverProcessEvent(ctx, connect.NewRequest(&ingressv1.DeliverProcessEventRequest{
-				ModelRef:    ref,
-				InstanceKey: key,
-				// CMMN keys plan items by the planItem id (pi1), not the task
-				// definition id (h1) — firing on an unknown id fails the instance.
-				EventKind: "TaskCompleted",
-				Payload:   []byte(`{"PlanItemID":"pi1","Outputs":{}}`),
+				ResumeToken: tok,
+				Payload:     []byte(`{}`),
 			})); err != nil {
-				t.Fatalf("DeliverProcessEvent: %v", err)
+				t.Fatalf("DeliverProcessEvent (resume token): %v", err)
 			}
 			if got := pollProcessTerminal(t, ctx, icli, ref, key, 5*time.Second); got != enginev1.ProcessStatus_PROCESS_STATUS_COMPLETED {
 				t.Fatalf("human task case did not complete after delivery (got %v)", got)
@@ -318,8 +319,9 @@ func TestProcess_CMMNHumanTaskParkThenComplete(t *testing.T) {
 // assertAwaitingResumeToken reads the parked instance and asserts GetProcessInstance
 // surfaces exactly one awaiting task with the expected node_id and a resume_token
 // that decodes back to (name, instance_key, node_id) — the Phase-3 discovery
-// surface, proving the RUNNING-gated mint against a real linearizable read.
-func assertAwaitingResumeToken(t *testing.T, ctx context.Context, icli *ingressclient.Client, ref *enginev1.ModelRef, key, wantNode string) {
+// surface, proving the RUNNING-gated mint against a real linearizable read. Returns
+// the token so a caller can round-trip it through the consume path.
+func assertAwaitingResumeToken(t *testing.T, ctx context.Context, icli *ingressclient.Client, ref *enginev1.ModelRef, key, wantNode string) string {
 	t.Helper()
 	resp, err := icli.GetProcessInstance(ctx, connect.NewRequest(&ingressv1.GetProcessInstanceRequest{
 		ModelRef: ref, InstanceKey: key,
@@ -341,6 +343,7 @@ func assertAwaitingResumeToken(t *testing.T, ctx context.Context, icli *ingressc
 	if tgt.Service != ref.GetName() || tgt.InstanceKey != key || tgt.NodeID != wantNode {
 		t.Fatalf("decoded token = %+v, want service=%q key=%q node=%q", tgt, ref.GetName(), key, wantNode)
 	}
+	return tasks[0].GetResumeToken()
 }
 
 // pollProcessParkedOrTerminal polls until the instance is parked at a passive wait

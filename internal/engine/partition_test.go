@@ -1154,3 +1154,35 @@ func TestPartition_OnSnapshotPersistedFiresAfterSaveSnapshot(t *testing.T) {
 		t.Fatal("OnSnapshotPersisted was not invoked after successful SaveSnapshot")
 	}
 }
+
+// TestIsProcessFeedback_TaskCompletedGatedOnInvocationID locks the resume-token
+// invariant: a synthesized service-task result (task_invocation_id set) is feedback
+// and decrements outstanding, but an externally-injected human-task completion (no
+// id, the consume path) is NOT — it never incremented outstanding, so decrementing
+// it would corrupt the quiescence signal for an instance with concurrent dispatched
+// work. Timer/child feedback and external input are unchanged.
+func TestIsProcessFeedback_TaskCompletedGatedOnInvocationID(t *testing.T) {
+	id := &enginev1.InvocationId{PartitionKey: 1, Uuid: bytes.Repeat([]byte{0x7}, 16)}
+	cases := []struct {
+		name string
+		pl   *enginev1.ProcessEventPayload
+		want bool
+	}{
+		{"service-task feedback (id set)", &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_TaskCompleted{
+			TaskCompleted: &enginev1.ProcessTaskCompleted{NodeId: "svc", TaskInvocationId: id}}}, true},
+		{"human-task completion (no id)", &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_TaskCompleted{
+			TaskCompleted: &enginev1.ProcessTaskCompleted{NodeId: "u"}}}, false},
+		{"timer fired", &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_TimerFired{
+			TimerFired: &enginev1.ProcessTimerFired{NodeId: "t"}}}, true},
+		{"child completed", &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_ChildCompleted{
+			ChildCompleted: &enginev1.ProcessChildCompleted{NodeId: "c"}}}, true},
+		{"external input", &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_External{External: []byte("{}")}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isProcessFeedback(tc.pl); got != tc.want {
+				t.Fatalf("isProcessFeedback = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

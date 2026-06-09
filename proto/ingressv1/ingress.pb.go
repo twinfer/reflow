@@ -1235,7 +1235,17 @@ type DeliverProcessEventRequest struct {
 	// payload is the JSON-marshaled typed event body — e.g. for UserTaskCompleted,
 	// {"NodeID":"u","Outputs":{...}}. The server wraps (event_kind, payload) in the
 	// external-event envelope the worker's adapter decodes.
-	Payload       []byte `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
+	Payload []byte `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
+	// resume_token, when set, is the opaque "rpt_…" handle from a prior
+	// GetProcessInstance awaiting_tasks. It supersedes model_ref/instance_key
+	// addressing — the token carries (name, instance_key, node_id) — and turns this
+	// into a typed task completion (the consume half of the resume-token flow), the
+	// same path as POST /v1/tasks/{token}. On the token path event_kind is
+	// reinterpreted as the action: empty or "complete" completes the parked task with
+	// `payload` as the JSON output vars; "fail" fails it (payload, if any, is the
+	// failure message). The instance must still list node_id in its awaiting set
+	// (validated by a linearizable read) else the call fails FailedPrecondition.
+	ResumeToken   string `protobuf:"bytes,5,opt,name=resume_token,json=resumeToken,proto3" json:"resume_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1296,6 +1306,13 @@ func (x *DeliverProcessEventRequest) GetPayload() []byte {
 		return x.Payload
 	}
 	return nil
+}
+
+func (x *DeliverProcessEventRequest) GetResumeToken() string {
+	if x != nil {
+		return x.ResumeToken
+	}
+	return ""
 }
 
 type DeliverProcessEventResponse struct {
@@ -2576,13 +2593,14 @@ const file_ingressv1_ingress_proto_rawDesc = "" +
 	"\apayload\x18\x03 \x01(\fR\apayload\"D\n" +
 	"\x16DeliverMessageResponse\x12\x0e\n" +
 	"\x02pk\x18\x01 \x01(\x06R\x02pk\x12\x1a\n" +
-	"\baccepted\x18\x02 \x01(\bR\baccepted\"\xb0\x01\n" +
+	"\baccepted\x18\x02 \x01(\bR\baccepted\"\xd3\x01\n" +
 	"\x1aDeliverProcessEventRequest\x126\n" +
 	"\tmodel_ref\x18\x01 \x01(\v2\x19.reflw.engine.v1.ModelRefR\bmodelRef\x12!\n" +
 	"\finstance_key\x18\x02 \x01(\tR\vinstanceKey\x12\x1d\n" +
 	"\n" +
 	"event_kind\x18\x03 \x01(\tR\teventKind\x12\x18\n" +
-	"\apayload\x18\x04 \x01(\fR\apayload\"I\n" +
+	"\apayload\x18\x04 \x01(\fR\apayload\x12!\n" +
+	"\fresume_token\x18\x05 \x01(\tR\vresumeToken\"I\n" +
 	"\x1bDeliverProcessEventResponse\x12\x0e\n" +
 	"\x02pk\x18\x01 \x01(\x06R\x02pk\x12\x1a\n" +
 	"\baccepted\x18\x02 \x01(\bR\baccepted\"v\n" +

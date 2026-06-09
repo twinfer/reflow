@@ -71,6 +71,12 @@ type ProcessEventDeliverer interface {
 	DeliverProcessEventCore(ctx context.Context, a DeliverProcessEventArgs) (uint64, error)
 }
 
+// TaskCompleter completes (or fails) a parked task by opaque resume token — the
+// consume half of the resume-token flow. *Server satisfies it.
+type TaskCompleter interface {
+	CompleteTaskCore(ctx context.Context, a CompleteTaskArgs) (uint64, error)
+}
+
 // IngressAuthorizer authorizes a REST-facade ingress call by Cedar action id.
 // *authz.Interceptor satisfies it; kept as an interface so this package needs
 // no authz import and the kernel is unit-testable with a fake.
@@ -83,6 +89,7 @@ var (
 	_ ProcessStarter        = (*Server)(nil)
 	_ ProcessReader         = (*Server)(nil)
 	_ ProcessEventDeliverer = (*Server)(nil)
+	_ TaskCompleter         = (*Server)(nil)
 )
 
 // InvokeConfig wires the REST data-plane kernel.
@@ -91,6 +98,7 @@ type InvokeConfig struct {
 	Starter      ProcessStarter
 	Reader       ProcessReader
 	Deliverer    ProcessEventDeliverer
+	Completer    TaskCompleter
 	Authorizer   IngressAuthorizer
 	Metrics      *observability.Metrics
 	MaxBodyBytes int64
@@ -261,6 +269,56 @@ func DeliverProcessEventHTTP(cfg InvokeConfig) http.Handler {
 			InstanceKey: r.PathValue("key"),
 			EventKind:   kind,
 			Payload:     body,
+		})
+		if err != nil {
+			writeConnErr(sc, err)
+			return
+		}
+		writeJSON(sc, http.StatusAccepted, map[string]any{
+			"pk":       strconv.FormatUint(pk, 10),
+			"accepted": true,
+		})
+	})
+}
+
+// CompleteTaskHTTP builds the handler for POST /v1/tasks/{token} — complete (or
+// fail) a parked user/human task by its opaque resume token (from a prior
+// GetProcessInstance awaiting_tasks). The request body is the JSON output vars;
+// ?action=complete (default) | fail and ?failure= drive the fail path. Token-only:
+// the token carries (name, instance_key, node_id), so the caller names no element
+// id. Send-only → 202 + {pk, accepted}. Trisotech "POST to the resume point" shape.
+func CompleteTaskHTTP(cfg InvokeConfig) http.Handler {
+	const route = "/v1/tasks/{token}"
+	maxBody := cfg.maxBody()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sc := &statusCapture{ResponseWriter: w, status: http.StatusOK}
+		defer func() { recordREST(cfg.Metrics, route, r.Method, sc.status) }()
+
+		if r.Method != http.MethodPost {
+			http.Error(sc, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		// Reuses the DeliverProcessEvent action — completing a parked task by token
+		// is the same authority as delivering its completion event by (name, key).
+		if err := cfg.Authorizer.AuthorizeIngressAction(r.Context(), actionDeliverProcessEvent, groupIngressActions); err != nil {
+			writeConnErr(sc, err)
+			return
+		}
+		action := r.URL.Query().Get("action")
+		if action != "" && action != "complete" && action != "fail" {
+			http.Error(sc, "query param 'action' must be 'complete' or 'fail'", http.StatusBadRequest)
+			return
+		}
+		body, err := io.ReadAll(http.MaxBytesReader(sc, r.Body, maxBody))
+		if err != nil {
+			http.Error(sc, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		pk, err := cfg.Completer.CompleteTaskCore(r.Context(), CompleteTaskArgs{
+			ResumeToken:    r.PathValue("token"),
+			Output:         body,
+			Fail:           action == "fail",
+			FailureMessage: r.URL.Query().Get("failure"),
 		})
 		if err != nil {
 			writeConnErr(sc, err)

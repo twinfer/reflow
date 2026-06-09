@@ -301,6 +301,16 @@ message DeliverProcessEventRequest {
   // {"NodeID":"u","Outputs":{...}}. The server wraps (event_kind, payload) in the
   // external-event envelope the worker's adapter decodes.
   bytes payload = 4;
+  // resume_token, when set, is the opaque "rpt_…" handle from a prior
+  // GetProcessInstance awaiting_tasks. It supersedes model_ref/instance_key
+  // addressing — the token carries (name, instance_key, node_id) — and turns this
+  // into a typed task completion (the consume half of the resume-token flow), the
+  // same path as POST /v1/tasks/{token}. On the token path event_kind is
+  // reinterpreted as the action: empty or "complete" completes the parked task with
+  // `payload` as the JSON output vars; "fail" fails it (payload, if any, is the
+  // failure message). The instance must still list node_id in its awaiting set
+  // (validated by a linearizable read) else the call fails FailedPrecondition.
+  string resume_token = 5;
 }
 
 message DeliverProcessEventResponse {

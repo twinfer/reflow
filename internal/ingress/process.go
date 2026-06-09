@@ -206,9 +206,25 @@ func (s *Server) DeliverProcessEventCore(ctx context.Context, a DeliverProcessEv
 	return pk, nil
 }
 
-// DeliverProcessEvent is the Connect RPC shell over DeliverProcessEventCore.
+// DeliverProcessEvent is the Connect RPC shell over DeliverProcessEventCore. When
+// resume_token is set it instead routes through CompleteTaskCore (the typed
+// resume-token consume path): event_kind is the action ("fail" → fail, else
+// complete) and payload is the output vars (or, when failing, the failure message).
 func (s *Server) DeliverProcessEvent(ctx context.Context, req *connect.Request[ingressv1.DeliverProcessEventRequest]) (*connect.Response[ingressv1.DeliverProcessEventResponse], error) {
 	msg := req.Msg
+	if tok := msg.GetResumeToken(); tok != "" {
+		args := CompleteTaskArgs{ResumeToken: tok, Fail: msg.GetEventKind() == "fail"}
+		if args.Fail {
+			args.FailureMessage = string(msg.GetPayload())
+		} else {
+			args.Output = msg.GetPayload()
+		}
+		pk, err := s.CompleteTaskCore(ctx, args)
+		if err != nil {
+			return nil, err
+		}
+		return connect.NewResponse(&ingressv1.DeliverProcessEventResponse{Pk: pk, Accepted: true}), nil
+	}
 	pk, err := s.DeliverProcessEventCore(ctx, DeliverProcessEventArgs{
 		Name:        msg.GetModelRef().GetName(),
 		InstanceKey: msg.GetInstanceKey(),
@@ -219,6 +235,108 @@ func (s *Server) DeliverProcessEvent(ctx context.Context, req *connect.Request[i
 		return nil, err
 	}
 	return connect.NewResponse(&ingressv1.DeliverProcessEventResponse{Pk: pk, Accepted: true}), nil
+}
+
+// CompleteTaskArgs is the transport-agnostic input to CompleteTaskCore — shared by
+// the resume-token RPC path (DeliverProcessEvent with resume_token set) and the
+// REST facade (POST /v1/tasks/{token}).
+type CompleteTaskArgs struct {
+	ResumeToken    string
+	Output         []byte // JSON output vars merged on completion (ignored when Fail)
+	Fail           bool   // complete-as-failed — drives an error boundary / incident
+	FailureMessage string
+}
+
+// CompleteTaskCore completes (or fails) a parked BPMN user task / CMMN human task
+// addressed by an opaque resume token — the consume half of the resume-token flow.
+// It decodes the token to (partition_key, name, instance_key, node_id), validates
+// against live state with one linearizable read (the instance must be present,
+// RUNNING, and still list node_id in its awaiting set — exactly what
+// GetProcessInstance would have surfaced — else the token is stale, already
+// completed, or forged: FailedPrecondition), then proposes the typed
+// ProcessEvent{task_completed} both adapters map plane-agnostically (BPMN
+// ServiceTaskCompleted / CMMN TaskCompleted, both keyed by node_id). The caller
+// supplies only outputs; node_id rides the token, so there is no
+// BPMN-NodeID-vs-CMMN-PlanItemID field to get wrong. task_invocation_id is left
+// unset, so the apply path treats this as external input (no proc_invoke_idx drop,
+// no outstanding decrement). Returns the routed partition_key; errors are
+// connect.Errors. The non-RPC core shared by the RPC shell and the REST facade.
+func (s *Server) CompleteTaskCore(ctx context.Context, a CompleteTaskArgs) (uint64, error) {
+	tgt, err := keys.DecodeResumeToken(a.ResumeToken)
+	if err != nil {
+		return 0, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("resume token: %w", err))
+	}
+	// The token embeds partition_key for self-routing; recompute the canonical pk
+	// from (service, instance_key) and reject a mismatch so a corrupt/forged token
+	// can't address a different shard than the instance actually lives on.
+	pk := routing.PartitionKey(tgt.Service, tgt.InstanceKey)
+	if pk != tgt.PartitionKey {
+		return 0, connect.NewError(connect.CodeInvalidArgument, errors.New("resume token routing mismatch"))
+	}
+	shardID := s.host.Partitioner().ShardForKey(pk)
+
+	// Validate against live state: the task must still be parked and awaiting input.
+	// Mirrors ResolveProcessIncident's RETRY precondition read.
+	res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupProcessInstance{
+		Service:     tgt.Service,
+		InstanceKey: tgt.InstanceKey,
+	})
+	if err != nil {
+		return 0, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup process instance: %w", err))
+	}
+	r, ok := res.(engine.ProcessInstanceLookupResult)
+	if !ok {
+		return 0, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup process instance: unexpected type %T", res))
+	}
+	if !r.Present || r.Record.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_RUNNING ||
+		!awaitingContains(r.Record.GetAwaiting(), tgt.NodeID) {
+		return 0, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("task %q is not awaiting input (already completed, or the instance is not running)", tgt.NodeID))
+	}
+
+	runner := s.host.Partition(shardID)
+	if runner == nil {
+		return 0, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no partition for shard %d", shardID))
+	}
+	tc := &enginev1.ProcessTaskCompleted{NodeId: tgt.NodeID}
+	if a.Fail {
+		tc.Failed = true
+		tc.FailureMessage = a.FailureMessage
+	} else {
+		tc.Output = a.Output
+	}
+	cmd := &enginev1.Command{Kind: &enginev1.Command_ProcessEvent{ProcessEvent: &enginev1.ProcessEvent{
+		Pk:          pk,
+		Service:     tgt.Service,
+		InstanceKey: tgt.InstanceKey,
+		Payload:     &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_TaskCompleted{TaskCompleted: tc}},
+		// No ModelRef/Kind: a continuation event for the existing instance.
+	}}}
+	nonce, err := mintNonce()
+	if err != nil {
+		return 0, connect.NewError(connect.CodeInternal, fmt.Errorf("mint nonce: %w", err))
+	}
+	// Fresh nonce per call (not idempotent by id): the SyncRead validation above is
+	// the dedup guard — a re-submitted token whose task already completed no longer
+	// appears in the awaiting set and is rejected before this propose.
+	producerID := "resumetask/" + nonce
+	if err := runner.Proposer().ProposeIngress(ctx, producerID, 1, cmd); err != nil {
+		if errors.Is(err, engine.ErrShardClosed) {
+			return 0, connect.NewError(connect.CodeUnavailable, errors.New("shard closed"))
+		}
+		return 0, connect.NewError(connect.CodeInternal, fmt.Errorf("propose complete task: %w", err))
+	}
+	return pk, nil
+}
+
+// awaitingContains reports whether node is in the record's persisted awaiting set.
+func awaitingContains(awaiting []*enginev1.AwaitingTask, node string) bool {
+	for _, aw := range awaiting {
+		if aw.GetNodeId() == node {
+			return true
+		}
+	}
+	return false
 }
 
 // encodeExternalEventEnvelope wraps a reflwos engine-event (kind discriminator +

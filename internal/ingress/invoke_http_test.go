@@ -110,6 +110,20 @@ func (f *fakeDeliverer) DeliverProcessEventCore(_ context.Context, a ingress.Del
 	return f.pk, f.err
 }
 
+type fakeCompleter struct {
+	pk  uint64
+	err error
+
+	gotArgs ingress.CompleteTaskArgs
+	called  bool
+}
+
+func (f *fakeCompleter) CompleteTaskCore(_ context.Context, a ingress.CompleteTaskArgs) (uint64, error) {
+	f.called = true
+	f.gotArgs = a
+	return f.pk, f.err
+}
+
 // --- helpers -----------------------------------------------------------------
 
 func restMux(ic ingress.InvokeConfig) *http.ServeMux {
@@ -119,6 +133,7 @@ func restMux(ic ingress.InvokeConfig) *http.ServeMux {
 	m.Handle("POST /v1/processes/{name}/{key}/events", ingress.DeliverProcessEventHTTP(ic))
 	m.Handle("GET /v1/processes/{name}/{key}", ingress.GetProcessInstanceHTTP(ic))
 	m.Handle("GET /v1/processes/{name}/{key}/history", ingress.GetProcessHistoryHTTP(ic))
+	m.Handle("POST /v1/tasks/{token}", ingress.CompleteTaskHTTP(ic))
 	m.Handle("POST /v1/{service}/{key}/{handler}", ingress.InvokeHTTP(ic, true))
 	m.Handle("POST /v1/{service}/{handler}", ingress.InvokeHTTP(ic, false))
 	return m
@@ -484,6 +499,80 @@ func TestGetProcessInstanceHTTP_AuthzDeny(t *testing.T) {
 	}
 	if rd.called {
 		t.Fatalf("reader must not run after authz denial")
+	}
+}
+
+// --- complete-by-resume-token kernel -----------------------------------------
+
+// TestCompleteTaskHTTP_Success: POST /v1/tasks/{token} authorizes against
+// DeliverProcessEvent, threads the path token + body (output vars) into the
+// completer as a non-fail completion, and returns 202 + {pk, accepted}.
+func TestCompleteTaskHTTP_Success(t *testing.T) {
+	cp := &fakeCompleter{pk: 99}
+	authz := &fakeAuthorizer{}
+	rec := doReq(restMux(ingress.InvokeConfig{Completer: cp, Authorizer: authz}),
+		"POST", "/v1/tasks/rpt_abc", []byte(`{"approved":true}`), nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (%q)", rec.Code, rec.Body.String())
+	}
+	if authz.gotAction != "DeliverProcessEvent" {
+		t.Fatalf("authorized action = %q, want DeliverProcessEvent", authz.gotAction)
+	}
+	if cp.gotArgs.ResumeToken != "rpt_abc" || string(cp.gotArgs.Output) != `{"approved":true}` || cp.gotArgs.Fail {
+		t.Fatalf("complete args = %+v", cp.gotArgs)
+	}
+	if body := decodeJSON(t, rec); body["pk"] != "99" || body["accepted"] != true {
+		t.Fatalf("body = %v", body)
+	}
+}
+
+// TestCompleteTaskHTTP_FailAction: ?action=fail&failure= drives the fail path —
+// Fail set, FailureMessage threaded, body ignored as output.
+func TestCompleteTaskHTTP_FailAction(t *testing.T) {
+	cp := &fakeCompleter{pk: 1}
+	rec := doReq(restMux(ingress.InvokeConfig{Completer: cp, Authorizer: &fakeAuthorizer{}}),
+		"POST", "/v1/tasks/rpt_abc?action=fail&failure=nope", []byte(`{}`), nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (%q)", rec.Code, rec.Body.String())
+	}
+	if !cp.gotArgs.Fail || cp.gotArgs.FailureMessage != "nope" {
+		t.Fatalf("complete args = %+v", cp.gotArgs)
+	}
+}
+
+func TestCompleteTaskHTTP_InvalidAction(t *testing.T) {
+	cp := &fakeCompleter{}
+	rec := doReq(restMux(ingress.InvokeConfig{Completer: cp, Authorizer: &fakeAuthorizer{}}),
+		"POST", "/v1/tasks/rpt_abc?action=bogus", []byte(`{}`), nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if cp.called {
+		t.Fatalf("completer must not run on an invalid action")
+	}
+}
+
+func TestCompleteTaskHTTP_AuthzDeny(t *testing.T) {
+	cp := &fakeCompleter{}
+	authz := &fakeAuthorizer{err: connect.NewError(connect.CodePermissionDenied, errors.New("no"))}
+	rec := doReq(restMux(ingress.InvokeConfig{Completer: cp, Authorizer: authz}),
+		"POST", "/v1/tasks/rpt_abc", []byte(`{}`), nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if cp.called {
+		t.Fatalf("completer must not run after authz denial")
+	}
+}
+
+// TestCompleteTaskHTTP_StaleToken: a stale/forged token surfaces as
+// FailedPrecondition from the core → 412 (the boundary-validation contract).
+func TestCompleteTaskHTTP_StaleToken(t *testing.T) {
+	cp := &fakeCompleter{err: connect.NewError(connect.CodeFailedPrecondition, errors.New("not awaiting"))}
+	rec := doReq(restMux(ingress.InvokeConfig{Completer: cp, Authorizer: &fakeAuthorizer{}}),
+		"POST", "/v1/tasks/rpt_abc", []byte(`{}`), nil)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412 (%q)", rec.Code, rec.Body.String())
 	}
 }
 

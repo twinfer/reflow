@@ -38,6 +38,7 @@ const (
 	actionSubmitInvocation          = "SubmitInvocation"
 	actionStartProcess              = "StartProcess"
 	actionDeliverProcessEvent       = "DeliverProcessEvent"
+	actionGetProcessInstance        = "GetProcessInstance"
 	actionGetProcessInstanceHistory = "GetProcessInstanceHistory"
 	groupIngressActions             = "IngressActions"
 )
@@ -54,10 +55,12 @@ type ProcessStarter interface {
 	StartProcessCore(ctx context.Context, a StartProcessArgs) (uint64, string, error)
 }
 
-// ProcessReader reads process-instance observability (the activity timeline).
-// *Server satisfies it. Kept as an interface so the REST kernel is unit-testable
-// with a fake and needs no engine import beyond enginev1.
+// ProcessReader reads process-instance observability — one instance's current
+// state (incl. resume tokens for parked tasks) and its activity timeline. *Server
+// satisfies it. Kept as an interface so the REST kernel is unit-testable with a
+// fake and needs no engine import beyond enginev1/ingressv1.
 type ProcessReader interface {
+	GetProcessInstanceCore(ctx context.Context, name, instanceKey string) (*ingressv1.GetProcessInstanceResponse, error)
 	GetProcessInstanceHistoryCore(ctx context.Context, name, instanceKey string, afterSeq uint64, limit int) (present bool, events []*enginev1.ProcessHistoryEvent, nextAfterSeq uint64, err error)
 }
 
@@ -267,6 +270,39 @@ func DeliverProcessEventHTTP(cfg InvokeConfig) http.Handler {
 			"pk":       strconv.FormatUint(pk, 10),
 			"accepted": true,
 		})
+	})
+}
+
+// GetProcessInstanceHTTP builds the handler for GET /v1/processes/{name}/{key} —
+// one instance's current state as protojson, including awaiting_tasks (parked
+// user/human tasks) each carrying an opaque resume_token the caller round-trips to
+// complete it via POST /v1/tasks/{token}. This is the "list resume points for this
+// instance" discovery surface. A reaped/never-started instance (present=false)
+// maps to 404.
+func GetProcessInstanceHTTP(cfg InvokeConfig) http.Handler {
+	const route = "/v1/processes/{name}/{key}"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sc := &statusCapture{ResponseWriter: w, status: http.StatusOK}
+		defer func() { recordREST(cfg.Metrics, route, r.Method, sc.status) }()
+
+		if r.Method != http.MethodGet {
+			http.Error(sc, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if err := cfg.Authorizer.AuthorizeIngressAction(r.Context(), actionGetProcessInstance, groupIngressActions); err != nil {
+			writeConnErr(sc, err)
+			return
+		}
+		resp, err := cfg.Reader.GetProcessInstanceCore(r.Context(), r.PathValue("name"), r.PathValue("key"))
+		if err != nil {
+			writeConnErr(sc, err)
+			return
+		}
+		if !resp.GetPresent() {
+			http.Error(sc, "process instance not found", http.StatusNotFound)
+			return
+		}
+		writeProtoJSON(sc, http.StatusOK, resp)
 	})
 }
 

@@ -350,6 +350,24 @@ message GetProcessInstanceResponse {
   // parked for human intervention (node_id, cause, raised_at). Resolve it with
   // ResolveProcessIncident.
   reflw.engine.v1.ProcessIncident incident = 10;
+  // awaiting_tasks lists the instance's currently-parked, externally-completable
+  // tasks (BPMN user tasks / CMMN human tasks), each with an opaque, self-routing
+  // resume_token the caller round-trips to complete the task
+  // (POST /v1/tasks/{resume_token}) without naming the inner element id. Populated
+  // only while status == PROCESS_STATUS_RUNNING — a terminal / incident-parked
+  // record never surfaces a stale set. Mirrors Trisotech's resume points.
+  repeated AwaitingTaskInfo awaiting_tasks = 11;
+}
+
+// AwaitingTaskInfo is one externally-completable parked task surfaced on a
+// GetProcessInstance read. node_id is the BPMN flow-node id or CMMN replicaKey,
+// name is the model @name (may be empty); resume_token is the opaque "rpt_…"
+// handle encoding (partition_key, name, instance_key, node_id) so the caller
+// completes the task by token alone.
+message AwaitingTaskInfo {
+  string node_id = 1;
+  string name = 2;
+  string resume_token = 3;
 }
 
 message ResolveProcessIncidentRequest {

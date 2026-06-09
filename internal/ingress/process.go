@@ -314,25 +314,29 @@ func (s *Server) ResolveProcessIncident(ctx context.Context, req *connect.Reques
 	return connect.NewResponse(&ingressv1.ResolveProcessIncidentResponse{Accepted: true}), nil
 }
 
-// GetProcessInstance performs a linearizable read of one instance's record from
-// the partition owning (model name, instance_key) — the same routing
+// GetProcessInstanceCore performs a linearizable read of one instance's record
+// from the partition owning (model name, instance_key) — the same routing
 // StartProcess uses. It proposes nothing; it exists so a caller without an await
 // RPC can observe whether an instance is running, parked, or terminal-and-reaped.
-func (s *Server) GetProcessInstance(ctx context.Context, req *connect.Request[ingressv1.GetProcessInstanceRequest]) (*connect.Response[ingressv1.GetProcessInstanceResponse], error) {
-	msg := req.Msg
-	name := msg.GetModelRef().GetName()
+// When the instance is present and RUNNING it mints one resume token per parked
+// task in rec.Awaiting (the discovery half of the resume-token flow). The apply
+// path mirrors the awaiting set onto the record on a normal turn but does not
+// clear it on incident-park / terminal, so gating token minting on RUNNING keeps a
+// stale set from leaking as live resume points. The non-RPC core shared by the
+// RPC shell and the REST instance facade; errors are connect.Errors.
+func (s *Server) GetProcessInstanceCore(ctx context.Context, name, instanceKey string) (*ingressv1.GetProcessInstanceResponse, error) {
 	if name == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("model_ref.name is required"))
 	}
-	if msg.GetInstanceKey() == "" {
+	if instanceKey == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("instance_key is required"))
 	}
 
-	pk := routing.PartitionKey(name, msg.GetInstanceKey())
+	pk := routing.PartitionKey(name, instanceKey)
 	shardID := s.host.Partitioner().ShardForKey(pk)
 	res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupProcessInstance{
 		Service:     name,
-		InstanceKey: msg.GetInstanceKey(),
+		InstanceKey: instanceKey,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup process instance: %w", err))
@@ -352,8 +356,44 @@ func (s *Server) GetProcessInstance(ctx context.Context, req *connect.Request[in
 		resp.CreatedAtMs = r.Record.GetCreatedAtMs()
 		resp.EndedAtMs = r.Record.GetEndedAtMs()
 		resp.Incident = r.Record.GetIncident() // set iff status == INCIDENT
+		if r.Record.GetStatus() == enginev1.ProcessStatus_PROCESS_STATUS_RUNNING {
+			resp.AwaitingTasks = awaitingTaskInfos(pk, name, instanceKey, r.Record.GetAwaiting())
+		}
+	}
+	return resp, nil
+}
+
+// GetProcessInstance is the Connect RPC shell over GetProcessInstanceCore.
+func (s *Server) GetProcessInstance(ctx context.Context, req *connect.Request[ingressv1.GetProcessInstanceRequest]) (*connect.Response[ingressv1.GetProcessInstanceResponse], error) {
+	resp, err := s.GetProcessInstanceCore(ctx, req.Msg.GetModelRef().GetName(), req.Msg.GetInstanceKey())
+	if err != nil {
+		return nil, err
 	}
 	return connect.NewResponse(resp), nil
+}
+
+// awaitingTaskInfos maps a record's parked-task set to the ingress surface,
+// minting a self-routing resume token per task so an external caller completes it
+// by token alone (POST /v1/tasks/{token}) without naming the inner element. A task
+// whose fields overflow the token codec's u16 ceiling is skipped (unreachable for
+// real model names / instance keys / node ids) rather than failing the read.
+func awaitingTaskInfos(pk uint64, name, instanceKey string, awaiting []*enginev1.AwaitingTask) []*ingressv1.AwaitingTaskInfo {
+	if len(awaiting) == 0 {
+		return nil
+	}
+	out := make([]*ingressv1.AwaitingTaskInfo, 0, len(awaiting))
+	for _, aw := range awaiting {
+		tok, err := keys.MintResumeToken(pk, name, instanceKey, aw.GetNodeId())
+		if err != nil {
+			continue
+		}
+		out = append(out, &ingressv1.AwaitingTaskInfo{
+			NodeId:      aw.GetNodeId(),
+			Name:        aw.GetName(),
+			ResumeToken: tok,
+		})
+	}
+	return out
 }
 
 // ListProcessInstances lists the deployment's process instances: one

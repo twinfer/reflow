@@ -14,8 +14,10 @@ import (
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflw/internal/ingress"
+	"github.com/twinfer/reflw/internal/storage/keys"
 	"github.com/twinfer/reflw/pkg/handler"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
 // --- fakes -------------------------------------------------------------------
@@ -73,10 +75,19 @@ type fakeReader struct {
 	nextAfterSeq uint64
 	err          error
 
+	instance    *ingressv1.GetProcessInstanceResponse // GetProcessInstanceCore canned result
+	instanceErr error
+
 	gotName, gotKey string
 	gotAfterSeq     uint64
 	gotLimit        int
 	called          bool
+}
+
+func (f *fakeReader) GetProcessInstanceCore(_ context.Context, name, instanceKey string) (*ingressv1.GetProcessInstanceResponse, error) {
+	f.called = true
+	f.gotName, f.gotKey = name, instanceKey
+	return f.instance, f.instanceErr
 }
 
 func (f *fakeReader) GetProcessInstanceHistoryCore(_ context.Context, name, instanceKey string, afterSeq uint64, limit int) (bool, []*enginev1.ProcessHistoryEvent, uint64, error) {
@@ -106,6 +117,7 @@ func restMux(ic ingress.InvokeConfig) *http.ServeMux {
 	m.Handle("POST /v1/processes/{name}", ingress.StartProcessHTTP(ic, false))
 	m.Handle("POST /v1/cases/{name}", ingress.StartProcessHTTP(ic, true))
 	m.Handle("POST /v1/processes/{name}/{key}/events", ingress.DeliverProcessEventHTTP(ic))
+	m.Handle("GET /v1/processes/{name}/{key}", ingress.GetProcessInstanceHTTP(ic))
 	m.Handle("GET /v1/processes/{name}/{key}/history", ingress.GetProcessHistoryHTTP(ic))
 	m.Handle("POST /v1/{service}/{key}/{handler}", ingress.InvokeHTTP(ic, true))
 	m.Handle("POST /v1/{service}/{handler}", ingress.InvokeHTTP(ic, false))
@@ -399,6 +411,79 @@ func TestDeliverProcessEventHTTP_AuthzDeny(t *testing.T) {
 	}
 	if dl.called {
 		t.Fatalf("deliverer must not run after authz denial")
+	}
+}
+
+// TestGetProcessInstanceHTTP_Success: the GET instance route authorizes against
+// GetProcessInstance, threads name/key into the reader, and renders the state as
+// protojson — including awaiting_tasks, whose resume_token survives the JSON
+// round-trip and decodes back to (name, key, node_id).
+func TestGetProcessInstanceHTTP_Success(t *testing.T) {
+	tok, err := keys.MintResumeToken(0xab, "order", "o-1", "u")
+	if err != nil {
+		t.Fatalf("mint token: %v", err)
+	}
+	rd := &fakeReader{instance: &ingressv1.GetProcessInstanceResponse{
+		Present: true,
+		Status:  enginev1.ProcessStatus_PROCESS_STATUS_RUNNING,
+		Kind:    enginev1.ProcessKind_PROCESS_KIND_BPMN,
+		AwaitingTasks: []*ingressv1.AwaitingTaskInfo{
+			{NodeId: "u", Name: "Approve", ResumeToken: tok},
+		},
+	}}
+	authz := &fakeAuthorizer{}
+	rec := doReq(restMux(ingress.InvokeConfig{Reader: rd, Authorizer: authz}),
+		"GET", "/v1/processes/order/o-1", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%q)", rec.Code, rec.Body.String())
+	}
+	if authz.gotAction != "GetProcessInstance" {
+		t.Fatalf("authorized action = %q, want GetProcessInstance", authz.gotAction)
+	}
+	if rd.gotName != "order" || rd.gotKey != "o-1" {
+		t.Fatalf("reader args = name=%q key=%q", rd.gotName, rd.gotKey)
+	}
+	body := decodeJSON(t, rec)
+	if body["present"] != true || body["status"] != "PROCESS_STATUS_RUNNING" {
+		t.Fatalf("body = %v (%q)", body, rec.Body.String())
+	}
+	tasks, ok := body["awaitingTasks"].([]any)
+	if !ok || len(tasks) != 1 {
+		t.Fatalf("awaitingTasks = %v", body["awaitingTasks"])
+	}
+	t0 := tasks[0].(map[string]any)
+	if t0["nodeId"] != "u" || t0["name"] != "Approve" {
+		t.Fatalf("awaitingTasks[0] = %v", t0)
+	}
+	gotTok, _ := t0["resumeToken"].(string)
+	tgt, err := keys.DecodeResumeToken(gotTok)
+	if err != nil {
+		t.Fatalf("decode rendered token %q: %v", gotTok, err)
+	}
+	if tgt.Service != "order" || tgt.InstanceKey != "o-1" || tgt.NodeID != "u" {
+		t.Fatalf("decoded token = %+v", tgt)
+	}
+}
+
+func TestGetProcessInstanceHTTP_NotFound(t *testing.T) {
+	rd := &fakeReader{instance: &ingressv1.GetProcessInstanceResponse{Present: false}}
+	rec := doReq(restMux(ingress.InvokeConfig{Reader: rd, Authorizer: &fakeAuthorizer{}}),
+		"GET", "/v1/processes/order/o-1", nil, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (%q)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetProcessInstanceHTTP_AuthzDeny(t *testing.T) {
+	rd := &fakeReader{instance: &ingressv1.GetProcessInstanceResponse{Present: true}}
+	authz := &fakeAuthorizer{err: connect.NewError(connect.CodePermissionDenied, errors.New("no"))}
+	rec := doReq(restMux(ingress.InvokeConfig{Reader: rd, Authorizer: authz}),
+		"GET", "/v1/processes/order/o-1", nil, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if rd.called {
+		t.Fatalf("reader must not run after authz denial")
 	}
 }
 

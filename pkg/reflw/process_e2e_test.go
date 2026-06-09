@@ -11,6 +11,7 @@ import (
 
 	"github.com/twinfer/reflw/internal/config"
 	"github.com/twinfer/reflw/internal/connectserver"
+	"github.com/twinfer/reflw/internal/storage/keys"
 	"github.com/twinfer/reflw/pkg/ingressclient"
 	"github.com/twinfer/reflw/pkg/reflw"
 	"github.com/twinfer/reflw/pkg/reflw/processengine"
@@ -235,7 +236,10 @@ func TestProcess_UserTaskParkThenComplete(t *testing.T) {
 		}
 		switch pollProcessParkedOrTerminal(t, ctx, icli, ref, key, 5*time.Second) {
 		case enginev1.ProcessStatus_PROCESS_STATUS_RUNNING:
-			// Parked at the user task — complete it with an external event.
+			// Parked at the user task — the resume-token surface lists it (BPMN keys
+			// by flow-node id "u").
+			assertAwaitingResumeToken(t, ctx, icli, ref, key, "u")
+			// Complete it with an external event.
 			if _, err := icli.DeliverProcessEvent(ctx, connect.NewRequest(&ingressv1.DeliverProcessEventRequest{
 				ModelRef:    ref,
 				InstanceKey: key,
@@ -287,6 +291,9 @@ func TestProcess_CMMNHumanTaskParkThenComplete(t *testing.T) {
 		}
 		switch pollProcessParkedOrTerminal(t, ctx, icli, ref, key, 5*time.Second) {
 		case enginev1.ProcessStatus_PROCESS_STATUS_RUNNING:
+			// Parked at the human task — the resume-token surface lists it keyed by
+			// the planItem id (pi1), not the humanTask definition id (h1).
+			assertAwaitingResumeToken(t, ctx, icli, ref, key, "pi1")
 			if _, err := icli.DeliverProcessEvent(ctx, connect.NewRequest(&ingressv1.DeliverProcessEventRequest{
 				ModelRef:    ref,
 				InstanceKey: key,
@@ -306,6 +313,34 @@ func TestProcess_CMMNHumanTaskParkThenComplete(t *testing.T) {
 		}
 	}
 	t.Fatal("human task case never parked to complete")
+}
+
+// assertAwaitingResumeToken reads the parked instance and asserts GetProcessInstance
+// surfaces exactly one awaiting task with the expected node_id and a resume_token
+// that decodes back to (name, instance_key, node_id) — the Phase-3 discovery
+// surface, proving the RUNNING-gated mint against a real linearizable read.
+func assertAwaitingResumeToken(t *testing.T, ctx context.Context, icli *ingressclient.Client, ref *enginev1.ModelRef, key, wantNode string) {
+	t.Helper()
+	resp, err := icli.GetProcessInstance(ctx, connect.NewRequest(&ingressv1.GetProcessInstanceRequest{
+		ModelRef: ref, InstanceKey: key,
+	}))
+	if err != nil {
+		t.Fatalf("GetProcessInstance: %v", err)
+	}
+	tasks := resp.Msg.GetAwaitingTasks()
+	if len(tasks) != 1 {
+		t.Fatalf("awaiting_tasks = %d, want 1: %+v", len(tasks), tasks)
+	}
+	if tasks[0].GetNodeId() != wantNode {
+		t.Fatalf("awaiting node_id = %q, want %q", tasks[0].GetNodeId(), wantNode)
+	}
+	tgt, err := keys.DecodeResumeToken(tasks[0].GetResumeToken())
+	if err != nil {
+		t.Fatalf("decode resume token %q: %v", tasks[0].GetResumeToken(), err)
+	}
+	if tgt.Service != ref.GetName() || tgt.InstanceKey != key || tgt.NodeID != wantNode {
+		t.Fatalf("decoded token = %+v, want service=%q key=%q node=%q", tgt, ref.GetName(), key, wantNode)
+	}
 }
 
 // pollProcessParkedOrTerminal polls until the instance is parked at a passive wait

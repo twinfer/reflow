@@ -143,6 +143,9 @@ func TestAdvanceCMMN_HumanTaskParksThenCompletes(t *testing.T) {
 	if start.GetTerminal() != nil {
 		t.Errorf("human task should park, not terminate; got %+v", start.GetTerminal())
 	}
+	if aw := start.GetAwaiting(); len(aw) != 1 || aw[0].GetNodeId() != "pi1" {
+		t.Errorf("parked human task should surface as awaiting [pi1] (the planItem id, not the humanTask def id); got %+v", aw)
+	}
 
 	cont := invoker.ProcessAdvanceInput{
 		Pk: 0, Service: "humancase", InstanceKey: "i1",
@@ -155,6 +158,9 @@ func TestAdvanceCMMN_HumanTaskParksThenCompletes(t *testing.T) {
 	}
 	if done.GetTerminal() == nil || done.GetTerminal().GetFailed() {
 		t.Fatalf("want successful terminal after human completes, got %+v", done.GetTerminal())
+	}
+	if len(done.GetAwaiting()) != 0 {
+		t.Errorf("completed case should have no awaiting tasks; got %+v", done.GetAwaiting())
 	}
 }
 

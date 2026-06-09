@@ -1291,6 +1291,21 @@ message ProcessAdvanced {
   // no-advance turn (new_state unchanged); release_held_node rides the resume turn.
   string hold_event_node = 14;
   repeated string release_held_node = 15;
+  // awaiting lists the instance's plan items / flow nodes currently parked on an
+  // external completion (BPMN user tasks, CMMN active human tasks), derived from
+  // engine state each turn like incident so it always reflects the current parked
+  // set. The apply path mirrors it onto ProcessInstanceRecord.awaiting; ingress
+  // GetProcessInstance turns each entry into a resume token.
+  repeated AwaitingTask awaiting = 16;
+}
+
+// AwaitingTask is one externally-completable parked task on a running instance:
+// node_id is the BPMN flow-node id or CMMN replicaKey, name is the model @name
+// (may be empty). Carried on ProcessAdvanced.awaiting (turn result) and mirrored
+// onto ProcessInstanceRecord.awaiting; ingress mints a resume token per entry.
+message AwaitingTask {
+  string node_id = 1;
+  string name = 2;
 }
 
 // ProcessIncident is a parked uncaught failure on a running instance — the
@@ -1473,6 +1488,11 @@ message ProcessInstanceRecord {
   // reaped, active_seq==0); state_blob retains the failing element so RETRY can
   // re-drive it. Cleared when the incident is resolved.
   ProcessIncident incident = 15;
+  // awaiting mirrors the last turn's ProcessAdvanced.awaiting: the instance's
+  // currently-parked externally-completable tasks (empty unless parked on user /
+  // human tasks). Cleared on incident park. ingress GetProcessInstance derives a
+  // resume token per entry.
+  repeated AwaitingTask awaiting = 16;
 }
 
 // ProcessInboxEntry is one queued event for an instance, stored at

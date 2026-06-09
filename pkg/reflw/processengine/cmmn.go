@@ -64,6 +64,7 @@ func (a *Adapter) advanceCMMN(in invoker.ProcessAdvanceInput) (*enginev1.Process
 				InstanceKey:   in.InstanceKey,
 				NewState:      rec.GetStateBlob(),
 				HoldEventNode: node,
+				Awaiting:      awaitingCMMN(def, state),
 			}, nil
 		}
 		var aerr error
@@ -77,7 +78,27 @@ func (a *Adapter) advanceCMMN(in invoker.ProcessAdvanceInput) (*enginev1.Process
 	if err != nil {
 		return nil, fmt.Errorf("processengine: marshal case state: %w", err)
 	}
-	return a.translateCMMN(in, cmds, state, newState)
+	adv, err := a.translateCMMN(in, cmds, state, newState)
+	if err != nil {
+		return nil, err
+	}
+	adv.Awaiting = awaitingCMMN(def, state)
+	return adv, nil
+}
+
+// awaitingCMMN converts the engine's parked human-task list into the proto carrier
+// the apply path mirrors onto ProcessInstanceRecord.awaiting. Rides every turn
+// (including the suspend-hold early return) so the persisted set stays current.
+func awaitingCMMN(def *cmmn.CaseDefinition, state *cmmn.CaseState) []*enginev1.AwaitingTask {
+	src := cmmn.AwaitingExternalTasks(def, state)
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]*enginev1.AwaitingTask, len(src))
+	for i, w := range src {
+		out[i] = &enginev1.AwaitingTask{NodeId: w.NodeID, Name: w.Name}
+	}
+	return out
 }
 
 // eventForCMMN decodes a ProcessEventPayload into the reflwos CMMN EngineEvent that

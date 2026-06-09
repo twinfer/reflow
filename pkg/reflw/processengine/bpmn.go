@@ -70,7 +70,27 @@ func (a *Adapter) advanceBPMN(in invoker.ProcessAdvanceInput) (*enginev1.Process
 	if err != nil {
 		return nil, fmt.Errorf("processengine: marshal state: %w", err)
 	}
-	return a.translateBPMN(in, graph, cmds, newState)
+	adv, err := a.translateBPMN(in, graph, cmds, newState)
+	if err != nil {
+		return nil, err
+	}
+	adv.Awaiting = awaitingBPMN(graph, state)
+	return adv, nil
+}
+
+// awaitingBPMN converts the engine's parked user-task list into the proto carrier
+// the apply path mirrors onto ProcessInstanceRecord.awaiting. Rides every turn so
+// the persisted set always reflects the current parked tasks.
+func awaitingBPMN(graph *bpmn.ProcessGraph, state *bpmn.ExecutionState) []*enginev1.AwaitingTask {
+	src := bpmn.AwaitingExternalTasks(graph, state)
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]*enginev1.AwaitingTask, len(src))
+	for i, w := range src {
+		out[i] = &enginev1.AwaitingTask{NodeId: w.NodeID, Name: w.Name}
+	}
+	return out
 }
 
 // childInstanceKey mints a deterministic key for a CallActivity child instance

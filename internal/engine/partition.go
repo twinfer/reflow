@@ -1219,6 +1219,14 @@ func (p *Partition) onProcessAdvanced(batch storage.Batch, meta *enginev1.Partit
 		}
 	}
 
+	// Mirror the turn's parked externally-completable tasks onto the record so
+	// GetProcessInstance can mint a resume token per entry. The adapter recomputes
+	// adv.Awaiting from engine state every non-terminal turn (including the
+	// suspend-hold turn, which also lands here), so the persisted set is always
+	// current; the terminal / BPMN-incident early returns above skip this write and
+	// ingress surfaces awaiting only while status == RUNNING, so a stale set on a
+	// parked / finished record is never read.
+	rec.Awaiting = adv.GetAwaiting()
 	if err := procT.Put(batch, lp, service, instanceKey, rec); err != nil {
 		return fmt.Errorf("onProcessAdvanced: write record: %w", err)
 	}

@@ -329,6 +329,9 @@ func TestAdvanceBPMN_UserTaskParksThenCompletes(t *testing.T) {
 	if start.GetIncident() != nil {
 		t.Errorf("user task should park clean, not raise an incident; got %+v", start.GetIncident())
 	}
+	if aw := start.GetAwaiting(); len(aw) != 1 || aw[0].GetNodeId() != "u" {
+		t.Errorf("parked user task should surface as awaiting [u]; got %+v", aw)
+	}
 
 	cont := invoker.ProcessAdvanceInput{
 		Pk: 0, Service: "ut", InstanceKey: "i1",
@@ -341,6 +344,9 @@ func TestAdvanceBPMN_UserTaskParksThenCompletes(t *testing.T) {
 	}
 	if adv.GetTerminal() == nil || adv.GetTerminal().GetFailed() {
 		t.Fatalf("want successful terminal after user task completion, got %+v", adv.GetTerminal())
+	}
+	if len(adv.GetAwaiting()) != 0 {
+		t.Errorf("completed instance should have no awaiting tasks; got %+v", adv.GetAwaiting())
 	}
 }
 

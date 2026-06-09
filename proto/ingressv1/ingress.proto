@@ -97,6 +97,16 @@ service Ingress {
   // signal broadcast). Messages with no current subscriber are dropped.
   rpc DeliverMessage(DeliverMessageRequest) returns (DeliverMessageResponse);
 
+  // DeliverProcessEvent injects an external typed engine event into a RUNNING
+  // instance addressed by (model_ref.name, instance_key) — the path a human or
+  // operator uses to complete a parked user/human task, fire a CMMN user-event
+  // listener, or push a variable update onto a parked conditional. Unlike
+  // DeliverMessage (correlated by message_name/correlation_key to whatever is
+  // subscribed), this is point-to-point: it proposes a continuation ProcessEvent
+  // (no model_ref → the apply path appends to the named instance's inbox and
+  // advances one turn). An absent or terminal instance is a benign drop.
+  rpc DeliverProcessEvent(DeliverProcessEventRequest) returns (DeliverProcessEventResponse);
+
   // GetProcessInstance is a linearizable read of one instance's current state,
   // routed by (model name, instance_key) like StartProcess. It exists
   // so a caller without an await RPC can observe lifecycle: present=false means
@@ -273,6 +283,31 @@ message DeliverMessageResponse {
   fixed64 pk = 1;
   // accepted is true when the command was routed and proposed; it does not wait
   // for apply, nor report how many subscribers matched.
+  bool accepted = 2;
+}
+
+message DeliverProcessEventRequest {
+  // model_ref.name + instance_key select the routing partition; model_ref.kind /
+  // version are ignored (the running instance already carries its plane + model).
+  reflw.engine.v1.ModelRef model_ref = 1;
+  string instance_key = 2;
+  // event_kind is the reflwos engine-event discriminator, matched to the
+  // instance's plane: BPMN (e.g. "UserTaskCompleted", "SignalReceived",
+  // "VariablesUpdated") or CMMN (e.g. "TaskCompleted", "UserEventOccurred"). The
+  // worker validates it against the instance's kind on apply; a mismatch fails
+  // the turn.
+  string event_kind = 3;
+  // payload is the JSON-marshaled typed event body — e.g. for UserTaskCompleted,
+  // {"NodeID":"u","Outputs":{...}}. The server wraps (event_kind, payload) in the
+  // external-event envelope the worker's adapter decodes.
+  bytes payload = 4;
+}
+
+message DeliverProcessEventResponse {
+  // partition_key the event was routed to (debug/observability).
+  fixed64 pk = 1;
+  // accepted is true when the command was routed and proposed; it does not wait
+  // for apply, and does not report whether the instance was present/running.
   bool accepted = 2;
 }
 

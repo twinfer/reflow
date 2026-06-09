@@ -37,6 +37,7 @@ const (
 	// ids the RPC path uses in procMap, so policy treats REST identically.
 	actionSubmitInvocation          = "SubmitInvocation"
 	actionStartProcess              = "StartProcess"
+	actionDeliverProcessEvent       = "DeliverProcessEvent"
 	actionGetProcessInstanceHistory = "GetProcessInstanceHistory"
 	groupIngressActions             = "IngressActions"
 )
@@ -60,6 +61,13 @@ type ProcessReader interface {
 	GetProcessInstanceHistoryCore(ctx context.Context, name, instanceKey string, afterSeq uint64, limit int) (present bool, events []*enginev1.ProcessHistoryEvent, nextAfterSeq uint64, err error)
 }
 
+// ProcessEventDeliverer injects an external typed engine event into a running
+// instance (the human-task / user-event / variable-update completion path).
+// *Server satisfies it.
+type ProcessEventDeliverer interface {
+	DeliverProcessEventCore(ctx context.Context, a DeliverProcessEventArgs) (uint64, error)
+}
+
 // IngressAuthorizer authorizes a REST-facade ingress call by Cedar action id.
 // *authz.Interceptor satisfies it; kept as an interface so this package needs
 // no authz import and the kernel is unit-testable with a fake.
@@ -68,9 +76,10 @@ type IngressAuthorizer interface {
 }
 
 var (
-	_ Invoker        = (*Server)(nil)
-	_ ProcessStarter = (*Server)(nil)
-	_ ProcessReader  = (*Server)(nil)
+	_ Invoker               = (*Server)(nil)
+	_ ProcessStarter        = (*Server)(nil)
+	_ ProcessReader         = (*Server)(nil)
+	_ ProcessEventDeliverer = (*Server)(nil)
 )
 
 // InvokeConfig wires the REST data-plane kernel.
@@ -78,6 +87,7 @@ type InvokeConfig struct {
 	Invoker      Invoker
 	Starter      ProcessStarter
 	Reader       ProcessReader
+	Deliverer    ProcessEventDeliverer
 	Authorizer   IngressAuthorizer
 	Metrics      *observability.Metrics
 	MaxBodyBytes int64
@@ -205,6 +215,57 @@ func StartProcessHTTP(cfg InvokeConfig, isCase bool) http.Handler {
 		writeJSON(sc, http.StatusAccepted, map[string]any{
 			"pk":           strconv.FormatUint(pk, 10),
 			"instance_key": instanceKey,
+		})
+	})
+}
+
+// DeliverProcessEventHTTP builds the handler for POST
+// /v1/processes/{name}/{key}/events?kind=<EventKind> — inject an external typed
+// engine event into the running instance addressed by (name, key): complete a
+// parked user/human task, fire a CMMN user-event listener, or push a variable
+// update. ?kind is the reflwos event discriminator (e.g. UserTaskCompleted,
+// TaskCompleted); the request body is the JSON event payload. The route addresses
+// an existing instance by name+key regardless of plane, so /v1/processes/ is the
+// canonical prefix for both BPMN and CMMN (matching the history route). Send-only
+// → 202 + {pk, accepted}.
+func DeliverProcessEventHTTP(cfg InvokeConfig) http.Handler {
+	const route = "/v1/processes/{name}/{key}/events"
+	maxBody := cfg.maxBody()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sc := &statusCapture{ResponseWriter: w, status: http.StatusOK}
+		defer func() { recordREST(cfg.Metrics, route, r.Method, sc.status) }()
+
+		if r.Method != http.MethodPost {
+			http.Error(sc, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if err := cfg.Authorizer.AuthorizeIngressAction(r.Context(), actionDeliverProcessEvent, groupIngressActions); err != nil {
+			writeConnErr(sc, err)
+			return
+		}
+		kind := r.URL.Query().Get("kind")
+		if kind == "" {
+			http.Error(sc, "query param 'kind' is required", http.StatusBadRequest)
+			return
+		}
+		body, err := io.ReadAll(http.MaxBytesReader(sc, r.Body, maxBody))
+		if err != nil {
+			http.Error(sc, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		pk, err := cfg.Deliverer.DeliverProcessEventCore(r.Context(), DeliverProcessEventArgs{
+			Name:        r.PathValue("name"),
+			InstanceKey: r.PathValue("key"),
+			EventKind:   kind,
+			Payload:     body,
+		})
+		if err != nil {
+			writeConnErr(sc, err)
+			return
+		}
+		writeJSON(sc, http.StatusAccepted, map[string]any{
+			"pk":       strconv.FormatUint(pk, 10),
+			"accepted": true,
 		})
 	})
 }

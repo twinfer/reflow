@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -141,6 +142,101 @@ func (s *Server) DeliverMessage(ctx context.Context, req *connect.Request[ingres
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("propose deliver message: %w", err))
 	}
 	return connect.NewResponse(&ingressv1.DeliverMessageResponse{Pk: pk, Accepted: true}), nil
+}
+
+// DeliverProcessEventArgs is the transport-agnostic input to
+// DeliverProcessEventCore — shared by the RPC shell and the REST process facade.
+type DeliverProcessEventArgs struct {
+	Name        string
+	InstanceKey string
+	EventKind   string
+	Payload     []byte
+}
+
+// DeliverProcessEventCore injects an external typed engine event into a running
+// instance, routed by (name, instance_key) like StartProcess. It wraps
+// (event_kind, payload) in the external-event envelope the worker's adapter
+// decodes (processengine.decodeBPMNExternalEvent / decodeCMMNExternalEvent) and
+// proposes a continuation ProcessEvent — NO model_ref, so the apply path appends
+// to the running instance's inbox rather than creating one; an absent or terminal
+// instance is a benign drop (enqueueInstanceEvent). It is the human-task /
+// user-event / variable-update completion path. Returns the routed partition_key;
+// errors are connect.Errors. The non-RPC core extracted from the RPC shell.
+func (s *Server) DeliverProcessEventCore(ctx context.Context, a DeliverProcessEventArgs) (uint64, error) {
+	if a.Name == "" {
+		return 0, connect.NewError(connect.CodeInvalidArgument, errors.New("model_ref.name is required"))
+	}
+	if a.InstanceKey == "" {
+		return 0, connect.NewError(connect.CodeInvalidArgument, errors.New("instance_key is required"))
+	}
+	if a.EventKind == "" {
+		return 0, connect.NewError(connect.CodeInvalidArgument, errors.New("event_kind is required"))
+	}
+	envelope, err := encodeExternalEventEnvelope(a.EventKind, a.Payload)
+	if err != nil {
+		return 0, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("encode external event: %w", err))
+	}
+
+	pk := routing.PartitionKey(a.Name, a.InstanceKey)
+	shardID := s.host.Partitioner().ShardForKey(pk)
+	runner := s.host.Partition(shardID)
+	if runner == nil {
+		return 0, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no partition for shard %d", shardID))
+	}
+
+	cmd := &enginev1.Command{Kind: &enginev1.Command_ProcessEvent{ProcessEvent: &enginev1.ProcessEvent{
+		Pk:          pk,
+		Service:     a.Name,
+		InstanceKey: a.InstanceKey,
+		Payload:     &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_External{External: envelope}},
+		// No ModelRef/Kind: this is a continuation event for an existing
+		// instance, not a start — the apply path appends it to the inbox.
+	}}}
+	nonce, err := mintNonce()
+	if err != nil {
+		return 0, connect.NewError(connect.CodeInternal, fmt.Errorf("mint nonce: %w", err))
+	}
+	producerID := "procevent/" + nonce
+	if err := runner.Proposer().ProposeIngress(ctx, producerID, 1, cmd); err != nil {
+		if errors.Is(err, engine.ErrShardClosed) {
+			return 0, connect.NewError(connect.CodeUnavailable, errors.New("shard closed"))
+		}
+		return 0, connect.NewError(connect.CodeInternal, fmt.Errorf("propose deliver process event: %w", err))
+	}
+	return pk, nil
+}
+
+// DeliverProcessEvent is the Connect RPC shell over DeliverProcessEventCore.
+func (s *Server) DeliverProcessEvent(ctx context.Context, req *connect.Request[ingressv1.DeliverProcessEventRequest]) (*connect.Response[ingressv1.DeliverProcessEventResponse], error) {
+	msg := req.Msg
+	pk, err := s.DeliverProcessEventCore(ctx, DeliverProcessEventArgs{
+		Name:        msg.GetModelRef().GetName(),
+		InstanceKey: msg.GetInstanceKey(),
+		EventKind:   msg.GetEventKind(),
+		Payload:     msg.GetPayload(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&ingressv1.DeliverProcessEventResponse{Pk: pk, Accepted: true}), nil
+}
+
+// encodeExternalEventEnvelope wraps a reflwos engine-event (kind discriminator +
+// JSON body) in the external-event envelope the worker's process adapter decodes
+// on a continuation turn. The shape — {"kind","payload"} — is a stable wire
+// contract: the decode counterpart is processengine.externalEvent (and it mirrors
+// dboshost/wire's BPMNEventEnvelope). This layer cannot import the pkg/ adapter
+// (internal must not depend on pkg/*), so the two-field shape is replicated here;
+// keep the JSON tags in lockstep with processengine.externalEvent. An empty
+// payload normalizes to "{}" so json.RawMessage stays valid.
+func encodeExternalEventEnvelope(kind string, payload []byte) ([]byte, error) {
+	if len(payload) == 0 {
+		payload = []byte("{}")
+	}
+	return json.Marshal(struct {
+		Kind    string          `json:"kind"`
+		Payload json.RawMessage `json:"payload"`
+	}{Kind: kind, Payload: json.RawMessage(payload)})
 }
 
 // ResolveProcessIncident resolves an incident-parked instance, routed by

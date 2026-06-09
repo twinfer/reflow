@@ -85,12 +85,27 @@ func (f *fakeReader) GetProcessInstanceHistoryCore(_ context.Context, name, inst
 	return f.present, f.events, f.nextAfterSeq, f.err
 }
 
+type fakeDeliverer struct {
+	pk  uint64
+	err error
+
+	gotArgs ingress.DeliverProcessEventArgs
+	called  bool
+}
+
+func (f *fakeDeliverer) DeliverProcessEventCore(_ context.Context, a ingress.DeliverProcessEventArgs) (uint64, error) {
+	f.called = true
+	f.gotArgs = a
+	return f.pk, f.err
+}
+
 // --- helpers -----------------------------------------------------------------
 
 func restMux(ic ingress.InvokeConfig) *http.ServeMux {
 	m := http.NewServeMux()
 	m.Handle("POST /v1/processes/{name}", ingress.StartProcessHTTP(ic, false))
 	m.Handle("POST /v1/cases/{name}", ingress.StartProcessHTTP(ic, true))
+	m.Handle("POST /v1/processes/{name}/{key}/events", ingress.DeliverProcessEventHTTP(ic))
 	m.Handle("GET /v1/processes/{name}/{key}/history", ingress.GetProcessHistoryHTTP(ic))
 	m.Handle("POST /v1/{service}/{key}/{handler}", ingress.InvokeHTTP(ic, true))
 	m.Handle("POST /v1/{service}/{handler}", ingress.InvokeHTTP(ic, false))
@@ -335,6 +350,55 @@ func TestGetProcessHistoryHTTP_AuthzDeny(t *testing.T) {
 	}
 	if rd.called {
 		t.Fatalf("reader must not run after authz denial")
+	}
+}
+
+// TestDeliverProcessEventHTTP_Success: the events route authorizes against
+// DeliverProcessEvent, threads name/key/?kind/body into the deliverer, and returns
+// 202 + {pk, accepted}.
+func TestDeliverProcessEventHTTP_Success(t *testing.T) {
+	dl := &fakeDeliverer{pk: 42}
+	authz := &fakeAuthorizer{}
+	rec := doReq(restMux(ingress.InvokeConfig{Deliverer: dl, Authorizer: authz}),
+		"POST", "/v1/processes/order/o-1/events?kind=UserTaskCompleted", []byte(`{"NodeID":"u"}`), nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (%q)", rec.Code, rec.Body.String())
+	}
+	if authz.gotAction != "DeliverProcessEvent" {
+		t.Fatalf("authorized action = %q, want DeliverProcessEvent", authz.gotAction)
+	}
+	if dl.gotArgs.Name != "order" || dl.gotArgs.InstanceKey != "o-1" ||
+		dl.gotArgs.EventKind != "UserTaskCompleted" || string(dl.gotArgs.Payload) != `{"NodeID":"u"}` {
+		t.Fatalf("deliver args = %+v", dl.gotArgs)
+	}
+	if body := decodeJSON(t, rec); body["pk"] != "42" || body["accepted"] != true {
+		t.Fatalf("body = %v", body)
+	}
+}
+
+// TestDeliverProcessEventHTTP_MissingKind: ?kind is required (400, deliverer untouched).
+func TestDeliverProcessEventHTTP_MissingKind(t *testing.T) {
+	dl := &fakeDeliverer{}
+	rec := doReq(restMux(ingress.InvokeConfig{Deliverer: dl, Authorizer: &fakeAuthorizer{}}),
+		"POST", "/v1/processes/order/o-1/events", []byte(`{}`), nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if dl.called {
+		t.Fatalf("deliverer must not run without a kind")
+	}
+}
+
+func TestDeliverProcessEventHTTP_AuthzDeny(t *testing.T) {
+	dl := &fakeDeliverer{}
+	authz := &fakeAuthorizer{err: connect.NewError(connect.CodePermissionDenied, errors.New("no"))}
+	rec := doReq(restMux(ingress.InvokeConfig{Deliverer: dl, Authorizer: authz}),
+		"POST", "/v1/processes/order/o-1/events?kind=UserTaskCompleted", []byte(`{}`), nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if dl.called {
+		t.Fatalf("deliverer must not run after authz denial")
 	}
 }
 

@@ -3,6 +3,7 @@ package processengine
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -102,6 +103,34 @@ func isTimerWaitNode(graph *bpmn.ProcessGraph, nodeID string) bool {
 	return false
 }
 
+// slotForInstance encodes a reflwos MI instance id into the reflw timer slot. A
+// reflwos instance id is a stringified non-negative int ("" for a non-MI scalar
+// wait); the +1 offset keeps the non-MI case ("" → slot 0) distinct from MI
+// instance 0 (→ slot 1) so the fire side can recover the exact instance. The slot
+// rides the durable timer key (processTimerID) and the fired ProcessTimerFired, so
+// N instances parked at one timer node get N distinct durable rows and fire
+// independently — the engine treats slot as an opaque disambiguator.
+func slotForInstance(instanceID string) uint32 {
+	if instanceID == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(instanceID)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return uint32(n) + 1
+}
+
+// instanceForSlot inverts slotForInstance: slot 0 → "" (non-MI), slot k>0 → the
+// MI instance id itoa(k-1). Used by eventForBPMN to recover the firing instance
+// from ProcessTimerFired.slot so advanceWaitFired advances the right instance token.
+func instanceForSlot(slot uint32) string {
+	if slot == 0 {
+		return ""
+	}
+	return strconv.Itoa(int(slot) - 1)
+}
+
 // eventForBPMN decodes a ProcessEventPayload into the reflwos EngineEvent that
 // drives the continuation Advance. (The first-turn External-as-start-vars case is
 // handled in advanceBPMN before this is reached.)
@@ -124,8 +153,11 @@ func eventForBPMN(p *enginev1.ProcessEventPayload) (bpmn.EngineEvent, error) {
 		}
 		return bpmn.ServiceTaskCompleted{NodeID: tc.GetNodeId(), InstanceID: tc.GetInstanceIdx(), Outputs: outputs}, nil
 	case *enginev1.ProcessEventPayload_TimerFired:
+		// Recover the MI instance from the slot the arm encoded, so a per-instance
+		// timer inside an MI subprocess body advances the right instance's token
+		// (advanceWaitFired is instance-aware). Non-MI → slot 0 → InstanceID "".
 		tf := of.TimerFired
-		return bpmn.TimerFired{NodeID: tf.GetNodeId()}, nil
+		return bpmn.TimerFired{NodeID: tf.GetNodeId(), InstanceID: instanceForSlot(tf.GetSlot())}, nil
 	case *enginev1.ProcessEventPayload_ChildCompleted:
 		cc := of.ChildCompleted
 		if cc.GetFailed() {
@@ -260,15 +292,23 @@ func (a *Adapter) translateBPMN(in invoker.ProcessAdvanceInput, graph *bpmn.Proc
 			// Engine-internal placeholder; re-evaluated intra-engine on the next
 			// VariablesUpdated. Nothing for the driver to actuate.
 		case bpmn.CancelActivity:
-			// No in-flight-invocation cancel on the process plane; a late task
-			// completion for a torn-down token is ignored by the engine.
+			// An interrupting boundary event fired on this activity's host: tear
+			// down whatever it had in flight — a service-task invocation or a
+			// child process/case — by node id, the same silent by-id cancel
+			// CMMN's CancelTask uses (the engine already moved the token off the
+			// activity, so no completion is wanted). InvokeCancel has no instance
+			// dimension, so an MI activity cancels all instances' work by node;
+			// per-instance precision rides the same instance_idx plumbing as the
+			// MI-timer path. A CancelActivity for a node with nothing in flight
+			// (e.g. a user task) naturally no-ops in the apply scan.
+			adv.CancelInvoke = append(adv.CancelInvoke, &enginev1.InvokeCancel{NodeId: t.NodeID})
 		case bpmn.WaitForTimer:
-			// FireAtMs is absolute logical time. Slot disambiguates multiple
-			// timers on one node; reflwos correlates by (NodeID, InstanceID) and
-			// has no slot, so the single-timer-per-node case is slot 0.
-			if t.InstanceID != "" {
-				return nil, fmt.Errorf("processengine: multi-instance timer not yet supported (node %q instance %q)", t.NodeID, t.InstanceID)
-			}
+			// FireAtMs is absolute logical time. Slot disambiguates multiple timers
+			// on one node; reflwos correlates by (NodeID, InstanceID), so the slot
+			// carries the MI instance (slotForInstance) — a per-instance timer inside
+			// an MI subprocess body thus gets its own durable timer row and fires
+			// independently. A non-MI wait is slot 0.
+			//
 			// A TimeCycle (Repeat != 0) re-arms itself: reflwos re-emits a fresh
 			// WaitForTimer on every TimerFired — with the remaining count carried
 			// in its durable ExecutionState — until the count is exhausted, so each
@@ -279,7 +319,7 @@ func (a *Adapter) translateBPMN(in invoker.ProcessAdvanceInput, graph *bpmn.Proc
 			adv.ArmTimer = append(adv.ArmTimer, &enginev1.TimerArm{
 				NodeId:   t.NodeID,
 				FireAtMs: in.Entry.GetLogicalTimeMs() + uint64(t.Duration.Milliseconds()),
-				Slot:     0,
+				Slot:     slotForInstance(t.InstanceID),
 			})
 		case bpmn.CancelWait:
 			// CancelWait tears down a timer OR a signal/message wait. A timer-wait
@@ -289,7 +329,9 @@ func (a *Adapter) translateBPMN(in invoker.ProcessAdvanceInput, graph *bpmn.Proc
 			// the outbox). The catch's correlation key is not re-derivable here,
 			// which is why the instruction carries only the node id.
 			if isTimerWaitNode(graph, t.NodeID) {
-				adv.CancelTimer = append(adv.CancelTimer, &enginev1.TimerCancel{NodeId: t.NodeID, Slot: 0})
+				// Same slot encoding as the arm so the cancel targets this instance's
+				// durable timer row (processTimerID folds in the slot).
+				adv.CancelTimer = append(adv.CancelTimer, &enginev1.TimerCancel{NodeId: t.NodeID, Slot: slotForInstance(t.InstanceID)})
 			} else {
 				adv.Unsubscribe = append(adv.Unsubscribe, &enginev1.SignalUnsubscribe{NodeId: t.NodeID})
 			}
@@ -315,7 +357,12 @@ func (a *Adapter) translateBPMN(in invoker.ProcessAdvanceInput, graph *bpmn.Proc
 				Vars:        vars,
 			})
 		case bpmn.RunUserTask:
-			return nil, fmt.Errorf("processengine: RunUserTask (human task) not supported (node %q)", t.NodeID)
+			// Passive: the engine parks the user task; a person completes it later,
+			// arriving as an external ProcessEvent (UserTaskCompleted, delivered via
+			// the DeliverProcessEvent ingress RPC) that eventForBPMN turns back into
+			// a completion the reflwos engine handles identically to a service task
+			// (engine.go: UserTaskCompleted and ServiceTaskCompleted share one apply
+			// path). Nothing to actuate now — same shape as cmmn.RunHumanTask.
 		default:
 			return nil, fmt.Errorf("processengine: unsupported BPMN command %T", c)
 		}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/twinfer/reflw/internal/engine/invoker"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	"github.com/twinfer/reflwos/cmmn"
 	"github.com/twinfer/reflwos/dmn"
 )
 
@@ -154,6 +155,25 @@ func TestAdvanceCMMN_HumanTaskParksThenCompletes(t *testing.T) {
 	}
 	if done.GetTerminal() == nil || done.GetTerminal().GetFailed() {
 		t.Fatalf("want successful terminal after human completes, got %+v", done.GetTerminal())
+	}
+}
+
+// TestEventForCMMN_ExternalUserEventOccurrence pins Gap 6 on the CMMN plane: an
+// OccurUserEvent delivered through the external-event envelope (the
+// DeliverProcessEvent path) decodes to cmmn.OccurUserEvent, so the engine fires
+// the parked user-event listener. Closes the "parked but un-triggerable" gap for
+// CMMN user-event listeners, the same way DeliverProcessEvent completes a human task.
+func TestEventForCMMN_ExternalUserEventOccurrence(t *testing.T) {
+	ev, err := eventForCMMN(cmmnExtPayload(t, "OccurUserEvent", cmmn.OccurUserEvent{PlanItemID: "evt1"}))
+	if err != nil {
+		t.Fatalf("eventForCMMN: %v", err)
+	}
+	ue, ok := ev.(cmmn.OccurUserEvent)
+	if !ok {
+		t.Fatalf("event = %T, want cmmn.OccurUserEvent", ev)
+	}
+	if ue.PlanItemID != "evt1" {
+		t.Fatalf("PlanItemID = %q, want evt1", ue.PlanItemID)
 	}
 }
 

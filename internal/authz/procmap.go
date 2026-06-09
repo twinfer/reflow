@@ -59,6 +59,7 @@ var procMap = map[string]procEntry{
 	ingressv1connect.IngressGetObjectStateProcedure:            {"GetObjectState", []string{groupIngress}},
 	ingressv1connect.IngressStartProcessProcedure:              {"StartProcess", []string{groupIngress}},
 	ingressv1connect.IngressDeliverMessageProcedure:            {"DeliverMessage", []string{groupIngress}},
+	ingressv1connect.IngressDeliverProcessEventProcedure:       {"DeliverProcessEvent", []string{groupIngress}},
 	ingressv1connect.IngressGetProcessInstanceProcedure:        {"GetProcessInstance", []string{groupIngress}},
 	ingressv1connect.IngressListProcessInstancesProcedure:      {"ListProcessInstances", []string{groupIngress}},
 	ingressv1connect.IngressGetProcessInstanceHistoryProcedure: {"GetProcessInstanceHistory", []string{groupIngress}},

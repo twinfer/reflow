@@ -2,10 +2,12 @@ package processengine
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/twinfer/reflw/internal/engine/invoker"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	"github.com/twinfer/reflwos/bpmn"
 )
 
 // Start -> IntermediateTimerCatch(PT5M) -> End.
@@ -63,6 +65,56 @@ func timerFiredPayload(node string) *enginev1.ProcessEventPayload {
 	return &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_TimerFired{
 		TimerFired: &enginev1.ProcessTimerFired{NodeId: node},
 	}}
+}
+
+func timerFiredSlotPayload(node string, slot uint32) *enginev1.ProcessEventPayload {
+	return &enginev1.ProcessEventPayload{Of: &enginev1.ProcessEventPayload_TimerFired{
+		TimerFired: &enginev1.ProcessTimerFired{NodeId: node, Slot: slot},
+	}}
+}
+
+// Start -> MI subProcess (loopCardinality 2; body: start -> inner timer catch ->
+// end) -> End. Each MI instance parks at the inner timer "wait" with its own
+// instance id, so the two arms must carry distinct slots and fire independently.
+const miInnerTimerBPMN = `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="test">
+  <process id="p" isExecutable="true">
+    <startEvent id="start"><outgoing>f1</outgoing></startEvent>
+    <sequenceFlow id="f1" sourceRef="start" targetRef="mi"/>
+    <subProcess id="mi">
+      <incoming>f1</incoming><outgoing>f2</outgoing>
+      <multiInstanceLoopCharacteristics isSequential="false">
+        <loopCardinality>2</loopCardinality>
+      </multiInstanceLoopCharacteristics>
+      <startEvent id="s2"><outgoing>g1</outgoing></startEvent>
+      <sequenceFlow id="g1" sourceRef="s2" targetRef="wait"/>
+      <intermediateCatchEvent id="wait">
+        <incoming>g1</incoming><outgoing>g2</outgoing>
+        <timerEventDefinition><timeDuration>PT5M</timeDuration></timerEventDefinition>
+      </intermediateCatchEvent>
+      <sequenceFlow id="g2" sourceRef="wait" targetRef="e2"/>
+      <endEvent id="e2"><incoming>g2</incoming></endEvent>
+    </subProcess>
+    <sequenceFlow id="f2" sourceRef="mi" targetRef="end"/>
+    <endEvent id="end"><incoming>f2</incoming></endEvent>
+  </process>
+</definitions>`
+
+// tokensAtNode counts the tokens parked at nodeID in a serialized ExecutionState,
+// keyed by their MI instance id — the discriminator for per-instance timer firing.
+func tokensAtNode(t *testing.T, state []byte, nodeID string) map[string]int {
+	t.Helper()
+	var es bpmn.ExecutionState
+	if err := json.Unmarshal(state, &es); err != nil {
+		t.Fatalf("unmarshal ExecutionState: %v", err)
+	}
+	out := map[string]int{}
+	for _, tok := range es.Tokens {
+		if tok.NodeID == nodeID {
+			out[tok.Instance]++
+		}
+	}
+	return out
 }
 
 func findArm(arms []*enginev1.TimerArm, node string) *enginev1.TimerArm {
@@ -152,6 +204,73 @@ func TestAdvanceBPMN_BoundaryTimerArmedThenCancelled(t *testing.T) {
 	}
 	if !hasInvoke(adv.GetInvoke(), "work2") {
 		t.Errorf("want Invoke for work2 after work completion, got %v", adv.GetInvoke())
+	}
+}
+
+// TestAdvanceBPMN_MultiInstanceInnerTimer pins Gap 2: a per-instance timer inside
+// an MI subprocess body. The two instances park at the same node "wait" with
+// distinct instance ids, so the adapter must arm two timers with distinct slots,
+// and firing one instance's slot must advance ONLY that instance's token (the
+// other stays parked) — proving the engine's instance-aware fire path. Before this
+// fix the adapter hard-errored on the per-instance WaitForTimer.
+func TestAdvanceBPMN_MultiInstanceInnerTimer(t *testing.T) {
+	a := New(mustResolver(t, "miTimer", miInnerTimerBPMN))
+
+	start, err := a.Advance(context.Background(), startInput("miTimer", nil, 1000))
+	if err != nil {
+		t.Fatalf("start (MI inner timer must not error): %v", err)
+	}
+	if start.GetTerminal() != nil {
+		t.Fatalf("unexpected terminal on start: %+v", start.GetTerminal())
+	}
+	// Two instances → two arms at "wait" with distinct, non-zero slots (1 and 2).
+	var slots []uint32
+	for _, arm := range start.GetArmTimer() {
+		if arm.GetNodeId() == "wait" {
+			slots = append(slots, arm.GetSlot())
+		}
+	}
+	if len(slots) != 2 || slots[0] == slots[1] || slots[0] == 0 || slots[1] == 0 {
+		t.Fatalf("want 2 distinct non-zero slots for the MI inner timer, got %v", slots)
+	}
+	if got := tokensAtNode(t, start.GetNewState(), "wait"); got["0"] != 1 || got["1"] != 1 {
+		t.Fatalf("want one parked token per instance at wait, got %v", got)
+	}
+
+	// Fire instance 1's timer (slot 2). Only instance 1 advances; instance 0 stays
+	// parked, so the process does NOT terminate.
+	fire1 := invoker.ProcessAdvanceInput{
+		Pk: 0, Service: "miTimer", InstanceKey: "i1",
+		Record: bpmnRecord("miTimer", start.GetNewState()),
+		Entry:  &enginev1.ProcessInboxEntry{Payload: timerFiredSlotPayload("wait", slotForInstance("1")), LogicalTimeMs: 2000},
+	}
+	adv1, err := a.Advance(context.Background(), fire1)
+	if err != nil {
+		t.Fatalf("fire instance 1: %v", err)
+	}
+	if adv1.GetTerminal() != nil {
+		t.Fatalf("process must not terminate while instance 0 is still parked: %+v", adv1.GetTerminal())
+	}
+	got := tokensAtNode(t, adv1.GetNewState(), "wait")
+	if got["1"] != 0 {
+		t.Fatalf("instance 1's token must be gone after its timer fired, got %v", got)
+	}
+	if got["0"] != 1 {
+		t.Fatalf("instance 0 must stay parked at wait after instance 1 fired, got %v", got)
+	}
+
+	// Fire instance 0's timer (slot 1). Both instances done → MI completes → process completes.
+	fire0 := invoker.ProcessAdvanceInput{
+		Pk: 0, Service: "miTimer", InstanceKey: "i1",
+		Record: bpmnRecord("miTimer", adv1.GetNewState()),
+		Entry:  &enginev1.ProcessInboxEntry{Payload: timerFiredSlotPayload("wait", slotForInstance("0")), LogicalTimeMs: 3000},
+	}
+	adv0, err := a.Advance(context.Background(), fire0)
+	if err != nil {
+		t.Fatalf("fire instance 0: %v", err)
+	}
+	if adv0.GetTerminal() == nil || adv0.GetTerminal().GetFailed() {
+		t.Fatalf("want successful terminal after both instances fired, got %+v", adv0.GetTerminal())
 	}
 }
 

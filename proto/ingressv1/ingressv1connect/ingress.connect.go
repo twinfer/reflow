@@ -72,6 +72,9 @@ const (
 	IngressStartProcessProcedure = "/reflw.ingress.v1.Ingress/StartProcess"
 	// IngressDeliverMessageProcedure is the fully-qualified name of the Ingress's DeliverMessage RPC.
 	IngressDeliverMessageProcedure = "/reflw.ingress.v1.Ingress/DeliverMessage"
+	// IngressDeliverProcessEventProcedure is the fully-qualified name of the Ingress's
+	// DeliverProcessEvent RPC.
+	IngressDeliverProcessEventProcedure = "/reflw.ingress.v1.Ingress/DeliverProcessEvent"
 	// IngressGetProcessInstanceProcedure is the fully-qualified name of the Ingress's
 	// GetProcessInstance RPC.
 	IngressGetProcessInstanceProcedure = "/reflw.ingress.v1.Ingress/GetProcessInstance"
@@ -153,6 +156,15 @@ type IngressClient interface {
 	// An empty correlation_key addresses every instance waiting on the name (BPMN
 	// signal broadcast). Messages with no current subscriber are dropped.
 	DeliverMessage(context.Context, *connect.Request[ingressv1.DeliverMessageRequest]) (*connect.Response[ingressv1.DeliverMessageResponse], error)
+	// DeliverProcessEvent injects an external typed engine event into a RUNNING
+	// instance addressed by (model_ref.name, instance_key) — the path a human or
+	// operator uses to complete a parked user/human task, fire a CMMN user-event
+	// listener, or push a variable update onto a parked conditional. Unlike
+	// DeliverMessage (correlated by message_name/correlation_key to whatever is
+	// subscribed), this is point-to-point: it proposes a continuation ProcessEvent
+	// (no model_ref → the apply path appends to the named instance's inbox and
+	// advances one turn). An absent or terminal instance is a benign drop.
+	DeliverProcessEvent(context.Context, *connect.Request[ingressv1.DeliverProcessEventRequest]) (*connect.Response[ingressv1.DeliverProcessEventResponse], error)
 	// GetProcessInstance is a linearizable read of one instance's current state,
 	// routed by (model name, instance_key) like StartProcess. It exists
 	// so a caller without an await RPC can observe lifecycle: present=false means
@@ -266,6 +278,12 @@ func NewIngressClient(httpClient connect.HTTPClient, baseURL string, opts ...con
 			connect.WithSchema(ingressMethods.ByName("DeliverMessage")),
 			connect.WithClientOptions(opts...),
 		),
+		deliverProcessEvent: connect.NewClient[ingressv1.DeliverProcessEventRequest, ingressv1.DeliverProcessEventResponse](
+			httpClient,
+			baseURL+IngressDeliverProcessEventProcedure,
+			connect.WithSchema(ingressMethods.ByName("DeliverProcessEvent")),
+			connect.WithClientOptions(opts...),
+		),
 		getProcessInstance: connect.NewClient[ingressv1.GetProcessInstanceRequest, ingressv1.GetProcessInstanceResponse](
 			httpClient,
 			baseURL+IngressGetProcessInstanceProcedure,
@@ -307,6 +325,7 @@ type ingressClient struct {
 	listInvocations           *connect.Client[ingressv1.ListInvocationsRequest, ingressv1.ListInvocationsResponse]
 	startProcess              *connect.Client[ingressv1.StartProcessRequest, ingressv1.StartProcessResponse]
 	deliverMessage            *connect.Client[ingressv1.DeliverMessageRequest, ingressv1.DeliverMessageResponse]
+	deliverProcessEvent       *connect.Client[ingressv1.DeliverProcessEventRequest, ingressv1.DeliverProcessEventResponse]
 	getProcessInstance        *connect.Client[ingressv1.GetProcessInstanceRequest, ingressv1.GetProcessInstanceResponse]
 	listProcessInstances      *connect.Client[ingressv1.ListProcessInstancesRequest, ingressv1.ListProcessInstancesResponse]
 	getProcessInstanceHistory *connect.Client[ingressv1.GetProcessInstanceHistoryRequest, ingressv1.GetProcessInstanceHistoryResponse]
@@ -371,6 +390,11 @@ func (c *ingressClient) StartProcess(ctx context.Context, req *connect.Request[i
 // DeliverMessage calls reflw.ingress.v1.Ingress.DeliverMessage.
 func (c *ingressClient) DeliverMessage(ctx context.Context, req *connect.Request[ingressv1.DeliverMessageRequest]) (*connect.Response[ingressv1.DeliverMessageResponse], error) {
 	return c.deliverMessage.CallUnary(ctx, req)
+}
+
+// DeliverProcessEvent calls reflw.ingress.v1.Ingress.DeliverProcessEvent.
+func (c *ingressClient) DeliverProcessEvent(ctx context.Context, req *connect.Request[ingressv1.DeliverProcessEventRequest]) (*connect.Response[ingressv1.DeliverProcessEventResponse], error) {
+	return c.deliverProcessEvent.CallUnary(ctx, req)
 }
 
 // GetProcessInstance calls reflw.ingress.v1.Ingress.GetProcessInstance.
@@ -460,6 +484,15 @@ type IngressHandler interface {
 	// An empty correlation_key addresses every instance waiting on the name (BPMN
 	// signal broadcast). Messages with no current subscriber are dropped.
 	DeliverMessage(context.Context, *connect.Request[ingressv1.DeliverMessageRequest]) (*connect.Response[ingressv1.DeliverMessageResponse], error)
+	// DeliverProcessEvent injects an external typed engine event into a RUNNING
+	// instance addressed by (model_ref.name, instance_key) — the path a human or
+	// operator uses to complete a parked user/human task, fire a CMMN user-event
+	// listener, or push a variable update onto a parked conditional. Unlike
+	// DeliverMessage (correlated by message_name/correlation_key to whatever is
+	// subscribed), this is point-to-point: it proposes a continuation ProcessEvent
+	// (no model_ref → the apply path appends to the named instance's inbox and
+	// advances one turn). An absent or terminal instance is a benign drop.
+	DeliverProcessEvent(context.Context, *connect.Request[ingressv1.DeliverProcessEventRequest]) (*connect.Response[ingressv1.DeliverProcessEventResponse], error)
 	// GetProcessInstance is a linearizable read of one instance's current state,
 	// routed by (model name, instance_key) like StartProcess. It exists
 	// so a caller without an await RPC can observe lifecycle: present=false means
@@ -569,6 +602,12 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 		connect.WithSchema(ingressMethods.ByName("DeliverMessage")),
 		connect.WithHandlerOptions(opts...),
 	)
+	ingressDeliverProcessEventHandler := connect.NewUnaryHandler(
+		IngressDeliverProcessEventProcedure,
+		svc.DeliverProcessEvent,
+		connect.WithSchema(ingressMethods.ByName("DeliverProcessEvent")),
+		connect.WithHandlerOptions(opts...),
+	)
 	ingressGetProcessInstanceHandler := connect.NewUnaryHandler(
 		IngressGetProcessInstanceProcedure,
 		svc.GetProcessInstance,
@@ -619,6 +658,8 @@ func NewIngressHandler(svc IngressHandler, opts ...connect.HandlerOption) (strin
 			ingressStartProcessHandler.ServeHTTP(w, r)
 		case IngressDeliverMessageProcedure:
 			ingressDeliverMessageHandler.ServeHTTP(w, r)
+		case IngressDeliverProcessEventProcedure:
+			ingressDeliverProcessEventHandler.ServeHTTP(w, r)
 		case IngressGetProcessInstanceProcedure:
 			ingressGetProcessInstanceHandler.ServeHTTP(w, r)
 		case IngressListProcessInstancesProcedure:
@@ -682,6 +723,10 @@ func (UnimplementedIngressHandler) StartProcess(context.Context, *connect.Reques
 
 func (UnimplementedIngressHandler) DeliverMessage(context.Context, *connect.Request[ingressv1.DeliverMessageRequest]) (*connect.Response[ingressv1.DeliverMessageResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.DeliverMessage is not implemented"))
+}
+
+func (UnimplementedIngressHandler) DeliverProcessEvent(context.Context, *connect.Request[ingressv1.DeliverProcessEventRequest]) (*connect.Response[ingressv1.DeliverProcessEventResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("reflw.ingress.v1.Ingress.DeliverProcessEvent is not implemented"))
 }
 
 func (UnimplementedIngressHandler) GetProcessInstance(context.Context, *connect.Request[ingressv1.GetProcessInstanceRequest]) (*connect.Response[ingressv1.GetProcessInstanceResponse], error) {

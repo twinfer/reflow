@@ -9910,8 +9910,7 @@ func (x *UpsertPlatformConfig) GetRecord() *PlatformConfigRecord {
 // and commit logs would leak it. Each SecretRecord carries a pointer
 // to where the ciphertext lives (gocloud.dev/blob URI) and which KEK
 // can decrypt it (Tink KMS URI). The same record is referenced by
-// `secret_name` from its consumers (today the cluster CA signing key,
-// CARootRecord) so define-once, reference-many.
+// `secret_name` from its consumers, so define-once, reference-many.
 //
 // Per-node internal/secretstore Reconcilers fetch the blob, dispatch
 // the KEK URI to registry.GetKMSClient, and call

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -17,7 +18,7 @@ import (
 
 func newTestMW(t *testing.T) func(http.Handler) http.Handler {
 	t.Helper()
-	mw, closer, err := HTTPMiddleware(nil)
+	mw, closer, err := HTTPMiddleware(context.Background(), nil, nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}

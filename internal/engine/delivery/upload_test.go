@@ -28,7 +28,7 @@ func uploadTestServer(t *testing.T, leader bool) (*Client, string, func()) {
 		leader:   map[uint64]uint64{7: 1},
 		dataDirs: map[uint64]string{7: dataDir},
 	}
-	mw, mwCloser, err := auth.HTTPMiddleware(nil)
+	mw, mwCloser, err := auth.HTTPMiddleware(context.Background(), nil, nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}

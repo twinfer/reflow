@@ -342,7 +342,17 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 		return nil, err
 	}
 
-	mw, mwCloser, mwErr := auth.HTTPMiddleware(logger)
+	var oidcCfg *auth.OIDCConfig
+	if cfg.Auth.OIDC.Enabled() {
+		oidcCfg = &auth.OIDCConfig{
+			Issuer:      cfg.Auth.OIDC.Issuer,
+			Audience:    cfg.Auth.OIDC.Audience,
+			GroupsClaim: cfg.Auth.OIDC.GroupsClaim,
+			ClaimKeys:   cfg.Auth.OIDC.ClaimKeys,
+		}
+		logger.Info("reflw: OIDC bearer auth enabled", "issuer", cfg.Auth.OIDC.Issuer)
+	}
+	mw, mwCloser, mwErr := auth.HTTPMiddleware(ctx, logger, oidcCfg)
 	if mwErr != nil {
 		return bail(fmt.Errorf("reflw: auth middleware: %w", mwErr))
 	}
@@ -356,7 +366,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	if azErr != nil {
 		return bail(fmt.Errorf("reflw: authz engine: %w", azErr))
 	}
-	authzInterceptor := authz.NewInterceptor(authzEngine, logger, false)
+	authzInterceptor := authz.NewInterceptor(authzEngine, logger, cfg.Auth.OIDC.Enabled())
 
 	// Node mesh identity: when a cluster CA is configured, this node
 	// self-issues its own node/<id> leaf from the config CA + KMS-wrapped
@@ -554,6 +564,11 @@ func startIngressListener(
 		Middleware:         mw,
 		AuthzInterceptor:   authzIc,
 		TaskSchemaResolver: taskSchema,
+		CORS: ingress.CORSConfig{
+			AllowedOrigins: cfg.Ingress.CORS.AllowedOrigins,
+			AllowedHeaders: cfg.Ingress.CORS.AllowedHeaders,
+			MaxAgeSeconds:  cfg.Ingress.CORS.MaxAgeSeconds,
+		},
 	}
 	if len(cfg.Webhooks) > 0 {
 		icfg.ExtraRoutes = webhookRoutes(cfg.Webhooks, secrets, logger)

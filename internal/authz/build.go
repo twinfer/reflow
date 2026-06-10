@@ -52,8 +52,13 @@ func PrincipalEntity(p auth.Principal) (cedar.EntityUID, types.Entity) {
 		})}
 	case "user":
 		uid := cedar.NewEntityUID(TypeUser, cedar.String(p.Subject))
+		groups := make([]types.Value, 0, len(p.Groups))
+		for _, g := range p.Groups {
+			groups = append(groups, types.String(g))
+		}
 		return uid, types.Entity{UID: uid, Attributes: types.NewRecord(types.RecordMap{
 			"subject": types.String(p.Subject),
+			"groups":  types.NewSet(groups...),
 		})}
 	default:
 		uid := cedar.NewEntityUID(TypeAnonymous, "anonymous")

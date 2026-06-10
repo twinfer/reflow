@@ -19,7 +19,7 @@
 // ---- Principal entity types — one per authn outcome ----
 entity ClusterOperator;                  // mTLS CN=operator/<name>
 entity Node { node_id: Long };           // mTLS CN=node/<id>
-entity User { subject: String };         // OIDC bearer
+entity User { subject: String, groups: Set<String> }; // OIDC bearer (groups from the token claim)
 entity Anonymous;                        // no verified identity — open-ingress traffic
 
 // ---- Resource entity types — one per persisted record + action target ----

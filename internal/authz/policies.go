@@ -5,7 +5,9 @@ package authz
 // PlatformConfigTable. It reproduces the plane separation:
 //   - operators have full access (the old operator/* rules);
 //   - nodes may only call the inter-node mesh actions (Delivery + SelfJoin);
-//   - the ingress data plane is open (anonymous + User).
+//   - the ingress data plane is open (anonymous + User);
+//   - OIDC users in the "reflw-admins" group additionally reach the app-config
+//     read + write planes (cluster-admin + platform stay operator-only).
 //
 // The engine is single-tenant — multi-tenancy is a deployment concern (one
 // instance per customer), so there is no in-policy tenant isolation. Everything
@@ -27,4 +29,14 @@ permit (principal is Node, action in [Action::"MeshActions"], resource);
 // replace this by pushing a cluster policy.
 permit (principal is Anonymous, action in [Action::"IngressActions"], resource);
 permit (principal is User, action in [Action::"IngressActions"], resource);
+
+// Browser operators (OIDC users) in the "reflw-admins" group may read app
+// config and perform app-config writes (deployments / models / secrets).
+// Cluster-admin and platform planes stay operator-mTLS-only — a browser admin
+// never reaches them via the foundational policy; operators widen per-cluster
+// via UpsertClusterAuthzPolicy.
+permit (principal is User, action in [Action::"ConfigReadActions"], resource)
+when { principal.groups.contains("reflw-admins") };
+permit (principal is User, action in [Action::"AppConfigActions"], resource)
+when { principal.groups.contains("reflw-admins") };
 `

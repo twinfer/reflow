@@ -221,9 +221,55 @@ type AdminConfig struct {
 // is mesh-leaf mTLS (principal from the verified leaf CN); a request with
 // no client cert produces an anonymous principal, and the Cedar
 // authorization interceptor (internal/authz) decides whether anonymous is
-// acceptable for each procedure. The struct is currently empty — per-
-// listener transport security is configured via the *.Creds fields.
-type AuthConfig struct{}
+// acceptable for each procedure. Per-listener transport security is
+// configured via the *.Creds fields.
+type AuthConfig struct {
+	// OIDC enables Bearer-token authentication for browser operators. When an
+	// issuer is set, the ingress listener verifies inbound
+	// `Authorization: Bearer <jwt>` against the provider's JWKS and maps the
+	// token to a User principal; mTLS mesh identities still take precedence.
+	// Disabled (empty issuer) leaves authentication mesh-mTLS-only.
+	OIDC OIDCConfig `koanf:"oidc"`
+}
+
+// OIDCConfig configures OIDC Bearer verification for browser operators. The
+// provider is discovered at the issuer URL once at startup (a discovery failure
+// is fatal). Enabled() (a non-empty issuer) turns it on.
+type OIDCConfig struct {
+	// Issuer is the OIDC provider's URL (its discovery document lives at
+	// <issuer>/.well-known/openid-configuration). Empty disables OIDC.
+	Issuer string `koanf:"issuer"`
+	// Audience is the expected `aud` claim. Empty skips the audience check
+	// (verify issuer + signature + expiry only).
+	Audience string `koanf:"audience"`
+	// GroupsClaim names the token claim holding the caller's groups, stamped
+	// onto the Cedar User entity for group-gated policies. Empty defaults to
+	// "groups".
+	GroupsClaim string `koanf:"groups_claim"`
+	// ClaimKeys lists extra string claims to copy into the Principal for audit.
+	ClaimKeys []string `koanf:"claim_keys"`
+}
+
+// Enabled reports whether OIDC Bearer auth is configured (issuer set).
+func (c OIDCConfig) Enabled() bool { return c.Issuer != "" }
+
+// CORSConfig configures browser cross-origin access to the ingress listener.
+// Empty AllowedOrigins disables CORS (the default — same-origin and non-browser
+// clients need none).
+type CORSConfig struct {
+	// AllowedOrigins is the exact-match origin allowlist (e.g.
+	// "https://console.example.com"). Empty disables CORS. "*" allows any origin
+	// but disables credentialed responses (a browser rule).
+	AllowedOrigins []string `koanf:"allowed_origins"`
+	// AllowedHeaders are extra request headers permitted on top of the built-in
+	// Connect/gRPC-Web protocol set (+ Authorization, Idempotency-Key).
+	AllowedHeaders []string `koanf:"allowed_headers"`
+	// MaxAgeSeconds caps how long a browser caches a preflight. 0 → 7200 (2h).
+	MaxAgeSeconds int `koanf:"max_age_seconds"`
+}
+
+// Enabled reports whether any CORS origin is allowlisted.
+func (c CORSConfig) Enabled() bool { return len(c.AllowedOrigins) > 0 }
 
 // SnapshotConfig configures the per-partition DR snapshot producer,
 // the archive repository, and the retention reaper.
@@ -440,6 +486,10 @@ type IngressConfig struct {
 	// insecure; multi-node deployments emit a startup warning so the
 	// operator knows the client surface is unauthenticated.
 	Creds creds.Spec `koanf:"creds"`
+	// CORS configures browser cross-origin access. Empty AllowedOrigins
+	// (the default) disables CORS; set it when a browser console on a
+	// different origin talks to this listener (the BFF deployment).
+	CORS CORSConfig `koanf:"cors"`
 }
 
 // WebhookConfig declares one inbound vendor webhook mounted on the

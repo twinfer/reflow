@@ -67,7 +67,7 @@ func (s *stubHandler) Deliver(ctx context.Context, stream *connect.BidiStream[de
 func startTestDelivery(t *testing.T, h *stubHandler) (*Client, func()) {
 	t.Helper()
 
-	mw, mwCloser, err := auth.HTTPMiddleware(nil)
+	mw, mwCloser, err := auth.HTTPMiddleware(context.Background(), nil, nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestDeliveryClient_NoLeaderHint(t *testing.T) {
 // the client surfaces it as a non-Ack error. Exercises the auth path
 // from the inside without TLS fixtures.
 func TestDeliveryClient_PolicyDenies(t *testing.T) {
-	mw, mwCloser, err := auth.HTTPMiddleware(nil)
+	mw, mwCloser, err := auth.HTTPMiddleware(context.Background(), nil, nil)
 	if err != nil {
 		t.Fatalf("HTTPMiddleware: %v", err)
 	}

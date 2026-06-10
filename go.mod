@@ -5,6 +5,7 @@ go 1.26.2
 require (
 	connectrpc.com/authn v0.2.0
 	connectrpc.com/connect v1.19.2
+	connectrpc.com/cors v0.1.0
 	connectrpc.com/vanguard v0.4.0
 	github.com/HdrHistogram/hdrhistogram-go v1.2.0
 	github.com/Shopify/toxiproxy/v2 v2.12.0
@@ -14,6 +15,7 @@ require (
 	github.com/cedar-policy/cedar-go v1.6.2
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/cockroachdb/pebble/v2 v2.1.5
+	github.com/coreos/go-oidc/v3 v3.18.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/vault/api v1.20.0
@@ -28,6 +30,7 @@ require (
 	github.com/moby/moby/client v0.4.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/qmuntal/stateless v1.8.0
+	github.com/rs/cors v1.11.1
 	github.com/testcontainers/testcontainers-go v0.42.0
 	github.com/tink-crypto/tink-go-awskms/v2 v2.1.0
 	github.com/tink-crypto/tink-go-gcpkms/v2 v2.2.0

@@ -61,6 +61,10 @@ type Config struct {
 	// the read returns the descriptor only. Held as an interface so this package
 	// never imports reflwos.
 	TaskSchemaResolver TaskSchemaResolver
+	// CORS, when Enabled (non-empty AllowedOrigins), wraps the transcoder with a
+	// browser CORS handler — outermost, so preflight is answered before auth. The
+	// zero value disables CORS (same-origin / non-browser clients need none).
+	CORS CORSConfig
 }
 
 // Runtime is a started ingress server. Close it to stop the listener
@@ -107,11 +111,14 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 		return nil, fmt.Errorf("ingress: transcoder: %w", err)
 	}
 
-	// Outermost → innermost: auth Middleware (stamps the verified principal) →
-	// metaLiftHandler (Reflw-Meta-* headers → ctx) → transcoder. CORS is added
-	// in a later phase. Mounted at "/" so the transcoder owns both the Connect
-	// subtree and the REST paths with no ServeMux pattern conflict.
+	// Outermost → innermost: CORS (answers browser preflight before auth) → auth
+	// Middleware (stamps the verified principal) → metaLiftHandler (Reflw-Meta-*
+	// headers → ctx) → transcoder. Mounted at "/" so the transcoder owns both the
+	// Connect subtree and the REST paths with no ServeMux pattern conflict.
 	root := cfg.Middleware(metaLiftHandler(transcoder))
+	if cfg.CORS.Enabled() {
+		root = corsMiddleware(cfg.CORS)(root)
+	}
 	routes := []connectserver.Route{{Path: "/", Handler: root}}
 	if cfg.ExtraRoutes != nil {
 		routes = append(routes, cfg.ExtraRoutes(srv)...)

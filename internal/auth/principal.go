@@ -25,9 +25,13 @@ type Principal struct {
 	// mTLS handshake. Empty for JWT-derived and anonymous principals.
 	// Recorded for audit; not used for authorization.
 	MeshCAFingerprint string
+	// Groups are the caller's group memberships, lifted from the OIDC
+	// token's groups claim by the bearer verifier. Stamped onto the Cedar
+	// User entity (build.go) so group-gated policies can match — e.g. a
+	// browser operator in "reflw-admins". Empty for mTLS and anonymous.
+	Groups []string
 	// Claims is the forward-compat extension bag: OIDC claims copied
-	// in by the JWT verifier per OIDCIssuer.AllowedClaims, OPA results
-	// later. Empty for mTLS.
+	// in by the JWT verifier per OIDCConfig.ClaimKeys. Empty for mTLS.
 	Claims map[string]string
 }
 

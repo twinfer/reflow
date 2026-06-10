@@ -65,6 +65,20 @@ type Config struct {
 	// browser CORS handler — outermost, so preflight is answered before auth. The
 	// zero value disables CORS (same-origin / non-browser clients need none).
 	CORS CORSConfig
+	// ServeAdmin mounts the adminv1 service on this ingress listener as a second
+	// Vanguard service (Connect / gRPC / gRPC-Web), making ingress a BFF: a
+	// browser console reaches both the data plane and admin on one origin.
+	// AdminPath + AdminHandler must be set when true. The standalone mTLS admin
+	// listener is unaffected — both dispatch to the same admin.Server, and
+	// authorization is the same Cedar interceptor, so cluster-admin stays
+	// operator-only and app-config is group-gated.
+	ServeAdmin bool
+	// AdminPath / AdminHandler are the adminv1 Connect handler (from
+	// admin.Server.NewHandler) mounted when ServeAdmin is set. The handler must
+	// already carry its interceptor chain (authz + proposal-principal); the outer
+	// auth Middleware wraps the whole transcoder.
+	AdminPath    string
+	AdminHandler http.Handler
 }
 
 // Runtime is a started ingress server. Close it to stop the listener
@@ -105,8 +119,21 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 	path, handler := ingressv1connect.NewIngressHandler(srv,
 		connect.WithInterceptors(cfg.AuthzInterceptor, withDefaultDeadline(defaultLookupTimeout)),
 	)
-	svc := vanguard.NewService(path, handler, vanguard.WithMaxMessageBufferBytes(maxIngressMessageBytes))
-	transcoder, err := vanguard.NewTranscoder([]*vanguard.Service{svc})
+	services := []*vanguard.Service{
+		vanguard.NewService(path, handler, vanguard.WithMaxMessageBufferBytes(maxIngressMessageBytes)),
+	}
+	// BFF: optionally serve the admin service on this same listener/transcoder so
+	// a browser console hits one origin for data plane + admin. Connect-only (the
+	// adminv1 protos carry no google.api.http annotations); the Cedar interceptor
+	// on the handler keeps cluster-admin operator-only and app-config group-gated.
+	if cfg.ServeAdmin {
+		if cfg.AdminHandler == nil || cfg.AdminPath == "" {
+			return nil, errors.New("ingress: ServeAdmin set but AdminPath/AdminHandler missing")
+		}
+		services = append(services, vanguard.NewService(cfg.AdminPath, cfg.AdminHandler, vanguard.WithMaxMessageBufferBytes(maxIngressMessageBytes)))
+		cfg.Log.Info("ingress: serving admin on the ingress listener (BFF)")
+	}
+	transcoder, err := vanguard.NewTranscoder(services)
 	if err != nil {
 		return nil, fmt.Errorf("ingress: transcoder: %w", err)
 	}

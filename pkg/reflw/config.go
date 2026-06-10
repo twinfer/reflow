@@ -490,6 +490,13 @@ type IngressConfig struct {
 	// (the default) disables CORS; set it when a browser console on a
 	// different origin talks to this listener (the BFF deployment).
 	CORS CORSConfig `koanf:"cors"`
+	// ServeAdmin also mounts the admin service on this ingress listener,
+	// making it a BFF — a browser console reaches the data plane and admin
+	// (deployments, secrets, cluster ops) on one origin. The standalone mTLS
+	// admin listener (Admin.Addr) is unaffected; both serve the same handler,
+	// and the Cedar policy keeps cluster-admin operator-only while app-config
+	// is gated to OIDC users in the "reflw-admins" group. Default false.
+	ServeAdmin bool `koanf:"serve_admin"`
 }
 
 // WebhookConfig declares one inbound vendor webhook mounted on the

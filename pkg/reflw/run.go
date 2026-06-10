@@ -535,6 +535,7 @@ func startIngressListener(
 	authzIc connect.Interceptor,
 	secrets *secretstore.Resolver,
 	taskSchema ingress.TaskSchemaResolver,
+	adminSvc *admin.Server,
 	metrics *observability.Metrics,
 	logger *slog.Logger,
 ) (*ingress.Runtime, *creds.ListenerCreds, error) {
@@ -569,6 +570,16 @@ func startIngressListener(
 			AllowedHeaders: cfg.Ingress.CORS.AllowedHeaders,
 			MaxAgeSeconds:  cfg.Ingress.CORS.MaxAgeSeconds,
 		},
+	}
+	// Ingress-as-BFF: mount the admin service on the ingress listener too. Same
+	// admin.Server + interceptor chain as the standalone listener (authz +
+	// proposal-principal), so the durable audit "who" is stamped identically.
+	if cfg.Ingress.ServeAdmin && adminSvc != nil {
+		adminPath, adminH := adminSvc.NewHandler(
+			connect.WithInterceptors(authzIc, proposalPrincipalInterceptor{}))
+		icfg.ServeAdmin = true
+		icfg.AdminPath = adminPath
+		icfg.AdminHandler = adminH
 	}
 	if len(cfg.Webhooks) > 0 {
 		icfg.ExtraRoutes = webhookRoutes(cfg.Webhooks, secrets, logger)
@@ -868,7 +879,7 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	if d.modelTableResolver != nil {
 		taskSchema = d.modelTableResolver
 	}
-	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, authzInterceptor, secrets, taskSchema, metrics, logger)
+	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, authzInterceptor, secrets, taskSchema, adminSvc, metrics, logger)
 	if err != nil {
 		if snapshotCxl != nil {
 			snapshotCxl()

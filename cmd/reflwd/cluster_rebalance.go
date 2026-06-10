@@ -11,7 +11,7 @@ import (
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflw/pkg/reflwclient"
-	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
 )
 
 // cmdRebalanceAdvise invokes ClusterCtl/RebalanceAdvise and emits the
@@ -25,7 +25,7 @@ func cmdRebalanceAdvise(ctx context.Context, args []string) error {
 		return err
 	}
 	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
-		resp, err := cli.Cluster.RebalanceAdvise(ctx, connect.NewRequest(&clusterctlv1.RebalanceAdviseRequest{}))
+		resp, err := cli.Admin.RebalanceAdvise(ctx, connect.NewRequest(&adminv1.RebalanceAdviseRequest{}))
 		if err != nil {
 			return err
 		}
@@ -64,7 +64,7 @@ func cmdRebalanceDrain(ctx context.Context, args []string) error {
 	}
 	drain := !*stop
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
-		adv, err := cli.Cluster.RebalanceAdvise(rctx, connect.NewRequest(&clusterctlv1.RebalanceAdviseRequest{}))
+		adv, err := cli.Admin.RebalanceAdvise(rctx, connect.NewRequest(&adminv1.RebalanceAdviseRequest{}))
 		if err != nil {
 			return fmt.Errorf("read pre-drain advisory: %w", err)
 		}
@@ -78,7 +78,7 @@ func cmdRebalanceDrain(ctx context.Context, args []string) error {
 		// revision check is unnecessary in the v1 surface; concurrent
 		// operator edits are detected via the post-apply read below.
 		_ = adv
-		resp, err := cli.Cluster.RebalanceDrain(rctx, connect.NewRequest(&clusterctlv1.RebalanceDrainRequest{
+		resp, err := cli.Admin.RebalanceDrain(rctx, connect.NewRequest(&adminv1.RebalanceDrainRequest{
 			ShardId: *shard,
 			Drain:   drain,
 		}))

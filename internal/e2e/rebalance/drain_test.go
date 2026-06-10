@@ -20,8 +20,8 @@ import (
 
 	"github.com/twinfer/reflw/internal/e2e"
 	"github.com/twinfer/reflw/pkg/reflwclient"
-	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
-	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
+	apiv1 "github.com/twinfer/reflw/proto/apiv1"
 )
 
 // TestE2EBalance_DrainShardRebalances brings up a 3-node, 3-shard
@@ -177,8 +177,8 @@ func adviseLPsPerShard(ctx context.Context, cluster *e2e.ContainerCluster) (map[
 			lastErr = err
 			continue
 		}
-		resp, err := cli.Cluster.RebalanceAdvise(ctx,
-			connect.NewRequest(&clusterctlv1.RebalanceAdviseRequest{}))
+		resp, err := cli.Admin.RebalanceAdvise(ctx,
+			connect.NewRequest(&adminv1.RebalanceAdviseRequest{}))
 		_ = cli.Close()
 		if err == nil {
 			return resp.Msg.GetLpsPerShard(), nil
@@ -212,11 +212,11 @@ func drainShard(ctx context.Context, cluster *e2e.ContainerCluster, shardID uint
 				lastErr = err
 				continue
 			}
-			req := connect.NewRequest(&clusterctlv1.RebalanceDrainRequest{
+			req := connect.NewRequest(&adminv1.RebalanceDrainRequest{
 				ShardId: shardID,
 				Drain:   drain,
 			})
-			_, err = cli.Cluster.RebalanceDrain(ctx, req)
+			_, err = cli.Admin.RebalanceDrain(ctx, req)
 			_ = cli.Close()
 			if err == nil {
 				return nil
@@ -256,7 +256,7 @@ func stripScheme(u string) string {
 // listTransfers returns every LPTransferRecord visible to the metadata
 // leader. Round-robins on Unavailable so the call lands on the leader
 // without resolving LeaderHint.
-func listTransfers(ctx context.Context, cluster *e2e.ContainerCluster) ([]*enginev1.LPTransferRecord, error) {
+func listTransfers(ctx context.Context, cluster *e2e.ContainerCluster) ([]*apiv1.LPTransferView, error) {
 	var lastErr error
 	for _, node := range cluster.Nodes {
 		if node == nil || !node.IsLive() {
@@ -267,11 +267,11 @@ func listTransfers(ctx context.Context, cluster *e2e.ContainerCluster) ([]*engin
 			lastErr = err
 			continue
 		}
-		resp, err := cli.Cluster.ListLPTransfers(ctx,
-			connect.NewRequest(&clusterctlv1.ListLPTransfersRequest{}))
+		resp, err := cli.Admin.ListLPTransfers(ctx,
+			connect.NewRequest(&adminv1.ListLPTransfersRequest{}))
 		_ = cli.Close()
 		if err == nil {
-			return resp.Msg.GetRecords(), nil
+			return resp.Msg.GetTransfers(), nil
 		}
 		lastErr = err
 		var cerr *connect.Error

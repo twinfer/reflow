@@ -25,7 +25,7 @@ import (
 	tinkkmsblob "github.com/twinfer/reflw/pkg/kms/blob"
 	"github.com/twinfer/reflw/pkg/reflw"
 	"github.com/twinfer/reflw/pkg/reflwclient"
-	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
 )
 
 // Container-side paths for the cluster CA material every node mounts to
@@ -222,7 +222,7 @@ func awaitNodeCount(ctx context.Context, t *testing.T, adminAddr string, certs *
 		cli, err := reflwclient.Dial(ctx, reflwclient.DialOptions{Addr: adminAddr, Creds: certs.operatorSpec()})
 		if err == nil {
 			rctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			resp, rerr := cli.Cluster.ListNodes(rctx, connect.NewRequest(&clusterctlv1.ListNodesRequest{}))
+			resp, rerr := cli.Admin.ListNodes(rctx, connect.NewRequest(&adminv1.ListNodesRequest{}))
 			cancel()
 			_ = cli.Close()
 			if rerr == nil {
@@ -257,7 +257,7 @@ func awaitPartitionMember(ctx context.Context, t *testing.T, adminAddr string, c
 		cli, err := reflwclient.Dial(ctx, reflwclient.DialOptions{Addr: adminAddr, Creds: certs.operatorSpec()})
 		if err == nil {
 			rctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			resp, rerr := cli.Cluster.ListPartitions(rctx, connect.NewRequest(&clusterctlv1.ListPartitionsRequest{}))
+			resp, rerr := cli.Admin.ListPartitions(rctx, connect.NewRequest(&adminv1.ListPartitionsRequest{}))
 			cancel()
 			_ = cli.Close()
 			if rerr == nil {

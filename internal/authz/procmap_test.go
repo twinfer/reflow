@@ -1,24 +1,23 @@
 package authz
 
 import (
+	"regexp"
 	"testing"
 
 	"github.com/cedar-policy/cedar-go"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
-	configv1 "github.com/twinfer/reflw/proto/configv1"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
 	deliveryv1 "github.com/twinfer/reflw/proto/deliveryv1"
 	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
-// inScopeFiles are the four Connect services mounted behind the authz
-// interceptor. bootstrap.MeshSign, discovery, and handler.HandlerService live
-// on separate listeners and are intentionally excluded.
+// inScopeFiles are the three Connect services mounted behind the authz
+// interceptor. discovery and handler.HandlerService live on separate listeners
+// and are intentionally excluded.
 var inScopeFiles = []protoreflect.FileDescriptor{
 	ingressv1.File_ingressv1_ingress_proto,
-	configv1.File_configv1_config_proto,
-	clusterctlv1.File_clusterctlv1_clusterctl_proto,
+	adminv1.File_adminv1_admin_proto,
 	deliveryv1.File_deliveryv1_delivery_proto,
 }
 
@@ -68,6 +67,47 @@ func TestProcMap_ActionIDsUnique(t *testing.T) {
 			t.Errorf("action id %q maps from both %s and %s", e.action, prev, proc)
 		}
 		seen[e.action] = proc
+	}
+}
+
+// schemaActionRE matches a quoted action declaration in schema.cedar
+// (`action "AwaitInvocation" ...`), capturing the bare action id. Group
+// declarations (`action IngressActions;`) are unquoted and so excluded.
+var schemaActionRE = regexp.MustCompile(`action\s+"([^"]+)"`)
+
+// restOnlyActions are Cedar actions declared in schema.cedar but deliberately
+// absent from procMap: they are authorized off the REST facade via
+// Interceptor.AuthorizeIngressAction (a bare action id, not a Connect
+// procedure), so they have no procMap entry.
+var restOnlyActions = map[string]bool{
+	"SubmitInvocation": true,
+}
+
+// TestSchemaActions_MatchProcmap closes the drift gap that let dead actions
+// (the removed CA-root / join-token surface) and missing actions (the model and
+// process-plane RPCs) sit in schema.cedar undetected: TestProcMap_* only checks
+// procMap<->RPC, never schema<->procMap. This asserts both directions — every
+// procMap action is declared in the schema, and every schema action is either in
+// procMap or a known REST-only action — so a future add/remove that touches only
+// one side fails CI.
+func TestSchemaActions_MatchProcmap(t *testing.T) {
+	schemaActions := map[string]bool{}
+	for _, m := range schemaActionRE.FindAllStringSubmatch(string(schemaText), -1) {
+		schemaActions[m[1]] = true
+	}
+	procActions := map[string]bool{}
+	for _, e := range procMap {
+		procActions[e.action] = true
+	}
+	for a := range procActions {
+		if !schemaActions[a] {
+			t.Errorf("procMap action %q is not declared in schema.cedar", a)
+		}
+	}
+	for a := range schemaActions {
+		if !procActions[a] && !restOnlyActions[a] {
+			t.Errorf("schema.cedar action %q has no procMap entry and is not a known REST-only action", a)
+		}
 	}
 }
 

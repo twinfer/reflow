@@ -10,7 +10,7 @@
 // Mounting verifiers as HTTP routes — resolving the secret from the
 // secret store, calling SubmitInvocation, mapping the result to an
 // HTTP status — lives in pkg/reflw's ExtraRoutes adapter, keyed off
-// reflw.Config.Webhooks (see pkg/reflw/webhook.go).
+// reflw.Admin.Webhooks (see pkg/reflw/webhook.go).
 package webhook
 
 import (
@@ -41,7 +41,7 @@ import (
 //     load-bearing.
 type Verifier interface {
 	// Name is the config key that selects this verifier from
-	// reflw.Config.Webhooks[].Provider. Must match the registered
+	// reflw.Admin.Webhooks[].Provider. Must match the registered
 	// name exactly. Convention: lowercase vendor name ("stripe",
 	// "github", "slack", "acme-internal").
 	Name() string

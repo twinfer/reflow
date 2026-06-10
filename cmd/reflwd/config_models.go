@@ -11,8 +11,7 @@ import (
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflw/pkg/reflwclient"
-	configv1 "github.com/twinfer/reflw/proto/configv1"
-	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
 )
 
 // cmdRegisterModel registers a model — or a dependency-closed set of models —
@@ -48,7 +47,7 @@ func cmdRegisterModel(ctx context.Context, args []string) error {
 		return err
 	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
-		resp, err := cli.Config.RegisterModelSet(rctx, connect.NewRequest(&configv1.RegisterModelSetRequest{
+		resp, err := cli.Admin.RegisterModelSet(rctx, connect.NewRequest(&adminv1.RegisterModelSetRequest{
 			Entries:           entries,
 			IfTableRevisionEq: *ifRev,
 		}))
@@ -71,7 +70,7 @@ type manifestEntry struct {
 // buildModelSetEntries assembles RegisterModelSet entries from either a single
 // --file (+ --kind/--name/--version) or a --manifest list. Exactly one of the two
 // must be supplied.
-func buildModelSetEntries(file, kind, name, version, manifest string) ([]*configv1.ModelSetEntry, error) {
+func buildModelSetEntries(file, kind, name, version, manifest string) ([]*adminv1.ModelSetEntry, error) {
 	switch {
 	case manifest != "" && file != "":
 		return nil, errors.New("pass either --file or --manifest, not both")
@@ -87,7 +86,7 @@ func buildModelSetEntries(file, kind, name, version, manifest string) ([]*config
 		if len(rows) == 0 {
 			return nil, errors.New("manifest is empty")
 		}
-		entries := make([]*configv1.ModelSetEntry, 0, len(rows))
+		entries := make([]*adminv1.ModelSetEntry, 0, len(rows))
 		for i, row := range rows {
 			if row.File == "" || row.Name == "" {
 				return nil, fmt.Errorf("manifest entry %d: file and name are required", i)
@@ -100,9 +99,11 @@ func buildModelSetEntries(file, kind, name, version, manifest string) ([]*config
 			if k == "" {
 				k = "bpmn"
 			}
-			entries = append(entries, &configv1.ModelSetEntry{
-				ModelRef: &enginev1.ModelRef{Kind: k, Name: row.Name, Version: row.Version},
-				Xml:      xmlBytes,
+			entries = append(entries, &adminv1.ModelSetEntry{
+				Kind:    k,
+				Name:    row.Name,
+				Version: row.Version,
+				Xml:     xmlBytes,
 			})
 		}
 		return entries, nil
@@ -114,9 +115,11 @@ func buildModelSetEntries(file, kind, name, version, manifest string) ([]*config
 		if err != nil {
 			return nil, fmt.Errorf("read model file: %w", err)
 		}
-		return []*configv1.ModelSetEntry{{
-			ModelRef: &enginev1.ModelRef{Kind: kind, Name: name, Version: version},
-			Xml:      xmlBytes,
+		return []*adminv1.ModelSetEntry{{
+			Kind:    kind,
+			Name:    name,
+			Version: version,
+			Xml:     xmlBytes,
 		}}, nil
 	default:
 		return nil, errors.New("pass --file (single model) or --manifest (model set)")
@@ -133,16 +136,17 @@ func cmdListModels(ctx context.Context, args []string) error {
 		return err
 	}
 	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
-		resp, err := cli.Config.ListModels(ctx, connect.NewRequest(&configv1.ListModelsRequest{}))
+		resp, err := cli.Admin.ListModels(ctx, connect.NewRequest(&adminv1.ListModelsRequest{}))
 		if err != nil {
 			return err
 		}
-		models := make([]map[string]any, 0, len(resp.Msg.GetRecords()))
-		for _, m := range resp.Msg.GetRecords() {
+		models := make([]map[string]any, 0, len(resp.Msg.GetModels()))
+		for _, m := range resp.Msg.GetModels() {
 			models = append(models, map[string]any{
-				"model_ref":        m.GetModelRef(),
+				"kind":             m.GetKind(),
+				"name":             m.GetName(),
+				"version":          m.GetVersion(),
 				"registered_at_ms": m.GetRegisteredAtMs(),
-				"xml_bytes":        len(m.GetXml()),
 			})
 		}
 		enc := json.NewEncoder(os.Stdout)
@@ -171,20 +175,20 @@ func cmdDescribeModel(ctx context.Context, args []string) error {
 		return errors.New("--name is required")
 	}
 	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
-		resp, err := cli.Config.DescribeModel(ctx, connect.NewRequest(&configv1.DescribeModelRequest{
-			ModelRef: &enginev1.ModelRef{Kind: *kind, Name: *name, Version: *version},
+		resp, err := cli.Admin.DescribeModel(ctx, connect.NewRequest(&adminv1.DescribeModelRequest{
+			Kind: *kind, Name: *name, Version: *version,
 		}))
 		if err != nil {
 			return err
 		}
-		rec := resp.Msg.GetRecord()
+		rec := resp.Msg.GetModel()
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(map[string]any{
-			"model_ref":        rec.GetModelRef(),
+			"kind":             rec.GetKind(),
+			"name":             rec.GetName(),
+			"version":          rec.GetVersion(),
 			"registered_at_ms": rec.GetRegisteredAtMs(),
-			"bundle":           rec.GetBundle(),
-			"xml":              string(rec.GetXml()),
 		})
 	})
 }
@@ -207,12 +211,12 @@ func cmdDeleteModel(ctx context.Context, args []string) error {
 		return errors.New("--name is required")
 	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
-		list, err := cli.Config.ListModels(rctx, connect.NewRequest(&configv1.ListModelsRequest{}))
+		list, err := cli.Admin.ListModels(rctx, connect.NewRequest(&adminv1.ListModelsRequest{}))
 		if err != nil {
 			return fmt.Errorf("read revision: %w", err)
 		}
-		resp, err := cli.Config.DeleteModel(rctx, connect.NewRequest(&configv1.DeleteModelRequest{
-			ModelRef:          &enginev1.ModelRef{Kind: *kind, Name: *name, Version: *version},
+		resp, err := cli.Admin.DeleteModel(rctx, connect.NewRequest(&adminv1.DeleteModelRequest{
+			Kind: *kind, Name: *name, Version: *version,
 			IfTableRevisionEq: list.Msg.GetTableRevision(),
 		}))
 		if err != nil {

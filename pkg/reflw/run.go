@@ -21,10 +21,9 @@ import (
 
 	"github.com/twinfer/reflwos/capability"
 
+	"github.com/twinfer/reflw/internal/admin"
 	"github.com/twinfer/reflw/internal/auth"
 	"github.com/twinfer/reflw/internal/authz"
-	"github.com/twinfer/reflw/internal/clusterctl"
-	"github.com/twinfer/reflw/internal/config"
 	"github.com/twinfer/reflw/internal/connectserver"
 	"github.com/twinfer/reflw/internal/engine"
 	"github.com/twinfer/reflw/internal/engine/cluster"
@@ -42,7 +41,7 @@ import (
 	"github.com/twinfer/reflw/pkg/reflw/creds"
 	"github.com/twinfer/reflw/pkg/reflw/processengine"
 	"github.com/twinfer/reflw/pkg/reflwclient"
-	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 
 	// KMS providers always-linked, config-gated. Each subpackage's
@@ -264,7 +263,7 @@ func Run(ctx context.Context, cfg Config) (*Host, error) {
 	// a broken or unresolved-import model is rejected at registration instead of
 	// failing silently per-node at reconcile. Nil otherwise → config falls back
 	// to its shallow well-formed-XML check with empty bundles.
-	var modelPlanner config.PlanModelSetFunc
+	var modelPlanner admin.PlanModelSetFunc
 	if modelResolver != nil {
 		modelPlanner = processengine.PlanModelSet
 	}
@@ -602,7 +601,7 @@ type startupDeps struct {
 	secretNotifier         *cluster.TableNotifier
 	modelNotifier          *cluster.TableNotifier
 	modelTableResolver     *processengine.TableResolver
-	modelPlanner           config.PlanModelSetFunc
+	modelPlanner           admin.PlanModelSetFunc
 	lpOwnersNotifier       *cluster.TableNotifier
 	platformConfigNotifier *cluster.TableNotifier
 	logger                 *slog.Logger
@@ -725,11 +724,11 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 		}
 	}
 
-	// Build the in-process ClusterCtl + Config servers unconditionally —
-	// the Config server is the engine proposer + deployment glue that
-	// autoSeedEndpoints needs, even when no external listener is
-	// configured. The Connect listeners only go up when adminEnabled.
-	clusterSrv, cErr := clusterctl.NewServer(clusterctl.Config{
+	// Build the in-process Admin server unconditionally — it is the engine
+	// proposer + deployment glue that autoSeedEndpoints needs, even when no
+	// external listener is configured. The Connect listener only goes up when
+	// adminEnabled.
+	adminCfg := admin.Config{
 		Host:       eh,
 		Runner:     runner,
 		Repo:       snapshotRepoIface,
@@ -743,56 +742,40 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 			SkewEngagePct:              cfg.Rebalance.SkewEngagePct,
 			SkewDisengagePct:           cfg.Rebalance.SkewDisengagePct,
 		},
-	})
-	if cErr != nil {
-		if snapshotCxl != nil {
-			snapshotCxl()
-		}
-		if snapshotRepo != nil {
-			_ = snapshotRepo.Close()
-		}
-		return nil, fmt.Errorf("reflw: clusterctl server: %w", cErr)
+		// With the process plane on, back RegisterModelSet with the real reflwos
+		// planner (derives bundles + validates the dependency closure); nil
+		// otherwise → the shallow XML check with empty bundles.
+		PlanModelSet: d.modelPlanner,
 	}
-	configCfg := config.Config{
-		Host:   eh,
-		Runner: runner,
-		Log:    logger,
-	}
-	// With the process plane on, back RegisterModelSet with the real reflwos
-	// planner (derives bundles + validates the dependency closure); nil otherwise
-	// → config's shallow XML check with empty bundles.
-	configCfg.PlanModelSet = d.modelPlanner
-	// Avoid the typed-nil interface trap: only assign the Signer field
-	// when the underlying *creds.Signer is non-nil.
+	// Avoid the typed-nil interface trap: only assign the Signer field when the
+	// underlying *creds.Signer is non-nil.
 	if handlerSigner != nil {
-		configCfg.Signer = handlerSigner
+		adminCfg.Signer = handlerSigner
 	}
-	configSrv, cfErr := config.NewServer(configCfg)
-	if cfErr != nil {
+	adminSvc, aErr := admin.NewServer(adminCfg)
+	if aErr != nil {
 		if snapshotCxl != nil {
 			snapshotCxl()
 		}
 		if snapshotRepo != nil {
 			_ = snapshotRepo.Close()
 		}
-		return nil, fmt.Errorf("reflw: config server: %w", cfErr)
+		return nil, fmt.Errorf("reflw: admin server: %w", aErr)
 	}
 
 	if adminEnabled {
 		// proposalPrincipalInterceptor lifts auth.Principal into the
 		// engine proposer's ctx key so every Raft proposal originating
-		// from an admin/config Connect call stamps Envelope.Header.principal
+		// from an admin Connect call stamps Envelope.Header.principal
 		// — the durable audit trail's "who".
 		opts := connect.WithInterceptors(d.authzInterceptor, proposalPrincipalInterceptor{})
-		clusterPath, clusterH := clusterSrv.NewHandler(opts)
-		configPath, configH := configSrv.NewHandler(opts)
+		adminPath, adminH := adminSvc.NewHandler(opts)
 		cs, lErr := connectserver.New(ctx, connectserver.Config{
 			Addr: cfg.Admin.Addr,
 			TLS:  adminCreds.ServerTLSConfig,
 			Log:  logger,
 		},
-			connectserver.Route{Path: clusterPath, Handler: httpAuthMW(clusterH)},
-			connectserver.Route{Path: configPath, Handler: httpAuthMW(configH)},
+			connectserver.Route{Path: adminPath, Handler: httpAuthMW(adminH)},
 		)
 		if lErr != nil {
 			if snapshotCxl != nil {
@@ -896,10 +879,10 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	// the seed loop is logged and the next endpoint is tried; ctx is the
 	// Run caller's context — cancelling it cancels the seed loop.
 	if len(cfg.Handlers.Endpoints) > 0 {
-		go autoSeedEndpoints(ctx, configSrv, runner, cfg.Handlers.Endpoints, logger)
+		go autoSeedEndpoints(ctx, adminSvc, runner, cfg.Handlers.Endpoints, logger)
 	}
 	if cfg.Handlers.InProcess != nil {
-		go autoSeedInProc(ctx, configSrv, runner, cfg.Handlers.InProcess, logger)
+		go autoSeedInProc(ctx, adminSvc, runner, cfg.Handlers.InProcess, logger)
 	}
 
 	return &Host{
@@ -1119,7 +1102,7 @@ func (r lpOwnersReader) SnapshotLPOwners(ctx context.Context) (map[uint32]uint64
 // seeding and unset the field for subsequent boots.
 //
 // Runs as a fire-and-forget goroutine; logs each outcome at INFO / WARN.
-func autoSeedEndpoints(ctx context.Context, srv *config.Server, runner *engine.MetadataRunner, endpoints []HandlerEndpoint, log *slog.Logger) {
+func autoSeedEndpoints(ctx context.Context, srv *admin.Server, runner *engine.MetadataRunner, endpoints []HandlerEndpoint, log *slog.Logger) {
 	// Wait for shard 0 leadership before registering. The poll cadence
 	// is 200ms — fast enough to feel snappy in tests, slow enough that
 	// a non-leader node doesn't spin a CPU. Bound the wait so a stuck
@@ -1167,7 +1150,7 @@ const inprocDeploymentURL = "inproc://local"
 // synthesized locally via handler.LocalDiscovery — the engine cannot dial an
 // inproc URL to run the usual /discover probe. Fire-and-forget; mirrors
 // autoSeedEndpoints' leadership wait.
-func autoSeedInProc(ctx context.Context, srv *config.Server, runner *engine.MetadataRunner, reg *handler.Registry, log *slog.Logger) {
+func autoSeedInProc(ctx context.Context, srv *admin.Server, runner *engine.MetadataRunner, reg *handler.Registry, log *slog.Logger) {
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
 		if runner != nil && runner.IsLeader() {
@@ -1312,7 +1295,7 @@ func startMetricsServer(cfg MetricsConfig, log *slog.Logger) func() error {
 // gossip view was stale by one heartbeat); the outer retry here handles
 // transient cluster-wide Unavailable conditions during cold start.
 func callSelfJoin(ctx context.Context, cfg Config, host *engine.Host, id *creds.NodeIdentity, log *slog.Logger) error {
-	req := &clusterctlv1.AddNodeRequest{
+	req := &adminv1.AddNodeRequest{
 		NodeId:       cfg.Node.ID,
 		RaftAddr:     cfg.Node.RaftAddr,
 		GossipAddr:   cfg.Node.GossipAdvAddr,
@@ -1351,7 +1334,7 @@ func callSelfJoin(ctx context.Context, cfg Config, host *engine.Host, id *creds.
 			"node_id", req.NodeId, "attempt", attempt+1)
 		err = reflwclient.CallWithLeaderRedirect(ctx, dialOpts(leaderAddr),
 			3, func(rctx context.Context, cli *reflwclient.Client) error {
-				_, e := cli.Cluster.SelfJoin(rctx, connect.NewRequest(req))
+				_, e := cli.Admin.SelfJoin(rctx, connect.NewRequest(req))
 				return e
 			})
 		if err == nil {

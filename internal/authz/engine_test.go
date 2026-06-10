@@ -13,9 +13,9 @@ import (
 // action id is the bare method name (procmap.go); evalReq and ic.authorize both
 // resolve these through actionEntity.
 const (
-	actRegisterDeployment = "/reflw.config.v1.Config/RegisterDeployment"
-	actAddNode            = "/reflw.clusterctl.v1.ClusterCtl/AddNode"
-	actSelfJoin           = "/reflw.clusterctl.v1.ClusterCtl/SelfJoin"
+	actRegisterDeployment = "/reflw.admin.v1.Admin/RegisterDeployment"
+	actAddNode            = "/reflw.admin.v1.Admin/AddNode"
+	actSelfJoin           = "/reflw.admin.v1.Admin/SelfJoin"
 	actDeliver            = "/reflw.delivery.v1.Delivery/Deliver"
 	actUploadSST          = "/reflw.delivery.v1.Delivery/UploadLPTransferSST"
 	actAwaitInvocation    = "/reflw.ingress.v1.Ingress/AwaitInvocation"

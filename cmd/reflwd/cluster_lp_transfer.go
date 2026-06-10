@@ -11,7 +11,7 @@ import (
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflw/pkg/reflwclient"
-	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
 )
 
 // cmdTransferLP invokes ClusterCtl/TransferLP to initiate a cross-shard
@@ -31,7 +31,7 @@ func cmdTransferLP(ctx context.Context, args []string) error {
 		return errors.New("--to-shard is required (must be a partition shard id, not 0)")
 	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
-		resp, err := cli.Cluster.TransferLP(rctx, connect.NewRequest(&clusterctlv1.TransferLPRequest{
+		resp, err := cli.Admin.TransferLP(rctx, connect.NewRequest(&adminv1.TransferLPRequest{
 			Lp:        uint32(*lp),
 			DestShard: *destShard,
 		}))
@@ -55,7 +55,7 @@ func cmdListLPTransfers(ctx context.Context, args []string) error {
 		return err
 	}
 	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
-		resp, err := cli.Cluster.ListLPTransfers(ctx, connect.NewRequest(&clusterctlv1.ListLPTransfersRequest{}))
+		resp, err := cli.Admin.ListLPTransfers(ctx, connect.NewRequest(&adminv1.ListLPTransfersRequest{}))
 		if err != nil {
 			return err
 		}
@@ -63,7 +63,7 @@ func cmdListLPTransfers(ctx context.Context, args []string) error {
 		enc.SetIndent("", "  ")
 		return enc.Encode(map[string]any{
 			"table_revision": resp.Msg.GetTableRevision(),
-			"records":        resp.Msg.GetRecords(),
+			"transfers":      resp.Msg.GetTransfers(),
 		})
 	})
 }

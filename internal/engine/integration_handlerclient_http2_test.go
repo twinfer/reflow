@@ -12,21 +12,21 @@ import (
 	connect "connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/twinfer/reflw/internal/config"
+	"github.com/twinfer/reflw/internal/admin"
 	"github.com/twinfer/reflw/internal/connectserver"
 	"github.com/twinfer/reflw/internal/loadgen"
 	"github.com/twinfer/reflw/pkg/handler/wire"
-	configv1 "github.com/twinfer/reflw/proto/configv1"
-	"github.com/twinfer/reflw/proto/configv1/configv1connect"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
+	"github.com/twinfer/reflw/proto/adminv1/adminv1connect"
 	discoveryv1 "github.com/twinfer/reflw/proto/discoveryv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 )
 
-// callRegisterDeployment invokes config.Server.RegisterDeployment via a
+// callRegisterDeployment invokes admin.Server.RegisterDeployment via a
 // Connect h2c loopback so the request rides the same auth + dispatch
 // path production uses.
-func callRegisterDeployment(ctx context.Context, srv *config.Server, url string) (*configv1.RegisterDeploymentResponse, error) {
+func callRegisterDeployment(ctx context.Context, srv *admin.Server, url string) (*adminv1.RegisterDeploymentResponse, error) {
 	path, h := srv.NewHandler()
 	cs, err := connectserver.New(ctx, connectserver.Config{
 		Addr: "127.0.0.1:0",
@@ -40,8 +40,8 @@ func callRegisterDeployment(ctx context.Context, srv *config.Server, url string)
 	tr.Protocols.SetUnencryptedHTTP2(true)
 	tr.Protocols.SetHTTP1(false)
 	defer tr.CloseIdleConnections()
-	cli := configv1connect.NewConfigClient(&http.Client{Transport: tr}, "http://"+cs.Addr())
-	resp, err := cli.RegisterDeployment(ctx, connect.NewRequest(&configv1.RegisterDeploymentRequest{Url: url}))
+	cli := adminv1connect.NewAdminClient(&http.Client{Transport: tr}, "http://"+cs.Addr())
+	resp, err := cli.RegisterDeployment(ctx, connect.NewRequest(&adminv1.RegisterDeploymentRequest{Url: url}))
 	if err != nil {
 		return nil, err
 	}
@@ -187,12 +187,12 @@ func TestWireDispatch_HTTP2_RoundTrip(t *testing.T) {
 	leaderRig := findMetadataLeader(t, cluster)
 	host := leaderRig.Host
 
-	srv, err := config.NewServer(config.Config{
+	srv, err := admin.NewServer(admin.Config{
 		Host:   host,
 		Runner: host.MetadataRunner(),
 	})
 	if err != nil {
-		t.Fatalf("config.NewServer: %v", err)
+		t.Fatalf("admin.NewServer: %v", err)
 	}
 
 	regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -278,12 +278,12 @@ func TestWireDispatch_HTTP2_DeploymentSwap(t *testing.T) {
 	leaderRig := findMetadataLeader(t, cluster)
 	host := leaderRig.Host
 
-	srv, err := config.NewServer(config.Config{
+	srv, err := admin.NewServer(admin.Config{
 		Host:   host,
 		Runner: host.MetadataRunner(),
 	})
 	if err != nil {
-		t.Fatalf("config.NewServer: %v", err)
+		t.Fatalf("admin.NewServer: %v", err)
 	}
 
 	regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)

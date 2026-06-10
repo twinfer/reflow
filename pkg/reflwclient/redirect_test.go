@@ -12,20 +12,18 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
-	"github.com/twinfer/reflw/proto/clusterctlv1/clusterctlv1connect"
-	configv1 "github.com/twinfer/reflw/proto/configv1"
-	"github.com/twinfer/reflw/proto/configv1/configv1connect"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
+	"github.com/twinfer/reflw/proto/adminv1/adminv1connect"
 )
 
 // fakeCluster lets each test express AddNode behavior as a closure.
 // All other RPCs return Unimplemented via the embedded handler.
 type fakeCluster struct {
-	clusterctlv1connect.UnimplementedClusterCtlHandler
-	addNode func(context.Context, *clusterctlv1.AddNodeRequest) (*clusterctlv1.AddNodeResponse, error)
+	adminv1connect.UnimplementedAdminHandler
+	addNode func(context.Context, *adminv1.AddNodeRequest) (*adminv1.AddNodeResponse, error)
 }
 
-func (f *fakeCluster) AddNode(ctx context.Context, req *connect.Request[clusterctlv1.AddNodeRequest]) (*connect.Response[clusterctlv1.AddNodeResponse], error) {
+func (f *fakeCluster) AddNode(ctx context.Context, req *connect.Request[adminv1.AddNodeRequest]) (*connect.Response[adminv1.AddNodeResponse], error) {
 	resp, err := f.addNode(ctx, req.Msg)
 	if err != nil {
 		return nil, err
@@ -43,7 +41,7 @@ func startFakeCluster(t *testing.T, behavior *fakeCluster) (addr string, stop fu
 		t.Fatalf("listen: %v", err)
 	}
 	mux := http.NewServeMux()
-	path, h := clusterctlv1connect.NewClusterCtlHandler(behavior)
+	path, h := adminv1connect.NewAdminHandler(behavior)
 	mux.Handle(path, h)
 	srv := &http.Server{Handler: mux, Protocols: new(http.Protocols)}
 	srv.Protocols.SetUnencryptedHTTP2(true)
@@ -58,13 +56,13 @@ func startFakeCluster(t *testing.T, behavior *fakeCluster) (addr string, stop fu
 }
 
 // unavailableWithClusterHint returns CodeUnavailable carrying a
-// clusterctlv1.LeaderHint pointing at hintAddr.
+// adminv1.LeaderHint pointing at hintAddr.
 func unavailableWithClusterHint(hintAddr string) error {
 	cerr := connect.NewError(connect.CodeUnavailable, errors.New("not the metadata leader"))
 	if hintAddr == "" {
 		return cerr
 	}
-	if d, err := connect.NewErrorDetail(&clusterctlv1.LeaderHint{
+	if d, err := connect.NewErrorDetail(&adminv1.LeaderHint{
 		NodeId:        1,
 		AdminEndpoint: hintAddr,
 	}); err == nil {
@@ -74,14 +72,14 @@ func unavailableWithClusterHint(hintAddr string) error {
 }
 
 // unavailableWithConfigHint returns CodeUnavailable carrying a
-// configv1.LeaderHint pointing at hintAddr. Used to assert the
+// adminv1.LeaderHint pointing at hintAddr. Used to assert the
 // redirect helper handles either detail type.
 func unavailableWithConfigHint(hintAddr string) error {
 	cerr := connect.NewError(connect.CodeUnavailable, errors.New("not the metadata leader"))
 	if hintAddr == "" {
 		return cerr
 	}
-	if d, err := connect.NewErrorDetail(&configv1.LeaderHint{
+	if d, err := connect.NewErrorDetail(&adminv1.LeaderHint{
 		NodeId:        1,
 		AdminEndpoint: hintAddr,
 	}); err == nil {
@@ -92,9 +90,9 @@ func unavailableWithConfigHint(hintAddr string) error {
 
 func TestCallWithLeaderRedirect_FirstHopSucceeds(t *testing.T) {
 	var calls int32
-	leader := &fakeCluster{addNode: func(_ context.Context, _ *clusterctlv1.AddNodeRequest) (*clusterctlv1.AddNodeResponse, error) {
+	leader := &fakeCluster{addNode: func(_ context.Context, _ *adminv1.AddNodeRequest) (*adminv1.AddNodeResponse, error) {
 		atomic.AddInt32(&calls, 1)
-		return &clusterctlv1.AddNodeResponse{AssignmentEpoch: 42}, nil
+		return &adminv1.AddNodeResponse{AssignmentEpoch: 42}, nil
 	}}
 	addr, stop := startFakeCluster(t, leader)
 	defer stop()
@@ -103,7 +101,7 @@ func TestCallWithLeaderRedirect_FirstHopSucceeds(t *testing.T) {
 	defer cancel()
 	err := CallWithLeaderRedirect(ctx, DialOptions{Addr: addr}, 3,
 		func(rctx context.Context, cli *Client) error {
-			resp, err := cli.Cluster.AddNode(rctx, connect.NewRequest(&clusterctlv1.AddNodeRequest{NodeId: 4, RaftAddr: "x"}))
+			resp, err := cli.Admin.AddNode(rctx, connect.NewRequest(&adminv1.AddNodeRequest{NodeId: 4, RaftAddr: "x"}))
 			if err != nil {
 				return err
 			}
@@ -122,14 +120,14 @@ func TestCallWithLeaderRedirect_FirstHopSucceeds(t *testing.T) {
 
 func TestCallWithLeaderRedirect_FollowsHintToLeader(t *testing.T) {
 	var leaderCalls int32
-	leader := &fakeCluster{addNode: func(_ context.Context, _ *clusterctlv1.AddNodeRequest) (*clusterctlv1.AddNodeResponse, error) {
+	leader := &fakeCluster{addNode: func(_ context.Context, _ *adminv1.AddNodeRequest) (*adminv1.AddNodeResponse, error) {
 		atomic.AddInt32(&leaderCalls, 1)
-		return &clusterctlv1.AddNodeResponse{AssignmentEpoch: 7}, nil
+		return &adminv1.AddNodeResponse{AssignmentEpoch: 7}, nil
 	}}
 	leaderAddr, stopL := startFakeCluster(t, leader)
 	defer stopL()
 
-	follower := &fakeCluster{addNode: func(_ context.Context, _ *clusterctlv1.AddNodeRequest) (*clusterctlv1.AddNodeResponse, error) {
+	follower := &fakeCluster{addNode: func(_ context.Context, _ *adminv1.AddNodeRequest) (*adminv1.AddNodeResponse, error) {
 		return nil, unavailableWithClusterHint(leaderAddr)
 	}}
 	followerAddr, stopF := startFakeCluster(t, follower)
@@ -139,7 +137,7 @@ func TestCallWithLeaderRedirect_FollowsHintToLeader(t *testing.T) {
 	defer cancel()
 	err := CallWithLeaderRedirect(ctx, DialOptions{Addr: followerAddr}, 3,
 		func(rctx context.Context, cli *Client) error {
-			_, err := cli.Cluster.AddNode(rctx, connect.NewRequest(&clusterctlv1.AddNodeRequest{NodeId: 4, RaftAddr: "x"}))
+			_, err := cli.Admin.AddNode(rctx, connect.NewRequest(&adminv1.AddNodeRequest{NodeId: 4, RaftAddr: "x"}))
 			return err
 		})
 	if err != nil {
@@ -151,19 +149,19 @@ func TestCallWithLeaderRedirect_FollowsHintToLeader(t *testing.T) {
 }
 
 // TestCallWithLeaderRedirect_FollowsConfigHint covers the cross-service
-// path: a Config-side error carries configv1.LeaderHint, and the
+// path: a Config-side error carries adminv1.LeaderHint, and the
 // redirect helper must still chase it (it walks the connect.Error
 // details for either flavor).
 func TestCallWithLeaderRedirect_FollowsConfigHint(t *testing.T) {
 	var leaderCalls int32
-	leader := &fakeCluster{addNode: func(_ context.Context, _ *clusterctlv1.AddNodeRequest) (*clusterctlv1.AddNodeResponse, error) {
+	leader := &fakeCluster{addNode: func(_ context.Context, _ *adminv1.AddNodeRequest) (*adminv1.AddNodeResponse, error) {
 		atomic.AddInt32(&leaderCalls, 1)
-		return &clusterctlv1.AddNodeResponse{AssignmentEpoch: 7}, nil
+		return &adminv1.AddNodeResponse{AssignmentEpoch: 7}, nil
 	}}
 	leaderAddr, stopL := startFakeCluster(t, leader)
 	defer stopL()
 
-	follower := &fakeCluster{addNode: func(_ context.Context, _ *clusterctlv1.AddNodeRequest) (*clusterctlv1.AddNodeResponse, error) {
+	follower := &fakeCluster{addNode: func(_ context.Context, _ *adminv1.AddNodeRequest) (*adminv1.AddNodeResponse, error) {
 		return nil, unavailableWithConfigHint(leaderAddr)
 	}}
 	followerAddr, stopF := startFakeCluster(t, follower)
@@ -173,7 +171,7 @@ func TestCallWithLeaderRedirect_FollowsConfigHint(t *testing.T) {
 	defer cancel()
 	err := CallWithLeaderRedirect(ctx, DialOptions{Addr: followerAddr}, 3,
 		func(rctx context.Context, cli *Client) error {
-			_, err := cli.Cluster.AddNode(rctx, connect.NewRequest(&clusterctlv1.AddNodeRequest{NodeId: 4, RaftAddr: "x"}))
+			_, err := cli.Admin.AddNode(rctx, connect.NewRequest(&adminv1.AddNodeRequest{NodeId: 4, RaftAddr: "x"}))
 			return err
 		})
 	if err != nil {
@@ -189,7 +187,7 @@ func TestCallWithLeaderRedirect_LoopGuardOnSelfHint(t *testing.T) {
 	// must break out and return the original Unavailable.
 	var addrHolder string
 	srv := &fakeCluster{}
-	srv.addNode = func(_ context.Context, _ *clusterctlv1.AddNodeRequest) (*clusterctlv1.AddNodeResponse, error) {
+	srv.addNode = func(_ context.Context, _ *adminv1.AddNodeRequest) (*adminv1.AddNodeResponse, error) {
 		return nil, unavailableWithClusterHint(addrHolder)
 	}
 	addr, stop := startFakeCluster(t, srv)
@@ -200,7 +198,7 @@ func TestCallWithLeaderRedirect_LoopGuardOnSelfHint(t *testing.T) {
 	defer cancel()
 	err := CallWithLeaderRedirect(ctx, DialOptions{Addr: addr}, 5,
 		func(rctx context.Context, cli *Client) error {
-			_, err := cli.Cluster.AddNode(rctx, connect.NewRequest(&clusterctlv1.AddNodeRequest{NodeId: 4, RaftAddr: "x"}))
+			_, err := cli.Admin.AddNode(rctx, connect.NewRequest(&adminv1.AddNodeRequest{NodeId: 4, RaftAddr: "x"}))
 			return err
 		})
 	if connect.CodeOf(err) != connect.CodeUnavailable {
@@ -210,7 +208,7 @@ func TestCallWithLeaderRedirect_LoopGuardOnSelfHint(t *testing.T) {
 
 func TestCallWithLeaderRedirect_TerminalErrorShortCircuits(t *testing.T) {
 	var calls int32
-	srv := &fakeCluster{addNode: func(_ context.Context, _ *clusterctlv1.AddNodeRequest) (*clusterctlv1.AddNodeResponse, error) {
+	srv := &fakeCluster{addNode: func(_ context.Context, _ *adminv1.AddNodeRequest) (*adminv1.AddNodeResponse, error) {
 		atomic.AddInt32(&calls, 1)
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("no"))
 	}}
@@ -221,7 +219,7 @@ func TestCallWithLeaderRedirect_TerminalErrorShortCircuits(t *testing.T) {
 	defer cancel()
 	err := CallWithLeaderRedirect(ctx, DialOptions{Addr: addr}, 5,
 		func(rctx context.Context, cli *Client) error {
-			_, err := cli.Cluster.AddNode(rctx, connect.NewRequest(&clusterctlv1.AddNodeRequest{NodeId: 4, RaftAddr: "x"}))
+			_, err := cli.Admin.AddNode(rctx, connect.NewRequest(&adminv1.AddNodeRequest{NodeId: 4, RaftAddr: "x"}))
 			return err
 		})
 	if connect.CodeOf(err) != connect.CodePermissionDenied {
@@ -238,10 +236,10 @@ func TestCallWithLeaderRedirect_HopsExhausted(t *testing.T) {
 	var aAddr, bAddr string
 	a := &fakeCluster{}
 	b := &fakeCluster{}
-	a.addNode = func(_ context.Context, _ *clusterctlv1.AddNodeRequest) (*clusterctlv1.AddNodeResponse, error) {
+	a.addNode = func(_ context.Context, _ *adminv1.AddNodeRequest) (*adminv1.AddNodeResponse, error) {
 		return nil, unavailableWithClusterHint(bAddr)
 	}
-	b.addNode = func(_ context.Context, _ *clusterctlv1.AddNodeRequest) (*clusterctlv1.AddNodeResponse, error) {
+	b.addNode = func(_ context.Context, _ *adminv1.AddNodeRequest) (*adminv1.AddNodeResponse, error) {
 		return nil, unavailableWithClusterHint(aAddr)
 	}
 	addrA, stopA := startFakeCluster(t, a)
@@ -254,7 +252,7 @@ func TestCallWithLeaderRedirect_HopsExhausted(t *testing.T) {
 	defer cancel()
 	err := CallWithLeaderRedirect(ctx, DialOptions{Addr: addrA}, 3,
 		func(rctx context.Context, cli *Client) error {
-			_, err := cli.Cluster.AddNode(rctx, connect.NewRequest(&clusterctlv1.AddNodeRequest{NodeId: 4, RaftAddr: "x"}))
+			_, err := cli.Admin.AddNode(rctx, connect.NewRequest(&adminv1.AddNodeRequest{NodeId: 4, RaftAddr: "x"}))
 			return err
 		})
 	if err == nil {
@@ -265,6 +263,6 @@ func TestCallWithLeaderRedirect_HopsExhausted(t *testing.T) {
 	}
 }
 
-// _ = configv1connect placeholder kept so the import is referenced
-// even if the only configv1 test detail is the hint type.
-var _ = configv1connect.NewConfigClient
+// _ = adminv1connect placeholder kept so the import is referenced
+// even if the only adminv1 test detail is the hint type.
+var _ = adminv1connect.NewAdminClient

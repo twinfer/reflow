@@ -8,16 +8,16 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflw/internal/config"
+	"github.com/twinfer/reflw/internal/admin"
 	"github.com/twinfer/reflw/internal/connectserver"
 	"github.com/twinfer/reflw/internal/loadgen"
-	configv1 "github.com/twinfer/reflw/proto/configv1"
-	"github.com/twinfer/reflw/proto/configv1/configv1connect"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
+	"github.com/twinfer/reflw/proto/adminv1/adminv1connect"
 )
 
 // newDeploymentClient stands up a loopback Connect client against srv's
 // handler. Returned cleanup closes the listener and idle transport.
-func newDeploymentClient(t *testing.T, ctx context.Context, srv *config.Server) (configv1connect.ConfigClient, func()) {
+func newDeploymentClient(t *testing.T, ctx context.Context, srv *admin.Server) (adminv1connect.AdminClient, func()) {
 	t.Helper()
 	path, h := srv.NewHandler()
 	cs, err := connectserver.New(ctx, connectserver.Config{Addr: "127.0.0.1:0"},
@@ -28,7 +28,7 @@ func newDeploymentClient(t *testing.T, ctx context.Context, srv *config.Server) 
 	tr := &http.Transport{Protocols: new(http.Protocols)}
 	tr.Protocols.SetUnencryptedHTTP2(true)
 	tr.Protocols.SetHTTP1(false)
-	cli := configv1connect.NewConfigClient(&http.Client{Transport: tr}, "http://"+cs.Addr())
+	cli := adminv1connect.NewAdminClient(&http.Client{Transport: tr}, "http://"+cs.Addr())
 	return cli, func() {
 		tr.CloseIdleConnections()
 		cs.Close()
@@ -55,9 +55,9 @@ func TestConfig_DeploymentLifecycle(t *testing.T) {
 	leaderRig := findMetadataLeader(t, cluster)
 	host := leaderRig.Host
 
-	srv, err := config.NewServer(config.Config{Host: host, Runner: host.MetadataRunner()})
+	srv, err := admin.NewServer(admin.Config{Host: host, Runner: host.MetadataRunner()})
 	if err != nil {
-		t.Fatalf("config.NewServer: %v", err)
+		t.Fatalf("admin.NewServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -65,7 +65,7 @@ func TestConfig_DeploymentLifecycle(t *testing.T) {
 	defer closeCli()
 
 	// Register.
-	regResp, err := cli.RegisterDeployment(ctx, connect.NewRequest(&configv1.RegisterDeploymentRequest{
+	regResp, err := cli.RegisterDeployment(ctx, connect.NewRequest(&adminv1.RegisterDeploymentRequest{
 		Url: "http://" + fakeAddr,
 	}))
 	if err != nil {
@@ -77,7 +77,7 @@ func TestConfig_DeploymentLifecycle(t *testing.T) {
 	}
 
 	// List — must contain the new id and a non-zero revision.
-	listResp, err := cli.ListDeployments(ctx, connect.NewRequest(&configv1.ListDeploymentsRequest{}))
+	listResp, err := cli.ListDeployments(ctx, connect.NewRequest(&adminv1.ListDeploymentsRequest{}))
 	if err != nil {
 		t.Fatalf("ListDeployments: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestConfig_DeploymentLifecycle(t *testing.T) {
 	revAfterRegister := listResp.Msg.GetTableRevision()
 
 	// Describe — must return the same record.
-	descResp, err := cli.DescribeDeployment(ctx, connect.NewRequest(&configv1.DescribeDeploymentRequest{
+	descResp, err := cli.DescribeDeployment(ctx, connect.NewRequest(&adminv1.DescribeDeploymentRequest{
 		DeploymentId: id,
 	}))
 	if err != nil {
@@ -104,7 +104,7 @@ func TestConfig_DeploymentLifecycle(t *testing.T) {
 	}
 
 	// Describe-of-absent → NotFound.
-	_, err = cli.DescribeDeployment(ctx, connect.NewRequest(&configv1.DescribeDeploymentRequest{
+	_, err = cli.DescribeDeployment(ctx, connect.NewRequest(&adminv1.DescribeDeploymentRequest{
 		DeploymentId: "ghost",
 	}))
 	if err == nil {
@@ -115,7 +115,7 @@ func TestConfig_DeploymentLifecycle(t *testing.T) {
 	}
 
 	// Delete without --force → FailedPrecondition.
-	_, err = cli.DeleteDeployment(ctx, connect.NewRequest(&configv1.DeleteDeploymentRequest{
+	_, err = cli.DeleteDeployment(ctx, connect.NewRequest(&adminv1.DeleteDeploymentRequest{
 		DeploymentId: id,
 	}))
 	if err == nil {
@@ -126,7 +126,7 @@ func TestConfig_DeploymentLifecycle(t *testing.T) {
 	}
 
 	// Delete with --force and matching CAS.
-	delResp, err := cli.DeleteDeployment(ctx, connect.NewRequest(&configv1.DeleteDeploymentRequest{
+	delResp, err := cli.DeleteDeployment(ctx, connect.NewRequest(&adminv1.DeleteDeploymentRequest{
 		DeploymentId:      id,
 		Force:             true,
 		IfTableRevisionEq: revAfterRegister,
@@ -139,7 +139,7 @@ func TestConfig_DeploymentLifecycle(t *testing.T) {
 	}
 
 	// List must now be empty.
-	listResp, err = cli.ListDeployments(ctx, connect.NewRequest(&configv1.ListDeploymentsRequest{}))
+	listResp, err = cli.ListDeployments(ctx, connect.NewRequest(&adminv1.ListDeploymentsRequest{}))
 	if err != nil {
 		t.Fatalf("ListDeployments after delete: %v", err)
 	}
@@ -148,13 +148,13 @@ func TestConfig_DeploymentLifecycle(t *testing.T) {
 	}
 
 	// Stale CAS round-trip — register then delete with stale revision.
-	regResp2, err := cli.RegisterDeployment(ctx, connect.NewRequest(&configv1.RegisterDeploymentRequest{
+	regResp2, err := cli.RegisterDeployment(ctx, connect.NewRequest(&adminv1.RegisterDeploymentRequest{
 		Url: "http://" + fakeAddr,
 	}))
 	if err != nil {
 		t.Fatalf("RegisterDeployment #2: %v", err)
 	}
-	_, err = cli.DeleteDeployment(ctx, connect.NewRequest(&configv1.DeleteDeploymentRequest{
+	_, err = cli.DeleteDeployment(ctx, connect.NewRequest(&adminv1.DeleteDeploymentRequest{
 		DeploymentId:      regResp2.Msg.GetDeploymentId(),
 		Force:             true,
 		IfTableRevisionEq: 1, // stale

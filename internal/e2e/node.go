@@ -22,7 +22,7 @@ import (
 	"github.com/twinfer/reflw/pkg/ingressclient"
 	"github.com/twinfer/reflw/pkg/reflw/creds"
 	"github.com/twinfer/reflw/pkg/reflwclient"
-	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
@@ -160,7 +160,7 @@ func (n *ContainerNode) ListPartitions(ctx context.Context) ([]loadgen.Partition
 		return nil, err
 	}
 	defer cli.Close()
-	resp, err := cli.Cluster.NodeLeadership(ctx, connect.NewRequest(&clusterctlv1.NodeLeadershipRequest{}))
+	resp, err := cli.Admin.NodeLeadership(ctx, connect.NewRequest(&adminv1.NodeLeadershipRequest{}))
 	if err != nil {
 		return nil, err
 	}

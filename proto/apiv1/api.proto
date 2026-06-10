@@ -1,0 +1,231 @@
+// Reflw public API view types (reflw.api.v1).
+//
+// apiv1 is the front-end-facing vocabulary: JSON-ergonomic "view" DTOs and
+// the enums the console + SDK consume. It is imported by ingressv1 (data
+// plane) and adminv1 (control plane) so neither service has to import
+// enginev1 — the Raft/on-disk wire format — which would drag the entire
+// engine schema (and its internal storage vocabulary) into the browser
+// bundle and the public TS contract.
+//
+// These are NEW messages, not relocations: the engine types they mirror are
+// genuine FSM/on-disk types (see proto/enginev1/engine.proto). Servers map
+// enginev1 -> apiv1 via internal/apimap. Enum numeric values are kept equal
+// to their enginev1 counterparts so the mapping is a checked cast (see
+// internal/apimap and its tests).
+syntax = "proto3";
+
+package reflw.api.v1;
+
+option go_package = "github.com/twinfer/reflw/proto/apiv1;apiv1";
+
+// InvocationState is the flat lifecycle state of an invocation. Mirrors
+// enginev1.InvocationState (Free is not surfaced — a Free row is absent).
+enum InvocationState {
+  INVOCATION_STATE_UNSPECIFIED = 0;
+  INVOCATION_STATE_SCHEDULED = 1;
+  INVOCATION_STATE_INVOKED = 2;
+  INVOCATION_STATE_SUSPENDED = 3;
+  INVOCATION_STATE_COMPLETED = 4;
+}
+
+// ProcessStatus mirrors enginev1.ProcessStatus.
+enum ProcessStatus {
+  PROCESS_STATUS_UNSPECIFIED = 0;
+  PROCESS_STATUS_RUNNING = 1;
+  PROCESS_STATUS_COMPLETED = 2;
+  PROCESS_STATUS_FAILED = 3;
+  PROCESS_STATUS_INCIDENT = 4;
+}
+
+// ProcessKind mirrors enginev1.ProcessKind.
+enum ProcessKind {
+  PROCESS_KIND_UNSPECIFIED = 0;
+  PROCESS_KIND_BPMN = 1;
+  PROCESS_KIND_CMMN = 2;
+}
+
+// ProcessIncidentResolution mirrors enginev1.ProcessIncidentResolution. Used
+// on the ResolveProcessIncident request.
+enum ProcessIncidentResolution {
+  PROCESS_INCIDENT_RESOLUTION_UNSPECIFIED = 0;
+  PROCESS_INCIDENT_RESOLUTION_RETRY = 1;
+  PROCESS_INCIDENT_RESOLUTION_TERMINATE = 2;
+}
+
+// ProcessHistoryKind mirrors enginev1.ProcessHistoryKind (timeline event
+// discriminator). Values kept equal for the checked cast.
+enum ProcessHistoryKind {
+  PROCESS_HISTORY_KIND_UNSPECIFIED = 0;
+  PROCESS_HISTORY_KIND_STARTED = 1;
+  PROCESS_HISTORY_KIND_EVENT_RECEIVED = 2;
+  PROCESS_HISTORY_KIND_TASK_DISPATCHED = 3;
+  PROCESS_HISTORY_KIND_TASK_COMPLETED = 4;
+  PROCESS_HISTORY_KIND_TIMER_ARMED = 5;
+  PROCESS_HISTORY_KIND_TIMER_FIRED = 6;
+  PROCESS_HISTORY_KIND_CHILD_STARTED = 7;
+  PROCESS_HISTORY_KIND_CHILD_COMPLETED = 8;
+  PROCESS_HISTORY_KIND_SUBSCRIBED = 9;
+  PROCESS_HISTORY_KIND_UNSUBSCRIBED = 10;
+  PROCESS_HISTORY_KIND_MESSAGE_RECEIVED = 11;
+  PROCESS_HISTORY_KIND_COMPLETED = 12;
+  PROCESS_HISTORY_KIND_FAILED = 13;
+  PROCESS_HISTORY_KIND_INCIDENT_RAISED = 14;
+  PROCESS_HISTORY_KIND_INCIDENT_RESOLVED = 15;
+}
+
+// LPTransferPhase mirrors enginev1.LPTransferPhase (transfer saga phase).
+enum LPTransferPhase {
+  LP_TRANSFER_PHASE_UNSPECIFIED = 0;
+  LP_TRANSFER_PHASE_INIT = 1;
+  LP_TRANSFER_PHASE_SHIPPING = 2;
+  LP_TRANSFER_PHASE_STAGED = 3;
+  LP_TRANSFER_PHASE_FLIPPED = 4;
+  LP_TRANSFER_PHASE_CLEANED = 5;
+  LP_TRANSFER_PHASE_ABORTING = 6;
+  LP_TRANSFER_PHASE_ABORTED = 7;
+}
+
+// InvocationView is the list/summary projection of an invocation. The id is
+// the canonical "inv_<pk:16hex>_<uuid:32hex>" string, not the raw
+// {partition_key,uuid} struct — the front-end never needs the bytes.
+message InvocationView {
+  string invocation_id = 1;
+  string service = 2;
+  string handler = 3;
+  string object_key = 4;
+  InvocationState state = 5;
+  string deployment_id = 6;
+  uint64 created_at_ms = 7;
+  uint64 completed_at_ms = 8;
+}
+
+// InvocationStatusView is the full single-invocation status (DescribeInvocation).
+// Flattens the enginev1.InvocationStatus oneof into a discriminator plus the
+// operator-relevant per-state fields.
+message InvocationStatusView {
+  InvocationState state = 1;
+  string service = 2;
+  string handler = 3;
+  string object_key = 4;
+  string deployment_id = 5;
+  uint32 kind = 6;
+  uint64 created_at_ms = 7;
+  // SUSPENDED only.
+  repeated string awaiting_on = 8;
+  // COMPLETED only.
+  bool completed = 9;
+  bytes output = 10;
+  string failure_message = 11;
+  uint32 failure_code = 12;
+  uint64 completed_at_ms = 13;
+}
+
+// ProcessInstanceView is the read/summary projection of a process instance.
+// Used by both GetProcessInstance (all fields) and the list rows (the
+// summary subset; incident/awaiting_tasks/output left unset).
+message ProcessInstanceView {
+  string service = 1;
+  string instance_key = 2;
+  ProcessStatus status = 3;
+  ProcessKind kind = 4;
+  uint64 active_seq = 5;
+  uint64 next_seq = 6;
+  uint32 outstanding = 7;
+  bytes output = 8;
+  uint64 created_at_ms = 9;
+  uint64 ended_at_ms = 10;
+  ProcessIncidentView incident = 11;
+  repeated AwaitingTaskView awaiting_tasks = 12;
+}
+
+message ProcessIncidentView {
+  string node_id = 1;
+  string cause = 2;
+  uint64 raised_at_ms = 3;
+}
+
+message AwaitingTaskView {
+  string node_id = 1;
+  string name = 2;
+  string resume_token = 3;
+}
+
+message ProcessHistoryEventView {
+  uint64 seq = 1;
+  ProcessHistoryKind kind = 2;
+  string node_id = 3;
+  uint64 ts_ms = 4;
+  bool failed = 5;
+  string failure_message = 6;
+  string instance_idx = 7;
+  string detail = 8;
+}
+
+// DeploymentView is the read projection of a registered handler deployment.
+message DeploymentView {
+  string id = 1;
+  string url = 2;
+  uint64 registered_at_ms = 3;
+  uint32 max_journal_entries = 4;
+  uint64 invocation_retention_ms = 5;
+  uint64 workflow_retention_ms = 6;
+  repeated DeploymentHandlerView handlers = 7;
+}
+
+message DeploymentHandlerView {
+  string service = 1;
+  string handler = 2;
+  uint32 kind = 3;
+}
+
+// SecretView never carries plaintext — only the name and the ciphertext/KEK
+// pointers (gocloud.dev/blob + Tink KMS URIs).
+message SecretView {
+  string name = 1;
+  string blob_uri = 2;
+  string kek_uri = 3;
+}
+
+// ModelView is the read projection of a registered BPMN/CMMN/DMN model
+// (the XML source is not surfaced in list/describe views).
+message ModelView {
+  string kind = 1;
+  string name = 2;
+  string version = 3;
+  uint64 registered_at_ms = 4;
+}
+
+message NodeView {
+  uint64 node_id = 1;
+  string raft_addr = 2;
+  string node_host_id = 3;
+  int64 last_seen_ms = 4;
+}
+
+// PartitionView flattens enginev1.ReplicaSet into shard_id -> node ids.
+message PartitionView {
+  uint64 shard_id = 1;
+  repeated uint64 node_ids = 2;
+}
+
+message PartitionTableView {
+  repeated PartitionView shards = 1;
+  uint64 assignment_epoch = 2;
+  repeated uint64 meta_replicas = 3;
+}
+
+message LPTransferView {
+  string transfer_id = 1;
+  uint32 lp = 2;
+  uint64 source_shard = 3;
+  uint64 dest_shard = 4;
+  LPTransferPhase phase = 5;
+  uint64 started_at_ms = 6;
+  uint64 last_event_ms = 7;
+}
+
+message PartitionLeadershipView {
+  uint64 shard_id = 1;
+  bool is_leader = 2;
+  uint64 leader_epoch = 3;
+}

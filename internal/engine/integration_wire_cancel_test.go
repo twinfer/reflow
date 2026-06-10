@@ -9,7 +9,7 @@ import (
 	connect "connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/twinfer/reflw/internal/config"
+	"github.com/twinfer/reflw/internal/admin"
 	"github.com/twinfer/reflw/internal/engine/routing"
 	"github.com/twinfer/reflw/internal/ingress"
 	"github.com/twinfer/reflw/internal/loadgen"
@@ -108,9 +108,9 @@ func TestWireDispatch_HTTP2_CancelInvocation(t *testing.T) {
 	leaderRig := findMetadataLeader(t, cluster)
 	host := leaderRig.Host
 
-	srv, err := config.NewServer(config.Config{Host: host, Runner: host.MetadataRunner()})
+	srv, err := admin.NewServer(admin.Config{Host: host, Runner: host.MetadataRunner()})
 	if err != nil {
-		t.Fatalf("config.NewServer: %v", err)
+		t.Fatalf("admin.NewServer: %v", err)
 	}
 	regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer regCancel()

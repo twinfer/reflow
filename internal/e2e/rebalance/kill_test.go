@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/twinfer/reflw/internal/e2e"
-	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	apiv1 "github.com/twinfer/reflw/proto/apiv1"
 )
 
 // TestE2EBalance_KillMidTransfer is the chaos×rebalance smoke. Brings
@@ -175,8 +175,8 @@ func countTerminalTransfers(ctx context.Context, cluster *e2e.ContainerCluster) 
 	return n, nil
 }
 
-func isTerminalPhase(p enginev1.LPTransferPhase) bool {
-	return p == enginev1.LPTransferPhase_LP_TRANSFER_PHASE_CLEANED ||
-		p == enginev1.LPTransferPhase_LP_TRANSFER_PHASE_ABORTED
+func isTerminalPhase(p apiv1.LPTransferPhase) bool {
+	return p == apiv1.LPTransferPhase_LP_TRANSFER_PHASE_CLEANED ||
+		p == apiv1.LPTransferPhase_LP_TRANSFER_PHASE_ABORTED
 }
 

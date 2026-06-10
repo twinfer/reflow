@@ -62,7 +62,7 @@ func (protoCodec) Name() string { return "protobuf" }
 // roughly max_journal_entries (default 10_000) replay/command frames plus
 // the eager-state snapshot. 64 MiB is generous for realistic journals while
 // capping memory against a pathological or buggy peer; handlers that
-// legitimately receive larger requests raise handler.Config.MaxRecvBytes.
+// legitimately receive larger requests raise handler.Admin.MaxRecvBytes.
 const DefaultMaxRecvBytes = 64 << 20
 
 // Route is the per-session destination metadata: the (service, handler)

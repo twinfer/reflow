@@ -11,7 +11,7 @@ import (
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflw/pkg/reflwclient"
-	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
 )
 
 func cmdAddNode(ctx context.Context, args []string) error {
@@ -29,7 +29,7 @@ func cmdAddNode(ctx context.Context, args []string) error {
 		return errors.New("--node-id, --raft-addr, --gossip-addr, --grpc-endpoint are required")
 	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
-		resp, err := cli.Cluster.AddNode(rctx, connect.NewRequest(&clusterctlv1.AddNodeRequest{
+		resp, err := cli.Admin.AddNode(rctx, connect.NewRequest(&adminv1.AddNodeRequest{
 			NodeId:       *nodeID,
 			RaftAddr:     *raftAddr,
 			GossipAddr:   *gossipAddr,
@@ -55,7 +55,7 @@ func cmdRemoveNode(ctx context.Context, args []string) error {
 		return errors.New("--node-id is required")
 	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
-		resp, err := cli.Cluster.RemoveNode(rctx, connect.NewRequest(&clusterctlv1.RemoveNodeRequest{NodeId: *nodeID}))
+		resp, err := cli.Admin.RemoveNode(rctx, connect.NewRequest(&adminv1.RemoveNodeRequest{NodeId: *nodeID}))
 		if err != nil {
 			return err
 		}
@@ -74,7 +74,7 @@ func cmdNodes(ctx context.Context, args []string) error {
 		return err
 	}
 	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
-		resp, err := cli.Cluster.ListNodes(ctx, connect.NewRequest(&clusterctlv1.ListNodesRequest{}))
+		resp, err := cli.Admin.ListNodes(ctx, connect.NewRequest(&adminv1.ListNodesRequest{}))
 		if err != nil {
 			return err
 		}
@@ -94,7 +94,7 @@ func cmdPartitions(ctx context.Context, args []string) error {
 		return err
 	}
 	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
-		resp, err := cli.Cluster.ListPartitions(ctx, connect.NewRequest(&clusterctlv1.ListPartitionsRequest{}))
+		resp, err := cli.Admin.ListPartitions(ctx, connect.NewRequest(&adminv1.ListPartitionsRequest{}))
 		if err != nil {
 			return err
 		}
@@ -132,7 +132,7 @@ func cmdSnapshotCreate(ctx context.Context, args []string) error {
 		return errors.New("--shard is required")
 	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
-		resp, err := cli.Cluster.CreateSnapshot(rctx, connect.NewRequest(&clusterctlv1.CreateSnapshotRequest{ShardId: *shard}))
+		resp, err := cli.Admin.CreateSnapshot(rctx, connect.NewRequest(&adminv1.CreateSnapshotRequest{ShardId: *shard}))
 		if err != nil {
 			return err
 		}
@@ -153,7 +153,7 @@ func cmdSnapshotList(ctx context.Context, args []string) error {
 		return errors.New("--shard is required")
 	}
 	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
-		resp, err := cli.Cluster.ListSnapshots(ctx, connect.NewRequest(&clusterctlv1.ListSnapshotsRequest{ShardId: *shard}))
+		resp, err := cli.Admin.ListSnapshots(ctx, connect.NewRequest(&adminv1.ListSnapshotsRequest{ShardId: *shard}))
 		if err != nil {
 			return err
 		}
@@ -178,7 +178,7 @@ func cmdSnapshotDelete(ctx context.Context, args []string) error {
 		return errors.New("--index is required")
 	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
-		if _, err := cli.Cluster.DeleteSnapshot(rctx, connect.NewRequest(&clusterctlv1.DeleteSnapshotRequest{
+		if _, err := cli.Admin.DeleteSnapshot(rctx, connect.NewRequest(&adminv1.DeleteSnapshotRequest{
 			ShardId: *shard,
 			Index:   *index,
 		})); err != nil {

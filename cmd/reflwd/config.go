@@ -10,7 +10,7 @@ import (
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflw/pkg/reflwclient"
-	configv1 "github.com/twinfer/reflw/proto/configv1"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
 )
 
 // dispatchConfig routes "reflwd config <subcmd> ..." to the right
@@ -79,7 +79,7 @@ func cmdRegisterDeployment(ctx context.Context, args []string) error {
 		return errors.New("retention durations must be non-negative")
 	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
-		resp, err := cli.Config.RegisterDeployment(rctx, connect.NewRequest(&configv1.RegisterDeploymentRequest{
+		resp, err := cli.Admin.RegisterDeployment(rctx, connect.NewRequest(&adminv1.RegisterDeploymentRequest{
 			Url:                   *rawURL,
 			MaxJournalEntries:     uint32(*maxJournal),
 			InvocationRetentionMs: uint64(invRetention.Milliseconds()),
@@ -112,7 +112,7 @@ func cmdUpsertClusterAuthzPolicy(ctx context.Context, args []string) error {
 		return fmt.Errorf("read policy file: %w", err)
 	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
-		resp, err := cli.Config.UpsertClusterAuthzPolicy(rctx, connect.NewRequest(&configv1.UpsertClusterAuthzPolicyRequest{
+		resp, err := cli.Admin.UpsertClusterAuthzPolicy(rctx, connect.NewRequest(&adminv1.UpsertClusterAuthzPolicyRequest{
 			PolicyText:        string(text),
 			IfTableRevisionEq: *ifRev,
 		}))
@@ -134,7 +134,7 @@ func cmdGetClusterAuthzPolicy(ctx context.Context, args []string) error {
 		return err
 	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
-		resp, err := cli.Config.GetClusterAuthzPolicy(rctx, connect.NewRequest(&configv1.GetClusterAuthzPolicyRequest{}))
+		resp, err := cli.Admin.GetClusterAuthzPolicy(rctx, connect.NewRequest(&adminv1.GetClusterAuthzPolicyRequest{}))
 		if err != nil {
 			return err
 		}

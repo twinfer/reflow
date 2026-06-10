@@ -6,8 +6,7 @@ import (
 	"github.com/cedar-policy/cedar-go"
 	"github.com/cedar-policy/cedar-go/types"
 
-	clusterctlv1connect "github.com/twinfer/reflw/proto/clusterctlv1/clusterctlv1connect"
-	configv1connect "github.com/twinfer/reflw/proto/configv1/configv1connect"
+	adminv1connect "github.com/twinfer/reflw/proto/adminv1/adminv1connect"
 	deliveryv1connect "github.com/twinfer/reflw/proto/deliveryv1/deliveryv1connect"
 	ingressv1connect "github.com/twinfer/reflw/proto/ingressv1/ingressv1connect"
 )
@@ -19,7 +18,7 @@ import (
 // action's parent edges.
 const (
 	groupIngress        = "IngressActions"
-	groupTenantConfig   = "TenantConfigActions"
+	groupAppConfig      = "AppConfigActions"
 	groupConfigRead     = "ConfigReadActions"
 	groupPlatformConfig = "PlatformConfigActions"
 	groupClusterAdmin   = "ClusterAdminActions"
@@ -77,40 +76,40 @@ var procMap = map[string]procEntry{
 	// ----- Delivery + SelfJoin: node mesh -----
 	deliveryv1connect.DeliveryDeliverProcedure:             {"Deliver", []string{groupMesh}},
 	deliveryv1connect.DeliveryUploadLPTransferSSTProcedure: {"UploadLPTransferSST", []string{groupMesh}},
-	clusterctlv1connect.ClusterCtlSelfJoinProcedure:        {"SelfJoin", []string{groupMesh}},
+	adminv1connect.AdminSelfJoinProcedure:                  {"SelfJoin", []string{groupMesh}},
 
-	// ----- Config: tenant-config writes -----
-	configv1connect.ConfigUpsertSecretProcedure:       {"UpsertSecret", []string{groupTenantConfig}},
-	configv1connect.ConfigDeleteSecretProcedure:       {"DeleteSecret", []string{groupTenantConfig}},
-	configv1connect.ConfigRegisterDeploymentProcedure: {"RegisterDeployment", []string{groupTenantConfig}},
-	configv1connect.ConfigDeleteDeploymentProcedure:   {"DeleteDeployment", []string{groupTenantConfig}},
-	configv1connect.ConfigRegisterModelSetProcedure:   {"RegisterModelSet", []string{groupTenantConfig}},
-	configv1connect.ConfigDeleteModelProcedure:        {"DeleteModel", []string{groupTenantConfig}},
+	// ----- Admin: app-config writes -----
+	adminv1connect.AdminUpsertSecretProcedure:       {"UpsertSecret", []string{groupAppConfig}},
+	adminv1connect.AdminDeleteSecretProcedure:       {"DeleteSecret", []string{groupAppConfig}},
+	adminv1connect.AdminRegisterDeploymentProcedure: {"RegisterDeployment", []string{groupAppConfig}},
+	adminv1connect.AdminDeleteDeploymentProcedure:   {"DeleteDeployment", []string{groupAppConfig}},
+	adminv1connect.AdminRegisterModelSetProcedure:   {"RegisterModelSet", []string{groupAppConfig}},
+	adminv1connect.AdminDeleteModelProcedure:        {"DeleteModel", []string{groupAppConfig}},
 
-	// ----- Config: tenant-config reads -----
-	configv1connect.ConfigListDeploymentsProcedure:    {"ListDeployments", []string{groupConfigRead}},
-	configv1connect.ConfigDescribeDeploymentProcedure: {"DescribeDeployment", []string{groupConfigRead}},
-	configv1connect.ConfigListSecretsProcedure:        {"ListSecrets", []string{groupConfigRead}},
-	configv1connect.ConfigListModelsProcedure:         {"ListModels", []string{groupConfigRead}},
-	configv1connect.ConfigDescribeModelProcedure:      {"DescribeModel", []string{groupConfigRead}},
+	// ----- Admin: app-config reads -----
+	adminv1connect.AdminListDeploymentsProcedure:    {"ListDeployments", []string{groupConfigRead}},
+	adminv1connect.AdminDescribeDeploymentProcedure: {"DescribeDeployment", []string{groupConfigRead}},
+	adminv1connect.AdminListSecretsProcedure:        {"ListSecrets", []string{groupConfigRead}},
+	adminv1connect.AdminListModelsProcedure:         {"ListModels", []string{groupConfigRead}},
+	adminv1connect.AdminDescribeModelProcedure:      {"DescribeModel", []string{groupConfigRead}},
 
-	// ----- Config: platform plane (operator only) -----
-	configv1connect.ConfigUpsertClusterAuthzPolicyProcedure: {"UpsertClusterAuthzPolicy", []string{groupPlatformConfig}},
-	configv1connect.ConfigGetClusterAuthzPolicyProcedure:    {"GetClusterAuthzPolicy", []string{groupPlatformConfig}},
+	// ----- Admin: platform plane (operator only) -----
+	adminv1connect.AdminUpsertClusterAuthzPolicyProcedure: {"UpsertClusterAuthzPolicy", []string{groupPlatformConfig}},
+	adminv1connect.AdminGetClusterAuthzPolicyProcedure:    {"GetClusterAuthzPolicy", []string{groupPlatformConfig}},
 
-	// ----- ClusterCtl: cluster admin (operator only) -----
-	clusterctlv1connect.ClusterCtlAddNodeProcedure:         {"AddNode", []string{groupClusterAdmin}},
-	clusterctlv1connect.ClusterCtlRemoveNodeProcedure:      {"RemoveNode", []string{groupClusterAdmin}},
-	clusterctlv1connect.ClusterCtlListNodesProcedure:       {"ListNodes", []string{groupClusterAdmin}},
-	clusterctlv1connect.ClusterCtlListPartitionsProcedure:  {"ListPartitions", []string{groupClusterAdmin}},
-	clusterctlv1connect.ClusterCtlNodeLeadershipProcedure:  {"NodeLeadership", []string{groupClusterAdmin}},
-	clusterctlv1connect.ClusterCtlCreateSnapshotProcedure:  {"CreateSnapshot", []string{groupClusterAdmin}},
-	clusterctlv1connect.ClusterCtlListSnapshotsProcedure:   {"ListSnapshots", []string{groupClusterAdmin}},
-	clusterctlv1connect.ClusterCtlDeleteSnapshotProcedure:  {"DeleteSnapshot", []string{groupClusterAdmin}},
-	clusterctlv1connect.ClusterCtlTransferLPProcedure:      {"TransferLP", []string{groupClusterAdmin}},
-	clusterctlv1connect.ClusterCtlListLPTransfersProcedure: {"ListLPTransfers", []string{groupClusterAdmin}},
-	clusterctlv1connect.ClusterCtlRebalanceAdviseProcedure: {"RebalanceAdvise", []string{groupClusterAdmin}},
-	clusterctlv1connect.ClusterCtlRebalanceDrainProcedure:  {"RebalanceDrain", []string{groupClusterAdmin}},
+	// ----- Admin: cluster admin (operator only) -----
+	adminv1connect.AdminAddNodeProcedure:         {"AddNode", []string{groupClusterAdmin}},
+	adminv1connect.AdminRemoveNodeProcedure:      {"RemoveNode", []string{groupClusterAdmin}},
+	adminv1connect.AdminListNodesProcedure:       {"ListNodes", []string{groupClusterAdmin}},
+	adminv1connect.AdminListPartitionsProcedure:  {"ListPartitions", []string{groupClusterAdmin}},
+	adminv1connect.AdminNodeLeadershipProcedure:  {"NodeLeadership", []string{groupClusterAdmin}},
+	adminv1connect.AdminCreateSnapshotProcedure:  {"CreateSnapshot", []string{groupClusterAdmin}},
+	adminv1connect.AdminListSnapshotsProcedure:   {"ListSnapshots", []string{groupClusterAdmin}},
+	adminv1connect.AdminDeleteSnapshotProcedure:  {"DeleteSnapshot", []string{groupClusterAdmin}},
+	adminv1connect.AdminTransferLPProcedure:      {"TransferLP", []string{groupClusterAdmin}},
+	adminv1connect.AdminListLPTransfersProcedure: {"ListLPTransfers", []string{groupClusterAdmin}},
+	adminv1connect.AdminRebalanceAdviseProcedure: {"RebalanceAdvise", []string{groupClusterAdmin}},
+	adminv1connect.AdminRebalanceDrainProcedure:  {"RebalanceDrain", []string{groupClusterAdmin}},
 }
 
 // isIngressProcedure reports whether procedure is in the ingress data plane —

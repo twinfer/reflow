@@ -22,8 +22,7 @@ import (
 	_ "github.com/twinfer/reflw/pkg/kms/gcpkms"
 
 	"github.com/twinfer/reflw/pkg/reflwclient"
-	configv1 "github.com/twinfer/reflw/proto/configv1"
-	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
 )
 
 // cmdInitKEK creates a fresh BlobKMS KEK blob (boot key + encrypted
@@ -109,29 +108,22 @@ func cmdCreateSecret(ctx context.Context, args []string) error {
 		return err
 	}
 
-	rec := &enginev1.SecretRecord{
-		Name: *name,
-		Source: &enginev1.SecretRecord_RemoteEncrypted{
-			RemoteEncrypted: &enginev1.RemoteEncryptedSecret{
-				BlobUri: *blobURI,
-				KekUri:  *kekURI,
-			},
-		},
-	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
-		list, err := cli.Config.ListSecrets(rctx, connect.NewRequest(&configv1.ListSecretsRequest{}))
+		list, err := cli.Admin.ListSecrets(rctx, connect.NewRequest(&adminv1.ListSecretsRequest{}))
 		if err != nil {
 			return fmt.Errorf("read revision: %w", err)
 		}
-		resp, err := cli.Config.UpsertSecret(rctx, connect.NewRequest(&configv1.UpsertSecretRequest{
-			Record:            rec,
+		resp, err := cli.Admin.UpsertSecret(rctx, connect.NewRequest(&adminv1.UpsertSecretRequest{
+			Name:              *name,
+			BlobUri:           *blobURI,
+			KekUri:            *kekURI,
 			IfTableRevisionEq: list.Msg.GetTableRevision(),
 		}))
 		if err != nil {
 			return fmt.Errorf("UpsertSecret: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "secret upserted (name=%s, table_revision=%d)\n",
-			rec.GetName(), resp.Msg.GetTableRevision())
+			*name, resp.Msg.GetTableRevision())
 		return nil
 	})
 }
@@ -152,11 +144,11 @@ func cmdDeleteSecret(ctx context.Context, args []string) error {
 		return errors.New("--name is required")
 	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
-		list, err := cli.Config.ListSecrets(rctx, connect.NewRequest(&configv1.ListSecretsRequest{}))
+		list, err := cli.Admin.ListSecrets(rctx, connect.NewRequest(&adminv1.ListSecretsRequest{}))
 		if err != nil {
 			return fmt.Errorf("read revision: %w", err)
 		}
-		resp, err := cli.Config.DeleteSecret(rctx, connect.NewRequest(&configv1.DeleteSecretRequest{
+		resp, err := cli.Admin.DeleteSecret(rctx, connect.NewRequest(&adminv1.DeleteSecretRequest{
 			Name:              *name,
 			IfTableRevisionEq: list.Msg.GetTableRevision(),
 		}))
@@ -179,7 +171,7 @@ func cmdListSecrets(ctx context.Context, args []string) error {
 		return err
 	}
 	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
-		resp, err := cli.Config.ListSecrets(ctx, connect.NewRequest(&configv1.ListSecretsRequest{}))
+		resp, err := cli.Admin.ListSecrets(ctx, connect.NewRequest(&adminv1.ListSecretsRequest{}))
 		if err != nil {
 			return err
 		}
@@ -187,7 +179,7 @@ func cmdListSecrets(ctx context.Context, args []string) error {
 		enc.SetIndent("", "  ")
 		return enc.Encode(map[string]any{
 			"table_revision": resp.Msg.GetTableRevision(),
-			"records":        resp.Msg.GetRecords(),
+			"secrets":        resp.Msg.GetSecrets(),
 		})
 	})
 }

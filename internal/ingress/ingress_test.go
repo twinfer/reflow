@@ -12,9 +12,9 @@ import (
 
 	connect "connectrpc.com/connect"
 
+	"github.com/twinfer/reflw/internal/admin"
 	"github.com/twinfer/reflw/internal/auth"
 	"github.com/twinfer/reflw/internal/authz"
-	"github.com/twinfer/reflw/internal/config"
 	"github.com/twinfer/reflw/internal/engine"
 	"github.com/twinfer/reflw/internal/ingress"
 	"github.com/twinfer/reflw/pkg/handler"
@@ -114,9 +114,9 @@ func bringUpHostWithIngress(t *testing.T, reg *handler.Registry) (*engine.Host, 
 			_ = ln.Close()
 		})
 
-		asrv, err := config.NewServer(config.Config{Host: h, Runner: h.MetadataRunner()})
+		asrv, err := admin.NewServer(admin.Config{Host: h, Runner: h.MetadataRunner()})
 		if err != nil {
-			t.Fatalf("config.NewServer: %v", err)
+			t.Fatalf("admin.NewServer: %v", err)
 		}
 		regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer regCancel()

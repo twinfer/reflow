@@ -1,0 +1,293 @@
+// Reflw Admin service (reflw.admin.v1) — the unified operator/admin surface.
+//
+// adminv1 merges the former reflw.config.v1.Config (app config: deployments,
+// models, secrets, cluster authz policy) and reflw.clusterctl.v1.ClusterCtl
+// (cluster topology, DR snapshots, LP routing transfers, rebalance) into one
+// Connect service on the admin listener.
+//
+// Read responses return reflw.api.v1 view DTOs (not enginev1 records) so the
+// admin surface never leaks the Raft/on-disk wire format. Mutating RPCs propose
+// to shard 0 and must reach the metadata leader; non-leader nodes return
+// CodeUnavailable with a LeaderHint detail (pkg/reflwclient.CallWithLeaderRedirect
+// follows it).
+syntax = "proto3";
+
+package reflw.admin.v1;
+
+import "apiv1/api.proto";
+
+option go_package = "github.com/twinfer/reflw/proto/adminv1;adminv1";
+
+service Admin {
+  // --- app config: deployments ---
+  rpc RegisterDeployment(RegisterDeploymentRequest) returns (RegisterDeploymentResponse);
+  rpc ListDeployments(ListDeploymentsRequest) returns (ListDeploymentsResponse);
+  rpc DescribeDeployment(DescribeDeploymentRequest) returns (DescribeDeploymentResponse);
+  rpc DeleteDeployment(DeleteDeploymentRequest) returns (DeleteDeploymentResponse);
+
+  // --- app config: models ---
+  rpc RegisterModelSet(RegisterModelSetRequest) returns (RegisterModelSetResponse);
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+  rpc DescribeModel(DescribeModelRequest) returns (DescribeModelResponse);
+  rpc DeleteModel(DeleteModelRequest) returns (DeleteModelResponse);
+
+  // --- app config: secrets ---
+  rpc UpsertSecret(UpsertSecretRequest) returns (UpsertSecretResponse);
+  rpc DeleteSecret(DeleteSecretRequest) returns (DeleteSecretResponse);
+  rpc ListSecrets(ListSecretsRequest) returns (ListSecretsResponse);
+
+  // --- app config: cluster authz policy ---
+  rpc UpsertClusterAuthzPolicy(UpsertClusterAuthzPolicyRequest) returns (UpsertClusterAuthzPolicyResponse);
+  rpc GetClusterAuthzPolicy(GetClusterAuthzPolicyRequest) returns (GetClusterAuthzPolicyResponse);
+
+  // --- cluster topology ---
+  rpc AddNode(AddNodeRequest) returns (AddNodeResponse);
+  // SelfJoin is AddNode initiated by the joiner; authorized for node/<req.node_id>.
+  rpc SelfJoin(AddNodeRequest) returns (AddNodeResponse);
+  rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse);
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  rpc ListPartitions(ListPartitionsRequest) returns (ListPartitionsResponse);
+  rpc NodeLeadership(NodeLeadershipRequest) returns (NodeLeadershipResponse);
+
+  // --- DR snapshots ---
+  rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
+  rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
+
+  // --- LP routing transfers + rebalance ---
+  rpc TransferLP(TransferLPRequest) returns (TransferLPResponse);
+  rpc ListLPTransfers(ListLPTransfersRequest) returns (ListLPTransfersResponse);
+  rpc RebalanceAdvise(RebalanceAdviseRequest) returns (RebalanceAdviseResponse);
+  rpc RebalanceDrain(RebalanceDrainRequest) returns (RebalanceDrainResponse);
+}
+
+// --- deployments ---
+
+message RegisterDeploymentRequest {
+  string url = 1;
+  uint32 max_journal_entries = 2;
+  uint64 invocation_retention_ms = 3;
+  uint64 workflow_retention_ms = 4;
+}
+message RegisterDeploymentResponse {
+  string deployment_id = 1;
+}
+
+message ListDeploymentsRequest {}
+message ListDeploymentsResponse {
+  repeated reflw.api.v1.DeploymentView deployments = 1;
+  uint64 table_revision = 2;
+}
+
+message DescribeDeploymentRequest {
+  string deployment_id = 1;
+}
+message DescribeDeploymentResponse {
+  reflw.api.v1.DeploymentView deployment = 1;
+}
+
+message DeleteDeploymentRequest {
+  string deployment_id = 1;
+  bool force = 2;
+  uint64 if_table_revision_eq = 3;
+}
+message DeleteDeploymentResponse {
+  uint64 table_revision = 1;
+}
+
+// --- models (model_ref flattened to kind/name/version) ---
+
+message ModelSetEntry {
+  string kind = 1;
+  string name = 2;
+  string version = 3;
+  bytes xml = 4;
+}
+message RegisterModelSetRequest {
+  repeated ModelSetEntry entries = 1;
+  uint64 if_table_revision_eq = 2;
+}
+message RegisterModelSetResponse {
+  uint64 table_revision = 1;
+}
+
+message ListModelsRequest {}
+message ListModelsResponse {
+  repeated reflw.api.v1.ModelView models = 1;
+  uint64 table_revision = 2;
+}
+
+message DescribeModelRequest {
+  string kind = 1;
+  string name = 2;
+  string version = 3;
+}
+message DescribeModelResponse {
+  reflw.api.v1.ModelView model = 1;
+}
+
+message DeleteModelRequest {
+  string kind = 1;
+  string name = 2;
+  string version = 3;
+  uint64 if_table_revision_eq = 4;
+}
+message DeleteModelResponse {
+  uint64 table_revision = 1;
+}
+
+// --- secrets (record flattened to name/blob_uri/kek_uri) ---
+
+message UpsertSecretRequest {
+  string name = 1;
+  string blob_uri = 2;
+  string kek_uri = 3;
+  uint64 if_table_revision_eq = 4;
+}
+message UpsertSecretResponse {
+  uint64 table_revision = 1;
+}
+
+message DeleteSecretRequest {
+  string name = 1;
+  uint64 if_table_revision_eq = 2;
+}
+message DeleteSecretResponse {
+  uint64 table_revision = 1;
+}
+
+message ListSecretsRequest {}
+message ListSecretsResponse {
+  repeated reflw.api.v1.SecretView secrets = 1;
+  uint64 table_revision = 2;
+}
+
+// --- cluster authz policy ---
+
+message UpsertClusterAuthzPolicyRequest {
+  string policy_text = 1;
+  uint64 if_table_revision_eq = 2;
+}
+message UpsertClusterAuthzPolicyResponse {
+  uint64 table_revision = 1;
+}
+message GetClusterAuthzPolicyRequest {}
+message GetClusterAuthzPolicyResponse {
+  string policy_text = 1;
+  uint64 table_revision = 2;
+}
+
+// --- cluster topology ---
+
+message AddNodeRequest {
+  uint64 node_id = 1;
+  string raft_addr = 2;
+  string gossip_addr = 3;
+  string grpc_endpoint = 4;
+  string node_host_id = 5;
+}
+message AddNodeResponse {
+  uint64 assignment_epoch = 1;
+}
+
+message RemoveNodeRequest {
+  uint64 node_id = 1;
+}
+message RemoveNodeResponse {
+  uint64 assignment_epoch = 1;
+}
+
+message ListNodesRequest {}
+message ListNodesResponse {
+  repeated reflw.api.v1.NodeView nodes = 1;
+}
+
+message ListPartitionsRequest {}
+message ListPartitionsResponse {
+  reflw.api.v1.PartitionTableView table = 1;
+}
+
+message NodeLeadershipRequest {}
+message NodeLeadershipResponse {
+  repeated reflw.api.v1.PartitionLeadershipView partitions = 1;
+}
+
+// --- DR snapshots ---
+
+message CreateSnapshotRequest {
+  uint64 shard_id = 1;
+}
+message CreateSnapshotResponse {
+  uint64 shard_id = 1;
+  uint64 index = 2;
+  int64 size_bytes = 3;
+}
+
+message ListSnapshotsRequest {
+  uint64 shard_id = 1;
+}
+message SnapshotRef {
+  uint64 shard_id = 1;
+  uint64 index = 2;
+  int64 size_bytes = 3;
+  int64 created_at_unix_ms = 4;
+}
+message ListSnapshotsResponse {
+  repeated SnapshotRef snapshots = 1;
+}
+
+message DeleteSnapshotRequest {
+  uint64 shard_id = 1;
+  uint64 index = 2;
+}
+message DeleteSnapshotResponse {}
+
+// --- LP transfers + rebalance ---
+
+message TransferLPRequest {
+  uint32 lp = 1;
+  uint64 dest_shard = 2;
+}
+message TransferLPResponse {
+  string transfer_id = 1;
+}
+
+message ListLPTransfersRequest {}
+message ListLPTransfersResponse {
+  repeated reflw.api.v1.LPTransferView transfers = 1;
+  uint64 table_revision = 2;
+}
+
+message RebalanceMove {
+  uint32 lp = 1;
+  uint64 from_shard = 2;
+  uint64 to_shard = 3;
+}
+
+message RebalanceAdviseRequest {}
+message RebalanceAdviseResponse {
+  string mode = 1;
+  bool engaged = 2;
+  double skew_pct = 3;
+  uint32 in_flight = 4;
+  string skipped_reason = 5;
+  repeated uint64 drained_shards = 6;
+  map<uint64, uint32> lps_per_shard = 7;
+  repeated RebalanceMove would_transfer = 8;
+}
+
+message RebalanceDrainRequest {
+  uint64 shard_id = 1;
+  bool drain = 2;
+  uint64 if_table_revision_eq = 3;
+}
+message RebalanceDrainResponse {
+  uint64 table_revision = 1;
+}
+
+// LeaderHint is attached as a connect.Error detail on CodeUnavailable when the
+// receiving node is not the metadata leader. Clients dial admin_endpoint and retry.
+message LeaderHint {
+  uint64 node_id = 1;
+  string admin_endpoint = 2;
+}

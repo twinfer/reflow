@@ -11,14 +11,14 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflw/internal/config"
+	"github.com/twinfer/reflw/internal/admin"
 	"github.com/twinfer/reflw/internal/connectserver"
 	"github.com/twinfer/reflw/internal/storage/keys"
 	"github.com/twinfer/reflw/pkg/ingressclient"
 	"github.com/twinfer/reflw/pkg/reflw"
 	"github.com/twinfer/reflw/pkg/reflw/processengine"
-	configv1 "github.com/twinfer/reflw/proto/configv1"
-	"github.com/twinfer/reflw/proto/configv1/configv1connect"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
+	"github.com/twinfer/reflw/proto/adminv1/adminv1connect"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
@@ -35,11 +35,11 @@ const e2eStartEndBPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </process>
 </definitions>`
 
-// newLoopbackConfigClient mounts srv's Config handler on a loopback
+// newLoopbackAdminClient mounts srv's Config handler on a loopback
 // connectserver and returns a client + cleanup. No authz interceptor — the
 // admin listener's mTLS/Cedar gating is exercised by the auth tests; this drives
 // the handler logic directly, as the engine config integration tests do.
-func newLoopbackConfigClient(t *testing.T, ctx context.Context, srv *config.Server) (configv1connect.ConfigClient, func()) {
+func newLoopbackAdminClient(t *testing.T, ctx context.Context, srv *admin.Server) (adminv1connect.AdminClient, func()) {
 	t.Helper()
 	path, h := srv.NewHandler()
 	cs, err := connectserver.New(ctx, connectserver.Config{Addr: "127.0.0.1:0"},
@@ -50,7 +50,7 @@ func newLoopbackConfigClient(t *testing.T, ctx context.Context, srv *config.Serv
 	tr := &http.Transport{Protocols: new(http.Protocols)}
 	tr.Protocols.SetUnencryptedHTTP2(true)
 	tr.Protocols.SetHTTP1(false)
-	cli := configv1connect.NewConfigClient(&http.Client{Transport: tr}, "http://"+cs.Addr())
+	cli := adminv1connect.NewAdminClient(&http.Client{Transport: tr}, "http://"+cs.Addr())
 	return cli, func() {
 		tr.CloseIdleConnections()
 		cs.Close()
@@ -88,13 +88,13 @@ func TestProcess_RegisterReconcileRun(t *testing.T) {
 
 	// Register the model through the Config RPC → shard 0 ModelTable.
 	eng := host.Engine()
-	csrv, err := config.NewServer(config.Config{
+	csrv, err := admin.NewServer(admin.Config{
 		Host: eng, Runner: eng.MetadataRunner(), PlanModelSet: processengine.PlanModelSet,
 	})
 	if err != nil {
-		t.Fatalf("config.NewServer: %v", err)
+		t.Fatalf("admin.NewServer: %v", err)
 	}
-	ccli, closeC := newLoopbackConfigClient(t, ctx, csrv)
+	ccli, closeC := newLoopbackAdminClient(t, ctx, csrv)
 	defer closeC()
 	modelRef := &enginev1.ModelRef{Kind: "bpmn", Name: "E2E", Version: "v1"}
 	// RegisterModelSet targets shard 0 (metadata). On a freshly-started host it
@@ -103,10 +103,10 @@ func TestProcess_RegisterReconcileRun(t *testing.T) {
 	// StartProcess retry-until-deadline loop below.
 	regDeadline := time.Now().Add(15 * time.Second)
 	for {
-		_, err := ccli.RegisterModelSet(ctx, connect.NewRequest(&configv1.RegisterModelSetRequest{
-			Entries: []*configv1.ModelSetEntry{{
-				ModelRef: modelRef,
-				Xml:      []byte(e2eStartEndBPMN),
+		_, err := ccli.RegisterModelSet(ctx, connect.NewRequest(&adminv1.RegisterModelSetRequest{
+			Entries: []*adminv1.ModelSetEntry{{
+				Kind: modelRef.GetKind(), Name: modelRef.GetName(), Version: modelRef.GetVersion(),
+				Xml: []byte(e2eStartEndBPMN),
 			}},
 		}))
 		if err == nil {
@@ -187,18 +187,18 @@ func e2eProcessHost(t *testing.T, ctx context.Context, ref *enginev1.ModelRef, x
 	}
 
 	eng := host.Engine()
-	csrv, err := config.NewServer(config.Config{
+	csrv, err := admin.NewServer(admin.Config{
 		Host: eng, Runner: eng.MetadataRunner(), PlanModelSet: processengine.PlanModelSet,
 	})
 	if err != nil {
-		t.Fatalf("config.NewServer: %v", err)
+		t.Fatalf("admin.NewServer: %v", err)
 	}
-	ccli, closeC := newLoopbackConfigClient(t, ctx, csrv)
+	ccli, closeC := newLoopbackAdminClient(t, ctx, csrv)
 	t.Cleanup(closeC)
 	regDeadline := time.Now().Add(15 * time.Second)
 	for {
-		_, err := ccli.RegisterModelSet(ctx, connect.NewRequest(&configv1.RegisterModelSetRequest{
-			Entries: []*configv1.ModelSetEntry{{ModelRef: ref, Xml: []byte(xml)}},
+		_, err := ccli.RegisterModelSet(ctx, connect.NewRequest(&adminv1.RegisterModelSetRequest{
+			Entries: []*adminv1.ModelSetEntry{{Kind: ref.GetKind(), Name: ref.GetName(), Version: ref.GetVersion(), Xml: []byte(xml)}},
 		}))
 		if err == nil {
 			break

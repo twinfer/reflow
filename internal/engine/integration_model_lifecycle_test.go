@@ -7,11 +7,10 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	"github.com/twinfer/reflw/internal/config"
+	"github.com/twinfer/reflw/internal/admin"
 	"github.com/twinfer/reflw/internal/loadgen"
 	"github.com/twinfer/reflw/pkg/reflw/processengine"
-	configv1 "github.com/twinfer/reflw/proto/configv1"
-	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
 )
 
 // validBPMN is a minimal executable process: start → end. Parses and passes
@@ -56,13 +55,13 @@ func TestConfig_ModelValidationGate(t *testing.T) {
 	}
 	host := findMetadataLeader(t, cluster).Host
 
-	srv, err := config.NewServer(config.Config{
+	srv, err := admin.NewServer(admin.Config{
 		Host:         host,
 		Runner:       host.MetadataRunner(),
 		PlanModelSet: processengine.PlanModelSet, // the production injection
 	})
 	if err != nil {
-		t.Fatalf("config.NewServer: %v", err)
+		t.Fatalf("admin.NewServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -70,10 +69,10 @@ func TestConfig_ModelValidationGate(t *testing.T) {
 	defer closeCli()
 
 	// A structurally-invalid model is rejected at the gate, not committed.
-	_, err = cli.RegisterModelSet(ctx, connect.NewRequest(&configv1.RegisterModelSetRequest{
-		Entries: []*configv1.ModelSetEntry{{
-			ModelRef: &enginev1.ModelRef{Kind: "bpmn", Name: "Broken", Version: "v1"},
-			Xml:      []byte(staticInvalidBPMN),
+	_, err = cli.RegisterModelSet(ctx, connect.NewRequest(&adminv1.RegisterModelSetRequest{
+		Entries: []*adminv1.ModelSetEntry{{
+			Kind: "bpmn", Name: "Broken", Version: "v1",
+			Xml: []byte(staticInvalidBPMN),
 		}},
 	}))
 	if err == nil {
@@ -84,19 +83,19 @@ func TestConfig_ModelValidationGate(t *testing.T) {
 	}
 
 	// It must not have landed: the table is still empty.
-	listResp, err := cli.ListModels(ctx, connect.NewRequest(&configv1.ListModelsRequest{}))
+	listResp, err := cli.ListModels(ctx, connect.NewRequest(&adminv1.ListModelsRequest{}))
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
 	}
-	if got := len(listResp.Msg.GetRecords()); got != 0 {
+	if got := len(listResp.Msg.GetModels()); got != 0 {
 		t.Fatalf("rejected model leaked into the table: %d records, want 0", got)
 	}
 
 	// A valid model registers and bumps the revision.
-	upResp, err := cli.RegisterModelSet(ctx, connect.NewRequest(&configv1.RegisterModelSetRequest{
-		Entries: []*configv1.ModelSetEntry{{
-			ModelRef: &enginev1.ModelRef{Kind: "bpmn", Name: "Good", Version: "v1"},
-			Xml:      []byte(validBPMN),
+	upResp, err := cli.RegisterModelSet(ctx, connect.NewRequest(&adminv1.RegisterModelSetRequest{
+		Entries: []*adminv1.ModelSetEntry{{
+			Kind: "bpmn", Name: "Good", Version: "v1",
+			Xml: []byte(validBPMN),
 		}},
 	}))
 	if err != nil {
@@ -106,14 +105,14 @@ func TestConfig_ModelValidationGate(t *testing.T) {
 		t.Fatal("table_revision after valid register is 0; want >0")
 	}
 
-	listResp, err = cli.ListModels(ctx, connect.NewRequest(&configv1.ListModelsRequest{}))
+	listResp, err = cli.ListModels(ctx, connect.NewRequest(&adminv1.ListModelsRequest{}))
 	if err != nil {
 		t.Fatalf("ListModels #2: %v", err)
 	}
-	if got := len(listResp.Msg.GetRecords()); got != 1 {
+	if got := len(listResp.Msg.GetModels()); got != 1 {
 		t.Fatalf("after valid upsert: %d records, want 1", got)
 	}
-	if name := listResp.Msg.GetRecords()[0].GetModelRef().GetName(); name != "Good" {
+	if name := listResp.Msg.GetModels()[0].GetName(); name != "Good" {
 		t.Fatalf("listed model name = %q, want Good", name)
 	}
 }

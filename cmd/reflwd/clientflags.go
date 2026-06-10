@@ -13,7 +13,7 @@ import (
 // tlsFlags installs --client-cert / --client-key / --ca with env
 // fallbacks. Shared by every `reflwd cluster` and `reflwd config`
 // subcommand that dials the admin Connect port; cluster RPCs go
-// through cli.Cluster.X (ClusterCtl), config RPCs through cli.Config.Y
+// through cli.Admin.X (ClusterCtl), config RPCs through cli.Admin.Y
 // (Config), both served on the same mTLS listener.
 type tlsFlags struct {
 	clientCert string
@@ -91,8 +91,8 @@ func (t *tlsFlags) withClient(ctx context.Context, fn func(*reflwclient.Client) 
 
 // withLeaderRedirect validates the registered TLS flags and invokes fn
 // inside reflwclient.CallWithLeaderRedirect. fn receives the full
-// *reflwclient.Client wrapper; pick cli.Cluster.X for ClusterCtl RPCs
-// or cli.Config.Y for Config RPCs.
+// *reflwclient.Client wrapper; pick cli.Admin.X for ClusterCtl RPCs
+// or cli.Admin.Y for Config RPCs.
 func (t *tlsFlags) withLeaderRedirect(
 	ctx context.Context,
 	fn func(context.Context, *reflwclient.Client) error,

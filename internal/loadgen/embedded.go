@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/twinfer/reflw/internal/config"
+	"github.com/twinfer/reflw/internal/admin"
 	"github.com/twinfer/reflw/internal/engine"
 	"github.com/twinfer/reflw/pkg/handler"
 )
@@ -54,10 +54,10 @@ func StartEmbeddedHandlers(t testing.TB, cluster *Cluster, reg *handler.Registry
 		t.Fatal("loadgen: no metadata leader after AwaitAnyMetadataLeader")
 	}
 
-	asrv, err := config.NewServer(config.Config{Host: leader, Runner: leader.MetadataRunner()})
+	asrv, err := admin.NewServer(admin.Config{Host: leader, Runner: leader.MetadataRunner()})
 	if err != nil {
 		teardown()
-		t.Fatalf("loadgen: config.NewServer: %v", err)
+		t.Fatalf("loadgen: admin.NewServer: %v", err)
 	}
 
 	regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)

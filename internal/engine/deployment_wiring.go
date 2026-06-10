@@ -30,7 +30,7 @@ import (
 // session waits rather than failing the invocation terminally.
 //
 // Implements invoker.DeploymentResolver. Bound at partition construction
-// via invoker.Config.Deployments.
+// via invoker.Admin.Deployments.
 func (h *Host) resolveDeployment(ctx context.Context, deploymentID string) (*enginev1.DeploymentRecord, error) {
 	if deploymentID == "" {
 		return nil, nil

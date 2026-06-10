@@ -7,20 +7,18 @@ import (
 
 	connect "connectrpc.com/connect"
 
-	clusterctlv1 "github.com/twinfer/reflw/proto/clusterctlv1"
-	configv1 "github.com/twinfer/reflw/proto/configv1"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
 )
 
 // CallWithLeaderRedirect invokes fn against opts.Addr; on
-// connect.CodeUnavailable carrying a LeaderHint detail (either
-// clusterctlv1.LeaderHint or configv1.LeaderHint), it re-dials the
-// hinted admin endpoint (reusing opts.Creds) and retries. Bounded at
-// maxHops to break loops in degraded clusters where the hint cycles
-// between non-leaders. Returns the last RPC error when hops are
+// connect.CodeUnavailable carrying an adminv1.LeaderHint detail, it
+// re-dials the hinted admin endpoint (reusing opts.Creds) and retries.
+// Bounded at maxHops to break loops in degraded clusters where the hint
+// cycles between non-leaders. Returns the last RPC error when hops are
 // exhausted or when the error is non-Unavailable / lacks a hint.
 //
 // fn receives the full *Client wrapper so callers can pick the right
-// typed sub-client (cli.Cluster.AddNode, cli.Config.UpsertSecret, …).
+// typed sub-client (cli.Admin.AddNode, cli.Admin.UpsertSecret, …).
 //
 // Used by:
 //   - the joiner's callSelfJoin path in pkg/reflw/run.go (initial dial
@@ -69,19 +67,15 @@ func CallWithLeaderRedirect(
 }
 
 // extractLeaderHint walks the Connect error's protobuf details for the
-// first LeaderHint (either ClusterCtl's or Config's flavor — same
-// shape, different proto-package URL). Returns the admin_endpoint, or
-// "" when no hint is present.
+// first adminv1.LeaderHint. Returns the admin_endpoint, or "" when no
+// hint is present.
 func extractLeaderHint(cerr *connect.Error) string {
 	for _, d := range cerr.Details() {
 		v, err := d.Value()
 		if err != nil {
 			continue
 		}
-		if h, ok := v.(*clusterctlv1.LeaderHint); ok {
-			return h.GetAdminEndpoint()
-		}
-		if h, ok := v.(*configv1.LeaderHint); ok {
+		if h, ok := v.(*adminv1.LeaderHint); ok {
 			return h.GetAdminEndpoint()
 		}
 	}

@@ -17,7 +17,7 @@ import (
 
 	"github.com/twinfer/reflw/pkg/reflw/creds"
 	"github.com/twinfer/reflw/pkg/reflwclient"
-	configv1 "github.com/twinfer/reflw/proto/configv1"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
 )
 
 // loadhandlerInternalPort is the port cmd/loadhandler binds inside its
@@ -144,7 +144,7 @@ func registerOnce(ctx context.Context, adminURL, deploymentURL string, opCreds c
 	defer cli.Close()
 	rctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	_, err = cli.Config.RegisterDeployment(rctx, connect.NewRequest(&configv1.RegisterDeploymentRequest{
+	_, err = cli.Admin.RegisterDeployment(rctx, connect.NewRequest(&adminv1.RegisterDeploymentRequest{
 		Url: deploymentURL,
 	}))
 	return err

@@ -40,7 +40,7 @@ import (
 const loadgenPebbleCacheBytes int64 = 32 << 20 // 32 MiB
 
 // PartitionInfo summarizes one shard's leadership state from a single
-// node's point of view. Mirrors clusterctlv1.PartitionLeadership but lives
+// node's point of view. Mirrors apiv1.PartitionLeadershipView but lives
 // in the loadgen package so callers don't need to import the proto for
 // the bring-up await loop.
 type PartitionInfo struct {

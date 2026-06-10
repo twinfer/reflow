@@ -11,7 +11,7 @@ import (
 	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflw/pkg/reflwclient"
-	configv1 "github.com/twinfer/reflw/proto/configv1"
+	adminv1 "github.com/twinfer/reflw/proto/adminv1"
 )
 
 // cmdListDeployments invokes Config/ListDeployments and prints the
@@ -26,7 +26,7 @@ func cmdListDeployments(ctx context.Context, args []string) error {
 		return err
 	}
 	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
-		resp, err := cli.Config.ListDeployments(ctx, connect.NewRequest(&configv1.ListDeploymentsRequest{}))
+		resp, err := cli.Admin.ListDeployments(ctx, connect.NewRequest(&adminv1.ListDeploymentsRequest{}))
 		if err != nil {
 			return err
 		}
@@ -54,7 +54,7 @@ func cmdDescribeDeployment(ctx context.Context, args []string) error {
 		return errors.New("--id is required")
 	}
 	return tls.withClient(ctx, func(cli *reflwclient.Client) error {
-		resp, err := cli.Config.DescribeDeployment(ctx, connect.NewRequest(&configv1.DescribeDeploymentRequest{
+		resp, err := cli.Admin.DescribeDeployment(ctx, connect.NewRequest(&adminv1.DescribeDeploymentRequest{
 			DeploymentId: *id,
 		}))
 		if err != nil {
@@ -89,11 +89,11 @@ func cmdDeleteDeployment(ctx context.Context, args []string) error {
 		return errors.New("--force is required (delete may break in-flight invocations)")
 	}
 	return tls.withLeaderRedirect(ctx, func(rctx context.Context, cli *reflwclient.Client) error {
-		list, err := cli.Config.ListDeployments(rctx, connect.NewRequest(&configv1.ListDeploymentsRequest{}))
+		list, err := cli.Admin.ListDeployments(rctx, connect.NewRequest(&adminv1.ListDeploymentsRequest{}))
 		if err != nil {
 			return fmt.Errorf("read revision: %w", err)
 		}
-		resp, err := cli.Config.DeleteDeployment(rctx, connect.NewRequest(&configv1.DeleteDeploymentRequest{
+		resp, err := cli.Admin.DeleteDeployment(rctx, connect.NewRequest(&adminv1.DeleteDeploymentRequest{
 			DeploymentId:      *id,
 			Force:             true,
 			IfTableRevisionEq: list.Msg.GetTableRevision(),

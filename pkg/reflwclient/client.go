@@ -1,14 +1,12 @@
 // Package reflwclient is the Connect-based admin-port client shared
 // by the `reflwd cluster` / `reflwd config` CLIs, the SelfJoin path
 // in pkg/reflw/run.go, and integration tests. Thin wrapper over the
-// generated clusterctlv1connect.ClusterCtlClient and
-// configv1connect.ConfigClient with credential handling + connection
-// cleanup.
+// generated adminv1connect.AdminClient with credential handling +
+// connection cleanup.
 //
-// Both services live on the same admin listener today, so one Dial
-// yields one transport hosting both typed sub-clients. A future split
-// onto separate ports would change DialOptions but not the Client
-// shape — the Cluster + Config fields are stable.
+// The merged Admin service and Ingress live on separate listeners — a
+// Client built against an admin Addr can't reach Ingress and vice
+// versa, so dial the listener matching the RPC you intend to call.
 package reflwclient
 
 import (
@@ -21,8 +19,7 @@ import (
 	"strings"
 
 	"github.com/twinfer/reflw/pkg/reflw/creds"
-	"github.com/twinfer/reflw/proto/clusterctlv1/clusterctlv1connect"
-	"github.com/twinfer/reflw/proto/configv1/configv1connect"
+	"github.com/twinfer/reflw/proto/adminv1/adminv1connect"
 	"github.com/twinfer/reflw/proto/ingressv1/ingressv1connect"
 )
 
@@ -40,13 +37,12 @@ type DialOptions struct {
 }
 
 // Client wraps the typed sub-clients over a single HTTP/2 transport plus
-// credential lifecycle. Cluster + Config live on the admin listener;
-// Ingress lives on the separate ingress listener — a Client built against
-// an admin Addr can't reach Ingress and vice versa, so dial the listener
-// matching the RPC you intend to call.
+// credential lifecycle. Admin lives on the admin listener; Ingress lives on
+// the separate ingress listener — a Client built against an admin Addr can't
+// reach Ingress and vice versa, so dial the listener matching the RPC you
+// intend to call.
 type Client struct {
-	Cluster clusterctlv1connect.ClusterCtlClient
-	Config  configv1connect.ConfigClient
+	Admin   adminv1connect.AdminClient
 	Ingress ingressv1connect.IngressClient
 
 	addr    string
@@ -77,8 +73,7 @@ func Dial(_ context.Context, opts DialOptions) (*Client, error) {
 		hc := &http.Client{Transport: tr}
 		trimmed := strings.TrimRight(baseURL, "/")
 		return &Client{
-			Cluster: clusterctlv1connect.NewClusterCtlClient(hc, trimmed),
-			Config:  configv1connect.NewConfigClient(hc, trimmed),
+			Admin:   adminv1connect.NewAdminClient(hc, trimmed),
 			Ingress: ingressv1connect.NewIngressClient(hc, trimmed),
 			addr:    opts.Addr,
 			baseURL: baseURL,
@@ -108,8 +103,7 @@ func Dial(_ context.Context, opts DialOptions) (*Client, error) {
 	hc := &http.Client{Transport: tr}
 	trimmed := strings.TrimRight(baseURL, "/")
 	return &Client{
-		Cluster: clusterctlv1connect.NewClusterCtlClient(hc, trimmed),
-		Config:  configv1connect.NewConfigClient(hc, trimmed),
+		Admin:   adminv1connect.NewAdminClient(hc, trimmed),
 		Ingress: ingressv1connect.NewIngressClient(hc, trimmed),
 		addr:    opts.Addr,
 		baseURL: baseURL,

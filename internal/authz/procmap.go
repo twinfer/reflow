@@ -44,9 +44,7 @@ type procEntry struct {
 // RPC fails tests until it is classified into a plane — no silent authz gap.
 var procMap = map[string]procEntry{
 	// ----- Ingress: data plane -----
-	// SubmitInvocation has no RPC procedure (it moved to the REST facade
-	// POST /v1/…); its Cedar action still exists and the REST kernel
-	// authorizes against it via Interceptor.AuthorizeIngressAction.
+	ingressv1connect.IngressSubmitInvocationProcedure:          {"SubmitInvocation", []string{groupIngress}},
 	ingressv1connect.IngressAwaitInvocationProcedure:           {"AwaitInvocation", []string{groupIngress}},
 	ingressv1connect.IngressAttachInvocationProcedure:          {"AttachInvocation", []string{groupIngress}},
 	ingressv1connect.IngressGetInvocationOutputProcedure:       {"GetInvocationOutput", []string{groupIngress}},
@@ -63,6 +61,8 @@ var procMap = map[string]procEntry{
 	ingressv1connect.IngressListProcessInstancesProcedure:      {"ListProcessInstances", []string{groupIngress}},
 	ingressv1connect.IngressGetProcessInstanceHistoryProcedure: {"GetProcessInstanceHistory", []string{groupIngress}},
 	ingressv1connect.IngressResolveProcessIncidentProcedure:    {"ResolveProcessIncident", []string{groupIngress}},
+	ingressv1connect.IngressGetTaskProcedure:                   {"GetTask", []string{groupIngress}},
+	ingressv1connect.IngressCompleteTaskProcedure:              {"CompleteTask", []string{groupIngress}},
 
 	// ----- Ingress: operator-only maintenance (no open plane) -----
 	// PurgeInvocation permanently deletes a Completed invocation's durable

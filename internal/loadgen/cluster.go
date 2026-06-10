@@ -21,12 +21,14 @@ import (
 
 	"github.com/cockroachdb/pebble/v2"
 
+	"github.com/twinfer/reflw/internal/apimap"
 	"github.com/twinfer/reflw/internal/engine"
 	"github.com/twinfer/reflw/internal/engine/cluster"
 	"github.com/twinfer/reflw/internal/engine/delivery"
 	"github.com/twinfer/reflw/internal/engine/rebalance"
 	"github.com/twinfer/reflw/internal/engine/routing"
 	"github.com/twinfer/reflw/internal/storage"
+	apiv1 "github.com/twinfer/reflw/proto/apiv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
@@ -68,7 +70,7 @@ type Node interface {
 	// DescribeInvocation returns the current status of an invocation by
 	// id. Returns (nil, nil) if the invocation is not yet visible — the
 	// poller treats that as "still pending."
-	DescribeInvocation(ctx context.Context, id *enginev1.InvocationId) (*enginev1.InvocationStatus, error)
+	DescribeInvocation(ctx context.Context, id *enginev1.InvocationId) (*apiv1.InvocationStatusView, error)
 
 	// ListPartitions returns leadership state for every partition shard
 	// hosted by this node. Used by the bring-up leader-await loop and by
@@ -142,13 +144,19 @@ func (n *InProcessNode) SubmitInvocation(ctx context.Context, service, handler, 
 
 // DescribeInvocation looks up the invocation's current status via the
 // host's SyncRead path.
-func (n *InProcessNode) DescribeInvocation(ctx context.Context, id *enginev1.InvocationId) (*enginev1.InvocationStatus, error) {
+func (n *InProcessNode) DescribeInvocation(ctx context.Context, id *enginev1.InvocationId) (*apiv1.InvocationStatusView, error) {
 	pk := id.GetPartitionKey()
 	if pk == 0 {
 		return nil, fmt.Errorf("loadgen: invocation id has no partition_key")
 	}
 	shardID := n.Host.Partitioner().ShardForKey(pk)
-	return n.Host.LookupInvocationStatus(ctx, shardID, id)
+	st, err := n.Host.LookupInvocationStatus(ctx, shardID, id)
+	if err != nil {
+		return nil, err
+	}
+	// Match the ingress RPC path the ContainerNode helper uses (apiv1 view), so
+	// the Node interface is uniform across in-proc and containerized harnesses.
+	return apimap.InvocationStatusView(st), nil
 }
 
 // ListPartitions returns leadership state for every partition shard

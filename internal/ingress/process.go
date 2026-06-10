@@ -13,9 +13,11 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
 
+	"github.com/twinfer/reflw/internal/apimap"
 	"github.com/twinfer/reflw/internal/engine"
 	"github.com/twinfer/reflw/internal/engine/routing"
 	"github.com/twinfer/reflw/internal/storage/keys"
+	apiv1 "github.com/twinfer/reflw/proto/apiv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
@@ -43,7 +45,7 @@ type StartProcessArgs struct {
 // StartProcess RPC; errors are connect.Errors.
 func (s *Server) StartProcessCore(ctx context.Context, a StartProcessArgs) (uint64, string, error) {
 	if a.Name == "" {
-		return 0, "", connect.NewError(connect.CodeInvalidArgument, errors.New("model_ref.name is required"))
+		return 0, "", connect.NewError(connect.CodeInvalidArgument, errors.New("name is required"))
 	}
 	kind, err := processKindFromString(a.Kind)
 	if err != nil {
@@ -90,11 +92,10 @@ func (s *Server) StartProcessCore(ctx context.Context, a StartProcessArgs) (uint
 // StartProcess is the Connect RPC shell over StartProcessCore.
 func (s *Server) StartProcess(ctx context.Context, req *connect.Request[ingressv1.StartProcessRequest]) (*connect.Response[ingressv1.StartProcessResponse], error) {
 	msg := req.Msg
-	mr := msg.GetModelRef()
 	pk, instanceKey, err := s.StartProcessCore(ctx, StartProcessArgs{
-		Name:        mr.GetName(),
-		Kind:        mr.GetKind(),
-		Version:     mr.GetVersion(),
+		Name:        msg.GetName(),
+		Kind:        msg.GetKind(),
+		Version:     msg.GetVersion(),
 		InstanceKey: msg.GetInstanceKey(),
 		Vars:        msg.GetVars(),
 	})
@@ -166,7 +167,7 @@ type DeliverProcessEventArgs struct {
 // errors are connect.Errors. The non-RPC core extracted from the RPC shell.
 func (s *Server) DeliverProcessEventCore(ctx context.Context, a DeliverProcessEventArgs) (uint64, error) {
 	if a.Name == "" {
-		return 0, connect.NewError(connect.CodeInvalidArgument, errors.New("model_ref.name is required"))
+		return 0, connect.NewError(connect.CodeInvalidArgument, errors.New("name is required"))
 	}
 	if a.InstanceKey == "" {
 		return 0, connect.NewError(connect.CodeInvalidArgument, errors.New("instance_key is required"))
@@ -208,27 +209,13 @@ func (s *Server) DeliverProcessEventCore(ctx context.Context, a DeliverProcessEv
 	return pk, nil
 }
 
-// DeliverProcessEvent is the Connect RPC shell over DeliverProcessEventCore. When
-// resume_token is set it instead routes through CompleteTaskCore (the typed
-// resume-token consume path): event_kind is the action ("fail" → fail, else
-// complete) and payload is the output vars (or, when failing, the failure message).
+// DeliverProcessEvent is the Connect RPC shell over DeliverProcessEventCore — the
+// point-to-point typed-event path. Completing a parked user/human task by its
+// resume token is CompleteTask's job, not this RPC's.
 func (s *Server) DeliverProcessEvent(ctx context.Context, req *connect.Request[ingressv1.DeliverProcessEventRequest]) (*connect.Response[ingressv1.DeliverProcessEventResponse], error) {
 	msg := req.Msg
-	if tok := msg.GetResumeToken(); tok != "" {
-		args := CompleteTaskArgs{ResumeToken: tok, Fail: msg.GetEventKind() == "fail"}
-		if args.Fail {
-			args.FailureMessage = string(msg.GetPayload())
-		} else {
-			args.Output = msg.GetPayload()
-		}
-		pk, err := s.CompleteTaskCore(ctx, args)
-		if err != nil {
-			return nil, err
-		}
-		return connect.NewResponse(&ingressv1.DeliverProcessEventResponse{Pk: pk, Accepted: true}), nil
-	}
 	pk, err := s.DeliverProcessEventCore(ctx, DeliverProcessEventArgs{
-		Name:        msg.GetModelRef().GetName(),
+		Name:        msg.GetName(),
 		InstanceKey: msg.GetInstanceKey(),
 		EventKind:   msg.GetEventKind(),
 		Payload:     msg.GetPayload(),
@@ -237,6 +224,32 @@ func (s *Server) DeliverProcessEvent(ctx context.Context, req *connect.Request[i
 		return nil, err
 	}
 	return connect.NewResponse(&ingressv1.DeliverProcessEventResponse{Pk: pk, Accepted: true}), nil
+}
+
+// CompleteTask is the Connect RPC shell over CompleteTaskCore (the resume-token
+// consume path — complete or fail a parked BPMN user task / CMMN human task).
+func (s *Server) CompleteTask(ctx context.Context, req *connect.Request[ingressv1.CompleteTaskRequest]) (*connect.Response[ingressv1.CompleteTaskResponse], error) {
+	msg := req.Msg
+	pk, err := s.CompleteTaskCore(ctx, CompleteTaskArgs{
+		ResumeToken:    msg.GetResumeToken(),
+		Output:         msg.GetOutput(),
+		Fail:           msg.GetFail(),
+		FailureMessage: msg.GetFailureMessage(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&ingressv1.CompleteTaskResponse{Pk: pk, Accepted: true}), nil
+}
+
+// GetTask is the Connect RPC shell over GetTaskCore (the resume-token discovery
+// read — resolve a live token to its parked task descriptor + submission schema).
+func (s *Server) GetTask(ctx context.Context, req *connect.Request[ingressv1.GetTaskRequest]) (*connect.Response[ingressv1.GetTaskResponse], error) {
+	resp, err := s.GetTaskCore(ctx, req.Msg.GetResumeToken())
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
 }
 
 // CompleteTaskArgs is the transport-agnostic input to CompleteTaskCore — shared by
@@ -452,15 +465,16 @@ func encodeExternalEventEnvelope(kind string, payload []byte) ([]byte, error) {
 // instance RUNNING and is dropped).
 func (s *Server) ResolveProcessIncident(ctx context.Context, req *connect.Request[ingressv1.ResolveProcessIncidentRequest]) (*connect.Response[ingressv1.ResolveProcessIncidentResponse], error) {
 	msg := req.Msg
-	name := msg.GetModelRef().GetName()
+	name := msg.GetName()
 	if name == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("model_ref.name is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("name is required"))
 	}
 	if msg.GetInstanceKey() == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("instance_key is required"))
 	}
+	resolution := apimap.IncidentResolutionToEngine(msg.GetResolution())
 	retry := false
-	switch msg.GetResolution() {
+	switch resolution {
 	case enginev1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_TERMINATE:
 		// supported
 	case enginev1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_RETRY:
@@ -500,7 +514,7 @@ func (s *Server) ResolveProcessIncident(ctx context.Context, req *connect.Reques
 		Pk:          pk,
 		Service:     name,
 		InstanceKey: msg.GetInstanceKey(),
-		Resolution:  msg.GetResolution(),
+		Resolution:  resolution,
 		VarPatch:    msg.GetVarPatch(),
 	}}}
 	nonce, err := mintNonce()
@@ -529,7 +543,7 @@ func (s *Server) ResolveProcessIncident(ctx context.Context, req *connect.Reques
 // RPC shell and the REST instance facade; errors are connect.Errors.
 func (s *Server) GetProcessInstanceCore(ctx context.Context, name, instanceKey string) (*ingressv1.GetProcessInstanceResponse, error) {
 	if name == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("model_ref.name is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("name is required"))
 	}
 	if instanceKey == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("instance_key is required"))
@@ -552,25 +566,22 @@ func (s *Server) GetProcessInstanceCore(ctx context.Context, name, instanceKey s
 	}
 	resp := &ingressv1.GetProcessInstanceResponse{Present: r.Present}
 	if r.Present {
-		resp.Status = r.Record.GetStatus()
-		resp.Kind = r.Record.GetKind()
-		resp.ActiveSeq = r.Record.GetActiveSeq()
-		resp.NextSeq = r.Record.GetNextSeq()
-		resp.Outstanding = r.Record.GetOutstanding()
-		resp.Output = r.Record.GetOutput()
-		resp.CreatedAtMs = r.Record.GetCreatedAtMs()
-		resp.EndedAtMs = r.Record.GetEndedAtMs()
-		resp.Incident = r.Record.GetIncident() // set iff status == INCIDENT
+		view := apimap.ProcessInstanceView(r.Record, name, instanceKey)
+		// apimap leaves awaiting_tasks unset (minting resume tokens needs the
+		// storage-keys codec it deliberately doesn't import). Gate on RUNNING so a
+		// stale set on an incident-parked / terminal record doesn't leak as live
+		// resume points.
 		if r.Record.GetStatus() == enginev1.ProcessStatus_PROCESS_STATUS_RUNNING {
-			resp.AwaitingTasks = awaitingTaskInfos(pk, name, instanceKey, r.Record.GetAwaiting())
+			view.AwaitingTasks = awaitingTaskInfos(pk, name, instanceKey, r.Record.GetAwaiting())
 		}
+		resp.Instance = view
 	}
 	return resp, nil
 }
 
 // GetProcessInstance is the Connect RPC shell over GetProcessInstanceCore.
 func (s *Server) GetProcessInstance(ctx context.Context, req *connect.Request[ingressv1.GetProcessInstanceRequest]) (*connect.Response[ingressv1.GetProcessInstanceResponse], error) {
-	resp, err := s.GetProcessInstanceCore(ctx, req.Msg.GetModelRef().GetName(), req.Msg.GetInstanceKey())
+	resp, err := s.GetProcessInstanceCore(ctx, req.Msg.GetName(), req.Msg.GetInstanceKey())
 	if err != nil {
 		return nil, err
 	}
@@ -582,17 +593,17 @@ func (s *Server) GetProcessInstance(ctx context.Context, req *connect.Request[in
 // by token alone (POST /v1/tasks/{token}) without naming the inner element. A task
 // whose fields overflow the token codec's u16 ceiling is skipped (unreachable for
 // real model names / instance keys / node ids) rather than failing the read.
-func awaitingTaskInfos(pk uint64, name, instanceKey string, awaiting []*enginev1.AwaitingTask) []*ingressv1.AwaitingTaskInfo {
+func awaitingTaskInfos(pk uint64, name, instanceKey string, awaiting []*enginev1.AwaitingTask) []*apiv1.AwaitingTaskView {
 	if len(awaiting) == 0 {
 		return nil
 	}
-	out := make([]*ingressv1.AwaitingTaskInfo, 0, len(awaiting))
+	out := make([]*apiv1.AwaitingTaskView, 0, len(awaiting))
 	for _, aw := range awaiting {
 		tok, err := keys.MintResumeToken(pk, name, instanceKey, aw.GetNodeId())
 		if err != nil {
 			continue
 		}
-		out = append(out, &ingressv1.AwaitingTaskInfo{
+		out = append(out, &apiv1.AwaitingTaskView{
 			NodeId:      aw.GetNodeId(),
 			Name:        aw.GetName(),
 			ResumeToken: tok,
@@ -611,13 +622,13 @@ func (s *Server) ListProcessInstances(ctx context.Context, req *connect.Request[
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	limit := clampListLimit(int(msg.GetLimit()))
-	var out []*ingressv1.ProcessInstanceSummary
+	var out []*apiv1.ProcessInstanceView
 	var nextToken string
 	ferr := s.fanOut(ctx, cur,
 		func(shard uint64, after []byte) any {
 			return engine.LookupProcessInstances{
-				Service:         msg.GetModelRef().GetName(),
-				StatusFilter:    msg.GetStatusFilter(),
+				Service:         msg.GetName(),
+				StatusFilter:    apimap.ProcessStatusesToEngine(msg.GetStatusFilter()),
 				CreatedAfterMs:  msg.GetCreatedAfterMs(),
 				CreatedBeforeMs: msg.GetCreatedBeforeMs(),
 				After:           after,
@@ -630,17 +641,7 @@ func (s *Server) ListProcessInstances(ctx context.Context, req *connect.Request[
 				return false, fmt.Errorf("unexpected result type %T", res)
 			}
 			for _, si := range r.Instances {
-				out = append(out, &ingressv1.ProcessInstanceSummary{
-					Service:     si.Service,
-					InstanceKey: si.InstanceKey,
-					Status:      si.Record.GetStatus(),
-					Kind:        si.Record.GetKind(),
-					ActiveSeq:   si.Record.GetActiveSeq(),
-					NextSeq:     si.Record.GetNextSeq(),
-					Outstanding: si.Record.GetOutstanding(),
-					CreatedAtMs: si.Record.GetCreatedAtMs(),
-					EndedAtMs:   si.Record.GetEndedAtMs(),
-				})
+				out = append(out, apimap.ProcessInstanceView(si.Record, si.Service, si.InstanceKey))
 				if len(out) >= limit {
 					lp := keys.LPFromPartitionKey(routing.PartitionKey(si.Service, si.InstanceKey))
 					nextToken = encodePageToken(shard, keys.ProcessInstanceKey(lp, si.Service, si.InstanceKey))
@@ -664,7 +665,7 @@ func (s *Server) ListProcessInstances(ctx context.Context, req *connect.Request[
 // by the RPC shell and the REST history facade; errors are connect.Errors.
 func (s *Server) GetProcessInstanceHistoryCore(ctx context.Context, name, instanceKey string, afterSeq uint64, limit int) (bool, []*enginev1.ProcessHistoryEvent, uint64, error) {
 	if name == "" {
-		return false, nil, 0, connect.NewError(connect.CodeInvalidArgument, errors.New("model_ref.name is required"))
+		return false, nil, 0, connect.NewError(connect.CodeInvalidArgument, errors.New("name is required"))
 	}
 	if instanceKey == "" {
 		return false, nil, 0, connect.NewError(connect.CodeInvalidArgument, errors.New("instance_key is required"))
@@ -700,13 +701,13 @@ func (s *Server) GetProcessInstanceHistoryCore(ctx context.Context, name, instan
 func (s *Server) GetProcessInstanceHistory(ctx context.Context, req *connect.Request[ingressv1.GetProcessInstanceHistoryRequest]) (*connect.Response[ingressv1.GetProcessInstanceHistoryResponse], error) {
 	msg := req.Msg
 	present, events, nextAfterSeq, err := s.GetProcessInstanceHistoryCore(
-		ctx, msg.GetModelRef().GetName(), msg.GetInstanceKey(), msg.GetAfterSeq(), int(msg.GetLimit()))
+		ctx, msg.GetName(), msg.GetInstanceKey(), msg.GetAfterSeq(), int(msg.GetLimit()))
 	if err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(&ingressv1.GetProcessInstanceHistoryResponse{
 		Present:      present,
-		Events:       events,
+		Events:       apimap.ProcessHistoryEventViews(events),
 		NextAfterSeq: nextAfterSeq,
 	}), nil
 }

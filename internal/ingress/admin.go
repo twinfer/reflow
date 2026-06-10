@@ -7,7 +7,9 @@ import (
 
 	connect "connectrpc.com/connect"
 
+	"github.com/twinfer/reflw/internal/apimap"
 	"github.com/twinfer/reflw/internal/engine"
+	apiv1 "github.com/twinfer/reflw/proto/apiv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
@@ -16,7 +18,7 @@ import (
 // without blocking on completion.
 func (s *Server) DescribeInvocation(ctx context.Context, req *connect.Request[ingressv1.DescribeInvocationRequest]) (*connect.Response[ingressv1.DescribeInvocationResponse], error) {
 	msg := req.Msg
-	id, err := resolveID(msg.GetInvocationId(), msg.GetInvocationIdProto())
+	id, err := resolveID(msg.GetInvocationId())
 	if err != nil {
 		return nil, err
 	}
@@ -28,13 +30,13 @@ func (s *Server) DescribeInvocation(ctx context.Context, req *connect.Request[in
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup invocation: %w", err))
 	}
-	if st == nil {
-		// Treat as Free — invocation never seen.
-		return connect.NewResponse(&ingressv1.DescribeInvocationResponse{Status: &enginev1.InvocationStatus{
-			Status: &enginev1.InvocationStatus_Free{Free: &enginev1.Free{}},
-		}}), nil
+	// st == nil → never seen; apimap maps nil to nil, so surface an explicit
+	// UNSPECIFIED-state view (the view's "Free" equivalent) so the field is set.
+	view := apimap.InvocationStatusView(st)
+	if view == nil {
+		view = &apiv1.InvocationStatusView{State: apiv1.InvocationState_INVOCATION_STATE_UNSPECIFIED}
 	}
-	return connect.NewResponse(&ingressv1.DescribeInvocationResponse{Status: st}), nil
+	return connect.NewResponse(&ingressv1.DescribeInvocationResponse{Status: view}), nil
 }
 
 // GetObjectState reads a single state row for a virtual object. Routes

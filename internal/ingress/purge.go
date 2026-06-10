@@ -26,9 +26,9 @@ import (
 // afterward (it reports UNKNOWN once the row is purged).
 func (s *Server) PurgeInvocation(ctx context.Context, req *connect.Request[ingressv1.PurgeInvocationRequest]) (*connect.Response[ingressv1.PurgeInvocationResponse], error) {
 	msg := req.Msg
-	id, err := resolveID(msg.GetInvocationId(), msg.GetInvocationIdProto())
+	id, err := resolveID(msg.GetInvocationId())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, err
 	}
 
 	shardID := s.host.Partitioner().ShardForKey(id.GetPartitionKey())

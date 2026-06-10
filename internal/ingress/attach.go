@@ -17,7 +17,7 @@ import (
 // submitted this id; give me its result".
 func (s *Server) AttachInvocation(ctx context.Context, req *connect.Request[ingressv1.AttachInvocationRequest]) (*connect.Response[ingressv1.AttachInvocationResponse], error) {
 	msg := req.Msg
-	id, err := resolveID(msg.GetInvocationId(), msg.GetInvocationIdProto())
+	id, err := resolveID(msg.GetInvocationId())
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func (s *Server) AttachInvocation(ctx context.Context, req *connect.Request[ingr
 // this node.
 func (s *Server) GetInvocationOutput(ctx context.Context, req *connect.Request[ingressv1.GetInvocationOutputRequest]) (*connect.Response[ingressv1.GetInvocationOutputResponse], error) {
 	msg := req.Msg
-	id, err := resolveID(msg.GetInvocationId(), msg.GetInvocationIdProto())
+	id, err := resolveID(msg.GetInvocationId())
 	if err != nil {
 		return nil, err
 	}

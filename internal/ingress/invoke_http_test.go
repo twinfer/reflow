@@ -17,6 +17,7 @@ import (
 	"github.com/twinfer/reflw/internal/ingress"
 	"github.com/twinfer/reflw/internal/storage/keys"
 	"github.com/twinfer/reflw/pkg/handler"
+	apiv1 "github.com/twinfer/reflw/proto/apiv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
@@ -365,8 +366,8 @@ func TestGetProcessHistoryHTTP_Success(t *testing.T) {
 	if !ok || len(evs) != 2 {
 		t.Fatalf("events = %v", body["events"])
 	}
-	if ev0 := evs[0].(map[string]any); ev0["kind"] != "PROCESS_HISTORY_STARTED" {
-		t.Fatalf("events[0].kind = %v, want PROCESS_HISTORY_STARTED", ev0["kind"])
+	if ev0 := evs[0].(map[string]any); ev0["kind"] != "PROCESS_HISTORY_KIND_STARTED" {
+		t.Fatalf("events[0].kind = %v, want PROCESS_HISTORY_KIND_STARTED", ev0["kind"])
 	}
 }
 
@@ -452,10 +453,12 @@ func TestGetProcessInstanceHTTP_Success(t *testing.T) {
 	}
 	rd := &fakeReader{instance: &ingressv1.GetProcessInstanceResponse{
 		Present: true,
-		Status:  enginev1.ProcessStatus_PROCESS_STATUS_RUNNING,
-		Kind:    enginev1.ProcessKind_PROCESS_KIND_BPMN,
-		AwaitingTasks: []*ingressv1.AwaitingTaskInfo{
-			{NodeId: "u", Name: "Approve", ResumeToken: tok},
+		Instance: &apiv1.ProcessInstanceView{
+			Status: apiv1.ProcessStatus_PROCESS_STATUS_RUNNING,
+			Kind:   apiv1.ProcessKind_PROCESS_KIND_BPMN,
+			AwaitingTasks: []*apiv1.AwaitingTaskView{
+				{NodeId: "u", Name: "Approve", ResumeToken: tok},
+			},
 		},
 	}}
 	authz := &fakeAuthorizer{}
@@ -471,12 +474,16 @@ func TestGetProcessInstanceHTTP_Success(t *testing.T) {
 		t.Fatalf("reader args = name=%q key=%q", rd.gotName, rd.gotKey)
 	}
 	body := decodeJSON(t, rec)
-	if body["present"] != true || body["status"] != "PROCESS_STATUS_RUNNING" {
-		t.Fatalf("body = %v (%q)", body, rec.Body.String())
+	if body["present"] != true {
+		t.Fatalf("present = %v, want true (%q)", body["present"], rec.Body.String())
 	}
-	tasks, ok := body["awaitingTasks"].([]any)
+	inst, ok := body["instance"].(map[string]any)
+	if !ok || inst["status"] != "PROCESS_STATUS_RUNNING" {
+		t.Fatalf("instance = %v (%q)", body["instance"], rec.Body.String())
+	}
+	tasks, ok := inst["awaitingTasks"].([]any)
 	if !ok || len(tasks) != 1 {
-		t.Fatalf("awaitingTasks = %v", body["awaitingTasks"])
+		t.Fatalf("awaitingTasks = %v", inst["awaitingTasks"])
 	}
 	t0 := tasks[0].(map[string]any)
 	if t0["nodeId"] != "u" || t0["name"] != "Approve" {

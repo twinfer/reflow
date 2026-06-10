@@ -23,6 +23,7 @@ import (
 	"github.com/twinfer/reflw/pkg/reflw/creds"
 	"github.com/twinfer/reflw/pkg/reflwclient"
 	adminv1 "github.com/twinfer/reflw/proto/adminv1"
+	apiv1 "github.com/twinfer/reflw/proto/apiv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
@@ -131,13 +132,13 @@ func (n *ContainerNode) SubmitInvocation(ctx context.Context, service, handler, 
 // DescribeInvocation queries the non-blocking ingress endpoint. On a
 // transient transport error it drops the cached client so the caller's
 // next poll redials fresh.
-func (n *ContainerNode) DescribeInvocation(ctx context.Context, id *enginev1.InvocationId) (*enginev1.InvocationStatus, error) {
+func (n *ContainerNode) DescribeInvocation(ctx context.Context, id *enginev1.InvocationId) (*apiv1.InvocationStatusView, error) {
 	cli, err := n.ingress()
 	if err != nil {
 		return nil, err
 	}
 	resp, err := cli.DescribeInvocation(ctx, connect.NewRequest(&ingressv1.DescribeInvocationRequest{
-		InvocationIdProto: id,
+		InvocationId: ingress.FormatInvocationID(id),
 	}))
 	if err != nil {
 		if ingressRetryable(err) {

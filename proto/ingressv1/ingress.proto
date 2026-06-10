@@ -1,57 +1,91 @@
 // Reflw ingress service.
 //
 // Exposes the user-facing entrypoints for submitting invocations, awaiting
-// their results, and resolving awakeables. Served over Connect (HTTP/2)
-// with content-negotiated Connect / gRPC / gRPC-Web / HTTP-JSON; clients
-// pick a wire encoding by setting Content-Type. The default reflwd
-// config is single-partition (shard 1) but ingress is partition-agnostic
-// and routes via Host.Partitioner.
+// their results, resolving awakeables, and the process plane. Served over
+// Connect (HTTP/2) with content-negotiated Connect / gRPC / gRPC-Web /
+// HTTP-JSON; clients pick a wire encoding by setting Content-Type.
+//
+// Responses speak the reflw.api.v1 view vocabulary (apiv1), never enginev1 —
+// the Raft/on-disk format stays out of the public SDK and the browser bundle.
+// Each RPC also carries a google.api.http annotation: one definition yields
+// the Connect RPC, a REST/JSON route (transcoded by connectrpc.com/vanguard),
+// and an OpenAPI operation. REST paths are rooted at a literal first segment
+// (/v1/invocations, /v1/state, /v1/awakeables, /v1/promises, /v1/processes,
+// /v1/messages, /v1/tasks) so the transcoder has zero ambiguous routes.
 syntax = "proto3";
 
 package reflw.ingress.v1;
 
-import "enginev1/engine.proto";
+import "apiv1/api.proto";
+import "google/api/annotations.proto";
 import "google/protobuf/struct.proto";
 
 option go_package = "github.com/twinfer/reflw/proto/ingressv1;ingressv1";
 
 service Ingress {
-  // Submitting an invocation is done over the REST data-plane facade
-  // (POST /v1/{service}[/{object_key}]/{handler}), not an RPC — see
-  // internal/ingress/invoke_http.go. The RPCs below are by-invocation-id
-  // reads/awaits plus the process plane.
+  // SubmitInvocation mints an invocation for (service, handler[, object_key])
+  // and, in AWAIT mode (the default), blocks for its result; in SEND mode it
+  // returns the minted id immediately. service/handler/object_key ride the
+  // body (not the path) so the transcoder has no wildcard route. Caller
+  // metadata flows via the metadata map and/or Reflw-Meta-* request headers.
+  rpc SubmitInvocation(SubmitInvocationRequest) returns (SubmitInvocationResponse) {
+    option (google.api.http) = {
+      post: "/v1/invocations"
+      body: "*"
+    };
+  }
 
   // AwaitInvocation blocks (up to deadline) until the named invocation
   // reaches Completed and returns its output. Server-side polling of
   // SyncRead today; SSE/streaming is a future evolution.
-  rpc AwaitInvocation(AwaitInvocationRequest) returns (AwaitInvocationResponse);
+  rpc AwaitInvocation(AwaitInvocationRequest) returns (AwaitInvocationResponse) {
+    option (google.api.http) = {
+      post: "/v1/invocations/{invocation_id}/await"
+      body: "*"
+    };
+  }
 
   // ResolveAwakeable completes an outstanding awakeable previously
   // created by a handler via ctx.Awakeable(). Routes to the owning
   // partition by looking up the awakeable directory.
-  rpc ResolveAwakeable(ResolveAwakeableRequest) returns (ResolveAwakeableResponse);
+  rpc ResolveAwakeable(ResolveAwakeableRequest) returns (ResolveAwakeableResponse) {
+    option (google.api.http) = {
+      post: "/v1/awakeables/{awakeable_id}"
+      body: "*"
+    };
+  }
 
   // DescribeInvocation returns the current status of an invocation
   // without blocking. Read-only debug endpoint.
-  rpc DescribeInvocation(DescribeInvocationRequest) returns (DescribeInvocationResponse);
+  rpc DescribeInvocation(DescribeInvocationRequest) returns (DescribeInvocationResponse) {
+    option (google.api.http) = {get: "/v1/invocations/{invocation_id}"};
+  }
 
   // AttachInvocation blocks (up to deadline) on an existing invocation
   // and returns its outcome once Completed. Same shape as
   // AwaitInvocation but explicit about attaching to an already-
   // submitted invocation by id.
-  rpc AttachInvocation(AttachInvocationRequest) returns (AttachInvocationResponse);
+  rpc AttachInvocation(AttachInvocationRequest) returns (AttachInvocationResponse) {
+    option (google.api.http) = {
+      post: "/v1/invocations/{invocation_id}/attach"
+      body: "*"
+    };
+  }
 
   // GetInvocationOutput is a non-blocking lookup of an invocation's
   // current outcome. Returns PENDING for still-running invocations,
   // COMPLETED_OK / COMPLETED_FAILED for terminated ones, UNKNOWN if no
   // such invocation is known to this node.
-  rpc GetInvocationOutput(GetInvocationOutputRequest) returns (GetInvocationOutputResponse);
+  rpc GetInvocationOutput(GetInvocationOutputRequest) returns (GetInvocationOutputResponse) {
+    option (google.api.http) = {get: "/v1/invocations/{invocation_id}/output"};
+  }
 
   // GetObjectState reads a single state value for a virtual object.
-  // Routes to the partition owning the object by hashing (service,
-  // object_key) through the cluster Partitioner. present=false (not an
-  // error) when the key is absent.
-  rpc GetObjectState(GetObjectStateRequest) returns (GetObjectStateResponse);
+  // Routes to the partition owning (service, object_key) through the
+  // cluster Partitioner. present=false (not an error) when the key is absent.
+  rpc GetObjectState(GetObjectStateRequest) returns (GetObjectStateResponse) {
+    option (google.api.http) = {get: "/v1/state"};
+  }
 
   // CancelInvocation forces a running invocation to terminate with
   // FailureCode=9002 (cancelled). Implemented as a __cancel__ signal
@@ -59,7 +93,12 @@ service Ingress {
   // resolves the active InvocationId via KeyLeaseTable and synthesizes
   // a terminal Completed. Idempotent: cancelling an already-completed
   // invocation is a no-op.
-  rpc CancelInvocation(CancelInvocationRequest) returns (CancelInvocationResponse);
+  rpc CancelInvocation(CancelInvocationRequest) returns (CancelInvocationResponse) {
+    option (google.api.http) = {
+      post: "/v1/invocations/{invocation_id}/cancel"
+      body: "*"
+    };
+  }
 
   // ResolveWorkflowPromise resolves or rejects a named workflow-scoped
   // durable promise. Routes by (service, workflow_key) via
@@ -67,7 +106,12 @@ service Ingress {
   // and wakes any in-flight Promise(name).Result() awaiter. Idempotent
   // against already-completed promises: succeeded=false signals
   // "promise already completed" without an error status.
-  rpc ResolveWorkflowPromise(ResolveWorkflowPromiseRequest) returns (ResolveWorkflowPromiseResponse);
+  rpc ResolveWorkflowPromise(ResolveWorkflowPromiseRequest) returns (ResolveWorkflowPromiseResponse) {
+    option (google.api.http) = {
+      post: "/v1/promises"
+      body: "*"
+    };
+  }
 
   // PurgeInvocation deletes a Completed invocation's durable rows (inv
   // status, journal, signal inbox/awaiter) immediately, instead of
@@ -75,20 +119,33 @@ service Ingress {
   // in the invocation id. Idempotent and no-op-safe: purging an absent or
   // not-yet-Completed invocation is accepted but changes nothing (the
   // apply arm requires a Completed/Free → Free transition). Does not touch
-  // virtual-object state or workflow promise rows.
-  rpc PurgeInvocation(PurgeInvocationRequest) returns (PurgeInvocationResponse);
+  // virtual-object state or workflow promise rows. Operator-only.
+  rpc PurgeInvocation(PurgeInvocationRequest) returns (PurgeInvocationResponse) {
+    option (google.api.http) = {
+      post: "/v1/invocations/{invocation_id}/purge"
+      body: "*"
+    };
+  }
 
   // ListInvocations lists invocations across the namespace, fanning out across
   // all partition shards (same substrate as ListProcessInstances). Optional
   // service-name and state filters; capped by limit. Read-only — no proposal.
-  rpc ListInvocations(ListInvocationsRequest) returns (ListInvocationsResponse);
+  rpc ListInvocations(ListInvocationsRequest) returns (ListInvocationsResponse) {
+    option (google.api.http) = {get: "/v1/invocations"};
+  }
 
-  // StartProcess launches a new reflwos BPMN/CMMN instance. Routes to the
-  // partition owning (model name, instance_key) and proposes a start
-  // ProcessEvent (model_ref + kind set). Idempotent per (model, instance_key):
-  // a start for an already-existing instance is dropped by the apply path. When
-  // instance_key is empty the server mints a random one (then not idempotent).
-  rpc StartProcess(StartProcessRequest) returns (StartProcessResponse);
+  // StartProcess launches a new reflwos BPMN/CMMN instance. kind ("bpmn" |
+  // "cmmn") selects the plane; routing is by (name, instance_key). Proposes a
+  // start ProcessEvent (model_ref + kind set). Idempotent per (model,
+  // instance_key): a start for an already-existing instance is dropped by the
+  // apply path. When instance_key is empty the server mints a random one (then
+  // not idempotent).
+  rpc StartProcess(StartProcessRequest) returns (StartProcessResponse) {
+    option (google.api.http) = {
+      post: "/v1/processes"
+      body: "*"
+    };
+  }
 
   // DeliverMessage correlates an inbound message/signal to parked process
   // instances. Routes to the partition owning (message_name,
@@ -96,65 +153,142 @@ service Ingress {
   // out to every instance subscribed on that (message_name, correlation_key).
   // An empty correlation_key addresses every instance waiting on the name (BPMN
   // signal broadcast). Messages with no current subscriber are dropped.
-  rpc DeliverMessage(DeliverMessageRequest) returns (DeliverMessageResponse);
+  rpc DeliverMessage(DeliverMessageRequest) returns (DeliverMessageResponse) {
+    option (google.api.http) = {
+      post: "/v1/messages"
+      body: "*"
+    };
+  }
 
   // DeliverProcessEvent injects an external typed engine event into a RUNNING
-  // instance addressed by (model_ref.name, instance_key) — the path a human or
-  // operator uses to complete a parked user/human task, fire a CMMN user-event
-  // listener, or push a variable update onto a parked conditional. Unlike
-  // DeliverMessage (correlated by message_name/correlation_key to whatever is
-  // subscribed), this is point-to-point: it proposes a continuation ProcessEvent
+  // instance addressed by (name, instance_key) — the path a human or operator
+  // uses to fire a CMMN user-event listener or push a variable update onto a
+  // parked conditional. Point-to-point: it proposes a continuation ProcessEvent
   // (no model_ref → the apply path appends to the named instance's inbox and
-  // advances one turn). An absent or terminal instance is a benign drop.
-  rpc DeliverProcessEvent(DeliverProcessEventRequest) returns (DeliverProcessEventResponse);
+  // advances one turn). An absent or terminal instance is a benign drop. To
+  // complete a parked user/human task by its resume token, use CompleteTask.
+  rpc DeliverProcessEvent(DeliverProcessEventRequest) returns (DeliverProcessEventResponse) {
+    option (google.api.http) = {
+      post: "/v1/processes/{name}/{instance_key}/events"
+      body: "*"
+    };
+  }
 
   // GetProcessInstance is a linearizable read of one instance's current state,
-  // routed by (model name, instance_key) like StartProcess. It exists
-  // so a caller without an await RPC can observe lifecycle: present=false means
-  // the instance never started OR already reached a terminal and was reaped
-  // (completion is immediate-reap, so a COMPLETED record never lingers);
-  // present=true with active_seq>0 means a turn is in flight; present=true with
-  // active_seq==0 means idle/parked on an external wait (a timer that will fire,
-  // or a message/signal subscription). Read-only — no proposal.
-  rpc GetProcessInstance(GetProcessInstanceRequest) returns (GetProcessInstanceResponse);
+  // routed by (name, instance_key) like StartProcess. present=false means the
+  // instance never started OR already reached a terminal and was reaped.
+  // Read-only — no proposal.
+  rpc GetProcessInstance(GetProcessInstanceRequest) returns (GetProcessInstanceResponse) {
+    option (google.api.http) = {get: "/v1/processes/{name}/{instance_key}"};
+  }
+
   // ListProcessInstances lists process instances across the namespace, fanning
   // out across all partition shards. Optional model-name and status filters;
   // capped by limit.
-  rpc ListProcessInstances(ListProcessInstancesRequest) returns (ListProcessInstancesResponse);
+  rpc ListProcessInstances(ListProcessInstancesRequest) returns (ListProcessInstancesResponse) {
+    option (google.api.http) = {get: "/v1/processes"};
+  }
 
   // GetProcessInstanceHistory reads one instance's append-only activity timeline
   // (start, inbound events, task dispatch/complete, timer arm/fire, child
   // start/complete, subscribe/unsubscribe, message received, terminal), routed by
-  // (model name, instance_key) like GetProcessInstance. Read-only — no
-  // proposal. The timeline is bounded live (keep-last-N) and survives a terminal
-  // only within the instance's retention window (historyTimeToLive); present=false
-  // means the instance never started or was reaped. Page forward with after_seq.
-  rpc GetProcessInstanceHistory(GetProcessInstanceHistoryRequest) returns (GetProcessInstanceHistoryResponse);
+  // (name, instance_key) like GetProcessInstance. Read-only — no proposal. The
+  // timeline survives a terminal only within the instance's retention window;
+  // present=false means the instance never started or was reaped. Page forward
+  // with after_seq.
+  rpc GetProcessInstanceHistory(GetProcessInstanceHistoryRequest) returns (GetProcessInstanceHistoryResponse) {
+    option (google.api.http) = {get: "/v1/processes/{name}/{instance_key}/history"};
+  }
 
   // ResolveProcessIncident resolves an incident-parked instance (one whose
   // status is PROCESS_STATUS_INCIDENT — an uncaught failure parked for human
   // intervention). RETRY re-drives the failed element as a new turn (optionally
   // patching variables first); TERMINATE fails the instance terminally. Routed by
-  // (model name, instance_key) like StartProcess. Idempotent: resolving a
-  // non-incident instance is accepted but changes nothing (accepted=false).
-  rpc ResolveProcessIncident(ResolveProcessIncidentRequest) returns (ResolveProcessIncidentResponse);
+  // (name, instance_key) like StartProcess. Idempotent: resolving a non-incident
+  // instance is accepted but changes nothing (accepted=false).
+  rpc ResolveProcessIncident(ResolveProcessIncidentRequest) returns (ResolveProcessIncidentResponse) {
+    option (google.api.http) = {
+      post: "/v1/processes/{name}/{instance_key}/incident"
+      body: "*"
+    };
+  }
+
+  // GetTask resolves an opaque resume token (from a GetProcessInstance
+  // awaiting_tasks entry) to the parked user/human task it addresses — the
+  // discovery (read) half of the resume-token surface. Returned only when the
+  // token is live (instance present, RUNNING, node_id still awaiting); a
+  // stale/consumed/forged token is FailedPrecondition. The schema field, when
+  // set, is the task's submission JSON Schema (model-derived, best-effort).
+  rpc GetTask(GetTaskRequest) returns (GetTaskResponse) {
+    option (google.api.http) = {get: "/v1/tasks/{resume_token}"};
+  }
+
+  // CompleteTask completes (or fails) a parked BPMN user task / CMMN human task
+  // by its opaque resume token — the consume half of the resume-token flow. The
+  // token carries (name, instance_key, node_id), so the caller names no element
+  // id; it supplies only the output vars (or, when fail=true, a failure message).
+  // A linearizable read gates it (the task must still be awaiting) else
+  // FailedPrecondition.
+  rpc CompleteTask(CompleteTaskRequest) returns (CompleteTaskResponse) {
+    option (google.api.http) = {
+      post: "/v1/tasks/{resume_token}"
+      body: "*"
+    };
+  }
+}
+
+message SubmitInvocationRequest {
+  // Mode selects await-by-default (block for the result) vs send (return the id
+  // immediately). MODE_UNSPECIFIED defaults to AWAIT.
+  enum Mode {
+    MODE_UNSPECIFIED = 0;
+    MODE_AWAIT = 1;
+    MODE_SEND = 2;
+  }
+  string service = 1;
+  string handler = 2;
+  // Virtual-object / workflow key; empty for plain services.
+  string object_key = 3;
+  // Handler input (JSON or arbitrary bytes; base64 on the JSON wire).
+  bytes input = 4;
+  // Optional idempotency key: a prior submit with the same
+  // (service, handler, object_key, idempotency_key) returns the existing id.
+  string idempotency_key = 5;
+  // Caller metadata, surfaced to the handler via ctx.Metadata(). Merged with
+  // any Reflw-Meta-* request headers.
+  map<string, string> metadata = 6;
+  Mode mode = 7;
+  // Await timeout in ms (AWAIT mode only). 0 → the server default clamp (60s cap).
+  uint32 timeout_ms = 8;
+}
+
+message SubmitInvocationResponse {
+  // The canonical "inv_<pk:16hex>_<uuid:32hex>" id of the (possibly pre-existing,
+  // on an idempotency hit) invocation.
+  string invocation_id = 1;
+  // completed is false in SEND mode and when an AWAIT outlived the server clamp
+  // (the caller then polls GetInvocationOutput / AwaitInvocation by id).
+  bool completed = 2;
+  bytes output = 3;
+  string failure_message = 4;
+  // failure_code mirrors the completed invocation's code (e.g. 9002 for
+  // cancellation) so callers distinguish typed failures from plain messages.
+  uint32 failure_code = 5;
 }
 
 message AwaitInvocationRequest {
-  // Either a stringified id (preferred) or the raw struct.
+  // The canonical "inv_…" id string.
   string invocation_id = 1;
-  reflw.engine.v1.InvocationId invocation_id_proto = 2;
   // Server-side timeout in milliseconds. Capped at 60_000 by the server.
-  uint32 timeout_ms = 3;
+  uint32 timeout_ms = 2;
 }
 
 message AwaitInvocationResponse {
   bytes output = 1;
   string failure_message = 2;
   bool completed = 3;
-  // failure_code mirrors InvocationStatus.Completed.failure_code so
-  // callers can distinguish typed failures (e.g. 9002 for cancellation)
-  // from plain string messages.
+  // failure_code mirrors the completed invocation's failure_code so callers can
+  // distinguish typed failures (e.g. 9002 for cancellation) from plain messages.
   uint32 failure_code = 4;
 }
 
@@ -173,20 +307,17 @@ message ResolveAwakeableResponse {
 
 message DescribeInvocationRequest {
   string invocation_id = 1;
-  reflw.engine.v1.InvocationId invocation_id_proto = 2;
 }
 
 message DescribeInvocationResponse {
-  reflw.engine.v1.InvocationStatus status = 1;
+  reflw.api.v1.InvocationStatusView status = 1;
 }
 
 message AttachInvocationRequest {
   string invocation_id = 1;
-  reflw.engine.v1.InvocationId invocation_id_proto = 2;
-  // Server-side timeout in milliseconds. 0 means use the
-  // default-deadline interceptor's bound (2s). Capped at 60_000 by the
-  // server.
-  uint32 timeout_ms = 3;
+  // Server-side timeout in milliseconds. 0 means use the default-deadline
+  // interceptor's bound (2s). Capped at 60_000 by the server.
+  uint32 timeout_ms = 2;
 }
 
 message AttachInvocationResponse {
@@ -198,7 +329,6 @@ message AttachInvocationResponse {
 
 message GetInvocationOutputRequest {
   string invocation_id = 1;
-  reflw.engine.v1.InvocationId invocation_id_proto = 2;
 }
 
 message GetObjectStateRequest {
@@ -229,9 +359,7 @@ message GetInvocationOutputResponse {
 }
 
 message CancelInvocationRequest {
-  // Either a stringified id (preferred) or the raw struct.
   string invocation_id = 1;
-  reflw.engine.v1.InvocationId invocation_id_proto = 2;
 }
 
 message CancelInvocationResponse {
@@ -243,9 +371,7 @@ message CancelInvocationResponse {
 }
 
 message PurgeInvocationRequest {
-  // Either a stringified id (preferred) or the raw struct.
   string invocation_id = 1;
-  reflw.engine.v1.InvocationId invocation_id_proto = 2;
 }
 
 message PurgeInvocationResponse {
@@ -255,13 +381,15 @@ message PurgeInvocationResponse {
 }
 
 message StartProcessRequest {
-  // model_ref.kind is "bpmn" or "cmmn"; model_ref.name is the routing service;
-  // model_ref.version pins the model snapshot the worker resolves.
-  reflw.engine.v1.ModelRef model_ref = 1;
+  // kind is "bpmn" or "cmmn"; name is the routing service; version pins the
+  // model snapshot the worker resolves (empty → latest).
+  string kind = 1;
+  string name = 2;
+  string version = 3;
   // Optional caller-chosen instance key. Empty → the server mints a random one.
-  string instance_key = 2;
+  string instance_key = 4;
   // Start variables: a JSON object merged into the new instance.
-  bytes vars = 3;
+  bytes vars = 5;
 }
 
 message StartProcessResponse {
@@ -288,30 +416,18 @@ message DeliverMessageResponse {
 }
 
 message DeliverProcessEventRequest {
-  // model_ref.name + instance_key select the routing partition; model_ref.kind /
-  // version are ignored (the running instance already carries its plane + model).
-  reflw.engine.v1.ModelRef model_ref = 1;
+  // name + instance_key select the running instance (its plane + model are
+  // already pinned on the record).
+  string name = 1;
   string instance_key = 2;
   // event_kind is the reflwos engine-event discriminator, matched to the
-  // instance's plane: BPMN (e.g. "UserTaskCompleted", "SignalReceived",
-  // "VariablesUpdated") or CMMN (e.g. "TaskCompleted", "UserEventOccurred"). The
-  // worker validates it against the instance's kind on apply; a mismatch fails
-  // the turn.
+  // instance's plane: BPMN (e.g. "SignalReceived", "VariablesUpdated") or CMMN
+  // (e.g. "UserEventOccurred"). The worker validates it against the instance's
+  // kind on apply; a mismatch fails the turn.
   string event_kind = 3;
-  // payload is the JSON-marshaled typed event body — e.g. for UserTaskCompleted,
-  // {"NodeID":"u","Outputs":{...}}. The server wraps (event_kind, payload) in the
-  // external-event envelope the worker's adapter decodes.
+  // payload is the JSON-marshaled typed event body. The server wraps
+  // (event_kind, payload) in the external-event envelope the worker decodes.
   bytes payload = 4;
-  // resume_token, when set, is the opaque "rpt_…" handle from a prior
-  // GetProcessInstance awaiting_tasks. It supersedes model_ref/instance_key
-  // addressing — the token carries (name, instance_key, node_id) — and turns this
-  // into a typed task completion (the consume half of the resume-token flow), the
-  // same path as POST /v1/tasks/{token}. On the token path event_kind is
-  // reinterpreted as the action: empty or "complete" completes the parked task with
-  // `payload` as the JSON output vars; "fail" fails it (payload, if any, is the
-  // failure message). The instance must still list node_id in its awaiting set
-  // (validated by a linearizable read) else the call fails FailedPrecondition.
-  string resume_token = 5;
 }
 
 message DeliverProcessEventResponse {
@@ -323,78 +439,34 @@ message DeliverProcessEventResponse {
 }
 
 message GetProcessInstanceRequest {
-  // model_ref.name + instance_key select the routing partition
-  // (model_ref.kind/version are ignored for the read).
-  reflw.engine.v1.ModelRef model_ref = 1;
+  // name + instance_key select the routing partition.
+  string name = 1;
   string instance_key = 2;
 }
 
 message GetProcessInstanceResponse {
   // present is false when no record exists — never started, or terminal and
-  // reaped (ProcessTerminal.retention_ms==0, or the history window elapsed). A
-  // terminal instance with a non-zero retention_ms stays present=true with a
-  // terminal status until its history window elapses.
+  // reaped. A terminal instance with a non-zero retention_ms stays present=true
+  // with a terminal status until its history window elapses.
   bool present = 1;
-  // The remaining fields are meaningful only when present=true.
-  reflw.engine.v1.ProcessStatus status = 2;
-  reflw.engine.v1.ProcessKind kind = 3;
-  // active_seq is the seq of the turn in flight, or 0 when the instance is idle
-  // (parked on a timer or message/signal wait). next_seq is the inbox append
-  // cursor; next_seq-1-active_seq is the count of queued-but-not-yet-run events.
-  uint64 active_seq = 4;
-  uint64 next_seq = 5;
-  // outstanding is the authoritative count of dispatched work that will feed back
-  // on its own — service tasks, child processes, armed timers. With active_seq==0,
-  // next_seq==active_seq+1, and outstanding==0 the instance is genuinely quiescent
-  // (parked on an external message/signal); any of the three non-zero means it
-  // will progress without external input. Lets a caller distinguish "working"
-  // from "parked" without timing heuristics.
-  uint32 outstanding = 6;
-  // Terminal / history fields, populated when present=true and the instance is
-  // terminal (status COMPLETED/FAILED) within its retention window. output is the
-  // completed instance's output (empty on failure); created_at_ms / ended_at_ms
-  // bracket the instance lifetime.
-  bytes output = 7;
-  uint64 created_at_ms = 8;
-  uint64 ended_at_ms = 9;
-  // incident is set when status == PROCESS_STATUS_INCIDENT: an uncaught failure
-  // parked for human intervention (node_id, cause, raised_at). Resolve it with
-  // ResolveProcessIncident.
-  reflw.engine.v1.ProcessIncident incident = 10;
-  // awaiting_tasks lists the instance's currently-parked, externally-completable
-  // tasks (BPMN user tasks / CMMN human tasks), each with an opaque, self-routing
-  // resume_token the caller round-trips to complete the task
-  // (POST /v1/tasks/{resume_token}) without naming the inner element id. Populated
-  // only while status == PROCESS_STATUS_RUNNING — a terminal / incident-parked
-  // record never surfaces a stale set. Mirrors Trisotech's resume points.
-  repeated AwaitingTaskInfo awaiting_tasks = 11;
+  // instance is set only when present=true. awaiting_tasks is populated only
+  // while status == PROCESS_STATUS_RUNNING — each parked task carries an opaque,
+  // self-routing resume_token the caller round-trips to GetTask / CompleteTask.
+  reflw.api.v1.ProcessInstanceView instance = 2;
 }
 
-// AwaitingTaskInfo is one externally-completable parked task surfaced on a
-// GetProcessInstance read. node_id is the BPMN flow-node id or CMMN replicaKey,
-// name is the model @name (may be empty); resume_token is the opaque "rpt_…"
-// handle encoding (partition_key, name, instance_key, node_id) so the caller
-// completes the task by token alone.
-message AwaitingTaskInfo {
-  string node_id = 1;
-  string name = 2;
-  string resume_token = 3;
+message GetTaskRequest {
+  // The opaque "rpt_…" resume token from a GetProcessInstance awaiting_tasks
+  // entry.
+  string resume_token = 1;
 }
 
-// GetTaskResponse resolves an opaque resume token to the parked task it
-// addresses — the discovery (read) half of the resume-token surface served at
-// GET /v1/tasks/{resume_token}, mirroring POST /v1/tasks/{resume_token} (the
-// completion half). It is returned only when the token is live: the instance is
-// present, RUNNING, and still lists node_id in its awaiting set — the same
-// liveness gate the completion path applies. A stale/consumed/forged token is a
-// FailedPrecondition (the task is no longer awaiting), not a body.
-//
-// service/instance_key/node_id/name are the task identity (echoing what the
-// token encodes plus the model @name). schema, when present, is the task's
-// submission JSON Schema — the fields a completion must supply, derived from the
-// instance's pinned model by a model resolver. It is model-derived (a gateway
-// concern); the engine forwards it opaquely and omits it when no resolver can
-// produce it (no process engine, or a task with no typed output contract).
+// GetTaskResponse is the parked task a live resume token addresses.
+// service/instance_key/node_id/name are the task identity (node_id is the BPMN
+// flow-node id or CMMN replicaKey; name is the model @name, may be empty).
+// schema, when present, is the task's submission JSON Schema — model-derived
+// (a gateway concern); the engine forwards it opaquely and omits it when no
+// resolver can produce it.
 message GetTaskResponse {
   string service = 1;
   string instance_key = 2;
@@ -403,12 +475,29 @@ message GetTaskResponse {
   google.protobuf.Struct schema = 5;
 }
 
+message CompleteTaskRequest {
+  // The opaque "rpt_…" resume token identifying the parked task.
+  string resume_token = 1;
+  // JSON output vars merged on completion (ignored when fail=true).
+  bytes output = 2;
+  // fail completes the task as failed (drives an error boundary / incident),
+  // with failure_message as the cause.
+  bool fail = 3;
+  string failure_message = 4;
+}
+
+message CompleteTaskResponse {
+  // partition_key the completion was routed to (debug/observability).
+  fixed64 pk = 1;
+  // accepted is true when the completion was routed and proposed.
+  bool accepted = 2;
+}
+
 message ResolveProcessIncidentRequest {
-  // model_ref.name + instance_key select the routing partition
-  // (model_ref.kind/version are ignored).
-  reflw.engine.v1.ModelRef model_ref = 1;
+  // name + instance_key select the routing partition.
+  string name = 1;
   string instance_key = 2;
-  reflw.engine.v1.ProcessIncidentResolution resolution = 3;
+  reflw.api.v1.ProcessIncidentResolution resolution = 3;
   // RETRY only: variables to merge before re-driving the failed element (optional).
   bytes var_patch = 4;
 }
@@ -421,9 +510,8 @@ message ResolveProcessIncidentResponse {
 }
 
 message GetProcessInstanceHistoryRequest {
-  // model_ref.name + instance_key select the routing partition
-  // (model_ref.kind/version are ignored for the read).
-  reflw.engine.v1.ModelRef model_ref = 1;
+  // name + instance_key select the routing partition.
+  string name = 1;
   string instance_key = 2;
   // Resume strictly past this event seq (0 = from the first event). Pair with the
   // response's next_after_seq to page a long timeline forward.
@@ -433,29 +521,26 @@ message GetProcessInstanceHistoryRequest {
 }
 
 message GetProcessInstanceHistoryResponse {
-  // present mirrors GetProcessInstance: false when no record exists — the instance
-  // never started, or reached a terminal and was reaped (or its retention window
-  // elapsed). events is empty (not absent) for a present instance with no timeline
-  // rows in this page.
+  // present mirrors GetProcessInstance: false when no record exists. events is
+  // empty (not absent) for a present instance with no timeline rows in this page.
   bool present = 1;
-  repeated reflw.engine.v1.ProcessHistoryEvent events = 2;
+  repeated reflw.api.v1.ProcessHistoryEventView events = 2;
   // The seq to pass back as after_seq for the next page; 0 when the page did not
   // fill to limit (end of timeline).
   uint64 next_after_seq = 3;
 }
 
 message ListProcessInstancesRequest {
-  // model_ref.name (when set) filters to one model; empty lists every model in
-  // the namespace. model_ref.kind/version are ignored.
-  reflw.engine.v1.ModelRef model_ref = 1;
+  // name (when set) filters to one model; empty lists every model in the
+  // namespace.
+  string name = 1;
   // Optional status filter; empty = any status.
-  repeated reflw.engine.v1.ProcessStatus status_filter = 2;
+  repeated reflw.api.v1.ProcessStatus status_filter = 2;
   // Max rows per page; 0 = the server default cap. Doubles as the page size.
   uint32 limit = 3;
   // Optional created_at window [created_after_ms, created_before_ms): keep only
   // instances whose created_at_ms is >= created_after_ms (when non-zero) and
-  // < created_before_ms (when non-zero). created_at_ms is stamped at instance
-  // creation, so the window is exact for process instances.
+  // < created_before_ms (when non-zero).
   uint64 created_after_ms = 4;
   uint64 created_before_ms = 5;
   // Opaque continuation from a prior response's next_page_token; empty starts at
@@ -464,22 +549,10 @@ message ListProcessInstancesRequest {
 }
 
 message ListProcessInstancesResponse {
-  repeated ProcessInstanceSummary instances = 1;
+  repeated reflw.api.v1.ProcessInstanceView instances = 1;
   // Set when more rows may remain (the page filled to limit); pass it back as
   // page_token to continue. Empty signals the end of iteration.
   string next_page_token = 2;
-}
-
-message ProcessInstanceSummary {
-  string service = 1;
-  string instance_key = 2;
-  reflw.engine.v1.ProcessStatus status = 3;
-  reflw.engine.v1.ProcessKind kind = 4;
-  uint64 active_seq = 5;
-  uint64 next_seq = 6;
-  uint32 outstanding = 7;
-  uint64 created_at_ms = 8;
-  uint64 ended_at_ms = 9;
 }
 
 message ListInvocationsRequest {
@@ -487,7 +560,7 @@ message ListInvocationsRequest {
   // in the namespace.
   string service = 1;
   // Optional state filter; empty = any state.
-  repeated reflw.engine.v1.InvocationState state_filter = 2;
+  repeated reflw.api.v1.InvocationState state_filter = 2;
   // Max rows per page; 0 = the server default cap. Doubles as the page size.
   uint32 limit = 3;
   // Optional created_at window [created_after_ms, created_before_ms): keep only
@@ -503,19 +576,10 @@ message ListInvocationsRequest {
 }
 
 message ListInvocationsResponse {
-  repeated InvocationSummary invocations = 1;
+  repeated reflw.api.v1.InvocationView invocations = 1;
   // Set when more rows may remain (the page filled to limit); pass it back as
   // page_token to continue. Empty signals the end of iteration.
   string next_page_token = 2;
-}
-
-message InvocationSummary {
-  reflw.engine.v1.InvocationId id = 1;
-  reflw.engine.v1.InvocationTarget target = 2;
-  reflw.engine.v1.InvocationState state = 3;
-  string deployment_id = 4;
-  uint64 created_at_ms = 5;
-  uint64 completed_at_ms = 6;
 }
 
 message ResolveWorkflowPromiseRequest {

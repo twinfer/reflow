@@ -19,6 +19,7 @@ import (
 	"github.com/twinfer/reflw/internal/ingress"
 	"github.com/twinfer/reflw/pkg/handler"
 	"github.com/twinfer/reflw/pkg/ingressclient"
+	apiv1 "github.com/twinfer/reflw/proto/apiv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
@@ -242,7 +243,7 @@ func TestIngress_ListInvocations(t *testing.T) {
 		}
 	}
 
-	listReq := func(req *ingressv1.ListInvocationsRequest) []*ingressv1.InvocationSummary {
+	listReq := func(req *ingressv1.ListInvocationsRequest) []*apiv1.InvocationView {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -258,13 +259,13 @@ func TestIngress_ListInvocations(t *testing.T) {
 		t.Fatalf("list Echo: got %d, want %d", len(all), len(inputs))
 	}
 	for _, iv := range all {
-		if iv.GetTarget().GetServiceName() != "Echo" {
-			t.Fatalf("summary target service = %q, want Echo", iv.GetTarget().GetServiceName())
+		if iv.GetService() != "Echo" {
+			t.Fatalf("summary service = %q, want Echo", iv.GetService())
 		}
-		if iv.GetState() != enginev1.InvocationState_INVOCATION_STATE_COMPLETED {
+		if iv.GetState() != apiv1.InvocationState_INVOCATION_STATE_COMPLETED {
 			t.Fatalf("summary state = %v, want COMPLETED", iv.GetState())
 		}
-		if iv.GetId() == nil {
+		if iv.GetInvocationId() == "" {
 			t.Fatalf("summary missing id")
 		}
 	}
@@ -272,13 +273,13 @@ func TestIngress_ListInvocations(t *testing.T) {
 	// State filter composes with service: COMPLETED returns all three, SCHEDULED none.
 	if c := listReq(&ingressv1.ListInvocationsRequest{
 		Service:     "Echo",
-		StateFilter: []enginev1.InvocationState{enginev1.InvocationState_INVOCATION_STATE_COMPLETED},
+		StateFilter: []apiv1.InvocationState{apiv1.InvocationState_INVOCATION_STATE_COMPLETED},
 	}); len(c) != len(inputs) {
 		t.Fatalf("list COMPLETED: got %d, want %d", len(c), len(inputs))
 	}
 	if sc := listReq(&ingressv1.ListInvocationsRequest{
 		Service:     "Echo",
-		StateFilter: []enginev1.InvocationState{enginev1.InvocationState_INVOCATION_STATE_SCHEDULED},
+		StateFilter: []apiv1.InvocationState{apiv1.InvocationState_INVOCATION_STATE_SCHEDULED},
 	}); len(sc) != 0 {
 		t.Fatalf("list SCHEDULED: got %d, want 0", len(sc))
 	}
@@ -311,7 +312,7 @@ func TestIngress_ListInvocations(t *testing.T) {
 			t.Fatalf("page %d returned %d rows, want <= 1", pages, len(rows))
 		}
 		for _, iv := range rows {
-			seen[string(iv.GetId().GetUuid())]++
+			seen[iv.GetInvocationId()]++
 		}
 		token = resp.Msg.GetNextPageToken()
 		if token == "" {
@@ -357,7 +358,7 @@ func TestIngress_DescribeInvocation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DescribeInvocation: %v", err)
 		}
-		if _, ok := desc.Msg.GetStatus().GetStatus().(*enginev1.InvocationStatus_Completed); ok {
+		if desc.Msg.GetStatus().GetState() == apiv1.InvocationState_INVOCATION_STATE_COMPLETED {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)

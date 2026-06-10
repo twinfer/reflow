@@ -48,6 +48,32 @@ func IncidentResolutionToEngine(r apiv1.ProcessIncidentResolution) enginev1.Proc
 	return enginev1.ProcessIncidentResolution(r)
 }
 
+// ProcessStatusesToEngine maps a view status-filter slice (a request input) back
+// to the engine enum. nil in → nil out.
+func ProcessStatusesToEngine(in []apiv1.ProcessStatus) []enginev1.ProcessStatus {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]enginev1.ProcessStatus, len(in))
+	for i, s := range in {
+		out[i] = enginev1.ProcessStatus(s)
+	}
+	return out
+}
+
+// InvocationStatesToEngine maps a view state-filter slice (a request input) back
+// to the engine enum. nil in → nil out.
+func InvocationStatesToEngine(in []apiv1.InvocationState) []enginev1.InvocationState {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]enginev1.InvocationState, len(in))
+	for i, s := range in {
+		out[i] = enginev1.InvocationState(s)
+	}
+	return out
+}
+
 // --- invocation views ---
 
 // InvocationView builds a list/summary view. The caller passes the canonical

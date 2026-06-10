@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	apiv1 "github.com/twinfer/reflw/proto/apiv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
@@ -62,11 +63,11 @@ poll:
 			if err != nil || st == nil {
 				continue
 			}
-			if cs, ok := st.GetStatus().(*enginev1.InvocationStatus_Completed); ok {
-				if cs.Completed.GetFailureMessage() != "" {
+			if st.GetState() == apiv1.InvocationState_INVOCATION_STATE_COMPLETED {
+				if st.GetFailureMessage() != "" {
 					violations = append(violations, Violation{
 						Kind:    "completed_with_failure",
-						Detail:  cs.Completed.GetFailureMessage(),
+						Detail:  st.GetFailureMessage(),
 						Subject: inv.ID,
 					})
 				}
@@ -98,22 +99,20 @@ poll:
 			state = fmt.Sprintf("lookup_err=%v", err)
 		case st == nil:
 			state = "nil_status"
-		case st.GetStatus() == nil:
-			state = "no_kind"
 		default:
-			switch st.GetStatus().(type) {
-			case *enginev1.InvocationStatus_Free:
+			switch st.GetState() {
+			case apiv1.InvocationState_INVOCATION_STATE_UNSPECIFIED:
 				state = "Free"
-			case *enginev1.InvocationStatus_Scheduled:
+			case apiv1.InvocationState_INVOCATION_STATE_SCHEDULED:
 				state = "Scheduled"
-			case *enginev1.InvocationStatus_Invoked:
+			case apiv1.InvocationState_INVOCATION_STATE_INVOKED:
 				state = "Invoked"
-			case *enginev1.InvocationStatus_Suspended:
+			case apiv1.InvocationState_INVOCATION_STATE_SUSPENDED:
 				state = "Suspended"
-			case *enginev1.InvocationStatus_Completed:
+			case apiv1.InvocationState_INVOCATION_STATE_COMPLETED:
 				state = "Completed(missed_by_poller)"
 			default:
-				state = fmt.Sprintf("%T", st.GetStatus())
+				state = fmt.Sprintf("%v", st.GetState())
 			}
 		}
 		violations = append(violations, Violation{

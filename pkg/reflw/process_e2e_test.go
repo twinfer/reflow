@@ -19,6 +19,7 @@ import (
 	"github.com/twinfer/reflw/pkg/reflw/processengine"
 	adminv1 "github.com/twinfer/reflw/proto/adminv1"
 	"github.com/twinfer/reflw/proto/adminv1/adminv1connect"
+	apiv1 "github.com/twinfer/reflw/proto/apiv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
@@ -132,14 +133,14 @@ func TestProcess_RegisterReconcileRun(t *testing.T) {
 	for attempt := 0; time.Now().Before(deadline); attempt++ {
 		key := fmt.Sprintf("e2e-%d", attempt)
 		if _, err := icli.StartProcess(ctx, connect.NewRequest(&ingressv1.StartProcessRequest{
-			ModelRef: modelRef, InstanceKey: key,
+			Kind: modelRef.GetKind(), Name: modelRef.GetName(), Version: modelRef.GetVersion(), InstanceKey: key,
 		})); err != nil {
 			t.Fatalf("StartProcess: %v", err)
 		}
 		switch pollProcessTerminal(t, ctx, icli, modelRef, key, 5*time.Second) {
-		case enginev1.ProcessStatus_PROCESS_STATUS_COMPLETED:
+		case apiv1.ProcessStatus_PROCESS_STATUS_COMPLETED:
 			return // success
-		case enginev1.ProcessStatus_PROCESS_STATUS_FAILED:
+		case apiv1.ProcessStatus_PROCESS_STATUS_FAILED:
 			time.Sleep(200 * time.Millisecond) // model not reconciled yet; retry
 		}
 	}
@@ -232,29 +233,29 @@ func TestProcess_UserTaskParkThenComplete(t *testing.T) {
 	for attempt := 0; time.Now().Before(deadline); attempt++ {
 		key := fmt.Sprintf("ut-%d", attempt)
 		if _, err := icli.StartProcess(ctx, connect.NewRequest(&ingressv1.StartProcessRequest{
-			ModelRef: ref, InstanceKey: key,
+			Kind: ref.GetKind(), Name: ref.GetName(), Version: ref.GetVersion(), InstanceKey: key,
 		})); err != nil {
 			t.Fatalf("StartProcess: %v", err)
 		}
 		switch pollProcessParkedOrTerminal(t, ctx, icli, ref, key, 5*time.Second) {
-		case enginev1.ProcessStatus_PROCESS_STATUS_RUNNING:
+		case apiv1.ProcessStatus_PROCESS_STATUS_RUNNING:
 			// Parked at the user task — the resume-token surface lists it (BPMN keys
 			// by flow-node id "u").
 			assertAwaitingResumeToken(t, ctx, icli, ref, key, "u")
 			// Complete it with an external event.
 			if _, err := icli.DeliverProcessEvent(ctx, connect.NewRequest(&ingressv1.DeliverProcessEventRequest{
-				ModelRef:    ref,
+				Name:        ref.GetName(),
 				InstanceKey: key,
 				EventKind:   "UserTaskCompleted",
 				Payload:     []byte(`{"NodeID":"u","Outputs":{"approved":true}}`),
 			})); err != nil {
 				t.Fatalf("DeliverProcessEvent: %v", err)
 			}
-			if got := pollProcessTerminal(t, ctx, icli, ref, key, 5*time.Second); got != enginev1.ProcessStatus_PROCESS_STATUS_COMPLETED {
+			if got := pollProcessTerminal(t, ctx, icli, ref, key, 5*time.Second); got != apiv1.ProcessStatus_PROCESS_STATUS_COMPLETED {
 				t.Fatalf("user task instance did not complete after delivery (got %v)", got)
 			}
 			return // success
-		case enginev1.ProcessStatus_PROCESS_STATUS_FAILED:
+		case apiv1.ProcessStatus_PROCESS_STATUS_FAILED:
 			time.Sleep(200 * time.Millisecond) // model not reconciled yet; retry
 		}
 	}
@@ -287,12 +288,12 @@ func TestProcess_CMMNHumanTaskParkThenComplete(t *testing.T) {
 	for attempt := 0; time.Now().Before(deadline); attempt++ {
 		key := fmt.Sprintf("hc-%d", attempt)
 		if _, err := icli.StartProcess(ctx, connect.NewRequest(&ingressv1.StartProcessRequest{
-			ModelRef: ref, InstanceKey: key,
+			Kind: ref.GetKind(), Name: ref.GetName(), Version: ref.GetVersion(), InstanceKey: key,
 		})); err != nil {
 			t.Fatalf("StartProcess: %v", err)
 		}
 		switch pollProcessParkedOrTerminal(t, ctx, icli, ref, key, 5*time.Second) {
-		case enginev1.ProcessStatus_PROCESS_STATUS_RUNNING:
+		case apiv1.ProcessStatus_PROCESS_STATUS_RUNNING:
 			// Parked at the human task — the resume-token surface lists it keyed by
 			// the planItem id (pi1), not the humanTask definition id (h1). Complete it
 			// by token alone: the caller names no planItem id and sends only outputs;
@@ -301,17 +302,17 @@ func TestProcess_CMMNHumanTaskParkThenComplete(t *testing.T) {
 			// resume-token round-trip (mint on GetProcessInstance → decode + validate
 			// + typed propose on consume).
 			tok := assertAwaitingResumeToken(t, ctx, icli, ref, key, "pi1")
-			if _, err := icli.DeliverProcessEvent(ctx, connect.NewRequest(&ingressv1.DeliverProcessEventRequest{
+			if _, err := icli.CompleteTask(ctx, connect.NewRequest(&ingressv1.CompleteTaskRequest{
 				ResumeToken: tok,
-				Payload:     []byte(`{}`),
+				Output:      []byte(`{}`),
 			})); err != nil {
-				t.Fatalf("DeliverProcessEvent (resume token): %v", err)
+				t.Fatalf("CompleteTask (resume token): %v", err)
 			}
-			if got := pollProcessTerminal(t, ctx, icli, ref, key, 5*time.Second); got != enginev1.ProcessStatus_PROCESS_STATUS_COMPLETED {
+			if got := pollProcessTerminal(t, ctx, icli, ref, key, 5*time.Second); got != apiv1.ProcessStatus_PROCESS_STATUS_COMPLETED {
 				t.Fatalf("human task case did not complete after delivery (got %v)", got)
 			}
 			return // success
-		case enginev1.ProcessStatus_PROCESS_STATUS_FAILED:
+		case apiv1.ProcessStatus_PROCESS_STATUS_FAILED:
 			time.Sleep(200 * time.Millisecond) // model not reconciled yet; retry
 		}
 	}
@@ -350,12 +351,12 @@ func TestProcess_GetTaskSchema_E2E(t *testing.T) {
 	for attempt := 0; time.Now().Before(deadline); attempt++ {
 		key := fmt.Sprintf("uts-%d", attempt)
 		if _, err := icli.StartProcess(ctx, connect.NewRequest(&ingressv1.StartProcessRequest{
-			ModelRef: ref, InstanceKey: key,
+			Kind: ref.GetKind(), Name: ref.GetName(), Version: ref.GetVersion(), InstanceKey: key,
 		})); err != nil {
 			t.Fatalf("StartProcess: %v", err)
 		}
 		switch pollProcessParkedOrTerminal(t, ctx, icli, ref, key, 5*time.Second) {
-		case enginev1.ProcessStatus_PROCESS_STATUS_RUNNING:
+		case apiv1.ProcessStatus_PROCESS_STATUS_RUNNING:
 			tok := assertAwaitingResumeToken(t, ctx, icli, ref, key, "u")
 			body := httpGetTask(t, ctx, addr, tok)
 			if body["service"] != ref.Name || body["instanceKey"] != key || body["nodeId"] != "u" {
@@ -370,7 +371,7 @@ func TestProcess_GetTaskSchema_E2E(t *testing.T) {
 				t.Fatalf("schema.properties.decision missing: %v", schema)
 			}
 			return // success
-		case enginev1.ProcessStatus_PROCESS_STATUS_FAILED:
+		case apiv1.ProcessStatus_PROCESS_STATUS_FAILED:
 			time.Sleep(200 * time.Millisecond) // model not reconciled yet; retry
 		}
 	}
@@ -410,12 +411,12 @@ func httpGetTask(t *testing.T, ctx context.Context, addr, token string) map[stri
 func assertAwaitingResumeToken(t *testing.T, ctx context.Context, icli *ingressclient.Client, ref *enginev1.ModelRef, key, wantNode string) string {
 	t.Helper()
 	resp, err := icli.GetProcessInstance(ctx, connect.NewRequest(&ingressv1.GetProcessInstanceRequest{
-		ModelRef: ref, InstanceKey: key,
+		Name: ref.GetName(), InstanceKey: key,
 	}))
 	if err != nil {
 		t.Fatalf("GetProcessInstance: %v", err)
 	}
-	tasks := resp.Msg.GetAwaitingTasks()
+	tasks := resp.Msg.GetInstance().GetAwaitingTasks()
 	if len(tasks) != 1 {
 		t.Fatalf("awaiting_tasks = %d, want 1: %+v", len(tasks), tasks)
 	}
@@ -435,49 +436,49 @@ func assertAwaitingResumeToken(t *testing.T, ctx context.Context, icli *ingressc
 // pollProcessParkedOrTerminal polls until the instance is parked at a passive wait
 // (RUNNING, active_seq==0, outstanding==0, with the start turn already consumed) or
 // reaches a terminal, returning the observed status; UNSPECIFIED on timeout.
-func pollProcessParkedOrTerminal(t *testing.T, ctx context.Context, icli *ingressclient.Client, ref *enginev1.ModelRef, key string, timeout time.Duration) enginev1.ProcessStatus {
+func pollProcessParkedOrTerminal(t *testing.T, ctx context.Context, icli *ingressclient.Client, ref *enginev1.ModelRef, key string, timeout time.Duration) apiv1.ProcessStatus {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		resp, err := icli.GetProcessInstance(ctx, connect.NewRequest(&ingressv1.GetProcessInstanceRequest{
-			ModelRef: ref, InstanceKey: key,
+			Name: ref.GetName(), InstanceKey: key,
 		}))
 		if err == nil && resp.Msg.GetPresent() {
-			switch st := resp.Msg.GetStatus(); st {
-			case enginev1.ProcessStatus_PROCESS_STATUS_COMPLETED, enginev1.ProcessStatus_PROCESS_STATUS_FAILED:
+			switch st := resp.Msg.GetInstance().GetStatus(); st {
+			case apiv1.ProcessStatus_PROCESS_STATUS_COMPLETED, apiv1.ProcessStatus_PROCESS_STATUS_FAILED:
 				return st
-			case enginev1.ProcessStatus_PROCESS_STATUS_RUNNING:
+			case apiv1.ProcessStatus_PROCESS_STATUS_RUNNING:
 				// active_seq==0 + outstanding==0 + next_seq>1 means the start turn ran
 				// and the instance is now parked with no dispatched work — a user/human
 				// task wait, not a turn still in flight.
-				if resp.Msg.GetActiveSeq() == 0 && resp.Msg.GetOutstanding() == 0 && resp.Msg.GetNextSeq() > 1 {
+				if resp.Msg.GetInstance().GetActiveSeq() == 0 && resp.Msg.GetInstance().GetOutstanding() == 0 && resp.Msg.GetInstance().GetNextSeq() > 1 {
 					return st
 				}
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return enginev1.ProcessStatus_PROCESS_STATUS_UNSPECIFIED
+	return apiv1.ProcessStatus_PROCESS_STATUS_UNSPECIFIED
 }
 
 // pollProcessTerminal polls GetProcessInstance until the instance reaches a
 // terminal status (COMPLETED/FAILED) or the timeout elapses; returns
 // UNSPECIFIED on timeout.
-func pollProcessTerminal(t *testing.T, ctx context.Context, icli *ingressclient.Client, ref *enginev1.ModelRef, key string, timeout time.Duration) enginev1.ProcessStatus {
+func pollProcessTerminal(t *testing.T, ctx context.Context, icli *ingressclient.Client, ref *enginev1.ModelRef, key string, timeout time.Duration) apiv1.ProcessStatus {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		resp, err := icli.GetProcessInstance(ctx, connect.NewRequest(&ingressv1.GetProcessInstanceRequest{
-			ModelRef: ref, InstanceKey: key,
+			Name: ref.GetName(), InstanceKey: key,
 		}))
 		if err == nil && resp.Msg.GetPresent() {
-			switch st := resp.Msg.GetStatus(); st {
-			case enginev1.ProcessStatus_PROCESS_STATUS_COMPLETED,
-				enginev1.ProcessStatus_PROCESS_STATUS_FAILED:
+			switch st := resp.Msg.GetInstance().GetStatus(); st {
+			case apiv1.ProcessStatus_PROCESS_STATUS_COMPLETED,
+				apiv1.ProcessStatus_PROCESS_STATUS_FAILED:
 				return st
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return enginev1.ProcessStatus_PROCESS_STATUS_UNSPECIFIED
+	return apiv1.ProcessStatus_PROCESS_STATUS_UNSPECIFIED
 }

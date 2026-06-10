@@ -9,8 +9,10 @@ import (
 
 	connect "connectrpc.com/connect"
 
+	"github.com/twinfer/reflw/internal/apimap"
 	"github.com/twinfer/reflw/internal/engine"
 	"github.com/twinfer/reflw/internal/storage/keys"
+	apiv1 "github.com/twinfer/reflw/proto/apiv1"
 	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
@@ -128,13 +130,13 @@ func (s *Server) ListInvocations(ctx context.Context, req *connect.Request[ingre
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	limit := clampListLimit(int(msg.GetLimit()))
-	var out []*ingressv1.InvocationSummary
+	var out []*apiv1.InvocationView
 	var nextToken string
 	ferr := s.fanOut(ctx, cur,
 		func(shard uint64, after []byte) any {
 			return engine.LookupInvocations{
 				Service:         msg.GetService(),
-				StateFilter:     msg.GetStateFilter(),
+				StateFilter:     apimap.InvocationStatesToEngine(msg.GetStateFilter()),
 				CreatedAfterMs:  msg.GetCreatedAfterMs(),
 				CreatedBeforeMs: msg.GetCreatedBeforeMs(),
 				After:           after,
@@ -147,14 +149,8 @@ func (s *Server) ListInvocations(ctx context.Context, req *connect.Request[ingre
 				return false, fmt.Errorf("unexpected result type %T", res)
 			}
 			for _, iv := range r.Invocations {
-				out = append(out, &ingressv1.InvocationSummary{
-					Id:            iv.ID,
-					Target:        iv.Target,
-					State:         iv.State,
-					DeploymentId:  iv.DeploymentID,
-					CreatedAtMs:   iv.CreatedAtMs,
-					CompletedAtMs: iv.CompletedAtMs,
-				})
+				out = append(out, apimap.InvocationView(
+					FormatInvocationID(iv.ID), iv.Target, iv.State, iv.DeploymentID, iv.CreatedAtMs, iv.CompletedAtMs))
 				if len(out) >= limit {
 					key, err := keys.InvocationKey(iv.ID)
 					if err != nil {

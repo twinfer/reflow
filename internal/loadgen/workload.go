@@ -13,6 +13,7 @@ import (
 	"github.com/twinfer/reflw/internal/engine/routing"
 	"github.com/twinfer/reflw/internal/storage/keys"
 	"github.com/twinfer/reflw/pkg/handler"
+	apiv1 "github.com/twinfer/reflw/proto/apiv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
@@ -150,12 +151,11 @@ func (cfg WorkloadConfig) Run(ctx context.Context, sampler *Sampler) (WorkloadSt
 				if err != nil || st == nil {
 					return true
 				}
-				switch s := st.GetStatus().(type) {
-				case *enginev1.InvocationStatus_Completed:
+				if st.GetState() == apiv1.InvocationState_INVOCATION_STATE_COMPLETED {
 					if sampler != nil {
 						sampler.ObserveLatency(time.Since(entry.issuedAt))
 					}
-					if s.Completed.GetFailureMessage() != "" {
+					if st.GetFailureMessage() != "" {
 						failed.Add(1)
 					} else {
 						completed.Add(1)

@@ -61,6 +61,8 @@ action "GetProcessInstance"        in [Action::"IngressActions"] appliesTo { pri
 action "ListProcessInstances"      in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, ClusterOperator], resource: Invocation };
 action "GetProcessInstanceHistory" in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, ClusterOperator], resource: Invocation };
 action "ResolveProcessIncident"    in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, ClusterOperator], resource: Invocation };
+action "GetTask"                   in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, ClusterOperator], resource: Invocation };
+action "CompleteTask"              in [Action::"IngressActions"] appliesTo { principal: [Anonymous, User, ClusterOperator], resource: Invocation };
 
 // ===================== Ingress: operator-only maintenance (no open plane) =====================
 action "PurgeInvocation" appliesTo { principal: [ClusterOperator], resource: Invocation };

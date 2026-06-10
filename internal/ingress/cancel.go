@@ -38,9 +38,9 @@ import (
 // termination is observable via AwaitInvocation.
 func (s *Server) CancelInvocation(ctx context.Context, req *connect.Request[ingressv1.CancelInvocationRequest]) (*connect.Response[ingressv1.CancelInvocationResponse], error) {
 	msg := req.Msg
-	id, err := resolveID(msg.GetInvocationId(), msg.GetInvocationIdProto())
+	id, err := resolveID(msg.GetInvocationId())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, err
 	}
 
 	shardID := s.host.Partitioner().ShardForKey(id.GetPartitionKey())

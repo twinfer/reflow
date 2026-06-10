@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/twinfer/reflw/internal/e2e"
+	apiv1 "github.com/twinfer/reflw/proto/apiv1"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 )
 
@@ -118,12 +119,11 @@ func awaitCompletion(t *testing.T, cluster *e2e.ContainerCluster, id *enginev1.I
 				continue
 			}
 			lastDesc = describe(st)
-			done := st.GetCompleted()
-			if done == nil {
+			if st.GetState() != apiv1.InvocationState_INVOCATION_STATE_COMPLETED {
 				continue
 			}
-			if msg := done.GetFailureMessage(); msg != "" {
-				return fmt.Errorf("invocation failed: code=%d msg=%s", done.GetFailureCode(), msg)
+			if msg := st.GetFailureMessage(); msg != "" {
+				return fmt.Errorf("invocation failed: code=%d msg=%s", st.GetFailureCode(), msg)
 			}
 			return nil
 		}
@@ -138,17 +138,17 @@ func awaitCompletion(t *testing.T, cluster *e2e.ContainerCluster, id *enginev1.I
 // describe returns a short string showing which oneof variant the
 // status holds (Free / Scheduled / Invoked / Suspended / Completed).
 // Used for diagnostic context on timeout.
-func describe(st *enginev1.InvocationStatus) string {
-	switch {
-	case st.GetCompleted() != nil:
+func describe(st *apiv1.InvocationStatusView) string {
+	switch st.GetState() {
+	case apiv1.InvocationState_INVOCATION_STATE_COMPLETED:
 		return "Completed"
-	case st.GetSuspended() != nil:
+	case apiv1.InvocationState_INVOCATION_STATE_SUSPENDED:
 		return "Suspended"
-	case st.GetInvoked() != nil:
+	case apiv1.InvocationState_INVOCATION_STATE_INVOKED:
 		return "Invoked"
-	case st.GetScheduled() != nil:
+	case apiv1.InvocationState_INVOCATION_STATE_SCHEDULED:
 		return "Scheduled"
-	case st.GetFree() != nil:
+	case apiv1.InvocationState_INVOCATION_STATE_UNSPECIFIED:
 		return "Free"
 	default:
 		return "<unknown>"

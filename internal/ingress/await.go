@@ -55,7 +55,7 @@ func (s *Server) Await(ctx context.Context, id *enginev1.InvocationId, timeoutMs
 // awaitMaxTimeout so a stalled handler can't hold the stream open indefinitely.
 func (s *Server) AwaitInvocation(ctx context.Context, req *connect.Request[ingressv1.AwaitInvocationRequest]) (*connect.Response[ingressv1.AwaitInvocationResponse], error) {
 	msg := req.Msg
-	id, err := resolveID(msg.GetInvocationId(), msg.GetInvocationIdProto())
+	id, err := resolveID(msg.GetInvocationId())
 	if err != nil {
 		return nil, err
 	}

@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/twinfer/reflw/internal/apimap"
 	"github.com/twinfer/reflw/internal/observability"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
 	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
@@ -453,7 +454,7 @@ func GetProcessHistoryHTTP(cfg InvokeConfig) http.Handler {
 		}
 		writeProtoJSON(sc, http.StatusOK, &ingressv1.GetProcessInstanceHistoryResponse{
 			Present:      present,
-			Events:       events,
+			Events:       apimap.ProcessHistoryEventViews(events),
 			NextAfterSeq: nextAfterSeq,
 		})
 	})

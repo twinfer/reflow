@@ -21,6 +21,7 @@ import (
 	"github.com/twinfer/reflw/internal/engine"
 	"github.com/twinfer/reflw/internal/engine/routing"
 	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 	"github.com/twinfer/reflw/proto/ingressv1/ingressv1connect"
 	protocolv1 "github.com/twinfer/reflw/proto/protocolv1"
 )
@@ -175,6 +176,41 @@ func (s *Server) Submit(ctx context.Context, a SubmitArgs) (*enginev1.Invocation
 	return id, nil
 }
 
+// SubmitInvocation is the Connect RPC shell over Submit. In AWAIT mode (the
+// default — MODE_UNSPECIFIED maps to AWAIT) it blocks for the result via Await;
+// in SEND mode it returns the minted id immediately. Caller metadata rides the
+// request map (the transcoded REST path's Reflw-Meta-* header lift is wired in
+// the ingress runtime, ahead of this handler).
+func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingressv1.SubmitInvocationRequest]) (*connect.Response[ingressv1.SubmitInvocationResponse], error) {
+	msg := req.Msg
+	id, err := s.Submit(ctx, SubmitArgs{
+		Service:        msg.GetService(),
+		Handler:        msg.GetHandler(),
+		ObjectKey:      msg.GetObjectKey(),
+		Input:          msg.GetInput(),
+		IdempotencyKey: msg.GetIdempotencyKey(),
+		Metadata:       msg.GetMetadata(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	idStr := FormatInvocationID(id)
+	if msg.GetMode() == ingressv1.SubmitInvocationRequest_MODE_SEND {
+		return connect.NewResponse(&ingressv1.SubmitInvocationResponse{InvocationId: idStr}), nil
+	}
+	out, err := s.Await(ctx, id, msg.GetTimeoutMs())
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&ingressv1.SubmitInvocationResponse{
+		InvocationId:   idStr,
+		Completed:      out.Completed,
+		Output:         out.Output,
+		FailureMessage: out.FailureMessage,
+		FailureCode:    out.FailureCode,
+	}), nil
+}
+
 // routeToShard picks the owning partition for a target by hashing
 // (service, object_key) through the Host's Partitioner.
 func (s *Server) routeToShard(target *enginev1.InvocationTarget) uint64 {
@@ -209,13 +245,9 @@ func mintInvocationID(target *enginev1.InvocationTarget) (*enginev1.InvocationId
 	}, nil
 }
 
-// resolveID picks an InvocationId from either the proto field
-// (preferred) or the string form. Returns an InvalidArgument connect
-// error if neither is usable.
-func resolveID(idStr string, idProto *enginev1.InvocationId) (*enginev1.InvocationId, error) {
-	if idProto != nil && len(idProto.GetUuid()) == 16 {
-		return idProto, nil
-	}
+// resolveID parses the canonical "inv_…" id string into an InvocationId.
+// Returns an InvalidArgument connect error when empty or malformed.
+func resolveID(idStr string) (*enginev1.InvocationId, error) {
 	if idStr == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invocation_id is required"))
 	}

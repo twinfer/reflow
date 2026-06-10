@@ -13,7 +13,7 @@ import (
 	"github.com/twinfer/reflw/internal/ingress"
 	"github.com/twinfer/reflw/pkg/ingressclient"
 	"github.com/twinfer/reflw/pkg/reflw/processengine"
-	enginev1 "github.com/twinfer/reflw/proto/enginev1"
+	apiv1 "github.com/twinfer/reflw/proto/apiv1"
 	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 )
 
@@ -122,7 +122,9 @@ func TestIngress_StartProcessThenDeliverMessage(t *testing.T) {
 	startCtx, startCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer startCancel()
 	startResp, err := cli.StartProcess(startCtx, connect.NewRequest(&ingressv1.StartProcessRequest{
-		ModelRef:    &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"},
+		Kind:        "bpmn",
+		Name:        svc,
+		Version:     "v1",
 		InstanceKey: instKey,
 		Vars:        []byte(`{"orderId":"A-1"}`),
 	}))
@@ -156,15 +158,15 @@ func TestIngress_StartProcessThenDeliverMessage(t *testing.T) {
 		gctx, gcancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer gcancel()
 		resp, gerr := cli.GetProcessInstance(gctx, connect.NewRequest(&ingressv1.GetProcessInstanceRequest{
-			ModelRef: &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"}, InstanceKey: instKey,
+			Name: svc, InstanceKey: instKey,
 		}))
 		if gerr != nil {
 			t.Fatalf("GetProcessInstance: %v", gerr)
 		}
 		return resp.Msg
 	}
-	if g := getInst(); !g.GetPresent() || g.GetActiveSeq() != 0 {
-		t.Fatalf("GetProcessInstance parked = {present:%v active_seq:%d}, want {true 0}", g.GetPresent(), g.GetActiveSeq())
+	if g := getInst(); !g.GetPresent() || g.GetInstance().GetActiveSeq() != 0 {
+		t.Fatalf("GetProcessInstance parked = {present:%v active_seq:%d}, want {true 0}", g.GetPresent(), g.GetInstance().GetActiveSeq())
 	}
 
 	// 3. Deliver the correlated message.
@@ -216,7 +218,9 @@ func TestIngress_GetProcessInstanceHistory(t *testing.T) {
 	startCtx, startCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer startCancel()
 	if _, err := cli.StartProcess(startCtx, connect.NewRequest(&ingressv1.StartProcessRequest{
-		ModelRef:    &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"},
+		Kind:        "bpmn",
+		Name:        svc,
+		Version:     "v1",
 		InstanceKey: instKey,
 		Vars:        []byte(`{"orderId":"A-1"}`),
 	})); err != nil {
@@ -228,7 +232,7 @@ func TestIngress_GetProcessInstanceHistory(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		resp, err := cli.GetProcessInstanceHistory(ctx, connect.NewRequest(&ingressv1.GetProcessInstanceHistoryRequest{
-			ModelRef: &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"}, InstanceKey: instKey,
+			Name: svc, InstanceKey: instKey,
 			AfterSeq: after, Limit: limit,
 		}))
 		if err != nil {
@@ -257,12 +261,12 @@ func TestIngress_GetProcessInstanceHistory(t *testing.T) {
 			t.Fatalf("event[%d] seq=%d, want %d", i, ev.GetSeq(), i+1)
 		}
 	}
-	if evs[0].GetKind() != enginev1.ProcessHistoryKind_PROCESS_HISTORY_STARTED {
+	if evs[0].GetKind() != apiv1.ProcessHistoryKind_PROCESS_HISTORY_KIND_STARTED {
 		t.Fatalf("event[0] kind=%v, want STARTED", evs[0].GetKind())
 	}
 	subscribed := false
 	for _, ev := range evs {
-		if ev.GetKind() == enginev1.ProcessHistoryKind_PROCESS_HISTORY_SUBSCRIBED {
+		if ev.GetKind() == apiv1.ProcessHistoryKind_PROCESS_HISTORY_KIND_SUBSCRIBED {
 			subscribed = true
 		}
 	}
@@ -283,7 +287,7 @@ func TestIngress_GetProcessInstanceHistory(t *testing.T) {
 	unknownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	unknown, err := cli.GetProcessInstanceHistory(unknownCtx, connect.NewRequest(&ingressv1.GetProcessInstanceHistoryRequest{
-		ModelRef: &enginev1.ModelRef{Name: svc}, InstanceKey: "no-such-instance",
+		Name: svc, InstanceKey: "no-such-instance",
 	}))
 	if err != nil {
 		t.Fatalf("GetProcessInstanceHistory(unknown): %v", err)
@@ -309,7 +313,9 @@ func TestIngress_ListProcessInstances(t *testing.T) {
 	for _, k := range instKeys {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_, err := cli.StartProcess(ctx, connect.NewRequest(&ingressv1.StartProcessRequest{
-			ModelRef:    &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"},
+			Kind:        "bpmn",
+			Name:        svc,
+			Version:     "v1",
 			InstanceKey: k,
 			Vars:        []byte(`{"orderId":"` + k + `"}`),
 		}))
@@ -319,7 +325,7 @@ func TestIngress_ListProcessInstances(t *testing.T) {
 		}
 	}
 
-	listReq := func(req *ingressv1.ListProcessInstancesRequest) []*ingressv1.ProcessInstanceSummary {
+	listReq := func(req *ingressv1.ListProcessInstancesRequest) []*apiv1.ProcessInstanceView {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -332,9 +338,9 @@ func TestIngress_ListProcessInstances(t *testing.T) {
 
 	// Wait until all three records exist (each StartProcess commits its record).
 	deadline := time.Now().Add(10 * time.Second)
-	var got []*ingressv1.ProcessInstanceSummary
+	var got []*apiv1.ProcessInstanceView
 	for time.Now().Before(deadline) {
-		got = listReq(&ingressv1.ListProcessInstancesRequest{ModelRef: &enginev1.ModelRef{Name: svc}})
+		got = listReq(&ingressv1.ListProcessInstancesRequest{Name: svc})
 		if len(got) == len(instKeys) {
 			break
 		}
@@ -357,11 +363,11 @@ func TestIngress_ListProcessInstances(t *testing.T) {
 	}
 
 	// A non-matching model name lists nothing.
-	if other := listReq(&ingressv1.ListProcessInstancesRequest{ModelRef: &enginev1.ModelRef{Name: "nope"}}); len(other) != 0 {
+	if other := listReq(&ingressv1.ListProcessInstancesRequest{Name: "nope"}); len(other) != 0 {
 		t.Fatalf("list other model: got %d, want 0", len(other))
 	}
 	// limit caps the result.
-	if capped := listReq(&ingressv1.ListProcessInstancesRequest{ModelRef: &enginev1.ModelRef{Name: svc}, Limit: 1}); len(capped) != 1 {
+	if capped := listReq(&ingressv1.ListProcessInstancesRequest{Name: svc, Limit: 1}); len(capped) != 1 {
 		t.Fatalf("list limit 1: got %d, want 1", len(capped))
 	}
 }
@@ -405,7 +411,9 @@ func TestIngress_ProcessIncidentLifecycle(t *testing.T) {
 	startCtx, startCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer startCancel()
 	if _, err := cli.StartProcess(startCtx, connect.NewRequest(&ingressv1.StartProcessRequest{
-		ModelRef:    &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"},
+		Kind:        "bpmn",
+		Name:        svc,
+		Version:     "v1",
 		InstanceKey: instKey,
 		Vars:        []byte(`{"status":"rejected"}`),
 	})); err != nil {
@@ -417,7 +425,7 @@ func TestIngress_ProcessIncidentLifecycle(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		resp, err := cli.GetProcessInstance(ctx, connect.NewRequest(&ingressv1.GetProcessInstanceRequest{
-			ModelRef: &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"}, InstanceKey: instKey,
+			Name: svc, InstanceKey: instKey,
 		}))
 		if err != nil {
 			t.Fatalf("GetProcessInstance: %v", err)
@@ -431,30 +439,30 @@ func TestIngress_ProcessIncidentLifecycle(t *testing.T) {
 	var g *ingressv1.GetProcessInstanceResponse
 	for time.Now().Before(deadline) {
 		g = getInst()
-		if g.GetPresent() && g.GetStatus() == enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT {
+		if g.GetPresent() && g.GetInstance().GetStatus() == apiv1.ProcessStatus_PROCESS_STATUS_INCIDENT {
 			break
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	if !g.GetPresent() || g.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT {
-		t.Fatalf("instance not parked as incident: present=%v status=%v", g.GetPresent(), g.GetStatus())
+	if !g.GetPresent() || g.GetInstance().GetStatus() != apiv1.ProcessStatus_PROCESS_STATUS_INCIDENT {
+		t.Fatalf("instance not parked as incident: present=%v status=%v", g.GetPresent(), g.GetInstance().GetStatus())
 	}
-	if g.GetIncident().GetNodeId() != "gw" {
-		t.Fatalf("incident node = %q, want gw (incident=%+v)", g.GetIncident().GetNodeId(), g.GetIncident())
+	if g.GetInstance().GetIncident().GetNodeId() != "gw" {
+		t.Fatalf("incident node = %q, want gw (incident=%+v)", g.GetInstance().GetIncident().GetNodeId(), g.GetInstance().GetIncident())
 	}
 
 	// The activity timeline records the incident.
 	hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer hcancel()
 	hresp, err := cli.GetProcessInstanceHistory(hctx, connect.NewRequest(&ingressv1.GetProcessInstanceHistoryRequest{
-		ModelRef: &enginev1.ModelRef{Name: svc}, InstanceKey: instKey,
+		Name: svc, InstanceKey: instKey,
 	}))
 	if err != nil {
 		t.Fatalf("GetProcessInstanceHistory: %v", err)
 	}
 	sawIncident := false
 	for _, ev := range hresp.Msg.GetEvents() {
-		if ev.GetKind() == enginev1.ProcessHistoryKind_PROCESS_HISTORY_INCIDENT_RAISED {
+		if ev.GetKind() == apiv1.ProcessHistoryKind_PROCESS_HISTORY_KIND_INCIDENT_RAISED {
 			sawIncident = true
 		}
 	}
@@ -466,8 +474,8 @@ func TestIngress_ProcessIncidentLifecycle(t *testing.T) {
 	tctx, tcancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer tcancel()
 	if _, err := cli.ResolveProcessIncident(tctx, connect.NewRequest(&ingressv1.ResolveProcessIncidentRequest{
-		ModelRef: &enginev1.ModelRef{Name: svc}, InstanceKey: instKey,
-		Resolution: enginev1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_TERMINATE,
+		Name: svc, InstanceKey: instKey,
+		Resolution: apiv1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_TERMINATE,
 	})); err != nil {
 		t.Fatalf("ResolveProcessIncident TERMINATE: %v", err)
 	}
@@ -520,7 +528,9 @@ func TestIngress_ProcessIncidentRetry(t *testing.T) {
 	startCtx, startCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer startCancel()
 	if _, err := cli.StartProcess(startCtx, connect.NewRequest(&ingressv1.StartProcessRequest{
-		ModelRef:    &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"},
+		Kind:        "bpmn",
+		Name:        svc,
+		Version:     "v1",
 		InstanceKey: instKey,
 		Vars:        []byte(`{"status":"rejected"}`),
 	})); err != nil {
@@ -532,7 +542,7 @@ func TestIngress_ProcessIncidentRetry(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		resp, err := cli.GetProcessInstance(ctx, connect.NewRequest(&ingressv1.GetProcessInstanceRequest{
-			ModelRef: &enginev1.ModelRef{Kind: "bpmn", Name: svc, Version: "v1"}, InstanceKey: instKey,
+			Name: svc, InstanceKey: instKey,
 		}))
 		if err != nil {
 			t.Fatalf("GetProcessInstance: %v", err)
@@ -543,21 +553,21 @@ func TestIngress_ProcessIncidentRetry(t *testing.T) {
 	// Wait for the instance to park as an incident at the gateway.
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if g := getInst(); g.GetPresent() && g.GetStatus() == enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT {
+		if g := getInst(); g.GetPresent() && g.GetInstance().GetStatus() == apiv1.ProcessStatus_PROCESS_STATUS_INCIDENT {
 			break
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	if g := getInst(); g.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_INCIDENT {
-		t.Fatalf("instance not parked as incident: status=%v", g.GetStatus())
+	if g := getInst(); g.GetInstance().GetStatus() != apiv1.ProcessStatus_PROCESS_STATUS_INCIDENT {
+		t.Fatalf("instance not parked as incident: status=%v", g.GetInstance().GetStatus())
 	}
 
 	// Resolve with RETRY, patching the variable that fixes the gateway condition.
 	rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer rcancel()
 	rresp, rerr := cli.ResolveProcessIncident(rctx, connect.NewRequest(&ingressv1.ResolveProcessIncidentRequest{
-		ModelRef: &enginev1.ModelRef{Name: svc}, InstanceKey: instKey,
-		Resolution: enginev1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_RETRY,
+		Name: svc, InstanceKey: instKey,
+		Resolution: apiv1.ProcessIncidentResolution_PROCESS_INCIDENT_RESOLUTION_RETRY,
 		VarPatch:   []byte(`{"status":"approved"}`),
 	}))
 	if rerr != nil {
@@ -573,23 +583,23 @@ func TestIngress_ProcessIncidentRetry(t *testing.T) {
 	var g *ingressv1.GetProcessInstanceResponse
 	for time.Now().Before(deadline) {
 		g = getInst()
-		if g.GetPresent() && g.GetStatus() == enginev1.ProcessStatus_PROCESS_STATUS_COMPLETED {
+		if g.GetPresent() && g.GetInstance().GetStatus() == apiv1.ProcessStatus_PROCESS_STATUS_COMPLETED {
 			break
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	if g.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_COMPLETED {
-		t.Fatalf("after RETRY, status = %v, want COMPLETED (incident=%+v)", g.GetStatus(), g.GetIncident())
+	if g.GetInstance().GetStatus() != apiv1.ProcessStatus_PROCESS_STATUS_COMPLETED {
+		t.Fatalf("after RETRY, status = %v, want COMPLETED (incident=%+v)", g.GetInstance().GetStatus(), g.GetInstance().GetIncident())
 	}
-	if g.GetIncident() != nil {
-		t.Fatalf("completed instance still carries an incident: %+v", g.GetIncident())
+	if g.GetInstance().GetIncident() != nil {
+		t.Fatalf("completed instance still carries an incident: %+v", g.GetInstance().GetIncident())
 	}
 
 	// The timeline records the resolution and the eventual completion.
 	hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer hcancel()
 	hresp, err := cli.GetProcessInstanceHistory(hctx, connect.NewRequest(&ingressv1.GetProcessInstanceHistoryRequest{
-		ModelRef: &enginev1.ModelRef{Name: svc}, InstanceKey: instKey,
+		Name: svc, InstanceKey: instKey,
 	}))
 	if err != nil {
 		t.Fatalf("GetProcessInstanceHistory: %v", err)
@@ -597,9 +607,9 @@ func TestIngress_ProcessIncidentRetry(t *testing.T) {
 	var sawResolved, sawCompleted bool
 	for _, ev := range hresp.Msg.GetEvents() {
 		switch ev.GetKind() {
-		case enginev1.ProcessHistoryKind_PROCESS_HISTORY_INCIDENT_RESOLVED:
+		case apiv1.ProcessHistoryKind_PROCESS_HISTORY_KIND_INCIDENT_RESOLVED:
 			sawResolved = true
-		case enginev1.ProcessHistoryKind_PROCESS_HISTORY_COMPLETED:
+		case apiv1.ProcessHistoryKind_PROCESS_HISTORY_KIND_COMPLETED:
 			sawCompleted = true
 		}
 	}

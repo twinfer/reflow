@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -61,17 +60,12 @@ type ContainerNode struct {
 // ingressRetryable reports whether an ingress error is a transient transport
 // hiccup worth redialing for. Docker Desktop's port proxy occasionally drops
 // the first stream on a freshly-dialed mTLS HTTP/2 connection ("unexpected
-// EOF"); a fresh dial then succeeds. Handles all three error shapes the ingress
-// surfaces: the REST Submit *HTTPStatusError (retry only 503), Connect RPC
-// errors (retry CodeUnavailable), and raw transport failures on the REST path
-// (any net.Error — these arrive uncoded).
+// EOF"); a fresh dial then succeeds. Handles the two shapes the ingress
+// surfaces: Connect RPC errors (retry CodeUnavailable) and raw transport
+// failures (any net.Error — these arrive uncoded).
 func ingressRetryable(err error) bool {
 	if err == nil {
 		return false
-	}
-	var he *ingressclient.HTTPStatusError
-	if errors.As(err, &he) {
-		return he.Status == http.StatusServiceUnavailable
 	}
 	if connect.CodeOf(err) == connect.CodeUnavailable {
 		return true
@@ -91,10 +85,10 @@ func (n *ContainerNode) dropIngress() {
 	}
 }
 
-// SubmitInvocation submits via this node's REST data-plane facade
-// (POST /v1/…); the server mints the invocation id and forwards to the
-// destination shard via its Partitioner. Retries on a transient transport
-// error with a fresh connection (see ingressRetryable).
+// SubmitInvocation submits via this node's SubmitInvocation RPC (SEND mode);
+// the server mints the invocation id and forwards to the destination shard via
+// its Partitioner. Retries on a transient transport error with a fresh
+// connection (see ingressRetryable).
 func (n *ContainerNode) SubmitInvocation(ctx context.Context, service, handler, objectKey string, input []byte) (*enginev1.InvocationId, error) {
 	var lastErr error
 	for attempt := 0; attempt < 4; attempt++ {

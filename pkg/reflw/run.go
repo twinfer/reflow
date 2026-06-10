@@ -554,12 +554,6 @@ func startIngressListener(
 		Middleware:         mw,
 		AuthzInterceptor:   authzIc,
 		TaskSchemaResolver: taskSchema,
-		Metrics:            metrics,
-	}
-	// The same *authz.Interceptor that gates the Connect RPCs also authorizes
-	// the REST data-plane facade (by Cedar action id, not procedure).
-	if ra, ok := authzIc.(ingress.IngressAuthorizer); ok {
-		icfg.RESTAuthorizer = ra
 	}
 	if len(cfg.Webhooks) > 0 {
 		icfg.ExtraRoutes = webhookRoutes(cfg.Webhooks, secrets, logger)

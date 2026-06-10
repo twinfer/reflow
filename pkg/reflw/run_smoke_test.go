@@ -2,11 +2,11 @@ package reflw_test
 
 import (
 	"context"
-	"errors"
 	"net"
-	"net/http"
 	"testing"
 	"time"
+
+	connect "connectrpc.com/connect"
 
 	"github.com/twinfer/reflw/pkg/ingressclient"
 	"github.com/twinfer/reflw/pkg/reflw"
@@ -80,12 +80,8 @@ func TestRun_StartsIngressListener(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Submit against unregistered handler; got nil")
 	}
-	var statusErr *ingressclient.HTTPStatusError
-	if !errors.As(err, &statusErr) {
-		t.Fatalf("expected *ingressclient.HTTPStatusError; got %v", err)
-	}
-	if statusErr.Status != http.StatusPreconditionFailed {
-		t.Fatalf("Submit status = %d; want 412 (FailedPrecondition): %v", statusErr.Status, err)
+	if code := connect.CodeOf(err); code != connect.CodeFailedPrecondition {
+		t.Fatalf("Submit code = %v; want FailedPrecondition: %v", code, err)
 	}
 }
 

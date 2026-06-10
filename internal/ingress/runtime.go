@@ -9,60 +9,58 @@ import (
 	"net/http"
 
 	connect "connectrpc.com/connect"
+	"connectrpc.com/vanguard"
 
 	"github.com/twinfer/reflw/internal/connectserver"
 	"github.com/twinfer/reflw/internal/engine"
-	"github.com/twinfer/reflw/internal/observability"
 	"github.com/twinfer/reflw/proto/ingressv1/ingressv1connect"
 )
+
+// maxIngressMessageBytes caps the buffered request/response payload Vanguard
+// will transcode (4 MiB). Larger payloads fail with resource-exhausted.
+const maxIngressMessageBytes uint32 = 4 << 20
 
 // Config is the minimum the ingress runtime needs. Mirrors the public
 // pkg/reflw.IngressConfig but kept internal so engine packages don't
 // pull in the public surface.
 type Config struct {
 	// Addr is the listen address. Connect content-negotiates Connect /
-	// gRPC / gRPC-Web / HTTP-JSON on this single port.
+	// gRPC / gRPC-Web / HTTP-JSON on this single port, and Vanguard adds
+	// REST+JSON for every RPC carrying a google.api.http annotation.
 	Addr string
 	// TLS, when non-nil, wraps the listener with TLS (HTTP/2 over TLS).
 	// Nil enables h2c.
 	TLS *tls.Config
 	// Log is the structured logger; defaults to slog.Default.
 	Log *slog.Logger
-	// Middleware wraps the Connect handler with the unified auth
-	// middleware (auth.HTTPMiddleware). REQUIRED — Start returns an
-	// error when nil. Anonymous traffic is permitted only by the policy
-	// (the embedded starter policy includes an ingress_open allow rule
-	// for /reflw.ingress.v1.Ingress/* with no principal restriction),
-	// not by skipping the middleware. Tests that intentionally bypass
-	// auth must pass an explicit identity passthrough.
+	// Middleware wraps the transcoder with the unified auth middleware
+	// (auth.HTTPMiddleware). REQUIRED — Start returns an error when nil.
+	// Anonymous traffic is permitted only by the policy (the foundational
+	// policy opens the ingress plane to any principal), not by skipping the
+	// middleware. Tests that intentionally bypass auth must pass an explicit
+	// identity passthrough.
 	Middleware func(http.Handler) http.Handler
-	// AuthzInterceptor enforces Cedar authorization on every ingress RPC.
-	// It runs after the auth Middleware has attached the verified principal
-	// to the request context. REQUIRED — Start returns an error when nil, so
-	// the ingress data plane is never served without authorization.
+	// AuthzInterceptor enforces Cedar authorization on every ingress RPC. It
+	// runs inside the Connect handler, after the auth Middleware has attached
+	// the verified principal — and because Vanguard transcodes REST into a
+	// Connect call against the same handler, it gates the REST routes too.
+	// REQUIRED — Start returns an error when nil, so the ingress data plane is
+	// never served without authorization.
 	AuthzInterceptor connect.Interceptor
 	// ExtraRoutes builds additional connectserver.Routes mounted on the
-	// same listener as the Connect ingress. Called once after Start
-	// constructs the in-process Server, so the caller can wire handlers
-	// (notably webhook receivers) that need *Server directly. The caller
-	// is responsible for wrapping each handler with the auth middleware
-	// (the same instance passed in Middleware); Start does not double-wrap.
-	// Webhooks deliberately skip it (HMAC is their gate).
+	// same listener as the transcoder. Called once after Start constructs the
+	// in-process Server, so the caller can wire handlers (notably webhook
+	// receivers) that need *Server directly. Their (validated) paths out-rank
+	// the "/" transcoder on the ServeMux. The caller is responsible for the
+	// auth middleware on these handlers; Start does not wrap them. Webhooks
+	// deliberately skip it (HMAC is their gate).
 	ExtraRoutes func(srv *Server) []connectserver.Route
-	// RESTAuthorizer, when non-nil, mounts the first-class REST data-plane
-	// facade (POST /v1/{service}/{handler}[/{key}], /v1/processes/{name},
-	// /v1/cases/{name}) behind Middleware, authorizing each call via Cedar.
-	// *authz.Interceptor satisfies it. Nil disables the REST facade (the
-	// Connect RPCs still serve).
-	RESTAuthorizer IngressAuthorizer
 	// TaskSchemaResolver, when non-nil, lets GET /v1/tasks/{token} return a parked
 	// task's submission JSON Schema alongside its descriptor. Resolved from the
 	// active model resolver (the table-backed reflwos resolver satisfies it); nil →
 	// the read returns the descriptor only. Held as an interface so this package
 	// never imports reflwos.
 	TaskSchemaResolver TaskSchemaResolver
-	// Metrics records IngressRESTRequests for the REST facade. Optional.
-	Metrics *observability.Metrics
 }
 
 // Runtime is a started ingress server. Close it to stop the listener
@@ -94,38 +92,27 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 	}
 	srv := NewServer(host, cfg.Log)
 	srv.schemaResolver = cfg.TaskSchemaResolver
+
+	// One Connect handler for the ingress service, behind the Cedar authz +
+	// default-deadline interceptors. Vanguard wraps it so the same handler and
+	// the same interceptor chain serve Connect/gRPC/gRPC-Web AND the REST
+	// routes declared by the google.api.http annotations — REST authorization
+	// is the standard procedure-keyed interceptor, with no bespoke REST path.
 	path, handler := ingressv1connect.NewIngressHandler(srv,
 		connect.WithInterceptors(cfg.AuthzInterceptor, withDefaultDeadline(defaultLookupTimeout)),
 	)
-	routes := []connectserver.Route{{Path: path, Handler: cfg.Middleware(handler)}}
-	if cfg.RESTAuthorizer != nil {
-		ic := InvokeConfig{
-			Invoker:    srv,
-			Starter:    srv,
-			Reader:     srv,
-			Deliverer:  srv,
-			Completer:  srv,
-			Authorizer: cfg.RESTAuthorizer,
-			Metrics:    cfg.Metrics,
-			Log:        cfg.Log,
-		}
-		routes = append(routes,
-			connectserver.Route{Path: "POST /v1/processes/{name}", Handler: cfg.Middleware(StartProcessHTTP(ic, false))},
-			connectserver.Route{Path: "POST /v1/cases/{name}", Handler: cfg.Middleware(StartProcessHTTP(ic, true))},
-			connectserver.Route{Path: "POST /v1/processes/{name}/{key}/events", Handler: cfg.Middleware(DeliverProcessEventHTTP(ic))},
-			connectserver.Route{Path: "GET /v1/processes/{name}/{key}", Handler: cfg.Middleware(GetProcessInstanceHTTP(ic))},
-			connectserver.Route{Path: "GET /v1/processes/{name}/{key}/history", Handler: cfg.Middleware(GetProcessHistoryHTTP(ic))},
-			// The /v1/tasks/{token} resume-point surface: GET resolves the token to
-			// the parked task (descriptor + submission schema), POST completes/fails
-			// it. Both are more specific than /v1/{service}/{handler} (literal "tasks"
-			// in segment 2) so they take precedence — /v1/tasks/ is reserved like
-			// /v1/processes/ and /v1/cases/. GET and POST are distinct mux patterns.
-			connectserver.Route{Path: "GET /v1/tasks/{token}", Handler: cfg.Middleware(GetTaskHTTP(ic))},
-			connectserver.Route{Path: "POST /v1/tasks/{token}", Handler: cfg.Middleware(CompleteTaskHTTP(ic))},
-			connectserver.Route{Path: "POST /v1/{service}/{key}/{handler}", Handler: cfg.Middleware(InvokeHTTP(ic, true))},
-			connectserver.Route{Path: "POST /v1/{service}/{handler}", Handler: cfg.Middleware(InvokeHTTP(ic, false))},
-		)
+	svc := vanguard.NewService(path, handler, vanguard.WithMaxMessageBufferBytes(maxIngressMessageBytes))
+	transcoder, err := vanguard.NewTranscoder([]*vanguard.Service{svc})
+	if err != nil {
+		return nil, fmt.Errorf("ingress: transcoder: %w", err)
 	}
+
+	// Outermost → innermost: auth Middleware (stamps the verified principal) →
+	// metaLiftHandler (Reflw-Meta-* headers → ctx) → transcoder. CORS is added
+	// in a later phase. Mounted at "/" so the transcoder owns both the Connect
+	// subtree and the REST paths with no ServeMux pattern conflict.
+	root := cfg.Middleware(metaLiftHandler(transcoder))
+	routes := []connectserver.Route{{Path: "/", Handler: root}}
 	if cfg.ExtraRoutes != nil {
 		routes = append(routes, cfg.ExtraRoutes(srv)...)
 	}

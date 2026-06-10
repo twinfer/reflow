@@ -75,21 +75,13 @@ func TestProcMap_ActionIDsUnique(t *testing.T) {
 // declarations (`action IngressActions;`) are unquoted and so excluded.
 var schemaActionRE = regexp.MustCompile(`action\s+"([^"]+)"`)
 
-// restOnlyActions are Cedar actions declared in schema.cedar but deliberately
-// absent from procMap: authorized off a non-Connect surface via
-// Interceptor.AuthorizeIngressAction (a bare action id, not a Connect
-// procedure). As of the ingressv1 RPC restoration every ingress action — submit
-// included — is a real Connect procedure, so this set is empty; the seam is kept
-// for a future REST-only surface.
-var restOnlyActions = map[string]bool{}
-
 // TestSchemaActions_MatchProcmap closes the drift gap that let dead actions
 // (the removed CA-root / join-token surface) and missing actions (the model and
 // process-plane RPCs) sit in schema.cedar undetected: TestProcMap_* only checks
 // procMap<->RPC, never schema<->procMap. This asserts both directions — every
-// procMap action is declared in the schema, and every schema action is either in
-// procMap or a known REST-only action — so a future add/remove that touches only
-// one side fails CI.
+// procMap action is declared in the schema, and every schema action has a
+// procMap entry (every action is a real Connect procedure now that the REST
+// facade is gone) — so a future add/remove that touches only one side fails CI.
 func TestSchemaActions_MatchProcmap(t *testing.T) {
 	schemaActions := map[string]bool{}
 	for _, m := range schemaActionRE.FindAllStringSubmatch(string(schemaText), -1) {
@@ -105,8 +97,8 @@ func TestSchemaActions_MatchProcmap(t *testing.T) {
 		}
 	}
 	for a := range schemaActions {
-		if !procActions[a] && !restOnlyActions[a] {
-			t.Errorf("schema.cedar action %q has no procMap entry and is not a known REST-only action", a)
+		if !procActions[a] {
+			t.Errorf("schema.cedar action %q has no procMap entry", a)
 		}
 	}
 }

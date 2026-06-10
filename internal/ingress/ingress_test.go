@@ -40,9 +40,12 @@ func testIngressMiddleware(t *testing.T) func(http.Handler) http.Handler {
 // testAuthzInterceptor returns a Cedar authz interceptor over the in-binary
 // foundational policies — ingress is open to all principals, so anonymous h2c
 // tests reach the handler, authorized the same way production wires it.
+// bearerEnabled=true so anonymous denials on operator-only routes advertise the
+// Bearer challenge (exercised by the transcoder gate test); it is inert for the
+// allowed-anonymous happy paths.
 func testAuthzInterceptor(t *testing.T) *authz.Interceptor {
 	t.Helper()
-	ic, err := authz.NewFoundationalInterceptor(nil, false)
+	ic, err := authz.NewFoundationalInterceptor(nil, true)
 	if err != nil {
 		t.Fatalf("authz.NewFoundationalInterceptor: %v", err)
 	}
@@ -126,12 +129,10 @@ func bringUpHostWithIngress(t *testing.T, reg *handler.Registry) (*engine.Host, 
 		}
 	}
 
-	ic := testAuthzInterceptor(t)
 	rt, err := ingress.Start(context.Background(), h, ingress.Config{
 		Addr:             "127.0.0.1:0",
 		Middleware:       testIngressMiddleware(t),
-		AuthzInterceptor: ic,
-		RESTAuthorizer:   ic,
+		AuthzInterceptor: testAuthzInterceptor(t),
 	})
 	if err != nil {
 		t.Fatalf("ingress.Start: %v", err)

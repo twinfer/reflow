@@ -126,8 +126,6 @@ func isIngressProcedure(procedure string) bool {
 // buildActionEntity returns the Cedar action UID for an action id plus its
 // entity carrying the plane-group parent edges, so `action in [Action::"<group>"]`
 // resolves against the entity map (cedar.Authorize never consults the schema).
-// Shared by actionEntity (the RPC path, keyed on procedure) and the REST
-// facade's Interceptor.AuthorizeIngressAction (keyed on a bare action id).
 func buildActionEntity(action string, groups []string) (cedar.EntityUID, types.Entity) {
 	uid := cedar.NewEntityUID(actionType, cedar.String(action))
 	parents := make([]cedar.EntityUID, len(groups))

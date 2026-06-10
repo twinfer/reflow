@@ -51,6 +51,16 @@ func NewServer(h *engine.Host, log *slog.Logger) *Server {
 	return &Server{host: h, log: log}
 }
 
+// TaskSchemaResolver derives a parked task's submission JSON Schema from the
+// instance's pinned model. The reflwos model resolver satisfies it structurally;
+// held as an interface so internal/ingress stays model-agnostic (it never imports
+// reflwos). The bytes are opaque JSON Schema — the engine forwards them, schema
+// generation is a gateway (reflwos) concern. A (nil, nil) return means the task
+// has no typed completion contract; an error means the model was unresolvable.
+type TaskSchemaResolver interface {
+	TaskSchema(ctx context.Context, modelRef *enginev1.ModelRef, nodeID string) ([]byte, error)
+}
+
 // SubmitArgs is the transport-agnostic input to a durable submit — the
 // fields the former SubmitInvocation RPC carried, shared by the Connect
 // RPC shell and the REST kernel (invoke_http.go) / webhook adapter.
@@ -178,9 +188,10 @@ func (s *Server) Submit(ctx context.Context, a SubmitArgs) (*enginev1.Invocation
 
 // SubmitInvocation is the Connect RPC shell over Submit. In AWAIT mode (the
 // default — MODE_UNSPECIFIED maps to AWAIT) it blocks for the result via Await;
-// in SEND mode it returns the minted id immediately. Caller metadata rides the
-// request map (the transcoded REST path's Reflw-Meta-* header lift is wired in
-// the ingress runtime, ahead of this handler).
+// in SEND mode it returns the minted id immediately. Caller metadata arrives two
+// ways and is merged: the request map (the typed RPC carrier) and Reflw-Meta-*
+// headers lifted into the context by metaLiftHandler ahead of this handler on the
+// Vanguard-transcoded REST path. Header values win (mergeMeta).
 func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingressv1.SubmitInvocationRequest]) (*connect.Response[ingressv1.SubmitInvocationResponse], error) {
 	msg := req.Msg
 	id, err := s.Submit(ctx, SubmitArgs{
@@ -189,7 +200,7 @@ func (s *Server) SubmitInvocation(ctx context.Context, req *connect.Request[ingr
 		ObjectKey:      msg.GetObjectKey(),
 		Input:          msg.GetInput(),
 		IdempotencyKey: msg.GetIdempotencyKey(),
-		Metadata:       msg.GetMetadata(),
+		Metadata:       mergeMeta(metaFromContext(ctx), msg.GetMetadata()),
 	})
 	if err != nil {
 		return nil, err

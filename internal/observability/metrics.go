@@ -25,11 +25,6 @@ type Metrics struct {
 	// deployment is hitting MaxJournalEntries; raise the cap via
 	// DeploymentRecord.max_journal_entries.
 	InvocationsCompleted *prometheus.CounterVec
-	// IngressRESTRequests counts HTTP requests served by the /v1/*
-	// REST facade. Labels: route (chi pattern), method, status (2xx /
-	// 4xx / 5xx). Route is the chi template, never the raw path, so
-	// cardinality stays bounded.
-	IngressRESTRequests *prometheus.CounterVec
 	// RebalanceMode is a one-shot gauge stamped at rebalancer start.
 	// 0 = off, 1 = advisory, 2 = auto. When the loop never starts
 	// (Mode=off) the gauge is set to 0 so dashboards can distinguish
@@ -156,10 +151,6 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name: "reflw_invocations_completed_total",
 			Help: "Invocations that reached the Completed status, classified by outcome (success, failure, cancelled, step_budget_exhausted).",
 		}, []string{"service", "outcome"}),
-		IngressRESTRequests: f.NewCounterVec(prometheus.CounterOpts{
-			Name: "reflw_ingress_rest_requests_total",
-			Help: "HTTP requests served by the /v1/* REST ingress facade, labeled by chi route template, method, and status class.",
-		}, []string{"route", "method", "status"}),
 		RebalanceMode: f.NewGauge(prometheus.GaugeOpts{
 			Name: "reflw_rebalance_mode",
 			Help: "Autonomous LP rebalancer mode. 0=off, 1=advisory, 2=auto. Stamped once at start.",

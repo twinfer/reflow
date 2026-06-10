@@ -1,28 +1,27 @@
 // Package ingressclient is a typed client for the reflw ingress service.
 // Callers (test harness, operator tools, embedded programs) dial one of
-// these against a reflw node's ingress listener. Reads/awaits use the
-// Connect RPCs (AwaitInvocation / AttachInvocation / …); submitting an
-// invocation uses the REST data-plane facade (Submit → POST /v1/…).
+// these against a reflw node's ingress listener. Every call is a Connect
+// RPC over the single ingress listener (content-negotiated against the
+// Vanguard transcoder); Submit is a thin wrapper over SubmitInvocation in
+// SEND mode.
 package ingressclient
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"strings"
 
+	connect "connectrpc.com/connect"
+
+	ingressv1 "github.com/twinfer/reflw/proto/ingressv1"
 	"github.com/twinfer/reflw/proto/ingressv1/ingressv1connect"
 )
 
 // Client is a thin wrapper around the generated Connect client plus the
-// underlying http.Client (so callers can Close idle connections and Submit
-// over the REST facade).
+// underlying http.Client (so callers can Close idle connections).
 type Client struct {
 	ingressv1connect.IngressClient
 	hc      *http.Client
@@ -72,8 +71,7 @@ func Dial(opts Options) (*Client, error) {
 	}, nil
 }
 
-// SubmitArgs is the input to Submit — the REST data-plane equivalent of the
-// removed SubmitInvocation RPC request.
+// SubmitArgs is the input to Submit.
 type SubmitArgs struct {
 	Service        string
 	Handler        string
@@ -83,64 +81,27 @@ type SubmitArgs struct {
 	Metadata       map[string]string
 }
 
-// HTTPStatusError is returned by Submit when the REST facade responds with a
-// non-202 status. It carries the status so callers can classify the failure
-// (e.g. retry on 503, give up on 4xx).
-type HTTPStatusError struct {
-	Status int
-	Body   string
-}
-
-func (e *HTTPStatusError) Error() string {
-	return fmt.Sprintf("ingressclient: submit: status %d: %s", e.Status, e.Body)
-}
-
-// Submit posts to the REST data-plane facade
-// (POST /v1/{service}[/{object_key}]/{handler}?mode=send) and returns the
-// minted invocation id string without blocking for the result — use
-// AwaitInvocation / AttachInvocation to wait. It replaces the removed
-// SubmitInvocation RPC. A non-202 response yields a *HTTPStatusError.
+// Submit calls SubmitInvocation in SEND mode and returns the minted invocation
+// id string without blocking for the result — use AwaitInvocation /
+// AttachInvocation to wait. Errors are *connect.Error; classify with
+// connect.CodeOf.
 func (c *Client) Submit(ctx context.Context, a SubmitArgs) (string, error) {
 	if a.Service == "" || a.Handler == "" {
 		return "", errors.New("ingressclient: service and handler are required")
 	}
-	segs := []string{"v1", a.Service}
-	if a.ObjectKey != "" {
-		segs = append(segs, a.ObjectKey)
-	}
-	segs = append(segs, a.Handler)
-	for i, s := range segs {
-		segs[i] = url.PathEscape(s)
-	}
-	endpoint := c.baseURL + "/" + strings.Join(segs, "/") + "?mode=send"
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(a.Input))
+	resp, err := c.SubmitInvocation(ctx, connect.NewRequest(&ingressv1.SubmitInvocationRequest{
+		Service:        a.Service,
+		Handler:        a.Handler,
+		ObjectKey:      a.ObjectKey,
+		Input:          a.Input,
+		IdempotencyKey: a.IdempotencyKey,
+		Metadata:       a.Metadata,
+		Mode:           ingressv1.SubmitInvocationRequest_MODE_SEND,
+	}))
 	if err != nil {
 		return "", err
 	}
-	if a.IdempotencyKey != "" {
-		req.Header.Set("Idempotency-Key", a.IdempotencyKey)
-	}
-	for k, v := range a.Metadata {
-		req.Header.Set("Reflw-Meta-"+k, v)
-	}
-
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusAccepted {
-		return "", &HTTPStatusError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
-	}
-	var out struct {
-		InvocationID string `json:"invocation_id"`
-	}
-	if err := json.Unmarshal(body, &out); err != nil {
-		return "", fmt.Errorf("ingressclient: decode submit response: %w", err)
-	}
-	return out.InvocationID, nil
+	return resp.Msg.GetInvocationId(), nil
 }
 
 // Close releases the underlying connection pool.

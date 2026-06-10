@@ -12,6 +12,7 @@ import (
 	"time"
 
 	connect "connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/twinfer/reflw/internal/ingress"
 	"github.com/twinfer/reflw/internal/storage/keys"
@@ -78,7 +79,11 @@ type fakeReader struct {
 	instance    *ingressv1.GetProcessInstanceResponse // GetProcessInstanceCore canned result
 	instanceErr error
 
+	task    *ingressv1.GetTaskResponse // GetTaskCore canned result
+	taskErr error
+
 	gotName, gotKey string
+	gotToken        string
 	gotAfterSeq     uint64
 	gotLimit        int
 	called          bool
@@ -94,6 +99,12 @@ func (f *fakeReader) GetProcessInstanceHistoryCore(_ context.Context, name, inst
 	f.called = true
 	f.gotName, f.gotKey, f.gotAfterSeq, f.gotLimit = name, instanceKey, afterSeq, limit
 	return f.present, f.events, f.nextAfterSeq, f.err
+}
+
+func (f *fakeReader) GetTaskCore(_ context.Context, resumeToken string) (*ingressv1.GetTaskResponse, error) {
+	f.called = true
+	f.gotToken = resumeToken
+	return f.task, f.taskErr
 }
 
 type fakeDeliverer struct {
@@ -133,6 +144,7 @@ func restMux(ic ingress.InvokeConfig) *http.ServeMux {
 	m.Handle("POST /v1/processes/{name}/{key}/events", ingress.DeliverProcessEventHTTP(ic))
 	m.Handle("GET /v1/processes/{name}/{key}", ingress.GetProcessInstanceHTTP(ic))
 	m.Handle("GET /v1/processes/{name}/{key}/history", ingress.GetProcessHistoryHTTP(ic))
+	m.Handle("GET /v1/tasks/{token}", ingress.GetTaskHTTP(ic))
 	m.Handle("POST /v1/tasks/{token}", ingress.CompleteTaskHTTP(ic))
 	m.Handle("POST /v1/{service}/{key}/{handler}", ingress.InvokeHTTP(ic, true))
 	m.Handle("POST /v1/{service}/{handler}", ingress.InvokeHTTP(ic, false))
@@ -573,6 +585,95 @@ func TestCompleteTaskHTTP_StaleToken(t *testing.T) {
 		"POST", "/v1/tasks/rpt_abc", []byte(`{}`), nil)
 	if rec.Code != http.StatusPreconditionFailed {
 		t.Fatalf("status = %d, want 412 (%q)", rec.Code, rec.Body.String())
+	}
+}
+
+// --- resolve-task-by-resume-token kernel -------------------------------------
+
+// TestGetTaskHTTP_SuccessWithSchema: GET /v1/tasks/{token} authorizes against
+// GetProcessInstance (a read), threads the path token into the reader, and renders
+// the descriptor + submission schema as protojson (the schema struct inline).
+func TestGetTaskHTTP_SuccessWithSchema(t *testing.T) {
+	sch, err := structpb.NewStruct(map[string]any{"type": "object", "required": []any{"approved"}})
+	if err != nil {
+		t.Fatalf("build schema struct: %v", err)
+	}
+	rd := &fakeReader{task: &ingressv1.GetTaskResponse{
+		Service: "order", InstanceKey: "o-1", NodeId: "u", Name: "Approve", Schema: sch,
+	}}
+	authz := &fakeAuthorizer{}
+	rec := doReq(restMux(ingress.InvokeConfig{Reader: rd, Authorizer: authz}),
+		"GET", "/v1/tasks/rpt_xyz", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%q)", rec.Code, rec.Body.String())
+	}
+	if authz.gotAction != "GetProcessInstance" {
+		t.Fatalf("authorized action = %q, want GetProcessInstance", authz.gotAction)
+	}
+	if rd.gotToken != "rpt_xyz" {
+		t.Fatalf("reader token = %q, want rpt_xyz", rd.gotToken)
+	}
+	body := decodeJSON(t, rec)
+	if body["service"] != "order" || body["instanceKey"] != "o-1" || body["nodeId"] != "u" || body["name"] != "Approve" {
+		t.Fatalf("descriptor body = %v (%q)", body, rec.Body.String())
+	}
+	schema, ok := body["schema"].(map[string]any)
+	if !ok || schema["type"] != "object" {
+		t.Fatalf("schema = %v (%q)", body["schema"], rec.Body.String())
+	}
+}
+
+// TestGetTaskHTTP_DescriptorOnly: with no resolver wired the core returns a
+// schema-less response; protojson omits the schema field entirely.
+func TestGetTaskHTTP_DescriptorOnly(t *testing.T) {
+	rd := &fakeReader{task: &ingressv1.GetTaskResponse{
+		Service: "order", InstanceKey: "o-1", NodeId: "u", Name: "Approve",
+	}}
+	rec := doReq(restMux(ingress.InvokeConfig{Reader: rd, Authorizer: &fakeAuthorizer{}}),
+		"GET", "/v1/tasks/rpt_xyz", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%q)", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	if _, present := body["schema"]; present {
+		t.Fatalf("schema must be omitted when absent: %q", rec.Body.String())
+	}
+	if body["nodeId"] != "u" {
+		t.Fatalf("descriptor body = %v", body)
+	}
+}
+
+// TestGetTaskHTTP_StaleToken: a stale/consumed token surfaces as FailedPrecondition
+// from the core → 412 (the same liveness gate the completion path applies).
+func TestGetTaskHTTP_StaleToken(t *testing.T) {
+	rd := &fakeReader{taskErr: connect.NewError(connect.CodeFailedPrecondition, errors.New("not awaiting"))}
+	rec := doReq(restMux(ingress.InvokeConfig{Reader: rd, Authorizer: &fakeAuthorizer{}}),
+		"GET", "/v1/tasks/rpt_xyz", nil, nil)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412 (%q)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestGetTaskHTTP_InvalidToken: a malformed token surfaces as InvalidArgument → 400.
+func TestGetTaskHTTP_InvalidToken(t *testing.T) {
+	rd := &fakeReader{taskErr: connect.NewError(connect.CodeInvalidArgument, errors.New("resume token"))}
+	rec := doReq(restMux(ingress.InvokeConfig{Reader: rd, Authorizer: &fakeAuthorizer{}}),
+		"GET", "/v1/tasks/bogus", nil, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (%q)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetTaskHTTP_AuthzDeny(t *testing.T) {
+	rd := &fakeReader{task: &ingressv1.GetTaskResponse{NodeId: "u"}}
+	authz := &fakeAuthorizer{err: connect.NewError(connect.CodePermissionDenied, errors.New("no"))}
+	rec := doReq(restMux(ingress.InvokeConfig{Reader: rd, Authorizer: authz}),
+		"GET", "/v1/tasks/rpt_xyz", nil, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if rd.called {
+		t.Fatalf("reader must not run after authz denial")
 	}
 }
 

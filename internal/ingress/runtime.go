@@ -55,6 +55,12 @@ type Config struct {
 	// *authz.Interceptor satisfies it. Nil disables the REST facade (the
 	// Connect RPCs still serve).
 	RESTAuthorizer IngressAuthorizer
+	// TaskSchemaResolver, when non-nil, lets GET /v1/tasks/{token} return a parked
+	// task's submission JSON Schema alongside its descriptor. Resolved from the
+	// active model resolver (the table-backed reflwos resolver satisfies it); nil →
+	// the read returns the descriptor only. Held as an interface so this package
+	// never imports reflwos.
+	TaskSchemaResolver TaskSchemaResolver
 	// Metrics records IngressRESTRequests for the REST facade. Optional.
 	Metrics *observability.Metrics
 }
@@ -87,6 +93,7 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 		cfg.Log = slog.Default()
 	}
 	srv := NewServer(host, cfg.Log)
+	srv.schemaResolver = cfg.TaskSchemaResolver
 	path, handler := ingressv1connect.NewIngressHandler(srv,
 		connect.WithInterceptors(cfg.AuthzInterceptor, withDefaultDeadline(defaultLookupTimeout)),
 	)
@@ -108,9 +115,12 @@ func Start(ctx context.Context, host *engine.Host, cfg Config) (*Runtime, error)
 			connectserver.Route{Path: "POST /v1/processes/{name}/{key}/events", Handler: cfg.Middleware(DeliverProcessEventHTTP(ic))},
 			connectserver.Route{Path: "GET /v1/processes/{name}/{key}", Handler: cfg.Middleware(GetProcessInstanceHTTP(ic))},
 			connectserver.Route{Path: "GET /v1/processes/{name}/{key}/history", Handler: cfg.Middleware(GetProcessHistoryHTTP(ic))},
-			// More specific than POST /v1/{service}/{handler} (literal "tasks" in
-			// segment 2), so it takes precedence — /v1/tasks/ is reserved for the
-			// resume-token surface, like /v1/processes/ and /v1/cases/.
+			// The /v1/tasks/{token} resume-point surface: GET resolves the token to
+			// the parked task (descriptor + submission schema), POST completes/fails
+			// it. Both are more specific than /v1/{service}/{handler} (literal "tasks"
+			// in segment 2) so they take precedence — /v1/tasks/ is reserved like
+			// /v1/processes/ and /v1/cases/. GET and POST are distinct mux patterns.
+			connectserver.Route{Path: "GET /v1/tasks/{token}", Handler: cfg.Middleware(GetTaskHTTP(ic))},
 			connectserver.Route{Path: "POST /v1/tasks/{token}", Handler: cfg.Middleware(CompleteTaskHTTP(ic))},
 			connectserver.Route{Path: "POST /v1/{service}/{key}/{handler}", Handler: cfg.Middleware(InvokeHTTP(ic, true))},
 			connectserver.Route{Path: "POST /v1/{service}/{handler}", Handler: cfg.Middleware(InvokeHTTP(ic, false))},

@@ -10,6 +10,8 @@ import (
 	"strconv"
 
 	connect "connectrpc.com/connect"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/twinfer/reflw/internal/engine"
 	"github.com/twinfer/reflw/internal/engine/routing"
@@ -277,6 +279,8 @@ func (s *Server) CompleteTaskCore(ctx context.Context, a CompleteTaskArgs) (uint
 
 	// Validate against live state: the task must still be parked and awaiting input.
 	// Mirrors ResolveProcessIncident's RETRY precondition read.
+	ctx, cancel := ensureReadDeadline(ctx)
+	defer cancel()
 	res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupProcessInstance{
 		Service:     tgt.Service,
 		InstanceKey: tgt.InstanceKey,
@@ -329,14 +333,95 @@ func (s *Server) CompleteTaskCore(ctx context.Context, a CompleteTaskArgs) (uint
 	return pk, nil
 }
 
+// GetTaskCore resolves a parked task by opaque resume token — the discovery (read)
+// half of the resume-token flow, the GET counterpart to CompleteTaskCore. It
+// decodes the token to (partition_key, name, instance_key, node_id) and validates
+// against live state with one linearizable read exactly as CompleteTaskCore does
+// (present, RUNNING, node_id still in the awaiting set — else the token is stale,
+// already completed, or forged: FailedPrecondition), then returns the task
+// descriptor. When a schema resolver is wired it best-effort enriches the response
+// with the task's submission JSON Schema, resolved against the instance's pinned
+// model_ref; a schema-resolution failure is logged and omitted (the descriptor is
+// authoritative). Read-only — proposes nothing. The non-RPC core behind GET
+// /v1/tasks/{token}; errors are connect.Errors.
+func (s *Server) GetTaskCore(ctx context.Context, resumeToken string) (*ingressv1.GetTaskResponse, error) {
+	tgt, err := keys.DecodeResumeToken(resumeToken)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("resume token: %w", err))
+	}
+	// Recompute the canonical pk and reject a mismatch — same forgery guard as
+	// CompleteTaskCore so the read can't address a shard the instance never lived on.
+	pk := routing.PartitionKey(tgt.Service, tgt.InstanceKey)
+	if pk != tgt.PartitionKey {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("resume token routing mismatch"))
+	}
+	shardID := s.host.Partitioner().ShardForKey(pk)
+
+	ctx, cancel := ensureReadDeadline(ctx)
+	defer cancel()
+	res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupProcessInstance{
+		Service:     tgt.Service,
+		InstanceKey: tgt.InstanceKey,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup process instance: %w", err))
+	}
+	r, ok := res.(engine.ProcessInstanceLookupResult)
+	if !ok {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup process instance: unexpected type %T", res))
+	}
+	aw := awaitingTask(r.Record.GetAwaiting(), tgt.NodeID)
+	if !r.Present || r.Record.GetStatus() != enginev1.ProcessStatus_PROCESS_STATUS_RUNNING || aw == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("task %q is not awaiting input (already completed, or the instance is not running)", tgt.NodeID))
+	}
+	resp := &ingressv1.GetTaskResponse{
+		Service:     tgt.Service,
+		InstanceKey: tgt.InstanceKey,
+		NodeId:      tgt.NodeID,
+		Name:        aw.GetName(),
+	}
+	if s.schemaResolver != nil {
+		resp.Schema = s.taskSchema(ctx, r.Record.GetModelRef(), tgt.NodeID)
+	}
+	return resp, nil
+}
+
+// taskSchema best-effort resolves a parked task's submission JSON Schema via the
+// injected resolver and decodes it into a structpb.Struct for the response. Any
+// failure (model unresolvable, no typed contract, decode error) yields nil — the
+// descriptor stands on its own. Schema generation is a reflwos (gateway) concern;
+// the bytes are forwarded opaquely.
+func (s *Server) taskSchema(ctx context.Context, modelRef *enginev1.ModelRef, nodeID string) *structpb.Struct {
+	b, err := s.schemaResolver.TaskSchema(ctx, modelRef, nodeID)
+	if err != nil {
+		s.log.Debug("ingress: task schema unavailable", "node", nodeID, "err", err)
+		return nil
+	}
+	if len(b) == 0 {
+		return nil
+	}
+	var st structpb.Struct
+	if err := protojson.Unmarshal(b, &st); err != nil {
+		s.log.Warn("ingress: task schema decode failed", "node", nodeID, "err", err)
+		return nil
+	}
+	return &st
+}
+
 // awaitingContains reports whether node is in the record's persisted awaiting set.
 func awaitingContains(awaiting []*enginev1.AwaitingTask, node string) bool {
+	return awaitingTask(awaiting, node) != nil
+}
+
+// awaitingTask returns the record's awaiting entry for node, or nil when absent.
+func awaitingTask(awaiting []*enginev1.AwaitingTask, node string) *enginev1.AwaitingTask {
 	for _, aw := range awaiting {
 		if aw.GetNodeId() == node {
-			return true
+			return aw
 		}
 	}
-	return false
+	return nil
 }
 
 // encodeExternalEventEnvelope wraps a reflwos engine-event (kind discriminator +
@@ -452,6 +537,8 @@ func (s *Server) GetProcessInstanceCore(ctx context.Context, name, instanceKey s
 
 	pk := routing.PartitionKey(name, instanceKey)
 	shardID := s.host.Partitioner().ShardForKey(pk)
+	ctx, cancel := ensureReadDeadline(ctx)
+	defer cancel()
 	res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupProcessInstance{
 		Service:     name,
 		InstanceKey: instanceKey,
@@ -585,6 +672,8 @@ func (s *Server) GetProcessInstanceHistoryCore(ctx context.Context, name, instan
 	limit = clampListLimit(limit)
 	pk := routing.PartitionKey(name, instanceKey)
 	shardID := s.host.Partitioner().ShardForKey(pk)
+	ctx, cancel := ensureReadDeadline(ctx)
+	defer cancel()
 	res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupProcessInstanceHistory{
 		Service:     name,
 		InstanceKey: instanceKey,

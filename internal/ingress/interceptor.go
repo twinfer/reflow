@@ -13,6 +13,20 @@ import (
 // request context unchanged and so often has none.
 const defaultLookupTimeout = 2 * time.Second
 
+// ensureReadDeadline guarantees ctx carries a deadline before a dragonboat
+// SyncRead, which requires one. The Connect path gets this from the
+// withDefaultDeadline interceptor; the REST facade (invoke_http.go) forwards the
+// request context unchanged, so a SyncRead-backed core attaches the same default
+// itself when none is present. The proposer self-defends separately for the
+// propose path. The returned cancel is a no-op when ctx already had a deadline; the
+// caller must defer it regardless.
+func ensureReadDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, defaultLookupTimeout)
+}
+
 // withDefaultDeadline returns a connect.Interceptor that ensures every
 // inbound unary or streaming RPC carries a deadline. If the context
 // already has one the handler runs untouched; otherwise a fresh ctx

@@ -56,12 +56,29 @@ type ProcessStarter interface {
 }
 
 // ProcessReader reads process-instance observability — one instance's current
-// state (incl. resume tokens for parked tasks) and its activity timeline. *Server
-// satisfies it. Kept as an interface so the REST kernel is unit-testable with a
-// fake and needs no engine import beyond enginev1/ingressv1.
+// state (incl. resume tokens for parked tasks), its activity timeline, and a
+// single parked task resolved by opaque resume token. *Server satisfies it. Kept
+// as an interface so the REST kernel is unit-testable with a fake and needs no
+// engine import beyond enginev1/ingressv1.
 type ProcessReader interface {
 	GetProcessInstanceCore(ctx context.Context, name, instanceKey string) (*ingressv1.GetProcessInstanceResponse, error)
 	GetProcessInstanceHistoryCore(ctx context.Context, name, instanceKey string, afterSeq uint64, limit int) (present bool, events []*enginev1.ProcessHistoryEvent, nextAfterSeq uint64, err error)
+	// GetTaskCore resolves a parked task by opaque resume token — the discovery
+	// (read) half of the resume-token surface, the GET counterpart to
+	// CompleteTaskCore's POST. Returns the task descriptor (and its submission
+	// schema when a resolver is wired) when the token is live; FailedPrecondition
+	// when it is stale/consumed/forged.
+	GetTaskCore(ctx context.Context, resumeToken string) (*ingressv1.GetTaskResponse, error)
+}
+
+// TaskSchemaResolver derives a parked task's submission JSON Schema from the
+// instance's pinned model. The reflwos model resolver satisfies it structurally;
+// held as an interface so internal/ingress stays model-agnostic (it never imports
+// reflwos). The bytes are opaque JSON Schema — the engine forwards them, schema
+// generation is a gateway (reflwos) concern. A (nil, nil) return means the task
+// has no typed completion contract; an error means the model was unresolvable.
+type TaskSchemaResolver interface {
+	TaskSchema(ctx context.Context, modelRef *enginev1.ModelRef, nodeID string) ([]byte, error)
 }
 
 // ProcessEventDeliverer injects an external typed engine event into a running
@@ -328,6 +345,38 @@ func CompleteTaskHTTP(cfg InvokeConfig) http.Handler {
 			"pk":       strconv.FormatUint(pk, 10),
 			"accepted": true,
 		})
+	})
+}
+
+// GetTaskHTTP builds the handler for GET /v1/tasks/{token} — resolve a parked
+// user/human task by its opaque resume token: the discovery (read) half of the
+// resume-token surface, the GET counterpart to POST /v1/tasks/{token}. Returns the
+// task descriptor (service, instance_key, node_id, name) as protojson, plus a
+// `schema` (the submission JSON Schema) when a model resolver is wired. A
+// stale/consumed/forged token whose task is no longer awaiting maps to 412
+// (FailedPrecondition) — the same liveness gate the completion path applies — a
+// malformed token to 400. Authorizes against the same read action as
+// GetProcessInstance, the instance read that surfaces the very same tokens.
+func GetTaskHTTP(cfg InvokeConfig) http.Handler {
+	const route = "/v1/tasks/{token}"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sc := &statusCapture{ResponseWriter: w, status: http.StatusOK}
+		defer func() { recordREST(cfg.Metrics, route, r.Method, sc.status) }()
+
+		if r.Method != http.MethodGet {
+			http.Error(sc, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if err := cfg.Authorizer.AuthorizeIngressAction(r.Context(), actionGetProcessInstance, groupIngressActions); err != nil {
+			writeConnErr(sc, err)
+			return
+		}
+		resp, err := cfg.Reader.GetTaskCore(r.Context(), r.PathValue("token"))
+		if err != nil {
+			writeConnErr(sc, err)
+			return
+		}
+		writeProtoJSON(sc, http.StatusOK, resp)
 	})
 }
 

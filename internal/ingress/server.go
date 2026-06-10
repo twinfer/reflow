@@ -33,6 +33,12 @@ type Server struct {
 
 	host *engine.Host
 	log  *slog.Logger
+	// schemaResolver, when set, derives a parked task's submission JSON Schema for
+	// the GET /v1/tasks/{token} read (set by the ingress runtime from the active
+	// model resolver). Held as an interface so this package stays model-agnostic —
+	// it never imports reflwos. Nil → the read returns the descriptor without a
+	// schema (no process engine, or a non-schema-capable resolver).
+	schemaResolver TaskSchemaResolver
 }
 
 // NewServer builds an ingress Server bound to the given host. Log
@@ -86,12 +92,17 @@ func (s *Server) Submit(ctx context.Context, a SubmitArgs) (*enginev1.Invocation
 	// miss the lookup, both propose) is handled authoritatively in the
 	// apply path's onInvoke: the second InvokeCommand is dropped.
 	if ik := a.IdempotencyKey; ik != "" {
-		res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupIdempotency{
+		// Submit is reached over the REST facade and webhook adapter (which derives
+		// an idempotency key), neither of which carries the Connect deadline
+		// interceptor — and SyncRead requires a deadline.
+		rctx, rcancel := ensureReadDeadline(ctx)
+		res, err := s.host.NodeHost().SyncRead(rctx, shardID, engine.LookupIdempotency{
 			Service:        target.GetServiceName(),
 			Handler:        target.GetHandlerName(),
 			ObjectKey:      target.GetObjectKey(),
 			IdempotencyKey: ik,
 		})
+		rcancel()
 		if err == nil {
 			if prior, ok := res.(*enginev1.InvocationId); ok && prior != nil {
 				return prior, nil
@@ -125,10 +136,12 @@ func (s *Server) Submit(ctx context.Context, a SubmitArgs) (*enginev1.Invocation
 	// to (service, workflow_key) already claimed the key — surface the
 	// existing InvocationId. Apply-path authoritatively dedups losing races.
 	if protocolv1.Kind(info.Kind) == protocolv1.Kind_KIND_WORKFLOW && target.GetObjectKey() != "" {
-		res, err := s.host.NodeHost().SyncRead(ctx, shardID, engine.LookupWorkflowRun{
+		rctx, rcancel := ensureReadDeadline(ctx)
+		res, err := s.host.NodeHost().SyncRead(rctx, shardID, engine.LookupWorkflowRun{
 			Service:     target.GetServiceName(),
 			WorkflowKey: target.GetObjectKey(),
 		})
+		rcancel()
 		if err == nil {
 			if prior, ok := res.(*enginev1.InvocationId); ok && prior != nil {
 				return prior, nil

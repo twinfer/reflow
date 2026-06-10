@@ -36,6 +36,10 @@ type parsedModel struct {
 	decisions   map[string]*dmn.Runtime       // decisionRef → runtime (from bundle.decisions)
 	children    map[string]*enginev1.ModelRef // calledElement → child ref override (bundle.children)
 	retentionMs uint64
+	// xml is the raw model document, retained so TaskSchema can lazily derive a
+	// parked task's submission schema (schema.go) off the apply path — the
+	// no-per-turn-I/O contract is unaffected (the apply path never calls it).
+	xml []byte
 }
 
 // TableResolver is a ModelResolver fed by shard 0's ModelTable. A reconciler
@@ -260,13 +264,13 @@ func parseModelRecord(rec *enginev1.ModelRecord, dmnRuntimes map[modelKey]*dmn.R
 		if err != nil {
 			return nil, fmt.Errorf("parse bpmn: %w", err)
 		}
-		return &parsedModel{graph: g, decisions: decisions, children: children, retentionMs: historyTTLFromBPMN(rec.GetXml())}, nil
+		return &parsedModel{graph: g, decisions: decisions, children: children, retentionMs: historyTTLFromBPMN(rec.GetXml()), xml: rec.GetXml()}, nil
 	case "cmmn":
 		def, err := cmmn.Parse(rec.GetXml(), "")
 		if err != nil {
 			return nil, fmt.Errorf("parse cmmn: %w", err)
 		}
-		return &parsedModel{caseDef: def, decisions: decisions, children: children, retentionMs: historyTTLFromCMMN(rec.GetXml())}, nil
+		return &parsedModel{caseDef: def, decisions: decisions, children: children, retentionMs: historyTTLFromCMMN(rec.GetXml()), xml: rec.GetXml()}, nil
 	default:
 		return nil, fmt.Errorf("unknown model kind %q", ref.GetKind())
 	}

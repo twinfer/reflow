@@ -525,6 +525,7 @@ func startIngressListener(
 	mw func(http.Handler) http.Handler,
 	authzIc connect.Interceptor,
 	secrets *secretstore.Resolver,
+	taskSchema ingress.TaskSchemaResolver,
 	metrics *observability.Metrics,
 	logger *slog.Logger,
 ) (*ingress.Runtime, *creds.ListenerCreds, error) {
@@ -548,12 +549,13 @@ func startIngressListener(
 		logger.Warn("reflw: ingress is running on an insecure listener — multi-node deployments should configure cfg.Ingress.Creds")
 	}
 	icfg := ingress.Config{
-		Addr:             cfg.Ingress.Addr,
-		TLS:              lc.ServerTLSConfig,
-		Log:              logger,
-		Middleware:       mw,
-		AuthzInterceptor: authzIc,
-		Metrics:          metrics,
+		Addr:               cfg.Ingress.Addr,
+		TLS:                lc.ServerTLSConfig,
+		Log:                logger,
+		Middleware:         mw,
+		AuthzInterceptor:   authzIc,
+		TaskSchemaResolver: taskSchema,
+		Metrics:            metrics,
 	}
 	// The same *authz.Interceptor that gates the Connect RPCs also authorizes
 	// the REST data-plane facade (by Cedar action id, not procedure).
@@ -866,7 +868,15 @@ func finishStartup(ctx context.Context, d startupDeps) (*Host, error) {
 	}
 
 	multiNode := len(cfg.Cluster.Peers) > 1
-	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, authzInterceptor, secrets, metrics, logger)
+	// GET /v1/tasks/{token} returns a parked task's submission schema when the
+	// active model resolver can derive it; the table-backed resolver does. Absent or
+	// non-capable → the read returns the descriptor only. Guarded so a nil
+	// *TableResolver never becomes a non-nil interface wrapping a nil pointer.
+	var taskSchema ingress.TaskSchemaResolver
+	if d.modelTableResolver != nil {
+		taskSchema = d.modelTableResolver
+	}
+	ingressRT, ingressCreds, err := startIngressListener(ctx, eh, cfg, multiNode, httpAuthMW, authzInterceptor, secrets, taskSchema, metrics, logger)
 	if err != nil {
 		if snapshotCxl != nil {
 			snapshotCxl()

@@ -11,6 +11,7 @@ syntax = "proto3";
 package reflw.ingress.v1;
 
 import "enginev1/engine.proto";
+import "google/protobuf/struct.proto";
 
 option go_package = "github.com/twinfer/reflw/proto/ingressv1;ingressv1";
 
@@ -378,6 +379,28 @@ message AwaitingTaskInfo {
   string node_id = 1;
   string name = 2;
   string resume_token = 3;
+}
+
+// GetTaskResponse resolves an opaque resume token to the parked task it
+// addresses — the discovery (read) half of the resume-token surface served at
+// GET /v1/tasks/{resume_token}, mirroring POST /v1/tasks/{resume_token} (the
+// completion half). It is returned only when the token is live: the instance is
+// present, RUNNING, and still lists node_id in its awaiting set — the same
+// liveness gate the completion path applies. A stale/consumed/forged token is a
+// FailedPrecondition (the task is no longer awaiting), not a body.
+//
+// service/instance_key/node_id/name are the task identity (echoing what the
+// token encodes plus the model @name). schema, when present, is the task's
+// submission JSON Schema — the fields a completion must supply, derived from the
+// instance's pinned model by a model resolver. It is model-derived (a gateway
+// concern); the engine forwards it opaquely and omits it when no resolver can
+// produce it (no process engine, or a task with no typed output contract).
+message GetTaskResponse {
+  string service = 1;
+  string instance_key = 2;
+  string node_id = 3;
+  string name = 4;
+  google.protobuf.Struct schema = 5;
 }
 
 message ResolveProcessIncidentRequest {

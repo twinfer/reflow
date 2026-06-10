@@ -2,7 +2,9 @@ package reflw_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"testing"
 	"time"
@@ -162,7 +164,7 @@ const e2eUserTaskBPMN = `<?xml version="1.0" encoding="UTF-8"?>
 // and returns an ingress client for driving it. All cleanup is registered on t.
 // Shared by the process e2e tests; mirrors TestProcess_RegisterReconcileRun's
 // inline setup.
-func e2eProcessHost(t *testing.T, ctx context.Context, ref *enginev1.ModelRef, xml string) *ingressclient.Client {
+func e2eProcessHost(t *testing.T, ctx context.Context, ref *enginev1.ModelRef, xml string) (*ingressclient.Client, string) {
 	t.Helper()
 	ingressAddr := freeAddr(t)
 	cfg := reflw.Config{
@@ -212,7 +214,7 @@ func e2eProcessHost(t *testing.T, ctx context.Context, ref *enginev1.ModelRef, x
 		t.Fatalf("ingressclient.Dial: %v", err)
 	}
 	t.Cleanup(func() { _ = icli.Close() })
-	return icli
+	return icli, ingressAddr
 }
 
 // TestProcess_UserTaskParkThenComplete closes the BPMN human-task gap end to end:
@@ -224,7 +226,7 @@ func e2eProcessHost(t *testing.T, ctx context.Context, ref *enginev1.ModelRef, x
 func TestProcess_UserTaskParkThenComplete(t *testing.T) {
 	ctx := t.Context()
 	ref := &enginev1.ModelRef{Kind: "bpmn", Name: "UT", Version: "v1"}
-	icli := e2eProcessHost(t, ctx, ref, e2eUserTaskBPMN)
+	icli, _ := e2eProcessHost(t, ctx, ref, e2eUserTaskBPMN)
 
 	deadline := time.Now().Add(20 * time.Second)
 	for attempt := 0; time.Now().Before(deadline); attempt++ {
@@ -279,7 +281,7 @@ const e2eHumanCaseCMMN = `<?xml version="1.0" encoding="UTF-8"?>
 func TestProcess_CMMNHumanTaskParkThenComplete(t *testing.T) {
 	ctx := t.Context()
 	ref := &enginev1.ModelRef{Kind: "cmmn", Name: "HC", Version: "v1"}
-	icli := e2eProcessHost(t, ctx, ref, e2eHumanCaseCMMN)
+	icli, _ := e2eProcessHost(t, ctx, ref, e2eHumanCaseCMMN)
 
 	deadline := time.Now().Add(20 * time.Second)
 	for attempt := 0; time.Now().Before(deadline); attempt++ {
@@ -314,6 +316,90 @@ func TestProcess_CMMNHumanTaskParkThenComplete(t *testing.T) {
 		}
 	}
 	t.Fatal("human task case never parked to complete")
+}
+
+// e2eUserTaskSchemaBPMN is start → userTask(with a data output) → end. The data
+// output gives the task a typed completion contract, so the resume-point read can
+// surface a submission schema.
+const e2eUserTaskSchemaBPMN = `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" targetNamespace="test">
+  <itemDefinition id="Item_Decision" structureRef="xsd:string"/>
+  <process id="p" isExecutable="true" camunda:historyTimeToLive="P1D">
+    <startEvent id="start"><outgoing>f1</outgoing></startEvent>
+    <sequenceFlow id="f1" sourceRef="start" targetRef="u"/>
+    <userTask id="u" name="Approve"><incoming>f1</incoming><outgoing>f2</outgoing>
+      <ioSpecification><dataOutput id="o0" name="decision" itemSubjectRef="Item_Decision"/></ioSpecification>
+    </userTask>
+    <sequenceFlow id="f2" sourceRef="u" targetRef="end"/>
+    <endEvent id="end"><incoming>f2</incoming></endEvent>
+  </process>
+</definitions>`
+
+// TestProcess_GetTaskSchema_E2E proves the full GET /v1/tasks/{token} surface end
+// to end: register an output-bearing user task, park it, mint a resume token off
+// GetProcessInstance, then GET the token over the REST facade and get back the task
+// descriptor PLUS its submission schema. This is the one seam the unit tests can't
+// cover — the run.go wiring that hands the active model resolver to the ingress
+// Server as a TaskSchemaResolver — exercised against a real reconciled model.
+func TestProcess_GetTaskSchema_E2E(t *testing.T) {
+	ctx := t.Context()
+	ref := &enginev1.ModelRef{Kind: "bpmn", Name: "UTS", Version: "v1"}
+	icli, addr := e2eProcessHost(t, ctx, ref, e2eUserTaskSchemaBPMN)
+
+	deadline := time.Now().Add(20 * time.Second)
+	for attempt := 0; time.Now().Before(deadline); attempt++ {
+		key := fmt.Sprintf("uts-%d", attempt)
+		if _, err := icli.StartProcess(ctx, connect.NewRequest(&ingressv1.StartProcessRequest{
+			ModelRef: ref, InstanceKey: key,
+		})); err != nil {
+			t.Fatalf("StartProcess: %v", err)
+		}
+		switch pollProcessParkedOrTerminal(t, ctx, icli, ref, key, 5*time.Second) {
+		case enginev1.ProcessStatus_PROCESS_STATUS_RUNNING:
+			tok := assertAwaitingResumeToken(t, ctx, icli, ref, key, "u")
+			body := httpGetTask(t, ctx, addr, tok)
+			if body["service"] != ref.Name || body["instanceKey"] != key || body["nodeId"] != "u" {
+				t.Fatalf("descriptor = %v", body)
+			}
+			schema, ok := body["schema"].(map[string]any)
+			if !ok {
+				t.Fatalf("schema absent/wrong type (run.go resolver wiring?): %v", body["schema"])
+			}
+			props, _ := schema["properties"].(map[string]any)
+			if _, ok := props["decision"]; !ok {
+				t.Fatalf("schema.properties.decision missing: %v", schema)
+			}
+			return // success
+		case enginev1.ProcessStatus_PROCESS_STATUS_FAILED:
+			time.Sleep(200 * time.Millisecond) // model not reconciled yet; retry
+		}
+	}
+	t.Fatal("user task instance never parked")
+}
+
+// httpGetTask issues GET /v1/tasks/{token} over the REST facade and returns the
+// decoded JSON body, failing the test on a non-200. Plain HTTP (the REST routes
+// serve over HTTP/1.1), anonymous (the e2e ingress permits the read action).
+func httpGetTask(t *testing.T, ctx context.Context, addr, token string) map[string]any {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/v1/tasks/"+token, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /v1/tasks: %v", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/tasks status = %d (%q)", resp.StatusCode, string(b))
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("decode %q: %v", b, err)
+	}
+	return m
 }
 
 // assertAwaitingResumeToken reads the parked instance and asserts GetProcessInstance

@@ -347,10 +347,11 @@ message GetObjectStateResponse {
 
 message GetInvocationOutputResponse {
   enum Status {
-    PENDING = 0;
-    COMPLETED_OK = 1;
-    COMPLETED_FAILED = 2;
-    UNKNOWN = 3;
+    STATUS_UNSPECIFIED = 0;
+    STATUS_PENDING = 1;
+    STATUS_COMPLETED_OK = 2;
+    STATUS_COMPLETED_FAILED = 3;
+    STATUS_UNKNOWN = 4;
   }
   Status status = 1;
   bytes output = 2;

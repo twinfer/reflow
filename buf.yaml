@@ -15,6 +15,39 @@ lint:
     # without prefixes, etc.). We accept that divergence for
     # vocabulary alignment with the upstream community.
     - proto/protocolv1
+  # Rule exemptions scoped to the internal wire formats. The client-facing
+  # protos (apiv1, ingressv1, adminv1) are held to STANDARD so buf lint stays
+  # a real gate on the surface the browser/OpenAPI consume; the engine/mesh
+  # formats are exempted with rationale rather than churned.
+  ignore_only:
+    # enginev1 is the on-disk + Raft format. Enum values serialize by NUMBER,
+    # not name, so prefixing them changes zero bytes — it would only churn the
+    # FSM/apply path for a style rule no client ever sees (enginev1 is never a
+    # client proto). Internal vocabulary stays as-is.
+    ENUM_VALUE_PREFIX:
+      - proto/enginev1
+    ENUM_ZERO_VALUE_SUFFIX:
+      - proto/enginev1
+    # Short service names are house style (Ingress/Admin/Delivery). connect-query
+    # keys hooks by method, not service, so the "Service" suffix buys nothing on
+    # the client surface.
+    SERVICE_SUFFIX:
+      - proto/deliveryv1
+      - proto/ingressv1
+      - proto/adminv1
+    # SelfJoin is AddNode initiated by the joiner: it intentionally shares
+    # AddNode's request/response (same addNodeInternal body, gated by
+    # checkSelfJoinPrincipal). Duplicating an identical message pair just to
+    # satisfy the rule would be bloat. discoveryv1's Discover predates the
+    # standard-name convention (mesh-internal, no external consumer).
+    RPC_REQUEST_RESPONSE_UNIQUE:
+      - proto/adminv1
+    RPC_REQUEST_STANDARD_NAME:
+      - proto/adminv1
+      - proto/discoveryv1
+    RPC_RESPONSE_STANDARD_NAME:
+      - proto/adminv1
+      - proto/discoveryv1
 breaking:
   use:
     - FILE

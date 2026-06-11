@@ -415,7 +415,7 @@ func TestIngress_AttachAndGetOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetInvocationOutput: %v", err)
 	}
-	if outResp.Msg.GetStatus() != ingressv1.GetInvocationOutputResponse_COMPLETED_OK {
+	if outResp.Msg.GetStatus() != ingressv1.GetInvocationOutputResponse_STATUS_COMPLETED_OK {
 		t.Errorf("status = %v; want COMPLETED_OK", outResp.Msg.GetStatus())
 	}
 	if got := string(outResp.Msg.GetOutput()); got != "echo:phase3" {
@@ -428,7 +428,7 @@ func TestIngress_AttachAndGetOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetInvocationOutput unknown: %v", err)
 	}
-	if unkResp.Msg.GetStatus() != ingressv1.GetInvocationOutputResponse_UNKNOWN {
+	if unkResp.Msg.GetStatus() != ingressv1.GetInvocationOutputResponse_STATUS_UNKNOWN {
 		t.Errorf("unknown id status = %v; want UNKNOWN", unkResp.Msg.GetStatus())
 	}
 }

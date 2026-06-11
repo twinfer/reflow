@@ -60,29 +60,29 @@ func (s *Server) GetInvocationOutput(ctx context.Context, req *connect.Request[i
 	st, err := s.host.LookupInvocationStatus(readCtx, shardID, id)
 	if err != nil {
 		if isTransientLookupErr(err) {
-			return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{Status: ingressv1.GetInvocationOutputResponse_UNKNOWN}), nil
+			return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{Status: ingressv1.GetInvocationOutputResponse_STATUS_UNKNOWN}), nil
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup invocation: %w", err))
 	}
 	if st == nil {
-		return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{Status: ingressv1.GetInvocationOutputResponse_UNKNOWN}), nil
+		return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{Status: ingressv1.GetInvocationOutputResponse_STATUS_UNKNOWN}), nil
 	}
 	switch s := st.GetStatus().(type) {
 	case *enginev1.InvocationStatus_Completed:
 		if fmsg := s.Completed.GetFailureMessage(); fmsg != "" {
 			return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{
-				Status:         ingressv1.GetInvocationOutputResponse_COMPLETED_FAILED,
+				Status:         ingressv1.GetInvocationOutputResponse_STATUS_COMPLETED_FAILED,
 				FailureMessage: fmsg,
 				FailureCode:    s.Completed.GetFailureCode(),
 			}), nil
 		}
 		return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{
-			Status: ingressv1.GetInvocationOutputResponse_COMPLETED_OK,
+			Status: ingressv1.GetInvocationOutputResponse_STATUS_COMPLETED_OK,
 			Output: s.Completed.GetOutput(),
 		}), nil
 	case nil, *enginev1.InvocationStatus_Free:
-		return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{Status: ingressv1.GetInvocationOutputResponse_UNKNOWN}), nil
+		return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{Status: ingressv1.GetInvocationOutputResponse_STATUS_UNKNOWN}), nil
 	default:
-		return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{Status: ingressv1.GetInvocationOutputResponse_PENDING}), nil
+		return connect.NewResponse(&ingressv1.GetInvocationOutputResponse{Status: ingressv1.GetInvocationOutputResponse_STATUS_PENDING}), nil
 	}
 }

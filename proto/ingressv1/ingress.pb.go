@@ -93,25 +93,28 @@ func (SubmitInvocationRequest_Mode) EnumDescriptor() ([]byte, []int) {
 type GetInvocationOutputResponse_Status int32
 
 const (
-	GetInvocationOutputResponse_PENDING          GetInvocationOutputResponse_Status = 0
-	GetInvocationOutputResponse_COMPLETED_OK     GetInvocationOutputResponse_Status = 1
-	GetInvocationOutputResponse_COMPLETED_FAILED GetInvocationOutputResponse_Status = 2
-	GetInvocationOutputResponse_UNKNOWN          GetInvocationOutputResponse_Status = 3
+	GetInvocationOutputResponse_STATUS_UNSPECIFIED      GetInvocationOutputResponse_Status = 0
+	GetInvocationOutputResponse_STATUS_PENDING          GetInvocationOutputResponse_Status = 1
+	GetInvocationOutputResponse_STATUS_COMPLETED_OK     GetInvocationOutputResponse_Status = 2
+	GetInvocationOutputResponse_STATUS_COMPLETED_FAILED GetInvocationOutputResponse_Status = 3
+	GetInvocationOutputResponse_STATUS_UNKNOWN          GetInvocationOutputResponse_Status = 4
 )
 
 // Enum value maps for GetInvocationOutputResponse_Status.
 var (
 	GetInvocationOutputResponse_Status_name = map[int32]string{
-		0: "PENDING",
-		1: "COMPLETED_OK",
-		2: "COMPLETED_FAILED",
-		3: "UNKNOWN",
+		0: "STATUS_UNSPECIFIED",
+		1: "STATUS_PENDING",
+		2: "STATUS_COMPLETED_OK",
+		3: "STATUS_COMPLETED_FAILED",
+		4: "STATUS_UNKNOWN",
 	}
 	GetInvocationOutputResponse_Status_value = map[string]int32{
-		"PENDING":          0,
-		"COMPLETED_OK":     1,
-		"COMPLETED_FAILED": 2,
-		"UNKNOWN":          3,
+		"STATUS_UNSPECIFIED":      0,
+		"STATUS_PENDING":          1,
+		"STATUS_COMPLETED_OK":     2,
+		"STATUS_COMPLETED_FAILED": 3,
+		"STATUS_UNKNOWN":          4,
 	}
 )
 
@@ -975,7 +978,7 @@ func (x *GetInvocationOutputResponse) GetStatus() GetInvocationOutputResponse_St
 	if x != nil {
 		return x.Status
 	}
-	return GetInvocationOutputResponse_PENDING
+	return GetInvocationOutputResponse_STATUS_UNSPECIFIED
 }
 
 func (x *GetInvocationOutputResponse) GetOutput() []byte {
@@ -2671,17 +2674,18 @@ const file_ingressv1_ingress_proto_rawDesc = "" +
 	"\tstate_key\x18\x03 \x01(\tR\bstateKey\"H\n" +
 	"\x16GetObjectStateResponse\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\fR\x05value\x12\x18\n" +
-	"\apresent\x18\x02 \x01(\bR\apresent\"\x9b\x02\n" +
+	"\apresent\x18\x02 \x01(\bR\apresent\"\xcf\x02\n" +
 	"\x1bGetInvocationOutputResponse\x12L\n" +
 	"\x06status\x18\x01 \x01(\x0e24.reflw.ingress.v1.GetInvocationOutputResponse.StatusR\x06status\x12\x16\n" +
 	"\x06output\x18\x02 \x01(\fR\x06output\x12'\n" +
 	"\x0ffailure_message\x18\x03 \x01(\tR\x0efailureMessage\x12!\n" +
-	"\ffailure_code\x18\x04 \x01(\rR\vfailureCode\"J\n" +
-	"\x06Status\x12\v\n" +
-	"\aPENDING\x10\x00\x12\x10\n" +
-	"\fCOMPLETED_OK\x10\x01\x12\x14\n" +
-	"\x10COMPLETED_FAILED\x10\x02\x12\v\n" +
-	"\aUNKNOWN\x10\x03\">\n" +
+	"\ffailure_code\x18\x04 \x01(\rR\vfailureCode\"~\n" +
+	"\x06Status\x12\x16\n" +
+	"\x12STATUS_UNSPECIFIED\x10\x00\x12\x12\n" +
+	"\x0eSTATUS_PENDING\x10\x01\x12\x17\n" +
+	"\x13STATUS_COMPLETED_OK\x10\x02\x12\x1b\n" +
+	"\x17STATUS_COMPLETED_FAILED\x10\x03\x12\x12\n" +
+	"\x0eSTATUS_UNKNOWN\x10\x04\">\n" +
 	"\x17CancelInvocationRequest\x12#\n" +
 	"\rinvocation_id\x18\x01 \x01(\tR\finvocationId\"6\n" +
 	"\x18CancelInvocationResponse\x12\x1a\n" +

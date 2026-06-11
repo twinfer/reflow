@@ -365,9 +365,13 @@ func cmmnTimerFireAt(logicalMs uint64, t cmmn.RunTask) (uint64, error) {
 	return 0, fmt.Errorf("processengine: timer listener %q has neither duration nor absolute time", t.PlanItemID)
 }
 
-// cmmnTaskRef mirrors cmmnhost.taskRef: read <capability ref="…"/> from the
-// task's extension elements.
+// cmmnTaskRef mirrors cmmnhost.taskRef: the reflwos-native
+// <reflwos:taskDefinition type="ns:op"/> wins; a legacy <capability ref="ns:op"/>
+// is the fallback.
 func cmmnTaskRef(t cmmn.RunTask) (string, error) {
+	if ref := cmmn.TaskDefType(t.ExtensionsXML); ref != "" {
+		return ref, nil
+	}
 	var cfg struct {
 		Capability struct {
 			Ref string `xml:"ref,attr"`
@@ -377,7 +381,7 @@ func cmmnTaskRef(t cmmn.RunTask) (string, error) {
 		return "", fmt.Errorf("processengine: decode <capability> for %q: %w", t.PlanItemID, err)
 	}
 	if cfg.Capability.Ref == "" {
-		return "", fmt.Errorf("processengine: task %q names no capability (set <capability ref=\"ns:op\"/>)", t.PlanItemID)
+		return "", fmt.Errorf("processengine: task %q names no capability (set <reflwos:taskDefinition type=\"ns:op\"/>)", t.PlanItemID)
 	}
 	return cfg.Capability.Ref, nil
 }

@@ -1,27 +1,33 @@
-// Command reflwd is the production reflw binary. It exposes three
+// Command reflwd is the production reflw binary. It exposes these
 // top-level subcommands:
 //
 //	reflwd run                 # start the engine
-//	reflwd cluster <subcmd>    # mTLS-authenticated ClusterCtl RPCs
-//	                            # (fleet ops: membership, partitions,
-//	                            # snapshots, LP transfers)
-//	reflwd config <subcmd>     # mTLS-authenticated Config RPCs
-//	                            # (app config: deployments, event
-//	                            # sources, webhooks, secrets,
-//	                            # CA roots, join tokens)
+//	reflwd cluster <subcmd>    # fleet ops: membership, partitions,
+//	                            # snapshots, LP transfers, rebalance
+//	reflwd config <subcmd>     # app config: deployments, models,
+//	                            # secrets, cluster authz policy; plus
+//	                            # local PKI (ca init, issue-operator)
+//	reflwd purge-invocation    # operator: purge a completed invocation
 //
-// PKI: cluster CA + leaf material is managed via shard-0 tables —
-// operators run `reflwd config ca init` once to mint a cluster CA,
-// `reflwd config create-join-token` to mint a one-time joiner
-// credential, and `reflwd run --join` to redeem it. Every leaf carries
-// the principal Raw form (e.g. "node/1", "operator/alice") in its CN
-// that the reflw TLS layer matches against the listener's expected
-// role.
+// cluster and config both dispatch to the single reflw.admin.v1.Admin
+// Connect service on the mTLS admin listener (the former config +
+// clusterctl services were merged into one Admin service; the CLI keeps
+// the two command groups for UX). --admin may point at ANY cluster node —
+// mutating commands follow the LeaderHint detail attached to
+// connect.CodeUnavailable to redirect to the metadata leader automatically.
 //
-// Cluster and config subcommands talk to the admin Connect listener via
-// mTLS. --admin may point at ANY cluster node — mutating commands follow
-// the LeaderHint detail attached to connect.CodeUnavailable to redirect
-// to the metadata leader automatically:
+// PKI: the cluster CA is config + KMS, not a shard-0 table — a public CA
+// cert distributed via cluster_ca.ca_cert_file plus a KMS-wrapped signing
+// key (cluster_ca.key_blob_uri + key_kek_uri). `reflwd config ca init`
+// mints the CA and seals its key; `reflwd config issue-operator` mints an
+// operator/<name> leaf from it — both LOCAL commands (no RPC, no cluster
+// connection): whoever can unwrap the KMS key can mint a cert. Each node
+// self-issues its own node/<id> mesh leaf at startup, so there is no
+// central issuer, no join token, and no bootstrap port. A new node joins
+// via `reflwd cluster add-node` (operator-driven) or `reflwd run` with
+// cluster.join_existing=true. Every leaf carries the principal Raw form
+// (e.g. "node/1", "operator/alice") in its CN, which the reflw mTLS layer
+// and the Cedar authz policy match against.
 //
 //	reflwd cluster add-node            --admin=ANY:PORT --node-id=N --raft-addr=... --gossip-addr=... --grpc-endpoint=... [--node-host-id=ID]
 //	reflwd cluster remove-node         --admin=ANY:PORT --node-id=N
@@ -35,19 +41,26 @@
 //	reflwd cluster rebalance-advise    --admin=ANY:PORT
 //	reflwd cluster rebalance-drain     --admin=ANY:PORT --shard=N [--stop]
 //
-//	reflwd config register-deployment  --admin=ANY:PORT --url=http://HANDLER:PORT
-//	reflwd config list-deployments     --admin=ANY:PORT
-//	reflwd config describe-deployment  --admin=ANY:PORT --id=DEPLOYMENT_ID
-//	reflwd config delete-deployment    --admin=ANY:PORT --id=DEPLOYMENT_ID --force
-//	reflwd config apply -f <file>      --admin=ANY:PORT
-//	reflwd config init-kek             --blob-uri=...
-//	reflwd config create-secret        --admin=ANY:PORT --name=N --kek-uri=... --blob-uri=...
-//	reflwd config delete-secret        --admin=ANY:PORT --name=N
-//	reflwd config list-secrets         --admin=ANY:PORT
-//	reflwd config decrypt-secret       --name=N --kek-uri=... --blob-uri=...
+//	reflwd config register-deployment         --admin=ANY:PORT --url=http://HANDLER:PORT
+//	reflwd config list-deployments            --admin=ANY:PORT
+//	reflwd config describe-deployment         --admin=ANY:PORT --id=DEPLOYMENT_ID
+//	reflwd config delete-deployment           --admin=ANY:PORT --id=DEPLOYMENT_ID --force
+//	reflwd config register-model              --admin=ANY:PORT --file=M.bpmn --kind=bpmn --name=N --version=V  (or --manifest=set.json)
+//	reflwd config list-models                 --admin=ANY:PORT
+//	reflwd config describe-model              --admin=ANY:PORT --kind=bpmn --name=N [--version=V]
+//	reflwd config delete-model                --admin=ANY:PORT --kind=bpmn --name=N
+//	reflwd config create-secret               --admin=ANY:PORT --name=N --kek-uri=... --blob-uri=...
+//	reflwd config delete-secret               --admin=ANY:PORT --name=N
+//	reflwd config list-secrets                --admin=ANY:PORT
+//	reflwd config upsert-cluster-authz-policy --admin=ANY:PORT -f policy.cedar [--if-revision=R]
+//	reflwd config get-cluster-authz-policy    --admin=ANY:PORT
+//	reflwd config ca init                     --kek-uri=... --key-blob-uri=... [--ca-cert-out=ca.crt]   # LOCAL
+//	reflwd config issue-operator              --name=N --ca-cert-file=... --key-blob-uri=... --key-kek-uri=... [--out=.]  # LOCAL
+//	reflwd config init-kek                    --blob-uri=...   # LOCAL
+//	reflwd config decrypt-secret              --name=N --kek-uri=... --blob-uri=...   # LOCAL
 //
-// Cluster and config subcommands need the operator TLS flags (or
-// matching env vars):
+// The Admin RPCs (everything above except the LOCAL PKI/KEK commands)
+// need the operator TLS flags (or matching env vars):
 //
 //	--client-cert   $REFLW_CLIENT_CERT
 //	--client-key    $REFLW_CLIENT_KEY
